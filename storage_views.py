@@ -1,0 +1,157 @@
+from __future__ import annotations
+
+import sqlite3
+from typing import Any
+
+from .gating import build_fts_query, compact_text, like_terms, query_tokens
+from .models import RecallItem
+from .scoring import lexical_score
+from .sql_store import curated_recall_item_id, iter_curated_entries
+
+
+
+def search_db_memories(provider: Any, query: str, *, limit: int) -> list[RecallItem]:
+    conn = provider._require_conn()
+    tokens = query_tokens(query)
+    fts_query = build_fts_query(tokens)
+    rows: list[sqlite3.Row] = []
+    candidate_pool = max(limit * 2, limit)
+    recent_scan_limit = max(
+        candidate_pool,
+        int((provider._retrieval_config or {}).get("candidate_pool") or candidate_pool) * 4,
+        48,
+    )
+    with provider._lock:
+        if fts_query:
+            rows.extend(
+                conn.execute(
+                    """
+                    SELECT m.*
+                    FROM memories_fts
+                    JOIN memories m ON m.id = memories_fts.memory_id
+                    WHERE memories_fts MATCH ? AND m.scope_id = ?
+                    ORDER BY m.updated_at DESC
+                    LIMIT ?
+                    """,
+                    (fts_query, provider._scope_id, candidate_pool),
+                ).fetchall()
+            )
+        like_query_terms = like_terms(query, tokens)
+        if like_query_terms:
+            clause = " OR ".join(["content LIKE ?", "summary LIKE ?"] * len(like_query_terms))
+            params: list[Any] = []
+            for term in like_query_terms:
+                needle = f"%{term}%"
+                params.extend([needle, needle])
+            params.extend([provider._scope_id, candidate_pool])
+            rows.extend(
+                conn.execute(
+                    f"""
+                    SELECT *
+                    FROM memories
+                    WHERE ({clause}) AND scope_id = ?
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                    """,
+                    params,
+                ).fetchall()
+            )
+        if len(rows) < candidate_pool:
+            rows.extend(
+                conn.execute(
+                    """
+                    SELECT *
+                    FROM memories
+                    WHERE scope_id = ?
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                    """,
+                    (provider._scope_id, recent_scan_limit),
+                ).fetchall()
+            )
+
+    dedup_rows: dict[str, sqlite3.Row] = {row["id"]: row for row in rows}
+    min_score = float((provider._retrieval_config or {}).get("min_score") or provider._config_value("min_score", 0.18))
+    results: list[RecallItem] = []
+    for row in dedup_rows.values():
+        score = lexical_score(
+            query=query,
+            content=row["content"],
+            summary=row["summary"],
+            source=row["source"],
+            target=row["target"],
+        )
+        if score < min_score * 0.5:
+            continue
+        results.append(
+            RecallItem(
+                id=row["id"],
+                content=row["content"],
+                summary=row["summary"],
+                source=row["source"],
+                target=row["target"],
+                score=score,
+                updated_at=row["updated_at"],
+                metadata={"lexical_score": score, "vector_score": 0.0},
+            )
+        )
+    return results
+
+
+
+def search_vector_memories(provider: Any, query: str, *, limit: int) -> list[RecallItem]:
+    if not provider._vector_ready or not provider._vector_store or not provider._embedder:
+        return []
+    query_vector = provider._embedder.embed(query)
+    top_k = max(limit, int((provider._vector_config or {}).get("top_k") or limit))
+    rows = provider._vector_store.search(query_vector, scope_id=provider._scope_id, limit=top_k)
+    threshold = float((provider._retrieval_config or {}).get("vector_min_score") or 0.12)
+    results: list[RecallItem] = []
+    for row in rows:
+        distance = float(row.get("_distance") or 0.0)
+        vector_score = max(0.0, 1.0 - distance)
+        if vector_score < threshold:
+            continue
+        results.append(
+            RecallItem(
+                id=row["id"],
+                content=row["content"],
+                summary=row["summary"],
+                source=row["source"],
+                target=row["target"],
+                score=vector_score,
+                updated_at=row["updated_at"],
+                metadata={"lexical_score": 0.0, "vector_score": vector_score},
+            )
+        )
+    return results
+
+
+
+def search_curated_memories(provider: Any, query: str) -> list[RecallItem]:
+    min_score = float((provider._retrieval_config or {}).get("min_score") or provider._config_value("min_score", 0.18))
+    results: list[RecallItem] = []
+    for target, content, updated_at in iter_curated_entries(provider._hermes_home):
+        summary = compact_text(content, 220)
+        score = lexical_score(
+            query=query,
+            content=content,
+            summary=summary,
+            source="builtin-curated",
+            target=target,
+        )
+        if score < min_score:
+            continue
+        results.append(
+            RecallItem(
+                id=curated_recall_item_id(target, content),
+                content=content,
+                summary=summary,
+                source="builtin-curated",
+                target=target,
+                score=score,
+                updated_at=updated_at,
+                metadata={"lexical_score": score, "vector_score": 0.0},
+            )
+        )
+    return results

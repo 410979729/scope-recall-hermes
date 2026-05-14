@@ -1,0 +1,48 @@
+{
+  "auto_recall": true,
+  "auto_capture": true,
+  "auto_recall_min_length": 15,
+  "auto_recall_min_repeated": 8,
+  "auto_recall_max_items": 3,
+  "auto_recall_max_chars": 600,
+  "auto_recall_per_item_max_chars": 180,
+  "max_recall_per_turn": 10,
+  "min_score": 0.18,
+  "capture_assistant": true,
+  "query_char_limit": 1000,
+  "min_capture_length": 10,
+  "enable_tools": true,
+  "retrieval": {
+    "mode": "hybrid",
+    "lexical_weight": 0.45,
+    "vector_weight": 0.55,
+    "candidate_pool": 12,
+    "min_score": 0.18,
+    "vector_min_score": 0.12,
+    "metric": "cosine",
+    "freshness_hints": ["current", "currently", "latest", "new", "newest", "now", "recent", "recently", "today", "updated"],
+    "freshness_base_weight": 0.22,
+    "freshness_step_weight": 0.1,
+    "freshness_max_weight": 0.42
+  },
+  "vector": {
+    "enabled": true,
+    "backend": "lancedb",
+    "table_name": "memories",
+    "top_k": 8,
+    "sync_mode": "incremental",
+    "embedder": {
+      "provider": "openai-compatible",
+      "dimensions": 3072,
+      "model": "gemini-embedding-001",
+      "api_key_env": ["OPENAI_API_KEY", "GOOGLE_API_KEY"],
+      "base_url_env": ["GEMINI_BASE_URL", "OPENAI_BASE_URL"],
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai"
+    },
+    "fallback_embedder": {
+      "provider": "local-hash",
+      "dimensions": 256,
+      "model": "hash-v1"
+    }
+  }
+}

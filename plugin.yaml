@@ -1,0 +1,7 @@
+name: scope-recall
+version: 0.2.0
+description: Current-turn local memory provider with SQLite truth store and LanceDB vector companion.
+hooks:
+  - on_turn_start
+  - on_session_end
+  - on_memory_write

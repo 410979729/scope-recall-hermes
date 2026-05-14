@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scope-recall"
+version = "0.2.0"
+description = "Hermes current-turn memory provider with SQLite truth storage and a LanceDB vector companion."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Yuheng" }
+]
+keywords = ["hermes", "memory", "sqlite", "lancedb", "plugin"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+  "lancedb>=0.30.2",
+  "pyarrow>=24,<25",
+]
+
+[project.urls]
+Homepage = "https://github.com/joyjoy-ai/scope-recall"
+Documentation = "https://github.com/joyjoy-ai/scope-recall#readme"
+Issues = "https://github.com/joyjoy-ai/scope-recall/issues"
+
+[tool.setuptools]
+include-package-data = true
+packages = ["scope_recall"]
+package-dir = {"scope_recall" = "."}
+
+[tool.setuptools.package-data]
+"*" = ["LICENSE"]
+
+[tool.setuptools.data-files]
+"" = ["plugin.yaml", "config.json", "README.md", "DESIGN.md", "CHANGELOG.md", ".env.example"]
+"docs" = ["docs/*.md"]
+"scripts" = ["scripts/*.py"]
+".github/workflows" = [".github/workflows/*.yml"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

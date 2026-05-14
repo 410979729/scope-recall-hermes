@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.12']
+
+    steps:
+      - name: Check out scope-recall
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Hermes runtime for plugin tests
+        run: |
+          git clone --depth 1 https://github.com/NousResearch/hermes-agent.git .hermes-agent-src
+          python -m pip install --upgrade pip
+          python -m pip install -e .hermes-agent-src
+
+      - name: Install scope-recall test dependencies
+        run: |
+          python -m pip install -e .
+          python -m pip install pytest wheel
+
+      - name: Run tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.hermes-agent-src:${{ github.workspace }}
+        run: python -m pytest -q
+
+      - name: Compile Python sources
+        run: python -m compileall -q .
+
+      - name: Build wheel and inspect contents
+        run: |
+          tmpdist="${RUNNER_TEMP}/scope-recall-dist"
+          rm -rf "$tmpdist"
+          mkdir -p "$tmpdist"
+          python -m pip wheel . --no-deps -w "$tmpdist"
+          python - <<'PY'
+          import pathlib
+          import sys
+          import zipfile
+
+          tmpdist = pathlib.Path(__import__('os').environ['RUNNER_TEMP']) / 'scope-recall-dist'
+          wheels = list(tmpdist.glob('scope_recall-*.whl'))
+          if len(wheels) != 1:
+              raise SystemExit(f'expected one scope_recall wheel, found {wheels}')
+          required = {
+              'scope_recall/__init__.py',
+              'scope_recall/provider.py',
+          }
+          data_required_suffixes = {
+              'plugin.yaml',
+              'config.json',
+              'README.md',
+              'DESIGN.md',
+              'CHANGELOG.md',
+              '.env.example',
+              'docs/migration.md',
+              'docs/differences-from-memory-lancedb-pro.md',
+              'scripts/import.openclaw.memory_lancedb_pro.py',
+              'scripts/repair.vector_index.py',
+          }
+          with zipfile.ZipFile(wheels[0]) as zf:
+              names = set(zf.namelist())
+          missing = sorted(required - names)
+          for suffix in data_required_suffixes:
+              if not any(name.endswith('/data/' + suffix) for name in names):
+                  missing.append(suffix)
+          pycache = sorted(name for name in names if '__pycache__' in name or name.endswith('.pyc'))
+          if missing or pycache:
+              raise SystemExit({'missing': missing, 'pycache': pycache})
+          print(f'wheel ok: {wheels[0].name}')
+          PY

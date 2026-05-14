@@ -1,0 +1,25 @@
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+*.pyc
+.venv/
+venv/
+.DS_Store
+
+# Runtime/state artifacts must never be published.
+*.sqlite3
+*.sqlite3-*
+lancedb/
+scope-recall/
+lancepro/
+backups/
+review-report.*.md
+.env
+.env.*
+!.env.example

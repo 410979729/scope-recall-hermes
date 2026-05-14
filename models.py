@@ -1,0 +1,97 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any
+
+
+@dataclass
+class RecallItem:
+    id: str
+    content: str
+    summary: str
+    source: str
+    target: str
+    score: float
+    updated_at: str
+    metadata: dict[str, Any] | None = None
+
+
+@dataclass
+class RuntimeScope:
+    platform: str = "cli"
+    user_id: str = ""
+    chat_id: str = ""
+    thread_id: str = ""
+    gateway_session_key: str = ""
+    agent_identity: str = ""
+    agent_workspace: str = ""
+    agent_context: str = "primary"
+
+
+@dataclass
+class ImportedMemoryRow:
+    id: str
+    scope_id: str
+    platform: str
+    user_id: str
+    chat_id: str
+    thread_id: str
+    gateway_session_key: str
+    agent_identity: str
+    agent_workspace: str
+    session_id: str
+    source: str
+    target: str
+    content: str
+    summary: str
+    created_at: str
+    updated_at: str
+    import_metadata: str
+    import_fingerprint: str
+
+
+@dataclass
+class VectorIndexRecord:
+    id: str
+    scope_id: str
+    source: str
+    target: str
+    content: str
+    summary: str
+    updated_at: str
+
+    def to_payload(self, vector: list[float]) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "scope_id": self.scope_id,
+            "source": self.source,
+            "target": self.target,
+            "content": self.content,
+            "summary": self.summary,
+            "updated_at": self.updated_at,
+            "vector": vector,
+        }
+
+
+
+def json_dumps_stable(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+
+def normalize_import_timestamp(raw_ts: Any) -> str:
+    if raw_ts:
+        try:
+            return datetime.fromtimestamp(float(raw_ts) / 1000.0, tz=timezone.utc).isoformat()
+        except Exception:
+            pass
+    return datetime.now(timezone.utc).isoformat()
+
+
+
+def build_import_fingerprint(*, raw_scope: str, category: str, text: str, timestamp: str, metadata_text: str) -> str:
+    material = "\n".join([raw_scope.strip(), category.strip(), text.strip(), timestamp.strip(), metadata_text.strip()])
+    return hashlib.sha1(material.encode("utf-8")).hexdigest()
