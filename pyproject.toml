@@ -28,9 +28,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/joyjoy-ai/scope-recall"
-Documentation = "https://github.com/joyjoy-ai/scope-recall#readme"
-Issues = "https://github.com/joyjoy-ai/scope-recall/issues"
+Homepage = "https://github.com/410979729/scope-recall"
+Documentation = "https://github.com/410979729/scope-recall#readme"
+Issues = "https://github.com/410979729/scope-recall/issues"
 
 [tool.setuptools]
 include-package-data = true
