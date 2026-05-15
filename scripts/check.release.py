@@ -21,7 +21,7 @@ import zipfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PACKAGE_VERSION = "1.0.0"
 WHEEL_DATA_PREFIX = f"scope_recall-{PACKAGE_VERSION}.data/data"
-GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist"}
+GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
 EXTERNAL_TEST_DIRS = {".hermes-agent-src"}
 SECRET_PATTERNS = {
     "api_key_assignment": re.compile(r"(api_key|secret|password|passwd|token)\s*=\s*['\"][A-Za-z0-9._\-+/=]{12,}['\"]", re.I),
@@ -34,6 +34,7 @@ REQUIRED_SOURCE_FILES = {
     "DESIGN.md",
     "CHANGELOG.md",
     "LICENSE",
+    "SECURITY.md",
     "CONTRIBUTING.md",
     "MANIFEST.in",
     "pyproject.toml",
@@ -45,6 +46,7 @@ REQUIRED_SOURCE_FILES = {
     "docs/stability.md",
     "scripts/import.openclaw.memory_lancedb_pro.py",
     "scripts/repair.vector_index.py",
+    "py.typed",
 }
 REQUIRED_WHEEL = {
     "scope_recall/__init__.py",
@@ -54,11 +56,13 @@ REQUIRED_WHEEL = {
     "scope_recall/governance.py",
     "scope_recall/prompting.py",
     "scope_recall/schemas.py",
+    "scope_recall/py.typed",
     f"{WHEEL_DATA_PREFIX}/plugin.yaml",
     f"{WHEEL_DATA_PREFIX}/config.json",
     f"{WHEEL_DATA_PREFIX}/README.md",
     f"{WHEEL_DATA_PREFIX}/DESIGN.md",
     f"{WHEEL_DATA_PREFIX}/CHANGELOG.md",
+    f"{WHEEL_DATA_PREFIX}/docs/SECURITY.md",
     f"{WHEEL_DATA_PREFIX}/.env.example",
     f"{WHEEL_DATA_PREFIX}/docs/migration.md",
     f"{WHEEL_DATA_PREFIX}/docs/differences-from-memory-lancedb-pro.md",
@@ -135,7 +139,8 @@ def metadata_check() -> dict[str, object]:
     required_snippets = {
         "pyproject version": f'version = "{PACKAGE_VERSION}"',
         "plugin version": f"version: {PACKAGE_VERSION}",
-        "stable classifier": "Development Status :: 5 - Production/Stable",
+        "stable classifier": "Development Status :: 4 - Beta",
+        "public contributors": "scope-recall contributors",
         "changelog v1": f"## [{PACKAGE_VERSION}]",
         "readme v1": "first stable V1 release line",
         "stability truth source": "SQLite is the truth source",
@@ -145,8 +150,8 @@ def metadata_check() -> dict[str, object]:
     for label, snippet in required_snippets.items():
         if snippet not in searchable:
             failures.append(f"missing {label}: {snippet}")
-    if "Development Status :: 4 - Beta" in searchable:
-        failures.append("beta classifier still present")
+    if "Development Status :: 5 - Production/Stable" in searchable:
+        failures.append("production-stable classifier still present; V1 should remain release-candidate/beta until broader field use")
     if 'version = "0.' in pyproject or "version: 0." in plugin:
         failures.append("0.x package/plugin version still present")
     for tool_name in STABLE_TOOL_NAMES:
@@ -187,7 +192,7 @@ def wheel_check() -> dict[str, object]:
 
 
 def cleanup_generated() -> None:
-    for pattern in ["__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", "*.egg-info"]:
+    for pattern in ["__pycache__", ".pytest_cache", ".ruff_cache", ".venv", "build", "dist", "*.egg-info"]:
         for path in sorted(ROOT.rglob(pattern), key=lambda item: len(item.parts), reverse=True):
             if not path.exists():
                 continue

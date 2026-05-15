@@ -199,8 +199,6 @@ def delete_memories(provider: Any, ids: list[str]) -> int:
 
 def dedupe_memories(provider: Any, *, dry_run: bool = True, scope_only: bool = False) -> dict[str, Any]:
     groups = exact_duplicate_groups(provider._require_conn(), scope_id=provider._scope_id if scope_only else None)
-    if not scope_only:
-        groups = [group for group in groups if group.get("scope_id") == provider._scope_id]
     delete_ids = [memory_id for group in groups for memory_id in group["delete_ids"]]
     payload: dict[str, Any] = {
         "dry_run": dry_run,

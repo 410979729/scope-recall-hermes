@@ -5,6 +5,9 @@ import pytest
 from plugins.memory import load_memory_provider
 from tools.memory_tool import MemoryStore, memory_tool
 
+from scope_recall.models import RuntimeScope
+from scope_recall.scope import build_scope_id
+
 
 @pytest.fixture
 def provider(tmp_path):
@@ -265,6 +268,24 @@ def test_scope_isolation_prefers_gateway_session_key(tmp_path):
     finally:
         p1.shutdown()
         p2.shutdown()
+
+
+def test_scope_id_serialization_cannot_collide_via_raw_delimiters():
+    embedded_delimiter = RuntimeScope(
+        platform="telegram",
+        agent_workspace="hermes",
+        agent_identity="yuheng",
+        user_id="joy|chat:group-1",
+    )
+    structured_chat = RuntimeScope(
+        platform="telegram",
+        agent_workspace="hermes",
+        agent_identity="yuheng",
+        user_id="joy",
+        chat_id="group-1",
+    )
+
+    assert build_scope_id(embedded_delimiter) != build_scope_id(structured_chat)
 
 
 def test_budget_caps_number_of_lines(provider):
@@ -743,6 +764,65 @@ def test_dedupe_tool_dry_run_and_apply_collapses_existing_duplicates(provider):
     assert applied["deleted"] == 1
     stats = json.loads(provider.handle_tool_call("scope_recall_stats", {}))
     assert stats["total_memories"] == 1
+
+
+def test_dedupe_scope_only_false_collapses_duplicates_across_scopes(tmp_path):
+    p1 = load_memory_provider("scope-recall")
+    p2 = load_memory_provider("scope-recall")
+    assert p1 is not None and p2 is not None
+
+    p1.initialize(
+        "session-a",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+        user_id="joy",
+        chat_id="group-1",
+    )
+    p2.initialize(
+        "session-b",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+        user_id="joy",
+        chat_id="group-2",
+    )
+
+    try:
+        for plugin in (p1, p2):
+            plugin._store_now(
+                content="Duplicate note across scopes.",
+                source="legacy-import",
+                target="memory",
+                session_id="legacy",
+                semantic_merge=False,
+                allow_duplicate=True,
+            )
+            plugin._store_now(
+                content="Duplicate note across scopes.",
+                source="legacy-import",
+                target="memory",
+                session_id="legacy",
+                semantic_merge=False,
+                allow_duplicate=True,
+            )
+
+        dry = json.loads(p1.handle_tool_call("scope_recall_dedupe", {"dry_run": True, "scope_only": False}))
+        assert dry["duplicate_groups"] == 2
+        assert dry["duplicates"] == 2
+
+        applied = json.loads(p1.handle_tool_call("scope_recall_dedupe", {"dry_run": False, "scope_only": False}))
+        assert applied["deleted"] == 2
+        stats = json.loads(p1.handle_tool_call("scope_recall_stats", {}))
+        assert stats["total_memories"] == 2
+        assert stats["scope_memories"] == 1
+    finally:
+        p1.shutdown()
+        p2.shutdown()
 
 
 def test_vector_search_error_degrades_to_lexical_and_marks_needs_repair(provider, monkeypatch):

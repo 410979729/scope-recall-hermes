@@ -18,7 +18,7 @@ Current-turn recall · SQLite truth · LanceDB companion · Hybrid retrieval · 
 
 `scope-recall` is a Hermes local memory provider built for **current-turn recall** with strong runtime scope isolation.
 
-Version `1.0.0` is the first stable V1 release line. The V1 compatibility contract is documented in [`docs/stability.md`](docs/stability.md).
+Version `1.0.0` is the first stable V1 release line for the documented interfaces, packaged as a public release candidate for broader field testing. The V1 compatibility contract is documented in [`docs/stability.md`](docs/stability.md).
 
 It uses a **two-layer design**:
 
@@ -403,6 +403,43 @@ scope_recall_stats
 Backward-compatible aliases are still accepted internally for old `lancepro_*` tool names during transition.
 
 ### Tool quick reference
+
+Example primary-agent tool calls:
+
+```python
+# Store provider-owned memory in the current runtime scope.
+store = scope_recall_store(
+    content="This project deploys with uv run app.",
+    target="ops",
+)
+
+# Search only the active runtime scope.
+results = scope_recall_search(
+    query="How does this project deploy?",
+    limit=3,
+)
+
+# Inspect truth/vector health.
+stats = scope_recall_stats()
+```
+
+Example `scope_recall_stats` shape:
+
+```json
+{
+  "provider": "scope-recall",
+  "total_memories": 42,
+  "scope_memories": 7,
+  "vector": {
+    "enabled": true,
+    "ready": true,
+    "status": "ready",
+    "row_count": 42,
+    "unique_id_count": 42,
+    "duplicate_row_count": 0
+  }
+}
+```
 
 | Tool | Purpose |
 | --- | --- |

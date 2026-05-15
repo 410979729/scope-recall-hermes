@@ -11,11 +11,11 @@ requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
-  { name = "Yuheng" }
+  { name = "scope-recall contributors" }
 ]
 keywords = ["hermes", "memory", "sqlite", "lancedb", "plugin"]
 classifiers = [
-  "Development Status :: 5 - Production/Stable",
+  "Development Status :: 4 - Beta",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3.11",
@@ -37,11 +37,11 @@ packages = ["scope_recall"]
 package-dir = {"scope_recall" = "."}
 
 [tool.setuptools.package-data]
-"*" = ["LICENSE"]
+"scope_recall" = ["py.typed"]
 
 [tool.setuptools.data-files]
 "" = ["plugin.yaml", "config.json", "README.md", "DESIGN.md", "CHANGELOG.md", ".env.example"]
-"docs" = ["docs/*.md"]
+"docs" = ["docs/*.md", "SECURITY.md"]
 "scripts" = ["scripts/*.py"]
 ".github/workflows" = [".github/workflows/*.yml"]
 

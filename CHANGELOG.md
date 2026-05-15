@@ -11,10 +11,12 @@ All notable changes to `scope-recall` will be documented in this file.
 - Added a public README structure with badges, quick start, architecture diagram, tool quick reference, troubleshooting notes, and release-gate guidance.
 
 ### Changed
-- Promoted package and plugin metadata from `0.2.0` / beta classifier to `1.0.0` / production-stable classifier.
+- Promoted package and plugin metadata from `0.2.0` to `1.0.0`, while keeping the public package classifier at beta/release-candidate maturity until broader field use.
 - Aligned the public Python support floor and CI matrix with the current Hermes runtime requirement of Python 3.11+.
 - Tightened V1 documentation around SQLite truth ownership, LanceDB companion-cache rebuildability, and non-goals versus OpenClaw `memory-lancedb-pro` parity.
 - Changed GitHub Actions to run `scripts/check.release.py` as the remote CI gate so CI matches the local V1 release audit.
+- Replaced agent-specific author/copyright wording with project contributor wording and added `SECURITY.md` plus a `py.typed` marker for public-release hygiene.
+- Fixed scope id serialization to avoid delimiter-collision between user/chat/thread/session components and aligned `scope_recall_dedupe(scope_only=false)` with its documented cross-scope semantics.
 
 ## [0.2.0] - 2026-05-12
 
