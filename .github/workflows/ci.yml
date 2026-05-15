@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.12']
+
+    steps:
+      - name: Check out scope-recall
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Hermes runtime for plugin tests
+        run: |
+          git clone --depth 1 https://github.com/NousResearch/hermes-agent.git .hermes-agent-src
+          python -m pip install --upgrade pip
+          python -m pip install -e .hermes-agent-src
+
+      - name: Install scope-recall test dependencies
+        run: |
+          python -m pip install -e .
+          python -m pip install pytest wheel
+
+      - name: Run full V1 release gate
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.hermes-agent-src:${{ github.workspace }}
+        run: python scripts/check.release.py
