@@ -110,6 +110,13 @@ class LanceVectorStore:
             except TypeError:
                 pass
             return list(table.to_list())
+        if hasattr(table, "to_arrow"):
+            arrow_table = table.to_arrow()
+            if columns:
+                keep = [name for name in columns if name in arrow_table.column_names]
+                if keep:
+                    arrow_table = arrow_table.select(keep)
+            return arrow_table.to_pylist()
         if hasattr(table, "to_pandas"):
             frame = table.to_pandas()
             if columns:

@@ -11,7 +11,7 @@ Current-turn recall · SQLite truth · LanceDB companion · Hybrid retrieval · 
 [![CI](https://github.com/410979729/scope-recall/actions/workflows/ci.yml/badge.svg)](https://github.com/410979729/scope-recall/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Hermes Plugin](https://img.shields.io/badge/Hermes-Memory%20Provider-blue)](https://hermes-agent.nousresearch.com/docs)
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](pyproject.toml)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-blue)](pyproject.toml)
 [![Storage](https://img.shields.io/badge/Storage-SQLite%20%2B%20LanceDB-orange)](DESIGN.md)
 
 </div>
@@ -98,7 +98,7 @@ hermes memory status
 
 ### Option B: Manual download / unpacked plugin install
 
-Current Hermes plugin discovery expects an **unpacked plugin directory**. If you download a release archive instead of cloning:
+Current Hermes plugin discovery expects an **unpacked plugin directory**. `scope-recall` V1 targets the current Hermes runtime line, which requires Python 3.11 or newer. If you download a release archive instead of cloning:
 
 1. unpack it as `$HERMES_HOME/plugins/scope-recall/`
 2. run `python -m pip install -e "$HERMES_HOME/plugins/scope-recall"`

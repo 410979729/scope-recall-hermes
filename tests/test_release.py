@@ -44,6 +44,7 @@ def test_default_embedder_targets_gemini_openai_compatible_api():
 
 
 def test_sentence_transformers_embedder_builds_local_interface_without_loading_weights():
+    sentence_transformers_available = bool(importlib.util.find_spec("sentence_transformers"))
     embedder = build_embedder(
         {
             "provider": "sentence-transformers",
@@ -54,7 +55,7 @@ def test_sentence_transformers_embedder_builds_local_interface_without_loading_w
     assert info["provider"] == "sentence-transformers"
     assert info["model"] == "sentence-transformers/all-MiniLM-L6-v2"
     assert info["dimensions"] >= 384
-    assert embedder.is_available() is True
+    assert embedder.is_available() is sentence_transformers_available
 
 
 @pytest.mark.skipif(not bool(__import__('importlib').util.find_spec('sentence_transformers')), reason='sentence-transformers not installed')

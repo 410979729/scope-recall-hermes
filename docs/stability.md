@@ -22,6 +22,8 @@ $HERMES_HOME/plugins/scope-recall/
 
 Wheel builds are release-artifact sanity checks and provide an importable Python package named `scope_recall`, but Hermes plugin discovery is still directory-based unless Hermes itself adds a wheel/entry-point plugin loader later.
 
+V1 targets the current Hermes runtime line and therefore requires Python 3.11 or newer.
+
 ## Stable V1 storage contract
 
 SQLite is the truth source.

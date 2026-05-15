@@ -11,6 +11,7 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ### Changed
 - Promoted package and plugin metadata from `0.2.0` / beta classifier to `1.0.0` / production-stable classifier.
+- Aligned the public Python support floor and CI matrix with the current Hermes runtime requirement of Python 3.11+.
 - Tightened V1 documentation around SQLite truth ownership, LanceDB companion-cache rebuildability, and non-goals versus OpenClaw `memory-lancedb-pro` parity.
 - Changed GitHub Actions to run `scripts/check.release.py` as the remote CI gate so CI matches the local V1 release audit.
 

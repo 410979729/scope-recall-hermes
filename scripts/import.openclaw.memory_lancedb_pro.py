@@ -226,6 +226,8 @@ def main() -> int:
     table = db.open_table("memories")
     if hasattr(table, "to_list"):
         rows = table.to_list()
+    elif hasattr(table, "to_arrow"):
+        rows = table.to_arrow().to_pylist()
     else:
         rows = table.to_pandas().to_dict(orient="records")
     mapped = [map_row(row, args.scope_prefix) for row in rows if str(row.get("text") or "").strip()]
