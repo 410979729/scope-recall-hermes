@@ -143,6 +143,18 @@ def merge_memories(provider: Any, target_id: str, source_ids: list[str], content
         ).fetchall()
     if target_row is None:
         return {"merged": False, "error": "target_id not found", "target_id": target_id, "deleted": 0}
+    found_source_ids = {str(row["id"]) for row in source_rows}
+    missing_source_ids = [memory_id for memory_id in source_ids if memory_id not in found_source_ids]
+    if missing_source_ids:
+        return {
+            "merged": False,
+            "error": "source_id not found or not accessible",
+            "target_id": target_id,
+            "missing_source_ids": missing_source_ids,
+            "deleted": 0,
+        }
+    if not source_rows and content is None:
+        return {"merged": False, "error": "source_ids or content is required", "target_id": target_id, "deleted": 0}
     target_scope_id = str(target_row["scope_id"])
     if any(str(row["scope_id"]) != target_scope_id for row in source_rows):
         return {

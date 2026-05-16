@@ -1278,15 +1278,68 @@ def test_merge_tool_cannot_read_or_delete_local_memory_from_another_scope(tmp_pa
         b = json.loads(p2.handle_tool_call("scope_recall_store", {"content": "Group two source note.", "target": "general"}))
         result = json.loads(p1.handle_tool_call("scope_recall_merge", {"target_id": a["id"], "source_ids": [b["id"]]}))
 
-        assert result["merged"] is True
+        assert result["merged"] is False
         assert result["deleted"] == 0
-        assert result["source_ids"] == []
+        assert result["missing_source_ids"] == [b["id"]]
+        assert "not accessible" in result["error"]
         other_row = p2._require_conn().execute("SELECT content FROM memories WHERE id = ?", (b["id"],)).fetchone()
         assert other_row is not None
         assert other_row["content"] == "Group two source note."
         own_row = p1._require_conn().execute("SELECT content FROM memories WHERE id = ?", (a["id"],)).fetchone()
         assert own_row is not None
         assert own_row["content"] == "Group one target note."
+    finally:
+        p1.shutdown()
+        p2.shutdown()
+
+
+def test_merge_tool_rejects_inaccessible_source_even_with_explicit_content(tmp_path):
+    p1 = load_memory_provider("scope-recall")
+    p2 = load_memory_provider("scope-recall")
+    assert p1 is not None and p2 is not None
+
+    p1.initialize(
+        "session-a",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+        user_id="joy",
+        chat_id="group-1",
+    )
+    p2.initialize(
+        "session-b",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+        user_id="joy",
+        chat_id="group-2",
+    )
+
+    try:
+        a = json.loads(p1.handle_tool_call("scope_recall_store", {"content": "Group one merge target stays intact.", "target": "general"}))
+        b = json.loads(p2.handle_tool_call("scope_recall_store", {"content": "Group two inaccessible source stays intact.", "target": "general"}))
+        result = json.loads(
+            p1.handle_tool_call(
+                "scope_recall_merge",
+                {
+                    "target_id": a["id"],
+                    "source_ids": [b["id"]],
+                    "content": "Explicit overwrite must not happen when a source is inaccessible.",
+                },
+            )
+        )
+
+        assert result["merged"] is False
+        assert result["deleted"] == 0
+        assert result["missing_source_ids"] == [b["id"]]
+        own_row = p1._require_conn().execute("SELECT content FROM memories WHERE id = ?", (a["id"],)).fetchone()
+        other_row = p2._require_conn().execute("SELECT content FROM memories WHERE id = ?", (b["id"],)).fetchone()
+        assert own_row is not None and own_row["content"] == "Group one merge target stays intact."
+        assert other_row is not None and other_row["content"] == "Group two inaccessible source stays intact."
     finally:
         p1.shutdown()
         p2.shutdown()
