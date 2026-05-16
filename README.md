@@ -2,11 +2,11 @@
 
 <div align="center">
 
-**Hermes current-turn memory provider with SQLite truth storage and a LanceDB vector companion**
+**Hermes current-turn memory provider with permanent semantic recall, SQLite truth storage, and a LanceDB vector companion**
 
-*Give Hermes memory that recalls the right thing for the current turn — without stale topic bleed across chats, users, threads, or agent identities.*
+*Give Hermes durable memory that can follow the same user across windows/chats while keeping local scratch context from bleeding into the wrong place.*
 
-Current-turn recall · SQLite truth · LanceDB companion · Hybrid retrieval · Strong scope isolation · Deterministic governance
+Current-turn recall · Permanent shared memory · Local scratch scopes · SQLite truth · LanceDB companion · Hybrid retrieval
 
 [![CI](https://github.com/410979729/scope-recall/actions/workflows/ci.yml/badge.svg)](https://github.com/410979729/scope-recall/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -16,7 +16,7 @@ Current-turn recall · SQLite truth · LanceDB companion · Hybrid retrieval · 
 
 </div>
 
-`scope-recall` is a Hermes local memory provider built for **current-turn recall** with strong runtime scope isolation.
+`scope-recall` is a Hermes local memory provider built for **current-turn recall** and **permanent semantic memory**. Durable user/project/ops/memory facts are shared across windows/chats for the same user + agent identity; raw general turn captures stay local to the current chat/thread/session.
 
 Version `1.0.1` is the first stable V1 release line for the documented interfaces, packaged as a public release candidate for broader field testing. The V1 compatibility contract is documented in [`docs/stability.md`](docs/stability.md).
 
@@ -31,31 +31,40 @@ This replaces the old `lancepro` naming, which was misleading because the earlie
 
 ## Why scope-recall?
 
-Most local agent memory bugs are not just "the agent forgot". In real Hermes gateway deployments, a harder problem is that memory can be recalled in the wrong place:
+Most agent memory pain is not just "wrong memory was recalled". The bigger user-facing failure is often "the agent forgot everything when I opened a new window." `scope-recall` therefore separates **durable facts** from **local scratch context**:
 
-- a previous turn leaks into a new topic
-- one Telegram group contaminates another group
-- one topic/thread leaks into another thread
-- a sibling agent's context is accidentally treated as this agent's context
-- a vector cache looks healthy but no longer matches the durable truth rows
+- user preferences, project facts, ops notes, and explicitly stored memories follow the same user + agent identity across chats/windows
+- raw/general turn captures remain local to the current chat/thread/session so one group's temporary chatter does not contaminate another group
+- current-turn recall searches only for memories relevant to the active query, avoiding stale previous-turn injection
+- the SQLite truth store remains auditable, and LanceDB is only a rebuildable semantic companion
 
 `scope-recall` is built around a simple rule:
 
-> Recall memory for the **current query**, under the **current runtime scope**, from an auditable truth source.
+> Recall the relevant durable memory for the **current query**, while keeping local scratch context inside the **current runtime scope**.
 
-### Without scope-aware current-turn recall
+### Without scoped durable recall
 
-> **You:** "In this project, use SQLite as the source of truth."
+> **You:** "For this memory-provider project, SQLite is the source of truth."
 >
-> *(later, in a different chat/topic)*
+> *(later, in another window/chat)*
 >
-> **Agent:** "I'll apply that SQLite decision here too." ❌
+> **Agent:** "I don't have that context here." ❌
 
 ### With scope-recall
 
 > **You:** "What did we decide for this Hermes memory provider?"
 >
-> **Agent:** recalls the scoped SQLite-truth/LanceDB-companion memory for the current chat/session/thread and answers from the relevant context. ✅
+> **Agent:** recalls the durable project memory from SQLite truth/LanceDB companion and answers from the relevant context. ✅
+
+### Without local scratch boundaries
+
+> **Group A:** "Temporary note: restart this group's test bot only."
+>
+> *(later, in Group B)*
+>
+> **Agent:** applies Group A's temporary note in Group B. ❌
+
+`scope-recall` keeps that temporary `general` scratch row local while still sharing durable `user`/`memory`/`project`/`ops` facts.
 
 ### What you get
 
@@ -64,7 +73,7 @@ Most local agent memory bugs are not just "the agent forgot". In real Hermes gat
 | Current-turn recall | `prefetch(query)` retrieves against the active user query; `queue_prefetch()` is intentionally a no-op |
 | Storage authority | SQLite is the durable truth; LanceDB is rebuildable companion state |
 | Hybrid retrieval | SQLite lexical/FTS candidates + LanceDB semantic candidates + bounded prompt rendering |
-| Scope isolation | agent workspace + identity + platform + user + chat/session + thread |
+| Memory scope model | shared durable scope for user/project/ops/memory facts; local scope for general scratch captures |
 | Built-in memory integration | Hermes curated `USER.md` / `MEMORY.md` are live-read, not mirrored into SQLite |
 | Governance | deterministic exact dedupe, conservative near-duplicate merge, filtering, metadata, decay review |
 | Migration | local `lancepro` auto-migration; OpenClaw `memory-lancedb-pro` import is explicit |
@@ -173,6 +182,18 @@ Provider aliases `local-model`, `local-embedding`, and `huggingface` resolve to 
 
 ---
 
+## Durable memory vs local scratch scope
+
+`scope-recall` does **not** split all memory by every group or tiny window. It uses two provider-owned scopes:
+
+- **Shared durable scope**: `platform + agent_workspace + agent_identity + user_id`. Rows with targets `user`, `memory`, `project`, and `ops` are stored here, so they can be recalled across chats/windows for the same user and agent.
+- **Local runtime scope**: shared durable scope plus `gateway_session_key`, or `chat_id` / `thread_id`. Rows with target `general` stay here, so temporary group/topic/session chatter does not bleed elsewhere.
+- **Accessible scope set**: normal recall and scoped tool actions can see the current local scope plus the shared durable scope; they cannot see another user, sibling agent identity, or another local chat/thread/session scratch scope.
+
+This aims at the common expectation: "if I gave the agent durable information before, it should remember it later," without making every scratch line globally visible forever.
+
+---
+
 ## Dual-memory architecture: important
 
 When `scope-recall` is active, Hermes memory has **two intentional authority zones**:
@@ -180,7 +201,7 @@ When `scope-recall` is active, Hermes memory has **two intentional authority zon
 | Layer | Storage | Purpose | How recall sees it |
 | --- | --- | --- | --- |
 | Hermes curated memory | `$HERMES_HOME/memories/USER.md`, `$HERMES_HOME/memories/MEMORY.md` | User profile and durable hand-curated notes managed by Hermes built-in memory | Live-read during recall; not mirrored into SQLite |
-| Scope Recall provider memory | `$HERMES_HOME/scope-recall/memory.sqlite3` + `$HERMES_HOME/scope-recall/lancedb/` | Provider-owned captured/stored memories, scope metadata, lexical/vector retrieval | SQLite truth + optional LanceDB companion ranking |
+| Scope Recall provider memory | `$HERMES_HOME/scope-recall/memory.sqlite3` + `$HERMES_HOME/scope-recall/lancedb/` | Provider-owned shared durable memories plus local scratch captures, scope metadata, lexical/vector retrieval | SQLite truth + optional LanceDB companion ranking |
 
 Key principle:
 
@@ -309,6 +330,13 @@ Runtime fallback remains available:
 - `queue_prefetch()` is intentionally a no-op
 - this avoids stale next-turn injection from the previous topic
 
+### Permanent shared recall
+
+- `user`, `memory`, `project`, and `ops` rows are durable shared memories for the same user + agent identity
+- they can be recalled from another chat/window when the new query is semantically relevant
+- `general` rows remain local scratch context for the current chat/thread/session
+- ID-based updates/deletes/merges are restricted to the current accessible scope set, not global row ids
+
 ### Hybrid retrieval
 
 ```text
@@ -407,7 +435,7 @@ scope_recall_govern
 scope_recall_repair
 ```
 
-`scope_recall_export` defaults to the active runtime scope. Passing `scope_only=false` is also an operator maintenance action and fails closed unless `maintenance_tools_enabled=true`.
+`scope_recall_export` defaults to the current accessible scope set: local scratch scope plus shared durable scope. Passing `scope_only=false` is an operator maintenance action and fails closed unless `maintenance_tools_enabled=true`.
 
 Backward-compatible aliases are still accepted internally for old `lancepro_*` tool names during transition.
 
@@ -416,13 +444,13 @@ Backward-compatible aliases are still accepted internally for old `lancepro_*` t
 Example primary-agent tool calls:
 
 ```python
-# Store provider-owned memory in the current runtime scope.
+# Store provider-owned memory. ops/user/memory/project become shared durable rows; general stays local scratch.
 store = scope_recall_store(
     content="This project deploys with uv run app.",
     target="ops",
 )
 
-# Search only the active runtime scope.
+# Search the current accessible scope set: local scratch plus shared durable memory.
 results = scope_recall_search(
     query="How does this project deploy?",
     limit=3,
@@ -439,6 +467,8 @@ Example `scope_recall_stats` shape:
   "provider": "scope-recall",
   "total_memories": 42,
   "scope_memories": 7,
+  "local_scope_memories": 3,
+  "shared_scope_memories": 4,
   "vector": {
     "enabled": true,
     "ready": true,
@@ -453,12 +483,12 @@ Example `scope_recall_stats` shape:
 | Tool | Purpose |
 | --- | --- |
 | `scope_recall_store` | Store a provider-owned memory row after deterministic governance checks |
-| `scope_recall_search` | Search scoped memory with lexical/vector/hybrid retrieval |
-| `scope_recall_forget` | Delete memories matching a query or explicit id scope |
-| `scope_recall_update` | Replace the content/category of an existing memory in the active runtime scope |
+| `scope_recall_search` | Search the current local scratch scope plus shared durable scope with lexical/vector/hybrid retrieval |
+| `scope_recall_forget` | Delete memories matching a query within the current accessible scope set |
+| `scope_recall_update` | Replace content/category within the current accessible scope set; shared/local target-mode changes are rejected |
 | `scope_recall_dedupe` | Operator-only: inspect or collapse exact duplicate rows |
-| `scope_recall_merge` | Merge same-scope memories into a target row |
-| `scope_recall_export` | Export SQLite truth rows as JSON or JSONL; defaults to current scope |
+| `scope_recall_merge` | Merge same-scope memories into a target row; shared/local mixing is rejected |
+| `scope_recall_export` | Export SQLite truth rows as JSON or JSONL; defaults to current accessible scope set |
 | `scope_recall_govern` | Operator-only: review tier distribution and decay/archive candidates |
 | `scope_recall_repair` | Operator-only: repair/rebuild the LanceDB companion from SQLite truth |
 | `scope_recall_stats` | Inspect storage, retrieval, scope, and vector health |

@@ -7,13 +7,27 @@ def _scope_component(label: str, value: str) -> str:
     return f"{label}:{len(value)}:{value}"
 
 
+def build_shared_scope_id(scope: RuntimeScope) -> str:
+    """Return the durable user/profile scope shared across chats/windows.
+
+    This deliberately excludes chat_id, thread_id, gateway_session_key, and
+    session_id-like state. It is still bounded by platform, agent workspace,
+    agent identity, and user id so memories do not leak between users or sibling
+    agent identities.
+    """
+
+    return "|".join(
+        [
+            _scope_component("platform", scope.platform or "cli"),
+            _scope_component("workspace", scope.agent_workspace or "default"),
+            _scope_component("agent", scope.agent_identity or "default"),
+            _scope_component("user", scope.user_id or "local"),
+        ]
+    )
+
+
 def build_scope_id(scope: RuntimeScope) -> str:
-    parts = [
-        _scope_component("platform", scope.platform or "cli"),
-        _scope_component("workspace", scope.agent_workspace or "default"),
-        _scope_component("agent", scope.agent_identity or "default"),
-        _scope_component("user", scope.user_id or "local"),
-    ]
+    parts = [build_shared_scope_id(scope)]
     if scope.gateway_session_key:
         parts.append(_scope_component("session", scope.gateway_session_key))
     else:
@@ -22,3 +36,16 @@ def build_scope_id(scope: RuntimeScope) -> str:
         if scope.thread_id:
             parts.append(_scope_component("thread", scope.thread_id))
     return "|".join(parts)
+
+
+def accessible_scope_ids(scope: RuntimeScope) -> list[str]:
+    """Return local + shared scopes readable/writable by this runtime identity."""
+
+    local = build_scope_id(scope)
+    shared = build_shared_scope_id(scope)
+    scopes = [local, shared]
+    output: list[str] = []
+    for scope_id in scopes:
+        if scope_id and scope_id not in output:
+            output.append(scope_id)
+    return output

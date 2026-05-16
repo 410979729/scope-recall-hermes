@@ -27,7 +27,7 @@ from .memory_ops import (
     update_memory,
 )
 from .migration import migrate_legacy_scope_recall_storage
-from .models import RuntimeScope
+from .models import RuntimeScope, recall_scope_mode
 from .recall import RecallService
 from .prompting import render_current_turn_recall
 from .schemas import (
@@ -42,7 +42,7 @@ from .schemas import (
     SCOPE_RECALL_STORE_SCHEMA,
     SCOPE_RECALL_UPDATE_SCHEMA,
 )
-from .scope import build_scope_id
+from .scope import accessible_scope_ids, build_scope_id, build_shared_scope_id
 from .sql_store import ensure_schema
 from .storage_views import search_curated_memories, search_db_memories, search_vector_memories
 from .tooling import ScopeRecallToolService
@@ -66,6 +66,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._current_turn = 0
         self._scope = RuntimeScope()
         self._scope_id = ""
+        self._shared_scope_id = ""
+        self._accessible_scope_ids: list[str] = []
         self._storage_dir: Path | None = None
         self._db_path: Path | None = None
         self._hermes_home: Path | None = None
@@ -157,6 +159,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             agent_context=str(kwargs.get("agent_context") or "primary"),
         )
         self._scope_id = build_scope_id(self._scope)
+        self._shared_scope_id = build_shared_scope_id(self._scope)
+        self._accessible_scope_ids = accessible_scope_ids(self._scope)
         self._current_turn = 0
         self._last_recall_turns = {}
 
@@ -176,7 +180,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             suffix = f" Vector companion requested but not active ({self._vector_message or self._vector_status})."
         return (
             "# Scope Recall Memory\n"
-            "Active. Uses current-turn local recall with conservative gating and strong scope isolation."
+            "Active. Uses current-turn local recall with conservative gating."
+            " Durable user/project/ops/memory rows are shared across windows/chats for the same user + agent identity,"
+            " while raw general turn captures remain local to the current chat/thread/session."
             " Built-in curated memory files are read live at recall time, and previous-turn prefetched memory is never injected into a new topic."
             + suffix
         )
@@ -404,6 +410,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
 
     def _dedup_key(self, content: str) -> str:
         return dedup_key(content)
+
+    def _scope_mode_for(self, target: str, source: str = "") -> str:
+        return recall_scope_mode(target, source)
 
 
 def register(ctx) -> None:

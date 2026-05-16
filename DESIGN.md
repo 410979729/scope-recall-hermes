@@ -2,12 +2,13 @@
 
 ## Positioning
 
-`scope-recall` is a Hermes local memory provider focused on **current-turn recall**.
+`scope-recall` is a Hermes local memory provider focused on **current-turn recall** plus **durable shared semantic memory**.
 
 It inherits the useful policy ideas from OpenClaw `memory-lancedb-pro`:
 
 - no stale previous-turn injection
-- strong scope isolation
+- permanent shared memory for durable facts
+- local scratch isolation for temporary chat/thread/session context
 - conservative gating
 - bounded recall budget
 
@@ -24,8 +25,9 @@ That split is deliberate. SQLite is the durable source of truth; LanceDB is the 
 2. Keep durable local truth in a simple audit-friendly store.
 3. Add semantic/hybrid retrieval without making the vector store the only source of truth.
 4. Respect Hermes built-in curated memory as the source of truth for `memory` tool writes.
-5. Isolate memory strongly enough for gateway multi-chat / multi-topic use.
-6. Preserve an offline-capable default path for local operation and open-source onboarding.
+5. Share durable `user`/`memory`/`project`/`ops` facts across windows/chats for the same user + agent identity.
+6. Isolate `general` scratch captures strongly enough for gateway multi-chat / multi-topic use.
+7. Preserve an offline-capable default path for local operation and open-source onboarding.
 
 ## Non-goals for V1
 
@@ -178,19 +180,40 @@ Typical local model choices include:
 
 This keeps the retrieval pipeline unchanged while swapping only the embedder implementation.
 
-## Scope isolation
+## Scope model: durable shared memory + local scratch
 
-Scope priority:
+`scope-recall` deliberately avoids both extremes: it does not make every row global, and it does not lock every useful fact into one chat/window.
+
+### Shared durable scope
+
+Shared durable scope is built from:
 
 1. `platform`
 2. `agent_workspace`
 3. `agent_identity`
 4. `user_id`
-5. `gateway_session_key` when Hermes provides it
-6. otherwise `chat_id`
-7. plus `thread_id` when present
 
-This matters because user-only scoping is insufficient in Telegram/Discord multi-group or topic scenarios.
+Rows with targets `user`, `memory`, `project`, and `ops` are stored in this shared scope. They can be recalled across chat/thread/session boundaries for the same user and agent identity when the current query is relevant.
+
+### Local runtime scope
+
+Local runtime scope starts with the shared durable scope and adds:
+
+1. `gateway_session_key` when Hermes provides it; otherwise
+2. `chat_id`
+3. `thread_id` when present
+
+Rows with target `general` stay in this local scope. Raw turn captures and temporary scratch notes therefore do not leak from one group/topic/session into another.
+
+### Accessible scope set
+
+At runtime, normal recall and scoped tool actions use the deduped set:
+
+```text
+[current local runtime scope, shared durable scope]
+```
+
+This lets one user recall durable memory from another window while still preventing cross-user, cross-agent, and cross-local-scratch access. ID-based update/merge/delete paths must use this accessible set, never raw global ids alone. Ordinary update/merge paths also reject shared/local mode changes so a durable row cannot accidentally become globally visible `general` scratch, and a local scratch merge cannot swallow a shared durable memory.
 
 ## Migration plan
 
@@ -240,11 +263,22 @@ After final review:
 
 ## Tool exposure
 
-Primary-agent only:
+Primary-agent default tools:
 
 - `scope_recall_store`
 - `scope_recall_search`
+- `scope_recall_forget`
+- `scope_recall_update`
+- `scope_recall_merge`
+- `scope_recall_export` with `scope_only=true`
 - `scope_recall_stats`
+
+Operator-only maintenance tools require `maintenance_tools_enabled=true` and fail closed otherwise:
+
+- `scope_recall_dedupe`
+- `scope_recall_govern`
+- `scope_recall_repair`
+- `scope_recall_export(scope_only=false)`
 
 Subagents do not get tool schemas and cannot use them.
 

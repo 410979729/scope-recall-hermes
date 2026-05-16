@@ -68,6 +68,7 @@ class ScopeRecallToolService:
                 "skipped": outcome == "skipped",
                 "id": memory_id,
                 "target": target,
+                "scope_mode": self.provider._scope_mode_for(target, "tool-store"),
             }
         )
 

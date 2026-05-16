@@ -198,6 +198,7 @@ def upsert_vector_record(
     content: str,
     summary: str,
     updated_at: str,
+    scope_id: str | None = None,
 ) -> None:
     if not provider._vector_ready or not provider._vector_store or not provider._embedder:
         return
@@ -207,7 +208,7 @@ def upsert_vector_record(
             [
                 {
                     "id": id,
-                    "scope_id": provider._scope_id,
+                    "scope_id": scope_id or provider._scope_id,
                     "source": source,
                     "target": target,
                     "content": content,

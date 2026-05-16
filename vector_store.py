@@ -84,7 +84,19 @@ class LanceVectorStore:
             ]
         )
 
+    def _ensure_schema_compatible(self) -> None:
+        table = self._require_table()
+        existing = set(getattr(table.schema, "names", []) or [])
+        required = {"id", "scope_id", "source", "target", "content", "summary", "updated_at", "vector"}
+        if required <= existing:
+            return
+        if self._db is None:
+            raise RuntimeError("vector database is not open")
+        self._db.drop_table(self._table_name, ignore_missing=True)
+        self._table = self._db.create_table(self._table_name, schema=self._schema())
+
     def upsert_records(self, rows: Iterable[dict[str, Any]]) -> None:
+        self._ensure_schema_compatible()
         table = self._require_table()
         payload = list(rows)
         if not payload:

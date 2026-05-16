@@ -55,7 +55,9 @@ V1 keeps these behavior boundaries stable:
 - subagent / non-primary contexts do not expose Scope Recall tools
 - maintenance tools (`scope_recall_dedupe`, `scope_recall_govern`, and `scope_recall_repair`) are hidden and fail closed unless `maintenance_tools_enabled=true`
 - `scope_recall_export` is available for scoped exports by default; `scope_only=false` requires `maintenance_tools_enabled=true`
-- runtime scope isolation includes agent workspace, agent identity, platform, user, chat/thread or gateway session key
+- durable `user`/`memory`/`project`/`ops` rows are shared across windows/chats for the same platform + agent workspace + agent identity + user id
+- `general` scratch rows remain local to the current chat/thread or gateway session key
+- scoped tool actions operate on the current accessible scope set: local runtime scope plus shared durable scope
 
 ## Stable V1 tool surface
 
@@ -72,7 +74,16 @@ The following tool names are stable for V1:
 - `scope_recall_repair`
 - `scope_recall_stats`
 
-Patch/minor releases may add fields to JSON responses. Existing documented fields should not be removed in the V1 line unless they are unsafe or clearly erroneous, in which case the changelog must call out the compatibility impact.
+Patch/minor releases may add fields to JSON responses. Existing documented fields should not be removed in the V1 line unless they are unsafe or clearly erroneous, in which case the changelog must call out the compatibility impact. V1 rejects ordinary `scope_recall_update` / `scope_recall_merge` attempts that would move a row between shared durable and local scratch modes; such migrations require an explicit future maintenance path.
+
+## Stable V1 scope contract
+
+V1 uses a two-scope model:
+
+- shared durable scope: `platform + agent_workspace + agent_identity + user_id`
+- local runtime scope: shared durable scope plus `gateway_session_key`, or `chat_id` / `thread_id`
+
+Targets `user`, `memory`, `project`, and `ops` are shared durable memories. Target `general` is local scratch memory. Search/retrieval uses the deduped accessible set of current local scope plus shared durable scope. Global maintenance across all scopes is outside normal chat use and requires operator mode.
 
 ## Stable V1 retrieval contract
 

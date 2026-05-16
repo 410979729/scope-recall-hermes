@@ -8,6 +8,7 @@ import uuid
 from typing import Any
 
 from .gating import should_skip_capture
+from .models import recall_scope_mode
 from .sql_store import store_row
 from .vector_runtime import upsert_vector_record
 
@@ -101,16 +102,22 @@ def store_now(
     metadata: dict[str, Any] | None = None,
     allow_duplicate: bool = False,
 ) -> tuple[str, bool]:
-    metadata_json = json.dumps(metadata or {}, ensure_ascii=False, sort_keys=True)
     if should_skip_capture(content, provider._config):
         return "", False
     conn = provider._require_conn()
     memory_id = uuid.uuid4().hex
+    scope_mode = recall_scope_mode(target, source)
+    row_scope_id = provider._shared_scope_id if scope_mode == "shared" else provider._scope_id
+    metadata_payload = dict(metadata or {})
+    metadata_payload.setdefault("scope_mode", scope_mode)
+    metadata_payload.setdefault("runtime_scope_id", provider._scope_id)
+    metadata_payload.setdefault("shared_scope_id", provider._shared_scope_id)
+    metadata_json = json.dumps(metadata_payload, ensure_ascii=False, sort_keys=True)
     with provider._lock:
         memory_id, summary, updated_at, inserted = store_row(
             conn,
             memory_id=memory_id,
-            scope_id=provider._scope_id,
+            scope_id=row_scope_id,
             platform=provider._scope.platform,
             user_id=provider._scope.user_id,
             chat_id=provider._scope.chat_id,
@@ -134,5 +141,6 @@ def store_now(
             content=content,
             summary=summary,
             updated_at=updated_at,
+            scope_id=row_scope_id,
         )
     return memory_id, inserted

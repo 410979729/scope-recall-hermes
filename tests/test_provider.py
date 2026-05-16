@@ -163,7 +163,7 @@ def test_scope_isolation_uses_user_and_profile(tmp_path):
         p2.shutdown()
 
 
-def test_scope_isolation_includes_chat_id(tmp_path):
+def test_permanent_user_memory_crosses_chat_id(tmp_path):
     p1 = load_memory_provider("scope-recall")
     p2 = load_memory_provider("scope-recall")
     assert p1 is not None and p2 is not None
@@ -196,7 +196,7 @@ def test_scope_isolation_includes_chat_id(tmp_path):
         assert payload["stored"] is True
 
         p2.on_turn_start(1, "What style does Joy like?")
-        assert p2.prefetch("What style does Joy like?") == ""
+        assert "concise replies" in p2.prefetch("What style does Joy like?").lower()
 
         p1.on_turn_start(1, "What style does Joy like?")
         assert "concise replies" in p1.prefetch("What style does Joy like?").lower()
@@ -205,7 +205,7 @@ def test_scope_isolation_includes_chat_id(tmp_path):
         p2.shutdown()
 
 
-def test_scope_isolation_includes_thread_id(tmp_path):
+def test_permanent_user_memory_crosses_thread_id(tmp_path):
     p1 = load_memory_provider("scope-recall")
     p2 = load_memory_provider("scope-recall")
     assert p1 is not None and p2 is not None
@@ -240,7 +240,7 @@ def test_scope_isolation_includes_thread_id(tmp_path):
         assert payload["stored"] is True
 
         p2.on_turn_start(1, "What style does Joy like?")
-        assert p2.prefetch("What style does Joy like?") == ""
+        assert "concise replies" in p2.prefetch("What style does Joy like?").lower()
 
         p1.on_turn_start(1, "What style does Joy like?")
         assert "concise replies" in p1.prefetch("What style does Joy like?").lower()
@@ -249,7 +249,7 @@ def test_scope_isolation_includes_thread_id(tmp_path):
         p2.shutdown()
 
 
-def test_scope_isolation_prefers_gateway_session_key(tmp_path):
+def test_permanent_user_memory_crosses_gateway_session_key(tmp_path):
     p1 = load_memory_provider("scope-recall")
     p2 = load_memory_provider("scope-recall")
     assert p1 is not None and p2 is not None
@@ -282,7 +282,7 @@ def test_scope_isolation_prefers_gateway_session_key(tmp_path):
         assert payload["stored"] is True
 
         p2.on_turn_start(1, "What style does Joy like?")
-        assert p2.prefetch("What style does Joy like?") == ""
+        assert "concise replies" in p2.prefetch("What style does Joy like?").lower()
 
         p1.on_turn_start(1, "What style does Joy like?")
         assert "concise replies" in p1.prefetch("What style does Joy like?").lower()
@@ -290,6 +290,137 @@ def test_scope_isolation_prefers_gateway_session_key(tmp_path):
         p1.shutdown()
         p2.shutdown()
 
+
+
+def test_local_general_memory_stays_in_chat_scope(tmp_path):
+    p1 = load_memory_provider("scope-recall")
+    p2 = load_memory_provider("scope-recall")
+    assert p1 is not None and p2 is not None
+
+    p1.initialize(
+        "session-a",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+        user_id="joy",
+        chat_id="group-1",
+    )
+    p2.initialize(
+        "session-b",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+        user_id="joy",
+        chat_id="group-2",
+    )
+
+    try:
+        payload = json.loads(
+            p1.handle_tool_call("scope_recall_store", {"content": "Group one temporary scratch note.", "target": "general"})
+        )
+        assert payload["stored"] is True
+        assert payload["scope_mode"] == "local"
+
+        p2.on_turn_start(1, "What was the group one temporary scratch note?")
+        assert p2.prefetch("What was the group one temporary scratch note?") == ""
+
+        p1.on_turn_start(1, "What was the group one temporary scratch note?")
+        assert "temporary scratch note" in p1.prefetch("What was the group one temporary scratch note?").lower()
+    finally:
+        p1.shutdown()
+        p2.shutdown()
+
+
+def test_durable_shared_memory_is_visible_but_not_to_another_user(tmp_path):
+    owner = load_memory_provider("scope-recall")
+    other = load_memory_provider("scope-recall")
+    assert owner is not None and other is not None
+
+    owner.initialize(
+        "session-a",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+        user_id="joy",
+        chat_id="group-1",
+    )
+    other.initialize(
+        "session-b",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+        user_id="other-user",
+        chat_id="group-2",
+    )
+
+    try:
+        stored = json.loads(owner.handle_tool_call("scope_recall_store", {"content": "Joy project codename is Star Compass.", "target": "project"}))
+        assert stored["stored"] is True
+        assert stored["scope_mode"] == "shared"
+
+        other.on_turn_start(1, "What is Joy project codename?")
+        assert other.prefetch("What is Joy project codename?") == ""
+
+        blocked = json.loads(other.handle_tool_call("scope_recall_update", {"id": stored["id"], "content": "Other user overwrite attempt."}))
+        assert blocked["error"]
+        row = owner._require_conn().execute("SELECT content FROM memories WHERE id = ?", (stored["id"],)).fetchone()
+        assert row is not None
+        assert row["content"] == "Joy project codename is Star Compass."
+    finally:
+        owner.shutdown()
+        other.shutdown()
+
+
+def test_durable_shared_memory_is_not_visible_to_sibling_agent_identity(tmp_path):
+    yuheng = load_memory_provider("scope-recall")
+    tianshu = load_memory_provider("scope-recall")
+    assert yuheng is not None and tianshu is not None
+
+    yuheng.initialize(
+        "session-a",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+        user_id="joy",
+        chat_id="group-1",
+    )
+    tianshu.initialize(
+        "session-b",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        agent_context="primary",
+        agent_identity="tianshu",
+        agent_workspace="hermes",
+        user_id="joy",
+        chat_id="group-2",
+    )
+
+    try:
+        stored = json.loads(yuheng.handle_tool_call("scope_recall_store", {"content": "Yuheng-only durable note is blue comet.", "target": "memory"}))
+        assert stored["stored"] is True
+        assert stored["scope_mode"] == "shared"
+
+        tianshu.on_turn_start(1, "What is the Yuheng-only durable note?")
+        assert tianshu.prefetch("What is the Yuheng-only durable note?") == ""
+
+        blocked = json.loads(tianshu.handle_tool_call("scope_recall_update", {"id": stored["id"], "content": "Sibling overwrite attempt."}))
+        assert blocked["error"]
+        row = yuheng._require_conn().execute("SELECT content FROM memories WHERE id = ?", (stored["id"],)).fetchone()
+        assert row is not None
+        assert row["content"] == "Yuheng-only durable note is blue comet."
+    finally:
+        yuheng.shutdown()
+        tianshu.shutdown()
 
 def test_scope_id_serialization_cannot_collide_via_raw_delimiters():
     embedded_delimiter = RuntimeScope(
@@ -768,7 +899,7 @@ def test_update_tool_replaces_memory_and_old_fts_is_removed(provider):
     assert new_results["results"][0]["target"] == "ops"
 
 
-def test_update_tool_cannot_modify_memory_from_another_scope(tmp_path):
+def test_update_tool_cannot_modify_local_memory_from_another_scope(tmp_path):
     p1 = load_memory_provider("scope-recall")
     p2 = load_memory_provider("scope-recall")
     assert p1 is not None and p2 is not None
@@ -795,7 +926,7 @@ def test_update_tool_cannot_modify_memory_from_another_scope(tmp_path):
     )
 
     try:
-        stored = json.loads(p1.handle_tool_call("scope_recall_store", {"content": "Group one private note.", "target": "memory"}))
+        stored = json.loads(p1.handle_tool_call("scope_recall_store", {"content": "Group one private note.", "target": "general"}))
         blocked = json.loads(
             p2.handle_tool_call("scope_recall_update", {"id": stored["id"], "content": "Group two overwrite attempt."})
         )
@@ -865,7 +996,7 @@ def test_dedupe_scope_only_false_requires_operator_mode(tmp_path):
             plugin._store_now(
                 content="Duplicate note across scopes.",
                 source="legacy-import",
-                target="memory",
+                target="general",
                 session_id="legacy",
                 semantic_merge=False,
                 allow_duplicate=True,
@@ -873,7 +1004,7 @@ def test_dedupe_scope_only_false_requires_operator_mode(tmp_path):
             plugin._store_now(
                 content="Duplicate note across scopes.",
                 source="legacy-import",
-                target="memory",
+                target="general",
                 session_id="legacy",
                 semantic_merge=False,
                 allow_duplicate=True,
@@ -925,7 +1056,7 @@ def test_dedupe_scope_only_false_allowed_only_with_operator_config(tmp_path):
                 plugin._store_now(
                     content="Operator duplicate note across scopes.",
                     source="legacy-import",
-                    target="memory",
+                    target="general",
                     session_id="legacy",
                     semantic_merge=False,
                     allow_duplicate=True,
@@ -1027,7 +1158,8 @@ def test_semantic_merge_does_not_hide_conflicting_memory(provider):
     assert stats["total_memories"] == 2
 
 
-def test_merge_tool_cannot_read_or_delete_memory_from_another_scope(tmp_path):
+
+def test_update_tool_cannot_change_shared_memory_into_local_general(tmp_path):
     p1 = load_memory_provider("scope-recall")
     p2 = load_memory_provider("scope-recall")
     assert p1 is not None and p2 is not None
@@ -1054,8 +1186,96 @@ def test_merge_tool_cannot_read_or_delete_memory_from_another_scope(tmp_path):
     )
 
     try:
-        a = json.loads(p1.handle_tool_call("scope_recall_store", {"content": "Group one target note.", "target": "memory"}))
-        b = json.loads(p2.handle_tool_call("scope_recall_store", {"content": "Group two source note.", "target": "memory"}))
+        stored = json.loads(p1.handle_tool_call("scope_recall_store", {"content": "Joy durable note remains shared.", "target": "memory"}))
+        blocked = json.loads(
+            p1.handle_tool_call(
+                "scope_recall_update",
+                {"id": stored["id"], "content": "Temporary group one scratch sentinel.", "target": "general"},
+            )
+        )
+
+        assert blocked["error"]
+        row = p1._require_conn().execute("SELECT target, content, scope_id FROM memories WHERE id = ?", (stored["id"],)).fetchone()
+        assert row is not None
+        assert row["target"] == "memory"
+        assert row["scope_id"] == p1._shared_scope_id
+
+        p2.on_turn_start(1, "Temporary group one scratch sentinel")
+        assert p2.prefetch("Temporary group one scratch sentinel") == ""
+    finally:
+        p1.shutdown()
+        p2.shutdown()
+
+
+def test_merge_tool_rejects_shared_local_scope_mixing(tmp_path):
+    p1 = load_memory_provider("scope-recall")
+    p2 = load_memory_provider("scope-recall")
+    assert p1 is not None and p2 is not None
+
+    p1.initialize(
+        "session-a",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+        user_id="joy",
+        chat_id="group-1",
+    )
+    p2.initialize(
+        "session-b",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+        user_id="joy",
+        chat_id="group-2",
+    )
+
+    try:
+        local = json.loads(p1.handle_tool_call("scope_recall_store", {"content": "Group one local merge target.", "target": "general"}))
+        shared = json.loads(p2.handle_tool_call("scope_recall_store", {"content": "Shared durable merge source.", "target": "memory"}))
+        result = json.loads(p1.handle_tool_call("scope_recall_merge", {"target_id": local["id"], "source_ids": [shared["id"]]}))
+
+        assert result["merged"] is False
+        assert result["deleted"] == 0
+        assert "shared durable and local scratch" in result["error"]
+        assert p1._require_conn().execute("SELECT id FROM memories WHERE id = ?", (local["id"],)).fetchone() is not None
+        assert p2._require_conn().execute("SELECT id FROM memories WHERE id = ?", (shared["id"],)).fetchone() is not None
+    finally:
+        p1.shutdown()
+        p2.shutdown()
+
+def test_merge_tool_cannot_read_or_delete_local_memory_from_another_scope(tmp_path):
+    p1 = load_memory_provider("scope-recall")
+    p2 = load_memory_provider("scope-recall")
+    assert p1 is not None and p2 is not None
+
+    p1.initialize(
+        "session-a",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+        user_id="joy",
+        chat_id="group-1",
+    )
+    p2.initialize(
+        "session-b",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+        user_id="joy",
+        chat_id="group-2",
+    )
+
+    try:
+        a = json.loads(p1.handle_tool_call("scope_recall_store", {"content": "Group one target note.", "target": "general"}))
+        b = json.loads(p2.handle_tool_call("scope_recall_store", {"content": "Group two source note.", "target": "general"}))
         result = json.loads(p1.handle_tool_call("scope_recall_merge", {"target_id": a["id"], "source_ids": [b["id"]]}))
 
         assert result["merged"] is True
@@ -1132,8 +1352,8 @@ def test_export_scope_only_false_requires_operator_mode(tmp_path):
     )
 
     try:
-        own = json.loads(p1.handle_tool_call("scope_recall_store", {"content": "Group one export note.", "target": "ops"}))
-        other = json.loads(p2.handle_tool_call("scope_recall_store", {"content": "Group two export note.", "target": "ops"}))
+        own = json.loads(p1.handle_tool_call("scope_recall_store", {"content": "Group one export note.", "target": "general"}))
+        other = json.loads(p2.handle_tool_call("scope_recall_store", {"content": "Group two export note.", "target": "general"}))
 
         scoped = json.loads(p1.handle_tool_call("scope_recall_export", {"format": "json", "scope_only": True}))
         assert scoped["count"] == 1
@@ -1175,8 +1395,8 @@ def test_export_scope_only_false_allowed_only_with_operator_config(tmp_path):
     )
 
     try:
-        own = json.loads(p1.handle_tool_call("scope_recall_store", {"content": "Operator group one export note.", "target": "ops"}))
-        other = json.loads(p2.handle_tool_call("scope_recall_store", {"content": "Operator group two export note.", "target": "ops"}))
+        own = json.loads(p1.handle_tool_call("scope_recall_store", {"content": "Operator group one export note.", "target": "general"}))
+        other = json.loads(p2.handle_tool_call("scope_recall_store", {"content": "Operator group two export note.", "target": "general"}))
 
         exported = json.loads(p1.handle_tool_call("scope_recall_export", {"format": "json", "scope_only": False}))
         ids = {row["id"] for row in exported["data"]}

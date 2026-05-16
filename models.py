@@ -76,10 +76,25 @@ class VectorIndexRecord:
         }
 
 
+def recall_scope_mode(target: str, source: str = "") -> str:
+    """Classify a memory row as shared or local.
+
+    User/project/ops/memory facts are durable by default and should be reusable
+    across windows/chats for the same user + agent profile. Raw turn transcripts
+    and one-off general captures remain local to the chat/thread/session scope.
+    """
+
+    normalized_target = str(target or "memory").strip().lower()
+    normalized_source = str(source or "").strip().lower()
+    if normalized_target in {"user", "memory", "project", "ops"}:
+        return "shared"
+    if normalized_source == "tool-store" and normalized_target != "general":
+        return "shared"
+    return "local"
+
 
 def json_dumps_stable(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
 
 
 def normalize_import_timestamp(raw_ts: Any) -> str:
@@ -89,7 +104,6 @@ def normalize_import_timestamp(raw_ts: Any) -> str:
         except Exception:
             pass
     return datetime.now(timezone.utc).isoformat()
-
 
 
 def build_import_fingerprint(*, raw_scope: str, category: str, text: str, timestamp: str, metadata_text: str) -> str:

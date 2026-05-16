@@ -10,6 +10,14 @@ from .sql_store import curated_recall_item_id, iter_curated_entries
 from .vector_runtime import mark_vector_needs_repair
 
 
+def _scope_placeholders(provider: Any) -> str:
+    return ",".join("?" for _ in provider._accessible_scope_ids)
+
+
+def _accessible_scope_params(provider: Any) -> list[str]:
+    return [str(scope_id) for scope_id in provider._accessible_scope_ids]
+
+
 def search_db_memories(provider: Any, query: str, *, limit: int) -> list[RecallItem]:
     conn = provider._require_conn()
     tokens = query_tokens(query)
@@ -29,11 +37,11 @@ def search_db_memories(provider: Any, query: str, *, limit: int) -> list[RecallI
                     SELECT m.*
                     FROM memories_fts
                     JOIN memories m ON m.id = memories_fts.memory_id
-                    WHERE memories_fts MATCH ? AND m.scope_id = ?
+                    WHERE memories_fts MATCH ? AND m.scope_id IN ({})
                     ORDER BY m.updated_at DESC
                     LIMIT ?
-                    """,
-                    (fts_query, provider._scope_id, candidate_pool),
+                    """.format(_scope_placeholders(provider)),
+                    [fts_query, *_accessible_scope_params(provider), candidate_pool],
                 ).fetchall()
             )
         like_query_terms = like_terms(query, tokens)
@@ -43,13 +51,13 @@ def search_db_memories(provider: Any, query: str, *, limit: int) -> list[RecallI
             for term in like_query_terms:
                 needle = f"%{term}%"
                 params.extend([needle, needle])
-            params.extend([provider._scope_id, candidate_pool])
+            params.extend([*_accessible_scope_params(provider), candidate_pool])
             rows.extend(
                 conn.execute(
                     f"""
                     SELECT *
                     FROM memories
-                    WHERE ({clause}) AND scope_id = ?
+                    WHERE ({clause}) AND scope_id IN ({_scope_placeholders(provider)})
                     ORDER BY updated_at DESC
                     LIMIT ?
                     """,
@@ -62,11 +70,11 @@ def search_db_memories(provider: Any, query: str, *, limit: int) -> list[RecallI
                     """
                     SELECT *
                     FROM memories
-                    WHERE scope_id = ?
+                    WHERE scope_id IN ({})
                     ORDER BY updated_at DESC
                     LIMIT ?
-                    """,
-                    (provider._scope_id, recent_scan_limit),
+                    """.format(_scope_placeholders(provider)),
+                    [*_accessible_scope_params(provider), recent_scan_limit],
                 ).fetchall()
             )
 
@@ -104,7 +112,9 @@ def search_vector_memories(provider: Any, query: str, *, limit: int) -> list[Rec
     try:
         query_vector = provider._embedder.embed(query)
         top_k = max(limit, int((provider._vector_config or {}).get("top_k") or limit))
-        rows = provider._vector_store.search(query_vector, scope_id=provider._scope_id, limit=top_k)
+        rows = []
+        for scope_id in provider._accessible_scope_ids:
+            rows.extend(provider._vector_store.search(query_vector, scope_id=scope_id, limit=top_k))
     except Exception as exc:
         mark_vector_needs_repair(provider, exc)
         return []

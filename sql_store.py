@@ -177,9 +177,20 @@ def update_row(
     content: str,
     target: str | None = None,
     scope_id: str | None = None,
+    scope_ids: list[str] | tuple[str, ...] | None = None,
 ) -> tuple[bool, str, str]:
-    where = "id = ? AND scope_id = ?" if scope_id is not None else "id = ?"
-    params: tuple[Any, ...] = (memory_id, scope_id) if scope_id is not None else (memory_id,)
+    if scope_ids is not None:
+        clean_scope_ids = [str(item) for item in scope_ids if str(item)]
+        if not clean_scope_ids:
+            return False, "", ""
+        where = f"id = ? AND scope_id IN ({','.join('?' for _ in clean_scope_ids)})"
+        params: tuple[Any, ...] = (memory_id, *clean_scope_ids)
+    elif scope_id is not None:
+        where = "id = ? AND scope_id = ?"
+        params = (memory_id, scope_id)
+    else:
+        where = "id = ?"
+        params = (memory_id,)
     row = conn.execute(f"SELECT * FROM memories WHERE {where}", params).fetchone()
     if row is None:
         return False, "", ""
@@ -207,21 +218,38 @@ def update_row(
     return True, summary, updated_at
 
 
-def delete_rows(conn: sqlite3.Connection, ids: list[str], *, scope_id: str | None = None) -> int:
+def delete_rows(
+    conn: sqlite3.Connection,
+    ids: list[str],
+    *,
+    scope_id: str | None = None,
+    scope_ids: list[str] | tuple[str, ...] | None = None,
+) -> int:
     ids = [str(memory_id) for memory_id in ids if str(memory_id).strip()]
     if not ids:
         return 0
     placeholders = ",".join("?" for _ in ids)
-    if scope_id is None:
+    if scope_ids is not None:
+        clean_scope_ids = [str(item) for item in scope_ids if str(item)]
+        if not clean_scope_ids:
+            return 0
+        scoped_ids = [
+            str(row["id"])
+            for row in conn.execute(
+                f"SELECT id FROM memories WHERE id IN ({placeholders}) AND scope_id IN ({','.join('?' for _ in clean_scope_ids)})",
+                [*ids, *clean_scope_ids],
+            ).fetchall()
+        ]
+    elif scope_id is None:
         scoped_ids = ids
     else:
         scoped_ids = [
             str(row["id"])
             for row in conn.execute(f"SELECT id FROM memories WHERE id IN ({placeholders}) AND scope_id = ?", [*ids, scope_id]).fetchall()
         ]
-        if not scoped_ids:
-            return 0
-        placeholders = ",".join("?" for _ in scoped_ids)
+    if not scoped_ids:
+        return 0
+    placeholders = ",".join("?" for _ in scoped_ids)
     before = int(conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0])
     conn.execute(f"DELETE FROM memories_fts WHERE memory_id IN ({placeholders})", scoped_ids)
     conn.execute(f"DELETE FROM memories WHERE id IN ({placeholders})", scoped_ids)
@@ -230,9 +258,24 @@ def delete_rows(conn: sqlite3.Connection, ids: list[str], *, scope_id: str | Non
     return max(0, before - after)
 
 
-def exact_duplicate_groups(conn: sqlite3.Connection, *, scope_id: str | None = None) -> list[dict[str, Any]]:
-    where = "WHERE scope_id = ?" if scope_id else ""
-    params: tuple[Any, ...] = (scope_id,) if scope_id else ()
+def exact_duplicate_groups(
+    conn: sqlite3.Connection,
+    *,
+    scope_id: str | None = None,
+    scope_ids: list[str] | tuple[str, ...] | None = None,
+) -> list[dict[str, Any]]:
+    if scope_ids is not None:
+        clean_scope_ids = [str(item) for item in scope_ids if str(item)]
+        if not clean_scope_ids:
+            return []
+        where = f"WHERE scope_id IN ({','.join('?' for _ in clean_scope_ids)})"
+        params: tuple[Any, ...] = tuple(clean_scope_ids)
+    elif scope_id:
+        where = "WHERE scope_id = ?"
+        params = (scope_id,)
+    else:
+        where = ""
+        params = ()
     rows = conn.execute(
         f"""
         SELECT scope_id, target, dedup_key, COUNT(*) AS count
