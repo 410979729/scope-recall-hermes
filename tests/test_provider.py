@@ -37,6 +37,18 @@ def test_scope_recall_plugin_loads_from_hermes_home_plugins():
     assert plugin.name == "scope-recall"
 
 
+def test_sync_turn_accepts_structured_content(provider):
+    provider.sync_turn(
+        [{"type": "text", "text": "We deploy services with uv run after structured gateway messages."}],
+        [{"type": "text", "text": "Got it."}],
+    )
+    provider.flush(timeout=2.0)
+
+    provider.on_turn_start(1, "How do structured gateway messages deploy services?")
+    result = provider.prefetch("How do structured gateway messages deploy services?")
+    assert "uv run" in result.lower()
+
+
 def test_prefetch_uses_current_turn_query_not_previous_prefetch(provider):
     provider.sync_turn(
         "We deploy services with uv run and restart the gateway after model changes.",
