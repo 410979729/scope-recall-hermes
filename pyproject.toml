@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scope-recall"
-version = "1.1.0"
+version = "1.0.2"
 description = "Hermes current-turn memory provider with SQLite truth storage and a LanceDB vector companion."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -4,7 +4,7 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
-## [1.1.0] - 2026-05-18
+## [1.0.2] - 2026-05-18
 
 ### Added
 - Added `capture_filters.py` to centralize automatic capture hygiene and block runtime-wrapper text such as recent Telegram context, context-compaction handoffs, skill-review meta prompts, and secret-like literals before they enter SQLite or vector storage.
