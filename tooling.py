@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from tools.registry import tool_error
@@ -9,6 +10,10 @@ from tools.registry import tool_error
 from .capture_filters import CaptureFilterResult, should_capture_text
 
 logger = logging.getLogger(__name__)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 TOOL_ALIASES = {
     "lancepro_store": "scope_recall_store",
@@ -48,6 +53,17 @@ class ScopeRecallToolService:
             logger.warning("Scope Recall tool %s failed: %s", tool_name, exc)
             return tool_error(str(exc))
 
+    def _receipt(self, action: str, *, target: str = "", id: str = "", scope_mode: str = "", **extra: Any) -> dict[str, Any]:
+        data: dict[str, Any] = {"action": action, "provider": "scope-recall", "at": _now_iso()}
+        if target:
+            data["target"] = target
+        if id:
+            data["id"] = id
+        if scope_mode:
+            data["scope_mode"] = scope_mode
+        data.update({key: value for key, value in extra.items() if value not in (None, "", [])})
+        return data
+
     def _handle_store(self, args: dict[str, Any]) -> str:
         content = self.provider._clean_text(str(args.get("content") or ""))
         if not content:
@@ -66,6 +82,7 @@ class ScopeRecallToolService:
                     "id": "",
                     "target": target,
                     "scope_mode": scope_mode,
+                    "receipt": self._receipt("rejected_sensitive", target=target, scope_mode=scope_mode, reason=filter_result.reason),
                 }
             )
         memory_id, inserted, outcome = self.provider._store_now(
@@ -83,6 +100,7 @@ class ScopeRecallToolService:
                 "id": memory_id,
                 "target": target,
                 "scope_mode": scope_mode,
+                "receipt": self._receipt("promoted" if inserted else outcome, target=target, id=memory_id, scope_mode=scope_mode),
             }
         )
 
@@ -123,7 +141,12 @@ class ScopeRecallToolService:
             return tool_error("content is required")
         filter_result = self._storage_filter(content)
         if not filter_result.allowed:
-            return tool_error("content is not suitable for storage", skipped=True, skip_reason=filter_result.reason)
+            return tool_error(
+                "content is not suitable for storage",
+                skipped=True,
+                skip_reason=filter_result.reason,
+                receipt=self._receipt("rejected_sensitive", reason=filter_result.reason),
+            )
         target_arg = args.get("target")
         target = str(target_arg) if target_arg else None
         updated, summary, updated_at = self.provider._update_memory(memory_id, content, target)
@@ -143,6 +166,7 @@ class ScopeRecallToolService:
                 "scope_mode": self.provider._scope_mode_for(actual_target, source),
                 "summary": summary,
                 "updated_at": updated_at,
+                "receipt": self._receipt("updated", target=actual_target, id=memory_id, scope_mode=self.provider._scope_mode_for(actual_target, source)),
             }
         )
 
@@ -169,10 +193,26 @@ class ScopeRecallToolService:
         if content is not None:
             filter_result = self._storage_filter(content)
             if not filter_result.allowed:
-                return tool_error("content is not suitable for storage", skipped=True, skip_reason=filter_result.reason)
+                return tool_error(
+                    "content is not suitable for storage",
+                    skipped=True,
+                    skip_reason=filter_result.reason,
+                    receipt=self._receipt("rejected_sensitive", reason=filter_result.reason),
+                )
         target_arg = args.get("target")
         target = str(target_arg) if target_arg else None
-        return self._json(self.provider._merge_memories(target_id, [str(item) for item in source_ids], content, target))
+        payload = self.provider._merge_memories(target_id, [str(item) for item in source_ids], content, target)
+        if payload.get("merged"):
+            payload["receipt"] = self._receipt(
+                "merged",
+                target=str(payload.get("target") or target or ""),
+                id=str(payload.get("id") or payload.get("target_id") or ""),
+                scope_mode=str(payload.get("scope_mode") or ""),
+                target_id=str(payload.get("target_id") or ""),
+                source_ids=payload.get("source_ids") or [],
+                source_candidate_id=str(args.get("source_candidate_id") or ""),
+            )
+        return self._json(payload)
 
     def _handle_export(self, args: dict[str, Any]) -> str:
         scope_only = self._bool_arg(args, "scope_only", True)

@@ -140,7 +140,32 @@ def search_vector_memories(provider: Any, query: str, *, limit: int) -> list[Rec
     return results
 
 
+def _curated_memory_allowed(provider: Any) -> bool:
+    raw_cfg = (provider._config or {}).get("curated_memory", {})
+    if raw_cfg is False:
+        return False
+    cfg = raw_cfg if isinstance(raw_cfg, dict) else {}
+    mode = str(cfg.get("mode") or "single-user").strip().lower()
+    if mode in {"disabled", "off", "false", "none"}:
+        return False
+
+    user_id = str(getattr(provider, "_scope", None).user_id or "")
+    allowed = [str(item).strip() for item in (cfg.get("allowed_user_ids") or []) if str(item).strip()]
+    if allowed:
+        return bool(user_id and user_id in allowed)
+    if mode in {"explicit-users", "allow-list", "allowlist"}:
+        return False
+    if mode in {"profile-global", "global", "all-users"}:
+        return True
+    # Safe default: global curated files may be injected only when Hermes is not
+    # running with an explicit gateway user id. Provider-owned SQLite rows remain
+    # the scoped durable store for multi-user contexts.
+    return not bool(user_id)
+
+
 def search_curated_memories(provider: Any, query: str) -> list[RecallItem]:
+    if not _curated_memory_allowed(provider):
+        return []
     min_score = float((provider._retrieval_config or {}).get("min_score") or provider._config_value("min_score", 0.18))
     results: list[RecallItem] = []
     for target, content, updated_at in iter_curated_entries(provider._hermes_home):

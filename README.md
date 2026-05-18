@@ -74,7 +74,7 @@ Most agent memory pain is not just "wrong memory was recalled". The bigger user-
 | Storage authority | SQLite is the durable truth; LanceDB is rebuildable companion state |
 | Hybrid retrieval | SQLite lexical/FTS candidates + LanceDB semantic candidates + bounded prompt rendering |
 | Memory scope model | shared durable scope for user/project/ops/memory facts; local scope for general scratch captures |
-| Built-in memory integration | Hermes curated `USER.md` / `MEMORY.md` are live-read, not mirrored into SQLite |
+| Built-in memory integration | Hermes curated `USER.md` / `MEMORY.md` are live-read, not mirrored into SQLite. In gateway contexts with an explicit `user_id`, curated-file recall is opt-in/allowlisted to avoid cross-user leakage from global profile files. |
 | Governance | deterministic exact dedupe, conservative near-duplicate merge, filtering, metadata, decay review |
 | Migration | local `lancepro` auto-migration; OpenClaw `memory-lancedb-pro` import is explicit |
 | Offline bootstrap | deterministic `local-hash` fallback when hosted embeddings are unavailable |
@@ -217,14 +217,14 @@ When `scope-recall` is active, Hermes memory has **two intentional authority zon
 
 | Layer | Storage | Purpose | How recall sees it |
 | --- | --- | --- | --- |
-| Hermes curated memory | `$HERMES_HOME/memories/USER.md`, `$HERMES_HOME/memories/MEMORY.md` | User profile and durable hand-curated notes managed by Hermes built-in memory | Live-read during recall; not mirrored into SQLite |
+| Hermes curated memory | `$HERMES_HOME/memories/USER.md`, `$HERMES_HOME/memories/MEMORY.md` | User profile and durable hand-curated notes managed by Hermes built-in memory | Live-read during recall; not mirrored into SQLite; gateway `user_id` contexts require curated-memory opt-in/allowlist |
 | Scope Recall provider memory | `$HERMES_HOME/scope-recall/memory.sqlite3` + `$HERMES_HOME/scope-recall/lancedb/` | Provider-owned shared durable memories plus local scratch captures, scope metadata, lexical/vector retrieval | SQLite truth + optional LanceDB companion ranking |
 
 Key principle:
 
 > SQLite is the truth source for provider-owned rows. Hermes curated memory files remain their own truth source. LanceDB is a rebuildable retrieval companion, not the authority.
 
-This is deliberate. Mirroring curated memory writes into SQLite can leave stale duplicates after replace/remove operations. Live-reading curated memory keeps Scope Recall aligned with Hermes native memory behavior.
+This is deliberate. Mirroring curated memory writes into SQLite can leave stale duplicates after replace/remove operations. Live-reading curated memory keeps Scope Recall aligned with Hermes native memory behavior. Because those curated files are profile-global, live-read recall defaults to `single-user`: it is active for single-user/no-`user_id` runtimes and disabled for explicit gateway `user_id` contexts unless `curated_memory.mode` is set to `profile-global` or `explicit-users` with matching `allowed_user_ids`.
 
 ---
 

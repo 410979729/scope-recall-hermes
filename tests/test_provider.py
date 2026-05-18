@@ -569,6 +569,7 @@ def test_reads_builtin_curated_memory_files(tmp_path):
         agent_workspace="hermes",
         user_id="joy",
     )
+    plugin._config["curated_memory"] = {"mode": "explicit-users", "allowed_user_ids": ["joy"]}
     try:
         plugin.on_turn_start(1, "What response style does Joy prefer?")
         result = plugin.prefetch("What response style does Joy prefer?")

@@ -30,6 +30,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     ],
     "enable_tools": True,
     "maintenance_tools_enabled": False,
+    "curated_memory": {
+        "mode": "single-user",
+        "allowed_user_ids": [],
+    },
     "retrieval": {
         "mode": "hybrid",
         "lexical_weight": 0.45,

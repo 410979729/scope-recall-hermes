@@ -37,6 +37,7 @@ from scope_recall_script_runtime.models import (  # noqa: E402
     ImportedMemoryRow,
     build_import_fingerprint,
     json_dumps_stable,
+    normalize_import_fingerprint_timestamp,
     normalize_import_timestamp,
 )
 
@@ -56,14 +57,17 @@ def map_row(row: dict[str, Any], scope_prefix: str) -> ImportedMemoryRow:
     raw_scope = str(row.get("scope") or "unknown")
     category = str(row.get("category") or "memory")
     content = str(row.get("text") or "").strip()
-    updated_at = normalize_import_timestamp(row.get("timestamp"))
+    raw_timestamp = row.get("timestamp")
+    updated_at = normalize_import_timestamp(raw_timestamp)
+    fingerprint_timestamp = normalize_import_fingerprint_timestamp(raw_timestamp)
     metadata = row.get("metadata")
     metadata_text = metadata if isinstance(metadata, str) else json_dumps_stable(metadata or {})
     fingerprint = build_import_fingerprint(
+        source_id=str(row.get("id") or ""),
         raw_scope=raw_scope,
         category=category,
         text=content,
-        timestamp=updated_at,
+        timestamp=fingerprint_timestamp,
         metadata_text=metadata_text,
     )
     return ImportedMemoryRow(

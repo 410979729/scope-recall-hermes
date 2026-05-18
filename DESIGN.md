@@ -46,7 +46,9 @@ Authoritative files:
 - `$HERMES_HOME/memories/USER.md`
 - `$HERMES_HOME/memories/MEMORY.md`
 
-These are live-read during recall. `on_memory_write` is intentionally an observational no-op: Hermes can notify the provider, but this provider must not mirror curated writes into SQLite.
+These are live-read during recall when curated-memory policy allows it. `on_memory_write` is intentionally an observational no-op: Hermes can notify the provider, but this provider must not mirror curated writes into SQLite.
+
+Default policy is conservative for gateways: global curated files are read in single-user/no-`user_id` contexts, but explicit `user_id` contexts must opt in via `curated_memory.mode: profile-global` or `curated_memory.mode: explicit-users` plus `allowed_user_ids`.
 
 Reason:
 

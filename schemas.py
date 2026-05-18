@@ -92,6 +92,7 @@ SCOPE_RECALL_MERGE_SCHEMA = {
             "source_ids": {"type": "array", "items": {"type": "string"}, "description": "Memory ids to merge then delete."},
             "content": {"type": "string", "description": "Optional explicit merged content."},
             "target": {"type": "string", "enum": ["user", "memory", "project", "ops", "general"]},
+            "source_candidate_id": {"type": "string", "description": "Optional audit candidate id to include in the merge receipt."},
         },
         "required": ["target_id"],
     },

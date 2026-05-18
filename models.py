@@ -98,7 +98,7 @@ def json_dumps_stable(value: Any) -> str:
 
 
 def normalize_import_timestamp(raw_ts: Any) -> str:
-    if raw_ts:
+    if raw_ts not in (None, ""):
         try:
             return datetime.fromtimestamp(float(raw_ts) / 1000.0, tz=timezone.utc).isoformat()
         except Exception:
@@ -106,6 +106,22 @@ def normalize_import_timestamp(raw_ts: Any) -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def build_import_fingerprint(*, raw_scope: str, category: str, text: str, timestamp: str, metadata_text: str) -> str:
-    material = "\n".join([raw_scope.strip(), category.strip(), text.strip(), timestamp.strip(), metadata_text.strip()])
+def normalize_import_fingerprint_timestamp(raw_ts: Any) -> str:
+    """Return stable timestamp material for import fingerprints.
+
+    ``normalize_import_timestamp`` may use the current import time for row
+    timestamps when legacy data is malformed. Fingerprints must not do that, or
+    rerunning an import would create a new id for the same source row.
+    """
+
+    if raw_ts not in (None, ""):
+        try:
+            return datetime.fromtimestamp(float(raw_ts) / 1000.0, tz=timezone.utc).isoformat()
+        except Exception:
+            return f"invalid:{str(raw_ts).strip()}"
+    return "missing"
+
+
+def build_import_fingerprint(*, raw_scope: str, category: str, text: str, timestamp: str, metadata_text: str, source_id: str = "") -> str:
+    material = "\n".join([source_id.strip(), raw_scope.strip(), category.strip(), text.strip(), timestamp.strip(), metadata_text.strip()])
     return hashlib.sha1(material.encode("utf-8")).hexdigest()

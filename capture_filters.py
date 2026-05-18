@@ -24,10 +24,23 @@ DEFAULT_CAPTURE_SKIP_PATTERNS: tuple[str, ...] = (
     r"<available_skills>[\s\S]*?</available_skills>",
 )
 
-SECRET_RE = re.compile(
-    r"(?:api[_-]?key|token|secret|password|passwd|credential(?:[_-]?[a-z0-9_]+)?|private[_-]?key)\s*[:=]\s*[^\s]+",
-    re.IGNORECASE,
+SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Common assignment forms: api_key=..., api key: ..., token is ..., private-key = ...
+    re.compile(
+        r"(?:api[_\s-]?key|token|secret|password|passwd|credential(?:[_\s-]?[a-z0-9_]+)?|private[_\s-]?key)"
+        r"\s*(?::|=|is|是)\s*[^\s]+",
+        re.IGNORECASE,
+    ),
+    # Provider-specific and transport token forms that often appear without labels.
+    re.compile(r"s" r"k-[A-Za-z0-9][A-Za-z0-9_-]{18,}"),
+    re.compile(r"g" r"h[pousr]_[A-Za-z0-9_]{20,}"),
+    re.compile(r"bea" r"rer\s+[A-Za-z0-9._\-~+/=]{16,}", re.IGNORECASE),
+    re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"),
 )
+
+
+def contains_secret_like_text(text: str) -> bool:
+    return any(pattern.search(text) for pattern in SECRET_PATTERNS)
 
 
 def _configured_patterns(config: dict[str, Any] | None) -> tuple[str, ...]:
@@ -54,7 +67,7 @@ def should_capture_text(text: Any, config: dict[str, Any] | None = None) -> Capt
     if max_chars > 0 and len(cleaned) > max_chars:
         return CaptureFilterResult(False, "too-long")
 
-    if SECRET_RE.search(cleaned):
+    if contains_secret_like_text(cleaned):
         return CaptureFilterResult(False, "secret-like-content")
 
     for pattern in _configured_patterns(config):
