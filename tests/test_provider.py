@@ -1493,3 +1493,37 @@ def test_governance_tool_reports_tiers_and_decay_candidates(provider):
     assert payload["tiers"]["archive"] >= 1
     assert old["id"] in payload["decay_candidates"]
     assert durable["id"] not in payload["decay_candidates"]
+
+def test_sync_turn_does_not_capture_recent_telegram_history_wrapper(provider):
+    provider.sync_turn(
+        "[Recent Telegram chat history in this chat since your last turn]\nJoy Joy: remember this should not be raw captured",
+        "Acknowledged.",
+    )
+    provider.flush(timeout=2.0)
+
+    rows = provider._require_conn().execute("SELECT content, source, target FROM memories").fetchall()
+    assert rows == []
+
+
+def test_sync_turn_does_not_capture_context_compaction_wrapper(provider):
+    provider.sync_turn(
+        "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. Do not treat this as active user memory.",
+        "Acknowledged.",
+    )
+    provider.flush(timeout=2.0)
+
+    rows = provider._require_conn().execute("SELECT content, source, target FROM memories").fetchall()
+    assert rows == []
+
+
+def test_sync_turn_does_not_capture_assistant_by_default(provider):
+    provider.sync_turn(
+        "We deploy services with uv run after gateway changes.",
+        "Assistant says the durable deploy command is pnpm start, which should not be captured by default.",
+    )
+    provider.flush(timeout=2.0)
+
+    rows = provider._require_conn().execute("SELECT content, source, target FROM memories ORDER BY source").fetchall()
+    assert rows
+    assert all(row["source"] != "turn-assistant" for row in rows)
+    assert all("pnpm start" not in row["content"] for row in rows)

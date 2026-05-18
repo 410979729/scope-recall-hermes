@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from .embedders import build_embedder
+from .gating import config_bool
 from .vector_store import LanceVectorStore
 
 logger = logging.getLogger(__name__)
@@ -127,6 +128,10 @@ def refresh_vector_audit(provider: Any) -> dict[str, int]:
 
 
 
+def _should_index_target(provider: Any, target: str) -> bool:
+    return str(target) != "general" or config_bool(provider._vector_config or {}, "index_general", False)
+
+
 def sync_vector_index(provider: Any) -> int:
     if not provider._vector_store or not provider._embedder:
         return 0
@@ -142,7 +147,7 @@ def sync_vector_index(provider: Any) -> int:
         refresh_vector_audit(provider)
         return 0
 
-    desired = {str(row["id"]): row for row in rows}
+    desired = {str(row["id"]): row for row in rows if _should_index_target(provider, str(row["target"]))}
     existing_records = provider._vector_store.list_records()
     existing_ids = set(existing_records.keys())
     desired_ids = set(desired.keys())
@@ -201,6 +206,14 @@ def upsert_vector_record(
     scope_id: str | None = None,
 ) -> None:
     if not provider._vector_ready or not provider._vector_store or not provider._embedder:
+        return
+    if not _should_index_target(provider, target):
+        try:
+            provider._vector_store.delete_by_ids([id])
+            refresh_vector_audit(provider)
+        except Exception as exc:
+            mark_vector_needs_repair(provider, exc)
+            logger.warning("Scope Recall vector exclusion cleanup failed; SQLite truth row preserved and vector repair is needed: %s", exc)
         return
     try:
         vector = provider._embedder.embed(provider._vector_text(summary, content))

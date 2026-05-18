@@ -2,6 +2,17 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- Added `capture_filters.py` to centralize automatic capture hygiene and block runtime-wrapper text such as recent Telegram context, context-compaction handoffs, skill-review meta prompts, and secret-like literals before they enter SQLite or vector storage.
+- Added regression coverage for capture filtering, structured content capture, context-wrapper rejection, and default assistant-response non-capture.
+
+### Changed
+- Changed default automatic capture posture to reduce raw `general` noise: `capture_assistant=false`, `min_capture_length=40`, and `capture_hard_max_chars=2500`.
+- Kept short extracted durable candidates eligible for capture even when raw-turn capture uses a higher minimum length, so concise user preferences and ops facts are not lost.
+- Treat exact semantic-merge matches as duplicates rather than no-op merges, preserving existing memory ids without rewriting content.
+
 ## [1.0.1] - 2026-05-16
 
 ### Security

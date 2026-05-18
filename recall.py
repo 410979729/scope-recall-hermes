@@ -38,13 +38,17 @@ class RecallService:
 
         merged: dict[str, RecallItem] = {}
         for item in lexical_candidates + vector_candidates + curated_candidates:
-            item_key = item.id if item.id.startswith("curated:") else self.provider._dedup_key(item.content)
+            if item.id.startswith("curated:"):
+                item_key = item.id
+            else:
+                dedup_class = "scratch" if item.target == "general" else "durable"
+                item_key = f"{dedup_class}:{self.provider._dedup_key(item.content)}"
             current = merged.get(item_key)
             if current is None:
                 merged[item_key] = item
                 continue
             incoming = dict(item.metadata or {})
-            preferred = current if current.updated_at >= item.updated_at else item
+            preferred = self._preferred_duplicate(current, item)
             other = item if preferred is current else current
             meta = dict(preferred.metadata or {})
             for meta_key, value in dict(other.metadata or {}).items():
@@ -61,6 +65,7 @@ class RecallService:
             merged[item_key] = preferred
 
         results = list(merged.values())
+        results = self._apply_general_policy(results)
         min_score = float(retrieval_cfg.get("min_score") or self.provider._config_value("min_score", 0.18))
         filtered: list[RecallItem] = []
         for item in results:
@@ -100,6 +105,38 @@ class RecallService:
             ),
             reverse=True,
         )[:limit]
+
+    def _preferred_duplicate(self, current: RecallItem, incoming: RecallItem) -> RecallItem:
+        if current.target == "general" and incoming.target != "general":
+            return incoming
+        if incoming.target == "general" and current.target != "general":
+            return current
+        return current if current.updated_at >= incoming.updated_at else incoming
+
+    def _apply_general_policy(self, items: list[RecallItem]) -> list[RecallItem]:
+        retrieval_cfg = self.provider._retrieval_config or {}
+        mode = str(retrieval_cfg.get("include_general") or "same-scope").strip().lower()
+        if mode not in {"same-scope", "never", "always"}:
+            mode = "same-scope"
+        general_weight = max(0.0, min(1.0, float(retrieval_cfg.get("general_weight") or 0.35)))
+        output: list[RecallItem] = []
+        for item in items:
+            if item.target != "general":
+                output.append(item)
+                continue
+            if mode == "never":
+                continue
+            scope_id = str((item.metadata or {}).get("scope_id") or "")
+            if mode == "same-scope" and scope_id and scope_id != str(self.provider._scope_id):
+                continue
+            if general_weight < 1.0:
+                meta = dict(item.metadata or {})
+                for key in ("lexical_score", "vector_score"):
+                    meta[key] = float(meta.get(key) or 0.0) * general_weight
+                meta["general_weight"] = general_weight
+                item.metadata = meta
+            output.append(item)
+        return output
 
     def final_score(self, meta: dict[str, Any]) -> float:
         retrieval_cfg = self.provider._retrieval_config or {}

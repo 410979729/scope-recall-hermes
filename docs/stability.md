@@ -53,7 +53,8 @@ V1 keeps these behavior boundaries stable:
 - built-in curated memory writes are not mirrored into SQLite
 - `on_memory_write()` remains observational unless a later major release changes storage ownership
 - subagent / non-primary contexts do not expose Scope Recall tools
-- maintenance tools (`scope_recall_dedupe`, `scope_recall_govern`, and `scope_recall_repair`) are hidden and fail closed unless `maintenance_tools_enabled=true`
+- maintenance tools (`scope_recall_dedupe`, `scope_recall_govern`, `scope_recall_hygiene`, and `scope_recall_repair`) are hidden and fail closed unless `maintenance_tools_enabled=true`
+- `scope_recall_hygiene` is read-only and never performs cleanup; operators must explicitly run a separate delete/merge/dedupe action after reviewing its output
 - `scope_recall_export` is available for scoped exports by default; `scope_only=false` requires `maintenance_tools_enabled=true`
 - durable `user`/`memory`/`project`/`ops` rows are shared across windows/chats for the same platform + agent workspace + agent identity + user id
 - `general` scratch rows remain local to the current chat/thread or gateway session key
@@ -71,6 +72,7 @@ The following tool names are stable for V1:
 - `scope_recall_merge`
 - `scope_recall_export`
 - `scope_recall_govern`
+- `scope_recall_hygiene`
 - `scope_recall_repair`
 - `scope_recall_stats`
 
@@ -139,3 +141,5 @@ The release check enforces V1 metadata, required public docs, wheel contents, te
 Passing V1 release gates proves the source tree and release artifact are ready. It does not prove a currently running Hermes gateway has loaded this exact code.
 
 To claim live runtime freshness, restart or reload the Hermes process and compare the live process start time against plugin source modification times, or run an equivalent runtime smoke test against the intended service instance.
+
+`scope_recall_hygiene` is a read-only report surface. It never performs cleanup; operators must explicitly run a separate delete/merge/dedupe action after reviewing its output.

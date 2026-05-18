@@ -7,7 +7,7 @@ import threading
 import uuid
 from typing import Any
 
-from .gating import should_skip_capture
+from .capture_filters import should_capture_text
 from .models import recall_scope_mode
 from .sql_store import store_row
 from .vector_runtime import upsert_vector_record
@@ -78,7 +78,7 @@ def enqueue_store(
     session_id: str,
     metadata: dict[str, Any] | None = None,
 ) -> None:
-    if should_skip_capture(content, provider._config):
+    if not should_capture_text(content, provider._config).allowed:
         return
     provider._write_queue.put(
         {
@@ -102,7 +102,7 @@ def store_now(
     metadata: dict[str, Any] | None = None,
     allow_duplicate: bool = False,
 ) -> tuple[str, bool]:
-    if should_skip_capture(content, provider._config):
+    if not should_capture_text(content, provider._config).allowed:
         return "", False
     conn = provider._require_conn()
     memory_id = uuid.uuid4().hex

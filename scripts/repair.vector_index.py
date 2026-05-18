@@ -95,6 +95,8 @@ def main() -> int:
     table_name = str(vector_config.get("table_name") or "memories")
     metric = str((config.get("retrieval") or {}).get("metric") or "cosine")
     rows = load_rows(db_path)
+    if not bool(vector_config.get("index_general", False)):
+        rows = [row for row in rows if str(row["target"]) != "general"]
     embedder = choose_embedder(config)
 
     plan = {

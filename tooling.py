@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from tools.registry import tool_error
 
-from .gating import should_skip_capture
+from .capture_filters import CaptureFilterResult, should_capture_text
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,7 @@ class ScopeRecallToolService:
             "scope_recall_merge": self._handle_merge,
             "scope_recall_export": self._handle_export,
             "scope_recall_govern": self._handle_govern,
+            "scope_recall_hygiene": self._handle_hygiene,
             "scope_recall_repair": self._handle_repair,
             "scope_recall_stats": self._handle_stats,
         }
@@ -52,8 +53,21 @@ class ScopeRecallToolService:
         if not content:
             return tool_error("content is required")
         target = str(args.get("target") or "memory")
-        if should_skip_capture(content, self.provider._config):
-            return self._json({"stored": False, "skipped": True, "id": "", "target": target})
+        scope_mode = self.provider._scope_mode_for(target, "tool-store")
+        filter_result = self._storage_filter(content)
+        if not filter_result.allowed:
+            return self._json(
+                {
+                    "stored": False,
+                    "duplicate": False,
+                    "merged": False,
+                    "skipped": True,
+                    "skip_reason": filter_result.reason,
+                    "id": "",
+                    "target": target,
+                    "scope_mode": scope_mode,
+                }
+            )
         memory_id, inserted, outcome = self.provider._store_now(
             content=content,
             source="tool-store",
@@ -68,7 +82,7 @@ class ScopeRecallToolService:
                 "skipped": outcome == "skipped",
                 "id": memory_id,
                 "target": target,
-                "scope_mode": self.provider._scope_mode_for(target, "tool-store"),
+                "scope_mode": scope_mode,
             }
         )
 
@@ -107,12 +121,30 @@ class ScopeRecallToolService:
             return tool_error("id is required")
         if not content:
             return tool_error("content is required")
+        filter_result = self._storage_filter(content)
+        if not filter_result.allowed:
+            return tool_error("content is not suitable for storage", skipped=True, skip_reason=filter_result.reason)
         target_arg = args.get("target")
         target = str(target_arg) if target_arg else None
         updated, summary, updated_at = self.provider._update_memory(memory_id, content, target)
         if not updated:
             return tool_error("id not found")
-        return self._json({"updated": True, "id": memory_id, "summary": summary, "updated_at": updated_at})
+        row = self.provider._require_conn().execute(
+            "SELECT source, target FROM memories WHERE id = ?",
+            (memory_id,),
+        ).fetchone()
+        actual_target = str(row["target"]) if row is not None else (target or "")
+        source = str(row["source"]) if row is not None else ""
+        return self._json(
+            {
+                "updated": True,
+                "id": memory_id,
+                "target": actual_target,
+                "scope_mode": self.provider._scope_mode_for(actual_target, source),
+                "summary": summary,
+                "updated_at": updated_at,
+            }
+        )
 
     def _handle_dedupe(self, args: dict[str, Any]) -> str:
         if not self._operator_mode_enabled():
@@ -134,8 +166,10 @@ class ScopeRecallToolService:
             source_ids = [source_ids]
         content_arg = args.get("content")
         content = self.provider._clean_text(str(content_arg)) if content_arg else None
-        if content is not None and should_skip_capture(content, self.provider._config):
-            return tool_error("content is not suitable for storage")
+        if content is not None:
+            filter_result = self._storage_filter(content)
+            if not filter_result.allowed:
+                return tool_error("content is not suitable for storage", skipped=True, skip_reason=filter_result.reason)
         target_arg = args.get("target")
         target = str(target_arg) if target_arg else None
         return self._json(self.provider._merge_memories(target_id, [str(item) for item in source_ids], content, target))
@@ -168,6 +202,12 @@ class ScopeRecallToolService:
             return tool_error("scope_recall_repair requires maintenance_tools_enabled=true")
         return self._json(self.provider._repair_vector())
 
+    def _handle_hygiene(self, args: dict[str, Any]) -> str:
+        if not self._operator_mode_enabled():
+            return tool_error("scope_recall_hygiene requires maintenance_tools_enabled=true")
+        limit = max(1, min(1000, int(args.get("limit") or 200)))
+        return self._json(self.provider._hygiene_report(limit=limit))
+
     def _handle_stats(self, args: dict[str, Any]) -> str:
         del args
         return self._json(self.provider._stats_payload())
@@ -191,6 +231,9 @@ class ScopeRecallToolService:
 
     def _operator_mode_enabled(self) -> bool:
         return bool(self.provider._config_value("maintenance_tools_enabled", False))
+
+    def _storage_filter(self, content: str) -> CaptureFilterResult:
+        return should_capture_text(content, self.provider._config)
 
     def _serialize_recall_item(self, item: Any) -> dict[str, Any]:
         metadata = item.metadata or {}

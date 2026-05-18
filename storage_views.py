@@ -100,7 +100,7 @@ def search_db_memories(provider: Any, query: str, *, limit: int) -> list[RecallI
                 target=row["target"],
                 score=score,
                 updated_at=row["updated_at"],
-                metadata={"lexical_score": score, "vector_score": 0.0},
+                metadata={"lexical_score": score, "vector_score": 0.0, "scope_id": row["scope_id"]},
             )
         )
     return results
@@ -134,7 +134,7 @@ def search_vector_memories(provider: Any, query: str, *, limit: int) -> list[Rec
                 target=row["target"],
                 score=vector_score,
                 updated_at=row["updated_at"],
-                metadata={"lexical_score": 0.0, "vector_score": vector_score},
+                metadata={"lexical_score": 0.0, "vector_score": vector_score, "scope_id": row.get("scope_id")},
             )
         )
     return results

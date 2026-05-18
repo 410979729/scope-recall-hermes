@@ -46,6 +46,14 @@ _QUERY_STOPWORDS = {
     "you",
 }
 
+TARGET_PRIORITY_BONUS = {
+    "user": 0.08,
+    "memory": 0.06,
+    "project": 0.055,
+    "ops": 0.055,
+    "general": -0.04,
+}
+
 
 def _canonical_tokens(text: str) -> set[str]:
     canonical: set[str] = set()
@@ -73,7 +81,7 @@ def lexical_score(*, query: str, content: str, summary: str, source: str, target
 
     phrase_bonus = 0.35 if normalized_query and normalized_query in haystack else 0.0
     source_bonus = 0.18 if source == "builtin-curated" else 0.08 if source.startswith("tool") else 0.02
-    target_bonus = 0.08 if target == "user" else 0.0
+    target_bonus = TARGET_PRIORITY_BONUS.get(target, 0.0)
     return max(0.0, min(1.0, overlap * 0.72 + phrase_bonus + source_bonus + target_bonus))
 
 

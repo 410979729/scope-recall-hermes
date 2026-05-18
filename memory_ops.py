@@ -33,6 +33,8 @@ def store_memory_now(
     if semantic_merge and not allow_duplicate and target in {"user", "ops", "project"}:
         merge_id, merged_content = find_semantic_merge_candidate(provider, content, target)
         if merge_id:
+            if merged_content.strip() == content.strip():
+                return merge_id, False, "duplicate"
             update_memory(provider, merge_id, merged_content, target)
             return merge_id, False, "merged"
     memory_id, inserted = store_now(
@@ -68,7 +70,7 @@ def find_semantic_merge_candidate(provider: Any, content: str, target: str) -> t
     for row in rows:
         existing = str(row["content"])
         if existing.strip().lower() == content.strip().lower():
-            continue
+            return str(row["id"]), existing
         if is_conflicting(existing, content):
             continue
         score = semantic_similarity(existing, content)
@@ -142,7 +144,7 @@ def merge_memories(provider: Any, target_id: str, source_ids: list[str], content
             [*source_ids, *scope_params] if source_ids else [],
         ).fetchall()
     if target_row is None:
-        return {"merged": False, "error": "target_id not found", "target_id": target_id, "deleted": 0}
+        return {"merged": False, "error": "target_id not found", "target_id": target_id, "deleted": 0, "target": "", "scope_mode": ""}
     found_source_ids = {str(row["id"]) for row in source_rows}
     missing_source_ids = [memory_id for memory_id in source_ids if memory_id not in found_source_ids]
     if missing_source_ids:
@@ -154,7 +156,7 @@ def merge_memories(provider: Any, target_id: str, source_ids: list[str], content
             "deleted": 0,
         }
     if not source_rows and content is None:
-        return {"merged": False, "error": "source_ids or content is required", "target_id": target_id, "deleted": 0}
+        return {"merged": False, "error": "source_ids or content is required", "target_id": target_id, "deleted": 0, "target": str(target_row["target"]), "scope_mode": _row_scope_mode(provider, target_row)}
     target_scope_id = str(target_row["scope_id"])
     if any(str(row["scope_id"]) != target_scope_id for row in source_rows):
         return {
@@ -186,6 +188,9 @@ def merge_memories(provider: Any, target_id: str, source_ids: list[str], content
     return {
         "merged": True,
         "target_id": target_id,
+        "id": target_id,
+        "target": requested_target,
+        "scope_mode": requested_mode,
         "source_ids": delete_ids,
         "deleted": deleted,
         "summary": summary,
@@ -322,6 +327,13 @@ def dedupe_memories(provider: Any, *, dry_run: bool = True, scope_only: bool = T
 def repair_vector(provider: Any) -> dict[str, Any]:
     setup_vector_layer(provider)
     return {"repaired": provider._vector_status == "ready", "vector": stats_payload(provider)["vector"]}
+
+
+def hygiene_report(provider: Any, *, limit: int = 200) -> dict[str, Any]:
+    from .hygiene import build_hygiene_report
+
+    with provider._lock:
+        return build_hygiene_report(provider._require_conn(), vector_store=provider._vector_store, limit=limit)
 
 
 def stats_payload(provider: Any) -> dict[str, Any]:

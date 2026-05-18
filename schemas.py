@@ -71,6 +71,17 @@ SCOPE_RECALL_DEDUPE_SCHEMA = {
     },
 }
 
+SCOPE_RECALL_HYGIENE_SCHEMA = {
+    "name": "scope_recall_hygiene",
+    "description": "Build a read-only Scope Recall memory hygiene report. Operator-only: requires maintenance_tools_enabled=true.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "limit": {"type": "integer", "description": "Maximum examples per report category; default 200."},
+        },
+    },
+}
+
 SCOPE_RECALL_MERGE_SCHEMA = {
     "name": "scope_recall_merge",
     "description": "Merge one or more Scope Recall memories into a target memory.",

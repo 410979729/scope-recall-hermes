@@ -81,6 +81,23 @@ Most agent memory pain is not just "wrong memory was recalled". The bigger user-
 
 ---
 
+## Optional companion: turn-closure-audit
+
+`scope-recall` works as a standalone Hermes memory provider. You can install only this plugin and get scoped current-turn recall, SQLite truth storage, LanceDB companion retrieval, and local scratch isolation.
+
+For stricter post-turn knowledge governance, pair it with [`turn-closure-audit`](https://github.com/410979729/turn-closure-audit).
+
+The two plugins solve adjacent problems:
+
+| Plugin | Role |
+| --- | --- |
+| `scope-recall` | decides what memory should be recalled for the current turn |
+| `turn-closure-audit` | audits a completed turn and writes redacted review candidates when important knowledge may not have been retained |
+
+This pairing is useful for long-lived Hermes agents where you want both scoped recall during a conversation and conservative review after the turn ends. It is optional, not a runtime dependency.
+
+---
+
 ## Quick start
 
 ### Option A: Clone into a Hermes plugin directory
@@ -432,8 +449,19 @@ Operator-only maintenance tools are hidden from the default schema and require `
 ```text
 scope_recall_dedupe
 scope_recall_govern
+scope_recall_hygiene
 scope_recall_repair
 ```
+
+`scope_recall_hygiene` is read-only. It reports runtime-wrapper noise, assistant scratch prose, duplicate dedupe keys, very short/long rows, `general` rows present in the vector companion, likely promotion candidates, and likely delete candidates. It does not delete, merge, promote, or rewrite rows.
+
+For an offline SQLite report without exposing the maintenance tool to agents:
+
+```bash
+python scripts/report.hygiene.py --db "$HERMES_HOME/scope-recall/memory.sqlite3" --format markdown
+```
+
+Destructive cleanup is intentionally out-of-band: use the hygiene report first, then require an explicit operator decision before running any separate delete/merge/dedupe action. The shipped hygiene path is dry-run/report-only.
 
 `scope_recall_export` defaults to the current accessible scope set: local scratch scope plus shared durable scope. Passing `scope_only=false` is an operator maintenance action and fails closed unless `maintenance_tools_enabled=true`.
 
@@ -490,6 +518,7 @@ Example `scope_recall_stats` shape:
 | `scope_recall_merge` | Merge same-scope memories into a target row; shared/local mixing is rejected |
 | `scope_recall_export` | Export SQLite truth rows as JSON or JSONL; defaults to current accessible scope set |
 | `scope_recall_govern` | Operator-only: review tier distribution and decay/archive candidates |
+| `scope_recall_hygiene` | Operator-only, read-only: report memory-quality cleanup/promotion candidates without modifying rows |
 | `scope_recall_repair` | Operator-only: repair/rebuild the LanceDB companion from SQLite truth |
 | `scope_recall_stats` | Inspect storage, retrieval, scope, and vector health |
 

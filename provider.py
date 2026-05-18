@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from agent.memory_provider import MemoryProvider
 
 from .capture import enqueue_store, flush_writer, shutdown_writer, start_writer
+from .capture_filters import should_capture_text
 from .config import load_runtime_config, save_runtime_config
 from .embedders import BaseEmbedder
 from .gating import clean_text, config_bool, dedup_key, normalize_query, should_skip_retrieval
@@ -20,6 +21,7 @@ from .memory_ops import (
     export_memories,
     find_semantic_merge_candidate,
     govern_memories,
+    hygiene_report,
     merge_memories,
     repair_vector,
     stats_payload,
@@ -35,6 +37,7 @@ from .schemas import (
     SCOPE_RECALL_EXPORT_SCHEMA,
     SCOPE_RECALL_FORGET_SCHEMA,
     SCOPE_RECALL_GOVERN_SCHEMA,
+    SCOPE_RECALL_HYGIENE_SCHEMA,
     SCOPE_RECALL_MERGE_SCHEMA,
     SCOPE_RECALL_REPAIR_SCHEMA,
     SCOPE_RECALL_SEARCH_SCHEMA,
@@ -208,23 +211,27 @@ class ScopeRecallMemoryProvider(MemoryProvider):
 
         clean_user = self._clean_text(user_content)
         clean_assistant = self._clean_text(assistant_content)
-        min_capture = int(self._config_value("min_capture_length", 10))
+        min_capture = int(self._config_value("min_capture_length", 40))
+        user_filter = should_capture_text(clean_user, self._config)
+        assistant_filter = should_capture_text(clean_assistant, self._config)
 
         extracted = False
-        for candidate in extract_candidates(clean_user):
-            if len(candidate.content) < min_capture:
-                continue
-            enqueue_store(
-                self,
-                content=candidate.content,
-                source="turn-extracted",
-                target=candidate.target,
-                session_id=self._session_id,
-                metadata={"category": candidate.category, "confidence": candidate.confidence},
-            )
-            extracted = True
+        if user_filter.allowed:
+            for candidate in extract_candidates(clean_user):
+                candidate_min_capture = min(min_capture, 24) if candidate.target in {"user", "ops", "project"} else min_capture
+                if len(candidate.content) < candidate_min_capture:
+                    continue
+                enqueue_store(
+                    self,
+                    content=candidate.content,
+                    source="turn-extracted",
+                    target=candidate.target,
+                    session_id=self._session_id,
+                    metadata={"category": candidate.category, "confidence": candidate.confidence},
+                )
+                extracted = True
 
-        if len(clean_user) >= min_capture and not self._is_trivial(clean_user) and not extracted:
+        if user_filter.allowed and len(clean_user) >= min_capture and not extracted:
             enqueue_store(
                 self,
                 content=clean_user,
@@ -233,9 +240,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 session_id=self._session_id,
             )
         if (
-            config_bool(self._config, "capture_assistant", True)
+            config_bool(self._config, "capture_assistant", False)
+            and assistant_filter.allowed
             and len(clean_assistant) >= min_capture
-            and not self._is_trivial(clean_assistant)
         ):
             enqueue_store(
                 self,
@@ -298,7 +305,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             SCOPE_RECALL_STATS_SCHEMA,
         ]
         if config_bool(self._config, "maintenance_tools_enabled", False):
-            schemas.extend([SCOPE_RECALL_DEDUPE_SCHEMA, SCOPE_RECALL_GOVERN_SCHEMA, SCOPE_RECALL_REPAIR_SCHEMA])
+            schemas.extend([SCOPE_RECALL_DEDUPE_SCHEMA, SCOPE_RECALL_GOVERN_SCHEMA, SCOPE_RECALL_REPAIR_SCHEMA, SCOPE_RECALL_HYGIENE_SCHEMA])
         return schemas
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
@@ -369,6 +376,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
 
     def _repair_vector(self) -> dict[str, Any]:
         return repair_vector(self)
+
+    def _hygiene_report(self, *, limit: int = 200) -> dict[str, Any]:
+        return hygiene_report(self, limit=limit)
 
     def _search_vector_memories(self, query: str, *, limit: int) -> List[RecallItem]:
         return search_vector_memories(self, query, limit=limit)
