@@ -91,6 +91,7 @@ def render_markdown(report: dict[str, Any]) -> str:
     for target, count in (report.get("totals_by_target") or {}).items():
         lines.append(f"- {target}: {count}")
     categories = [
+        "fts_index",
         "runtime_wrapper_noise",
         "assistant_prose_rows",
         "duplicate_dedupe_keys",
@@ -102,6 +103,18 @@ def render_markdown(report: dict[str, Any]) -> str:
     ]
     for category in categories:
         payload = report.get(category) or {}
+        if category == "fts_index":
+            lines.extend([
+                "",
+                "## fts_index",
+                f"Healthy: {payload.get('healthy', False)}",
+                f"Memory rows: {payload.get('memory_rows', 0)}",
+                f"FTS rows: {payload.get('fts_rows', 0)}",
+                f"Stale FTS rows: {payload.get('stale_fts_rows', 0)}",
+                f"Missing FTS rows: {payload.get('missing_fts_rows', 0)}",
+                f"Duplicate FTS extra rows: {payload.get('duplicate_fts_extra_rows', 0)}",
+            ])
+            continue
         lines.extend(["", f"## {category}", f"Count: {payload.get('count', 0)}"])
         for item in payload.get("items", [])[:10]:
             preview = item.get("preview") or item.get("dedup_key") or item.get("id") or ""

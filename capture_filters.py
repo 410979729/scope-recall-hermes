@@ -17,6 +17,9 @@ DEFAULT_CAPTURE_SKIP_PATTERNS: tuple[str, ...] = (
     r"^\[Recent Telegram chat history",
     r"^\[CONTEXT COMPACTION",
     r"Earlier turns were compacted into the summary below",
+    r"Conversation continues after context compression",
+    r"^## Active Task(?:\n|\r|$)",
+    r"^## Remaining Work(?:\n|\r|$)",
     r"^Review the conversation above and update the skill library",
     r"call the memory tool .*output only the raw json",
     r"reply with ok and nothing else",
@@ -44,16 +47,29 @@ def contains_secret_like_text(text: str) -> bool:
 
 
 def _configured_patterns(config: dict[str, Any] | None) -> tuple[str, ...]:
+    """Return additive safety skip patterns plus operator-configured patterns.
+
+    Runtime wrapper and secret-hygiene patterns are safety gates, not ordinary
+    preferences. Keep the built-in gates active even when an older config.json
+    carries its own capture_skip_patterns list from a previous release.
+    """
+    patterns = list(DEFAULT_CAPTURE_SKIP_PATTERNS)
     if not config:
-        return DEFAULT_CAPTURE_SKIP_PATTERNS
+        return tuple(patterns)
     raw = config.get("capture_skip_patterns")
+    configured: tuple[str, ...]
     if not raw:
-        return DEFAULT_CAPTURE_SKIP_PATTERNS
-    if isinstance(raw, str):
-        return (raw,)
-    if isinstance(raw, (list, tuple)):
-        return tuple(str(item) for item in raw if str(item).strip())
-    return DEFAULT_CAPTURE_SKIP_PATTERNS
+        configured = ()
+    elif isinstance(raw, str):
+        configured = (raw,)
+    elif isinstance(raw, (list, tuple)):
+        configured = tuple(str(item) for item in raw if str(item).strip())
+    else:
+        configured = ()
+    for pattern in configured:
+        if pattern not in patterns:
+            patterns.append(pattern)
+    return tuple(patterns)
 
 
 def should_capture_text(text: Any, config: dict[str, Any] | None = None) -> CaptureFilterResult:

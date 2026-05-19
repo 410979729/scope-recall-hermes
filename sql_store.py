@@ -75,11 +75,70 @@ def ensure_memory_columns(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_scope_recall_target_updated ON memories(target, updated_at DESC)")
 
 
-def rebuild_fts_if_empty(conn: sqlite3.Connection) -> None:
-    memory_count = int(conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0])
-    fts_count = int(conn.execute("SELECT COUNT(*) FROM memories_fts").fetchone()[0])
-    if memory_count and fts_count == 0:
+def _fts_counts(conn: sqlite3.Connection) -> dict[str, int | bool]:
+    memory_rows = int(conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0])
+    fts_rows = int(conn.execute("SELECT COUNT(*) FROM memories_fts").fetchone()[0])
+    stale_fts_rows = int(
+        conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM memories_fts AS f
+            LEFT JOIN memories AS m ON m.id = f.memory_id
+            WHERE m.id IS NULL
+            """
+        ).fetchone()[0]
+    )
+    missing_fts_rows = int(
+        conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM memories AS m
+            LEFT JOIN memories_fts AS f ON f.memory_id = m.id
+            WHERE f.memory_id IS NULL
+            """
+        ).fetchone()[0]
+    )
+    duplicate_fts_extra_rows = int(
+        conn.execute(
+            """
+            SELECT COALESCE(SUM(extra), 0)
+            FROM (
+                SELECT COUNT(*) - 1 AS extra
+                FROM memories_fts
+                GROUP BY memory_id
+                HAVING COUNT(*) > 1
+            )
+            """
+        ).fetchone()[0]
+    )
+    healthy = stale_fts_rows == 0 and missing_fts_rows == 0 and duplicate_fts_extra_rows == 0 and fts_rows == memory_rows
+    return {
+        "memory_rows": memory_rows,
+        "fts_rows": fts_rows,
+        "stale_fts_rows": stale_fts_rows,
+        "missing_fts_rows": missing_fts_rows,
+        "duplicate_fts_extra_rows": duplicate_fts_extra_rows,
+        "healthy": healthy,
+    }
+
+
+def fts_integrity_report(conn: sqlite3.Connection) -> dict[str, int | bool]:
+    return _fts_counts(conn)
+
+
+def reconcile_fts_index(conn: sqlite3.Connection) -> dict[str, Any]:
+    before = _fts_counts(conn)
+    needs_rebuild = not bool(before["healthy"])
+    if needs_rebuild:
+        conn.execute("DELETE FROM memories_fts")
         conn.execute("INSERT INTO memories_fts(memory_id, content, summary) SELECT id, content, summary FROM memories")
+        conn.commit()
+    after = _fts_counts(conn)
+    return {"rebuilt": needs_rebuild, "before": before, "after": after}
+
+
+def rebuild_fts_if_empty(conn: sqlite3.Connection) -> None:
+    reconcile_fts_index(conn)
 
 
 def now_iso() -> str:

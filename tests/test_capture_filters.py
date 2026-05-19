@@ -31,6 +31,20 @@ def test_secret_like_text_is_rejected():
     assert result.reason == "secret-like-content"
 
 
+def test_continuation_handoff_line_is_rejected():
+    result = should_capture_text("Conversation continues after context compression. Resume the active task from the summary.")
+
+    assert result.allowed is False
+    assert "Conversation continues after context compression" in result.reason
+
+
+def test_context_compaction_active_task_payload_is_rejected():
+    result = should_capture_text("## Active Task\n审计 LanceDB/vector 同步、重复与检索质量\n\n## Remaining Work\n进一步优化内容卫生处理")
+
+    assert result.allowed is False
+    assert "Active Task" in result.reason
+
+
 def test_ordinary_memory_fact_is_allowed():
     result = should_capture_text("Joy prefers read-only SQLite viewers for inspecting live memory databases.")
 

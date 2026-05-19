@@ -59,5 +59,34 @@ def test_build_hygiene_report_is_read_only_and_flags_quality_categories():
     assert report["very_short_rows"]["count"] >= 1
     assert report["very_long_rows"]["count"] == 1
     assert report["general_vector_rows"]["count"] == 1
+    assert report["fts_index"]["memory_rows"] == 7
+    assert report["fts_index"]["fts_rows"] == 7
+    assert report["fts_index"]["stale_fts_rows"] == 0
+    assert report["fts_index"]["missing_fts_rows"] == 0
+    assert report["fts_index"]["duplicate_fts_extra_rows"] == 0
     assert any(item["id"] == "promote-1" for item in report["likely_promotion_candidates"]["items"])
     assert {item["id"] for item in report["likely_delete_candidates"]["items"]} >= {"noise-1", "assistant-1"}
+
+
+def test_build_hygiene_report_surfaces_stale_missing_and_duplicate_fts_rows():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    _insert(conn, memory_id="memory-1", target="memory", content="durable memory row")
+    _insert(conn, memory_id="memory-2", target="memory", content="another durable memory row")
+    conn.execute("INSERT INTO memories_fts(memory_id, content, summary) VALUES (?, ?, ?)", ("stale-1", "stale", "stale"))
+    conn.execute("INSERT INTO memories_fts(memory_id, content, summary) VALUES (?, ?, ?)", ("memory-1", "duplicate", "duplicate"))
+    conn.execute("DELETE FROM memories_fts WHERE memory_id = ?", ("memory-2",))
+    conn.commit()
+
+    before = conn.total_changes
+    report = build_hygiene_report(conn)
+    after = conn.total_changes
+
+    assert after == before
+    assert report["fts_index"]["memory_rows"] == 2
+    assert report["fts_index"]["fts_rows"] == 3
+    assert report["fts_index"]["stale_fts_rows"] == 1
+    assert report["fts_index"]["missing_fts_rows"] == 1
+    assert report["fts_index"]["duplicate_fts_extra_rows"] == 1
+    assert report["fts_index"]["healthy"] is False

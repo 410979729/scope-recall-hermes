@@ -6,6 +6,7 @@ from typing import Any
 from .capture_filters import should_capture_text
 from .gating import compact_text
 from .governance import extract_candidates
+from .sql_store import fts_integrity_report
 
 VERY_SHORT_CHARS = 12
 VERY_LONG_CHARS = 2500
@@ -132,6 +133,7 @@ def build_hygiene_report(conn: Any, vector_store: Any = None, limit: int = 200) 
     return {
         "total_rows": len(rows),
         "totals_by_target": dict(sorted(totals_by_target.items())),
+        "fts_index": fts_integrity_report(conn),
         "runtime_wrapper_noise": _limited(runtime_noise, limit),
         "assistant_prose_rows": _limited(assistant_rows, limit),
         "duplicate_dedupe_keys": _limited(duplicate_groups, limit),

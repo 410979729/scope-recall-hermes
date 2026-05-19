@@ -49,6 +49,18 @@ def test_sync_turn_accepts_structured_content(provider):
     assert "uv run" in result.lower()
 
 
+def test_sync_turn_rejects_context_handoff_payload_from_loaded_config(provider):
+    provider.sync_turn(
+        "## Active Task\n审计 LanceDB/vector 同步、重复与检索质量\n\n## Remaining Work\n进一步优化内容卫生处理",
+        "Got it.",
+    )
+    provider.flush(timeout=2.0)
+
+    with provider._lock:
+        count = provider._require_conn().execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+    assert count == 0
+
+
 def test_prefetch_uses_current_turn_query_not_previous_prefetch(provider):
     provider.sync_turn(
         "We deploy services with uv run and restart the gateway after model changes.",
