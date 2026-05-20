@@ -52,7 +52,7 @@ This was necessary to avoid cross-group/topic memory bleed in gateway deployment
 
 ### 4. Default embedding path
 
-OpenClaw historical stores observed here use 3072-dimensional embedding vectors.
+Some OpenClaw `memory-lancedb-pro` stores use 3072-dimensional embedding vectors.
 
 `scope-recall` now ships with a configured default that targets a 3072-dimensional Gemini OpenAI-compatible embedding endpoint, while still retaining an offline `local-hash` fallback when that API path is unavailable.
 

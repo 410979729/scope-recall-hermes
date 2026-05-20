@@ -156,7 +156,7 @@ The shipped runtime config now targets a hosted embedder by default:
 - model: `gemini-embedding-001`
 - dimensions: `3072`
 
-That matches the current production-quality path used in this Hermes instance.
+That is the recommended high-quality hosted path for deployments that provide credentials.
 
 ### Runtime fallback: local-hash
 
@@ -279,6 +279,7 @@ Operator-only maintenance tools require `maintenance_tools_enabled=true` and fai
 
 - `scope_recall_dedupe`
 - `scope_recall_govern`
+- `scope_recall_hygiene`
 - `scope_recall_repair`
 - `scope_recall_export(scope_only=false)`
 
@@ -299,7 +300,7 @@ For V1 release/publish, keep these gates green:
 
 What is already real now:
 
-- plugin skeleton exists under `$HERMES_HOME/plugins/scope-recall`
+- plugin source is packaged as an unpacked Hermes plugin under `$HERMES_HOME/plugins/scope-recall`
 - SQLite truth layer exists
 - LanceDB companion layer exists
 - hybrid retrieval path exists
@@ -314,4 +315,4 @@ What is already real now:
 What remains outside source-tree readiness:
 
 - live Hermes gateway freshness still requires a restart/reload plus runtime smoke verification after deployment
-- GitHub publication requires pushing a clean commit, waiting for remote CI, and creating the `v1.0.3` tag/release
+- publishing a new release requires pushing a clean commit, waiting for remote CI, and creating or updating the appropriate next version tag/release according to the existing version line

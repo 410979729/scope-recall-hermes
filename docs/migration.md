@@ -27,7 +27,7 @@ This is **not automatic**.
 
 OpenClaw historical memory stores are not drop-in compatible with `scope-recall` because they use a different schema and different truth assumptions.
 
-Observed upstream LanceDB table shape in this environment:
+Known OpenClaw LanceDB source rows commonly include fields such as:
 
 - `id`
 - `text`

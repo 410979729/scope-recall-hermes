@@ -8,6 +8,11 @@ All notable changes to `scope-recall` will be documented in this file.
 - Reject generic `[System note: ...]` gateway/runtime wrappers, interrupted-turn recovery prompts, and preserved task-list wrappers before they can enter automatic capture or manual write surfaces.
 - Added regression coverage for the stale restored-message failure mode where an interrupted-turn system note could preserve an older user request and contaminate recall.
 - Tightened hybrid vector-only automatic recall so mid-confidence semantic-neighbor drift does not inject unrelated durable memories when there is no lexical evidence.
+- Added regression coverage for length-framed scope identifiers so delimiter-bearing `user_id` values cannot collide with split `user_id` + `chat_id` scope components.
+- Added regression coverage for operator `scope_recall_dedupe(scope_only=false)` to ensure cross-scope duplicate cleanup matches the documented maintenance-tool semantics.
+
+### Changed
+- Strengthened public README/DESIGN/migration wording around Scope Recall's quality promises, scope-isolation boundary, and release/publication boundaries without changing the 1.0.3 version line.
 
 ## [1.0.3] - 2026-05-20
 

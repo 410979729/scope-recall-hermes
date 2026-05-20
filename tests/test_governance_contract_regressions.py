@@ -16,7 +16,7 @@ def _write_scope_recall_config(hermes_home: Path, values: dict) -> None:
     config_path.write_text(json.dumps(values, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def _provider(tmp_path: Path, *, user_id: str = "joy", config: dict | None = None):
+def _provider(tmp_path: Path, *, user_id: str = "joy", chat_id: str = "chat-a", config: dict | None = None):
     plugin_home = tmp_path / "plugins"
     plugin_home.mkdir(parents=True, exist_ok=True)
     plugin_link = plugin_home / "scope-recall"
@@ -35,7 +35,7 @@ def _provider(tmp_path: Path, *, user_id: str = "joy", config: dict | None = Non
         hermes_home=str(tmp_path),
         platform="telegram",
         user_id=user_id,
-        chat_id="chat-a",
+        chat_id=chat_id,
         agent_context="primary",
         agent_identity="yuheng",
         agent_workspace="hermes",
@@ -189,3 +189,59 @@ def test_import_fingerprint_is_stable_for_missing_or_invalid_timestamps():
     bad_second = importer.map_row(row_bad_ts, "imported.test")
     assert bad_first.id == bad_second.id
     assert bad_first.import_fingerprint == bad_second.import_fingerprint
+
+
+def test_scope_id_uses_length_framing_to_prevent_delimiter_collisions():
+    from scope_recall.models import RuntimeScope
+    from scope_recall.scope import build_scope_id
+
+    with_delimiter = RuntimeScope(
+        platform="telegram",
+        agent_workspace="hermes",
+        agent_identity="yuheng",
+        user_id="joy|chat:group-1",
+    )
+    split_fields = RuntimeScope(
+        platform="telegram",
+        agent_workspace="hermes",
+        agent_identity="yuheng",
+        user_id="joy",
+        chat_id="group-1",
+    )
+
+    assert build_scope_id(with_delimiter) != build_scope_id(split_fields)
+
+
+def test_operator_dedupe_scope_only_false_covers_all_scopes(tmp_path):
+    provider_a = _provider(tmp_path, config={"maintenance_tools_enabled": True})
+    provider_b = _provider(tmp_path, chat_id="chat-b", config={"maintenance_tools_enabled": True})
+
+    try:
+        for provider in (provider_a, provider_b):
+            provider._store_now(
+                content="duplicate operator cleanup note",
+                source="legacy",
+                target="general",
+                session_id="legacy",
+                allow_duplicate=True,
+                semantic_merge=False,
+            )
+            provider._store_now(
+                content="duplicate operator cleanup note",
+                source="legacy",
+                target="general",
+                session_id="legacy",
+                allow_duplicate=True,
+                semantic_merge=False,
+            )
+
+        before = json.loads(provider_a.handle_tool_call("scope_recall_dedupe", {"dry_run": True, "scope_only": False}))
+        result = json.loads(provider_a.handle_tool_call("scope_recall_dedupe", {"dry_run": False, "scope_only": False}))
+        after = json.loads(provider_a.handle_tool_call("scope_recall_dedupe", {"dry_run": True, "scope_only": False}))
+    finally:
+        provider_a.shutdown()
+        provider_b.shutdown()
+
+    assert before["duplicate_groups"] == 2
+    assert result["deleted"] == 2
+    assert after["duplicate_groups"] == 0

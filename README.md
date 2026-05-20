@@ -27,6 +27,15 @@ It uses a **two-layer design**:
 
 This replaces the old `lancepro` naming, which was misleading because the earlier implementation was SQLite-only.
 
+### Design promises
+
+- **Truth stays inspectable**: SQLite remains the authoritative store; vectors are rebuildable.
+- **Recall is current-turn scoped**: retrieval is based on the active query, not stale queued context from the previous topic.
+- **Durable memory travels deliberately**: `user`, `memory`, `project`, and `ops` facts can follow the same user + agent identity across windows/chats.
+- **Scratch context stays local**: raw `general` turn captures stay inside the current chat/thread/session boundary.
+- **Operator actions fail closed**: cross-scope export/dedupe/govern/repair paths require explicit maintenance mode.
+- **Install remains practical**: hosted embeddings are used when configured, while deterministic `local-hash` keeps no-key bootstrap available.
+
 ---
 
 ## Why scope-recall?
@@ -389,7 +398,7 @@ Scope is built from:
 - otherwise `chat_id`
 - plus `thread_id` when present
 
-This prevents the same user from leaking memories across different groups, chats, or topics.
+This prevents raw identifiers containing delimiters from colliding with split scope fields, and preserves the intended split: durable facts can move with the same user + agent identity, while local scratch rows do not leak across different groups, chats, sessions, or topics.
 
 ### Vector repair and stats
 
@@ -667,6 +676,8 @@ Current focused regression coverage includes:
 - vector delete/upsert failure preserves SQLite truth and marks vector status `needs_repair`
 - vector search failure degrades to lexical recall and marks vector status `needs_repair`
 - write-time exact dedupe prevents repeat SQLite rows for the same normalized content in the same scope/target
+- length-framed scope identifiers prevent delimiter-collision between user/chat/thread/session components
+- operator `scope_recall_dedupe(scope_only=false)` covers duplicate groups across all scopes while ordinary scoped actions remain bounded to the current accessible scope set
 - capture filtering blocks known maintenance prompts, trivial replies, obvious secret-bearing text, and overlong prompt blocks
 - semantic near-duplicate merge and conflict preservation
 - rules-based smart extraction from user turns into preference / ops / project fact memories
