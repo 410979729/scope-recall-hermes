@@ -4,6 +4,17 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-05-20
+
+### Added
+- Added structured memory classification metadata for new writes, including category, tier, kind, lifecycle, authority, confidence, sensitivity, expiry, entity, tag, and scope-mode fields.
+- Added FTS hygiene repair coverage so missing, stale, or duplicate SQLite FTS rows are detected and repaired deterministically.
+- Added hygiene-report coverage for structured metadata presence and release-time regression coverage for the expanded governance layer.
+
+### Changed
+- Isolated the default Gemini embedding credential to `SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY`, avoiding accidental reuse of general OpenAI or Google API keys.
+- Kept the OpenAI-compatible Gemini endpoint as the hosted default while retaining `local-hash` as the no-credential fallback.
+
 ## [1.0.2] - 2026-05-18
 
 ### Added

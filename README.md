@@ -18,7 +18,7 @@ Current-turn recall · Permanent shared memory · Local scratch scopes · SQLite
 
 `scope-recall` is a Hermes local memory provider built for **current-turn recall** and **permanent semantic memory**. Durable user/project/ops/memory facts are shared across windows/chats for the same user + agent identity; raw general turn captures stay local to the current chat/thread/session.
 
-Version `1.0.2` is the memory-quality governance patch release for the documented V1 interfaces, packaged as a public release candidate for broader field testing. It keeps the V1 compatibility contract in [`docs/stability.md`](docs/stability.md) while adding conservative capture hygiene, write receipts, curated-memory controls, and stable import fingerprints.
+Version `1.0.3` is the structured-governance and embedding-credential isolation patch release for the documented V1 interfaces, packaged as a public release candidate for broader field testing. It keeps the V1 compatibility contract in [`docs/stability.md`](docs/stability.md) while adding structured classification metadata, FTS hygiene repair coverage, and a dedicated Gemini embedding credential environment variable.
 
 It uses a **two-layer design**:
 
@@ -166,7 +166,7 @@ Minimal default shape:
       "provider": "openai-compatible",
       "model": "gemini-embedding-001",
       "dimensions": 3072,
-      "api_key_env": ["OPENAI_API_KEY", "GOOGLE_API_KEY"],
+      "api_key_env": ["SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY"],
       "base_url": "https://generativelanguage.googleapis.com/v1beta/openai"
     },
     "fallback_embedder": {
@@ -595,7 +595,7 @@ python scripts/repair.vector_index.py --hermes-home "$HERMES_HOME"
 
 ### Hosted embeddings are unavailable
 
-The provider should degrade to `local-hash`. That keeps the system usable but lowers semantic quality. Set `GOOGLE_API_KEY` or `OPENAI_API_KEY` in your private environment to use the configured hosted path.
+The provider should degrade to `local-hash`. That keeps the system usable but lowers semantic quality. Set `SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY` in your private environment to use the configured hosted path.
 
 ### OpenClaw `.lance` data does not appear automatically
 

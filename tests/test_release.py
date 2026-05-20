@@ -31,8 +31,7 @@ def test_default_embedder_targets_gemini_openai_compatible_api():
             "model": "gemini-embedding-001",
             "dimensions": 3072,
             "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-            "api_key_env": ["OPENAI_API_KEY", "GOOGLE_API_KEY"],
-            "base_url_env": ["GEMINI_BASE_URL", "OPENAI_BASE_URL"],
+            "api_key_env": ["SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY"],
         }
     )
     info = embedder.describe()

@@ -288,7 +288,7 @@ Subagents do not get tool schemas and cannot use them.
 
 For V1 release/publish, keep these gates green:
 
-1. package and plugin metadata stay on `1.0.2` until the next patch release
+1. package and plugin metadata stay on `1.0.3` until the next patch release
 2. public maturity wording remains beta / release-candidate until broader field testing justifies a production-stable classifier
 3. README, DESIGN, CHANGELOG, stability contract, migration docs, and upstream-difference docs stay in sync
 4. local release gate passes with `python scripts/check.release.py`
@@ -314,4 +314,4 @@ What is already real now:
 What remains outside source-tree readiness:
 
 - live Hermes gateway freshness still requires a restart/reload plus runtime smoke verification after deployment
-- GitHub publication requires pushing a clean commit, waiting for remote CI, and creating the `v1.0.2` tag/release
+- GitHub publication requires pushing a clean commit, waiting for remote CI, and creating the `v1.0.3` tag/release
