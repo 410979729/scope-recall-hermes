@@ -2,11 +2,21 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
-## [Unreleased]
+## [1.0.6] - 2026-06-01
 
-### Fixed
+### Added
+- Added `capture_llm` module: LLM-powered semantic extraction of user+assistant turns into classified durable memory (preference, workflow, pitfall, decision, etc.) with user-configurable model and endpoint.
+- Added `capture_llm` configuration block (`capture_llm.enabled`, `capture_llm.model`, `capture_llm.base_url`, etc.) with safe defaults (disabled by default, requires API key).
+- LLM extraction runs in `sync_turn` before legacy regex extraction; if LLM succeeds, regex and raw-user fallback are skipped to avoid noise.
+- LLM extraction preserves entity and tag metadata on stored candidates for better recall targeting.
+
+### Changed
+- `sync_turn` now has a four-tier capture pipeline: LLM semantic extraction → regex extraction → raw user capture → raw assistant capture (legacy).
+- Bumped package, plugin, and release-check metadata to `1.0.6`.
 - Synced public README/stability/OpenClaw comparison wording with the v1.0.4/v1.0.5 entity, feedback, and nightly digest features.
 - Extended the public `scope_recall_store` tool schema `memory_type` enum to include workflow-oriented digest types already accepted by the governance layer.
+
+## [Unreleased]
 
 ## [1.0.5] - 2026-06-01
 

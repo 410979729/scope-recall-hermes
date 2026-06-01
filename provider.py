@@ -11,6 +11,7 @@ from agent.memory_provider import MemoryProvider
 
 from .capture import enqueue_store, flush_writer, shutdown_writer, start_writer
 from .capture_filters import should_capture_text
+from .capture_llm import extract_capture_candidates
 from .config import load_runtime_config, save_runtime_config
 from .embedders import BaseEmbedder
 from .gating import clean_text, config_bool, dedup_key, normalize_query, should_skip_retrieval
@@ -120,6 +121,17 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 "choices": ["true", "false"],
             },
             {
+                "key": "capture_llm.enabled",
+                "description": "Use LLM to extract user+assistant turns into structured memory (requires API key)",
+                "default": "false",
+                "choices": ["true", "false"],
+            },
+            {
+                "key": "capture_llm.model",
+                "description": "LLM model for capture extraction (OpenAI-compatible)",
+                "default": "gpt-4o-mini",
+            },
+            {
                 "key": "vector.enabled",
                 "description": "Enable LanceDB vector companion layer",
                 "default": "true",
@@ -224,8 +236,41 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         user_filter = should_capture_text(clean_user, self._config)
         assistant_filter = should_capture_text(clean_assistant, self._config)
 
+        # ── LLM semantic extraction (preferred when enabled) ──
+        llm_extracted = False
+        capture_llm_config = self._config.get("capture_llm")
+        if isinstance(capture_llm_config, dict) and (
+            capture_llm_config.get("enabled") in (True, "true", "1", "yes", "on")
+        ):
+            min_user = int(capture_llm_config.get("min_user_chars", 20))
+            min_asst = int(capture_llm_config.get("min_assistant_chars", 30))
+            if (
+                user_filter.allowed
+                and len(clean_user) >= min_user
+                and assistant_filter.allowed
+                and len(clean_assistant) >= min_asst
+            ):
+                for candidate in extract_capture_candidates(clean_user, clean_assistant, self._config):
+                    if len(candidate.content) < 12:
+                        continue
+                    enqueue_store(
+                        self,
+                        content=candidate.content,
+                        source="turn-llm-extracted",
+                        target=candidate.target,
+                        session_id=self._session_id,
+                        metadata={
+                            "category": candidate.memory_type,
+                            "confidence": candidate.confidence,
+                            "entities": candidate.entities,
+                            "tags": candidate.tags,
+                        },
+                    )
+                    llm_extracted = True
+
+        # ── Regex extraction (legacy fallback) ──
         extracted = False
-        if user_filter.allowed:
+        if not llm_extracted and user_filter.allowed:
             for candidate in extract_candidates(clean_user):
                 candidate_min_capture = min(min_capture, 24) if candidate.target in {"user", "ops", "project"} else min_capture
                 if len(candidate.content) < candidate_min_capture:
@@ -240,7 +285,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 )
                 extracted = True
 
-        if user_filter.allowed and len(clean_user) >= min_capture and not extracted:
+        # ── Raw user capture (last-resort fallback) ──
+        if not llm_extracted and user_filter.allowed and len(clean_user) >= min_capture and not extracted:
             enqueue_store(
                 self,
                 content=clean_user,
@@ -248,8 +294,11 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 target="general",
                 session_id=self._session_id,
             )
+
+        # ── Raw assistant capture (legacy, only when LLM not used) ──
         if (
-            config_bool(self._config, "capture_assistant", False)
+            not llm_extracted
+            and config_bool(self._config, "capture_assistant", False)
             and assistant_filter.allowed
             and len(clean_assistant) >= min_capture
         ):

@@ -72,9 +72,37 @@ def _configured_patterns(config: dict[str, Any] | None) -> tuple[str, ...]:
     else:
         configured = ()
     for pattern in configured:
-        if pattern not in patterns:
-            patterns.append(pattern)
+        normalized = _normalize_skip_pattern(pattern)
+        if normalized and normalized not in patterns:
+            patterns.append(normalized)
     return tuple(patterns)
+
+
+def _normalize_skip_pattern(pattern: str) -> str:
+    """Fix common config escaping mistakes so patterns actually match.
+
+    Hermes config UI stores patterns through JSON serialization, which can
+    cause patterns like ``^[CONTEXT`` to become doubly-escaped ``^\\\\[CONTEXT``
+    after a full save/load round-trip.  This function detects and repairs the
+    most common breakage: double backslashes before regex meta-characters.
+    """
+    if not pattern:
+        return ""
+    # Try as-is first
+    try:
+        re.compile(pattern)
+        return pattern  # valid regex already
+    except re.error:
+        pass
+    # Common fix: compress double backslashes to single before meta chars
+    repaired = re.sub(r"\\\\(?=[\\\[\](){}.*+?|^$])", r"\\", pattern)
+    if repaired == pattern:
+        return ""  # unfixable, discard
+    try:
+        re.compile(repaired)
+        return repaired
+    except re.error:
+        return ""  # still broken after repair, discard
 
 
 def should_capture_text(text: Any, config: dict[str, Any] | None = None) -> CaptureFilterResult:
