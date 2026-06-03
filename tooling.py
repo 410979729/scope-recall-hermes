@@ -48,6 +48,9 @@ class ScopeRecallToolService:
             "scope_recall_hygiene": self._handle_hygiene,
             "scope_recall_repair": self._handle_repair,
             "scope_recall_stats": self._handle_stats,
+            "scope_recall_inspect": self._handle_inspect,
+            "scope_recall_explain": self._handle_explain,
+            "scope_recall_benchmark": self._handle_benchmark,
         }
         handler = handlers.get(normalized)
         if handler is None:
@@ -296,6 +299,33 @@ class ScopeRecallToolService:
     def _handle_stats(self, args: dict[str, Any]) -> str:
         del args
         return self._json(self.provider._stats_payload())
+
+    def _handle_inspect(self, args: dict[str, Any]) -> str:
+        memory_id = str(args.get("id") or "").strip()
+        if not memory_id:
+            return tool_error("id is required")
+        return self._json(self.provider._inspect_memory(memory_id=memory_id))
+
+    def _handle_explain(self, args: dict[str, Any]) -> str:
+        query = self._clean_query(args)
+        if not query:
+            return tool_error("query is required")
+        return self._json(self.provider._explain_query(query=query, limit=self._limit(args)))
+
+    def _handle_benchmark(self, args: dict[str, Any]) -> str:
+        raw_queries = args.get("queries") or []
+        if isinstance(raw_queries, str):
+            queries = [raw_queries]
+        elif isinstance(raw_queries, list):
+            queries = [str(query) for query in raw_queries]
+        else:
+            queries = []
+        char_limit = int(self.provider._config_value("query_char_limit", 1000))
+        queries = [self.provider._normalize_query(query, char_limit) for query in queries]
+        queries = [query for query in queries if query]
+        if not queries:
+            return tool_error("queries is required")
+        return self._json(self.provider._benchmark_queries(queries=queries, limit=self._limit(args)))
 
     def _clean_query(self, args: dict[str, Any]) -> str:
         return self.provider._normalize_query(

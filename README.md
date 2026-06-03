@@ -18,7 +18,7 @@ Current-turn recall · Permanent shared memory · Nightly workflow digest · Loc
 
 `scope-recall` is a Hermes local memory provider built for **current-turn recall** and **permanent semantic memory**. Durable user/project/ops/memory facts are shared across windows/chats for the same user + agent identity; raw general turn captures stay local to the current chat/thread/session.
 
-Version `1.0.5` is the nightly digest release for the documented V1 interfaces, packaged as a public release candidate for broader field testing. It keeps the V1 compatibility contract in [`docs/stability.md`](docs/stability.md) while adding a profile-scoped daily conversation digest that can promote task workflows, tool-chain summaries, and important daily facts into SQLite truth without storing raw system/tool output.
+Version `1.0.7` continues the first stable V1 release line for the documented interfaces, packaged as a public release candidate for broader field testing. It keeps the V1 compatibility contract in [`docs/stability.md`](docs/stability.md) while adding BM25 final-score fusion, Chinese entity extraction, temporal decay, source-trust priors, contradiction relations, shared-pool observability, and inspect/explain/benchmark tools without storing raw system/tool output.
 
 It uses a **two-layer design**:
 
@@ -471,6 +471,9 @@ scope_recall_update
 scope_recall_merge
 scope_recall_export
 scope_recall_stats
+scope_recall_inspect
+scope_recall_explain
+scope_recall_benchmark
 ```
 
 Operator-only maintenance tools are hidden from the default schema and require `maintenance_tools_enabled=true`:
@@ -668,13 +671,19 @@ See [`docs/stability.md`](docs/stability.md) for the exact V1 compatibility and 
 
 ## Release and verification
 
-The public release gate is intentionally the same script used by GitHub Actions:
+The public release gate is intentionally the same script used by GitHub Actions. Run it from a Hermes-compatible Python environment so plugin-loader imports and LanceDB/pyarrow dependencies match the runtime:
 
 ```bash
-python -m pytest -q
-python scripts/check.release.py
-python scripts/repair.vector_index.py --hermes-home "$HERMES_HOME" --dry-run
+cd /path/to/scope-recall
+PYTHONPATH=/path/to/hermes-agent:/path/to/scope-recall \
+  /path/to/hermes-agent/venv/bin/python -m pytest -q
+PYTHONPATH=/path/to/hermes-agent:/path/to/scope-recall \
+  /path/to/hermes-agent/venv/bin/python scripts/check.release.py
+/path/to/hermes-agent/venv/bin/python scripts/doctor.py --source-root /path/to/scope-recall --hermes-home "$HERMES_HOME"
+/path/to/hermes-agent/venv/bin/python scripts/repair.vector_index.py --hermes-home "$HERMES_HOME" --dry-run
 ```
+
+Plain `pytest` from an unrelated Python environment is not a valid release signal: it can miss Hermes' `plugins.memory` loader path or the vector dependencies (`lancedb`, `pyarrow`) even when the checked-in plugin is healthy.
 
 Release publishing is tag-driven: `.github/workflows/release.yml` can create a GitHub Release for a `v*` tag and populate notes from the matching `CHANGELOG.md` entry.
 

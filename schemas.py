@@ -166,6 +166,44 @@ SCOPE_RECALL_STATS_SCHEMA = {
     "parameters": {"type": "object", "properties": {}},
 }
 
+SCOPE_RECALL_INSPECT_SCHEMA = {
+    "name": "scope_recall_inspect",
+    "description": "Inspect one Scope Recall row with metadata, feedback, and relation evidence.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "description": "Memory id to inspect."},
+        },
+        "required": ["id"],
+    },
+}
+
+SCOPE_RECALL_EXPLAIN_SCHEMA = {
+    "name": "scope_recall_explain",
+    "description": "Explain Scope Recall retrieval results with lexical, BM25, vector, decay, and trust components.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Query to explain."},
+            "limit": {"type": "integer", "description": "Maximum results to explain."},
+        },
+        "required": ["query"],
+    },
+}
+
+SCOPE_RECALL_BENCHMARK_SCHEMA = {
+    "name": "scope_recall_benchmark",
+    "description": "Run read-only Scope Recall query latency smoke checks.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "queries": {"type": "array", "items": {"type": "string"}, "description": "Queries to benchmark."},
+            "limit": {"type": "integer", "description": "Maximum results per query."},
+        },
+        "required": ["queries"],
+    },
+}
+
 SCOPE_RECALL_CONTEXT_SCHEMA = {
     "name": "scope_recall_context",
     "description": "Build a compact task-relevant memory context block plus structured evidence for a query.",

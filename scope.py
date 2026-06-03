@@ -26,6 +26,26 @@ def build_shared_scope_id(scope: RuntimeScope) -> str:
     )
 
 
+def build_shared_pool_scope_id(scope: RuntimeScope, pool_id: str) -> str:
+    """Return an optional cross-agent shared pool scope for one user/workspace.
+
+    Unlike ``build_shared_scope_id()``, this deliberately excludes
+    ``agent_identity``. It is opt-in via config and therefore acts as groundwork
+    for a future shared memory pool without changing the default isolation model.
+    """
+
+    normalized_pool = str(pool_id or "default").strip() or "default"
+    return "|".join(
+        [
+            _scope_component("pool", normalized_pool),
+            _scope_component("platform", scope.platform or "cli"),
+            _scope_component("workspace", scope.agent_workspace or "default"),
+            _scope_component("user", scope.user_id or "local"),
+        ]
+    )
+
+
+
 def build_scope_id(scope: RuntimeScope) -> str:
     parts = [build_shared_scope_id(scope)]
     if scope.gateway_session_key:

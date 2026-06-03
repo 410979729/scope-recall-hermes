@@ -1,4 +1,5 @@
 import importlib
+import importlib.util
 import json
 import sqlite3
 import subprocess
@@ -13,6 +14,7 @@ import pytest
 from plugins.memory import load_memory_provider
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "import.openclaw.memory_lancedb_pro.py"
+DOCTOR_PATH = Path(__file__).resolve().parents[1] / "scripts" / "doctor.py"
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME = "scope_recall"
 if PACKAGE_NAME not in sys.modules:
@@ -21,6 +23,287 @@ if PACKAGE_NAME not in sys.modules:
     sys.modules[PACKAGE_NAME] = package
 
 build_embedder = importlib.import_module(f"{PACKAGE_NAME}.embedders").build_embedder
+
+
+
+def _package_version() -> str:
+    import tomllib
+
+    return tomllib.loads((PLUGIN_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+
+
+
+def test_readme_public_version_matches_package_metadata():
+    readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+    version = _package_version()
+
+    assert f"Version `{version}`" in readme
+    assert "Version `1.0.6`" not in readme
+
+
+
+def test_readme_documents_hermes_venv_test_command():
+    readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "PYTHONPATH=/path/to/hermes-agent:" in readme
+    assert "venv/bin/python -m pytest -q" in readme
+    assert "Plain `pytest` from an unrelated Python environment" in readme
+
+
+
+def test_doctor_script_reports_source_versions():
+    result = subprocess.run(
+        [sys.executable, str(DOCTOR_PATH), "--source-root", str(PLUGIN_ROOT)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    version = _package_version()
+    assert payload["ok"] is True
+    assert payload["source"]["pyproject_version"] == version
+    assert payload["source"]["plugin_version"] == version
+    assert payload["source"]["readme_public_versions"] == [version]
+    assert payload["checks"]["source_metadata"]["ok"] is True
+
+
+
+def test_doctor_script_reports_missing_sqlite_truth_db(tmp_path):
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(DOCTOR_PATH),
+            "--source-root",
+            str(PLUGIN_ROOT),
+            "--hermes-home",
+            str(tmp_path),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert payload["runtime"]["sqlite"]["status"] == "missing"
+    assert "repair.vector_index.py" in "\n".join(payload["recommendations"])
+
+
+
+def test_doctor_vector_report_accepts_lancedb_list_tables_dict_response(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location("scope_recall_doctor", DOCTOR_PATH)
+    assert spec is not None
+    assert spec.loader is not None
+    doctor = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(doctor)
+
+    vector_dir = tmp_path / "scope-recall" / "lancedb"
+    vector_dir.mkdir(parents=True)
+
+    class FakeTable:
+        def count_rows(self):
+            return 7
+
+    class FakeDB:
+        def list_tables(self):
+            return {"tables": ["memories"], "page_token": None}
+
+        def open_table(self, name):
+            assert name == "memories"
+            return FakeTable()
+
+    fake_lancedb = types.SimpleNamespace(connect=lambda path: FakeDB())
+    monkeypatch.setitem(sys.modules, "lancedb", fake_lancedb)
+
+    payload, check, recommendations = doctor.vector_report(tmp_path)
+
+    assert payload["status"] == "ready"
+    assert payload["tables"] == ["memories"]
+    assert payload["row_count"] == 7
+    assert check["ok"] is True
+    assert recommendations == []
+
+
+
+def test_doctor_vector_report_marks_search_smoke_failure_needs_repair(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location("scope_recall_doctor", DOCTOR_PATH)
+    assert spec is not None
+    assert spec.loader is not None
+    doctor = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(doctor)
+
+    vector_dir = tmp_path / "scope-recall" / "lancedb"
+    vector_dir.mkdir(parents=True)
+
+    class FakeVectorType:
+        list_size = 3
+
+    class FakeField:
+        type = FakeVectorType()
+
+    class FakeSchema:
+        def field(self, name):
+            assert name == "vector"
+            return FakeField()
+
+    class FakeTable:
+        schema = FakeSchema()
+
+        def count_rows(self):
+            return 7
+
+        def search(self, vector):
+            raise RuntimeError("missing lance fragment")
+
+    class FakeDB:
+        def list_tables(self):
+            return {"tables": ["memories"], "page_token": None}
+
+        def open_table(self, name):
+            assert name == "memories"
+            return FakeTable()
+
+    fake_lancedb = types.SimpleNamespace(connect=lambda path: FakeDB())
+    monkeypatch.setitem(sys.modules, "lancedb", fake_lancedb)
+
+    payload, check, recommendations = doctor.vector_report(tmp_path)
+
+    assert payload["status"] == "needs_repair"
+    assert payload["ready"] is False
+    assert "missing lance fragment" in payload["error"]
+    assert check["ok"] is False
+    assert "repair.vector_index.py" in "\n".join(recommendations)
+
+
+
+def test_doctor_vector_report_marks_dimension_mismatch_needs_repair(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location("scope_recall_doctor", DOCTOR_PATH)
+    assert spec is not None
+    assert spec.loader is not None
+    doctor = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(doctor)
+
+    vector_dir = tmp_path / "scope-recall" / "lancedb"
+    vector_dir.mkdir(parents=True)
+
+    class FakeVectorType:
+        list_size = 256
+
+    class FakeField:
+        type = FakeVectorType()
+
+    class FakeSchema:
+        def field(self, name):
+            assert name == "vector"
+            return FakeField()
+
+    class FakeQuery:
+        def limit(self, value):
+            assert value == 1
+            return self
+
+        def to_list(self):
+            return []
+
+    class FakeTable:
+        schema = FakeSchema()
+
+        def count_rows(self):
+            return 7
+
+        def search(self, vector):
+            assert len(vector) == 256
+            return FakeQuery()
+
+    class FakeDB:
+        def list_tables(self):
+            return {"tables": ["memories"], "page_token": None}
+
+        def open_table(self, name):
+            assert name == "memories"
+            return FakeTable()
+
+    fake_lancedb = types.SimpleNamespace(connect=lambda path: FakeDB())
+    monkeypatch.setitem(sys.modules, "lancedb", fake_lancedb)
+
+    expected_embedder = {"source": "embedder", "provider": "openai-compatible", "model": "gemini-embedding-001", "dimensions": 3072}
+    payload, check, recommendations = doctor.vector_report(tmp_path, expected_embedder=expected_embedder)
+
+    assert payload["status"] == "needs_repair"
+    assert payload["ready"] is False
+    assert payload["dimensions"] == 256
+    assert payload["expected_embedder"]["dimensions"] == 3072
+    assert "dimension mismatch" in payload["error"]
+    assert check["ok"] is False
+    assert "repair.vector_index.py" in "\n".join(recommendations)
+
+
+
+def test_doctor_expected_embedder_prefers_available_primary(monkeypatch):
+    spec = importlib.util.spec_from_file_location("scope_recall_doctor", DOCTOR_PATH)
+    assert spec is not None
+    assert spec.loader is not None
+    doctor = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(doctor)
+
+    monkeypatch.setenv("SCOPE_RECALL_TEST_EMBEDDING_KEY", "present")
+    config = {
+        "vector": {
+            "embedder": {
+                "provider": "openai-compatible",
+                "model": "gemini-embedding-001",
+                "dimensions": 3072,
+                "api_key_env": ["SCOPE_RECALL_TEST_EMBEDDING_KEY"],
+            },
+            "fallback_embedder": {"provider": "local-hash", "model": "hash-v1", "dimensions": 256},
+        }
+    }
+
+    payload = doctor.expected_embedder_from_config(config)
+
+    assert payload["source"] == "embedder"
+    assert payload["provider"] == "openai-compatible"
+    assert payload["model"] == "gemini-embedding-001"
+    assert payload["dimensions"] == 3072
+
+
+
+def test_doctor_expected_embedder_uses_fallback_when_primary_unavailable(monkeypatch):
+    spec = importlib.util.spec_from_file_location("scope_recall_doctor", DOCTOR_PATH)
+    assert spec is not None
+    assert spec.loader is not None
+    doctor = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(doctor)
+
+    monkeypatch.delenv("SCOPE_RECALL_TEST_EMBEDDING_KEY", raising=False)
+    config = {
+        "vector": {
+            "embedder": {
+                "provider": "openai-compatible",
+                "model": "gemini-embedding-001",
+                "dimensions": 3072,
+                "api_key_env": ["SCOPE_RECALL_TEST_EMBEDDING_KEY"],
+            },
+            "fallback_embedder": {"provider": "local-hash", "model": "hash-v1", "dimensions": 256},
+        }
+    }
+
+    payload = doctor.expected_embedder_from_config(config)
+
+    assert payload["source"] == "fallback_embedder"
+    assert payload["provider"] == "local-hash"
+    assert payload["model"] == "hash-v1"
+    assert payload["dimensions"] == 256
+
+
+
+def test_release_gate_requires_doctor_script():
+    release_script = (PLUGIN_ROOT / "scripts" / "check.release.py").read_text(encoding="utf-8")
+
+    assert '"scripts/doctor.py"' in release_script
 
 
 

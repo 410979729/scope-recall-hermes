@@ -2,6 +2,24 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [1.0.7] - 2026-06-03
+
+### Added
+- Added `scripts/doctor.py`, a read-only source/runtime health report that checks release metadata alignment, SQLite truth availability, LanceDB companion readability, and repair recommendations.
+- Added BM25 as an optional final-score component for hybrid retrieval, while preserving candidate-local SQLite FTS5 `bm25()` normalization and raw-score metadata for explainability.
+- Added optional Jieba-backed Chinese entity extraction and broader code-ish entity extraction for mixed Chinese/English project memory.
+- Added explicit temporal-decay scoring, deterministic source-trust priors, typed `memory_relations`, and conservative contradiction marking with feedback/metadata evidence.
+- Added opt-in shared-pool scope stats plus `scope_recall_inspect`, `scope_recall_explain`, and `scope_recall_benchmark` observability tools.
+
+### Changed
+- Bumped package, plugin, release-check metadata, README, and stability docs to `1.0.7`.
+- Extended the release gate stable-tool check to cover the full public V1 default tool surface and new observability tools.
+
+### Fixed
+- Aligned the README public version text with package/plugin metadata and documented the Hermes venv + `PYTHONPATH` test command so plain `pytest` from an unrelated environment is not mistaken for release evidence.
+- Preserved pure lexical recall in default hybrid mode when BM25 metadata exists but `bm25_weight` is still zero, avoiding accidental dampening of local/general matches.
+- Reduced generic English entity noise so related-entity results keep explicit caller-provided entities such as `yuheng` visible.
+
 ## [1.0.6] - 2026-06-01
 
 ### Added
@@ -15,8 +33,6 @@ All notable changes to `scope-recall` will be documented in this file.
 - Bumped package, plugin, and release-check metadata to `1.0.6`.
 - Synced public README/stability/OpenClaw comparison wording with the v1.0.4/v1.0.5 entity, feedback, and nightly digest features.
 - Extended the public `scope_recall_store` tool schema `memory_type` enum to include workflow-oriented digest types already accepted by the governance layer.
-
-## [Unreleased]
 
 ## [1.0.5] - 2026-06-01
 

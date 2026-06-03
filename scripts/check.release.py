@@ -19,7 +19,7 @@ import tempfile
 import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PACKAGE_VERSION = "1.0.6"
+PACKAGE_VERSION = "1.0.7"
 WHEEL_DATA_PREFIX = f"scope_recall-{PACKAGE_VERSION}.data/data"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
 EXTERNAL_TEST_DIRS = {".hermes-agent-src"}
@@ -47,6 +47,7 @@ REQUIRED_SOURCE_FILES = {
     "scripts/import.openclaw.memory_lancedb_pro.py",
     "scripts/nightly-digest.py",
     "scripts/repair.vector_index.py",
+    "scripts/doctor.py",
     "py.typed",
 }
 REQUIRED_WHEEL = {
@@ -76,10 +77,15 @@ REQUIRED_WHEEL = {
     f"{WHEEL_DATA_PREFIX}/scripts/import.openclaw.memory_lancedb_pro.py",
     f"{WHEEL_DATA_PREFIX}/scripts/nightly-digest.py",
     f"{WHEEL_DATA_PREFIX}/scripts/repair.vector_index.py",
+    f"{WHEEL_DATA_PREFIX}/scripts/doctor.py",
 }
 STABLE_TOOL_NAMES = {
     "scope_recall_store",
     "scope_recall_search",
+    "scope_recall_context",
+    "scope_recall_probe",
+    "scope_recall_related",
+    "scope_recall_feedback",
     "scope_recall_forget",
     "scope_recall_update",
     "scope_recall_dedupe",
@@ -89,6 +95,9 @@ STABLE_TOOL_NAMES = {
     "scope_recall_hygiene",
     "scope_recall_repair",
     "scope_recall_stats",
+    "scope_recall_inspect",
+    "scope_recall_explain",
+    "scope_recall_benchmark",
 }
 
 

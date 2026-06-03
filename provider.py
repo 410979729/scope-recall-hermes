@@ -18,13 +18,16 @@ from .gating import clean_text, config_bool, dedup_key, normalize_query, should_
 from .governance import extract_candidates
 from .memory_ops import (
     context_payload,
+    benchmark_queries,
     dedupe_memories,
     delete_memories,
+    explain_query,
     export_memories,
     feedback_memory,
     find_semantic_merge_candidate,
     govern_memories,
     hygiene_report,
+    inspect_memory,
     merge_memories,
     probe_entity,
     repair_vector,
@@ -39,12 +42,15 @@ from .recall import RecallService
 from .prompting import render_current_turn_recall
 from .schemas import (
     SCOPE_RECALL_DEDUPE_SCHEMA,
+    SCOPE_RECALL_BENCHMARK_SCHEMA,
     SCOPE_RECALL_CONTEXT_SCHEMA,
+    SCOPE_RECALL_EXPLAIN_SCHEMA,
     SCOPE_RECALL_EXPORT_SCHEMA,
     SCOPE_RECALL_FEEDBACK_SCHEMA,
     SCOPE_RECALL_FORGET_SCHEMA,
     SCOPE_RECALL_GOVERN_SCHEMA,
     SCOPE_RECALL_HYGIENE_SCHEMA,
+    SCOPE_RECALL_INSPECT_SCHEMA,
     SCOPE_RECALL_MERGE_SCHEMA,
     SCOPE_RECALL_PROBE_SCHEMA,
     SCOPE_RECALL_REPAIR_SCHEMA,
@@ -54,7 +60,7 @@ from .schemas import (
     SCOPE_RECALL_STORE_SCHEMA,
     SCOPE_RECALL_UPDATE_SCHEMA,
 )
-from .scope import accessible_scope_ids, build_scope_id, build_shared_scope_id
+from .scope import accessible_scope_ids, build_scope_id, build_shared_pool_scope_id, build_shared_scope_id
 from .sql_store import ensure_schema
 from .storage_views import search_curated_memories, search_db_memories, search_vector_memories
 from .tooling import ScopeRecallToolService
@@ -79,6 +85,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._scope = RuntimeScope()
         self._scope_id = ""
         self._shared_scope_id = ""
+        self._shared_pool_enabled = False
+        self._shared_pool_id = ""
+        self._shared_pool_scope_id = ""
         self._accessible_scope_ids: list[str] = []
         self._storage_dir: Path | None = None
         self._db_path: Path | None = None
@@ -184,6 +193,13 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._scope_id = build_scope_id(self._scope)
         self._shared_scope_id = build_shared_scope_id(self._scope)
         self._accessible_scope_ids = accessible_scope_ids(self._scope)
+        raw_shared_pool_config = self._config.get("shared_pool")
+        shared_pool_config = raw_shared_pool_config if isinstance(raw_shared_pool_config, dict) else {}
+        self._shared_pool_enabled = bool(shared_pool_config.get("enabled", False))
+        self._shared_pool_id = str(shared_pool_config.get("pool_id") or "default") if self._shared_pool_enabled else ""
+        self._shared_pool_scope_id = build_shared_pool_scope_id(self._scope, self._shared_pool_id) if self._shared_pool_enabled else ""
+        if self._shared_pool_scope_id and self._shared_pool_scope_id not in self._accessible_scope_ids:
+            self._accessible_scope_ids.append(self._shared_pool_scope_id)
         self._current_turn = 0
         self._last_recall_turns = {}
 
@@ -365,6 +381,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             SCOPE_RECALL_MERGE_SCHEMA,
             SCOPE_RECALL_EXPORT_SCHEMA,
             SCOPE_RECALL_STATS_SCHEMA,
+            SCOPE_RECALL_INSPECT_SCHEMA,
+            SCOPE_RECALL_EXPLAIN_SCHEMA,
+            SCOPE_RECALL_BENCHMARK_SCHEMA,
         ]
         if config_bool(self._config, "maintenance_tools_enabled", False):
             schemas.extend([SCOPE_RECALL_DEDUPE_SCHEMA, SCOPE_RECALL_GOVERN_SCHEMA, SCOPE_RECALL_REPAIR_SCHEMA, SCOPE_RECALL_HYGIENE_SCHEMA])
@@ -453,6 +472,15 @@ class ScopeRecallMemoryProvider(MemoryProvider):
 
     def _feedback_memory(self, *, memory_id: str, rating: str, note: str = "") -> dict[str, Any]:
         return feedback_memory(self, memory_id=memory_id, rating=rating, note=note)
+
+    def _inspect_memory(self, *, memory_id: str) -> dict[str, Any]:
+        return inspect_memory(self, memory_id=memory_id)
+
+    def _explain_query(self, *, query: str, limit: int = 5) -> dict[str, Any]:
+        return explain_query(self, query=query, limit=limit)
+
+    def _benchmark_queries(self, *, queries: list[str], limit: int = 5) -> dict[str, Any]:
+        return benchmark_queries(self, queries=queries, limit=limit)
 
     def _search_vector_memories(self, query: str, *, limit: int) -> List[RecallItem]:
         return search_vector_memories(self, query, limit=limit)

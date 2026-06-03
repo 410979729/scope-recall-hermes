@@ -76,13 +76,34 @@ def _authority_for_source(source: str = "") -> str:
         return "agent_tool"
     if normalized == "turn-user":
         return "user_turn"
+    if normalized == "turn-assistant":
+        return "raw_assistant"
     if normalized == "turn-extracted":
         return "rule_extracted"
+    if normalized == "turn-llm-extracted":
+        return "llm_extracted"
     if normalized.startswith("legacy"):
         return "legacy_import"
     if normalized == "builtin-curated":
         return "curated_memory"
     return "unknown"
+
+
+_SOURCE_TRUST_PRIORS = {
+    "curated_memory": 0.92,
+    "agent_tool": 0.72,
+    "user_turn": 0.66,
+    "llm_extracted": 0.62,
+    "rule_extracted": 0.58,
+    "raw_assistant": 0.36,
+    "legacy_import": 0.45,
+    "unknown": 0.35,
+}
+
+
+def _source_trust_for_authority(authority: str) -> float:
+    return _SOURCE_TRUST_PRIORS.get(authority, _SOURCE_TRUST_PRIORS["unknown"])
+
 
 
 def normalize_memory_type(value: Any, fallback: str = "factual") -> str:
@@ -121,6 +142,7 @@ def classify_memory(text: str, target: str = "memory", source: str = "") -> dict
     trust = 0.5
     expires_at = None
     authority = _authority_for_source(source)
+    source_trust = _source_trust_for_authority(authority)
 
     if normalized_target == "general":
         category = "general"
@@ -177,6 +199,11 @@ def classify_memory(text: str, target: str = "memory", source: str = "") -> dict
     if any(word in lowered for word in ("token", "password", "secret", "api key", "apikey")):
         sensitivity = "sensitive"
 
+    if source_trust >= 0.8:
+        trust = max(trust, source_trust)
+    else:
+        trust = clamp_float((trust * 0.6) + (source_trust * 0.4), default=trust)
+
     entities = extract_entities(text or "", target=normalized_target)
     entity_tags = [f"entity:{entity}" for entity in entities[:6]]
     tags = _unique_strings(
@@ -196,6 +223,7 @@ def classify_memory(text: str, target: str = "memory", source: str = "") -> dict
         "memory_type": memory_type,
         "lifecycle": lifecycle,
         "authority": authority,
+        "source_trust": source_trust,
         "confidence": confidence,
         "importance": importance,
         "trust": trust,

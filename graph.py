@@ -7,7 +7,7 @@ from typing import Any
 
 from .gating import compact_text, query_tokens
 
-_ENTITY_WORD_RE = re.compile(r"`([^`\n]{2,80})`|([A-Z][A-Za-z0-9_.:/#-]{1,63})|([\u4e00-\u9fff]{2,12})")
+_ENTITY_WORD_RE = re.compile(r"`([^`\n]{2,80})`|([A-Za-z][A-Za-z0-9_.:/#-]{1,63})|([\u4e00-\u9fff]{2,12})")
 _COMMON_ENTITY_WORDS = {
     "the",
     "this",
@@ -25,6 +25,23 @@ _COMMON_ENTITY_WORDS = {
     "would",
     "user",
     "assistant",
+    "and",
+    "after",
+    "with",
+    "for",
+    "from",
+    "into",
+    "owns",
+    "uses",
+    "services",
+    "service",
+    "model",
+    "models",
+    "changes",
+    "app",
+    "architecture",
+    "scope",
+    "recall",
     "deploy",
     "deployment",
     "production",
@@ -34,7 +51,34 @@ _COMMON_ENTITY_WORDS = {
     "偏好",
     "希望",
     "临时",
+    "配置",
+    "使用",
+    "路线图",
+    "包含",
+    "中文",
+    "实体",
+    "增强",
 }
+
+
+def _jieba_entities(text: str) -> list[str]:
+    if not re.search(r"[\u4e00-\u9fff]", text or ""):
+        return []
+    try:
+        import jieba.posseg as pseg  # type: ignore[import-not-found]
+    except Exception:
+        return []
+    values: list[str] = []
+    for word, flag in pseg.cut(text or ""):
+        clean = str(word or "").strip()
+        if len(clean) < 2:
+            continue
+        if not re.search(r"[\u4e00-\u9fff]", clean):
+            continue
+        if str(flag or "").startswith(("n", "v")) or len(clean) >= 3:
+            values.append(clean)
+    return values
+
 
 
 def clamp_float(value: Any, *, default: float = 0.5, minimum: float = 0.0, maximum: float = 1.0) -> float:
@@ -83,6 +127,7 @@ def extract_entities(text: str, *, target: str = "") -> list[str]:
         value = next((group for group in match.groups() if group), "")
         if value:
             candidates.append(value)
+    candidates.extend(_jieba_entities(text or ""))
     if str(target or "").lower() == "user":
         for token in query_tokens(text or ""):
             if token in {"joy", "eri"}:
@@ -133,6 +178,20 @@ def ensure_graph_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_scope_recall_feedback_memory
             ON memory_feedback(memory_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS memory_relations (
+            source_memory_id TEXT NOT NULL,
+            target_memory_id TEXT NOT NULL,
+            relation_type TEXT NOT NULL,
+            confidence REAL NOT NULL DEFAULT 0.5,
+            note TEXT,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(source_memory_id, target_memory_id, relation_type)
+        );
+        CREATE INDEX IF NOT EXISTS idx_scope_recall_relations_source
+            ON memory_relations(source_memory_id, relation_type);
+        CREATE INDEX IF NOT EXISTS idx_scope_recall_relations_target
+            ON memory_relations(target_memory_id, relation_type);
         """
     )
 

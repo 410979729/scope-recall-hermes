@@ -7,7 +7,7 @@ from .gating import build_fts_query, compact_text, like_terms, normalized_token_
 from .governance import classify_memory
 from .graph import load_metadata
 from .models import RecallItem
-from .scoring import lexical_score
+from .scoring import bm25_to_score, lexical_score
 from .sql_store import curated_recall_item_id, iter_curated_entries
 from .vector_runtime import mark_vector_needs_repair
 
@@ -67,6 +67,7 @@ def _row_metadata(
             "lexical_score": lexical_score,
             "vector_score": vector_score,
             "scope_id": row["scope_id"],
+            "created_at": row["created_at"] if "created_at" in row.keys() else row["updated_at"],
         }
     )
     if bm25_score is not None:
@@ -146,14 +147,15 @@ def search_db_memories(provider: Any, query: str, *, limit: int) -> list[RecallI
         # (for example OpenClaw/凌晨 task context) despite zero token overlap.
         # Recency is only a reranking bonus after relevance is established.
 
-    bm25_scores: dict[str, float] = {}
+    bm25_raw_scores: dict[str, float | None] = {}
     for row in rows:
         if "bm25_score" not in row.keys():
             continue
         try:
-            bm25_scores[str(row["id"])] = float(row["bm25_score"])
+            bm25_raw_scores[str(row["id"])] = float(row["bm25_score"])
         except (TypeError, ValueError):
             continue
+    bm25_scores = bm25_to_score(bm25_raw_scores)
     dedup_rows: dict[str, sqlite3.Row] = {row["id"]: row for row in rows}
     min_score = float((provider._retrieval_config or {}).get("min_score") or provider._config_value("min_score", 0.18))
     results: list[RecallItem] = []
@@ -184,6 +186,8 @@ def search_db_memories(provider: Any, query: str, *, limit: int) -> list[RecallI
                 ),
             )
         )
+        if results[-1].metadata is not None and str(row["id"]) in bm25_raw_scores:
+            results[-1].metadata["bm25_raw"] = bm25_raw_scores[str(row["id"])]
     return results
 
 
@@ -207,10 +211,14 @@ def search_vector_memories(provider: Any, query: str, *, limit: int) -> list[Rec
         try:
             with provider._lock:
                 meta_rows = provider._require_conn().execute(
-                    f"SELECT id, scope_id, metadata FROM memories WHERE id IN ({placeholders})",
+                    f"SELECT id, scope_id, created_at, metadata FROM memories WHERE id IN ({placeholders})",
                     row_ids,
                 ).fetchall()
-            id_metadata = {str(row["id"]): load_metadata(row["metadata"]) for row in meta_rows}
+            id_metadata = {}
+            for row in meta_rows:
+                metadata = load_metadata(row["metadata"])
+                metadata.setdefault("created_at", str(row["created_at"]))
+                id_metadata[str(row["id"])] = metadata
         except Exception:
             id_metadata = {}
     results: list[RecallItem] = []

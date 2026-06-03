@@ -1,6 +1,6 @@
 # Scope Recall V1 stability contract
 
-`scope-recall` 1.0.5 is the nightly-digest consolidation patch release for the Hermes Scope Recall memory provider V1 line.
+`scope-recall` 1.0.7 is the roadmap observability and retrieval-quality patch release for the Hermes Scope Recall memory provider V1 line.
 
 This document defines what V1 commits to keep stable, what may evolve in minor releases, and what remains explicitly outside the V1 compatibility promise.
 
@@ -81,6 +81,9 @@ The following tool names are stable for V1:
 - `scope_recall_hygiene`
 - `scope_recall_repair`
 - `scope_recall_stats`
+- `scope_recall_inspect`
+- `scope_recall_explain`
+- `scope_recall_benchmark`
 
 Patch/minor releases may add fields to JSON responses. Existing documented fields should not be removed in the V1 line unless they are unsafe or clearly erroneous, in which case the changelog must call out the compatibility impact. V1 rejects ordinary `scope_recall_update` / `scope_recall_merge` attempts that would move a row between shared durable and local scratch modes; such migrations require an explicit future maintenance path.
 

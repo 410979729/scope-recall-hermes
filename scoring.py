@@ -86,6 +86,31 @@ def lexical_score(*, query: str, content: str, summary: str, source: str, target
 
 
 
+def bm25_to_score(raw_scores: dict[str, float | None]) -> dict[str, float]:
+    """Normalize SQLite FTS5 bm25() values onto a 0..1 relevance scale.
+
+    FTS5 ranks lower ``bm25()`` values as better. Retrieval keeps that raw
+    value for SQL ordering, then converts the candidate-local range into a
+    conventional higher-is-better component for final hybrid scoring.
+    """
+
+    parsed: dict[str, float] = {}
+    for key, value in raw_scores.items():
+        try:
+            parsed[str(key)] = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+    if not parsed:
+        return {}
+    best = min(parsed.values())
+    worst = max(parsed.values())
+    if best == worst:
+        return {key: 1.0 for key in parsed}
+    span = worst - best
+    return {key: max(0.0, min(1.0, (worst - value) / span)) for key, value in parsed.items()}
+
+
+
 def semantic_similarity(left: str, right: str) -> float:
     left_tokens = _canonical_tokens(left)
     right_tokens = _canonical_tokens(right)
@@ -98,7 +123,8 @@ def semantic_similarity(left: str, right: str) -> float:
     return max(jaccard, containment * 0.82)
 
 
-def combine_scores(item: dict[str, Any], *, lexical_weight: float, vector_weight: float) -> float:
+def combine_scores(item: dict[str, Any], *, lexical_weight: float, vector_weight: float, bm25_weight: float = 0.0) -> float:
     lexical = float(item.get("lexical_score") or 0.0)
     vector = float(item.get("vector_score") or 0.0)
-    return max(0.0, min(1.0, lexical * lexical_weight + vector * vector_weight))
+    bm25 = float(item.get("bm25_score") or 0.0)
+    return max(0.0, min(1.0, lexical * lexical_weight + vector * vector_weight + bm25 * bm25_weight))

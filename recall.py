@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 from typing import Any
 
@@ -94,6 +95,11 @@ class RecallService:
                     ),
                 ),
             )
+            decay_multiplier = self._temporal_decay_multiplier(meta, item.updated_at)
+            if decay_multiplier < 1.0:
+                decay_weight = max(0.0, min(1.0, float(retrieval_cfg.get("temporal_decay_weight") or 0.0)))
+                base_score *= (1.0 - decay_weight) + decay_weight * decay_multiplier
+            meta["temporal_decay_multiplier"] = decay_multiplier
             meta["base_score"] = base_score
             item.metadata = meta
             item.score = base_score
@@ -170,19 +176,47 @@ class RecallService:
         mode = str(retrieval_cfg.get("mode") or "lexical").lower()
         lexical = float(meta.get("lexical_score") or 0.0)
         vector = float(meta.get("vector_score") or 0.0)
+        bm25_weight = float(retrieval_cfg.get("bm25_weight") or 0.0)
+        bm25 = float(meta.get("bm25_score") or 0.0) if bm25_weight > 0.0 else 0.0
         if mode == "vector":
             return vector
         if mode == "hybrid":
-            if lexical > 0.0 and vector <= 0.0:
+            if bm25 > 0.0 and lexical <= 0.0 and vector <= 0.0:
+                return bm25
+            if lexical > 0.0 and vector <= 0.0 and bm25 <= 0.0:
                 return lexical
-            if vector > 0.0 and lexical <= 0.0:
+            if vector > 0.0 and lexical <= 0.0 and bm25 <= 0.0:
                 return vector
             return combine_scores(
-                {"lexical_score": lexical, "vector_score": vector},
+                {"lexical_score": lexical, "vector_score": vector, "bm25_score": bm25},
                 lexical_weight=float(retrieval_cfg.get("lexical_weight") or 0.45),
                 vector_weight=float(retrieval_cfg.get("vector_weight") or 0.55),
+                bm25_weight=bm25_weight,
             )
         return lexical
+
+    def _temporal_decay_multiplier(self, meta: dict[str, Any], updated_at: str) -> float:
+        retrieval_cfg = self.provider._retrieval_config or {}
+        enabled = retrieval_cfg.get("temporal_decay_enabled", False)
+        if isinstance(enabled, str):
+            enabled = enabled.strip().lower() in {"1", "true", "yes", "on"}
+        if not enabled:
+            return 1.0
+        half_life_days = max(1.0, float(retrieval_cfg.get("temporal_decay_half_life_days") or 180.0))
+        floor = max(0.0, min(1.0, float(retrieval_cfg.get("temporal_decay_floor") or 0.65)))
+        now_ts = datetime.now(timezone.utc).timestamp()
+        created_ts = self._timestamp_value(str(meta.get("created_at") or updated_at))
+        updated_ts = self._timestamp_value(updated_at)
+        if created_ts <= 0.0 and updated_ts <= 0.0:
+            return 1.0
+        created_age_days = max(0.0, (now_ts - (created_ts or updated_ts)) / 86400.0)
+        updated_age_days = max(0.0, (now_ts - (updated_ts or created_ts)) / 86400.0)
+        created_decay = 0.5 ** (created_age_days / (half_life_days * 2.0))
+        updated_decay = 0.5 ** (updated_age_days / half_life_days)
+        multiplier = updated_decay * 0.7 + created_decay * 0.3
+        if not math.isfinite(multiplier):
+            return 1.0
+        return max(floor, min(1.0, multiplier))
 
     def _freshness_weight(self, query: str) -> float:
         retrieval_cfg = self.provider._retrieval_config or {}
