@@ -37,7 +37,7 @@ from .memory_ops import (
     update_memory,
 )
 from .migration import migrate_legacy_scope_recall_storage
-from .models import RuntimeScope, recall_scope_mode
+from .models import RecallItem, RuntimeScope, recall_scope_mode
 from .recall import RecallService
 from .prompting import render_current_turn_recall
 from .schemas import (
@@ -65,7 +65,6 @@ from .sql_store import ensure_schema
 from .storage_views import search_curated_memories, search_db_memories, search_vector_memories
 from .tooling import ScopeRecallToolService
 from .vector_runtime import setup_vector_layer
-from .vector_store import LanceVectorStore
 
 logger = logging.getLogger(__name__)
 

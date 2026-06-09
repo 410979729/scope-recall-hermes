@@ -2,21 +2,20 @@
 Manual tests for capture_llm.py — no pytest required.
 Runs against the code directly in the plugin directory.
 """
-import sys
 import os
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from capture_llm import (
+from capture_llm import (  # noqa: E402
     _truthy,
     _VALID_MEMORY_TYPES,
     _parse_response,
     _resolve_api_key,
     _repair_truncated,
     extract_capture_candidates,
-    Candidate,
     EXTRACT_SYSTEM_PROMPT,
 )
 

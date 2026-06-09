@@ -14,7 +14,6 @@ import json
 import os
 import re
 import sqlite3
-import sys
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -24,6 +23,7 @@ DEFAULT_SOURCE_ROOT = Path(__file__).resolve().parents[1]
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Inspect scope-recall source/runtime health")
+    parser.add_argument("--json", action="store_true", help="emit JSON output (default; accepted for operator convenience)")
     parser.add_argument("--source-root", default=str(DEFAULT_SOURCE_ROOT), help="scope-recall source checkout")
     parser.add_argument("--hermes-home", default="", help="Hermes home/profile path to inspect")
     return parser.parse_args()

@@ -34,37 +34,45 @@ Primary differentiators:
 - operator tools expose inspect/search/feedback/export/repair/governance without requiring a hosted SaaS account;
 - degraded operation remains available through SQLite lexical recall even when vector dependencies are unavailable.
 
-## Must-fix before upstream outreach
+## Upstream readiness status
+
+Status after the `v1.0.9` release and upstream RFC submission. Completed items were verified for that release; re-run the repository hygiene checks before any follow-up release or upstream PR.
 
 ### Repository hygiene
 
-- [ ] Working tree is clean except the intentional upstream-application branch.
-- [ ] `pyproject.toml`, `plugin.yaml`, README version badge/text, `CHANGELOG.md`, and latest git tag agree.
-- [ ] `python -m pytest -q` passes locally.
-- [ ] `python scripts/check.release.py` passes locally.
-- [ ] CI passes on Python 3.11 and 3.12.
-- [ ] Release docs do not overclaim Hermes wheel/entry-point discovery; current supported shape is an unpacked `$HERMES_HOME/plugins/scope-recall/` directory.
+- [ ] Current follow-up branch working tree is clean before merge/release.
+- [x] `pyproject.toml`, `plugin.yaml`, README version badge/text, `CHANGELOG.md`, and latest git tag agree.
+- [x] `python -m pytest -q` passes locally.
+- [x] `python scripts/check.release.py` passes locally.
+- [x] CI passes on Python 3.11 and 3.12.
+- [x] Release docs do not overclaim Hermes wheel/entry-point discovery; current supported shape is an unpacked `$HERMES_HOME/plugins/scope-recall/` directory.
 
 ### Public issue closure
 
-- [ ] Issue #4 naming contract is documented in the repo and the issue is updated/closed with a maintainer summary.
-- [ ] Issue #1 non-AVX compatibility is resolved or has a merged first implementation path.
+- [x] Issue #4 naming contract is documented in the repo and the issue is updated/closed with a maintainer summary.
+- [x] Issue #1 non-AVX compatibility is resolved with the `sqlite-bruteforce` backend.
 - [ ] PR #2 MiniMax embedder is either merged after release-gate fixes or explicitly superseded by a maintainer implementation.
 
 ### Compatibility and install polish
 
-- [ ] README quick start includes a copy/paste clean-profile smoke test.
-- [ ] README explains the difference between `scope-recall` and `scope_recall`.
-- [ ] Vector backend config documents `lancedb` and non-AVX fallback behavior.
-- [ ] `vector_store.py` does not force native `pyarrow` import when LanceDB is not selected.
-- [ ] A non-AVX-safe backend such as `sqlite-bruteforce` exists, or vector import failures degrade cleanly without native import crashes.
-- [ ] `scripts/doctor.py` reports backend availability and actionable next steps.
+- [x] README quick start includes a copy/paste clean-profile smoke test.
+- [x] README explains the difference between `scope-recall` and `scope_recall`.
+- [x] Vector backend config documents `lancedb` and non-AVX fallback behavior.
+- [x] `vector_store.py` does not force native `pyarrow` import when LanceDB is not selected.
+- [x] A non-AVX-safe backend such as `sqlite-bruteforce` exists, or vector import failures degrade cleanly without native import crashes.
+- [x] `scripts/doctor.py` reports backend availability and actionable next steps.
 
 ### Upstream materials
 
-- [ ] Draft GitHub Discussion / RFC for `NousResearch/hermes-agent`.
+- [x] Draft GitHub Discussion / RFC for `NousResearch/hermes-agent`.
 - [ ] Draft docs-only PR text for a “Standalone memory providers” section.
-- [ ] Prepare an evidence bundle: install command, activation command, smoke-test output, tests, release gate, known limitations, maintenance commitment.
+- [x] Prepare an evidence bundle: install command, activation command, smoke-test output, tests, release gate, known limitations, maintenance commitment.
+
+### Remaining follow-up
+
+- Keep PR #2 (`MiniMax` embedder) blocked until the contributor rebases and resolves review comments, or supersede it with a maintainer branch.
+- Re-run `ruff check .`, `python -m pytest -q`, and `python scripts/check.release.py` before any new tag or upstream docs PR.
+- After upstream maintainer feedback on the RFC, prepare the smallest docs/plugin-discovery PR they are likely to accept.
 
 ## Suggested implementation order
 

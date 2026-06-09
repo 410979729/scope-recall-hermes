@@ -233,7 +233,11 @@ def cleanup_generated() -> None:
 def main() -> int:
     cleanup_generated()
     metadata = metadata_check()
-    for cmd in ([sys.executable, "-m", "pytest", "-q"], [sys.executable, "-m", "compileall", "-q", "."]):
+    for cmd in (
+        [sys.executable, "-m", "ruff", "check", "."],
+        [sys.executable, "-m", "pytest", "-q"],
+        [sys.executable, "-m", "compileall", "-q", "."],
+    ):
         fail_if_bad(run(cmd))
     wheel = wheel_check()
     cleanup_generated()

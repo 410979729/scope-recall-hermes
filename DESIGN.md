@@ -268,7 +268,7 @@ This keeps the boundary explicit: old OpenClaw LanceDB stores must be transforme
 
 ### Vector companion sync and repair
 
-The companion LanceDB layer syncs incrementally from SQLite truth on init by comparing stable ids and `updated_at` values:
+The configured vector companion layer syncs incrementally from SQLite truth on init by comparing stable ids and `updated_at` values:
 
 - missing vector rows are embedded and inserted
 - stale vector rows absent from SQLite are deleted
@@ -276,7 +276,7 @@ The companion LanceDB layer syncs incrementally from SQLite truth on init by com
 - unchanged rows are left alone
 - after sync, stats record physical row count, unique id count, and duplicate extra rows
 
-If LanceDB delete/upsert fails, SQLite remains authoritative and the provider marks vector state as `needs_repair`; the truth-row write is not reported as lost.
+If vector companion delete/upsert fails, SQLite remains authoritative and the provider marks vector state as `needs_repair`; the truth-row write is not reported as lost.
 
 Full rebuild is no longer the default init path. For deep maintenance or release-grade storage hygiene, run `scripts/repair.vector_index.py` to rebuild the configured vector companion from SQLite truth with an automatic backup.
 
@@ -291,7 +291,7 @@ The digest does not store raw `system` rows or raw `tool` output. Task-like sess
 - new durable fact/workflow/summary: insert
 - exact duplicate groups found after the run: delete duplicates through the same scoped delete path
 
-Actual writes use SQLite truth, FTS/entity sync, digest run/source ledger tables, and LanceDB upsert when the vector companion is enabled. Dry-run mode plans the same decisions without writing provider memory.
+Actual writes use SQLite truth, FTS/entity sync, digest run/source ledger tables, and configured vector upsert when the vector companion is enabled. Dry-run mode plans the same decisions without writing provider memory.
 
 ### Operational follow-up outside source readiness
 

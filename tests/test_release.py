@@ -71,6 +71,20 @@ def test_doctor_script_reports_source_versions():
 
 
 
+def test_doctor_script_accepts_explicit_json_flag():
+    result = subprocess.run(
+        [sys.executable, str(DOCTOR_PATH), "--json", "--source-root", str(PLUGIN_ROOT)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+
+
+
 def test_doctor_script_reports_missing_sqlite_truth_db(tmp_path):
     result = subprocess.run(
         [
@@ -418,6 +432,13 @@ def test_release_gate_requires_doctor_script():
     release_script = (PLUGIN_ROOT / "scripts" / "check.release.py").read_text(encoding="utf-8")
 
     assert '"scripts/doctor.py"' in release_script
+
+
+
+def test_release_gate_runs_ruff_check():
+    release_script = (PLUGIN_ROOT / "scripts" / "check.release.py").read_text(encoding="utf-8")
+
+    assert '[sys.executable, "-m", "ruff", "check", "."]' in release_script
 
 
 

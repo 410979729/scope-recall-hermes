@@ -95,8 +95,8 @@ Most agent memory pain is not just "wrong memory was recalled". The bigger user-
 | Area | What `scope-recall` V1 provides |
 | --- | --- |
 | Current-turn recall | `prefetch(query)` retrieves against the active user query; `queue_prefetch()` is intentionally a no-op |
-| Storage authority | SQLite is the durable truth; LanceDB is rebuildable companion state |
-| Hybrid retrieval | SQLite lexical/FTS candidates + LanceDB semantic candidates + bounded prompt rendering |
+| Storage authority | SQLite is the durable truth; vector backends are rebuildable companion state |
+| Hybrid retrieval | SQLite lexical/FTS candidates + configured vector companion candidates + bounded prompt rendering |
 | Entity/context layer | SQLite entity index, entity probe/related tools, compact query context, trust feedback |
 | Nightly digest | Profile-scoped daily consolidation for durable facts, workflow summaries, and sanitized tool-chain evidence |
 | Memory scope model | shared durable scope for user/project/ops/memory facts; local scope for general scratch captures |
