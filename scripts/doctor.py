@@ -2,8 +2,9 @@
 """Inspect scope-recall source metadata and runtime storage health.
 
 The doctor is intentionally read-only. It treats SQLite as the truth layer and
-LanceDB as an optional rebuildable companion, then emits a compact JSON report
-that operators can use before running repair or release checks.
+any configured vector backend as an optional rebuildable companion, then emits a
+compact JSON report that operators can use before running repair or release
+checks.
 """
 
 from __future__ import annotations
@@ -17,7 +18,6 @@ import sys
 import tomllib
 from pathlib import Path
 from typing import Any
-
 
 DEFAULT_SOURCE_ROOT = Path(__file__).resolve().parents[1]
 
@@ -38,7 +38,6 @@ def plugin_yaml_version(text: str) -> str:
     return match.group(1).strip() if match else ""
 
 
-
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     merged = dict(base)
     for key, value in (override or {}).items():
@@ -47,7 +46,6 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
         else:
             merged[key] = value
     return merged
-
 
 
 def load_runtime_config(source_root: Path, hermes_home: Path) -> dict[str, Any]:
@@ -64,7 +62,6 @@ def load_runtime_config(source_root: Path, hermes_home: Path) -> dict[str, Any]:
     return config
 
 
-
 def coerce_list(value: Any) -> list[str]:
     if value is None:
         return []
@@ -72,7 +69,6 @@ def coerce_list(value: Any) -> list[str]:
         return [str(item).strip() for item in value if str(item).strip()]
     text = str(value).strip()
     return [text] if text else []
-
 
 
 def embedder_config_available(config: dict[str, Any]) -> bool:
@@ -91,7 +87,6 @@ def embedder_config_available(config: dict[str, Any]) -> bool:
         except Exception:
             return False
     return True
-
 
 
 def expected_embedder_from_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -117,6 +112,18 @@ def expected_embedder_from_config(config: dict[str, Any]) -> dict[str, Any]:
         "dimensions": int(selected.get("dimensions") or 0),
     }
 
+
+def vector_enabled_from_config(config: dict[str, Any]) -> bool:
+    raw_vector = config.get("vector")
+    vector_config: dict[str, Any] = raw_vector if isinstance(raw_vector, dict) else {}
+    return vector_config.get("enabled") is not False
+
+
+def vector_backend_from_config(config: dict[str, Any]) -> str:
+    raw_vector = config.get("vector")
+    vector_config: dict[str, Any] = raw_vector if isinstance(raw_vector, dict) else {}
+    backend = str(vector_config.get("backend") or "lancedb").strip().lower()
+    return "sqlite-bruteforce" if backend == "sqlite" else backend
 
 
 def source_report(source_root: Path) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
@@ -195,7 +202,7 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
         finally:
             conn.close()
     except Exception as exc:
-        recommendations.append("Repair or restore the SQLite truth DB before rebuilding the LanceDB companion.")
+        recommendations.append("Repair or restore the SQLite truth DB before rebuilding the vector companion.")
         sqlite_payload = {"path": str(db_path), "status": "error", "error": str(exc), "memory_count": 0, "tables": []}
         return sqlite_payload, {"ok": False, "failures": [f"SQLite truth DB error: {exc}"]}, recommendations
 
@@ -224,14 +231,12 @@ def lancedb_table_names(db: Any) -> list[str]:
     return [str(name) for name in raw_tables]
 
 
-
 def vector_dimensions(table: Any) -> int:
     try:
         vector_field = table.schema.field("vector")
         return int(getattr(vector_field.type, "list_size", 0) or 0)
     except Exception:
         return 0
-
 
 
 def run_vector_search_smoke(table: Any, *, dimensions: int, row_count: int) -> str:
@@ -249,8 +254,7 @@ def run_vector_search_smoke(table: Any, *, dimensions: int, row_count: int) -> s
     return "ok"
 
 
-
-def vector_report(
+def lancedb_vector_report(
     hermes_home: Path,
     *,
     expected_embedder: dict[str, Any] | None = None,
@@ -259,7 +263,7 @@ def vector_report(
     vector_dir = hermes_home / "scope-recall" / "lancedb"
     if not vector_dir.exists():
         recommendations.append("LanceDB companion directory is missing; run scripts/repair.vector_index.py after SQLite truth is ready.")
-        payload = {"path": str(vector_dir), "status": "missing", "ready": False}
+        payload = {"backend": "lancedb", "path": str(vector_dir), "status": "missing", "ready": False}
         return payload, {"ok": False, "failures": [f"LanceDB directory not found: {vector_dir}"]}, recommendations
 
     try:
@@ -269,13 +273,14 @@ def vector_report(
         table_names = lancedb_table_names(db)
         if "memories" not in table_names:
             recommendations.append("LanceDB table 'memories' is missing; run scripts/repair.vector_index.py.")
-            payload = {"path": str(vector_dir), "status": "needs_repair", "ready": False, "tables": table_names}
+            payload = {"backend": "lancedb", "path": str(vector_dir), "status": "needs_repair", "ready": False, "tables": table_names}
             return payload, {"ok": False, "failures": ["LanceDB table 'memories' is missing"]}, recommendations
         table = db.open_table("memories")
         row_count = int(table.count_rows())
         dimensions = vector_dimensions(table)
         search_smoke = run_vector_search_smoke(table, dimensions=dimensions, row_count=row_count)
         payload = {
+            "backend": "lancedb",
             "path": str(vector_dir),
             "status": "ready",
             "ready": True,
@@ -300,8 +305,104 @@ def vector_report(
         return payload, {"ok": True, "failures": []}, recommendations
     except Exception as exc:
         recommendations.append("LanceDB companion is unreadable; run scripts/repair.vector_index.py to rebuild it from SQLite truth.")
-        payload = {"path": str(vector_dir), "status": "needs_repair", "ready": False, "error": str(exc)}
+        payload = {"backend": "lancedb", "path": str(vector_dir), "status": "needs_repair", "ready": False, "error": str(exc)}
         return payload, {"ok": False, "failures": [f"LanceDB error: {exc}"]}, recommendations
+
+
+def sqlite_vector_search_smoke(conn: sqlite3.Connection, *, dimensions: int, row_count: int) -> str:
+    if row_count <= 0:
+        return "skipped_empty"
+    row = conn.execute("SELECT vector_json FROM vector_records ORDER BY id LIMIT 1").fetchone()
+    if row is None:
+        return "skipped_empty"
+    vector = json.loads(str(row["vector_json"] or "[]"))
+    if dimensions and len(vector) != dimensions:
+        raise RuntimeError(f"stored vector has {len(vector)} dimensions, vector_meta expects {dimensions}")
+    # Touch numeric values to catch malformed JSON without mutating the store.
+    sum(float(item) * float(item) for item in vector)
+    return "ok"
+
+
+def sqlite_vector_report(
+    hermes_home: Path,
+    *,
+    expected_embedder: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    recommendations: list[str] = []
+    vector_path = hermes_home / "scope-recall" / "vector.sqlite3"
+    if not vector_path.exists():
+        recommendations.append("sqlite-bruteforce companion DB is missing; run scripts/repair.vector_index.py after SQLite truth is ready.")
+        payload = {"backend": "sqlite-bruteforce", "path": str(vector_path), "status": "missing", "ready": False}
+        return payload, {"ok": False, "failures": [f"sqlite-bruteforce companion DB not found: {vector_path}"]}, recommendations
+
+    try:
+        conn = sqlite3.connect(f"file:{vector_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            tables = sorted(row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'"))
+            required = {"vector_records", "vector_meta"}
+            missing = sorted(required - set(tables))
+            if missing:
+                recommendations.append("sqlite-bruteforce companion schema is incomplete; run scripts/repair.vector_index.py.")
+                payload = {"backend": "sqlite-bruteforce", "path": str(vector_path), "status": "needs_repair", "ready": False, "tables": tables}
+                return payload, {"ok": False, "failures": [f"sqlite-bruteforce tables missing: {missing}"]}, recommendations
+            row_count = int(conn.execute("SELECT COUNT(*) FROM vector_records").fetchone()[0])
+            meta = {str(row["key"]): str(row["value"]) for row in conn.execute("SELECT key, value FROM vector_meta").fetchall()}
+            dimensions = int(meta.get("dimensions") or 0)
+            table_name = str(meta.get("table_name") or "")
+            search_smoke = sqlite_vector_search_smoke(conn, dimensions=dimensions, row_count=row_count)
+        finally:
+            conn.close()
+
+        payload = {
+            "backend": "sqlite-bruteforce",
+            "path": str(vector_path),
+            "status": "ready",
+            "ready": True,
+            "tables": tables,
+            "table": table_name,
+            "row_count": row_count,
+            "dimensions": dimensions,
+            "search_smoke": search_smoke,
+        }
+        expected_dimensions = int((expected_embedder or {}).get("dimensions") or 0)
+        if dimensions and expected_dimensions and dimensions != expected_dimensions:
+            error = f"dimension mismatch: sqlite-bruteforce companion has {dimensions}, active/configured embedder expects {expected_dimensions}"
+            recommendations.append("sqlite-bruteforce companion dimensions do not match the active/configured embedder; run scripts/repair.vector_index.py to rebuild from SQLite truth.")
+            payload.update(
+                {
+                    "status": "needs_repair",
+                    "ready": False,
+                    "error": error,
+                    "expected_embedder": dict(expected_embedder or {}),
+                }
+            )
+            return payload, {"ok": False, "failures": [error]}, recommendations
+        return payload, {"ok": True, "failures": []}, recommendations
+    except Exception as exc:
+        recommendations.append("sqlite-bruteforce companion is unreadable; run scripts/repair.vector_index.py to rebuild it from SQLite truth.")
+        payload = {"backend": "sqlite-bruteforce", "path": str(vector_path), "status": "needs_repair", "ready": False, "error": str(exc)}
+        return payload, {"ok": False, "failures": [f"sqlite-bruteforce error: {exc}"]}, recommendations
+
+
+def vector_report(
+    hermes_home: Path,
+    *,
+    expected_embedder: dict[str, Any] | None = None,
+    backend: str = "lancedb",
+) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    normalized = "sqlite-bruteforce" if str(backend or "lancedb").strip().lower() == "sqlite" else str(backend or "lancedb").strip().lower()
+    if normalized == "sqlite-bruteforce":
+        return sqlite_vector_report(hermes_home, expected_embedder=expected_embedder)
+    if normalized == "lancedb":
+        return lancedb_vector_report(hermes_home, expected_embedder=expected_embedder)
+    payload = {"backend": normalized, "status": "unsupported", "ready": False}
+    return payload, {"ok": False, "failures": [f"unsupported vector backend: {normalized}"]}, ["Set vector.backend to 'lancedb' or 'sqlite-bruteforce'."]
+
+
+def disabled_vector_report() -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    payload = {"enabled": False, "status": "disabled", "ready": False}
+    return payload, {"ok": True, "failures": []}, []
 
 
 def main() -> int:
@@ -316,15 +417,22 @@ def main() -> int:
         runtime_config = load_runtime_config(source_root, hermes_home)
         expected_embedder = expected_embedder_from_config(runtime_config)
         sqlite_payload, sqlite_check, sqlite_recommendations = sqlite_report(hermes_home)
-        vector_payload, vector_check, vector_recommendations = vector_report(hermes_home, expected_embedder=expected_embedder)
+        if vector_enabled_from_config(runtime_config):
+            backend = vector_backend_from_config(runtime_config)
+            vector_payload, vector_check, vector_recommendations = vector_report(hermes_home, expected_embedder=expected_embedder, backend=backend)
+        else:
+            backend = "disabled"
+            vector_payload, vector_check, vector_recommendations = disabled_vector_report()
+        vector_payload.setdefault("backend", backend)
         payload["runtime"] = {
             "hermes_home": str(hermes_home),
             "expected_embedder": expected_embedder,
+            "vector_backend": backend,
             "sqlite": sqlite_payload,
             "vector": vector_payload,
         }
         checks["sqlite_truth"] = sqlite_check
-        checks["lancedb_companion"] = vector_check
+        checks["vector_companion"] = vector_check
         recommendations.extend(sqlite_recommendations)
         recommendations.extend(vector_recommendations)
 

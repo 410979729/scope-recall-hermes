@@ -156,7 +156,7 @@ SCOPE_RECALL_GOVERN_SCHEMA = {
 
 SCOPE_RECALL_REPAIR_SCHEMA = {
     "name": "scope_recall_repair",
-    "description": "Repair/rebuild the LanceDB vector companion from SQLite truth. Operator-only: requires maintenance_tools_enabled=true.",
+    "description": "Repair/rebuild the configured vector companion from SQLite truth. Operator-only: requires maintenance_tools_enabled=true.",
     "parameters": {"type": "object", "properties": {}},
 }
 

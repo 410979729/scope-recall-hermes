@@ -33,7 +33,7 @@ jobs:
 
       - name: Install scope-recall test dependencies
         run: |
-          python -m pip install -e .
+          python -m pip install -e ".[lancedb]"
           python -m pip install pytest wheel
 
       - name: Run full V1 release gate

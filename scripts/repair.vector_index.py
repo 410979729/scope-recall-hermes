@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Rebuild the scope-recall LanceDB companion from SQLite truth.
+"""Rebuild the scope-recall vector companion from SQLite truth.
 
 This script is intentionally conservative:
 - SQLite remains the authority.
-- Existing LanceDB data is backed up before rebuild unless --no-backup is passed.
-- The script only touches $HERMES_HOME/scope-recall/lancedb by default.
+- Existing vector companion data is backed up before rebuild unless --no-backup is passed.
+- The script only touches the configured companion path under $HERMES_HOME/scope-recall/ by default.
 
 Run it after stopping/restarting Hermes if you need a clean companion index for
-release-grade storage hygiene or after changing embedder dimensions.
+release-grade storage hygiene or after changing embedder dimensions/backends.
 """
 
 from __future__ import annotations
@@ -39,14 +39,16 @@ if PACKAGE_NAME not in sys.modules:
 
 from scope_recall_repair_runtime.config import load_runtime_config  # noqa: E402
 from scope_recall_repair_runtime.embedders import build_embedder  # noqa: E402
+from scope_recall_repair_runtime.sqlite_vector_store import SQLiteBruteForceVectorStore  # type: ignore[import-not-found]  # noqa: E402
 from scope_recall_repair_runtime.vector_store import LanceVectorStore  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Rebuild scope-recall LanceDB companion from SQLite truth")
+    parser = argparse.ArgumentParser(description="Rebuild scope-recall vector companion from SQLite truth")
     parser.add_argument("--hermes-home", default=os.environ.get("HERMES_HOME", "~/.hermes"), help="Hermes home/profile path")
-    parser.add_argument("--dry-run", action="store_true", help="Inspect planned rebuild without writing LanceDB")
-    parser.add_argument("--no-backup", action="store_true", help="Do not copy the old lancedb directory before rebuild")
+    parser.add_argument("--backend", default="", choices=["", "lancedb", "sqlite-bruteforce", "sqlite"], help="Override vector.backend from config")
+    parser.add_argument("--dry-run", action="store_true", help="Inspect planned rebuild without writing vector companion data")
+    parser.add_argument("--no-backup", action="store_true", help="Do not copy the old vector companion before rebuild")
     return parser.parse_args()
 
 
@@ -79,12 +81,85 @@ def choose_embedder(config: dict[str, Any]):
     return embedder
 
 
+def normalize_backend(value: str) -> str:
+    backend = str(value or "lancedb").strip().lower()
+    return "sqlite-bruteforce" if backend == "sqlite" else backend
+
+
+def backend_from_config(config: dict[str, Any], override: str = "") -> str:
+    if override:
+        return normalize_backend(override)
+    vector_config = dict(config.get("vector") or {})
+    return normalize_backend(str(vector_config.get("backend") or "lancedb"))
+
+
+def vector_target(storage_dir: Path, backend: str) -> Path:
+    if backend == "lancedb":
+        return storage_dir / "lancedb"
+    if backend == "sqlite-bruteforce":
+        return storage_dir / "vector.sqlite3"
+    raise RuntimeError(f"unsupported vector backend: {backend}")
+
+
+def sqlite_sidecar_paths(db_path: Path) -> list[Path]:
+    return [db_path, Path(f"{db_path}-wal"), Path(f"{db_path}-shm")]
+
+
+def backup_existing(target: Path, storage_dir: Path, backend: str) -> str:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d.%H%M%S")
+    backup_root = storage_dir / "backups"
+    backup_root.mkdir(parents=True, exist_ok=True)
+    if backend == "lancedb":
+        if not target.exists():
+            return ""
+        backup = backup_root / f"lancedb.pre-rebuild.{stamp}"
+        shutil.copytree(target, backup)
+        return str(backup)
+    if backend == "sqlite-bruteforce":
+        existing = [path for path in sqlite_sidecar_paths(target) if path.exists()]
+        if not existing:
+            return ""
+        backup = backup_root / f"sqlite-vector.pre-rebuild.{stamp}"
+        backup.mkdir(parents=True, exist_ok=True)
+        for path in existing:
+            shutil.copy2(path, backup / path.name)
+        return str(backup)
+    raise RuntimeError(f"unsupported vector backend: {backend}")
+
+
+def remove_existing(target: Path, backend: str) -> None:
+    if backend == "lancedb":
+        if target.exists():
+            shutil.rmtree(target)
+        target.mkdir(parents=True, exist_ok=True)
+        return
+    if backend == "sqlite-bruteforce":
+        target.parent.mkdir(parents=True, exist_ok=True)
+        for path in sqlite_sidecar_paths(target):
+            path.unlink(missing_ok=True)
+        return
+    raise RuntimeError(f"unsupported vector backend: {backend}")
+
+
+def open_store(target: Path, *, backend: str, table_name: str, dimensions: int, metric: str):
+    if backend == "lancedb":
+        store = LanceVectorStore(target, table_name=table_name, dimensions=dimensions, metric=metric)
+        if not store.is_available():
+            raise RuntimeError("lancedb/pyarrow is not installed")
+        store.open()
+        return store
+    if backend == "sqlite-bruteforce":
+        store = SQLiteBruteForceVectorStore(target, table_name=table_name, dimensions=dimensions, metric=metric)
+        store.open()
+        return store
+    raise RuntimeError(f"unsupported vector backend: {backend}")
+
+
 def main() -> int:
     args = parse_args()
     hermes_home = Path(args.hermes_home).expanduser().resolve()
     storage_dir = hermes_home / "scope-recall"
     db_path = storage_dir / "memory.sqlite3"
-    vector_dir = storage_dir / "lancedb"
 
     if not db_path.exists():
         print(json.dumps({"ok": False, "error": f"SQLite truth DB not found: {db_path}"}, ensure_ascii=False))
@@ -92,19 +167,22 @@ def main() -> int:
 
     config = load_runtime_config(PLUGIN_ROOT, storage_dir)
     vector_config = dict(config.get("vector") or {})
+    backend = backend_from_config(config, args.backend)
     table_name = str(vector_config.get("table_name") or "memories")
     metric = str((config.get("retrieval") or {}).get("metric") or "cosine")
     rows = load_rows(db_path)
     if not bool(vector_config.get("index_general", False)):
         rows = [row for row in rows if str(row["target"]) != "general"]
     embedder = choose_embedder(config)
+    target = vector_target(storage_dir, backend)
 
     plan = {
         "ok": True,
         "dry_run": bool(args.dry_run),
         "hermes_home": str(hermes_home),
         "sqlite_db": str(db_path),
-        "vector_dir": str(vector_dir),
+        "vector_backend": backend,
+        "vector_path": str(target),
         "table": table_name,
         "rows": len(rows),
         "embedder": embedder.describe(),
@@ -114,20 +192,12 @@ def main() -> int:
         return 0
 
     backup_path = ""
-    if vector_dir.exists() and not args.no_backup:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d.%H%M%S")
-        backup_root = storage_dir / "backups"
-        backup_root.mkdir(parents=True, exist_ok=True)
-        backup = backup_root / f"lancedb.pre-rebuild.{stamp}"
-        shutil.copytree(vector_dir, backup)
-        backup_path = str(backup)
+    if not args.no_backup:
+        backup_path = backup_existing(target, storage_dir, backend)
 
-    if vector_dir.exists():
-        shutil.rmtree(vector_dir)
-    vector_dir.mkdir(parents=True, exist_ok=True)
+    remove_existing(target, backend)
 
-    store = LanceVectorStore(vector_dir, table_name=table_name, dimensions=embedder.dimensions, metric=metric)
-    store.open()
+    store = open_store(target, backend=backend, table_name=table_name, dimensions=embedder.dimensions, metric=metric)
     try:
         payload: list[dict[str, Any]] = []
         batch_size = 100

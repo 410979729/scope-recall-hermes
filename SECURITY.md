@@ -37,4 +37,4 @@ Out of scope:
 
 ## Security posture
 
-`scope-recall` keeps SQLite as the durable truth source and treats LanceDB as rebuildable companion state. If the vector companion is damaged, prefer repair/rebuild from SQLite truth rather than trusting vector-only rows.
+`scope-recall` keeps SQLite as the durable truth source and treats vector backends as rebuildable companion state. If the vector companion is damaged, prefer repair/rebuild from SQLite truth rather than trusting vector-only rows.

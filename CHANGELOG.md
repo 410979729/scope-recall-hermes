@@ -2,6 +2,23 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [1.0.9] - 2026-06-09
+
+### Added
+- Added the `sqlite-bruteforce` vector backend for non-AVX or native-dependency-sensitive hosts. It stores rebuildable vector companion rows in `$HERMES_HOME/scope-recall/vector.sqlite3` while keeping `$HERMES_HOME/scope-recall/memory.sqlite3` as the truth source.
+- Added `docs/naming.md` to define the public `scope-recall` spelling versus Python/tool/config identifiers that use `scope_recall`.
+- Added `docs/hermes-upstream-recommendation-plan.md` with the standalone-provider checklist and Hermes upstream recommendation route.
+- Added regression coverage for native-free vector imports, `sqlite-bruteforce` runtime sync/search, doctor reporting, and repair-script rebuilds.
+
+### Changed
+- Moved `lancedb`/`pyarrow` to the `lancedb` optional dependency extra. Default package import no longer requires native vector dependencies, while CI and LanceDB installs use `.[lancedb]`.
+- Extended `vector.backend` configuration, runtime dispatch, doctor diagnostics, release checks, and repair tooling to cover both `lancedb` and `sqlite-bruteforce` companions.
+- Updated installation docs to distinguish the recommended LanceDB path from the native-free SQLite fallback path.
+
+### Fixed
+- Fixed the no-AVX/native-import failure mode where importing vector runtime modules could fail before the operator had a chance to select a safer backend.
+- Fixed the #4 naming ambiguity by documenting where each spelling is authoritative instead of performing a risky whole-repository rename.
+
 ## [1.0.8] - 2026-06-03
 
 ### Added
@@ -135,7 +152,7 @@ All notable changes to `scope-recall` will be documented in this file.
 ### Changed
 - Promoted package and plugin metadata from `0.2.0` to `1.0.0`, while keeping the public package classifier at beta/release-candidate maturity until broader field use.
 - Aligned the public Python support floor and CI matrix with the current Hermes runtime requirement of Python 3.11+.
-- Tightened V1 documentation around SQLite truth ownership, LanceDB companion-cache rebuildability, and non-goals versus OpenClaw `memory-lancedb-pro` parity.
+- Tightened V1 documentation around SQLite truth ownership, LanceDB companion-cache rebuildability, and OpenClaw migration/compatibility boundaries.
 - Changed GitHub Actions to run `scripts/check.release.py` as the remote CI gate so CI matches the local V1 release audit.
 - Replaced agent-specific author/copyright wording with project contributor wording and added `SECURITY.md` plus a `py.typed` marker for public-release hygiene.
 - Fixed scope id serialization to avoid delimiter-collision between user/chat/thread/session components and aligned `scope_recall_dedupe(scope_only=false)` with its documented cross-scope semantics.

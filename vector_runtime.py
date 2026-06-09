@@ -5,6 +5,7 @@ from typing import Any
 
 from .embedders import build_embedder
 from .gating import config_bool
+from .sqlite_vector_store import SQLiteBruteForceVectorStore
 from .vector_store import LanceVectorStore
 
 logger = logging.getLogger(__name__)
@@ -16,12 +17,14 @@ def mark_vector_needs_repair(provider: Any, exc: Exception | str) -> None:
     provider._vector_message = str(exc)
 
 
-def _rebuild_vector_store(provider: Any, *, dimensions: int) -> None:
+def _open_vector_store(provider: Any, *, dimensions: int) -> None:
     if provider._storage_dir is None:
         raise RuntimeError("storage not initialized")
     table_name = str((provider._vector_config or {}).get("table_name") or "memories")
     metric = str((provider._retrieval_config or {}).get("metric") or "cosine")
-    vector_dir = provider._storage_dir / "lancedb"
+    backend = str(getattr(provider, "_vector_backend", "") or "lancedb").strip().lower()
+    if backend == "sqlite":
+        backend = "sqlite-bruteforce"
     try:
         old_store = provider._vector_store
         if old_store is not None:
@@ -29,9 +32,24 @@ def _rebuild_vector_store(provider: Any, *, dimensions: int) -> None:
     except Exception:
         pass
 
+    if backend == "sqlite-bruteforce":
+        temp_store = SQLiteBruteForceVectorStore(
+            provider._storage_dir / "vector.sqlite3",
+            table_name=table_name,
+            dimensions=dimensions,
+            metric=metric,
+        )
+        temp_store.open()
+        provider._vector_store = temp_store
+        return
+
+    if backend != "lancedb":
+        raise RuntimeError(f"unsupported backend {backend}")
+
+    vector_dir = provider._storage_dir / "lancedb"
     temp_store = LanceVectorStore(vector_dir, table_name=table_name, dimensions=dimensions, metric=metric)
     if not temp_store.is_available():
-        raise RuntimeError("lancedb is not installed")
+        raise RuntimeError("lancedb/pyarrow is not installed")
     temp_store.open()
 
     schema_dimensions = 0
@@ -85,11 +103,6 @@ def setup_vector_layer(provider: Any) -> None:
         provider._vector_status = "degraded"
         provider._vector_message = provider._vector_message or f"embedder {provider._embedder.provider} unavailable"
         return
-    if provider._vector_backend != "lancedb":
-        provider._vector_status = "degraded"
-        provider._vector_message = f"unsupported backend {provider._vector_backend}"
-        return
-
     if provider._embedder.provider == "sentence-transformers" and hasattr(provider._embedder, "_model_or_raise"):
         try:
             provider._embedder._model_or_raise()
@@ -100,7 +113,7 @@ def setup_vector_layer(provider: Any) -> None:
             return
 
     try:
-        _rebuild_vector_store(provider, dimensions=provider._embedder.dimensions)
+        _open_vector_store(provider, dimensions=provider._embedder.dimensions)
         provider._vector_row_count = sync_vector_index(provider)
         refresh_vector_audit(provider)
     except Exception as exc:

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scope-recall"
-version = "1.0.8"
-description = "Hermes scoped memory provider with SQLite truth, LanceDB semantic recall, and nightly workflow digest."
+version = "1.0.9"
+description = "Hermes scoped memory provider with SQLite truth, optional vector companions, and nightly workflow digest."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -13,7 +13,7 @@ license-files = ["LICENSE"]
 authors = [
   { name = "scope-recall contributors" }
 ]
-keywords = ["hermes", "memory", "sqlite", "lancedb", "plugin"]
+keywords = ["hermes", "memory", "sqlite", "lancedb", "plugin", "vector"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Programming Language :: Python :: 3",
@@ -21,7 +21,14 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
 ]
-dependencies = [
+dependencies = []
+
+[project.optional-dependencies]
+lancedb = [
+  "lancedb>=0.30.2",
+  "pyarrow>=24,<25",
+]
+all = [
   "lancedb>=0.30.2",
   "pyarrow>=24,<25",
 ]

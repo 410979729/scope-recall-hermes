@@ -41,7 +41,7 @@ Known OpenClaw LanceDB source rows commonly include fields such as:
 `scope-recall` expects:
 
 - SQLite truth rows as the durable authority
-- a companion LanceDB index rebuilt from the SQLite truth layer
+- a configured companion vector index rebuilt from the SQLite truth layer
 - Hermes-style runtime scope fields such as `platform`, `user_id`, `chat_id`, `thread_id`, `gateway_session_key`, `agent_identity`, and `agent_workspace`
 
 So OpenClaw import must be an explicit transform, not a folder copy.
@@ -79,7 +79,7 @@ Look for:
 
 - `provider: scope-recall`
 - `migration.migrated: true` when old local storage was copied
-- expected SQLite/LanceDB paths under `$HERMES_HOME/scope-recall/`
+- expected SQLite/vector companion paths under `$HERMES_HOME/scope-recall/`
 
 ## Importing OpenClaw history
 

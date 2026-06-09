@@ -1,6 +1,6 @@
 name: scope-recall
-version: 1.0.8
-description: Scoped local memory provider with SQLite truth, LanceDB semantic recall, and nightly workflow digest.
+version: 1.0.9
+description: Scoped local memory provider with SQLite truth, optional vector companions, and nightly workflow digest.
 hooks:
   - on_turn_start
   - on_session_end

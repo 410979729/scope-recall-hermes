@@ -36,11 +36,17 @@ from scope_recall_hygiene_runtime.hygiene import build_hygiene_report  # noqa: E
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build a read-only Scope Recall SQLite hygiene report")
     parser.add_argument("--db", required=True, help="Path to scope-recall memory.sqlite3")
-    parser.add_argument("--vector-dir", help="Path to Scope Recall LanceDB directory; defaults to sibling lancedb/ beside --db")
-    parser.add_argument("--vector-table", default="memories", help="LanceDB table name")
+    parser.add_argument("--vector-backend", choices=["lancedb", "sqlite-bruteforce", "sqlite"], default="lancedb", help="Vector companion backend to inspect; default lancedb for backward compatibility")
+    parser.add_argument("--vector-dir", help="Path to vector companion: LanceDB directory or sqlite-bruteforce vector.sqlite3 file")
+    parser.add_argument("--vector-table", default="memories", help="Vector table name")
     parser.add_argument("--format", choices=["json", "markdown"], default="json")
     parser.add_argument("--limit", type=int, default=200, help="Maximum examples per category")
     return parser.parse_args()
+
+
+def normalize_backend(value: str) -> str:
+    backend = str(value or "lancedb").strip().lower()
+    return "sqlite-bruteforce" if backend == "sqlite" else backend
 
 
 def _table_rows(table: Any) -> list[dict[str, Any]]:
@@ -86,6 +92,48 @@ class ReadOnlyLanceVectorRecords:
         return records
 
 
+class ReadOnlySQLiteVectorRecords:
+    def __init__(self, vector_path: Path) -> None:
+        self.vector_path = vector_path
+
+    def list_records(self) -> dict[str, dict[str, Any]]:
+        if not self.vector_path.exists():
+            return {}
+        try:
+            conn = sqlite3.connect(f"file:{self.vector_path}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            try:
+                tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+                if "vector_records" not in tables:
+                    return {}
+                rows = conn.execute(
+                    """
+                    SELECT id, scope_id, source, target, content, summary, updated_at
+                    FROM vector_records
+                    ORDER BY updated_at ASC, id ASC
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+        except Exception:
+            return {}
+        records: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            memory_id = str(row["id"] or "")
+            if not memory_id:
+                continue
+            records[memory_id] = {
+                "id": memory_id,
+                "scope_id": str(row["scope_id"] or ""),
+                "source": str(row["source"] or ""),
+                "target": str(row["target"] or ""),
+                "content": str(row["content"] or ""),
+                "summary": str(row["summary"] or ""),
+                "updated_at": str(row["updated_at"] or ""),
+            }
+        return records
+
+
 def render_markdown(report: dict[str, Any]) -> str:
     lines = ["# Scope Recall Hygiene Report", "", f"Total rows: {report.get('total_rows', 0)}", "", "## Totals by target"]
     for target, count in (report.get("totals_by_target") or {}).items():
@@ -122,23 +170,37 @@ def render_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def resolve_vector_source(db_path: Path, *, backend: str, vector_dir: str, table_name: str) -> tuple[Any, dict[str, Any]]:
+    if backend == "sqlite-bruteforce":
+        vector_path = Path(vector_dir).expanduser().resolve() if vector_dir else (db_path.parent / "vector.sqlite3")
+        return ReadOnlySQLiteVectorRecords(vector_path), {
+            "backend": backend,
+            "enabled": vector_path.exists(),
+            "path": str(vector_path),
+            "table": table_name,
+        }
+    vector_path = Path(vector_dir).expanduser().resolve() if vector_dir else (db_path.parent / "lancedb")
+    return ReadOnlyLanceVectorRecords(vector_path, table_name), {
+        "backend": "lancedb",
+        "enabled": lancedb is not None and vector_path.exists(),
+        "path": str(vector_path),
+        "table": table_name,
+    }
+
+
 def main() -> int:
     args = parse_args()
     db_path = Path(args.db).expanduser().resolve()
     if not db_path.exists():
         print(json.dumps({"ok": False, "error": f"SQLite truth DB not found: {db_path}"}, ensure_ascii=False))
         return 1
-    vector_dir = Path(args.vector_dir).expanduser().resolve() if args.vector_dir else (db_path.parent / "lancedb")
-    vector_store = ReadOnlyLanceVectorRecords(vector_dir, str(args.vector_table or "memories"))
+    backend = normalize_backend(args.vector_backend)
+    vector_store, vector_source = resolve_vector_source(db_path, backend=backend, vector_dir=str(args.vector_dir or ""), table_name=str(args.vector_table or "memories"))
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
         report = build_hygiene_report(conn, vector_store=vector_store, limit=args.limit)
-        report["vector_report_source"] = {
-            "enabled": lancedb is not None and vector_dir.exists(),
-            "path": str(vector_dir),
-            "table": str(args.vector_table or "memories"),
-        }
+        report["vector_report_source"] = vector_source
     finally:
         conn.close()
     if args.format == "markdown":

@@ -5,14 +5,23 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
 
-import pyarrow as pa
-
 logger = logging.getLogger(__name__)
 
-try:
-    import lancedb
-except Exception:  # pragma: no cover - optional dependency
-    lancedb = None
+
+def _optional_lancedb():
+    try:
+        import lancedb  # type: ignore
+    except Exception:  # pragma: no cover - optional dependency
+        return None
+    return lancedb
+
+
+def _optional_pyarrow():
+    try:
+        import pyarrow as pa  # type: ignore
+    except Exception:  # pragma: no cover - optional dependency
+        return None
+    return pa
 
 
 
@@ -46,11 +55,12 @@ class LanceVectorStore:
         return self._dimensions
 
     def is_available(self) -> bool:
-        return lancedb is not None
+        return _optional_lancedb() is not None and _optional_pyarrow() is not None
 
     def open(self) -> None:
-        if not self.is_available():
-            raise RuntimeError("lancedb is not installed")
+        lancedb = _optional_lancedb()
+        if lancedb is None or _optional_pyarrow() is None:
+            raise RuntimeError("lancedb/pyarrow is not installed")
         self._db_path.mkdir(parents=True, exist_ok=True)
         self._db = lancedb.connect(str(self._db_path))
         self._table = self._open_or_create_table()
@@ -70,7 +80,10 @@ class LanceVectorStore:
         schema = self._schema()
         return self._db.create_table(self._table_name, schema=schema)
 
-    def _schema(self) -> pa.Schema:
+    def _schema(self):
+        pa = _optional_pyarrow()
+        if pa is None:
+            raise RuntimeError("pyarrow is not installed")
         return pa.schema(
             [
                 pa.field("id", pa.string()),
@@ -202,6 +215,9 @@ class LanceVectorStore:
         self._db.drop_table(self._table_name, ignore_missing=True)
         schema = self._schema()
         if repaired:
+            pa = _optional_pyarrow()
+            if pa is None:
+                raise RuntimeError("pyarrow is not installed")
             self._table = self._db.create_table(self._table_name, data=pa.Table.from_pylist(repaired, schema=schema))
         else:
             self._table = self._db.create_table(self._table_name, schema=schema)

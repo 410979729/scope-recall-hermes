@@ -87,21 +87,17 @@ OpenClaw history reuse is treated as an **explicit import problem**, not transpa
 - `scope_recall_repair`
 - LanceDB vector-search failure degradation to lexical recall with vector status marked `needs_repair`
 
-It still does not claim full OpenClaw `memory-lancedb-pro` parity. The remaining differences are:
+The remaining implementation differences are:
 
-- ordinary write-time extraction / merge is deterministic and conservative; the LLM path is a nightly batch digest, not an always-on created/merged/skipped governance classifier
-- semantic merge is score/rule-based, not a general contradiction resolver
-- tier governance currently classifies and reports decay/archive candidates, but does not run a full summarization / promotion / compression pipeline
-- no automatic reuse of old OpenClaw LanceDB stores without explicit transformation
+- ordinary write-time extraction / merge is deterministic and conservative; LLM-assisted consolidation runs through the nightly batch digest path
+- semantic merge uses scores/rules with conservative evidence rather than broad contradiction reasoning
+- tier governance currently classifies and reports decay/archive candidates; summarization, promotion, and compression remain explicit follow-up workflows
+- old OpenClaw LanceDB stores move through explicit transformation into SQLite truth rows before vector rebuild
 
 ## Honest claim boundary
 
 The correct way to describe `scope-recall` today is:
 
-> A Hermes local memory provider for current-turn recall with SQLite truth storage, LanceDB vector companion retrieval, strong runtime scope isolation, deterministic write-time governance, nightly digest consolidation, and explicit migration boundaries.
+> A Hermes local memory provider for current-turn recall with SQLite truth storage, configurable vector companion retrieval, strong runtime scope isolation, deterministic write-time governance, nightly digest consolidation, and explicit migration boundaries.
 
-It should **not** be described as:
-
-- a drop-in replacement for OpenClaw `memory-lancedb-pro`
-- a direct reuse wrapper around old `.lance` stores
-- full feature parity with the upstream governance stack
+When describing OpenClaw migration, use explicit importer and transformation language rather than drop-in replacement, direct `.lance` reuse, or broad feature-parity wording.

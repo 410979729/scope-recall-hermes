@@ -15,6 +15,7 @@ from plugins.memory import load_memory_provider
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "import.openclaw.memory_lancedb_pro.py"
 DOCTOR_PATH = Path(__file__).resolve().parents[1] / "scripts" / "doctor.py"
+REPAIR_PATH = Path(__file__).resolve().parents[1] / "scripts" / "repair.vector_index.py"
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME = "scope_recall"
 if PACKAGE_NAME not in sys.modules:
@@ -239,6 +240,119 @@ def test_doctor_vector_report_marks_dimension_mismatch_needs_repair(tmp_path, mo
     assert "dimension mismatch" in payload["error"]
     assert check["ok"] is False
     assert "repair.vector_index.py" in "\n".join(recommendations)
+
+
+
+def test_doctor_vector_report_accepts_sqlite_bruteforce_backend(tmp_path):
+    spec = importlib.util.spec_from_file_location("scope_recall_doctor", DOCTOR_PATH)
+    assert spec is not None
+    assert spec.loader is not None
+    doctor = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(doctor)
+
+    from scope_recall.sqlite_vector_store import SQLiteBruteForceVectorStore  # type: ignore[import-not-found]
+
+    store = SQLiteBruteForceVectorStore(tmp_path / "scope-recall" / "vector.sqlite3", table_name="memories", dimensions=2)
+    store.open()
+    try:
+        store.upsert_records(
+            [
+                {
+                    "id": "memory-1",
+                    "scope_id": "scope-a",
+                    "source": "tool-store",
+                    "target": "memory",
+                    "content": "non native vector backend",
+                    "summary": "sqlite vector",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                    "vector": [1.0, 0.0],
+                }
+            ]
+        )
+    finally:
+        store.close()
+
+    expected_embedder = {"source": "embedder", "provider": "local-debug", "model": "debug", "dimensions": 2}
+    payload, check, recommendations = doctor.vector_report(tmp_path, expected_embedder=expected_embedder, backend="sqlite-bruteforce")
+
+    assert payload["backend"] == "sqlite-bruteforce"
+    assert payload["status"] == "ready"
+    assert payload["row_count"] == 1
+    assert payload["dimensions"] == 2
+    assert payload["search_smoke"] == "ok"
+    assert check["ok"] is True
+    assert recommendations == []
+
+
+
+def test_repair_vector_index_rebuilds_sqlite_bruteforce_backend(tmp_path):
+    from scope_recall.sql_store import ensure_schema, store_row  # type: ignore[import-not-found]
+
+    storage_dir = tmp_path / "scope-recall"
+    storage_dir.mkdir(parents=True)
+    (storage_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "vector": {
+                    "enabled": True,
+                    "backend": "sqlite-bruteforce",
+                    "table_name": "memories",
+                    "index_general": False,
+                    "embedder": {"provider": "local-debug", "dimensions": 16, "model": "debug-hash-v1"},
+                },
+                "retrieval": {"metric": "cosine"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    conn = sqlite3.connect(storage_dir / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        store_row(
+            conn,
+            memory_id="memory-1",
+            scope_id="scope-a",
+            platform="cli",
+            user_id="joy",
+            chat_id="",
+            thread_id="",
+            gateway_session_key="",
+            agent_identity="yuheng",
+            agent_workspace="hermes",
+            session_id="session",
+            source="tool-store",
+            target="memory",
+            content="SQLite brute force repair rebuilds from SQLite truth.",
+        )
+    finally:
+        conn.close()
+
+    result = subprocess.run(
+        [sys.executable, str(REPAIR_PATH), "--hermes-home", str(tmp_path), "--no-backup"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["vector_backend"] == "sqlite-bruteforce"
+    assert payload["vector_path"].endswith("scope-recall/vector.sqlite3")
+    assert payload["rows"] == 1
+    assert payload["audit"] == {"physical_rows": 1, "unique_ids": 1, "duplicate_rows": 0, "duplicate_ids": 0}
+
+    result = subprocess.run(
+        [sys.executable, str(DOCTOR_PATH), "--source-root", str(PLUGIN_ROOT), "--hermes-home", str(tmp_path)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    doctor_payload = json.loads(result.stdout)
+    assert doctor_payload["runtime"]["vector_backend"] == "sqlite-bruteforce"
+    assert doctor_payload["runtime"]["vector"]["status"] == "ready"
 
 
 

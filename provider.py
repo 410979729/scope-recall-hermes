@@ -95,7 +95,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._plugin_dir = Path(__file__).resolve().parent
         self._last_recall_turns: dict[str, int] = {}
         self._embedder: BaseEmbedder | None = None
-        self._vector_store: LanceVectorStore | None = None
+        self._vector_store: Any | None = None
         self._vector_enabled = False
         self._vector_ready = False
         self._vector_status = "disabled"
@@ -142,9 +142,15 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             },
             {
                 "key": "vector.enabled",
-                "description": "Enable LanceDB vector companion layer",
+                "description": "Enable the rebuildable vector companion layer",
                 "default": "true",
                 "choices": ["true", "false"],
+            },
+            {
+                "key": "vector.backend",
+                "description": "Vector companion backend: LanceDB for ANN search, or sqlite-bruteforce for non-AVX/native-free hosts",
+                "default": "lancedb",
+                "choices": ["lancedb", "sqlite-bruteforce"],
             },
             {
                 "key": "vector.embedder.provider",
@@ -214,7 +220,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
     def system_prompt_block(self) -> str:
         suffix = ""
         if self._vector_enabled and self._vector_ready:
-            suffix = " Hybrid lexical+vector recall is enabled with a local LanceDB companion index."
+            suffix = f" Hybrid lexical+vector recall is enabled with a local {self._vector_backend} companion index."
         elif self._vector_enabled and not self._vector_ready:
             suffix = f" Vector companion requested but not active ({self._vector_message or self._vector_status})."
         return (
