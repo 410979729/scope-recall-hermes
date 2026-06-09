@@ -12,6 +12,19 @@ The stable public provider name is:
 
 The legacy `lancepro` naming exists only as a transition compatibility path. New installs and documentation should use `scope-recall`.
 
+The V1 naming split is intentional:
+
+- use `scope-recall` for the public project identity, `plugin.yaml` and
+  `pyproject.toml` project names, the Hermes `memory.provider` value, unpacked
+  plugin and provider-owned storage directories, and user-facing wording
+- use `scope_recall` where an identifier is required, including Python
+  imports/modules/functions, Hermes tool names, config keys, and SQL
+  table/index names
+- use uppercase `SCOPE_RECALL_*` for environment variables
+
+These existing names are compatibility surfaces. V1 does not mechanically
+rename one form to the other.
+
 ## Stable V1 install shape
 
 The supported Hermes install shape for V1 is an unpacked local plugin directory:

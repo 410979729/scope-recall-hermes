@@ -36,6 +36,21 @@ This replaces the old `lancepro` naming, which was misleading because the earlie
 - **Operator actions fail closed**: cross-scope export/dedupe/govern/repair paths require explicit maintenance mode.
 - **Install remains practical**: hosted embeddings are used when configured, while deterministic `local-hash` keeps no-key bootstrap available.
 
+### Naming convention
+
+The hyphenated and underscored forms have separate, intentional roles:
+
+| Form | Use |
+| --- | --- |
+| `scope-recall` | Public project/provider identity, package display name, plugin and storage directory names, and user-facing wording |
+| `scope_recall` | Python imports and identifiers, Hermes tool names, config keys, and SQL table/index names |
+| `SCOPE_RECALL_*` | Environment variables |
+
+For example, install the plugin under `$HERMES_HOME/plugins/scope-recall/`, select
+it with `memory.provider: scope-recall`, import it as `scope_recall`, and call
+tools such as `scope_recall_store`. These names are compatibility surfaces and
+should not be mechanically renamed to one spelling.
+
 ### Deployment boundaries
 
 `scope-recall` is the local per-Hermes recall layer. In multi-agent deployments that already run a central shared backend such as PostgreSQL, keep that backend as the cross-agent source of truth and connect it to `scope-recall` through explicit import/export/tool boundaries.
