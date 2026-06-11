@@ -1,5 +1,5 @@
 name: scope-recall
-version: 1.0.10
+version: 1.0.11
 description: Scoped local memory provider with SQLite truth, optional vector companions, and nightly workflow digest.
 hooks:
   - on_turn_start

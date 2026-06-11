@@ -17,6 +17,9 @@ class FakeEmbedder:
         self.embedded_texts.append(text)
         return [1.0, 0.0]
 
+    def embed_query(self, text):
+        return self.embed(text)
+
     def embed_texts(self, texts):
         texts = list(texts)
         self.embedded_texts.extend(texts)

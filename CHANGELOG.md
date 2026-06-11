@@ -2,6 +2,16 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [1.0.11] - 2026-06-11
+
+### Added
+- Added a `MiniMaxEmbedder` (provider: `minimax`) and a `build_embedder` route for the MiniMax `embo-01` embedding endpoint. The endpoint is non-OpenAI-compatible (`texts` plural, `type: "db" | "query"`, `vectors` reply), so the embedder talks to it directly via `urllib`.
+- Added MiniMax document/query request-type separation: vector indexing/upserts use `db`, while vector search uses `query` through the embedder query path.
+- Added optional MiniMax `GroupId` support for accounts that still require it, with `group_id` / `group_id_env` configuration.
+
+### Changed
+- Bumped package, plugin, release-check metadata, README, and stability docs to `1.0.11`.
+
 ## [1.0.10] - 2026-06-10
 
 ### Added

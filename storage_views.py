@@ -195,7 +195,7 @@ def search_vector_memories(provider: Any, query: str, *, limit: int) -> list[Rec
     if not provider._vector_ready or not provider._vector_store or not provider._embedder:
         return []
     try:
-        query_vector = provider._embedder.embed(query)
+        query_vector = provider._embedder.embed_query(query)
         top_k = max(limit, int((provider._vector_config or {}).get("top_k") or limit))
         rows = []
         for scope_id in provider._accessible_scope_ids:

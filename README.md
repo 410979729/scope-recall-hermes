@@ -20,7 +20,7 @@ Current-turn recall · Permanent shared memory · Nightly workflow digest · Loc
 
 This repository, `scope-recall-hermes`, is the Hermes implementation. The Python package name and Hermes plugin ID intentionally remain `scope-recall` for runtime compatibility. The OpenClaw sibling implementation lives at [`scope-recall-openclaw`](https://github.com/410979729/scope-recall-openclaw).
 
-Version `1.0.10` continues the first stable V1 release line for the documented interfaces, packaged as a public release candidate for broader field testing. It keeps the V1 compatibility contract in [`docs/stability.md`](docs/stability.md) while adding structured external-artifact anchors and a safe secret-index tool that stores vault references without putting plaintext credentials into SQL/FTS/vector recall.
+Version `1.0.11` continues the first stable V1 release line for the documented interfaces, packaged as a public release candidate for broader field testing. It keeps the V1 compatibility contract in [`docs/stability.md`](docs/stability.md) while adding optional MiniMax `embo-01` embeddings with document/query request-type separation.
 
 It uses a **two-layer design**:
 
@@ -243,11 +243,40 @@ Currently implemented:
 | --- | --- | --- |
 | `openai-compatible` | Gemini/OpenAI-compatible embedding APIs | Default configured path; supports env-based API key lookup |
 | `openai` | Direct OpenAI embeddings | Useful when you do not need a custom compatible endpoint |
+| `minimax` | MiniMax `embo-01` embeddings | Uses MiniMax's non-OpenAI-compatible `/v1/embeddings` shape with `texts` and `type`; indexing uses `db`, search queries use `query` |
 | `sentence-transformers` | Local Hugging Face / SentenceTransformers models | Good for local semantic embeddings when installed |
 | `local-hash` | Offline fallback | Deterministic degraded fallback, not a true semantic model |
 | `local-debug` | Tests/debugging | Tiny deterministic test embedder |
 
 Provider aliases `local-model`, `local-embedding`, and `huggingface` resolve to the `sentence-transformers` backend.
+
+MiniMax example:
+
+```json
+{
+  "vector": {
+    "embedder": {
+      "provider": "minimax",
+      "model": "embo-01",
+      "dimensions": 1536,
+      "api_key_env": ["MINIMAX_API_KEY"],
+      "base_url": "https://api.minimaxi.com",
+      "document_type": "db",
+      "query_type": "query",
+      "group_id_env": ["MINIMAX_GROUP_ID"],
+      "timeout": 30.0
+    }
+  }
+}
+```
+
+MiniMax notes:
+
+- `api_key_env` should point at private environment variables; do not put real keys in `config.json`.
+- `document_type` controls vector-indexing/upsert calls and defaults to `db`.
+- `query_type` controls vector-search query calls and defaults to `query`.
+- `group_id` / `group_id_env` is optional. When configured, Scope Recall sends it as the legacy-compatible `GroupId` query parameter for MiniMax accounts that still require a group id; leave it unset for accounts/endpoints that only require the bearer token.
+- `base_url` defaults to `https://api.minimaxi.com`. Override it if your account, proxy, or regional deployment uses another MiniMax embedding endpoint.
 
 ---
 

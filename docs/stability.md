@@ -1,6 +1,6 @@
 # Scope Recall V1 stability contract
 
-`scope-recall` 1.0.10 is the artifact-anchor and secret-index patch release for the Hermes Scope Recall memory provider V1 line.
+`scope-recall` 1.0.11 adds an optional `MiniMaxEmbedder` for the MiniMax `embo-01` embedding endpoint and otherwise remains the V1 compatibility line for the Hermes Scope Recall memory provider.
 
 This document defines the stable V1 compatibility surface and the areas that may evolve in patch or minor releases.
 
