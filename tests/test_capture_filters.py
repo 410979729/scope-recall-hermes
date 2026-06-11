@@ -84,6 +84,16 @@ def test_preserved_active_task_list_wrapper_is_rejected():
     assert "active task list" in result.reason
 
 
+def test_background_process_tool_notification_is_rejected():
+    result = should_capture_text(
+        "[IMPORTANT: Background process proc_abc123 completed (exit code 0). "
+        "Command: GH_PROMPT_DISABLED=1 gh auth refresh Output: First copy your one-time code: ABCD-1234]"
+    )
+
+    assert result.allowed is False
+    assert "Background process" in result.reason
+
+
 def test_ordinary_memory_fact_is_allowed():
     result = should_capture_text("Joy prefers read-only SQLite viewers for inspecting live memory databases.")
 

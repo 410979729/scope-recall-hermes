@@ -23,6 +23,7 @@ DEFAULT_CAPTURE_SKIP_PATTERNS: tuple[str, ...] = (
     r"Your previous turn was interrupted",
     r"finish processing those results and summarize what was accomplished",
     r"^\[Your active task list was preserved across context compression\]",
+    r"^\[IMPORTANT: Background process ",
     r"^## Active Task(?:\n|\r|$)",
     r"^## Remaining Work(?:\n|\r|$)",
     r"^Review the conversation above and update the skill library",
