@@ -34,6 +34,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         r"^\[CONTEXT COMPACTION",
         r"Earlier turns were compacted into the summary below",
         r"Conversation continues after context compression",
+        r"^\[Your active task list was preserved across context compression\]",
+        r"^\[IMPORTANT: Background process ",
         r"^## Active Task(?:\n|\r|$)",
         r"^## Remaining Work(?:\n|\r|$)",
         r"^Review the conversation above and update the skill library",

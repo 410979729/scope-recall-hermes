@@ -18,6 +18,7 @@
     "^\\[CONTEXT COMPACTION",
     "Earlier turns were compacted into the summary below",
     "Conversation continues after context compression",
+    "^\\[IMPORTANT: Background process ",
     "^## Active Task(?:\\n|\\r|$)",
     "^## Remaining Work(?:\\n|\\r|$)",
     "^Review the conversation above and update the skill library",
