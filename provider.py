@@ -136,6 +136,12 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 "choices": ["true", "false"],
             },
             {
+                "key": "capture_raw_user",
+                "description": "Legacy fallback: store whole user turns as local scratch memory when no structured extraction candidate is found",
+                "default": "false",
+                "choices": ["true", "false"],
+            },
+            {
                 "key": "capture_llm.model",
                 "description": "LLM model for capture extraction (OpenAI-compatible)",
                 "default": "gpt-4o-mini",
@@ -308,7 +314,13 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 extracted = True
 
         # ── Raw user capture (last-resort fallback) ──
-        if not llm_extracted and user_filter.allowed and len(clean_user) >= min_capture and not extracted:
+        if (
+            not llm_extracted
+            and config_bool(self._config, "capture_raw_user", False)
+            and user_filter.allowed
+            and len(clean_user) >= min_capture
+            and not extracted
+        ):
             enqueue_store(
                 self,
                 content=clean_user,

@@ -37,7 +37,21 @@ def test_scope_recall_plugin_loads_from_hermes_home_plugins():
     assert plugin.name == "scope-recall"
 
 
-def test_sync_turn_accepts_structured_content(provider):
+def test_sync_turn_does_not_store_raw_user_turns_by_default(provider):
+    provider.sync_turn(
+        [{"type": "text", "text": "We deploy services with uv run after structured gateway messages."}],
+        [{"type": "text", "text": "Got it."}],
+    )
+    provider.flush(timeout=2.0)
+
+    with provider._lock:
+        rows = provider._require_conn().execute("SELECT source, target, content FROM memories").fetchall()
+    assert rows == []
+
+
+def test_sync_turn_accepts_structured_content_when_raw_capture_is_explicitly_enabled(provider):
+    provider._config["capture_raw_user"] = True
+
     provider.sync_turn(
         [{"type": "text", "text": "We deploy services with uv run after structured gateway messages."}],
         [{"type": "text", "text": "Got it."}],
@@ -62,6 +76,8 @@ def test_sync_turn_rejects_context_handoff_payload_from_loaded_config(provider):
 
 
 def test_prefetch_uses_current_turn_query_not_previous_prefetch(provider):
+    provider._config["capture_raw_user"] = True
+
     provider.sync_turn(
         "We deploy services with uv run and restart the gateway after model changes.",
         "Got it.",
@@ -1688,6 +1704,8 @@ def test_sync_turn_does_not_capture_context_compaction_wrapper(provider):
 
 
 def test_sync_turn_does_not_capture_assistant_by_default(provider):
+    provider._config["capture_raw_user"] = True
+
     provider.sync_turn(
         "We deploy services with uv run after gateway changes.",
         "Assistant says the durable deploy command is pnpm start, which should not be captured by default.",

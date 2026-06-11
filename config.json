@@ -9,6 +9,7 @@
   "max_recall_per_turn": 10,
   "min_score": 0.18,
   "capture_assistant": false,
+  "capture_raw_user": false,
   "query_char_limit": 1000,
   "min_capture_length": 40,
   "capture_hard_max_chars": 2500,

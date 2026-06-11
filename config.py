@@ -27,6 +27,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "query_char_limit": 1000,
     "min_capture_length": 40,
+    "capture_raw_user": False,
     "capture_hard_max_chars": 2500,
     "capture_skip_patterns": [
         r"^\[Recent Telegram chat history",
