@@ -4,6 +4,7 @@ import logging
 import queue
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -13,8 +14,9 @@ from .capture import enqueue_store, flush_writer, shutdown_writer, start_writer
 from .capture_filters import should_capture_text
 from .capture_llm import extract_capture_candidates
 from .config import load_runtime_config, save_runtime_config
+from .journal import append_journal_entry, ensure_journal_schema, run_journal_digest
 from .embedders import BaseEmbedder
-from .gating import clean_text, config_bool, dedup_key, normalize_query, should_skip_retrieval
+from .gating import clean_text, compact_text, config_bool, dedup_key, normalize_query, should_skip_retrieval
 from .governance import extract_candidates
 from .memory_ops import (
     context_payload,
@@ -107,6 +109,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._migration_info: dict[str, Any] = {"migrated": False}
         self._recall_service = RecallService(self)
         self._tool_service = ScopeRecallToolService(self)
+        self._journal_digest_thread: threading.Thread | None = None
+        self._journal_digest_lock = threading.Lock()
+        self._last_journal_digest_started = 0.0
 
     @property
     def name(self) -> str:
@@ -220,6 +225,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         ensure_schema(self._conn)
+        ensure_journal_schema(self._conn)
         setup_vector_layer(self)
         start_writer(self)
 
@@ -263,8 +269,53 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         min_capture = int(self._config_value("min_capture_length", 40))
         user_filter = should_capture_text(clean_user, self._config)
         assistant_filter = should_capture_text(clean_assistant, self._config)
+        journal_filter_config = dict(self._config)
+        journal_filter_config["capture_hard_max_chars"] = -1
+        journal_user_filter = should_capture_text(clean_user, journal_filter_config)
+        journal_assistant_filter = should_capture_text(clean_assistant, journal_filter_config)
 
-        # ── LLM semantic extraction (preferred when enabled) ──
+        # Journal-first provenance capture: raw turns go to a staging journal,
+        # not durable recall rows or vector indexes. Background journal digest
+        # later groups, extracts, and merge-upserts high-density memories.
+        raw_journal_cfg = self._config.get("journal")
+        journal_cfg = raw_journal_cfg if isinstance(raw_journal_cfg, dict) else {}
+        journal_enabled = journal_cfg.get("enabled", True)
+        if isinstance(journal_enabled, str):
+            journal_enabled = journal_enabled.strip().lower() in {"1", "true", "yes", "on"}
+        if journal_enabled and (journal_user_filter.allowed or journal_assistant_filter.allowed):
+            journal_appended = False
+            with self._lock:
+                ensure_journal_schema(self._require_conn())
+                if journal_user_filter.allowed and clean_user:
+                    journal_appended = bool(
+                        append_journal_entry(
+                            self._require_conn(),
+                            scope=self._scope,
+                            scope_id=self._scope_id,
+                            shared_scope_id=self._shared_scope_id,
+                            session_id=self._session_id,
+                            turn_number=self._current_turn,
+                            role="user",
+                            content=clean_user,
+                        )
+                    ) or journal_appended
+                if journal_assistant_filter.allowed and clean_assistant:
+                    journal_appended = bool(
+                        append_journal_entry(
+                            self._require_conn(),
+                            scope=self._scope,
+                            scope_id=self._scope_id,
+                            shared_scope_id=self._shared_scope_id,
+                            session_id=self._session_id,
+                            turn_number=self._current_turn,
+                            role="assistant",
+                            content=clean_assistant,
+                        )
+                    ) or journal_appended
+            if journal_appended:
+                self._maybe_start_background_journal_digest()
+
+        # ── LLM semantic extraction (preferred when explicitly enabled) ──
         llm_extracted = False
         capture_llm_config = self._config.get("capture_llm")
         if isinstance(capture_llm_config, dict) and (
@@ -296,9 +347,13 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                     )
                     llm_extracted = True
 
-        # ── Regex extraction (legacy fallback) ──
+        # ── Regex extraction (legacy hot-path fallback; disabled by default) ──
         extracted = False
-        if not llm_extracted and user_filter.allowed:
+        per_turn_cfg = self._config.get("per_turn_extraction") if isinstance(self._config.get("per_turn_extraction"), dict) else {}
+        per_turn_regex_enabled = False
+        if isinstance(per_turn_cfg, dict):
+            per_turn_regex_enabled = config_bool(per_turn_cfg, "enabled", False)
+        if not llm_extracted and per_turn_regex_enabled and user_filter.allowed:
             for candidate in extract_candidates(clean_user):
                 candidate_min_capture = min(min_capture, 24) if candidate.target in {"user", "ops", "project"} else min_capture
                 if len(candidate.content) < candidate_min_capture:
@@ -365,8 +420,155 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         return
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        del messages
+        self._append_session_tool_journal(messages)
         flush_writer(self, timeout=3.0)
+        self._run_session_end_journal_digest()
+
+    def _journal_config(self) -> dict[str, Any]:
+        raw_journal = self._config.get("journal")
+        return raw_journal if isinstance(raw_journal, dict) else {}
+
+    def _append_session_tool_journal(self, messages: List[Dict[str, Any]]) -> None:
+        if not messages or self._scope.agent_context != "primary":
+            return
+        journal_config = self._journal_config()
+        if not config_bool(journal_config, "enabled", True):
+            return
+        with self._lock:
+            ensure_journal_schema(self._require_conn())
+            for index, message in enumerate(messages, start=1):
+                if not isinstance(message, dict):
+                    continue
+                role = str(message.get("role") or message.get("type") or "").strip().lower()
+                if role != "tool":
+                    continue
+                content = self._tool_journal_content(message)
+                if not content:
+                    continue
+                append_journal_entry(
+                    self._require_conn(),
+                    scope=self._scope,
+                    scope_id=self._scope_id,
+                    shared_scope_id=self._shared_scope_id,
+                    session_id=self._session_id,
+                    turn_number=index,
+                    role="tool",
+                    content=content,
+                    metadata={
+                        "source": "session-end-tool-trace",
+                        "tool_name": str(message.get("name") or message.get("tool_name") or ""),
+                        "message_index": index,
+                    },
+                )
+
+    def _tool_journal_content(self, message: Dict[str, Any]) -> str:
+        tool_name = str(message.get("name") or message.get("tool_name") or message.get("recipient") or "").strip()
+        raw_content = message.get("content")
+        if raw_content is None:
+            raw_content = message.get("output")
+        if raw_content is None:
+            raw_content = message.get("result")
+        content = clean_text(raw_content)
+        if not content:
+            return ""
+        prefix = f"Tool execution trace ({tool_name})" if tool_name else "Tool execution trace"
+        return compact_text(f"{prefix}: {content}", 1800)
+
+    def _coerce_journal_float(self, journal_config: dict[str, Any], key: str, default: float) -> float:
+        try:
+            return float(journal_config.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    def _background_digest_scope(self) -> RuntimeScope:
+        return RuntimeScope(
+            platform=self._scope.platform,
+            user_id=self._scope.user_id,
+            chat_id=self._scope.chat_id,
+            thread_id=self._scope.thread_id,
+            gateway_session_key=self._scope.gateway_session_key,
+            agent_identity=self._scope.agent_identity,
+            agent_workspace=self._scope.agent_workspace,
+            agent_context="primary",
+        )
+
+    def _maybe_start_background_journal_digest(self) -> None:
+        if self._hermes_home is None or self._scope.agent_context != "primary":
+            return
+        journal_config = self._journal_config()
+        if not config_bool(journal_config, "enabled", True):
+            return
+        if not config_bool(journal_config, "background_digest_enabled", True):
+            return
+        interval_hours = self._coerce_journal_float(journal_config, "digest_interval_hours", 2.0)
+        if interval_hours <= 0:
+            return
+        now = time.time()
+        with self._journal_digest_lock:
+            if self._journal_digest_thread is not None and self._journal_digest_thread.is_alive():
+                return
+            if self._last_journal_digest_started and now - self._last_journal_digest_started < interval_hours * 3600:
+                return
+            self._last_journal_digest_started = now
+            if config_bool(journal_config, "background_digest_synchronous", False):
+                self._run_background_journal_digest(journal_config)
+                return
+            thread = threading.Thread(
+                target=self._run_background_journal_digest,
+                args=(dict(journal_config),),
+                name="scope-recall-journal-digest",
+                daemon=True,
+            )
+            self._journal_digest_thread = thread
+            thread.start()
+
+    def _run_background_journal_digest(self, journal_config: dict[str, Any]) -> None:
+        if self._hermes_home is None:
+            return
+        try:
+            limit_entries = int(journal_config.get("max_entries_per_digest") or 500)
+        except (TypeError, ValueError):
+            limit_entries = 500
+        extractor = str(journal_config.get("extractor") or "llm").strip().lower()
+        try:
+            run_journal_digest(
+                hermes_home=self._hermes_home,
+                extractor=extractor,
+                scope=self._background_digest_scope(),
+                interval_label=f"background-{journal_config.get('digest_interval_hours', 2)}h",
+                limit_entries=max(1, limit_entries),
+                dry_run=False,
+            )
+        except Exception:
+            logger.exception("Scope Recall background journal digest failed")
+
+    def _run_session_end_journal_digest(self) -> None:
+        if self._hermes_home is None or self._scope.agent_context != "primary":
+            return
+        journal_config = self._journal_config()
+        if not config_bool(journal_config, "enabled", True):
+            return
+        if not config_bool(journal_config, "digest_on_session_end", True):
+            return
+        try:
+            limit_entries = int(journal_config.get("max_entries_per_digest") or 500)
+        except (TypeError, ValueError):
+            limit_entries = 500
+        extractor = str(journal_config.get("extractor") or "llm").strip().lower()
+        if extractor == "llm" and not config_bool(journal_config, "allow_session_end_llm", False):
+            logger.info("Scope Recall session-end journal digest skipped: llm extractor requires scheduled/background digest")
+            return
+        try:
+            run_journal_digest(
+                hermes_home=self._hermes_home,
+                extractor=extractor,
+                scope=self._scope,
+                interval_label="session-end",
+                limit_entries=max(1, limit_entries),
+                dry_run=False,
+            )
+        except Exception:
+            logger.exception("Scope Recall session-end journal digest failed")
 
     def on_session_switch(
         self,
@@ -418,6 +620,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
 
     def shutdown(self) -> None:
         shutdown_writer(self, timeout=3.0)
+        thread = self._journal_digest_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=3.0)
         with self._lock:
             if self._conn is not None:
                 self._conn.close()

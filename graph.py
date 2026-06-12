@@ -256,6 +256,54 @@ def entity_overlap_bonus(query: str, metadata: dict[str, Any], *, weight: float)
     return min(weight, weight * overlap)
 
 
+def entity_distance_scores(
+    query_entities: list[str],
+    memory_entities: dict[str, list[str]],
+    relations: dict[str, list[str]],
+    *,
+    max_depth: int = 2,
+) -> dict[str, float]:
+    """Score memories by graph distance from query entities.
+
+    This is the local/SQLite analogue of Zep-style focal-node reranking: direct
+    entity overlap scores highest, one-hop related entities score lower, and
+    unrelated memories receive no graph-distance score.
+    """
+
+    frontier = {normalize_entity(entity) for entity in query_entities if normalize_entity(entity)}
+    if not frontier:
+        return {}
+    distance: dict[str, int] = {entity: 0 for entity in frontier}
+    current = set(frontier)
+    normalized_relations = {
+        normalize_entity(key): [normalize_entity(value) for value in values if normalize_entity(value)]
+        for key, values in (relations or {}).items()
+    }
+    for depth in range(1, max(1, int(max_depth)) + 1):
+        next_frontier: set[str] = set()
+        for entity in current:
+            for neighbor in normalized_relations.get(entity, []):
+                if neighbor and neighbor not in distance:
+                    distance[neighbor] = depth
+                    next_frontier.add(neighbor)
+        current = next_frontier
+        if not current:
+            break
+
+    scores: dict[str, float] = {}
+    for memory_id, entities in (memory_entities or {}).items():
+        best: float = 0.0
+        for entity in entities:
+            normalized = normalize_entity(entity)
+            if normalized not in distance:
+                continue
+            # depth 0 => 1.0, depth 1 => 0.5, depth 2 => 0.333...
+            best = max(best, 1.0 / (distance[normalized] + 1.0))
+        if best > 0.0:
+            scores[str(memory_id)] = best
+    return scores
+
+
 def apply_quality_weight(score: float, metadata: dict[str, Any], *, weight: float) -> float:
     if weight <= 0.0:
         return score

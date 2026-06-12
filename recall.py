@@ -5,9 +5,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .gating import query_tokens
-from .graph import apply_quality_weight, entity_overlap_bonus
+from .graph import apply_quality_weight, entity_distance_scores, entity_overlap_bonus, metadata_entities, query_entities as graph_query_entities
 from .models import RecallItem
-from .scoring import combine_scores
+from .scoring import combine_scores, reciprocal_rank_fusion
 
 _FRESHNESS_HINTS = {
     "current",
@@ -37,6 +37,11 @@ class RecallService:
         lexical_candidates = self.provider._search_db_memories(query, limit=candidate_pool)
         vector_candidates = self.provider._search_vector_memories(query, limit=candidate_pool)
         curated_candidates = self.provider._search_curated_memories(query)
+        rrf_by_id = self._rrf_scores(lexical_candidates, vector_candidates, curated_candidates)
+        for item in lexical_candidates + vector_candidates + curated_candidates:
+            if item.id in rrf_by_id:
+                item.metadata = dict(item.metadata or {})
+                item.metadata["rrf_score"] = rrf_by_id[item.id]
 
         merged: dict[str, RecallItem] = {}
         for item in lexical_candidates + vector_candidates + curated_candidates:
@@ -56,7 +61,7 @@ class RecallService:
             for meta_key, value in dict(other.metadata or {}).items():
                 meta.setdefault(meta_key, value)
             current_meta = dict(current.metadata or {})
-            for meta_key in ("lexical_score", "vector_score", "base_score", "recency_bonus"):
+            for meta_key in ("lexical_score", "vector_score", "base_score", "recency_bonus", "rrf_score"):
                 meta[meta_key] = max(
                     float(meta.get(meta_key) or 0.0),
                     float(incoming.get(meta_key) or 0.0),
@@ -68,6 +73,7 @@ class RecallService:
 
         results = list(merged.values())
         results = self._apply_general_policy(results)
+        entity_graph_scores = self._entity_graph_scores(query, results)
         min_score = float(retrieval_cfg.get("min_score") or self.provider._config_value("min_score", 0.18))
         # Vector-only matches have no lexical evidence, so they must clear a
         # substantially higher bar than the broad vector candidate threshold.
@@ -92,9 +98,12 @@ class RecallService:
                         query,
                         meta,
                         weight=float(retrieval_cfg.get("entity_weight") or 0.06),
-                    ),
+                    )
+                    + entity_graph_scores.get(item.id, 0.0) * float(retrieval_cfg.get("entity_distance_weight", 0.04)),
                 ),
             )
+            if item.id in entity_graph_scores:
+                meta["entity_distance_score"] = entity_graph_scores[item.id]
             decay_multiplier = self._temporal_decay_multiplier(meta, item.updated_at)
             if decay_multiplier < 1.0:
                 decay_weight = max(0.0, min(1.0, float(retrieval_cfg.get("temporal_decay_weight") or 0.0)))
@@ -139,12 +148,68 @@ class RecallService:
             reverse=True,
         )[:limit]
 
+    def _entity_graph_scores(self, query: str, items: list[RecallItem]) -> dict[str, float]:
+        query_entity_values = graph_query_entities(query)
+        if not query_entity_values or not items:
+            return {}
+        memory_entities: dict[str, list[str]] = {}
+        relations: dict[str, list[str]] = {}
+        for item in items:
+            entities = metadata_entities(dict(item.metadata or {}), item.content, item.target)
+            if not entities:
+                continue
+            memory_entities[item.id] = entities
+            for entity in entities:
+                neighbors = relations.setdefault(entity, [])
+                for other in entities:
+                    if other != entity:
+                        neighbors.append(other)
+        return entity_distance_scores(query_entity_values, memory_entities, relations, max_depth=2)
+
     def _preferred_duplicate(self, current: RecallItem, incoming: RecallItem) -> RecallItem:
         if current.target == "general" and incoming.target != "general":
             return incoming
         if incoming.target == "general" and current.target != "general":
             return current
         return current if current.updated_at >= incoming.updated_at else incoming
+
+    def _rrf_scores(
+        self,
+        lexical_candidates: list[RecallItem],
+        vector_candidates: list[RecallItem],
+        curated_candidates: list[RecallItem],
+    ) -> dict[str, float]:
+        retrieval_cfg = self.provider._retrieval_config or {}
+        strategy = str(retrieval_cfg.get("fusion_strategy") or "rrf").strip().lower()
+        if strategy not in {"rrf", "reciprocal-rank-fusion"}:
+            return {}
+        ranked_lists: dict[str, list[str]] = {
+            "lexical": [item.id for item in lexical_candidates],
+            "vector": [item.id for item in vector_candidates],
+            "curated": [item.id for item in curated_candidates],
+        }
+        bm25_ranked = sorted(
+            [item for item in lexical_candidates if float((item.metadata or {}).get("bm25_score") or 0.0) > 0.0],
+            key=lambda item: float((item.metadata or {}).get("bm25_score") or 0.0),
+            reverse=True,
+        )
+        if bm25_ranked:
+            ranked_lists["bm25"] = [item.id for item in bm25_ranked]
+        fused = reciprocal_rank_fusion(
+            ranked_lists,
+            weights={
+                "lexical": float(retrieval_cfg.get("rrf_lexical_weight") or 1.0),
+                "vector": float(retrieval_cfg.get("rrf_vector_weight") or 1.0),
+                "bm25": float(retrieval_cfg.get("rrf_bm25_weight") or 1.0),
+                "curated": float(retrieval_cfg.get("rrf_curated_weight") or 1.25),
+            },
+            k=int(retrieval_cfg.get("rrf_k") or 60),
+            min_signals=int(retrieval_cfg.get("rrf_min_signals") or 2),
+        )
+        if not fused:
+            return {}
+        max_score = max(score for _, score in fused) or 1.0
+        return {item_id: max(0.0, min(1.0, score / max_score)) for item_id, score in fused}
 
     def _apply_general_policy(self, items: list[RecallItem]) -> list[RecallItem]:
         retrieval_cfg = self.provider._retrieval_config or {}
@@ -164,7 +229,7 @@ class RecallService:
                 continue
             if general_weight < 1.0:
                 meta = dict(item.metadata or {})
-                for key in ("lexical_score", "vector_score"):
+                for key in ("lexical_score", "vector_score", "bm25_score", "rrf_score"):
                     meta[key] = float(meta.get(key) or 0.0) * general_weight
                 meta["general_weight"] = general_weight
                 item.metadata = meta
@@ -176,23 +241,29 @@ class RecallService:
         mode = str(retrieval_cfg.get("mode") or "lexical").lower()
         lexical = float(meta.get("lexical_score") or 0.0)
         vector = float(meta.get("vector_score") or 0.0)
-        bm25_weight = float(retrieval_cfg.get("bm25_weight") or 0.0)
+        bm25_weight = float(retrieval_cfg.get("bm25_weight", 0.15))
         bm25 = float(meta.get("bm25_score") or 0.0) if bm25_weight > 0.0 else 0.0
+        rrf_score = float(meta.get("rrf_score") or 0.0)
+        rrf_weight = max(0.0, min(0.6, float(retrieval_cfg.get("rrf_weight", 0.18))))
         if mode == "vector":
             return vector
         if mode == "hybrid":
             if bm25 > 0.0 and lexical <= 0.0 and vector <= 0.0:
-                return bm25
-            if lexical > 0.0 and vector <= 0.0 and bm25 <= 0.0:
-                return lexical
-            if vector > 0.0 and lexical <= 0.0 and bm25 <= 0.0:
-                return vector
-            return combine_scores(
-                {"lexical_score": lexical, "vector_score": vector, "bm25_score": bm25},
-                lexical_weight=float(retrieval_cfg.get("lexical_weight") or 0.45),
-                vector_weight=float(retrieval_cfg.get("vector_weight") or 0.55),
-                bm25_weight=bm25_weight,
-            )
+                base = bm25
+            elif lexical > 0.0 and vector <= 0.0 and bm25 <= 0.0:
+                base = lexical
+            elif vector > 0.0 and lexical <= 0.0 and bm25 <= 0.0:
+                base = vector
+            else:
+                base = combine_scores(
+                    {"lexical_score": lexical, "vector_score": vector, "bm25_score": bm25},
+                    lexical_weight=float(retrieval_cfg.get("lexical_weight") or 0.45),
+                    vector_weight=float(retrieval_cfg.get("vector_weight") or 0.55),
+                    bm25_weight=bm25_weight,
+                )
+            if rrf_score > 0.0 and rrf_weight > 0.0:
+                base = (base * (1.0 - rrf_weight)) + (rrf_score * rrf_weight)
+            return max(0.0, min(1.0, base))
         return lexical
 
     def _temporal_decay_multiplier(self, meta: dict[str, Any], updated_at: str) -> float:

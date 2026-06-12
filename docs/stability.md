@@ -1,6 +1,6 @@
 # Scope Recall V1 stability contract
 
-`scope-recall` 1.0.11 adds an optional `MiniMaxEmbedder` for the MiniMax `embo-01` embedding endpoint and otherwise remains the V1 compatibility line for the Hermes Scope Recall memory provider.
+`scope-recall` 1.0.12 adds journal-first provenance capture, background journal digest merge/upsert, and RRF/BM25-aware hybrid retrieval while remaining inside the V1 compatibility line for the Hermes Scope Recall memory provider.
 
 This document defines the stable V1 compatibility surface and the areas that may evolve in patch or minor releases.
 
@@ -36,7 +36,8 @@ Stable V1 guarantees:
 - the configured vector companion is rebuildable companion state, not the source of truth
 - losing or rebuilding `$HERMES_HOME/scope-recall/lancedb/` or `$HERMES_HOME/scope-recall/vector.sqlite3` must not delete SQLite truth rows
 - vector repair may rebuild the configured companion from SQLite truth
-- nightly digest writes are still SQLite truth rows; the digest run/source ledger is audit metadata, not a separate memory authority
+- journal rows are provenance/staging evidence, not ordinary recall rows; digest-produced durable memories remain SQLite truth rows
+- nightly and journal digest writes are still SQLite truth rows; digest run/source ledgers are audit metadata, not separate memory authorities
 
 Schema evolution policy:
 
@@ -61,6 +62,8 @@ V1 keeps these behavior boundaries stable:
 - durable `user`/`memory`/`project`/`ops` rows are shared across windows/chats for the same platform + agent workspace + agent identity + user id
 - `general` scratch rows remain local to the current chat/thread or gateway session key
 - scoped tool actions operate on the current accessible scope set: local runtime scope plus shared durable scope
+- `sync_turn()` defaults to journal-first staging; legacy per-turn durable extraction must be explicitly enabled through `per_turn_extraction.enabled=true`
+- `scripts/journal-digest.py` may add or update durable rows from staged journal entries, but raw journal rows themselves are not recalled or indexed into the vector companion
 - `scripts/nightly-digest.py` may add or update durable rows, but it must not store raw `system` rows or raw `tool` output; task workflows are stored only as sanitized summaries with optional tool-name and verification metadata
 
 ## Stable V1 tool surface
@@ -106,7 +109,7 @@ V1 supports these retrieval modes:
 - `vector`
 - `hybrid`
 
-The default config uses hybrid retrieval with SQLite lexical recall plus a LanceDB vector companion. Operators can set `vector.backend=sqlite-bruteforce` for a native-free/non-AVX companion.
+The default config uses hybrid retrieval with SQLite lexical/BM25 recall, weighted reciprocal-rank fusion metadata, and a LanceDB vector companion. Operators can set `vector.backend=sqlite-bruteforce` for a native-free/non-AVX companion.
 
 Embedder policy:
 
@@ -136,6 +139,7 @@ A V1 source tree should pass:
 ```bash
 python -m pytest -q
 python scripts/check.release.py
+python scripts/journal-digest.py --hermes-home <profile> --dry-run
 python scripts/repair.vector_index.py --hermes-home <profile> --dry-run
 ```
 

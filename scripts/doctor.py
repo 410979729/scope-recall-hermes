@@ -48,7 +48,26 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
     return merged
 
 
+def load_profile_dotenv(hermes_home: Path) -> set[str]:
+    env_path = hermes_home / ".env"
+    loaded: set[str] = set()
+    if not env_path.exists():
+        return loaded
+    for line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if not key or not value:
+            continue
+        loaded.add(key)
+    return loaded
+
+
 def load_runtime_config(source_root: Path, hermes_home: Path) -> dict[str, Any]:
+    profile_env_keys = load_profile_dotenv(hermes_home)
     config: dict[str, Any] = {}
     for path in (source_root / "config.json", hermes_home / "scope-recall" / "config.json"):
         if not path.exists():
@@ -59,6 +78,8 @@ def load_runtime_config(source_root: Path, hermes_home: Path) -> dict[str, Any]:
             continue
         if isinstance(raw, dict):
             config = deep_merge(config, raw)
+    if profile_env_keys:
+        config["_profile_env_keys"] = sorted(profile_env_keys)
     return config
 
 
@@ -71,14 +92,18 @@ def coerce_list(value: Any) -> list[str]:
     return [text] if text else []
 
 
-def embedder_config_available(config: dict[str, Any]) -> bool:
+def embedder_config_available(config: dict[str, Any], *, profile_env_keys: set[str] | None = None) -> bool:
+    profile_env_keys = profile_env_keys or set()
     provider = str(config.get("provider") or "local-hash").strip().lower()
     if provider in {"local-hash", "local-debug"}:
         return True
     if provider in {"openai-compatible", "openai"}:
         if coerce_list(config.get("api_key")):
             return True
-        return any(os.getenv(name, "").strip() for name in coerce_list(config.get("api_key_env") or "OPENAI_API_KEY"))
+        return any(
+            os.getenv(name, "").strip() or name in profile_env_keys
+            for name in coerce_list(config.get("api_key_env") or "OPENAI_API_KEY")
+        )
     if provider in {"sentence-transformers", "local-model", "local-embedding", "huggingface"}:
         try:
             import importlib.util
@@ -98,9 +123,10 @@ def expected_embedder_from_config(config: dict[str, Any]) -> dict[str, Any]:
     raw_fallback = vector_config.get("fallback_embedder")
     primary: dict[str, Any] = raw_primary if isinstance(raw_primary, dict) else {}
     fallback: dict[str, Any] = raw_fallback if isinstance(raw_fallback, dict) else {}
+    profile_env_keys = set(coerce_list(config.get("_profile_env_keys")))
     source = "embedder"
     selected: dict[str, Any] = dict(primary)
-    if selected and not embedder_config_available(selected) and fallback and embedder_config_available(fallback):
+    if selected and not embedder_config_available(selected, profile_env_keys=profile_env_keys) and fallback and embedder_config_available(fallback, profile_env_keys=profile_env_keys):
         selected = dict(fallback)
         source = "fallback_embedder"
     if not selected:
@@ -208,6 +234,107 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
 
     sqlite_payload = {"path": str(db_path), "status": "ready", "memory_count": memory_count, "tables": tables}
     return sqlite_payload, {"ok": True, "failures": []}, recommendations
+
+
+def journal_enabled_from_config(config: dict[str, Any]) -> bool:
+    raw_journal = config.get("journal")
+    journal_config: dict[str, Any] = raw_journal if isinstance(raw_journal, dict) else {}
+    value = journal_config.get("enabled", True)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def journal_report(hermes_home: Path, *, enabled: bool = True) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    recommendations: list[str] = []
+    storage_dir = hermes_home / "scope-recall"
+    db_path = storage_dir / "memory.sqlite3"
+    if not enabled:
+        return {"enabled": False, "status": "disabled"}, {"ok": True, "failures": []}, recommendations
+    if not db_path.exists():
+        return {"enabled": True, "status": "missing", "path": str(db_path)}, {"ok": False, "failures": [f"SQLite truth DB not found: {db_path}"]}, recommendations
+
+    required_tables = {"journal_entries", "journal_digest_runs", "memory_journal_sources", "journal_rejections"}
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            missing = sorted(required_tables - tables)
+            if missing:
+                recommendations.append("Initialize scope-recall with the current plugin or run journal digest once to create the journal/provenance schema.")
+                return {
+                    "enabled": True,
+                    "path": str(db_path),
+                    "status": "schema_missing",
+                    "missing_tables": missing,
+                }, {"ok": False, "failures": [f"journal tables missing: {missing}"]}, recommendations
+
+            total_entries = int(conn.execute("SELECT COUNT(*) FROM journal_entries").fetchone()[0])
+            unprocessed_entries = int(
+                conn.execute("SELECT COUNT(*) FROM journal_entries WHERE processed_run_id IS NULL OR processed_run_id = ''").fetchone()[0]
+            )
+            processed_entries = max(0, total_entries - unprocessed_entries)
+            digest_runs = int(conn.execute("SELECT COUNT(*) FROM journal_digest_runs").fetchone()[0])
+            source_links = int(conn.execute("SELECT COUNT(*) FROM memory_journal_sources").fetchone()[0])
+            rejections = int(conn.execute("SELECT COUNT(*) FROM journal_rejections").fetchone()[0])
+            orphan_sources = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM memory_journal_sources AS s
+                    LEFT JOIN memories AS m ON m.id = s.memory_id
+                    WHERE m.id IS NULL
+                    """
+                ).fetchone()[0]
+            )
+            oldest_unprocessed = conn.execute(
+                """
+                SELECT created_at FROM journal_entries
+                WHERE processed_run_id IS NULL OR processed_run_id = ''
+                ORDER BY created_at ASC LIMIT 1
+                """
+            ).fetchone()
+            last_run = conn.execute(
+                """
+                SELECT id, started_at, finished_at, status, extractor, processed_entries, inserted, updated, skipped
+                FROM journal_digest_runs
+                ORDER BY started_at DESC LIMIT 1
+                """
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception as exc:
+        recommendations.append("Repair or restore the SQLite truth DB before trusting journal/provenance status.")
+        return {"enabled": True, "path": str(db_path), "status": "error", "error": str(exc)}, {"ok": False, "failures": [f"journal health error: {exc}"]}, recommendations
+
+    failures: list[str] = []
+    if orphan_sources:
+        failures.append(f"memory_journal_sources contains {orphan_sources} orphan link(s)")
+        recommendations.append("Run hygiene/repair or delete orphan memory_journal_sources before release.")
+    if unprocessed_entries:
+        recommendations.append("Run scripts/journal-digest.py to promote staged journal entries into durable memories.")
+
+    payload = {
+        "enabled": True,
+        "path": str(db_path),
+        "status": "ready" if not failures else "needs_repair",
+        "tables": sorted(required_tables),
+        "entries": {
+            "total": total_entries,
+            "processed": processed_entries,
+            "unprocessed": unprocessed_entries,
+            "oldest_unprocessed": oldest_unprocessed["created_at"] if oldest_unprocessed else "",
+        },
+        "digest_runs": digest_runs,
+        "last_digest_run": dict(last_run) if last_run else {},
+        "source_links": source_links,
+        "rejections": rejections,
+        "orphan_source_links": orphan_sources,
+    }
+    return payload, {"ok": not failures, "failures": failures}, recommendations
 
 
 def lancedb_table_names(db: Any) -> list[str]:
@@ -417,6 +544,7 @@ def main() -> int:
         runtime_config = load_runtime_config(source_root, hermes_home)
         expected_embedder = expected_embedder_from_config(runtime_config)
         sqlite_payload, sqlite_check, sqlite_recommendations = sqlite_report(hermes_home)
+        journal_payload, journal_check, journal_recommendations = journal_report(hermes_home, enabled=journal_enabled_from_config(runtime_config))
         if vector_enabled_from_config(runtime_config):
             backend = vector_backend_from_config(runtime_config)
             vector_payload, vector_check, vector_recommendations = vector_report(hermes_home, expected_embedder=expected_embedder, backend=backend)
@@ -429,11 +557,14 @@ def main() -> int:
             "expected_embedder": expected_embedder,
             "vector_backend": backend,
             "sqlite": sqlite_payload,
+            "journal": journal_payload,
             "vector": vector_payload,
         }
         checks["sqlite_truth"] = sqlite_check
+        checks["journal_provenance"] = journal_check
         checks["vector_companion"] = vector_check
         recommendations.extend(sqlite_recommendations)
+        recommendations.extend(journal_recommendations)
         recommendations.extend(vector_recommendations)
 
     payload["ok"] = all(bool(check.get("ok")) for check in checks.values())

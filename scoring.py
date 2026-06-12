@@ -128,3 +128,37 @@ def combine_scores(item: dict[str, Any], *, lexical_weight: float, vector_weight
     vector = float(item.get("vector_score") or 0.0)
     bm25 = float(item.get("bm25_score") or 0.0)
     return max(0.0, min(1.0, lexical * lexical_weight + vector * vector_weight + bm25 * bm25_weight))
+
+
+def reciprocal_rank_fusion(
+    ranked_lists: dict[str, list[str]],
+    *,
+    weights: dict[str, float] | None = None,
+    k: int = 60,
+    min_signals: int = 2,
+) -> list[tuple[str, float]]:
+    """Fuse heterogeneous retrieval rankings using weighted reciprocal rank fusion.
+
+    RRF is preferable to adding raw lexical/vector/BM25 scores because those
+    backends produce non-comparable score scales. Memories that appear in
+    multiple strong rankings are promoted above single-signal neighbors.
+    """
+
+    weights = weights or {}
+    scores: dict[str, float] = {}
+    signal_hits: dict[str, set[str]] = {}
+    for signal, ids in ranked_lists.items():
+        weight = float(weights.get(signal, 1.0))
+        if weight <= 0.0:
+            continue
+        seen: set[str] = set()
+        for rank, item_id in enumerate(ids, start=1):
+            clean_id = str(item_id or "")
+            if not clean_id or clean_id in seen:
+                continue
+            seen.add(clean_id)
+            scores[clean_id] = scores.get(clean_id, 0.0) + weight / (max(1, int(k)) + rank)
+            signal_hits.setdefault(clean_id, set()).add(signal)
+    min_required = max(1, int(min_signals or 1))
+    filtered_scores = {item_id: score for item_id, score in scores.items() if len(signal_hits.get(item_id, set())) >= min_required}
+    return sorted(filtered_scores.items(), key=lambda item: (item[1], item[0]), reverse=True)

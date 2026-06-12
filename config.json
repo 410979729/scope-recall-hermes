@@ -9,15 +9,41 @@
   "max_recall_per_turn": 10,
   "min_score": 0.18,
   "capture_assistant": false,
+  "capture_llm": {
+    "enabled": false,
+    "model": "gpt-4o-mini",
+    "base_url": "https://api.openai.com",
+    "api_key_env": [
+      "SCOPE_RECALL_CAPTURE_LLM_API_KEY",
+      "OPENAI_API_KEY"
+    ],
+    "max_tokens_per_turn": 2000,
+    "timeout": 15.0,
+    "min_user_chars": 20,
+    "min_assistant_chars": 30
+  },
   "capture_raw_user": false,
   "query_char_limit": 1000,
   "min_capture_length": 40,
+  "journal": {
+    "enabled": true,
+    "digest_on_session_end": false,
+    "background_digest_enabled": true,
+    "extractor": "llm",
+    "digest_interval_hours": 2,
+    "retention_days": 0,
+    "max_entries_per_digest": 500
+  },
+  "per_turn_extraction": {
+    "enabled": false
+  },
   "capture_hard_max_chars": 2500,
   "capture_skip_patterns": [
     "^\\[Recent Telegram chat history",
     "^\\[CONTEXT COMPACTION",
     "Earlier turns were compacted into the summary below",
     "Conversation continues after context compression",
+    "^\\[Your active task list was preserved across context compression\\]",
     "^\\[IMPORTANT: Background process ",
     "^## Active Task(?:\\n|\\r|$)",
     "^## Remaining Work(?:\\n|\\r|$)",
@@ -44,6 +70,15 @@
     "include_general": "same-scope",
     "general_weight": 0.35,
     "metric": "cosine",
+    "fusion_strategy": "rrf",
+    "bm25_weight": 0.15,
+    "rrf_weight": 0.18,
+    "rrf_k": 60,
+    "rrf_min_signals": 2,
+    "rrf_lexical_weight": 1.0,
+    "rrf_vector_weight": 1.0,
+    "rrf_bm25_weight": 1.0,
+    "rrf_curated_weight": 1.25,
     "freshness_hints": [
       "current",
       "currently",
@@ -60,7 +95,8 @@
     "freshness_step_weight": 0.1,
     "freshness_max_weight": 0.42,
     "metadata_weight": 0.08,
-    "entity_weight": 0.06
+    "entity_weight": 0.06,
+    "entity_distance_weight": 0.04
   },
   "vector": {
     "enabled": true,

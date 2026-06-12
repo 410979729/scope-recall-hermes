@@ -12,10 +12,11 @@ It inherits the useful policy ideas from OpenClaw `memory-lancedb-pro`:
 - conservative gating
 - bounded recall budget
 
-But its implementation is intentionally split into two clear layers:
+But its implementation is intentionally split into three clear layers:
 
-1. **SQLite truth layer**
-2. **Configured vector companion layer** (LanceDB by default, `sqlite-bruteforce` for native-free hosts)
+1. **Journal/provenance layer** for eligible raw conversation turns and evidence links
+2. **SQLite truth layer** for durable high-density memory rows
+3. **Configured vector companion layer** (LanceDB by default, `sqlite-bruteforce` for native-free hosts)
 
 That split is deliberate. SQLite is the durable source of truth; the configured vector backend is only the retrieval accelerator/semantic companion.
 
@@ -69,7 +70,7 @@ Stored in:
 
 Used for:
 
-- turn captures
+- durable high-density memory rows produced by tools, curated imports, nightly digest, or journal digest
 - provider tool writes
 - lexical lookup
 - runtime audit trail
@@ -93,6 +94,18 @@ SQLite schema includes:
 - timestamps
 
 An FTS5 side table provides fast lexical retrieval.
+
+### Layer B0 — journal/provenance staging
+
+Stored in the same SQLite database but deliberately outside ordinary recall:
+
+- `journal_entries`
+- `journal_digest_runs`
+- `memory_journal_sources`
+
+Eligible user/assistant/tool turns are appended to `journal_entries` as provenance. These rows are not durable memory rows, are not indexed into the vector companion, and are not returned by ordinary recall. A background journal digest reads unprocessed entries, groups related task/topic turns, extracts high-density candidates, merge-upserts against existing `user`/`memory`/`project`/`ops` rows, and records `memory_journal_sources` links so every digest memory can be traced back to source journal entries.
+
+This is the provider's default capture path. Per-turn durable extraction is a legacy/explicit mode; raw `turn-user/general` capture remains disabled by default.
 
 ### Layer C — vector companion
 
@@ -151,7 +164,7 @@ Skip recall when query is:
 - too short
 - greeting/noise/trivial text
 
-### Hybrid ranking
+### Hybrid RRF ranking
 
 Current config supports:
 
@@ -161,6 +174,8 @@ Current config supports:
 
 Default is `hybrid`.
 
+Candidate discovery uses SQLite FTS/LIKE/BM25, the configured vector companion, and curated memory when allowed. Final hybrid mode uses a conservative blend of calibrated lexical/vector/BM25 components plus weighted reciprocal-rank-fusion metadata so cross-signal hits are promoted without trusting incompatible raw score scales.
+
 Important rule:
 
 - if only lexical is available, use lexical score directly
@@ -169,7 +184,7 @@ Important rule:
 
 That prevents good curated lexical hits from being suppressed merely because there is no vector twin.
 
-SQLite FTS5 candidate discovery uses `bm25(memories_fts)` before recency tie-breaking. Final ranking still uses the provider's lexical/vector/freshness/entity/trust scoring, but BM25 prevents old high-relevance lexical rows from being cut out of the candidate pool by newer weak matches.
+SQLite FTS5 candidate discovery uses `bm25(memories_fts)` before recency tie-breaking. BM25 now also participates in final hybrid scoring with a bounded weight, while RRF reranking promotes memories that appear across lexical, vector, BM25, and curated rankings.
 
 ## Embedders
 
@@ -230,7 +245,7 @@ Local runtime scope starts with the shared durable scope and adds:
 2. `chat_id`
 3. `thread_id` when present
 
-Rows with target `general` stay in this local scope. Raw turn captures and temporary scratch notes therefore do not leak from one group/topic/session into another.
+Rows with target `general` stay in this local scope. Temporary scratch notes therefore do not leak from one group/topic/session into another. Raw conversation turns normally enter the journal/provenance layer first and are not recalled until a digest produces a durable/scratch memory row.
 
 ### Accessible scope set
 
@@ -331,7 +346,7 @@ Subagents do not get tool schemas and cannot use them.
 
 For V1 release/publish, keep these gates green:
 
-1. package and plugin metadata stay on `1.0.5` until the next patch release
+1. package and plugin metadata stay aligned with the current changelog release entry
 2. public maturity wording remains beta / release-candidate until broader field testing justifies a production-stable classifier
 3. README, DESIGN, CHANGELOG, stability contract, migration docs, and upstream-difference docs stay in sync
 4. local release gate passes with `python scripts/check.release.py`
@@ -344,8 +359,9 @@ What is already real now:
 
 - plugin source is packaged as an unpacked Hermes plugin under `$HERMES_HOME/plugins/scope-recall`
 - SQLite truth layer exists
+- journal/provenance staging and background journal digest exist
 - configured vector companion layer exists
-- hybrid retrieval path exists
+- hybrid retrieval with BM25 and RRF metadata exists
 - legacy local rename migration exists
 - focused tests for loading / hybrid recall / curated memory / stats pass
 - release docs include migration notes, upstream differences, a V1 stability contract, and an OpenClaw import script

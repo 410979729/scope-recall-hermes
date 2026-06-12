@@ -2,11 +2,11 @@
 
 <div align="center">
 
-**Hermes current-turn memory provider with permanent semantic recall, nightly workflow digest, SQLite truth storage, and optional vector companions**
+**Hermes current-turn memory provider with journal-first semantic capture, permanent recall, SQLite truth storage, and optional vector companions**
 
 *Give Hermes durable memory that can follow the same user across windows/chats while keeping local scratch context from bleeding into the wrong place.*
 
-Current-turn recall · Permanent shared memory · Nightly workflow digest · Local scratch scopes · SQLite truth · LanceDB/SQLite companion · Hybrid retrieval
+Current-turn recall · Journal-first capture · Permanent shared memory · Background digest · Local scratch scopes · SQLite truth · LanceDB/SQLite companion · Hybrid RRF retrieval
 
 [![CI](https://github.com/410979729/scope-recall-hermes/actions/workflows/ci.yml/badge.svg)](https://github.com/410979729/scope-recall-hermes/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -20,11 +20,12 @@ Current-turn recall · Permanent shared memory · Nightly workflow digest · Loc
 
 This repository, `scope-recall-hermes`, is the Hermes implementation. The Python package name and Hermes plugin ID intentionally remain `scope-recall` for runtime compatibility. The OpenClaw sibling implementation lives at [`scope-recall-openclaw`](https://github.com/410979729/scope-recall-openclaw).
 
-Version `1.0.11` continues the first stable V1 release line for the documented interfaces, packaged as a public release candidate for broader field testing. It keeps the V1 compatibility contract in [`docs/stability.md`](docs/stability.md) while adding optional MiniMax `embo-01` embeddings with document/query request-type separation.
+Version `1.0.12` continues the first stable V1 release line for the documented interfaces, packaged as a public release candidate for broader field testing. It keeps the V1 compatibility contract in [`docs/stability.md`](docs/stability.md) while replacing per-message durable capture with journal-first provenance, background journal digest, merge/upsert memory writes, and RRF/BM25-aware hybrid retrieval.
 
-It uses a **two-layer design**:
+It uses a **three-layer design**:
 
-- **SQLite truth store** for durable local records and deterministic auditing
+- **Journal/provenance layer** for eligible raw conversation turns and evidence links that are not directly recalled as durable memory
+- **SQLite truth store** for high-density durable local records and deterministic auditing
 - **Vector companion** for semantic retrieval and hybrid ranking: LanceDB by default, or `sqlite-bruteforce` for native-free/non-AVX hosts
 
 This replaces the old `lancepro` naming, which was misleading because the earlier implementation was SQLite-only.
@@ -34,7 +35,7 @@ This replaces the old `lancepro` naming, which was misleading because the earlie
 - **Truth stays inspectable**: SQLite remains the authoritative store; vectors are rebuildable.
 - **Recall is current-turn scoped**: retrieval is based on the active query, not stale queued context from the previous topic.
 - **Durable memory travels deliberately**: `user`, `memory`, `project`, and `ops` facts can follow the same user + agent identity across windows/chats.
-- **Scratch context stays local**: raw `general` turn captures stay inside the current chat/thread/session boundary.
+- **Raw turns are provenance, not durable memory**: eligible conversation turns are written to a journal/staging layer; only digest-produced high-density `user`/`memory`/`project`/`ops` rows enter durable recall and vector sync.
 - **Operator actions fail closed**: cross-scope export/dedupe/govern/repair paths require explicit maintenance mode.
 - **Install remains practical**: hosted embeddings are used when configured, while deterministic `local-hash` keeps no-key bootstrap available.
 
@@ -98,9 +99,9 @@ Most agent memory pain is not just "wrong memory was recalled". The bigger user-
 | --- | --- |
 | Current-turn recall | `prefetch(query)` retrieves against the active user query; `queue_prefetch()` is intentionally a no-op |
 | Storage authority | SQLite is the durable truth; vector backends are rebuildable companion state |
-| Hybrid retrieval | SQLite lexical/FTS candidates + configured vector companion candidates + bounded prompt rendering |
+| Hybrid retrieval | SQLite lexical/FTS/BM25 candidates + configured vector companion candidates + RRF reranking + bounded prompt rendering |
 | Entity/context layer | SQLite entity index, entity probe/related tools, compact query context, trust feedback |
-| Nightly digest | Profile-scoped daily consolidation for durable facts, workflow summaries, and sanitized tool-chain evidence |
+| Background digest | Profile-scoped journal/nightly consolidation for durable facts, workflow summaries, and sanitized tool-chain evidence |
 | Memory scope model | shared durable scope for user/project/ops/memory facts; local scope for general scratch captures |
 | Built-in memory integration | Hermes curated `USER.md` / `MEMORY.md` are live-read, not mirrored into SQLite. In gateway contexts with an explicit `user_id`, curated-file recall is opt-in/allowlisted to avoid cross-user leakage from global profile files. |
 | Governance | deterministic exact dedupe, conservative near-duplicate merge, filtering, metadata, decay review |
@@ -201,7 +202,23 @@ Minimal default shape:
     "mode": "hybrid",
     "lexical_weight": 0.45,
     "vector_weight": 0.55,
-    "candidate_pool": 12
+    "candidate_pool": 12,
+    "fusion_strategy": "rrf",
+    "bm25_weight": 0.15,
+    "rrf_weight": 0.18,
+    "rrf_min_signals": 2
+  },
+  "journal": {
+    "enabled": true,
+    "digest_on_session_end": false,
+    "background_digest_enabled": true,
+    "extractor": "llm",
+    "digest_interval_hours": 2,
+    "retention_days": 0,
+    "max_entries_per_digest": 500
+  },
+  "per_turn_extraction": {
+    "enabled": false
   },
   "vector": {
     "enabled": true,
@@ -339,11 +356,14 @@ When `scope-recall` is active, Hermes memory has **two intentional authority zon
 | Layer | Storage | Purpose | How recall sees it |
 | --- | --- | --- | --- |
 | Hermes curated memory | `$HERMES_HOME/memories/USER.md`, `$HERMES_HOME/memories/MEMORY.md` | User profile and durable hand-curated notes managed by Hermes built-in memory | Live-read during recall; not mirrored into SQLite; gateway `user_id` contexts require curated-memory opt-in/allowlist |
-| Scope Recall provider memory | `$HERMES_HOME/scope-recall/memory.sqlite3` + configured vector companion (`lancedb/` or `vector.sqlite3`) | Provider-owned shared durable memories plus local scratch captures, scope metadata, lexical/vector retrieval | SQLite truth + rebuildable companion ranking |
+| Scope Recall journal/provenance | `$HERMES_HOME/scope-recall/memory.sqlite3` (`journal_entries`, `memory_journal_sources`) | Eligible raw turns and digest evidence links; not ordinary recall memory | Background digest reads it, but recall does not inject raw journal rows |
+| Scope Recall provider memory | `$HERMES_HOME/scope-recall/memory.sqlite3` + configured vector companion (`lancedb/` or `vector.sqlite3`) | Provider-owned shared durable memories plus local scratch rows, scope metadata, lexical/vector/RRF retrieval | SQLite truth + rebuildable companion ranking |
 
-Key principle:
+Key principles:
 
 > SQLite is the truth source for provider-owned rows. Hermes curated memory files remain their own truth source. The configured vector backend is a rebuildable retrieval companion, not the authority.
+
+> Raw conversation turns are provenance first. They become durable recall only after journal/nightly digest turns them into high-density, merge-upserted memory rows.
 
 This is deliberate. Mirroring curated memory writes into SQLite can leave stale duplicates after replace/remove operations. Live-reading curated memory keeps Scope Recall aligned with Hermes native memory behavior. Because those curated files are profile-global, live-read recall defaults to `single-user`: it is active for single-user/no-`user_id` runtimes and disabled for explicit gateway `user_id` contexts unless `curated_memory.mode` is set to `profile-global` or `explicit-users` with matching `allowed_user_ids`.
 
@@ -357,6 +377,8 @@ Under the active Hermes profile:
 - `$HERMES_HOME/scope-recall/config.json`
 - `$HERMES_HOME/scope-recall/lancedb/` when `vector.backend=lancedb`
 - `$HERMES_HOME/scope-recall/vector.sqlite3` when `vector.backend=sqlite-bruteforce`
+
+Inside `memory.sqlite3`, `journal_entries` and `memory_journal_sources` preserve provenance for background digest without turning raw turns into ordinary recall rows.
 
 Legacy `lancepro` storage is migrated forward on first initialization when present.
 
@@ -375,7 +397,7 @@ prefetch(query)
    |       - $HERMES_HOME/memories/USER.md
    |       - $HERMES_HOME/memories/MEMORY.md
    |
-   +--> SQLite truth lookup / FTS
+   +--> SQLite truth lookup / FTS / BM25 / entity graph indexes
    |       - provider-owned memory rows
    |       - scope metadata
    |       - timestamps and governance metadata
@@ -385,7 +407,7 @@ prefetch(query)
    |       - rebuildable from SQLite truth
    |
    v
-hybrid scoring + recency-aware ranking + bounded prompt block
+hybrid scoring + RRF/BM25/entity-aware ranking + bounded prompt block
 ```
 
 <details>
@@ -402,9 +424,10 @@ hybrid scoring + recency-aware ranking + bounded prompt block
 | `sqlite_vector_store.py` | Pure-SQLite brute-force vector companion for native-free hosts |
 | `vector_runtime.py` | Vector runtime status and degradation handling |
 | `recall.py` | Lexical/vector/hybrid recall orchestration |
-| `scoring.py` | Score fusion, freshness boosts, capping logic |
+| `scoring.py` | Score fusion, reciprocal-rank fusion, freshness boosts, capping logic |
 | `gating.py` | Recall/capture gating and noise filtering |
 | `capture.py` | Auto-capture pipeline |
+| `journal.py` | Journal/provenance schema, journal digest, merge-upsert and evidence links |
 | `governance.py` | Deterministic dedupe, metadata, decay/governance review |
 | `memory_ops.py` | Store/search/forget/update/dedupe/merge/export/govern operations |
 | `tooling.py` | Provider tool dispatch |
@@ -413,6 +436,7 @@ hybrid scoring + recency-aware ranking + bounded prompt block
 | `nightly_digest.py` | Daily conversation digest pipeline, LLM/heuristic extraction, semantic write decisions |
 | `scripts/import.openclaw.memory_lancedb_pro.py` | Explicit OpenClaw history importer |
 | `scripts/nightly-digest.py` | CLI wrapper for the profile-scoped daily digest |
+| `scripts/journal-digest.py` | CLI wrapper for journal-first background digest |
 | `scripts/repair.vector_index.py` | Rebuild/repair the configured vector companion from SQLite truth |
 | `scripts/check.release.py` | Full V1 release gate used locally and by CI |
 
@@ -424,9 +448,10 @@ SQLite is the authoritative provider-owned store.
 
 It keeps:
 
-- raw memory rows
+- durable memory rows
 - scope metadata
 - lexical FTS index
+- journal provenance tables and digest evidence links
 - timestamps for auditing and migration
 
 Why SQLite stays authoritative:
@@ -489,7 +514,7 @@ Typical smoke run:
 python scripts/nightly-digest.py --hermes-home "$HERMES_HOME" --date 2026-06-01 --dry-run --extractor heuristic --verbose
 ```
 
-Production runs default to the LLM extractor. The script reads model/base URL/API key information from the Hermes profile config and `.env`, with `SCOPE_RECALL_DIGEST_API_KEY` available as an explicit override. If the LLM path returns no usable candidates for a session, the digest falls back to heuristic candidates for that session. Actual writes use SQLite truth rows, FTS/entity sync, digest run/source ledgers, semantic skip/update/insert decisions, exact duplicate cleanup, and configured vector companion upsert when vector indexing is enabled.
+Production runs default to the LLM extractor. The provider stages eligible turns into `journal_entries`, then schedules a non-blocking background digest according to `journal.digest_interval_hours` when `journal.background_digest_enabled=true`. `journal.digest_on_session_end=false` keeps slow LLM promotion out of normal session closeout by default; session-end LLM promotion requires explicit `journal.allow_session_end_llm=true`. The script reads model/base URL/API key information from the Hermes profile config and `.env`, with `SCOPE_RECALL_DIGEST_API_KEY` available as an explicit override. If the LLM path fails or returns no usable candidates, journal digest does **not** silently fall back and consume journal evidence; operators must explicitly request `--extractor heuristic` or set `journal.allow_heuristic_fallback=true` for a degraded fallback run. Actual writes use SQLite truth rows, FTS/entity sync, digest run/source ledgers, semantic skip/update/insert decisions, exact duplicate cleanup, and configured vector companion upsert when vector indexing is enabled.
 
 ### Hybrid retrieval
 

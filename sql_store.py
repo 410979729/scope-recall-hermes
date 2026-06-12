@@ -320,6 +320,8 @@ def delete_rows(
     conn.execute(f"DELETE FROM memory_feedback WHERE memory_id IN ({placeholders})", scoped_ids)
     if _table_exists(conn, "memory_digest_sources"):
         conn.execute(f"DELETE FROM memory_digest_sources WHERE memory_id IN ({placeholders})", scoped_ids)
+    if _table_exists(conn, "memory_journal_sources"):
+        conn.execute(f"DELETE FROM memory_journal_sources WHERE memory_id IN ({placeholders})", scoped_ids)
     conn.execute(f"DELETE FROM memories WHERE id IN ({placeholders})", scoped_ids)
     conn.commit()
     after = int(conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0])

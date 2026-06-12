@@ -19,7 +19,7 @@ import tempfile
 import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PACKAGE_VERSION = "1.0.11"
+PACKAGE_VERSION = "1.0.12"
 WHEEL_DATA_PREFIX = f"scope_recall-{PACKAGE_VERSION}.data/data"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
 EXTERNAL_TEST_DIRS = {".hermes-agent-src"}
@@ -49,6 +49,7 @@ REQUIRED_SOURCE_FILES = {
     "docs/hermes-upstream-recommendation-plan.md",
     "scripts/import.openclaw.memory_lancedb_pro.py",
     "scripts/nightly-digest.py",
+    "scripts/journal-digest.py",
     "scripts/repair.vector_index.py",
     "scripts/report.hygiene.py",
     "scripts/doctor.py",
@@ -67,6 +68,7 @@ REQUIRED_WHEEL = {
     "scope_recall/schemas.py",
     "scope_recall/secret_index.py",
     "scope_recall/hygiene.py",
+    "scope_recall/journal.py",
     "scope_recall/nightly_digest.py",
     "scope_recall/sqlite_vector_store.py",
     "scope_recall/py.typed",
@@ -86,6 +88,7 @@ REQUIRED_WHEEL = {
     f"{WHEEL_DATA_PREFIX}/docs/hermes-upstream-recommendation-plan.md",
     f"{WHEEL_DATA_PREFIX}/scripts/import.openclaw.memory_lancedb_pro.py",
     f"{WHEEL_DATA_PREFIX}/scripts/nightly-digest.py",
+    f"{WHEEL_DATA_PREFIX}/scripts/journal-digest.py",
     f"{WHEEL_DATA_PREFIX}/scripts/repair.vector_index.py",
     f"{WHEEL_DATA_PREFIX}/scripts/report.hygiene.py",
     f"{WHEEL_DATA_PREFIX}/scripts/doctor.py",

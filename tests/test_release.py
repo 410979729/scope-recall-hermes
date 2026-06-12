@@ -1,6 +1,7 @@
 import importlib
 import importlib.util
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -115,6 +116,38 @@ def test_doctor_script_reports_missing_sqlite_truth_db(tmp_path):
     assert payload["ok"] is False
     assert payload["runtime"]["sqlite"]["status"] == "missing"
     assert "repair.vector_index.py" in "\n".join(payload["recommendations"])
+
+
+def test_doctor_script_reports_missing_journal_schema(tmp_path):
+    storage = tmp_path / "scope-recall"
+    storage.mkdir(parents=True)
+    (storage / "config.json").write_text(json.dumps({"vector": {"enabled": False}}), encoding="utf-8")
+    conn = sqlite3.connect(storage / "memory.sqlite3")
+    try:
+        from scope_recall.sql_store import ensure_schema  # type: ignore[import-not-found]
+
+        ensure_schema(conn)
+    finally:
+        conn.close()
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(DOCTOR_PATH),
+            "--source-root",
+            str(PLUGIN_ROOT),
+            "--hermes-home",
+            str(tmp_path),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["checks"]["journal_provenance"]["ok"] is False
+    assert payload["runtime"]["journal"]["status"] == "schema_missing"
 
 
 
@@ -266,6 +299,43 @@ def test_doctor_vector_report_marks_dimension_mismatch_needs_repair(tmp_path, mo
     assert "repair.vector_index.py" in "\n".join(recommendations)
 
 
+def test_doctor_expected_embedder_loads_profile_dotenv_before_fallback(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location("scope_recall_doctor", DOCTOR_PATH)
+    assert spec is not None
+    assert spec.loader is not None
+    doctor = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(doctor)
+
+    monkeypatch.delenv("SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY", raising=False)
+    (tmp_path / ".env").write_text("SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY=test-key\n", encoding="utf-8")
+    storage = tmp_path / "scope-recall"
+    storage.mkdir(parents=True)
+    (storage / "config.json").write_text(
+        json.dumps(
+            {
+                "vector": {
+                    "enabled": True,
+                    "embedder": {
+                        "provider": "openai-compatible",
+                        "dimensions": 3072,
+                        "model": "gemini-embedding-001",
+                        "api_key_env": ["SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY"],
+                    },
+                    "fallback_embedder": {"provider": "local-hash", "dimensions": 256, "model": "hash-v1"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = doctor.load_runtime_config(PLUGIN_ROOT, tmp_path)
+    expected = doctor.expected_embedder_from_config(config)
+
+    assert expected["source"] == "embedder"
+    assert expected["dimensions"] == 3072
+    assert "SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY" not in os.environ
+
+
 
 def test_doctor_vector_report_accepts_sqlite_bruteforce_backend(tmp_path):
     spec = importlib.util.spec_from_file_location("scope_recall_doctor", DOCTOR_PATH)
@@ -310,6 +380,7 @@ def test_doctor_vector_report_accepts_sqlite_bruteforce_backend(tmp_path):
 
 
 def test_repair_vector_index_rebuilds_sqlite_bruteforce_backend(tmp_path):
+    from scope_recall.journal import ensure_journal_schema  # type: ignore[import-not-found]
     from scope_recall.sql_store import ensure_schema, store_row  # type: ignore[import-not-found]
 
     storage_dir = tmp_path / "scope-recall"
@@ -334,6 +405,7 @@ def test_repair_vector_index_rebuilds_sqlite_bruteforce_backend(tmp_path):
     conn.row_factory = sqlite3.Row
     try:
         ensure_schema(conn)
+        ensure_journal_schema(conn)
         store_row(
             conn,
             memory_id="memory-1",
@@ -962,7 +1034,7 @@ def test_recall_merge_preserves_incoming_recency_metadata(tmp_path):
         agent_workspace="hermes",
     )
     try:
-        plugin._retrieval_config = {"mode": "hybrid", "min_score": 0.0, "candidate_pool": 3}
+        plugin._retrieval_config = {"mode": "hybrid", "min_score": 0.0, "candidate_pool": 3, "fusion_strategy": "linear", "entity_distance_weight": 0.0}
         duplicate_content = "Joy prefers concise answers with direct problem-first reporting."
         older = RecallItem(
             id="older",

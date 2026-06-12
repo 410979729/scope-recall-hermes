@@ -1,4 +1,7 @@
+import importlib
 import json
+import threading
+import time
 
 import pytest
 
@@ -46,7 +49,182 @@ def test_sync_turn_does_not_store_raw_user_turns_by_default(provider):
 
     with provider._lock:
         rows = provider._require_conn().execute("SELECT source, target, content FROM memories").fetchall()
+        journal_count = provider._require_conn().execute("SELECT COUNT(*) FROM journal_entries").fetchone()[0]
     assert rows == []
+    assert journal_count == 1
+
+
+def test_sync_turn_preserves_long_user_turns_in_journal_chunks(provider):
+    marker = "TAIL-MARKER-PROVIDER-LONG-TURN"
+    long_user = "用户长任务说明：" + ("不要把长 turn 因为 capture_hard_max_chars 丢弃，要进入 journal chunking。" * 90) + marker
+
+    provider.on_turn_start(7, long_user)
+    provider.sync_turn(long_user, "ok")
+    provider.flush(timeout=2.0)
+
+    with provider._lock:
+        rows = provider._require_conn().execute("SELECT content, metadata FROM journal_entries ORDER BY id").fetchall()
+    assert len(rows) >= 2
+    assert marker in "".join(row["content"] for row in rows)
+    metadata = [json.loads(row["metadata"] or "{}") for row in rows]
+    assert all(item.get("original_content_hash") for item in metadata)
+    assert [item.get("chunk_index") for item in metadata] == list(range(1, len(rows) + 1))
+
+
+def test_on_session_end_captures_tool_trace_and_runs_journal_digest(tmp_path):
+    _write_scope_recall_config(
+        tmp_path,
+        {
+            "vector": {"enabled": False},
+            "journal": {"enabled": True, "digest_on_session_end": True, "extractor": "heuristic", "max_entries_per_digest": 20},
+        },
+    )
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    plugin.initialize(
+        "session-tool-trace",
+        hermes_home=str(tmp_path),
+        platform="cli",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        plugin.on_session_end(
+            [
+                {
+                    "role": "tool",
+                    "name": "exec_command",
+                    "content": "pytest failed because memory_journal_sources kept orphan links after delete_rows; fix delete_rows cleanup.",
+                }
+            ]
+        )
+        with plugin._lock:
+            journal_count = plugin._require_conn().execute("SELECT COUNT(*) FROM journal_entries").fetchone()[0]
+            memory = plugin._require_conn().execute("SELECT content FROM memories WHERE source = 'journal-digest'").fetchone()
+        assert journal_count == 1
+        assert memory is not None
+        assert "Tool execution trace" in memory["content"]
+        assert "orphan links" in memory["content"]
+    finally:
+        plugin.shutdown()
+
+
+def test_background_journal_digest_runs_after_append_and_respects_interval(tmp_path, monkeypatch):
+    _write_scope_recall_config(
+        tmp_path,
+        {
+            "vector": {"enabled": False},
+            "journal": {
+                "enabled": True,
+                "background_digest_enabled": True,
+                "background_digest_synchronous": True,
+                "digest_interval_hours": 1,
+                "extractor": "heuristic",
+                "max_entries_per_digest": 20,
+            },
+        },
+    )
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    plugin.initialize("session-background", hermes_home=str(tmp_path), platform="cli", agent_context="primary", agent_identity="yuheng", agent_workspace="hermes")
+    calls = []
+
+    def fake_digest(journal_config):
+        calls.append(dict(journal_config))
+
+    monkeypatch.setattr(plugin, "_run_background_journal_digest", fake_digest)
+    try:
+        plugin.sync_turn("用户要求 scope-recall 后台 digest 自动合并 journal evidence，而不是永远暂存。", "ok")
+        plugin.sync_turn("用户继续说明：同一小时内不应该重复启动 digest worker。", "ok")
+        assert len(calls) == 1
+
+        plugin._last_journal_digest_started -= 3601
+        plugin.sync_turn("用户继续说明：超过 digest_interval_hours 后可以再次调度 journal digest。", "ok")
+        assert len(calls) == 2
+        assert all(call["extractor"] == "heuristic" for call in calls)
+    finally:
+        plugin.shutdown()
+
+
+def test_background_journal_digest_is_nonblocking_and_not_duplicated_while_running(tmp_path, monkeypatch):
+    _write_scope_recall_config(
+        tmp_path,
+        {
+            "vector": {"enabled": False},
+            "journal": {
+                "enabled": True,
+                "background_digest_enabled": True,
+                "digest_interval_hours": 1,
+                "extractor": "heuristic",
+                "max_entries_per_digest": 20,
+            },
+        },
+    )
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    plugin.initialize("session-background-async", hermes_home=str(tmp_path), platform="cli", agent_context="primary", agent_identity="yuheng", agent_workspace="hermes")
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def fake_digest(journal_config):
+        calls.append(dict(journal_config))
+        started.set()
+        release.wait(timeout=2.0)
+
+    monkeypatch.setattr(plugin, "_run_background_journal_digest", fake_digest)
+    try:
+        before = time.monotonic()
+        plugin.sync_turn("用户要求后台 digest 不能阻塞普通 sync_turn 前台路径。", "ok")
+        elapsed = time.monotonic() - before
+        assert elapsed < 0.5
+        assert started.wait(timeout=2.0)
+
+        plugin.sync_turn("worker 仍在运行时不能重复启动第二个 digest。", "ok")
+        assert len(calls) == 1
+    finally:
+        release.set()
+        thread = getattr(plugin, "_journal_digest_thread", None)
+        if thread is not None:
+            thread.join(timeout=2.0)
+        plugin.shutdown()
+
+
+def test_background_journal_digest_failure_does_not_break_foreground_or_advance_watermark(tmp_path, monkeypatch):
+    _write_scope_recall_config(
+        tmp_path,
+        {
+            "vector": {"enabled": False},
+            "journal": {
+                "enabled": True,
+                "background_digest_enabled": True,
+                "background_digest_synchronous": True,
+                "digest_interval_hours": 1,
+                "extractor": "llm",
+                "max_entries_per_digest": 20,
+            },
+        },
+    )
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    plugin.initialize("session-background-fail", hermes_home=str(tmp_path), platform="cli", agent_context="primary", agent_identity="yuheng", agent_workspace="hermes")
+    provider_module = importlib.import_module(type(plugin).__module__)
+
+    def failing_digest(**kwargs):
+        raise RuntimeError("simulated background LLM outage")
+
+    monkeypatch.setattr(provider_module, "run_journal_digest", failing_digest)
+    try:
+        plugin.sync_turn("后台 LLM digest 失败时，前台 sync_turn 不能失败，也不能消费 journal 水位。", "ok")
+        with plugin._lock:
+            row = plugin._require_conn().execute("SELECT processed_run_id FROM journal_entries ORDER BY id LIMIT 1").fetchone()
+            digest_error = plugin._require_conn().execute("SELECT status, error FROM journal_digest_runs ORDER BY started_at DESC LIMIT 1").fetchone()
+        assert row is not None
+        assert row["processed_run_id"] == ""
+        assert digest_error is None
+    finally:
+        plugin.shutdown()
 
 
 def test_sync_turn_accepts_structured_content_when_raw_capture_is_explicitly_enabled(provider):
@@ -1311,6 +1489,19 @@ def test_repair_tool_rebuilds_vector_companion(provider):
     assert payload["vector"]["row_count"] == 1
 
 def test_smart_extract_turn_creates_preference_and_fact_memories(provider):
+    provider.sync_turn(
+        "Joy prefers playful concise replies. The production deploy command is uv run app.",
+        "Understood.",
+    )
+    provider.flush(timeout=5.0)
+
+    empty = json.loads(provider.handle_tool_call("scope_recall_search", {"query": "Joy reply preference", "limit": 5}))
+    assert empty["results"] == []
+    with provider._lock:
+        journal_count = provider._require_conn().execute("SELECT COUNT(*) FROM journal_entries").fetchone()[0]
+    assert journal_count >= 1
+
+    provider._config["per_turn_extraction"] = {"enabled": True}
     provider.sync_turn(
         "Joy prefers playful concise replies. The production deploy command is uv run app.",
         "Understood.",
