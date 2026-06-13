@@ -32,7 +32,7 @@ from .nightly_digest import (
     resolve_llm_config,
     session_chunks,
 )
-from .scope import accessible_scope_ids, build_scope_id, build_shared_scope_id, canonical_user_id, normalize_scope_identity
+from .scope import accessible_scope_ids, build_scope_id, build_shared_scope_id, canonical_user_id, normalize_scope_identity, writable_scope_ids
 from .sql_store import ensure_schema, now_iso, store_row, update_row
 from .vector_runtime import upsert_vector_record
 
@@ -516,7 +516,10 @@ def heuristic_journal_candidates(entries: list[JournalEntry]) -> list[JournalDig
     candidates: list[JournalDigestCandidate] = []
     for key, session_entries in groups.items():
         for segment_index, group_entries in enumerate(_segment_session_entries(session_entries), start=1):
-            combined = "\n".join(f"{entry.role}: {entry.content}" for entry in group_entries)
+            digest_entries = [entry for entry in group_entries if entry.role != "tool"]
+            if not digest_entries:
+                continue
+            combined = "\n".join(f"{entry.role}: {entry.content}" for entry in digest_entries)
             target, memory_type, tags = _classify_target_and_type(combined)
             session_ids = _unique([entry.session_id for entry in group_entries], limit=12)
             entry_ids = [entry.id for entry in group_entries]
@@ -654,6 +657,11 @@ def _find_match(conn: sqlite3.Connection, scope_ids: list[str], candidate: Journ
     return best_id, best_content, best_score
 
 
+def _memory_scope_id(conn: sqlite3.Connection, memory_id: str) -> str:
+    row = conn.execute("SELECT scope_id FROM memories WHERE id = ?", (memory_id,)).fetchone()
+    return str(row["scope_id"] if row is not None else "")
+
+
 def _record_journal_sources(conn: sqlite3.Connection, *, memory_id: str, run_id: str, entry_ids: list[int]) -> None:
     now = now_iso()
     conn.executemany(
@@ -744,6 +752,7 @@ def apply_journal_candidates(
 ) -> dict[str, Any]:
     scope = normalize_scope_identity(scope, runtime_config)
     scope_ids = accessible_scope_ids(scope, runtime_config)
+    write_scope_ids = writable_scope_ids(scope, runtime_config)
     shared_scope_id = build_shared_scope_id(scope, runtime_config)
     counts = Counter()
     actions: list[dict[str, Any]] = []
@@ -757,7 +766,16 @@ def apply_journal_candidates(
                 conn.commit()
             continue
         match_id, match_content, score = _find_match(conn, scope_ids, candidate)
-        if match_id and score >= 0.55 and not is_conflicting(match_content, candidate.content):
+        match_scope_id = _memory_scope_id(conn, match_id) if match_id else ""
+        match_is_writable = bool(match_scope_id and match_scope_id in set(write_scope_ids))
+        if match_id and score >= 0.88:
+            counts["skipped"] += 1
+            actions.append({"action": "skip", "reason": "existing memory covers candidate", "id": match_id, "score": round(score, 4), "entry_ids": candidate.entry_ids})
+            if not dry_run:
+                _record_journal_rejection(conn, run_id=run_id, entry_ids=candidate.entry_ids, reason="existing memory covers candidate", candidate=candidate)
+                conn.commit()
+            continue
+        if match_id and match_is_writable and score >= 0.55 and not is_conflicting(match_content, candidate.content):
             merged = merge_memory_text(match_content, candidate.content)
             if candidate.content not in merged and "merge/upsert" in candidate.content.lower():
                 merged = f"{merged}\n§\n{candidate.content}"
@@ -769,7 +787,7 @@ def apply_journal_candidates(
                     memory_id=match_id,
                     content=merged,
                     target=candidate.target,
-                    scope_ids=scope_ids,
+                    scope_ids=write_scope_ids,
                 )
                 if updated:
                     _merge_metadata(conn, memory_id=match_id, candidate=candidate, run_id=run_id)

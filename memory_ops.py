@@ -14,12 +14,23 @@ from .sql_store import delete_rows, exact_duplicate_groups, iter_curated_entries
 from .vector_runtime import mark_vector_needs_repair, setup_vector_layer, upsert_vector_record
 
 
-def _scope_placeholders(provider: Any) -> str:
-    return ",".join("?" for _ in provider._accessible_scope_ids)
+def _scope_params(provider: Any, *, writable: bool = False) -> list[str]:
+    attr = "_writable_scope_ids" if writable else "_accessible_scope_ids"
+    scopes = getattr(provider, attr, []) or []
+    return [str(scope_id) for scope_id in scopes if str(scope_id)]
+
+
+def _scope_placeholders(provider: Any, *, writable: bool = False) -> str:
+    params = _scope_params(provider, writable=writable)
+    return ",".join("?" for _ in params) or "NULL"
 
 
 def _accessible_scope_params(provider: Any) -> list[str]:
-    return [str(scope_id) for scope_id in provider._accessible_scope_ids]
+    return _scope_params(provider, writable=False)
+
+
+def _writable_scope_params(provider: Any) -> list[str]:
+    return _scope_params(provider, writable=True)
 
 
 def store_memory_now(
@@ -68,8 +79,8 @@ def _mark_conflicts_for_memory(provider: Any, *, memory_id: str, content: str, t
             WHERE id != ? AND target = ? AND scope_id IN ({})
             ORDER BY updated_at DESC
             LIMIT 50
-            """.format(_scope_placeholders(provider)),
-            [memory_id, target, *_accessible_scope_params(provider)],
+            """.format(_scope_placeholders(provider, writable=True)),
+            [memory_id, target, *_writable_scope_params(provider)],
         ).fetchall()
         conflicting_ids = [str(row["id"]) for row in rows if is_conflicting(str(row["content"]), content)]
         if not conflicting_ids:
@@ -138,8 +149,8 @@ def find_semantic_merge_candidate(provider: Any, content: str, target: str) -> t
             WHERE scope_id IN ({}) AND target = ?
             ORDER BY updated_at DESC
             LIMIT 50
-            """.format(_scope_placeholders(provider)),
-            [*_accessible_scope_params(provider), target],
+            """.format(_scope_placeholders(provider, writable=True)),
+            [*_writable_scope_params(provider), target],
         ).fetchall()
     best_id = ""
     best_content = ""
@@ -170,8 +181,8 @@ def _row_scope_mode(provider: Any, row: Any) -> str:
 
 def update_memory(provider: Any, memory_id: str, content: str, target: str | None = None) -> tuple[bool, str, str]:
     with provider._lock:
-        placeholders = _scope_placeholders(provider)
-        scope_params = _accessible_scope_params(provider)
+        placeholders = _scope_placeholders(provider, writable=True)
+        scope_params = _writable_scope_params(provider)
         existing = provider._require_conn().execute(
             f"SELECT source, target, scope_id FROM memories WHERE id = ? AND scope_id IN ({placeholders})",
             [memory_id, *scope_params],
@@ -187,13 +198,13 @@ def update_memory(provider: Any, memory_id: str, content: str, target: str | Non
             memory_id=memory_id,
             content=content,
             target=target,
-            scope_ids=provider._accessible_scope_ids,
+            scope_ids=scope_params,
         )
     if updated:
-        placeholders = _scope_placeholders(provider)
+        placeholders = _scope_placeholders(provider, writable=True)
         row = provider._require_conn().execute(
             f"SELECT source, target, content, summary, updated_at, scope_id FROM memories WHERE id = ? AND scope_id IN ({placeholders})",
-            [memory_id, *_accessible_scope_params(provider)],
+            [memory_id, *_writable_scope_params(provider)],
         ).fetchone()
         if row is not None:
             upsert_vector_record(
@@ -213,8 +224,8 @@ def merge_memories(provider: Any, target_id: str, source_ids: list[str], content
     source_ids = [str(memory_id) for memory_id in source_ids if str(memory_id).strip()]
     conn = provider._require_conn()
     with provider._lock:
-        placeholders = _scope_placeholders(provider)
-        scope_params = _accessible_scope_params(provider)
+        placeholders = _scope_placeholders(provider, writable=True)
+        scope_params = _writable_scope_params(provider)
         target_row = conn.execute(f"SELECT * FROM memories WHERE id = ? AND scope_id IN ({placeholders})", [target_id, *scope_params]).fetchone()
         source_rows = conn.execute(
             f"SELECT * FROM memories WHERE id IN ({','.join('?' for _ in source_ids)}) AND scope_id IN ({placeholders})" if source_ids else "SELECT * FROM memories WHERE 0",
@@ -305,8 +316,8 @@ def export_memories(provider: Any, *, fmt: str = "jsonl", scope_only: bool = Tru
 def govern_memories(provider: Any, *, dry_run: bool = True, scope_only: bool = True) -> dict[str, Any]:
     conn = provider._require_conn()
     if scope_only:
-        where = f"WHERE scope_id IN ({_scope_placeholders(provider)})"
-        params: tuple[Any, ...] = tuple(_accessible_scope_params(provider))
+        where = f"WHERE scope_id IN ({_scope_placeholders(provider, writable=True)})"
+        params: tuple[Any, ...] = tuple(_writable_scope_params(provider))
     else:
         where = ""
         params = ()
@@ -376,10 +387,10 @@ def govern_memories(provider: Any, *, dry_run: bool = True, scope_only: bool = T
     if not dry_run:
         with provider._lock:
             if scope_only:
-                placeholders = _scope_placeholders(provider)
+                placeholders = _scope_placeholders(provider, writable=True)
                 conn.executemany(
                     f"UPDATE memories SET metadata = ? WHERE id = ? AND scope_id IN ({placeholders})",
-                    [(*update, *_accessible_scope_params(provider)) for update in updates],
+                    [(*update, *_writable_scope_params(provider)) for update in updates],
                 )
             else:
                 conn.executemany("UPDATE memories SET metadata = ? WHERE id = ?", updates)
@@ -405,10 +416,13 @@ def delete_memories(provider: Any, ids: list[str]) -> int:
         scoped_ids = [
             str(row["id"])
             for row in provider._require_conn()
-            .execute(f"SELECT id FROM memories WHERE id IN ({placeholders}) AND scope_id IN ({_scope_placeholders(provider)})", [*requested_ids, *_accessible_scope_params(provider)])
+            .execute(
+                f"SELECT id FROM memories WHERE id IN ({placeholders}) AND scope_id IN ({_scope_placeholders(provider, writable=True)})",
+                [*requested_ids, *_writable_scope_params(provider)],
+            )
             .fetchall()
         ]
-        deleted_changes = delete_rows(provider._require_conn(), scoped_ids, scope_ids=provider._accessible_scope_ids)
+        deleted_changes = delete_rows(provider._require_conn(), scoped_ids, scope_ids=_writable_scope_params(provider))
     if provider._vector_store and scoped_ids:
         try:
             provider._vector_store.delete_by_ids(scoped_ids)
@@ -418,7 +432,7 @@ def delete_memories(provider: Any, ids: list[str]) -> int:
 
 
 def dedupe_memories(provider: Any, *, dry_run: bool = True, scope_only: bool = True) -> dict[str, Any]:
-    groups = exact_duplicate_groups(provider._require_conn(), scope_ids=provider._accessible_scope_ids if scope_only else None)
+    groups = exact_duplicate_groups(provider._require_conn(), scope_ids=_writable_scope_params(provider) if scope_only else None)
     delete_ids = [memory_id for group in groups for memory_id in group["delete_ids"]]
     payload: dict[str, Any] = {
         "dry_run": dry_run,
@@ -577,8 +591,8 @@ def feedback_memory(provider: Any, *, memory_id: str, rating: str, note: str = "
     conn = provider._require_conn()
     with provider._lock:
         row = conn.execute(
-            f"SELECT * FROM memories WHERE id = ? AND scope_id IN ({_scope_placeholders(provider)})",
-            [memory_id, *_accessible_scope_params(provider)],
+            f"SELECT * FROM memories WHERE id = ? AND scope_id IN ({_scope_placeholders(provider, writable=True)})",
+            [memory_id, *_writable_scope_params(provider)],
         ).fetchone()
         if row is None:
             return {"updated": False, "error": "id not found", "id": memory_id}
@@ -600,7 +614,10 @@ def feedback_memory(provider: Any, *, memory_id: str, rating: str, note: str = "
             "INSERT INTO memory_feedback(memory_id, rating, note, created_at) VALUES (?, ?, ?, ?)",
             (memory_id, rating_value, note[:240], datetime.now(timezone.utc).isoformat()),
         )
-        conn.execute("UPDATE memories SET metadata = ? WHERE id = ?", (metadata_json, memory_id))
+        conn.execute(
+            f"UPDATE memories SET metadata = ? WHERE id = ? AND scope_id IN ({_scope_placeholders(provider, writable=True)})",
+            (metadata_json, memory_id, *_writable_scope_params(provider)),
+        )
         conn.commit()
     return {
         "updated": True,

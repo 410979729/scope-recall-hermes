@@ -20,7 +20,7 @@ Current-turn recall · Journal-first capture · Permanent shared memory · Backg
 
 This repository, `scope-recall-hermes`, is the Hermes implementation. The Python package name and Hermes plugin ID intentionally remain `scope-recall` for runtime compatibility. The OpenClaw sibling implementation lives at [`scope-recall-openclaw`](https://github.com/410979729/scope-recall-openclaw).
 
-Version `1.0.14` continues the first stable V1 release line for the documented interfaces, packaged as a public release candidate for broader field testing. It keeps the V1 compatibility contract in [`docs/stability.md`](docs/stability.md) while adding opt-in canonical cross-platform identity mapping for durable rows, provider-specific digest endpoints, pre-initialization maintenance tool registration, journal-first provenance, background journal digest, merge/upsert memory writes, conflict-review relations, governance review candidates, and RRF/BM25-aware hybrid retrieval.
+Version `1.0.15` continues the first stable V1 release line for the documented interfaces, packaged as a public release candidate for broader field testing. It keeps the V1 compatibility contract in [`docs/stability.md`](docs/stability.md) while tightening endpoint handling, sensitive-error redaction, journal/tool-trace boundaries, cross-platform mutation scopes, and vector/update consistency on top of the v1.0.14 opt-in canonical identity and provider-specific endpoint support.
 
 It uses a **three-layer design**:
 
@@ -74,9 +74,9 @@ By default, durable shared scope remains platform-isolated: `platform + agent_wo
 
 Only durable targets (`user`, `memory`, `project`, `ops`) use the canonical shared scope. `general` scratch, raw journal evidence, chat/thread/session context, and tool traces remain local. Existing platform-specific durable rows stay readable through query-time aliases before any explicit migration. Newly written rows keep `raw_platform`, `raw_user_id`, and mapped `canonical_user` metadata for auditability.
 
-### Provider-specific digest endpoints
+### Provider-specific LLM endpoints
 
-For journal/nightly digest LLM providers whose chat-completions endpoint is not `base_url + /v1/chat/completions`, set either a full endpoint or disable `/v1` appending:
+For capture, journal, or nightly digest LLM providers whose chat-completions endpoint is not `base_url + /v1/chat/completions`, set either a full endpoint or disable `/v1` appending:
 
 ```json
 {

@@ -2,6 +2,21 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [1.0.15] - 2026-06-13
+
+### Fixed
+- Reused one chat-completions endpoint builder across capture, journal, and nightly digest paths so provider-specific endpoints and `append_v1=false` are honored consistently.
+- Redacted sensitive HTTP/SSE error bodies before provider exceptions surface from Codex responses or streaming response parsing.
+- Kept pure `role=tool` journal traces in provenance only; heuristic digest no longer promotes raw tool output into durable memory.
+- Changed empty-store nightly scope inference to use an explicit or CLI fallback instead of silently defaulting to Telegram.
+- Split readable aliases from writable scopes so legacy cross-platform platform scopes remain read-only unless an explicit migration writes them.
+- Preserved the updated row's real `scope_id` when nightly digest updates vectors for legacy rows.
+- Redacted secret scanner findings in the release gate while still reporting file, line, and rule evidence.
+
+### Changed
+- Added regression coverage for the v1.0.15 audit findings and updated the provider tool-trace test to assert journal-only provenance behavior.
+- Bumped package, plugin, release-check metadata, README, and stability docs to `1.0.15`.
+
 ## [1.0.14] - 2026-06-13
 
 ### Added

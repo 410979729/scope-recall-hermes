@@ -71,7 +71,7 @@ def test_sync_turn_preserves_long_user_turns_in_journal_chunks(provider):
     assert [item.get("chunk_index") for item in metadata] == list(range(1, len(rows) + 1))
 
 
-def test_on_session_end_captures_tool_trace_and_runs_journal_digest(tmp_path):
+def test_on_session_end_captures_tool_trace_but_does_not_promote_it_with_heuristic_digest(tmp_path):
     _write_scope_recall_config(
         tmp_path,
         {
@@ -100,12 +100,12 @@ def test_on_session_end_captures_tool_trace_and_runs_journal_digest(tmp_path):
             ]
         )
         with plugin._lock:
-            journal_count = plugin._require_conn().execute("SELECT COUNT(*) FROM journal_entries").fetchone()[0]
+            journal_row = plugin._require_conn().execute("SELECT content FROM journal_entries ORDER BY id DESC LIMIT 1").fetchone()
             memory = plugin._require_conn().execute("SELECT content FROM memories WHERE source = 'journal-digest'").fetchone()
-        assert journal_count == 1
-        assert memory is not None
-        assert "Tool execution trace" in memory["content"]
-        assert "orphan links" in memory["content"]
+        assert journal_row is not None
+        assert "Tool execution trace" in journal_row["content"]
+        assert "orphan links" in journal_row["content"]
+        assert memory is None
     finally:
         plugin.shutdown()
 

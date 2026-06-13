@@ -64,7 +64,7 @@ from .schemas import (
     SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA,
     SCOPE_RECALL_UPDATE_SCHEMA,
 )
-from .scope import accessible_scope_ids, build_scope_id, build_shared_pool_scope_id, build_shared_scope_id, normalize_scope_identity
+from .scope import accessible_scope_ids, build_scope_id, build_shared_pool_scope_id, build_shared_scope_id, normalize_scope_identity, writable_scope_ids
 from .sql_store import ensure_schema
 from .storage_views import search_curated_memories, search_db_memories, search_vector_memories
 from .tooling import ScopeRecallToolService
@@ -92,6 +92,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._shared_pool_id = ""
         self._shared_pool_scope_id = ""
         self._accessible_scope_ids: list[str] = []
+        self._writable_scope_ids: list[str] = []
         self._storage_dir: Path | None = None
         self._db_path: Path | None = None
         self._hermes_home: Path | None = None
@@ -212,6 +213,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._scope_id = build_scope_id(self._scope, self._config)
         self._shared_scope_id = build_shared_scope_id(self._scope, self._config)
         self._accessible_scope_ids = accessible_scope_ids(self._scope, self._config)
+        self._writable_scope_ids = writable_scope_ids(self._scope, self._config)
         raw_shared_pool_config = self._config.get("shared_pool")
         shared_pool_config = raw_shared_pool_config if isinstance(raw_shared_pool_config, dict) else {}
         self._shared_pool_enabled = config_bool(shared_pool_config, "enabled", False)

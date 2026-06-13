@@ -191,6 +191,23 @@ def build_scope_id(scope: RuntimeScope, config: dict[str, Any] | None = None) ->
     return "|".join(parts)
 
 
+def writable_scope_ids(scope: RuntimeScope, config: dict[str, Any] | None = None) -> list[str]:
+    """Return scopes this runtime may mutate.
+
+    Cross-platform identity mapping adds legacy platform scopes to readable
+    access for compatibility, but those legacy aliases are intentionally not
+    writable: updates/deletes/merges should only affect the current local
+    scratch scope and the current canonical durable shared scope.
+    """
+
+    normalized = normalize_scope_identity(scope, config)
+    output: list[str] = []
+    for scope_id in (build_scope_id(normalized, config), build_shared_scope_id(normalized, config)):
+        if scope_id and scope_id not in output:
+            output.append(scope_id)
+    return output
+
+
 def accessible_scope_ids(scope: RuntimeScope, config: dict[str, Any] | None = None) -> list[str]:
     """Return local + shared scopes readable/writable by this runtime identity.
 
