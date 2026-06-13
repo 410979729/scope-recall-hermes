@@ -307,6 +307,89 @@ def test_short_or_greeting_query_is_gated(provider):
     assert provider.prefetch("谢谢") == ""
 
 
+def test_conflicting_new_memory_records_review_relation_without_hiding_old(provider):
+    old_payload = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_store",
+            {"content": "Project Phoenix deploy command is uv run old-deploy.", "target": "ops", "memory_type": "procedure"},
+        )
+    )
+    assert old_payload["stored"] is True
+    new_payload = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_store",
+            {
+                "content": "Project Phoenix deploy command is not uv run old-deploy.",
+                "target": "ops",
+                "memory_type": "procedure",
+            },
+        )
+    )
+    assert new_payload["stored"] is True
+
+    with provider._lock:
+        old_row = provider._require_conn().execute("SELECT metadata FROM memories WHERE id = ?", (old_payload["id"],)).fetchone()
+        new_row = provider._require_conn().execute("SELECT metadata FROM memories WHERE id = ?", (new_payload["id"],)).fetchone()
+        contradicts = provider._require_conn().execute(
+            "SELECT COUNT(*) FROM memory_relations WHERE relation_type = 'contradicts' AND ((source_memory_id = ? AND target_memory_id = ?) OR (source_memory_id = ? AND target_memory_id = ?))",
+            (new_payload["id"], old_payload["id"], old_payload["id"], new_payload["id"]),
+        ).fetchone()[0]
+        supersedes = provider._require_conn().execute(
+            "SELECT COUNT(*) FROM memory_relations WHERE relation_type IN ('supersedes', 'superseded_by') AND (source_memory_id IN (?, ?) OR target_memory_id IN (?, ?))",
+            (new_payload["id"], old_payload["id"], new_payload["id"], old_payload["id"]),
+        ).fetchone()[0]
+    old_meta = json.loads(old_row["metadata"])
+    new_meta = json.loads(new_row["metadata"])
+    assert old_meta["lifecycle"] == "promoted"
+    assert old_meta["needs_conflict_review"] is True
+    assert old_meta["conflict_review_ids"] == [new_payload["id"]]
+    assert new_meta["conflict_review_ids"] == [old_payload["id"]]
+    assert contradicts == 2
+    assert supersedes == 0
+
+    results = json.loads(provider.handle_tool_call("scope_recall_search", {"query": "Project Phoenix deploy command", "limit": 5}))
+    result_ids = [item["id"] for item in results["results"]]
+    assert new_payload["id"] in result_ids
+    assert old_payload["id"] in result_ids
+
+
+def test_governance_reports_dirty_history_candidates_without_mutating_lifecycle(provider):
+    provider._config["maintenance_tools_enabled"] = True
+    scratch_payload = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_store",
+            {"content": "Temporary scratch note from a local debugging turn that should stay reviewable, not core memory.", "target": "general"},
+        )
+    )
+    old_payload = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_store",
+            {"content": "Project Orion deployment uses ./deploy-old.sh.", "target": "ops", "memory_type": "procedure"},
+        )
+    )
+    new_payload = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_store",
+            {"content": "Project Orion deployment does not use ./deploy-old.sh.", "target": "ops", "memory_type": "procedure"},
+        )
+    )
+    assert scratch_payload["stored"] is True
+    assert old_payload["stored"] is True
+    assert new_payload["stored"] is True
+
+    payload = json.loads(provider.handle_tool_call("scope_recall_govern", {"dry_run": True, "scope_only": True}))
+    candidates = {item["id"]: item for item in payload["review_candidates"]}
+    assert scratch_payload["id"] in candidates
+    assert "local-scratch" in candidates[scratch_payload["id"]]["reasons"]
+    assert old_payload["id"] in candidates
+    assert "conflict-review" in candidates[old_payload["id"]]["reasons"]
+
+    with provider._lock:
+        old_meta = json.loads(provider._require_conn().execute("SELECT metadata FROM memories WHERE id = ?", (old_payload["id"],)).fetchone()["metadata"])
+    assert old_meta["lifecycle"] == "promoted"
+    assert old_meta["needs_conflict_review"] is True
+
+
 def test_dedup_prevents_repeat_injection_within_min_repeated(provider):
     payload = json.loads(
         provider.handle_tool_call("scope_recall_store", {"content": "The deploy command is uv run app.", "target": "memory"})
@@ -1248,7 +1331,7 @@ def test_forget_tool_removes_matching_sqlite_and_vector_rows(provider):
     assert payload["stored"] is True
     provider.flush(timeout=5.0)
 
-    result = json.loads(provider.handle_tool_call("scope_recall_forget", {"query": "Temporary deploy note", "limit": 5}))
+    result = json.loads(provider.handle_tool_call("scope_recall_forget", {"ids": [payload["id"]]}))
     assert result["deleted"] == 1
     assert payload["id"] in result["ids"]
 

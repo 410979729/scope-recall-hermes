@@ -392,7 +392,7 @@ def test_repair_vector_index_rebuilds_sqlite_bruteforce_backend(tmp_path):
                     "enabled": True,
                     "backend": "sqlite-bruteforce",
                     "table_name": "memories",
-                    "index_general": False,
+                    "index_general": "false",
                     "embedder": {"provider": "local-debug", "dimensions": 16, "model": "debug-hash-v1"},
                 },
                 "retrieval": {"metric": "cosine"},
@@ -421,6 +421,22 @@ def test_repair_vector_index_rebuilds_sqlite_bruteforce_backend(tmp_path):
             source="tool-store",
             target="memory",
             content="SQLite brute force repair rebuilds from SQLite truth.",
+        )
+        store_row(
+            conn,
+            memory_id="general-1",
+            scope_id="scope-a",
+            platform="cli",
+            user_id="joy",
+            chat_id="",
+            thread_id="",
+            gateway_session_key="",
+            agent_identity="yuheng",
+            agent_workspace="hermes",
+            session_id="session",
+            source="turn-user",
+            target="general",
+            content="General scratch rows stay out of vector repair when index_general is string false.",
         )
     finally:
         conn.close()

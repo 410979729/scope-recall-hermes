@@ -19,7 +19,7 @@ import tempfile
 import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PACKAGE_VERSION = "1.0.12"
+PACKAGE_VERSION = "1.0.13"
 WHEEL_DATA_PREFIX = f"scope_recall-{PACKAGE_VERSION}.data/data"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
 EXTERNAL_TEST_DIRS = {".hermes-agent-src"}
@@ -52,6 +52,7 @@ REQUIRED_SOURCE_FILES = {
     "scripts/journal-digest.py",
     "scripts/repair.vector_index.py",
     "scripts/report.hygiene.py",
+    "scripts/migrate.legacy_hygiene.py",
     "scripts/doctor.py",
     "py.typed",
 }
@@ -91,6 +92,7 @@ REQUIRED_WHEEL = {
     f"{WHEEL_DATA_PREFIX}/scripts/journal-digest.py",
     f"{WHEEL_DATA_PREFIX}/scripts/repair.vector_index.py",
     f"{WHEEL_DATA_PREFIX}/scripts/report.hygiene.py",
+    f"{WHEEL_DATA_PREFIX}/scripts/migrate.legacy_hygiene.py",
     f"{WHEEL_DATA_PREFIX}/scripts/doctor.py",
 }
 STABLE_TOOL_NAMES = {

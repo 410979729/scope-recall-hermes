@@ -96,14 +96,13 @@ SCOPE_RECALL_SEARCH_SCHEMA = {
 
 SCOPE_RECALL_FORGET_SCHEMA = {
     "name": "scope_recall_forget",
-    "description": "Delete Scope Recall memories matching a query within the current accessible scope set.",
+    "description": "Delete Scope Recall memories by exact id within the current accessible scope set. Search/inspect first; query-only deletion is intentionally disabled.",
     "parameters": {
         "type": "object",
         "properties": {
-            "query": {"type": "string", "description": "Query used to find memories to delete."},
-            "limit": {"type": "integer", "description": "Maximum matching memories to delete."},
+            "id": {"type": "string", "description": "Single memory id to delete."},
+            "ids": {"type": "array", "items": {"type": "string"}, "description": "Exact memory ids to delete."},
         },
-        "required": ["query"],
     },
 }
 

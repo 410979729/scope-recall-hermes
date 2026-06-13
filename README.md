@@ -20,7 +20,7 @@ Current-turn recall · Journal-first capture · Permanent shared memory · Backg
 
 This repository, `scope-recall-hermes`, is the Hermes implementation. The Python package name and Hermes plugin ID intentionally remain `scope-recall` for runtime compatibility. The OpenClaw sibling implementation lives at [`scope-recall-openclaw`](https://github.com/410979729/scope-recall-openclaw).
 
-Version `1.0.12` continues the first stable V1 release line for the documented interfaces, packaged as a public release candidate for broader field testing. It keeps the V1 compatibility contract in [`docs/stability.md`](docs/stability.md) while replacing per-message durable capture with journal-first provenance, background journal digest, merge/upsert memory writes, and RRF/BM25-aware hybrid retrieval.
+Version `1.0.13` continues the first stable V1 release line for the documented interfaces, packaged as a public release candidate for broader field testing. It keeps the V1 compatibility contract in [`docs/stability.md`](docs/stability.md) while replacing per-message durable capture with journal-first provenance, background journal digest, merge/upsert memory writes, conflict-review relations, governance review candidates, and RRF/BM25-aware hybrid retrieval.
 
 It uses a **three-layer design**:
 
@@ -685,7 +685,7 @@ Example `scope_recall_stats` shape:
 | `scope_recall_probe` | Inspect accessible memories attached to a specific entity |
 | `scope_recall_related` | List entities that co-occur with a given entity in accessible memories |
 | `scope_recall_feedback` | Mark a memory as helpful or unhelpful so trust scoring can adjust future recall |
-| `scope_recall_forget` | Delete memories matching a query within the current accessible scope set |
+| `scope_recall_forget` | Delete memories by exact id/ids within the current accessible scope set; search or inspect first, then pass explicit ids |
 | `scope_recall_update` | Replace content/category within the current accessible scope set; shared/local target-mode changes are rejected |
 | `scope_recall_dedupe` | Operator-only: inspect or collapse exact duplicate rows |
 | `scope_recall_merge` | Merge same-scope memories into a target row; shared/local mixing is rejected |

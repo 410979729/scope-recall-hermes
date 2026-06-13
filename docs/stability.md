@@ -1,6 +1,6 @@
 # Scope Recall V1 stability contract
 
-`scope-recall` 1.0.12 adds journal-first provenance capture, background journal digest merge/upsert, and RRF/BM25-aware hybrid retrieval while remaining inside the V1 compatibility line for the Hermes Scope Recall memory provider.
+`scope-recall` 1.0.13 adds journal-first provenance capture, background journal digest merge/upsert, lifecycle-aware conflict handling, governance review candidates, retry-aware digest failure isolation, legacy scratch hygiene migration, and RRF/BM25-aware hybrid retrieval while remaining inside the V1 compatibility contract.
 
 This document defines the stable V1 compatibility surface and the areas that may evolve in patch or minor releases.
 
@@ -65,6 +65,7 @@ V1 keeps these behavior boundaries stable:
 - `sync_turn()` defaults to journal-first staging; legacy per-turn durable extraction must be explicitly enabled through `per_turn_extraction.enabled=true`
 - `scripts/journal-digest.py` may add or update durable rows from staged journal entries, but raw journal rows themselves are not recalled or indexed into the vector companion
 - `scripts/nightly-digest.py` may add or update durable rows, but it must not store raw `system` rows or raw `tool` output; task workflows are stored only as sanitized summaries with optional tool-name and verification metadata
+- recall suppresses rows whose metadata lifecycle is `superseded`, `obsolete`, `rejected`, or `archived`; `archived` is used by the legacy hygiene migrator for old scratch rows that remain auditable but should not be recalled
 
 ## Stable V1 tool surface
 
@@ -119,12 +120,13 @@ Embedder policy:
 
 ## Stable V1 migration contract
 
-V1 includes two separate migration paths:
+V1 includes three separate migration paths:
 
-1. legacy local `lancepro` storage migration on first initialization when applicable
-2. explicit OpenClaw `memory-lancedb-pro` import through `scripts/import.openclaw.memory_lancedb_pro.py`
+1. legacy scratch/raw hygiene migration through `scripts/migrate.legacy_hygiene.py` for older `scope-recall` SQLite stores
+2. legacy local `lancepro` storage migration on first initialization when applicable
+3. explicit OpenClaw `memory-lancedb-pro` import through `scripts/import.openclaw.memory_lancedb_pro.py`
 
-Old `.lance` tables enter V1 through import/cache paths: convert OpenClaw data into SQLite truth rows, then rebuild the configured vector companion from that truth store.
+Old `.lance` tables enter V1 through import/cache paths: convert OpenClaw data into SQLite truth rows, then rebuild the configured vector companion from that truth store. Old raw `general` scratch rows inside an existing SQLite truth store are metadata-archived, not deleted, and remain recoverable from the backup created by the hygiene migrator.
 
 ## V1 compatibility scope
 

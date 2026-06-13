@@ -197,6 +197,10 @@ _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.IGNORECASE)
 _JSON_ARRAY_RE = re.compile(r"\[[\s\S]*\]")
 
 
+def _log_parse_failure(reason: str, raw: str) -> None:
+    logger.warning("scope-recall capture_llm: %s (raw_len=%d)", reason, len(raw or ""))
+
+
 def _repair_truncated(text: str) -> str:
     """Attempt to repair JSON truncated by max_tokens cutoff.
 
@@ -287,15 +291,10 @@ def _parse_response(raw: str) -> list[Candidate]:
                     try:
                         data = json.loads(repaired)
                     except json.JSONDecodeError:
-                        logger.warning(
-                            f"scope-recall capture_llm: JSON parse failed "
-                            f"even after repair: {raw[:300]}"
-                        )
+                        _log_parse_failure("JSON parse failed even after repair", raw)
                         return []
                 else:
-                    logger.warning(
-                        f"scope-recall capture_llm: JSON parse failed: {raw[:300]}"
-                    )
+                    _log_parse_failure("JSON parse failed", raw)
                     return []
         else:
             # No JSON array found — try repairing raw text as last resort
@@ -304,14 +303,10 @@ def _parse_response(raw: str) -> list[Candidate]:
                 try:
                     data = json.loads(repaired)
                 except json.JSONDecodeError:
-                    logger.warning(
-                        f"scope-recall capture_llm: no JSON array found: {raw[:300]}"
-                    )
+                    _log_parse_failure("no JSON array found", raw)
                     return []
             else:
-                logger.warning(
-                    f"scope-recall capture_llm: no JSON array found: {raw[:300]}"
-                )
+                _log_parse_failure("no JSON array found", raw)
                 return []
 
     if isinstance(data, dict):

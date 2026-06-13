@@ -17,6 +17,7 @@ from scope_recall.journal import (
     heuristic_journal_candidates,
     load_unprocessed_journal_entries,
     run_journal_digest,
+    _insert_journal_entry,
 )
 
 
@@ -404,7 +405,7 @@ def test_journal_digest_llm_extractor_uses_llm_candidates_and_records_actual_ext
 
     import scope_recall.journal as journal_module
 
-    def fake_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float) -> str:
+    def fake_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float, api_mode: str = "chat_completions") -> str:
         assert "隐性经验" in prompt
         assert api_key == "test-key"
         return json.dumps([
@@ -456,7 +457,7 @@ def test_journal_digest_default_extractor_is_llm_not_heuristic(tmp_path, monkeyp
 
     assert journal_module.build_arg_parser().parse_args([]).extractor == "llm"
 
-    def fake_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float) -> str:
+    def fake_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float, api_mode: str = "chat_completions") -> str:
         return json.dumps([
             {
                 "action": "insert",
@@ -477,11 +478,242 @@ def test_journal_digest_default_extractor_is_llm_not_heuristic(tmp_path, monkeyp
     assert conn.execute("SELECT content FROM memories").fetchone()[0] == "journal digest default extractor is LLM-first, not heuristic."
 
 
-def test_llm_digest_failure_does_not_fallback_and_consume_journal_watermark(tmp_path, monkeypatch):
+def test_journal_capture_omits_inline_data_url_payload(tmp_path):
+    conn = _open_memory_db(tmp_path / "memory.sqlite3")
+    scope = _scope()
+    blob = "A" * 12000
+
+    entry_id = append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=build_scope_id(scope),
+        shared_scope_id=build_shared_scope_id(scope),
+        session_id="image-session",
+        turn_number=1,
+        role="user",
+        content=f"请看截图并审计 scope-recall。 data:image/jpeg;base64,{blob}",
+    )
+
+    assert entry_id
+    rows = conn.execute("SELECT content FROM journal_entries ORDER BY id").fetchall()
+    assert len(rows) == 1
+    assert "inline image/jpeg data omitted" in rows[0]["content"]
+    assert "data:image" not in rows[0]["content"]
+    assert blob[:100] not in rows[0]["content"]
+
+
+def test_legacy_base64_journal_chunk_is_processed_without_calling_llm(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     storage = hermes_home / "scope-recall"
     storage.mkdir(parents=True)
     (storage / "config.json").write_text(json.dumps({"vector": {"enabled": False}, "journal": {"extractor": "llm"}}), encoding="utf-8")
+    conn = _open_memory_db(storage / "memory.sqlite3")
+    scope = _scope()
+    entry_id = _insert_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=build_scope_id(scope),
+        shared_scope_id=build_shared_scope_id(scope),
+        session_id="legacy-image-chunk",
+        turn_number=1,
+        role="user",
+        text="A" * 1800,
+        metadata={"chunk_index": 2, "chunk_count": 73, "chunking": "bounded-journal-content"},
+    )
+
+    import scope_recall.journal as journal_module
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("base64-only journal chunks must not call LLM")
+
+    monkeypatch.setattr(journal_module, "call_llm", fail_if_called)
+
+    result = run_journal_digest(hermes_home=hermes_home, extractor="llm", scope=scope, interval_label="test", limit_entries=50)
+
+    assert result["processed_entries"] == 1
+    assert result["candidates"] == 0
+    row = conn.execute("SELECT processed_run_id FROM journal_entries WHERE id = ?", (entry_id,)).fetchone()
+    assert row["processed_run_id"] == result["run_id"]
+
+
+def test_mixed_journal_digest_does_not_send_tool_content_to_llm(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    storage = hermes_home / "scope-recall"
+    storage.mkdir(parents=True)
+    (storage / "config.json").write_text(json.dumps({"vector": {"enabled": False}, "journal": {"extractor": "llm"}}), encoding="utf-8")
+    conn = _open_memory_db(storage / "memory.sqlite3")
+    scope = _scope()
+    append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=build_scope_id(scope),
+        shared_scope_id=build_shared_scope_id(scope),
+        session_id="mixed-session",
+        turn_number=1,
+        role="user",
+        content="scope-recall mixed journal digest should preserve user intent.",
+    )
+    append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=build_scope_id(scope),
+        shared_scope_id=build_shared_scope_id(scope),
+        session_id="mixed-session",
+        turn_number=2,
+        role="tool",
+        content="RAW_TOOL_DIFF_SHOULD_NOT_ENTER_PROMPT " * 80,
+        metadata={"tool_name": "patch"},
+    )
+
+    import scope_recall.journal as journal_module
+
+    def fake_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float, api_mode: str = "chat_completions") -> str:
+        assert "scope-recall mixed journal digest" in prompt
+        assert "RAW_TOOL_DIFF_SHOULD_NOT_ENTER_PROMPT" not in prompt
+        return "[]"
+
+    monkeypatch.setattr(journal_module, "call_llm", fake_call_llm)
+
+    result = run_journal_digest(hermes_home=hermes_home, extractor="llm", scope=scope, interval_label="test", limit_entries=50)
+
+    total_entries = conn.execute("SELECT COUNT(*) FROM journal_entries").fetchone()[0]
+    assert result["processed_entries"] == total_entries
+    assert result["candidates"] == 0
+
+
+def test_tool_only_journal_digest_marks_entries_processed_without_calling_llm(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    storage = hermes_home / "scope-recall"
+    storage.mkdir(parents=True)
+    (storage / "config.json").write_text(json.dumps({"vector": {"enabled": False}, "journal": {"extractor": "llm"}}), encoding="utf-8")
+    conn = _open_memory_db(storage / "memory.sqlite3")
+    scope = _scope()
+    entry_id = append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=build_scope_id(scope),
+        shared_scope_id=build_shared_scope_id(scope),
+        session_id="tool-only-session",
+        turn_number=1,
+        role="tool",
+        content="Tool execution trace with a large diff that should not be sent to an LLM.",
+    )
+
+    import scope_recall.journal as journal_module
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("tool-only journal bundles must not call LLM")
+
+    monkeypatch.setattr(journal_module, "call_llm", fail_if_called)
+
+    result = run_journal_digest(hermes_home=hermes_home, extractor="llm", scope=scope, interval_label="test", limit_entries=50)
+
+    assert result["processed_entries"] == 1
+    assert result["candidates"] == 0
+    assert result["skipped"] == 1
+    row = conn.execute("SELECT processed_run_id FROM journal_entries WHERE id = ?", (entry_id,)).fetchone()
+    assert row["processed_run_id"] == result["run_id"]
+    rejection = conn.execute("SELECT reason FROM journal_rejections WHERE journal_entry_id = ?", (entry_id,)).fetchone()
+    assert rejection["reason"] == "no durable memory candidate"
+
+
+def test_journal_digest_marks_reviewed_entries_without_candidates_processed(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    storage = hermes_home / "scope-recall"
+    storage.mkdir(parents=True)
+    (storage / "config.json").write_text(json.dumps({"vector": {"enabled": False}, "journal": {"extractor": "llm"}}), encoding="utf-8")
+    conn = _open_memory_db(storage / "memory.sqlite3")
+    scope = _scope()
+    entry_id = append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=build_scope_id(scope),
+        shared_scope_id=build_shared_scope_id(scope),
+        session_id="no-candidate-session",
+        turn_number=1,
+        role="tool",
+        content="Tool trace that was reviewed by the digest but does not deserve durable memory.",
+    )
+
+    import scope_recall.journal as journal_module
+
+    monkeypatch.setattr(journal_module, "llm_journal_candidates", lambda *args, **kwargs: [])
+
+    result = run_journal_digest(hermes_home=hermes_home, extractor="llm", scope=scope, interval_label="test", limit_entries=50)
+
+    assert result["processed_entries"] == 1
+    assert result["candidates"] == 0
+    row = conn.execute("SELECT processed_run_id FROM journal_entries WHERE id = ?", (entry_id,)).fetchone()
+    assert row["processed_run_id"] == result["run_id"]
+    rejection = conn.execute("SELECT reason FROM journal_rejections WHERE journal_entry_id = ?", (entry_id,)).fetchone()
+    assert rejection["reason"] == "no durable memory candidate"
+
+
+def test_llm_digest_transient_failure_retries_before_quarantine(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    storage = hermes_home / "scope-recall"
+    storage.mkdir(parents=True)
+    (storage / "config.json").write_text(
+        json.dumps({"vector": {"enabled": False}, "journal": {"extractor": "llm", "llm_max_attempts": 3, "llm_retry_delay": 0}}),
+        encoding="utf-8",
+    )
+    (hermes_home / ".env").write_text("SCOPE_RECALL_DIGEST_API_KEY=test-key\n", encoding="utf-8")
+    conn = _open_memory_db(storage / "memory.sqlite3")
+    scope = _scope()
+    append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=build_scope_id(scope),
+        shared_scope_id=build_shared_scope_id(scope),
+        session_id="llm-retry-session",
+        turn_number=1,
+        role="user",
+        content="LLM digest 瞬时超时后应重试，成功后写入高质量候选，而不是立刻 quarantine。",
+    )
+
+    import scope_recall.journal as journal_module
+
+    attempts = {"count": 0}
+
+    def flaky_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float, api_mode: str = "chat_completions") -> str:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise TimeoutError("simulated timeout")
+        return json.dumps(
+            [
+                {
+                    "action": "insert",
+                    "content": "Scope Recall journal digest retries transient LLM timeout before quarantine, preserving valuable entries after recovery.",
+                    "target": "project",
+                    "memory_type": "procedure",
+                    "importance": 0.7,
+                    "confidence": 0.8,
+                    "entities": ["scope-recall"],
+                    "tags": ["journal-digest", "retry"],
+                    "reason": "retry recovered",
+                }
+            ]
+        )
+
+    monkeypatch.setattr(journal_module, "call_llm", flaky_call_llm)
+
+    result = run_journal_digest(hermes_home=hermes_home, scope=scope, interval_label="test", limit_entries=50)
+
+    assert attempts["count"] == 2
+    assert result["extractor_used"] == "llm"
+    assert result["inserted"] == 1
+    assert result["skipped"] == 0
+    assert conn.execute("SELECT COUNT(*) FROM journal_rejections").fetchone()[0] == 0
+
+
+def test_llm_digest_failure_retries_then_quarantines_without_fallback_memory(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    storage = hermes_home / "scope-recall"
+    storage.mkdir(parents=True)
+    (storage / "config.json").write_text(
+        json.dumps({"vector": {"enabled": False}, "journal": {"extractor": "llm", "llm_max_attempts": 2, "llm_retry_delay": 0}}),
+        encoding="utf-8",
+    )
     (hermes_home / ".env").write_text("SCOPE_RECALL_DIGEST_API_KEY=test-key\n", encoding="utf-8")
     conn = _open_memory_db(storage / "memory.sqlite3")
     scope = _scope()
@@ -493,23 +725,99 @@ def test_llm_digest_failure_does_not_fallback_and_consume_journal_watermark(tmp_
         session_id="llm-failure-session",
         turn_number=1,
         role="user",
-        content="LLM digest 失败时不得静默降级 heuristic 并消费 journal evidence。",
+        content="LLM digest 持续超时时不得静默降级 heuristic 写长期记忆，但重试耗尽后可以 quarantine 避免 backlog 卡住。",
     )
 
     import scope_recall.journal as journal_module
 
-    def failing_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float) -> str:
-        raise RuntimeError("simulated llm outage")
+    attempts = {"count": 0}
+
+    def failing_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float, api_mode: str = "chat_completions") -> str:
+        attempts["count"] += 1
+        raise TimeoutError("simulated llm timeout")
 
     monkeypatch.setattr(journal_module, "call_llm", failing_call_llm)
 
-    try:
-        run_journal_digest(hermes_home=hermes_home, scope=scope, interval_label="test", limit_entries=50)
-    except RuntimeError as exc:
-        assert "simulated llm outage" in str(exc)
-    else:
-        raise AssertionError("LLM failure must not silently fallback to heuristic")
+    result = run_journal_digest(hermes_home=hermes_home, scope=scope, interval_label="test", limit_entries=50)
 
+    assert attempts["count"] == 2
+    assert result["ok"] is True
+    assert result["processed_entries"] == 1
+    assert result["inserted"] == 0
+    assert result["updated"] == 0
+    assert result["skipped"] == 1
+    assert result["extractor_used"] == "llm-quarantine"
     row = conn.execute("SELECT processed_run_id FROM journal_entries WHERE id = ?", (entry_id,)).fetchone()
-    assert row["processed_run_id"] == ""
+    assert row["processed_run_id"] == result["run_id"]
     assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+    rejection = conn.execute("SELECT reason, candidate FROM journal_rejections WHERE journal_entry_id = ?", (entry_id,)).fetchone()
+    assert rejection["reason"] == "llm digest failed; quarantined"
+    assert "timeout after 2 attempt" in rejection["candidate"]
+    run = conn.execute("SELECT status, extractor, error, metadata FROM journal_digest_runs WHERE id = ?", (result["run_id"],)).fetchone()
+    assert run["status"] == "ok"
+    assert run["extractor"] == "llm-quarantine"
+    assert run["error"] is None
+    assert "timeout after 2 attempt" in run["metadata"]
+
+
+def test_llm_digest_auth_failure_quarantines_without_retrying(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    storage = hermes_home / "scope-recall"
+    storage.mkdir(parents=True)
+    (storage / "config.json").write_text(
+        json.dumps({"vector": {"enabled": False}, "journal": {"extractor": "llm", "llm_max_attempts": 3, "llm_retry_delay": 0}}),
+        encoding="utf-8",
+    )
+    (hermes_home / ".env").write_text("SCOPE_RECALL_DIGEST_API_KEY=test-key\n", encoding="utf-8")
+    conn = _open_memory_db(storage / "memory.sqlite3")
+    scope = _scope()
+    entry_id = append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=build_scope_id(scope),
+        shared_scope_id=build_shared_scope_id(scope),
+        session_id="llm-auth-failure-session",
+        turn_number=1,
+        role="user",
+        content="LLM digest 遇到 403 权限错误时不应盲目重试三次，应分类后隔离并保留审计信息。",
+    )
+
+    import scope_recall.journal as journal_module
+
+    attempts = {"count": 0}
+
+    def forbidden_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float, api_mode: str = "chat_completions") -> str:
+        attempts["count"] += 1
+        raise RuntimeError("HTTP 403 Forbidden")
+
+    monkeypatch.setattr(journal_module, "call_llm", forbidden_call_llm)
+
+    result = run_journal_digest(hermes_home=hermes_home, scope=scope, interval_label="test", limit_entries=50)
+
+    assert attempts["count"] == 1
+    assert result["extractor_used"] == "llm-quarantine"
+    row = conn.execute("SELECT processed_run_id FROM journal_entries WHERE id = ?", (entry_id,)).fetchone()
+    assert row["processed_run_id"] == result["run_id"]
+    rejection = conn.execute("SELECT candidate FROM journal_rejections WHERE journal_entry_id = ?", (entry_id,)).fetchone()
+    assert "auth after 1 attempt" in rejection["candidate"]
+
+
+def test_journal_capture_keeps_long_english_text_that_only_looks_base64ish(tmp_path):
+    conn = _open_memory_db(tmp_path / "memory.sqlite3")
+    scope = _scope()
+    long_ascii_words = " ".join(["A" * 8, "B" * 7, "C" * 9, "D" * 6] * 80)
+
+    entry_id = append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=build_scope_id(scope),
+        shared_scope_id=build_shared_scope_id(scope),
+        session_id="long-english-session",
+        turn_number=1,
+        role="user",
+        content=long_ascii_words,
+    )
+
+    assert entry_id > 0
+    row_count = conn.execute("SELECT COUNT(*) FROM journal_entries").fetchone()[0]
+    assert row_count >= 1

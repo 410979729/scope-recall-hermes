@@ -6,7 +6,7 @@ from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from scope_recall.nightly_digest import DigestOptions, load_session_bundles, redact_sensitive, run_digest
+from scope_recall.nightly_digest import DigestOptions, call_llm, load_session_bundles, redact_sensitive, resolve_llm_config, run_digest
 from scope_recall.sql_store import delete_rows
 
 
@@ -72,6 +72,156 @@ def _create_state_db(path: Path, day: date, *, content_suffix: str = "") -> None
         conn.commit()
     finally:
         conn.close()
+
+
+def test_digest_llm_config_can_use_dedicated_provider_without_inheriting_codex_endpoint(tmp_path):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    (hermes_home / ".env").write_text("DEEPSEEK_API_KEY=deepseek-test-key\n", encoding="utf-8")
+    (hermes_home / "config.yaml").write_text(
+        """
+model:
+  provider: openai-codex
+  default: gpt-5.5
+  base_url: https://chatgpt.com/backend-api/codex
+providers:
+  deepseek:
+    base_url: https://api.deepseek.com
+    default_model: deepseek-v4-pro
+    key_env: DEEPSEEK_API_KEY
+scope_recall_nightly_digest:
+  provider: deepseek
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = resolve_llm_config(hermes_home, DigestOptions(hermes_home=hermes_home, digest_date=date(2026, 6, 13)))
+
+    assert config["model"] == "deepseek-v4-pro"
+    assert config["base_url"] == "https://api.deepseek.com"
+    assert config["api_key"] == "deepseek-test-key"
+    assert config["api_mode"] == "chat_completions"
+
+
+def test_digest_llm_config_detects_codex_responses_mode(tmp_path):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    (hermes_home / ".env").write_text("CODEX_API_KEY=codex-test-token\n", encoding="utf-8")
+    (hermes_home / "config.yaml").write_text(
+        """
+model:
+  provider: openai-codex
+  default: gpt-5.5
+  base_url: https://chatgpt.com/backend-api/codex
+providers:
+  openai-codex:
+    base_url: https://chatgpt.com/backend-api/codex
+    key_env: CODEX_API_KEY
+scope_recall_nightly_digest:
+  provider: openai-codex
+  model: gpt-5.5
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = resolve_llm_config(hermes_home, DigestOptions(hermes_home=hermes_home, digest_date=date(2026, 6, 13)))
+
+    assert config["model"] == "gpt-5.5"
+    assert config["base_url"] == "https://chatgpt.com/backend-api/codex"
+    assert config["api_key"] == "codex-test-token"
+    assert config["provider"] == "openai-codex"
+    assert config["api_mode"] == "codex_responses"
+
+
+def test_call_llm_codex_responses_uses_responses_endpoint_and_extracts_text(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return (
+                'data: {"type":"response.output_text.delta","delta":"[{\\"content\\":\\"codex digest memory\\"}]"}\n\n'
+                'data: {"type":"response.output_item.done","item":{"type":"message","content":[{"type":"output_text","text":"[{\\"content\\":\\"codex digest memory\\"}]"}]}}\n\n'
+                'data: {"type":"response.completed","response":{"status":"completed"}}\n\n'
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["headers"] = dict(request.header_items())
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    import scope_recall.nightly_digest as nightly_digest
+
+    monkeypatch.setattr(nightly_digest.urllib.request, "urlopen", fake_urlopen)
+    fake_codex_token = "token" + "-without" + "-jwt" + "-claims"
+
+    raw = call_llm(
+        "extract this",
+        model="gpt-5.5",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key=fake_codex_token,
+        timeout=12,
+        api_mode="codex_responses",
+    )
+
+    assert raw == '[{"content":"codex digest memory"}]'
+    assert captured["url"] == "https://chatgpt.com/backend-api/codex/responses"
+    assert captured["body"]["model"] == "gpt-5.5"
+    assert captured["body"]["instructions"] == "You extract durable memory as strict JSON."
+    assert captured["body"]["store"] is False
+    assert captured["body"]["stream"] is True
+    assert "messages" not in captured["body"]
+    assert captured["headers"]["Authorization"] == f"Bearer {fake_codex_token}"
+    assert captured["headers"]["Originator"] == "codex_cli_rs"
+    assert captured["timeout"] == 12
+
+
+def test_call_llm_openai_compatible_uses_chat_completions_endpoint(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "[]"}}]}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["headers"] = dict(request.header_items())
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    import scope_recall.nightly_digest as nightly_digest
+
+    monkeypatch.setattr(nightly_digest.urllib.request, "urlopen", fake_urlopen)
+
+    raw = call_llm(
+        "extract this",
+        model="gpt-4o-mini",
+        base_url="https://api.openai.com",
+        api_key="openai-key",
+        timeout=12,
+        api_mode="chat_completions",
+    )
+
+    assert raw == "[]"
+    assert captured["url"] == "https://api.openai.com/v1/chat/completions"
+    assert captured["body"]["messages"][0]["role"] == "system"
+    assert captured["body"]["messages"][1]["content"] == "extract this"
+    assert captured["headers"]["Authorization"] == "Bearer openai-key"
 
 
 def test_redact_sensitive_handles_assignment_and_bearer_without_leaking_secret():

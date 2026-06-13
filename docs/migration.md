@@ -4,6 +4,29 @@ This document describes how to move into `scope-recall` from earlier local exper
 
 ## Supported migration paths
 
+### 0. Legacy raw/general/scratch hygiene inside an existing `scope-recall` SQLite store
+
+Use this when an older pre-journal or experimental `scope-recall` database already contains raw `general` scratch rows or durable rows with incomplete governance metadata.
+
+A conservative migrator is provided at:
+
+- `scripts/migrate.legacy_hygiene.py`
+
+Default mode is read-only:
+
+```bash
+python scripts/migrate.legacy_hygiene.py --hermes-home /path/to/hermes-profile
+```
+
+Apply mode creates a SQLite backup first, then updates metadata only:
+
+```bash
+python scripts/migrate.legacy_hygiene.py --hermes-home /path/to/hermes-profile --apply
+python scripts/repair.vector_index.py --hermes-home /path/to/hermes-profile
+```
+
+The migrator does not delete memory content. It marks legacy `general`/raw/scratch rows as `lifecycle=archived, category=legacy-scratch`, fills missing `lifecycle`/`category` metadata for durable rows, and records a `legacy_hygiene` receipt in row metadata. Rebuild the configured vector companion afterwards so archived/general scratch rows do not remain in semantic retrieval state.
+
 ### 1. Legacy local `lancepro` profile storage
 
 Implemented automatically on first initialization.

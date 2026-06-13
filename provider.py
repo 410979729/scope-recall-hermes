@@ -212,7 +212,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._accessible_scope_ids = accessible_scope_ids(self._scope)
         raw_shared_pool_config = self._config.get("shared_pool")
         shared_pool_config = raw_shared_pool_config if isinstance(raw_shared_pool_config, dict) else {}
-        self._shared_pool_enabled = bool(shared_pool_config.get("enabled", False))
+        self._shared_pool_enabled = config_bool(shared_pool_config, "enabled", False)
         self._shared_pool_id = str(shared_pool_config.get("pool_id") or "default") if self._shared_pool_enabled else ""
         self._shared_pool_scope_id = build_shared_pool_scope_id(self._scope, self._shared_pool_id) if self._shared_pool_enabled else ""
         if self._shared_pool_scope_id and self._shared_pool_scope_id not in self._accessible_scope_ids:

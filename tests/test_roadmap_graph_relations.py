@@ -54,7 +54,7 @@ def test_source_trust_priors_distinguish_curated_user_tool_and_raw_assistant_sou
     assert assistant["trust"] < tool["trust"]
 
 
-def test_conflicting_memory_store_marks_contradiction_relation_and_feedback(tmp_path):
+def test_conflicting_memory_store_marks_contradiction_relation_for_review(tmp_path):
     _write_config(tmp_path, {"vector": {"enabled": False}, "retrieval": {"mode": "lexical", "min_score": 0.18}})
     plugin = load_memory_provider("scope-recall")
     assert plugin is not None
@@ -78,6 +78,10 @@ def test_conflicting_memory_store_marks_contradiction_relation_and_feedback(tmp_
                 "SELECT relation_type, source_memory_id, target_memory_id FROM memory_relations WHERE source_memory_id = ? AND target_memory_id = ?",
                 (second["id"], first["id"]),
             ).fetchone()
+            reverse_relation = plugin._require_conn().execute(
+                "SELECT relation_type, source_memory_id, target_memory_id FROM memory_relations WHERE source_memory_id = ? AND target_memory_id = ?",
+                (first["id"], second["id"]),
+            ).fetchone()
             feedback_count = plugin._require_conn().execute(
                 "SELECT COUNT(*) FROM memory_feedback WHERE memory_id = ? AND note LIKE '%conflict%'",
                 (second["id"],),
@@ -87,9 +91,14 @@ def test_conflicting_memory_store_marks_contradiction_relation_and_feedback(tmp_
             )
 
         assert relation is not None
+        assert reverse_relation is not None
         assert relation["relation_type"] == "contradicts"
-        assert feedback_count >= 1
+        assert reverse_relation["relation_type"] == "contradicts"
+        assert feedback_count == 0
         assert metadata["conflict_count"] >= 1
+        assert metadata["conflict_review_count"] >= 1
+        assert metadata["needs_conflict_review"] is True
+        assert first["id"] in metadata["conflict_review_ids"]
         assert "contradicts" in metadata["relation_types"]
     finally:
         plugin.shutdown()

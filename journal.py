@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import time
 import uuid
@@ -36,6 +37,55 @@ from .sql_store import ensure_schema, now_iso, store_row, update_row
 from .vector_runtime import upsert_vector_record
 
 JOURNAL_TARGETS = {"user", "memory", "project", "ops"}
+DATA_URL_PREFIX_RE = re.compile(r"data:[a-z0-9.+-]+/[a-z0-9.+-]+;base64,", re.IGNORECASE)
+BASE64ISH_RE = re.compile(r"^[A-Za-z0-9+/=\s]+$")
+
+
+def _strip_inline_data_urls(text: str) -> str:
+    match = DATA_URL_PREFIX_RE.search(text)
+    if not match:
+        return text
+    media_type = text[match.start() : match.end()].split(";", 1)[0].removeprefix("data:") or "attachment"
+    return clean_text(f"{text[:match.start()]}[inline {media_type} data omitted]")
+
+
+def _looks_like_base64_blob(text: str) -> bool:
+    raw = str(text or "").strip()
+    compact = re.sub(r"\s+", "", raw)
+    if len(compact) < 500:
+        return False
+    if not BASE64ISH_RE.fullmatch(compact):
+        return False
+    # Avoid treating ordinary long English/ASCII prose as binary just because
+    # it happens to use only base64 alphabet characters plus spaces. Real base64
+    # payload chunks are usually one long run or line-wrapped into long rows;
+    # prose is word-wrapped into many short tokens.
+    tokens = re.split(r"\s+", raw)
+    if len(tokens) > 1 and max((len(token) for token in tokens), default=0) < 64:
+        return False
+    return True
+
+
+def _journal_entry_for_digest(entry: JournalEntry) -> JournalEntry | None:
+    stripped = _strip_inline_data_urls(entry.content)
+    if stripped != entry.content:
+        metadata = dict(entry.metadata)
+        metadata["inline_data_redacted"] = True
+        return JournalEntry(
+            id=entry.id,
+            scope_id=entry.scope_id,
+            shared_scope_id=entry.shared_scope_id,
+            session_id=entry.session_id,
+            turn_number=entry.turn_number,
+            role=entry.role,
+            content=stripped,
+            created_at=entry.created_at,
+            processed_run_id=entry.processed_run_id,
+            metadata=metadata,
+        )
+    if _looks_like_base64_blob(entry.content):
+        return None
+    return entry
 
 
 @dataclass
@@ -237,7 +287,9 @@ def append_journal_entry(
     role = str(role or "").strip().lower()
     if role not in {"user", "assistant", "tool"}:
         return 0
-    text = clean_text(content)
+    text = _strip_inline_data_urls(clean_text(content))
+    if _looks_like_base64_blob(text):
+        return 0
     if not text or not _journal_capture_allowed(text):
         return 0
     chunks = _chunk_journal_text(text)
@@ -625,6 +677,21 @@ def _record_journal_rejection(conn: sqlite3.Connection, *, run_id: str, entry_id
     )
 
 
+def _quarantine_journal_entries(conn: sqlite3.Connection, *, run_id: str, entries: list[JournalEntry], reason: str, error: Exception) -> None:
+    entry_ids = [int(entry.id) for entry in entries]
+    _record_journal_rejection(
+        conn,
+        run_id=run_id,
+        entry_ids=entry_ids,
+        reason=reason,
+        candidate=JournalDigestCandidate(
+            content=f"{reason}: {type(error).__name__}: {str(error)[:400]}",
+            target="memory",
+            entry_ids=entry_ids,
+        ),
+    )
+
+
 def _merge_metadata(conn: sqlite3.Connection, *, memory_id: str, candidate: JournalDigestCandidate, run_id: str) -> None:
     from .graph import load_metadata, sync_memory_entities
 
@@ -784,15 +851,20 @@ def _journal_session_bundles(entries: list[JournalEntry]) -> list[SessionBundle]
     bundles: list[SessionBundle] = []
     for session_id, session_entries in grouped.items():
         session_entries.sort(key=lambda item: (item.turn_number, item.id))
+        digest_entries = [entry for entry in (_journal_entry_for_digest(item) for item in session_entries) if entry is not None]
+        if not digest_entries:
+            continue
+        original_roles = {entry.role for entry in digest_entries}
         messages: list[MessageRecord] = []
         tool_names: list[str] = []
-        for entry in session_entries:
-            role = entry.role if entry.role in {"user", "assistant"} else "assistant"
-            content = entry.content if entry.role != "tool" else f"tool: {entry.content}"
+        for entry in digest_entries:
             if entry.role == "tool":
                 tool_name = str(entry.metadata.get("tool_name") or "").strip()
                 if tool_name:
                     tool_names.append(tool_name)
+                continue
+            role = entry.role if entry.role in {"user", "assistant"} else "assistant"
+            content = entry.content
             messages.append(
                 MessageRecord(
                     id=entry.id,
@@ -803,13 +875,14 @@ def _journal_session_bundles(entries: list[JournalEntry]) -> list[SessionBundle]
                     tool_name=str(entry.metadata.get("tool_name") or ""),
                 )
             )
-        title = compact_text(next((entry.content for entry in session_entries if entry.role == "user"), session_id), 100)
-        text = "\n".join(entry.content for entry in session_entries).lower()
+        title = compact_text(next((message.content for message in messages if message.role == "user"), session_id), 100)
+        text = "\n".join(message.content for message in messages).lower()
         is_task = bool(tool_names) or any(token in text for token in ["fix", "debug", "deploy", "release", "verify", "修", "排障", "部署", "验证", "实现"])
+        original_roles = {entry.role for entry in digest_entries}
         bundles.append(
             SessionBundle(
                 id=session_id,
-                source="journal",
+                source="journal-tool-only" if original_roles == {"tool"} else "journal",
                 title=title,
                 messages=messages,
                 tool_names=_unique(tool_names, limit=24),
@@ -863,16 +936,23 @@ def llm_journal_candidates(
     )
     existing = existing_memory_context(conn, profile)
     output: list[JournalDigestCandidate] = []
+    max_attempts = _coerce_positive_int(journal_config.get("llm_max_attempts") or journal_config.get("llm_retry_attempts"), 3)
+    retry_delay = _coerce_nonnegative_float(journal_config.get("llm_retry_delay"), 1.0)
     for bundle in _journal_session_bundles(entries):
+        if bundle.source == "journal-tool-only":
+            continue
         bundle_candidates: list[Any] = []
         for chunk in session_chunks(bundle, chunk_chars=options.chunk_chars, max_session_chars=options.max_session_chars):
             prompt = build_prompt(bundle, chunk, existing)
-            raw = call_llm(
+            raw = _call_llm_with_retries(
                 prompt,
                 model=llm_config["model"],
                 base_url=llm_config["base_url"],
                 api_key=llm_config["api_key"],
                 timeout=options.timeout,
+                api_mode=llm_config.get("api_mode", "chat_completions"),
+                max_attempts=max_attempts,
+                retry_delay=retry_delay,
             )
             bundle_candidates.extend(parse_llm_candidates(raw, bundle=bundle))
         output.extend(_journal_from_digest_candidate(candidate) for candidate in bundle_candidates)
@@ -995,6 +1075,86 @@ def _coerce_positive_int(value: Any, default: int) -> int:
     return max(1, parsed)
 
 
+def _coerce_nonnegative_float(value: Any, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(0.0, parsed)
+
+
+class JournalDigestLLMError(RuntimeError):
+    def __init__(self, message: str, *, attempts: int, error_kind: str, retryable: bool) -> None:
+        super().__init__(message)
+        self.attempts = attempts
+        self.error_kind = error_kind
+        self.retryable = retryable
+
+
+def _classify_llm_digest_error(exc: Exception) -> tuple[str, bool]:
+    message = str(exc or "").lower()
+    if isinstance(exc, TimeoutError) or "timeout" in message or "timed out" in message:
+        return "timeout", True
+    if "429" in message or "rate limit" in message or "too many requests" in message:
+        return "rate_limit", True
+    if any(token in message for token in ("500", "502", "503", "504", "server error", "bad gateway", "service unavailable", "gateway timeout")):
+        return "server", True
+    if any(token in message for token in ("connection", "network", "temporarily", "reset by peer", "remote end closed")):
+        return "network", True
+    if any(token in message for token in ("401", "403", "unauthorized", "forbidden", "invalid api key", "permission")):
+        return "auth", False
+    if any(token in message for token in ("402", "quota", "billing", "insufficient_quota")):
+        return "quota", False
+    if any(token in message for token in ("json", "parse", "decode")):
+        return "parse", False
+    return "unknown", True
+
+
+def _call_llm_with_retries(
+    prompt: str,
+    *,
+    model: str,
+    base_url: str,
+    api_key: str,
+    timeout: float,
+    api_mode: str,
+    max_attempts: int,
+    retry_delay: float,
+) -> str:
+    last_error: Exception | None = None
+    last_kind = "unknown"
+    last_retryable = True
+    for attempt in range(1, max(1, max_attempts) + 1):
+        try:
+            return call_llm(
+                prompt,
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
+                timeout=timeout,
+                api_mode=api_mode,
+            )
+        except Exception as exc:
+            last_error = exc
+            last_kind, last_retryable = _classify_llm_digest_error(exc)
+            if (not last_retryable) or attempt >= max_attempts:
+                raise JournalDigestLLMError(
+                    f"{last_kind} after {attempt} attempt(s): {type(exc).__name__}: {str(exc)[:400]}",
+                    attempts=attempt,
+                    error_kind=last_kind,
+                    retryable=last_retryable,
+                ) from exc
+            if retry_delay > 0:
+                time.sleep(retry_delay)
+    assert last_error is not None
+    raise JournalDigestLLMError(
+        f"{last_kind} after {max_attempts} attempt(s): {type(last_error).__name__}: {str(last_error)[:400]}",
+        attempts=max_attempts,
+        error_kind=last_kind,
+        retryable=last_retryable,
+    ) from last_error
+
+
 def _prune_processed_journal(conn: sqlite3.Connection, *, retention_days: int) -> int:
     if retention_days <= 0:
         return 0
@@ -1075,18 +1235,54 @@ def run_journal_digest(
             if not entries:
                 continue
             total_loaded_entries += len(entries)
-            candidates, scope_extractor_used, extractor_error = _collect_journal_candidates(
-                conn,
-                entries=entries,
-                hermes_home=hermes_home,
-                scope=active_scope,
-                journal_config=journal_config,
-                requested_extractor=requested_extractor,
-            )
+            try:
+                candidates, scope_extractor_used, extractor_error = _collect_journal_candidates(
+                    conn,
+                    entries=entries,
+                    hermes_home=hermes_home,
+                    scope=active_scope,
+                    journal_config=journal_config,
+                    requested_extractor=requested_extractor,
+                )
+            except Exception as exc:
+                if requested_extractor != "llm":
+                    raise
+                scope_extractor_used = "llm-quarantine"
+                extractor_error = str(exc)[:1000]
+                candidates = []
+                quarantine_entry_ids = [int(entry.id) for entry in entries]
+                counts["skipped"] += len(quarantine_entry_ids)
+                actions.append(
+                    {
+                        "action": "skip",
+                        "reason": "llm digest failed; quarantined",
+                        "entry_count": len(quarantine_entry_ids),
+                        "entry_ids": quarantine_entry_ids[:20],
+                    }
+                )
+                if not dry_run:
+                    _quarantine_journal_entries(
+                        conn,
+                        run_id=run_id,
+                        entries=entries,
+                        reason="llm digest failed; quarantined",
+                        error=exc,
+                    )
+                processed_entry_ids.extend(quarantine_entry_ids)
             extractor_counts[scope_extractor_used] += 1
             if extractor_error:
                 extractor_errors.append(extractor_error)
+            if scope_extractor_used == "llm-quarantine":
+                continue
             total_candidates += len(candidates)
+            candidate_entry_ids: set[int] = set()
+            for candidate in candidates:
+                for entry_id in candidate.entry_ids:
+                    try:
+                        candidate_entry_ids.add(int(entry_id))
+                    except (TypeError, ValueError):
+                        continue
+            loaded_entry_ids = {int(entry.id) for entry in entries}
             if not dry_run:
                 try:
                     from .nightly_digest import DigestVectorRuntime, ScopeProfile
@@ -1105,7 +1301,31 @@ def run_journal_digest(
                     vector_runtime = None
             applied = apply_journal_candidates(conn, vector_runtime, active_scope, run_id=run_id, candidates=candidates, dry_run=dry_run)
             counts.update(applied["counts"])
-            processed_entry_ids.extend(int(entry_id) for entry_id in applied.get("processed_entry_ids", []))
+            applied_entry_ids = {int(entry_id) for entry_id in applied.get("processed_entry_ids", [])}
+            reviewed_without_candidate_ids = sorted(loaded_entry_ids - candidate_entry_ids)
+            if reviewed_without_candidate_ids:
+                counts["skipped"] += len(reviewed_without_candidate_ids)
+                actions.append(
+                    {
+                        "action": "skip",
+                        "reason": "no durable memory candidate",
+                        "entry_count": len(reviewed_without_candidate_ids),
+                        "entry_ids": reviewed_without_candidate_ids[:20],
+                    }
+                )
+                if not dry_run:
+                    _record_journal_rejection(
+                        conn,
+                        run_id=run_id,
+                        entry_ids=reviewed_without_candidate_ids,
+                        reason="no durable memory candidate",
+                        candidate=JournalDigestCandidate(
+                            content="No durable memory candidate was produced for this reviewed journal entry.",
+                            target="memory",
+                            entry_ids=reviewed_without_candidate_ids,
+                        ),
+                    )
+            processed_entry_ids.extend(sorted(applied_entry_ids | set(reviewed_without_candidate_ids)))
             actions.extend(applied["actions"])
             if vector_runtime is not None:
                 try:

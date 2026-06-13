@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -550,6 +551,30 @@ def candidate_is_allowed(candidate: DigestCandidate) -> bool:
     return True
 
 
+def _normalize_digest_api_mode(value: Any, *, provider: str = "", base_url: str = "") -> str:
+    raw = str(value or "").strip().lower().replace("-", "_")
+    aliases = {
+        "": "",
+        "openai": "chat_completions",
+        "openai_compatible": "chat_completions",
+        "chat": "chat_completions",
+        "chat_completion": "chat_completions",
+        "chat_completions": "chat_completions",
+        "codex": "codex_responses",
+        "codex_responses": "codex_responses",
+        "responses": "codex_responses",
+        "openai_responses": "codex_responses",
+    }
+    normalized = aliases.get(raw, raw)
+    if normalized:
+        return normalized
+    provider_l = str(provider or "").strip().lower()
+    base_l = str(base_url or "").strip().lower()
+    if provider_l == "openai-codex" or ("chatgpt.com" in base_l and "/backend-api/codex" in base_l):
+        return "codex_responses"
+    return "chat_completions"
+
+
 def resolve_llm_config(hermes_home: Path, options: DigestOptions) -> dict[str, str]:
     config_path = hermes_home / "config.yaml"
     env = load_dotenv(hermes_home / ".env")
@@ -565,21 +590,48 @@ def resolve_llm_config(hermes_home: Path, options: DigestOptions) -> dict[str, s
             cfg = {}
     model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
     providers_cfg = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
-    provider = str(model_cfg.get("provider") or "").strip()
+    nightly_cfg = cfg.get("scope_recall_nightly_digest") if isinstance(cfg.get("scope_recall_nightly_digest"), dict) else {}
+
+    provider = str(nightly_cfg.get("provider") or model_cfg.get("provider") or "").strip()
     provider_cfg = providers_cfg.get(provider) if isinstance(providers_cfg.get(provider), dict) else {}
     model = options.model or str(
-        model_cfg.get("model")
+        nightly_cfg.get("model")
+        or nightly_cfg.get("default_model")
+        or provider_cfg.get("default_model")
+        or model_cfg.get("model")
         or model_cfg.get("default")
         or model_cfg.get("default_model")
-        or provider_cfg.get("default_model")
-        or ""
+        or "gpt-4o-mini"
     )
-    base_url = options.base_url or str(model_cfg.get("base_url") or provider_cfg.get("base_url") or "")
-    api_key = options.api_key or resolve_api_key(model_cfg.get("api_key") or provider_cfg.get("api_key") or provider_cfg.get("key_env"), provider, env)
-    nightly_cfg = cfg.get("scope_recall_nightly_digest") if isinstance(cfg.get("scope_recall_nightly_digest"), dict) else {}
-    model = str(nightly_cfg.get("model") or model or "gpt-4o-mini")
-    base_url = str(nightly_cfg.get("base_url") or base_url or "https://api.openai.com")
-    return {"model": model, "base_url": base_url.rstrip("/"), "api_key": api_key}
+    base_url = options.base_url or str(
+        nightly_cfg.get("base_url")
+        or provider_cfg.get("base_url")
+        or model_cfg.get("base_url")
+        or "https://api.openai.com"
+    )
+    api_key = options.api_key or resolve_api_key(
+        nightly_cfg.get("api_key")
+        or nightly_cfg.get("api_key_env")
+        or nightly_cfg.get("key_env")
+        or provider_cfg.get("api_key")
+        or provider_cfg.get("api_key_env")
+        or provider_cfg.get("key_env")
+        or model_cfg.get("api_key"),
+        provider,
+        env,
+    )
+    api_mode = _normalize_digest_api_mode(
+        nightly_cfg.get("api_mode") or provider_cfg.get("api_mode") or model_cfg.get("api_mode"),
+        provider=provider,
+        base_url=str(base_url or ""),
+    )
+    return {
+        "provider": provider,
+        "model": str(model or "gpt-4o-mini"),
+        "base_url": str(base_url or "https://api.openai.com").rstrip("/"),
+        "api_key": api_key,
+        "api_mode": api_mode,
+    }
 
 
 def load_dotenv(path: Path) -> dict[str, str]:
@@ -616,9 +668,121 @@ def resolve_api_key(raw_value: Any, provider: str, env: dict[str, str]) -> str:
     return ""
 
 
-def call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float) -> str:
-    if not api_key:
-        raise RuntimeError("API key not found for nightly digest")
+def _codex_cloudflare_headers(access_token: str) -> dict[str, str]:
+    headers = {
+        "User-Agent": "codex_cli_rs/0.0.0 (Scope Recall)",
+        "originator": "codex_cli_rs",
+    }
+    if not isinstance(access_token, str) or not access_token.strip():
+        return headers
+    try:
+        parts = access_token.split(".")
+        if len(parts) < 2:
+            return headers
+        payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+        acct_id = claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
+        if isinstance(acct_id, str) and acct_id:
+            headers["ChatGPT-Account-ID"] = acct_id
+    except Exception:
+        pass
+    return headers
+
+
+def _responses_endpoint(base_url: str) -> str:
+    endpoint = str(base_url or "").strip().rstrip("/")
+    if not endpoint:
+        endpoint = "https://api.openai.com/v1"
+    if endpoint.endswith("/responses"):
+        return endpoint
+    return endpoint + "/responses"
+
+
+def _response_item_get(item: Any, key: str, default: Any = None) -> Any:
+    if isinstance(item, dict):
+        return item.get(key, default)
+    value = getattr(item, key, default)
+    return value if value is not None else default
+
+
+def _extract_responses_text(data: dict[str, Any]) -> str:
+    output_text = data.get("output_text")
+    if isinstance(output_text, str) and output_text:
+        return output_text
+    parts: list[str] = []
+    for item in data.get("output") or []:
+        if _response_item_get(item, "type") != "message":
+            continue
+        for content_part in _response_item_get(item, "content", []) or []:
+            part_type = _response_item_get(content_part, "type")
+            if part_type in {"output_text", "text"}:
+                text = _response_item_get(content_part, "text", "")
+                if text:
+                    parts.append(str(text))
+    if parts:
+        return "".join(parts)
+    choice = (data.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    return str(message.get("content") or "")
+
+
+def _extract_responses_sse_text(body: str) -> str:
+    delta_parts: list[str] = []
+    item_parts: list[str] = []
+    completed_payload: dict[str, Any] | None = None
+    for line in body.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        raw = line[5:].strip()
+        if not raw or raw == "[DONE]":
+            continue
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        event_type = str(event.get("type") or "")
+        if event_type == "error":
+            message = event.get("message") or event.get("error") or raw
+            raise RuntimeError(f"LLM stream error: {message}")
+        if "output_text.delta" in event_type:
+            delta = event.get("delta")
+            if isinstance(delta, str):
+                delta_parts.append(delta)
+            continue
+        if event_type == "response.output_item.done":
+            item = event.get("item")
+            if isinstance(item, dict):
+                text = _extract_responses_text({"output": [item]})
+                if text:
+                    item_parts.append(text)
+            continue
+        if event_type in {"response.completed", "response.incomplete", "response.failed"}:
+            response = event.get("response")
+            if isinstance(response, dict):
+                completed_payload = response
+            if event_type == "response.failed":
+                raise RuntimeError(f"LLM stream failed: {event.get('response') or raw}")
+    if delta_parts:
+        return "".join(delta_parts)
+    if item_parts:
+        return "".join(item_parts)
+    if completed_payload:
+        return _extract_responses_text(completed_payload)
+    return ""
+
+
+def _decode_responses_body(body: str) -> str:
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return _extract_responses_sse_text(body)
+    if not isinstance(data, dict):
+        return ""
+    return _extract_responses_text(data)
+
+
+def _call_chat_completions_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float) -> str:
     endpoint = base_url.rstrip("/")
     if not endpoint.endswith("/v1"):
         endpoint += "/v1"
@@ -647,6 +811,58 @@ def call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: f
     choice = (data.get("choices") or [{}])[0]
     message = choice.get("message") or {}
     return str(message.get("content") or "")
+
+
+def _call_codex_responses_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float) -> str:
+    payload = {
+        "model": model,
+        "instructions": "You extract durable memory as strict JSON.",
+        "input": [
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": prompt}],
+            }
+        ],
+        "store": False,
+        "stream": True,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+        **_codex_cloudflare_headers(api_key),
+    }
+    request = urllib.request.Request(
+        _responses_endpoint(base_url),
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"LLM HTTP {exc.code}: {body}") from exc
+    return _decode_responses_body(body)
+
+
+def call_llm(
+    prompt: str,
+    *,
+    model: str,
+    base_url: str,
+    api_key: str,
+    timeout: float,
+    api_mode: str = "chat_completions",
+) -> str:
+    if not api_key:
+        raise RuntimeError("API key not found for nightly digest")
+    mode = _normalize_digest_api_mode(api_mode, provider="", base_url=base_url)
+    if mode == "codex_responses":
+        return _call_codex_responses_llm(prompt, model=model, base_url=base_url, api_key=api_key, timeout=timeout)
+    if mode != "chat_completions":
+        raise RuntimeError(f"Unsupported digest api_mode: {api_mode}")
+    return _call_chat_completions_llm(prompt, model=model, base_url=base_url, api_key=api_key, timeout=timeout)
 
 
 def infer_scope(conn: sqlite3.Connection, *, fallback_user_id: str = "") -> ScopeProfile:
@@ -969,6 +1185,7 @@ def collect_candidates(
                 base_url=llm_config["base_url"],
                 api_key=llm_config["api_key"],
                 timeout=options.timeout,
+                api_mode=llm_config.get("api_mode", "chat_completions"),
             )
             parsed = parse_llm_candidates(raw, bundle=bundle)
             if parsed:

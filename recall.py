@@ -72,6 +72,7 @@ class RecallService:
             merged[item_key] = preferred
 
         results = list(merged.values())
+        results = self._filter_recall_lifecycle(results)
         results = self._apply_general_policy(results)
         entity_graph_scores = self._entity_graph_scores(query, results)
         min_score = float(retrieval_cfg.get("min_score") or self.provider._config_value("min_score", 0.18))
@@ -210,6 +211,15 @@ class RecallService:
             return {}
         max_score = max(score for _, score in fused) or 1.0
         return {item_id: max(0.0, min(1.0, score / max_score)) for item_id, score in fused}
+
+    def _filter_recall_lifecycle(self, items: list[RecallItem]) -> list[RecallItem]:
+        output: list[RecallItem] = []
+        for item in items:
+            lifecycle = str((item.metadata or {}).get("lifecycle") or "").strip().lower()
+            if lifecycle in {"superseded", "obsolete", "rejected", "archived"}:
+                continue
+            output.append(item)
+        return output
 
     def _apply_general_policy(self, items: list[RecallItem]) -> list[RecallItem]:
         retrieval_cfg = self.provider._retrieval_config or {}

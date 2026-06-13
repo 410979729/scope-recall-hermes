@@ -8,6 +8,7 @@ from typing import Any, Callable
 from tools.registry import tool_error
 
 from .capture_filters import CaptureFilterResult, should_capture_text
+from .gating import config_bool
 from .graph import clamp_float
 from .secret_index import build_secret_index
 
@@ -212,19 +213,11 @@ class ScopeRecallToolService:
         )
 
     def _handle_forget(self, args: dict[str, Any]) -> str:
-        query = self._clean_query(args)
-        if not query:
-            return tool_error("query is required")
-        results = self.provider._recall_service.search_memories(query, limit=self._limit(args))
-        ids = []
-        seen_ids: set[str] = set()
-        for item in results:
-            if item.id.startswith("curated:") or item.id in seen_ids:
-                continue
-            seen_ids.add(item.id)
-            ids.append(item.id)
-        self.provider._delete_memories(ids)
-        return self._json({"deleted": len(ids), "ids": ids})
+        ids = self._memory_ids_arg(args)
+        if not ids:
+            return tool_error("ids are required for scope_recall_forget; search or inspect first, then pass exact ids")
+        deleted = self.provider._delete_memories(ids)
+        return self._json({"deleted": deleted, "ids": ids})
 
     def _handle_update(self, args: dict[str, Any]) -> str:
         memory_id = str(args.get("id") or "").strip()
@@ -391,7 +384,27 @@ class ScopeRecallToolService:
         return bool(value)
 
     def _operator_mode_enabled(self) -> bool:
-        return bool(self.provider._config_value("maintenance_tools_enabled", False))
+        return config_bool(self.provider._config, "maintenance_tools_enabled", False)
+
+    def _memory_ids_arg(self, args: dict[str, Any]) -> list[str]:
+        raw_ids = args.get("ids")
+        if raw_ids is None:
+            raw_ids = args.get("id")
+        if isinstance(raw_ids, str):
+            candidates = [raw_ids]
+        elif isinstance(raw_ids, list):
+            candidates = [str(item) for item in raw_ids]
+        else:
+            candidates = []
+        ids: list[str] = []
+        seen: set[str] = set()
+        for memory_id in candidates:
+            memory_id = str(memory_id or "").strip()
+            if not memory_id or memory_id.startswith("curated:") or memory_id in seen:
+                continue
+            seen.add(memory_id)
+            ids.append(memory_id)
+        return ids
 
     def _storage_filter(self, content: str) -> CaptureFilterResult:
         return should_capture_text(content, self.provider._config)

@@ -20,6 +20,39 @@ _DEPLOY_RE = re.compile(
 )
 _IDENTITY_RE = re.compile(r"\b(?P<subject>[A-Z][\w-]*)\s+is\s+(?P<object>[^.!?。！？]+)", re.IGNORECASE)
 _NEGATION_RE = re.compile(r"\b(no longer|not|never|不再|不要|不是|取消|avoid|stop)\b", re.IGNORECASE)
+_CLAIM_RE = re.compile(
+    r"^\s*(?P<subject>.+?)\s+"
+    r"(?P<predicate>(?:does\s+not\s+|do\s+not\s+|doesn't\s+|don't\s+|no\s+longer\s+)?"
+    r"(?:is|are|was|were|uses?|prefers?|likes?|wants?))\s+"
+    r"(?P<value>.+?)\s*[.!?。！？]?\s*$",
+    re.IGNORECASE,
+)
+_CONFLICT_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "be",
+    "by",
+    "current",
+    "for",
+    "in",
+    "is",
+    "it",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "with",
+    "does",
+    "do",
+    "not",
+    "no",
+    "longer",
+    "never",
+}
 _MEMORY_TYPES = {
     "factual",
     "preference",
@@ -327,12 +360,68 @@ def extract_candidates(text: str) -> list[ExtractionCandidate]:
     return candidates
 
 
+def _conflict_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[\w-]+", (text or "").lower())
+        if token and token not in _CONFLICT_STOPWORDS
+    }
+
+
+def _claim_slot_and_value(text: str) -> tuple[set[str], set[str]] | None:
+    """Extract a conservative fact slot and value for automatic conflict review.
+
+    Negation alone is too broad: "deploy command is X" and "deploy command is
+    not documented in README" share a topic, but negate different attributes.
+    Automatic conflict candidates therefore require both the same slot and an
+    overlapping value after negation words are stripped.
+    """
+
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return None
+    match = _CLAIM_RE.match(cleaned)
+    if not match:
+        return None
+    subject = match.group("subject") or ""
+    predicate = match.group("predicate") or ""
+    value = match.group("value") or ""
+    normalized_predicate = _NEGATION_RE.sub(" ", predicate.lower())
+    normalized_predicate = re.sub(r"\s+", " ", normalized_predicate).strip()
+    if normalized_predicate in {"is", "are", "was", "were"}:
+        slot_text = subject
+    else:
+        slot_text = f"{subject} {normalized_predicate}"
+    value_text = _NEGATION_RE.sub(" ", value)
+    slot_tokens = _conflict_tokens(slot_text)
+    value_tokens = _conflict_tokens(value_text)
+    if not slot_tokens or not value_tokens:
+        return None
+    return slot_tokens, value_tokens
+
+
+def _overlap_ratio(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / min(len(left), len(right))
+
+
 def is_conflicting(existing: str, candidate: str) -> bool:
     if dedup_key(existing) == dedup_key(candidate):
         return False
     if semantic_similarity(existing, candidate) < 0.35:
         return False
-    return bool(_NEGATION_RE.search(existing or "")) != bool(_NEGATION_RE.search(candidate or ""))
+    if bool(_NEGATION_RE.search(existing or "")) == bool(_NEGATION_RE.search(candidate or "")):
+        return False
+    existing_claim = _claim_slot_and_value(existing)
+    candidate_claim = _claim_slot_and_value(candidate)
+    if existing_claim is None or candidate_claim is None:
+        return False
+    existing_slot, existing_value = existing_claim
+    candidate_slot, candidate_value = candidate_claim
+    if _overlap_ratio(existing_slot, candidate_slot) < 0.75:
+        return False
+    return _overlap_ratio(existing_value, candidate_value) >= 0.6
 
 
 def merge_memory_text(existing: str, candidate: str) -> str:

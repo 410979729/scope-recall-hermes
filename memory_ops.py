@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .capture import store_now
+from .gating import compact_text
 from .graph import clamp_float, compact_context_lines, load_metadata, normalize_entity
 from .governance import classify_memory, is_conflicting, merge_memory_text, semantic_similarity
 from .models import recall_scope_mode
@@ -74,16 +75,35 @@ def _mark_conflicts_for_memory(provider: Any, *, memory_id: str, content: str, t
         if not conflicting_ids:
             return 0
         for target_id in conflicting_ids:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO memory_relations(source_memory_id, target_memory_id, relation_type, confidence, note, created_at)
-                VALUES (?, ?, 'contradicts', ?, ?, ?)
-                """,
-                (memory_id, target_id, 0.74, f"conflict: contradicts memory {target_id}", now),
+            for source_id, related_id in ((memory_id, target_id), (target_id, memory_id)):
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO memory_relations(source_memory_id, target_memory_id, relation_type, confidence, note, created_at)
+                    VALUES (?, ?, 'contradicts', ?, ?, ?)
+                    """,
+                    (source_id, related_id, 0.74, f"conflict-review: contradicts memory {related_id}", now),
+                )
+            old_row = conn.execute("SELECT metadata FROM memories WHERE id = ?", (target_id,)).fetchone()
+            old_metadata = load_metadata(old_row["metadata"] if old_row is not None else "{}")
+            old_relation_types = old_metadata.get("relation_types")
+            if not isinstance(old_relation_types, list):
+                old_relation_types = []
+            if "contradicts" not in old_relation_types:
+                old_relation_types.append("contradicts")
+            old_conflict_ids = old_metadata.get("conflict_review_ids")
+            if not isinstance(old_conflict_ids, list):
+                old_conflict_ids = []
+            old_metadata.update(
+                {
+                    "relation_types": old_relation_types,
+                    "conflict_review_ids": sorted({*map(str, old_conflict_ids), memory_id}),
+                    "conflict_review_count": int(old_metadata.get("conflict_review_count") or 0) + 1,
+                    "needs_conflict_review": True,
+                }
             )
             conn.execute(
-                "INSERT INTO memory_feedback(memory_id, rating, note, created_at) VALUES (?, ?, ?, ?)",
-                (memory_id, -1, f"conflict: contradicts memory {target_id}", now),
+                "UPDATE memories SET metadata = ? WHERE id = ?",
+                (json.dumps(old_metadata, ensure_ascii=False, sort_keys=True), target_id),
             )
         row = conn.execute("SELECT metadata FROM memories WHERE id = ?", (memory_id,)).fetchone()
         metadata_payload = load_metadata(row["metadata"] if row is not None else "{}")
@@ -92,11 +112,13 @@ def _mark_conflicts_for_memory(provider: Any, *, memory_id: str, content: str, t
             relation_types = []
         if "contradicts" not in relation_types:
             relation_types.append("contradicts")
+        existing_conflicts = metadata_payload.get("conflict_review_ids")
+        conflict_review_ids = existing_conflicts if isinstance(existing_conflicts, list) else []
         metadata_payload["relation_types"] = relation_types
+        metadata_payload["conflict_review_ids"] = sorted({*map(str, conflict_review_ids), *conflicting_ids})
         metadata_payload["conflict_count"] = int(metadata_payload.get("conflict_count") or 0) + len(conflicting_ids)
-        metadata_payload["feedback_count"] = int(metadata_payload.get("feedback_count") or 0) + len(conflicting_ids)
-        metadata_payload["unhelpful_count"] = int(metadata_payload.get("unhelpful_count") or 0) + len(conflicting_ids)
-        metadata_payload["trust"] = clamp_float(float(metadata_payload.get("trust") or 0.5) - 0.08, default=0.5)
+        metadata_payload["conflict_review_count"] = int(metadata_payload.get("conflict_review_count") or 0) + len(conflicting_ids)
+        metadata_payload["needs_conflict_review"] = True
         conn.execute(
             "UPDATE memories SET metadata = ? WHERE id = ?",
             (json.dumps(metadata_payload, ensure_ascii=False, sort_keys=True), memory_id),
@@ -290,13 +312,14 @@ def govern_memories(provider: Any, *, dry_run: bool = True, scope_only: bool = T
         params = ()
     with provider._lock:
         rows = conn.execute(
-            f"SELECT id, target, content, updated_at, metadata FROM memories {where}",
+            f"SELECT id, source, target, content, updated_at, metadata FROM memories {where}",
             params,
         ).fetchall()
 
     now = datetime.now(timezone.utc)
     tiers = {"core": 0, "working": 0, "archive": 0}
     decay_candidates: list[str] = []
+    review_candidates: list[dict[str, Any]] = []
     updates: list[tuple[str, str]] = []
     for row in rows:
         metadata: dict[str, Any] = {}
@@ -304,8 +327,8 @@ def govern_memories(provider: Any, *, dry_run: bool = True, scope_only: bool = T
             metadata.update(json.loads(str(row["metadata"] or "{}")))
         except Exception:
             pass
-        classified = dict(metadata)
-        classified.update(classify_memory(str(row["content"]), str(row["target"])))
+        classified = classify_memory(str(row["content"]), str(row["target"]), str(row["source"] or ""))
+        classified.update(metadata)
         tier = str(classified.get("tier") or "working")
         try:
             updated_at = datetime.fromisoformat(str(row["updated_at"]).replace("Z", "+00:00")).astimezone(timezone.utc)
@@ -316,6 +339,38 @@ def govern_memories(provider: Any, *, dry_run: bool = True, scope_only: bool = T
             tier = "archive"
             decay_candidates.append(str(row["id"]))
             classified["tier"] = "archive"
+        reasons: list[str] = []
+        lifecycle = str(classified.get("lifecycle") or "").strip().lower()
+        if lifecycle in {"superseded", "obsolete", "rejected"}:
+            reasons.append(f"lifecycle:{lifecycle}")
+        if bool(classified.get("needs_conflict_review")):
+            reasons.append("conflict-review")
+        if str(row["target"] or "").strip().lower() == "general":
+            reasons.append("local-scratch")
+        source = str(row["source"] or "").strip().lower()
+        if source in {"turn-user", "turn-assistant"}:
+            reasons.append(f"raw-source:{source}")
+        if tier == "archive":
+            reasons.append("archive-candidate")
+        try:
+            confidence = float(classified.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if confidence and confidence < 0.45:
+            reasons.append("low-confidence")
+        if reasons:
+            review_candidates.append(
+                {
+                    "id": str(row["id"]),
+                    "target": str(row["target"]),
+                    "source": str(row["source"]),
+                    "tier": tier,
+                    "lifecycle": lifecycle or str(classified.get("lifecycle") or ""),
+                    "reasons": sorted(set(reasons)),
+                    "updated_at": str(row["updated_at"]),
+                    "summary": compact_text(str(row["content"]), 160),
+                }
+            )
         tiers[tier] = tiers.get(tier, 0) + 1
         updates.append((json.dumps(classified, ensure_ascii=False, sort_keys=True), str(row["id"])))
     if not dry_run:
@@ -329,7 +384,16 @@ def govern_memories(provider: Any, *, dry_run: bool = True, scope_only: bool = T
             else:
                 conn.executemany("UPDATE memories SET metadata = ? WHERE id = ?", updates)
             conn.commit()
-    return {"dry_run": dry_run, "scope_only": scope_only, "total": len(rows), "tiers": tiers, "decay_candidates": decay_candidates}
+    review_candidates = sorted(review_candidates, key=lambda item: (item["updated_at"], item["id"]), reverse=True)
+    return {
+        "dry_run": dry_run,
+        "scope_only": scope_only,
+        "total": len(rows),
+        "tiers": tiers,
+        "decay_candidates": decay_candidates,
+        "review_candidate_count": len(review_candidates),
+        "review_candidates": review_candidates[:50],
+    }
 
 
 def delete_memories(provider: Any, ids: list[str]) -> int:

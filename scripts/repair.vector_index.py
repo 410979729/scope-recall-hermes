@@ -39,6 +39,7 @@ if PACKAGE_NAME not in sys.modules:
 
 from scope_recall_repair_runtime.config import load_runtime_config  # noqa: E402
 from scope_recall_repair_runtime.embedders import build_embedder  # noqa: E402
+from scope_recall_repair_runtime.gating import config_bool  # noqa: E402
 from scope_recall_repair_runtime.sqlite_vector_store import SQLiteBruteForceVectorStore  # type: ignore[import-not-found]  # noqa: E402
 from scope_recall_repair_runtime.vector_store import LanceVectorStore  # noqa: E402
 
@@ -171,7 +172,7 @@ def main() -> int:
     table_name = str(vector_config.get("table_name") or "memories")
     metric = str((config.get("retrieval") or {}).get("metric") or "cosine")
     rows = load_rows(db_path)
-    if not bool(vector_config.get("index_general", False)):
+    if not config_bool(vector_config, "index_general", False):
         rows = [row for row in rows if str(row["target"]) != "general"]
     embedder = choose_embedder(config)
     target = vector_target(storage_dir, backend)

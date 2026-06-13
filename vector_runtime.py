@@ -72,7 +72,7 @@ def _open_vector_store(provider: Any, *, dimensions: int) -> None:
 
 
 def setup_vector_layer(provider: Any) -> None:
-    provider._vector_enabled = bool((provider._vector_config or {}).get("enabled", False))
+    provider._vector_enabled = config_bool(provider._vector_config or {}, "enabled", False)
     provider._vector_backend = str((provider._vector_config or {}).get("backend") or "lancedb")
     provider._vector_ready = False
     provider._vector_status = "disabled"
