@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import sqlite3
 import threading
@@ -63,7 +64,7 @@ from .schemas import (
     SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA,
     SCOPE_RECALL_UPDATE_SCHEMA,
 )
-from .scope import accessible_scope_ids, build_scope_id, build_shared_pool_scope_id, build_shared_scope_id
+from .scope import accessible_scope_ids, build_scope_id, build_shared_pool_scope_id, build_shared_scope_id, normalize_scope_identity
 from .sql_store import ensure_schema
 from .storage_views import search_curated_memories, search_db_memories, search_vector_memories
 from .tooling import ScopeRecallToolService
@@ -197,7 +198,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._vector_config = dict(self._config.get("vector") or {})
 
         self._session_id = session_id
-        self._scope = RuntimeScope(
+        raw_scope = RuntimeScope(
             platform=str(kwargs.get("platform") or "cli"),
             user_id=str(kwargs.get("user_id") or ""),
             chat_id=str(kwargs.get("chat_id") or ""),
@@ -207,9 +208,10 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             agent_workspace=str(kwargs.get("agent_workspace") or ""),
             agent_context=str(kwargs.get("agent_context") or "primary"),
         )
-        self._scope_id = build_scope_id(self._scope)
-        self._shared_scope_id = build_shared_scope_id(self._scope)
-        self._accessible_scope_ids = accessible_scope_ids(self._scope)
+        self._scope = normalize_scope_identity(raw_scope, self._config)
+        self._scope_id = build_scope_id(self._scope, self._config)
+        self._shared_scope_id = build_shared_scope_id(self._scope, self._config)
+        self._accessible_scope_ids = accessible_scope_ids(self._scope, self._config)
         raw_shared_pool_config = self._config.get("shared_pool")
         shared_pool_config = raw_shared_pool_config if isinstance(raw_shared_pool_config, dict) else {}
         self._shared_pool_enabled = config_bool(shared_pool_config, "enabled", False)
@@ -584,8 +586,20 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             self._current_turn = 0
             self._last_recall_turns = {}
 
+    def _schema_config(self) -> dict[str, Any]:
+        if self._config:
+            return self._config
+        hermes_home = self._hermes_home or Path(os.environ.get("HERMES_HOME") or "~/.hermes").expanduser()
+        storage_dir = hermes_home / "scope-recall"
+        config = load_runtime_config(self._plugin_dir, storage_dir)
+        self._config = config
+        self._retrieval_config = dict(config.get("retrieval") or {})
+        self._vector_config = dict(config.get("vector") or {})
+        return config
+
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        if not config_bool(self._config, "enable_tools", True):
+        config = self._schema_config()
+        if not config_bool(config, "enable_tools", True):
             return []
         if self._scope.agent_context != "primary":
             return []
@@ -606,7 +620,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             SCOPE_RECALL_EXPLAIN_SCHEMA,
             SCOPE_RECALL_BENCHMARK_SCHEMA,
         ]
-        if config_bool(self._config, "maintenance_tools_enabled", False):
+        if config_bool(config, "maintenance_tools_enabled", False):
             schemas.extend([SCOPE_RECALL_DEDUPE_SCHEMA, SCOPE_RECALL_GOVERN_SCHEMA, SCOPE_RECALL_REPAIR_SCHEMA, SCOPE_RECALL_HYGIENE_SCHEMA])
         return schemas
 

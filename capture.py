@@ -9,6 +9,7 @@ from typing import Any
 
 from .capture_filters import should_capture_text
 from .models import recall_scope_mode
+from .scope import canonical_user_id
 from .sql_store import store_row
 from .vector_runtime import upsert_vector_record
 
@@ -112,6 +113,12 @@ def store_now(
     metadata_payload.setdefault("scope_mode", scope_mode)
     metadata_payload.setdefault("runtime_scope_id", provider._scope_id)
     metadata_payload.setdefault("shared_scope_id", provider._shared_scope_id)
+    metadata_payload.setdefault("raw_platform", provider._scope.platform)
+    metadata_payload.setdefault("raw_user_id", provider._scope.user_id)
+    canonical = canonical_user_id(provider._scope, provider._config)
+    if canonical:
+        metadata_payload.setdefault("canonical_user", canonical)
+        metadata_payload.setdefault("scope_identity_mode", "canonical")
     metadata_json = json.dumps(metadata_payload, ensure_ascii=False, sort_keys=True)
     with provider._lock:
         memory_id, summary, updated_at, inserted = store_row(

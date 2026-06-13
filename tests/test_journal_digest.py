@@ -405,7 +405,7 @@ def test_journal_digest_llm_extractor_uses_llm_candidates_and_records_actual_ext
 
     import scope_recall.journal as journal_module
 
-    def fake_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float, api_mode: str = "chat_completions") -> str:
+    def fake_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float, api_mode: str = "chat_completions", endpoint: str = "", append_v1: bool = True) -> str:
         assert "隐性经验" in prompt
         assert api_key == "test-key"
         return json.dumps([
@@ -457,7 +457,7 @@ def test_journal_digest_default_extractor_is_llm_not_heuristic(tmp_path, monkeyp
 
     assert journal_module.build_arg_parser().parse_args([]).extractor == "llm"
 
-    def fake_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float, api_mode: str = "chat_completions") -> str:
+    def fake_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float, api_mode: str = "chat_completions", endpoint: str = "", append_v1: bool = True) -> str:
         return json.dumps([
             {
                 "action": "insert",
@@ -567,7 +567,7 @@ def test_mixed_journal_digest_does_not_send_tool_content_to_llm(tmp_path, monkey
 
     import scope_recall.journal as journal_module
 
-    def fake_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float, api_mode: str = "chat_completions") -> str:
+    def fake_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float, api_mode: str = "chat_completions", endpoint: str = "", append_v1: bool = True) -> str:
         assert "scope-recall mixed journal digest" in prompt
         assert "RAW_TOOL_DIFF_SHOULD_NOT_ENTER_PROMPT" not in prompt
         return "[]"
@@ -675,7 +675,7 @@ def test_llm_digest_transient_failure_retries_before_quarantine(tmp_path, monkey
 
     attempts = {"count": 0}
 
-    def flaky_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float, api_mode: str = "chat_completions") -> str:
+    def flaky_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float, api_mode: str = "chat_completions", endpoint: str = "", append_v1: bool = True) -> str:
         attempts["count"] += 1
         if attempts["count"] == 1:
             raise TimeoutError("simulated timeout")
@@ -732,7 +732,7 @@ def test_llm_digest_failure_retries_then_quarantines_without_fallback_memory(tmp
 
     attempts = {"count": 0}
 
-    def failing_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float, api_mode: str = "chat_completions") -> str:
+    def failing_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float, api_mode: str = "chat_completions", endpoint: str = "", append_v1: bool = True) -> str:
         attempts["count"] += 1
         raise TimeoutError("simulated llm timeout")
 
@@ -786,7 +786,7 @@ def test_llm_digest_auth_failure_quarantines_without_retrying(tmp_path, monkeypa
 
     attempts = {"count": 0}
 
-    def forbidden_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float, api_mode: str = "chat_completions") -> str:
+    def forbidden_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float, api_mode: str = "chat_completions", endpoint: str = "", append_v1: bool = True) -> str:
         attempts["count"] += 1
         raise RuntimeError("HTTP 403 Forbidden")
 

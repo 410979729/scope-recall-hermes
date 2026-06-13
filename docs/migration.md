@@ -69,6 +69,25 @@ Known OpenClaw LanceDB source rows commonly include fields such as:
 
 So OpenClaw import must be an explicit transform, not a folder copy.
 
+### 3. Canonical cross-platform durable identity mapping
+
+This is **opt-in** and does not require rewriting existing rows. Configure explicit aliases only after deciding which platform accounts belong to the same human:
+
+```json
+{
+  "identity": {
+    "cross_platform_shared_scope": true,
+    "cli_user_id_fallback": "local",
+    "user_aliases": {
+      "telegram:8176453077": "joy",
+      "cli:local": "joy"
+    }
+  }
+}
+```
+
+After enabling it, new durable `user`/`memory`/`project`/`ops` rows use the canonical durable scope. Existing platform-specific durable rows remain readable through query-time aliases, so operators can verify behavior before planning any explicit repair/migration. `general` scratch and raw journal evidence remain platform/account/chat/session local.
+
 ## Recommended migration order
 
 1. Switch runtime provider to `scope-recall`

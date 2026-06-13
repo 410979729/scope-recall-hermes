@@ -32,7 +32,7 @@ from .nightly_digest import (
     resolve_llm_config,
     session_chunks,
 )
-from .scope import accessible_scope_ids, build_scope_id, build_shared_scope_id
+from .scope import accessible_scope_ids, build_scope_id, build_shared_scope_id, canonical_user_id, normalize_scope_identity
 from .sql_store import ensure_schema, now_iso, store_row, update_row
 from .vector_runtime import upsert_vector_record
 
@@ -723,6 +723,15 @@ def _candidate_allowed(candidate: JournalDigestCandidate) -> bool:
     return should_capture_text(candidate.content).allowed
 
 
+def _cross_platform_metadata(scope: RuntimeScope, config: dict[str, Any] | None = None) -> dict[str, Any]:
+    canonical = canonical_user_id(scope, config)
+    metadata = {"raw_platform": scope.platform or "cli", "raw_user_id": scope.user_id or "local"}
+    if canonical:
+        metadata["canonical_user"] = canonical
+        metadata["scope_identity_mode"] = "canonical"
+    return metadata
+
+
 def apply_journal_candidates(
     conn: sqlite3.Connection,
     vector_runtime: Any,
@@ -731,9 +740,11 @@ def apply_journal_candidates(
     run_id: str,
     candidates: list[JournalDigestCandidate],
     dry_run: bool = False,
+    runtime_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    scope_ids = accessible_scope_ids(scope)
-    shared_scope_id = build_shared_scope_id(scope)
+    scope = normalize_scope_identity(scope, runtime_config)
+    scope_ids = accessible_scope_ids(scope, runtime_config)
+    shared_scope_id = build_shared_scope_id(scope, runtime_config)
     counts = Counter()
     actions: list[dict[str, Any]] = []
     processed_entry_ids: set[int] = set()
@@ -798,7 +809,7 @@ def apply_journal_candidates(
                 source="journal-digest",
                 target=candidate.target,
                 content=candidate.content,
-                metadata=json.dumps(candidate_metadata(candidate, run_id), ensure_ascii=False, sort_keys=True),
+                metadata=json.dumps({**_cross_platform_metadata(scope, runtime_config), **candidate_metadata(candidate, run_id)}, ensure_ascii=False, sort_keys=True),
             )
             if inserted:
                 _record_journal_sources(conn, memory_id=stored_id, run_id=run_id, entry_ids=candidate.entry_ids)
@@ -916,6 +927,7 @@ def llm_journal_candidates(
     scope: RuntimeScope,
     journal_config: dict[str, Any],
 ) -> list[JournalDigestCandidate]:
+    runtime_config = _runtime_config(hermes_home)
     options = DigestOptions(
         hermes_home=hermes_home,
         digest_date=datetime.now(timezone.utc).date(),
@@ -924,15 +936,18 @@ def llm_journal_candidates(
         max_session_chars=_coerce_positive_int(journal_config.get("llm_max_session_chars"), 16000),
         model=str(journal_config.get("model") or ""),
         base_url=str(journal_config.get("base_url") or ""),
+        endpoint=str(journal_config.get("endpoint") or journal_config.get("chat_endpoint") or ""),
+        append_v1=_config_bool(journal_config, "append_v1", True) if "append_v1" in journal_config else None,
         api_key=str(journal_config.get("api_key") or ""),
         timeout=float(journal_config.get("timeout") or journal_config.get("llm_timeout") or 60.0),
     )
     llm_config = resolve_llm_config(hermes_home, options)
+    active_scope = normalize_scope_identity(scope, runtime_config)
     profile = ScopeProfile(
-        scope=scope,
-        scope_id=build_scope_id(scope),
-        shared_scope_id=build_shared_scope_id(scope),
-        accessible_scope_ids=accessible_scope_ids(scope),
+        scope=active_scope,
+        scope_id=build_scope_id(active_scope, runtime_config),
+        shared_scope_id=build_shared_scope_id(active_scope, runtime_config),
+        accessible_scope_ids=accessible_scope_ids(active_scope, runtime_config),
     )
     existing = existing_memory_context(conn, profile)
     output: list[JournalDigestCandidate] = []
@@ -951,6 +966,8 @@ def llm_journal_candidates(
                 api_key=llm_config["api_key"],
                 timeout=options.timeout,
                 api_mode=llm_config.get("api_mode", "chat_completions"),
+                endpoint=str(llm_config.get("endpoint") or ""),
+                append_v1=bool(llm_config.get("append_v1", True)),
                 max_attempts=max_attempts,
                 retry_delay=retry_delay,
             )
@@ -1059,10 +1076,14 @@ def _open_digest_connection(db_path: Path, *, dry_run: bool) -> sqlite3.Connecti
     return sqlite3.connect(db_path, timeout=30)
 
 
-def _journal_runtime_config(hermes_home: Path) -> dict[str, Any]:
+def _runtime_config(hermes_home: Path) -> dict[str, Any]:
     plugin_dir = Path(__file__).resolve().parent
     storage_dir = hermes_home / "scope-recall"
-    config = load_runtime_config(plugin_dir, storage_dir)
+    return load_runtime_config(plugin_dir, storage_dir)
+
+
+def _journal_runtime_config(hermes_home: Path) -> dict[str, Any]:
+    config = _runtime_config(hermes_home)
     raw_journal = config.get("journal")
     return raw_journal if isinstance(raw_journal, dict) else {}
 
@@ -1120,6 +1141,8 @@ def _call_llm_with_retries(
     api_mode: str,
     max_attempts: int,
     retry_delay: float,
+    endpoint: str = "",
+    append_v1: bool = True,
 ) -> str:
     last_error: Exception | None = None
     last_kind = "unknown"
@@ -1133,6 +1156,8 @@ def _call_llm_with_retries(
                 api_key=api_key,
                 timeout=timeout,
                 api_mode=api_mode,
+                endpoint=endpoint,
+                append_v1=append_v1,
             )
         except Exception as exc:
             last_error = exc
@@ -1196,7 +1221,9 @@ def run_journal_digest(
     run_id = uuid.uuid4().hex
     started_at = now_iso()
     vector_runtime = None
-    journal_config = _journal_runtime_config(hermes_home)
+    runtime_config = _runtime_config(hermes_home)
+    raw_journal = runtime_config.get("journal")
+    journal_config = raw_journal if isinstance(raw_journal, dict) else {}
     configured_limit = _coerce_positive_int(journal_config.get("max_entries_per_digest"), 500)
     effective_limit = _coerce_positive_int(limit_entries, configured_limit) if limit_entries is not None else configured_limit
     retention_days = int(journal_config.get("retention_days") or 0)
@@ -1230,7 +1257,8 @@ def run_journal_digest(
             remaining = max(0, effective_limit - total_loaded_entries)
             if remaining <= 0:
                 break
-            scope_ids = accessible_scope_ids(active_scope) if scope is not None else [build_scope_id(active_scope)]
+            active_scope = normalize_scope_identity(active_scope, runtime_config)
+            scope_ids = accessible_scope_ids(active_scope, runtime_config)
             entries = load_unprocessed_journal_entries(conn, scope_ids=scope_ids, limit=remaining)
             if not entries:
                 continue
@@ -1292,14 +1320,14 @@ def run_journal_digest(
                         conn=conn,
                         scope=ScopeProfile(
                             scope=active_scope,
-                            scope_id=build_scope_id(active_scope),
-                            shared_scope_id=build_shared_scope_id(active_scope),
-                            accessible_scope_ids=accessible_scope_ids(active_scope),
+                            scope_id=build_scope_id(active_scope, runtime_config),
+                            shared_scope_id=build_shared_scope_id(active_scope, runtime_config),
+                            accessible_scope_ids=accessible_scope_ids(active_scope, runtime_config),
                         ),
                     )
                 except Exception:
                     vector_runtime = None
-            applied = apply_journal_candidates(conn, vector_runtime, active_scope, run_id=run_id, candidates=candidates, dry_run=dry_run)
+            applied = apply_journal_candidates(conn, vector_runtime, active_scope, run_id=run_id, candidates=candidates, dry_run=dry_run, runtime_config=runtime_config)
             counts.update(applied["counts"])
             applied_entry_ids = {int(entry_id) for entry_id in applied.get("processed_entry_ids", [])}
             reviewed_without_candidate_ids = sorted(loaded_entry_ids - candidate_entry_ids)

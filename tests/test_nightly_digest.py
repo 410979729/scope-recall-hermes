@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import urllib.error
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -222,6 +223,144 @@ def test_call_llm_openai_compatible_uses_chat_completions_endpoint(monkeypatch):
     assert captured["body"]["messages"][0]["role"] == "system"
     assert captured["body"]["messages"][1]["content"] == "extract this"
     assert captured["headers"]["Authorization"] == "Bearer openai-key"
+
+
+def test_call_llm_chat_completions_respects_explicit_endpoint_without_appending_v1(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "[]"}}]}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        return FakeResponse()
+
+    import scope_recall.nightly_digest as nightly_digest
+
+    monkeypatch.setattr(nightly_digest.urllib.request, "urlopen", fake_urlopen)
+
+    raw = call_llm(
+        "extract this",
+        model="ark-code-latest",
+        base_url="https://ark.cn-beijing.volces.com/api/coding/v3",
+        endpoint="https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
+        api_key="ark-key",
+        timeout=12,
+        api_mode="chat_completions",
+    )
+
+    assert raw == "[]"
+    assert captured["url"] == "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions"
+
+
+def test_call_llm_chat_completions_append_v1_false_uses_provider_specific_root(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "[]"}}]}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        return FakeResponse()
+
+    import scope_recall.nightly_digest as nightly_digest
+
+    monkeypatch.setattr(nightly_digest.urllib.request, "urlopen", fake_urlopen)
+
+    call_llm(
+        "extract this",
+        model="ark-code-latest",
+        base_url="https://ark.cn-beijing.volces.com/api/coding/v3",
+        api_key="ark-key",
+        timeout=12,
+        api_mode="chat_completions",
+        append_v1=False,
+    )
+
+    assert captured["url"] == "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions"
+
+
+def test_call_llm_chat_completions_http_error_mentions_endpoint_without_secret(monkeypatch):
+    import io
+    from email.message import Message
+
+    fake_secret = "sk-" + "a" * 28
+
+    def fake_urlopen(request, timeout):
+        raise urllib.error.HTTPError(
+            request.full_url,
+            404,
+            "Not Found",
+            hdrs=Message(),
+            fp=io.BytesIO(f"provider error api_key={fake_secret}".encode("utf-8")),
+        )
+
+    import scope_recall.nightly_digest as nightly_digest
+
+    monkeypatch.setattr(nightly_digest.urllib.request, "urlopen", fake_urlopen)
+
+    try:
+        call_llm(
+            "extract this",
+            model="ark-code-latest",
+            base_url="https://ark.cn-beijing.volces.com/api/coding/v3",
+            api_key="ark-key",
+            timeout=12,
+            api_mode="chat_completions",
+            append_v1=False,
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")
+
+    assert "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions" in message
+    assert fake_secret not in message
+    assert "[REDACTED]" in message
+
+
+def test_digest_llm_config_exposes_append_v1_false_for_provider_specific_roots(tmp_path):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    (hermes_home / ".env").write_text("ARK_API_KEY=ark-test-key\n", encoding="utf-8")
+    (hermes_home / "config.yaml").write_text(
+        """
+model:
+  provider: ark
+  default: ark-code-latest
+providers:
+  ark:
+    base_url: https://ark.cn-beijing.volces.com/api/coding/v3
+    key_env: ARK_API_KEY
+scope_recall_nightly_digest:
+  provider: ark
+  append_v1: false
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = resolve_llm_config(hermes_home, DigestOptions(hermes_home=hermes_home, digest_date=date(2026, 6, 13)))
+
+    assert config["model"] == "ark-code-latest"
+    assert config["base_url"] == "https://ark.cn-beijing.volces.com/api/coding/v3"
+    assert config["api_key"] == "ark-test-key"
+    assert config["api_mode"] == "chat_completions"
+    assert config["append_v1"] is False
 
 
 def test_redact_sensitive_handles_assignment_and_bearer_without_leaking_secret():

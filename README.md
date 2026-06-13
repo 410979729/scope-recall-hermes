@@ -20,7 +20,7 @@ Current-turn recall · Journal-first capture · Permanent shared memory · Backg
 
 This repository, `scope-recall-hermes`, is the Hermes implementation. The Python package name and Hermes plugin ID intentionally remain `scope-recall` for runtime compatibility. The OpenClaw sibling implementation lives at [`scope-recall-openclaw`](https://github.com/410979729/scope-recall-openclaw).
 
-Version `1.0.13` continues the first stable V1 release line for the documented interfaces, packaged as a public release candidate for broader field testing. It keeps the V1 compatibility contract in [`docs/stability.md`](docs/stability.md) while replacing per-message durable capture with journal-first provenance, background journal digest, merge/upsert memory writes, conflict-review relations, governance review candidates, and RRF/BM25-aware hybrid retrieval.
+Version `1.0.14` continues the first stable V1 release line for the documented interfaces, packaged as a public release candidate for broader field testing. It keeps the V1 compatibility contract in [`docs/stability.md`](docs/stability.md) while adding opt-in canonical cross-platform identity mapping for durable rows, provider-specific digest endpoints, pre-initialization maintenance tool registration, journal-first provenance, background journal digest, merge/upsert memory writes, conflict-review relations, governance review candidates, and RRF/BM25-aware hybrid retrieval.
 
 It uses a **three-layer design**:
 
@@ -34,7 +34,7 @@ This replaces the old `lancepro` naming, which was misleading because the earlie
 
 - **Truth stays inspectable**: SQLite remains the authoritative store; vectors are rebuildable.
 - **Recall is current-turn scoped**: retrieval is based on the active query, not stale queued context from the previous topic.
-- **Durable memory travels deliberately**: `user`, `memory`, `project`, and `ops` facts can follow the same user + agent identity across windows/chats.
+- **Durable memory travels deliberately**: `user`, `memory`, `project`, and `ops` facts can follow the same user + agent identity across windows/chats, and can cross platforms only when explicit canonical identity mapping is configured.
 - **Raw turns are provenance, not durable memory**: eligible conversation turns are written to a journal/staging layer; only digest-produced high-density `user`/`memory`/`project`/`ops` rows enter durable recall and vector sync.
 - **Operator actions fail closed**: cross-scope export/dedupe/govern/repair paths require explicit maintenance mode.
 - **Install remains practical**: hosted embeddings are used when configured, while deterministic `local-hash` keeps no-key bootstrap available.
@@ -53,6 +53,41 @@ The V1 shape is intentionally simple:
 - Operational visibility is exposed through doctor, repair, inspect, explain, and benchmark utilities; deployment-specific dashboards can consume those outputs when needed.
 
 For external shared-memory bridge guidance, see [`docs/external-shared-memory.md`](docs/external-shared-memory.md).
+
+### Optional cross-platform identity mapping
+
+By default, durable shared scope remains platform-isolated: `platform + agent_workspace + agent_identity + user_id`. To let the same human recall durable rows across Telegram, CLI, Feishu, or another gateway, configure an explicit canonical identity map in `$HERMES_HOME/scope-recall/config.json`:
+
+```json
+{
+  "identity": {
+    "cross_platform_shared_scope": true,
+    "cli_user_id_fallback": "local",
+    "user_aliases": {
+      "telegram:8176453077": "joy",
+      "cli:local": "joy",
+      "feishu:ou_xxx": "joy"
+    }
+  }
+}
+```
+
+Only durable targets (`user`, `memory`, `project`, `ops`) use the canonical shared scope. `general` scratch, raw journal evidence, chat/thread/session context, and tool traces remain local. Existing platform-specific durable rows stay readable through query-time aliases before any explicit migration. Newly written rows keep `raw_platform`, `raw_user_id`, and mapped `canonical_user` metadata for auditability.
+
+### Provider-specific digest endpoints
+
+For journal/nightly digest LLM providers whose chat-completions endpoint is not `base_url + /v1/chat/completions`, set either a full endpoint or disable `/v1` appending:
+
+```json
+{
+  "journal": {
+    "endpoint": "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
+    "append_v1": false
+  }
+}
+```
+
+For `scripts/nightly-digest.py`, the same behavior is available through `--endpoint` or `--no-append-v1`.
 
 ---
 

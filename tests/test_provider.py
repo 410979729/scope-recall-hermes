@@ -409,6 +409,264 @@ def test_dedup_prevents_repeat_injection_within_min_repeated(provider):
     assert "uv run app" in third.lower()
 
 
+def test_maintenance_tool_schemas_preload_runtime_config_before_initialize(tmp_path, monkeypatch):
+    _write_scope_recall_config(tmp_path, {"maintenance_tools_enabled": True, "vector": {"enabled": False}})
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from scope_recall.provider import ScopeRecallMemoryProvider
+
+    plugin = ScopeRecallMemoryProvider()
+    names = {schema["name"] for schema in plugin.get_tool_schemas()}
+
+    assert "scope_recall_dedupe" in names
+    assert "scope_recall_govern" in names
+    assert "scope_recall_repair" in names
+    assert "scope_recall_hygiene" in names
+
+
+def test_cross_platform_identity_mapping_is_opt_in_and_default_keeps_platform_isolation(tmp_path):
+    _write_scope_recall_config(tmp_path, {"vector": {"enabled": False}})
+    telegram = load_memory_provider("scope-recall")
+    cli = load_memory_provider("scope-recall")
+    assert telegram is not None
+    assert cli is not None
+    telegram.initialize(
+        "telegram-session",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="8176453077",
+        chat_id="chat-a",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    cli.initialize(
+        "cli-session",
+        hermes_home=str(tmp_path),
+        platform="cli",
+        user_id="8176453077",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        assert telegram._shared_scope_id != cli._shared_scope_id
+        payload = json.loads(
+            telegram.handle_tool_call(
+                "scope_recall_store",
+                {
+                    "content": "Project Atlas default isolation memory should not cross platform without opt-in.",
+                    "target": "project",
+                    "memory_type": "project",
+                },
+            )
+        )
+        assert payload["stored"] is True
+        results = json.loads(cli.handle_tool_call("scope_recall_search", {"query": "default isolation memory cross platform opt-in", "limit": 5}))
+        assert payload["id"] not in {item["id"] for item in results["results"]}
+    finally:
+        telegram.shutdown()
+        cli.shutdown()
+
+
+def test_cross_platform_identity_mapping_unmapped_accounts_remain_isolated(tmp_path):
+    _write_scope_recall_config(
+        tmp_path,
+        {
+            "vector": {"enabled": False},
+            "identity": {
+                "cross_platform_shared_scope": True,
+                "cli_user_id_fallback": "local",
+                "user_aliases": {"telegram:8176453077": "joy"},
+            },
+        },
+    )
+    telegram = load_memory_provider("scope-recall")
+    cli = load_memory_provider("scope-recall")
+    assert telegram is not None
+    assert cli is not None
+    telegram.initialize(
+        "telegram-session",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="8176453077",
+        chat_id="chat-a",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    cli.initialize(
+        "cli-session",
+        hermes_home=str(tmp_path),
+        platform="cli",
+        user_id="",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        assert telegram._shared_scope_id != cli._shared_scope_id
+        payload = json.loads(
+            telegram.handle_tool_call(
+                "scope_recall_store",
+                {
+                    "content": "Project Atlas mapped telegram row should not leak to an unmapped CLI account.",
+                    "target": "project",
+                    "memory_type": "project",
+                },
+            )
+        )
+        assert payload["stored"] is True
+        results = json.loads(cli.handle_tool_call("scope_recall_search", {"query": "unmapped CLI account Project Atlas leak", "limit": 5}))
+        assert payload["id"] not in {item["id"] for item in results["results"]}
+    finally:
+        telegram.shutdown()
+        cli.shutdown()
+
+
+def test_cross_platform_identity_mapping_reads_legacy_platform_shared_rows(tmp_path):
+    _write_scope_recall_config(tmp_path, {"vector": {"enabled": False}})
+    telegram = load_memory_provider("scope-recall")
+    assert telegram is not None
+    telegram.initialize(
+        "telegram-session",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="8176453077",
+        chat_id="chat-a",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        legacy = json.loads(
+            telegram.handle_tool_call(
+                "scope_recall_store",
+                {
+                    "content": "Project Atlas legacy platform shared row remains readable after identity mapping.",
+                    "target": "project",
+                    "memory_type": "project",
+                },
+            )
+        )
+        assert legacy["stored"] is True
+        legacy_shared_scope = telegram._shared_scope_id
+    finally:
+        telegram.shutdown()
+
+    _write_scope_recall_config(
+        tmp_path,
+        {
+            "vector": {"enabled": False},
+            "identity": {
+                "cross_platform_shared_scope": True,
+                "cli_user_id_fallback": "local",
+                "user_aliases": {"telegram:8176453077": "joy", "cli:local": "joy"},
+            },
+        },
+    )
+    cli = load_memory_provider("scope-recall")
+    assert cli is not None
+    cli.initialize(
+        "cli-session",
+        hermes_home=str(tmp_path),
+        platform="cli",
+        user_id="",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        assert legacy_shared_scope in cli._accessible_scope_ids
+        results = json.loads(cli.handle_tool_call("scope_recall_search", {"query": "legacy platform shared row identity mapping", "limit": 5}))
+        assert legacy["id"] in {item["id"] for item in results["results"]}
+    finally:
+        cli.shutdown()
+
+
+def test_cross_platform_identity_mapping_shares_durable_memory_but_not_local_scratch(tmp_path):
+    _write_scope_recall_config(
+        tmp_path,
+        {
+            "vector": {"enabled": False},
+            "identity": {
+                "cross_platform_shared_scope": True,
+                "cli_user_id_fallback": "local",
+                "user_aliases": {
+                    "telegram:8176453077": "joy",
+                    "cli:local": "joy",
+                    "feishu:ou_xxx": "joy",
+                },
+            },
+        },
+    )
+    telegram = load_memory_provider("scope-recall")
+    cli = load_memory_provider("scope-recall")
+    assert telegram is not None
+    assert cli is not None
+    telegram.initialize(
+        "telegram-session",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="8176453077",
+        chat_id="chat-a",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    cli.initialize(
+        "cli-session",
+        hermes_home=str(tmp_path),
+        platform="cli",
+        user_id="",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        assert telegram._shared_scope_id == cli._shared_scope_id
+        assert telegram._scope_id != cli._scope_id
+        assert cli._scope.user_id == "local"
+
+        durable = json.loads(
+            telegram.handle_tool_call(
+                "scope_recall_store",
+                {
+                    "content": "Project Atlas cross-platform durable memory uses the Rust pipeline.",
+                    "target": "project",
+                    "memory_type": "project",
+                },
+            )
+        )
+        scratch = json.loads(
+            telegram.handle_tool_call(
+                "scope_recall_store",
+                {
+                    "content": "Telegram-only scratch note says Project Atlas temporary codename is Glass Sparrow.",
+                    "target": "general",
+                    "memory_type": "episodic",
+                },
+            )
+        )
+        assert durable["stored"] is True
+        assert scratch["stored"] is True
+        with telegram._lock:
+            metadata = json.loads(
+                telegram._require_conn().execute("SELECT metadata FROM memories WHERE id = ?", (durable["id"],)).fetchone()["metadata"]
+            )
+        assert metadata["canonical_user"] == "joy"
+        assert metadata["raw_platform"] == "telegram"
+        assert metadata["raw_user_id"] == "8176453077"
+        durable_results = json.loads(cli.handle_tool_call("scope_recall_search", {"query": "Project Atlas Rust pipeline", "limit": 5}))
+        durable_ids = {item["id"] for item in durable_results["results"]}
+        assert durable["id"] in durable_ids
+        scratch_results = json.loads(cli.handle_tool_call("scope_recall_search", {"query": "Glass Sparrow temporary codename", "limit": 5}))
+        scratch_ids = {item["id"] for item in scratch_results["results"]}
+        assert scratch["id"] not in scratch_ids
+    finally:
+        telegram.shutdown()
+        cli.shutdown()
+
+
 def test_maintenance_tool_schemas_require_operator_config(provider):
     schemas = provider.get_tool_schemas()
     names = {schema["name"] for schema in schemas}

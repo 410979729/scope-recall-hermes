@@ -32,7 +32,9 @@
     "extractor": "llm",
     "digest_interval_hours": 2,
     "retention_days": 0,
-    "max_entries_per_digest": 500
+    "max_entries_per_digest": 500,
+    "endpoint": "",
+    "append_v1": true
   },
   "per_turn_extraction": {
     "enabled": false
@@ -58,6 +60,11 @@
   "curated_memory": {
     "mode": "single-user",
     "allowed_user_ids": []
+  },
+  "identity": {
+    "cross_platform_shared_scope": false,
+    "cli_user_id_fallback": "local",
+    "user_aliases": {}
   },
   "retrieval": {
     "mode": "hybrid",

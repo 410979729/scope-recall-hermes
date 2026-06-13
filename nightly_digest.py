@@ -26,7 +26,7 @@ from .gating import clean_text, compact_text, dedup_key
 from .governance import is_conflicting, merge_memory_text, normalize_memory_type, semantic_similarity
 from .graph import clamp_float, load_metadata, normalize_entity, sync_memory_entities
 from .models import RuntimeScope
-from .scope import accessible_scope_ids, build_scope_id, build_shared_scope_id
+from .scope import accessible_scope_ids, build_scope_id, build_shared_scope_id, canonical_user_id, normalize_scope_identity
 from .sql_store import delete_rows, ensure_schema, exact_duplicate_groups, store_row, update_row
 from .vector_runtime import setup_vector_layer, upsert_vector_record
 
@@ -115,6 +115,8 @@ class DigestOptions:
     chunk_chars: int = 7000
     model: str = ""
     base_url: str = ""
+    endpoint: str = ""
+    append_v1: bool | None = None
     api_key: str = ""
     timeout: float = 60.0
     verbose: bool = False
@@ -551,6 +553,16 @@ def candidate_is_allowed(candidate: DigestCandidate) -> bool:
     return True
 
 
+def _config_bool_value(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 def _normalize_digest_api_mode(value: Any, *, provider: str = "", base_url: str = "") -> str:
     raw = str(value or "").strip().lower().replace("-", "_")
     aliases = {
@@ -575,7 +587,7 @@ def _normalize_digest_api_mode(value: Any, *, provider: str = "", base_url: str 
     return "chat_completions"
 
 
-def resolve_llm_config(hermes_home: Path, options: DigestOptions) -> dict[str, str]:
+def resolve_llm_config(hermes_home: Path, options: DigestOptions) -> dict[str, Any]:
     config_path = hermes_home / "config.yaml"
     env = load_dotenv(hermes_home / ".env")
     env.update(os.environ)
@@ -609,6 +621,18 @@ def resolve_llm_config(hermes_home: Path, options: DigestOptions) -> dict[str, s
         or model_cfg.get("base_url")
         or "https://api.openai.com"
     )
+    endpoint = options.endpoint or str(
+        nightly_cfg.get("endpoint")
+        or nightly_cfg.get("chat_endpoint")
+        or provider_cfg.get("endpoint")
+        or provider_cfg.get("chat_endpoint")
+        or model_cfg.get("endpoint")
+        or ""
+    )
+    append_v1_raw = options.append_v1
+    if append_v1_raw is None:
+        append_v1_raw = nightly_cfg.get("append_v1", provider_cfg.get("append_v1", model_cfg.get("append_v1", True)))
+    append_v1 = _config_bool_value(append_v1_raw, True)
     api_key = options.api_key or resolve_api_key(
         nightly_cfg.get("api_key")
         or nightly_cfg.get("api_key_env")
@@ -629,6 +653,8 @@ def resolve_llm_config(hermes_home: Path, options: DigestOptions) -> dict[str, s
         "provider": provider,
         "model": str(model or "gpt-4o-mini"),
         "base_url": str(base_url or "https://api.openai.com").rstrip("/"),
+        "endpoint": str(endpoint or "").rstrip("/"),
+        "append_v1": append_v1,
         "api_key": api_key,
         "api_mode": api_mode,
     }
@@ -782,11 +808,30 @@ def _decode_responses_body(body: str) -> str:
     return _extract_responses_text(data)
 
 
-def _call_chat_completions_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float) -> str:
-    endpoint = base_url.rstrip("/")
-    if not endpoint.endswith("/v1"):
-        endpoint += "/v1"
-    endpoint += "/chat/completions"
+def _chat_completions_endpoint(base_url: str, *, endpoint: str = "", append_v1: bool = True) -> str:
+    explicit = str(endpoint or "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    root = str(base_url or "").strip().rstrip("/") or "https://api.openai.com"
+    if root.endswith("/chat/completions"):
+        return root
+    if root.endswith("/v1"):
+        return root + "/chat/completions"
+    suffix = "/v1/chat/completions" if append_v1 else "/chat/completions"
+    return root + suffix
+
+
+def _call_chat_completions_llm(
+    prompt: str,
+    *,
+    model: str,
+    base_url: str,
+    api_key: str,
+    timeout: float,
+    endpoint: str = "",
+    append_v1: bool = True,
+) -> str:
+    endpoint_url = _chat_completions_endpoint(base_url, endpoint=endpoint, append_v1=append_v1)
     payload = {
         "model": model,
         "messages": [
@@ -797,7 +842,7 @@ def _call_chat_completions_llm(prompt: str, *, model: str, base_url: str, api_ke
         "max_tokens": 1800,
     }
     request = urllib.request.Request(
-        endpoint,
+        endpoint_url,
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
         method="POST",
@@ -806,8 +851,8 @@ def _call_chat_completions_llm(prompt: str, *, model: str, base_url: str, api_ke
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")[:500]
-        raise RuntimeError(f"LLM HTTP {exc.code}: {body}") from exc
+        body = redact_sensitive(exc.read().decode("utf-8", errors="replace")[:500])
+        raise RuntimeError(f"LLM HTTP {exc.code} at {endpoint_url}: {body}") from exc
     choice = (data.get("choices") or [{}])[0]
     message = choice.get("message") or {}
     return str(message.get("content") or "")
@@ -854,6 +899,8 @@ def call_llm(
     api_key: str,
     timeout: float,
     api_mode: str = "chat_completions",
+    endpoint: str = "",
+    append_v1: bool = True,
 ) -> str:
     if not api_key:
         raise RuntimeError("API key not found for nightly digest")
@@ -862,10 +909,18 @@ def call_llm(
         return _call_codex_responses_llm(prompt, model=model, base_url=base_url, api_key=api_key, timeout=timeout)
     if mode != "chat_completions":
         raise RuntimeError(f"Unsupported digest api_mode: {api_mode}")
-    return _call_chat_completions_llm(prompt, model=model, base_url=base_url, api_key=api_key, timeout=timeout)
+    return _call_chat_completions_llm(
+        prompt,
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
+        timeout=timeout,
+        endpoint=endpoint,
+        append_v1=append_v1,
+    )
 
 
-def infer_scope(conn: sqlite3.Connection, *, fallback_user_id: str = "") -> ScopeProfile:
+def infer_scope(conn: sqlite3.Connection, *, fallback_user_id: str = "", runtime_config: dict[str, Any] | None = None) -> ScopeProfile:
     row = conn.execute(
         """
         SELECT platform, user_id, chat_id, thread_id, gateway_session_key,
@@ -896,11 +951,12 @@ def infer_scope(conn: sqlite3.Connection, *, fallback_user_id: str = "") -> Scop
         agent_workspace=str(row["agent_workspace"] if row else "hermes") or "hermes",
         agent_context="primary",
     )
+    scope = normalize_scope_identity(scope, runtime_config)
     return ScopeProfile(
         scope=scope,
-        scope_id=build_scope_id(scope),
-        shared_scope_id=build_shared_scope_id(scope),
-        accessible_scope_ids=accessible_scope_ids(scope),
+        scope_id=build_scope_id(scope, runtime_config),
+        shared_scope_id=build_shared_scope_id(scope, runtime_config),
+        accessible_scope_ids=accessible_scope_ids(scope, runtime_config),
     )
 
 
@@ -1045,6 +1101,15 @@ def merge_candidate_metadata(conn: sqlite3.Connection, *, memory_id: str, candid
     sync_memory_entities(conn, memory_id=memory_id, content=str(row["content"]), target=str(row["target"]), metadata=existing)
 
 
+def _cross_platform_metadata(scope: RuntimeScope, config: dict[str, Any] | None = None) -> dict[str, Any]:
+    canonical = canonical_user_id(scope, config)
+    metadata = {"raw_platform": scope.platform or "cli", "raw_user_id": scope.user_id or "local"}
+    if canonical:
+        metadata["canonical_user"] = canonical
+        metadata["scope_identity_mode"] = "canonical"
+    return metadata
+
+
 def apply_candidates(
     conn: sqlite3.Connection,
     vector_runtime: DigestVectorRuntime | None,
@@ -1053,6 +1118,7 @@ def apply_candidates(
     run_id: str,
     candidates: list[DigestCandidate],
     dry_run: bool,
+    runtime_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     seen_candidate_keys: set[str] = set()
     actions: list[dict[str, Any]] = []
@@ -1126,7 +1192,7 @@ def apply_candidates(
                 source="nightly-digest",
                 target=candidate.target,
                 content=candidate.content,
-                metadata=json.dumps(candidate_metadata(candidate, run_id), ensure_ascii=False, sort_keys=True),
+                metadata=json.dumps({**_cross_platform_metadata(scope.scope, runtime_config), **candidate_metadata(candidate, run_id)}, ensure_ascii=False, sort_keys=True),
             )
             if inserted:
                 record_digest_source(conn, memory_id=stored_id, run_id=run_id, candidate=candidate)
@@ -1168,7 +1234,7 @@ def collect_candidates(
     bundles: list[SessionBundle],
     *,
     options: DigestOptions,
-    llm_config: dict[str, str],
+    llm_config: dict[str, Any],
     existing_context: list[str],
 ) -> list[DigestCandidate]:
     candidates: list[DigestCandidate] = []
@@ -1186,6 +1252,8 @@ def collect_candidates(
                 api_key=llm_config["api_key"],
                 timeout=options.timeout,
                 api_mode=llm_config.get("api_mode", "chat_completions"),
+                endpoint=str(llm_config.get("endpoint") or ""),
+                append_v1=bool(llm_config.get("append_v1", True)),
             )
             parsed = parse_llm_candidates(raw, bundle=bundle)
             if parsed:
@@ -1234,13 +1302,14 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
     run_id = uuid.uuid4().hex
     started_at = datetime.now(timezone.utc).isoformat()
     llm_config = resolve_llm_config(hermes_home, options)
-    scope = infer_scope(conn, fallback_user_id=next((bundle.user_id for bundle in bundles if bundle.user_id), ""))
+    runtime_config = load_runtime_config(Path(__file__).resolve().parent, storage_dir)
+    scope = infer_scope(conn, fallback_user_id=next((bundle.user_id for bundle in bundles if bundle.user_id), ""), runtime_config=runtime_config)
     vector_runtime: DigestVectorRuntime | None = None
     try:
         vector_runtime = None if options.dry_run else DigestVectorRuntime(hermes_home=hermes_home, conn=conn, scope=scope)
         existing = existing_memory_context(conn, scope)
         candidates = collect_candidates(bundles, options=options, llm_config=llm_config, existing_context=existing)
-        applied = apply_candidates(conn, vector_runtime, scope, run_id=run_id, candidates=candidates, dry_run=options.dry_run)
+        applied = apply_candidates(conn, vector_runtime, scope, run_id=run_id, candidates=candidates, dry_run=options.dry_run, runtime_config=runtime_config)
         counts = Counter(applied["counts"])
         status = "dry_run" if options.dry_run else "ok"
         result = {
@@ -1329,6 +1398,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit-sessions", type=int, default=0, help="Limit sessions for smoke tests")
     parser.add_argument("--model", default="", help="Override chat completion model")
     parser.add_argument("--base-url", default="", help="Override OpenAI-compatible base URL")
+    parser.add_argument("--endpoint", default="", help="Override full chat completions endpoint")
+    parser.add_argument("--append-v1", action=argparse.BooleanOptionalAction, default=None, help="Append /v1 before /chat/completions for base URLs")
     parser.add_argument("--api-key", default="", help=argparse.SUPPRESS)
     parser.add_argument("--timeout", type=float, default=60.0, help="LLM request timeout seconds")
     parser.add_argument("--verbose", action="store_true", help="Print detailed JSON")
@@ -1347,6 +1418,8 @@ def options_from_args(args: argparse.Namespace) -> DigestOptions:
         limit_sessions=max(0, int(args.limit_sessions or 0)),
         model=str(args.model or ""),
         base_url=str(args.base_url or ""),
+        endpoint=str(args.endpoint or ""),
+        append_v1=args.append_v1,
         api_key=str(args.api_key or ""),
         timeout=float(args.timeout or 60.0),
         verbose=bool(args.verbose),

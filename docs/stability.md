@@ -1,6 +1,6 @@
 # Scope Recall V1 stability contract
 
-`scope-recall` 1.0.13 adds journal-first provenance capture, background journal digest merge/upsert, lifecycle-aware conflict handling, governance review candidates, retry-aware digest failure isolation, legacy scratch hygiene migration, and RRF/BM25-aware hybrid retrieval while remaining inside the V1 compatibility contract.
+`scope-recall` 1.0.14 adds opt-in canonical cross-platform durable identity mapping, provider-specific digest endpoint controls, pre-initialization maintenance tool registration, journal-first provenance capture, background journal digest merge/upsert, lifecycle-aware conflict handling, governance review candidates, retry-aware digest failure isolation, legacy scratch hygiene migration, and RRF/BM25-aware hybrid retrieval while remaining inside the V1 compatibility contract.
 
 This document defines the stable V1 compatibility surface and the areas that may evolve in patch or minor releases.
 
@@ -59,8 +59,9 @@ V1 keeps these behavior boundaries stable:
 - `scope_recall_hygiene` is read-only and never performs cleanup; operators must explicitly run a separate delete/merge/dedupe action after reviewing its output
 - `scope_recall_export` is available for scoped exports by default; `scope_only=false` requires `maintenance_tools_enabled=true`
 - `scope_recall_store_secret_index` may store searchable credential indexes, vault references, and non-reversible fingerprint prefixes, but plaintext secret values must not be stored in SQLite content, metadata, FTS, vector text, exports, logs, or chat replies
-- durable `user`/`memory`/`project`/`ops` rows are shared across windows/chats for the same platform + agent workspace + agent identity + user id
-- `general` scratch rows remain local to the current chat/thread or gateway session key
+- durable `user`/`memory`/`project`/`ops` rows are shared across windows/chats for the same platform + agent workspace + agent identity + user id by default
+- when `identity.cross_platform_shared_scope=true` and explicit aliases map platform accounts to a canonical user, durable rows use a canonical `agent_workspace + agent_identity + canonical_user` shared scope
+- `general` scratch rows remain local to the current platform/account/chat/thread or gateway session key, including when canonical durable identity mapping is enabled
 - scoped tool actions operate on the current accessible scope set: local runtime scope plus shared durable scope
 - `sync_turn()` defaults to journal-first staging; legacy per-turn durable extraction must be explicitly enabled through `per_turn_extraction.enabled=true`
 - `scripts/journal-digest.py` may add or update durable rows from staged journal entries, but raw journal rows themselves are not recalled or indexed into the vector companion
@@ -97,10 +98,11 @@ Patch/minor releases may add fields to JSON responses. Existing documented field
 
 V1 uses a two-scope model:
 
-- shared durable scope: `platform + agent_workspace + agent_identity + user_id`
-- local runtime scope: shared durable scope plus `gateway_session_key`, or `chat_id` / `thread_id`
+- shared durable scope by default: `platform + agent_workspace + agent_identity + user_id`
+- optional canonical durable scope: `agent_workspace + agent_identity + canonical_user`, enabled only by explicit identity aliases
+- local runtime scope: durable scope plus the raw platform/account and `gateway_session_key`, or `chat_id` / `thread_id`
 
-Targets `user`, `memory`, `project`, and `ops` are shared durable memories. Target `general` is local scratch memory. Search/retrieval uses the deduped accessible set of current local scope plus shared durable scope. Global maintenance across all scopes is outside normal chat use and requires operator mode.
+Targets `user`, `memory`, `project`, and `ops` are shared durable memories. Target `general` is local scratch memory. Search/retrieval uses the deduped accessible set of current local scope plus shared durable scope, plus legacy platform shared-scope aliases for mapped identities. Global maintenance across all scopes is outside normal chat use and requires operator mode.
 
 ## Stable V1 retrieval contract
 
