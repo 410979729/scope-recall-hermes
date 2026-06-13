@@ -12,9 +12,15 @@ import json
 import logging
 import os
 import re
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
+
+try:  # Support both package imports and direct manual test imports.
+    from .http_utils import chat_completions_endpoint, redact_sensitive
+except ImportError:  # pragma: no cover - exercised by manual script import style
+    from http_utils import chat_completions_endpoint, redact_sensitive
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +110,8 @@ def extract_capture_candidates(
 
     model = str(llm_config.get("model", "gpt-4o-mini"))
     base_url = str(llm_config.get("base_url", "https://api.openai.com")).rstrip("/")
+    endpoint = str(llm_config.get("endpoint") or llm_config.get("chat_endpoint") or "").rstrip("/")
+    append_v1 = _truthy(llm_config.get("append_v1", True)) if "append_v1" in llm_config else True
     timeout = float(llm_config.get("timeout", 15.0))
     max_tokens = int(llm_config.get("max_tokens_per_turn", 2000))
 
@@ -128,9 +136,9 @@ def extract_capture_candidates(
     ]
 
     try:
-        raw = _call_openai_compatible(base_url, api_key, model, messages, max_tokens, timeout)
+        raw = _call_openai_compatible(base_url, api_key, model, messages, max_tokens, timeout, endpoint=endpoint, append_v1=append_v1)
     except Exception as exc:
-        logger.warning(f"scope-recall capture_llm: API call failed: {exc}")
+        logger.warning(f"scope-recall capture_llm: API call failed: {redact_sensitive(exc)}")
         return []
 
     return _parse_response(raw)
@@ -166,9 +174,12 @@ def _call_openai_compatible(
     messages: list[dict[str, str]],
     max_tokens: int,
     timeout: float,
+    *,
+    endpoint: str = "",
+    append_v1: bool = True,
 ) -> str:
     """Call an OpenAI-compatible chat completions endpoint."""
-    url = f"{base_url}/v1/chat/completions"
+    url = chat_completions_endpoint(base_url, endpoint=endpoint, append_v1=append_v1)
     body = json.dumps(
         {
             "model": model,
@@ -183,8 +194,12 @@ def _call_openai_compatible(
     req.add_header("Authorization", f"Bearer {api_key}")
     req.add_header("Content-Type", "application/json; charset=utf-8")
 
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        result = json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = redact_sensitive(exc.read().decode("utf-8", errors="replace")[:500])
+        raise RuntimeError(f"LLM HTTP {exc.code} at {url}: {body}") from exc
 
     choices = result.get("choices")
     if not choices:

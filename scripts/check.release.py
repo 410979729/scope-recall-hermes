@@ -19,7 +19,10 @@ import tempfile
 import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PACKAGE_VERSION = "1.0.14"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+PACKAGE_VERSION = "1.0.15"
 WHEEL_DATA_PREFIX = f"scope_recall-{PACKAGE_VERSION}.data/data"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
 EXTERNAL_TEST_DIRS = {".hermes-agent-src"}
@@ -65,6 +68,7 @@ REQUIRED_WHEEL = {
     "scope_recall/memory_ops.py",
     "scope_recall/tooling.py",
     "scope_recall/governance.py",
+    "scope_recall/http_utils.py",
     "scope_recall/prompting.py",
     "scope_recall/schemas.py",
     "scope_recall/secret_index.py",
@@ -133,6 +137,12 @@ def read_text(rel: str) -> str:
     return (ROOT / rel).read_text(encoding="utf-8")
 
 
+def redact_sensitive(text: object) -> str:
+    from scope_recall.http_utils import redact_sensitive as _redact_sensitive
+
+    return _redact_sensitive(text)
+
+
 def scan_tree() -> dict[str, list[str]]:
     findings: dict[str, list[str]] = {"generated_artifacts": [], "secrets": [], "private_paths": []}
     for path in ROOT.rglob("*"):
@@ -152,7 +162,8 @@ def scan_tree() -> dict[str, list[str]]:
         text = path.read_text(encoding="utf-8", errors="ignore")
         for name, rx in SECRET_PATTERNS.items():
             for match in rx.finditer(text):
-                findings["secrets"].append(f"{rel}: {name}: {match.group(0)[:80]}")
+                line_no = text[: match.start()].count("\n") + 1
+                findings["secrets"].append(f"{rel}:{line_no}: {name}: {redact_sensitive(match.group(0))}")
         private_markers = ("".join(("/home/", "a/", ".hermes-yuheng")), "".join(("/home/", "a/")))
         if any(marker in text for marker in private_markers):
             findings["private_paths"].append(str(rel))

@@ -1,6 +1,6 @@
 # Scope Recall V1 stability contract
 
-`scope-recall` 1.0.14 adds opt-in canonical cross-platform durable identity mapping, provider-specific digest endpoint controls, pre-initialization maintenance tool registration, journal-first provenance capture, background journal digest merge/upsert, lifecycle-aware conflict handling, governance review candidates, retry-aware digest failure isolation, legacy scratch hygiene migration, and RRF/BM25-aware hybrid retrieval while remaining inside the V1 compatibility contract.
+`scope-recall` 1.0.15 keeps the V1 compatibility contract while tightening endpoint handling, sensitive-error redaction, journal/tool-trace boundaries, cross-platform mutation scopes, and vector/update consistency on top of the v1.0.14 opt-in canonical identity and provider-specific endpoint support.
 
 This document defines the stable V1 compatibility surface and the areas that may evolve in patch or minor releases.
 
@@ -62,7 +62,8 @@ V1 keeps these behavior boundaries stable:
 - durable `user`/`memory`/`project`/`ops` rows are shared across windows/chats for the same platform + agent workspace + agent identity + user id by default
 - when `identity.cross_platform_shared_scope=true` and explicit aliases map platform accounts to a canonical user, durable rows use a canonical `agent_workspace + agent_identity + canonical_user` shared scope
 - `general` scratch rows remain local to the current platform/account/chat/thread or gateway session key, including when canonical durable identity mapping is enabled
-- scoped tool actions operate on the current accessible scope set: local runtime scope plus shared durable scope
+- scoped read actions operate on the current accessible scope set: local runtime scope, shared durable scope, and explicit read-only legacy aliases when canonical cross-platform identity mapping is enabled
+- scoped mutation actions operate only on writable current scopes: local runtime scope plus the current shared/canonical durable scope; legacy platform aliases remain read-only unless an explicit migration tool writes them
 - `sync_turn()` defaults to journal-first staging; legacy per-turn durable extraction must be explicitly enabled through `per_turn_extraction.enabled=true`
 - `scripts/journal-digest.py` may add or update durable rows from staged journal entries, but raw journal rows themselves are not recalled or indexed into the vector companion
 - `scripts/nightly-digest.py` may add or update durable rows, but it must not store raw `system` rows or raw `tool` output; task workflows are stored only as sanitized summaries with optional tool-name and verification metadata

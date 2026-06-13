@@ -25,8 +25,9 @@ from .config import load_runtime_config
 from .gating import clean_text, compact_text, dedup_key
 from .governance import is_conflicting, merge_memory_text, normalize_memory_type, semantic_similarity
 from .graph import clamp_float, load_metadata, normalize_entity, sync_memory_entities
+from .http_utils import chat_completions_endpoint as _shared_chat_completions_endpoint, redact_sensitive as _shared_redact_sensitive
 from .models import RuntimeScope
-from .scope import accessible_scope_ids, build_scope_id, build_shared_scope_id, canonical_user_id, normalize_scope_identity
+from .scope import accessible_scope_ids, build_scope_id, build_shared_scope_id, canonical_user_id, normalize_scope_identity, writable_scope_ids
 from .sql_store import delete_rows, ensure_schema, exact_duplicate_groups, store_row, update_row
 from .vector_runtime import setup_vector_layer, upsert_vector_record
 
@@ -99,6 +100,7 @@ class ScopeProfile:
     scope_id: str
     shared_scope_id: str
     accessible_scope_ids: list[str]
+    writable_scope_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -122,6 +124,21 @@ class DigestOptions:
     verbose: bool = False
 
 
+def _profile_writable_scope_ids(scope: ScopeProfile) -> list[str]:
+    configured = [str(scope_id) for scope_id in getattr(scope, "writable_scope_ids", []) if str(scope_id)]
+    fallback = [str(scope.scope_id), str(scope.shared_scope_id)]
+    output: list[str] = []
+    for scope_id in [*configured, *fallback]:
+        if scope_id and scope_id not in output:
+            output.append(scope_id)
+    return output
+
+
+def _memory_scope_id(conn: sqlite3.Connection, memory_id: str) -> str:
+    row = conn.execute("SELECT scope_id FROM memories WHERE id = ?", (memory_id,)).fetchone()
+    return str(row["scope_id"] if row is not None else "")
+
+
 class DigestVectorRuntime:
     """Small provider-shaped adapter for vector sync outside Hermes runtime."""
 
@@ -141,6 +158,7 @@ class DigestVectorRuntime:
         self._scope_id = scope.scope_id
         self._shared_scope_id = scope.shared_scope_id
         self._accessible_scope_ids = list(scope.accessible_scope_ids)
+        self._writable_scope_ids = _profile_writable_scope_ids(scope)
         self._embedder = None
         self._vector_store = None
         self._vector_enabled = False
@@ -165,10 +183,7 @@ class DigestVectorRuntime:
 
 
 def redact_sensitive(text: str) -> str:
-    redacted = str(text or "")
-    for pattern in SECRET_PATTERNS:
-        redacted = pattern.sub(_redact_match, redacted)
-    return redacted
+    return _shared_redact_sensitive(text)
 
 
 def _redact_match(match: re.Match[str]) -> str:
@@ -770,7 +785,7 @@ def _extract_responses_sse_text(body: str) -> str:
         event_type = str(event.get("type") or "")
         if event_type == "error":
             message = event.get("message") or event.get("error") or raw
-            raise RuntimeError(f"LLM stream error: {message}")
+            raise RuntimeError(f"LLM stream error: {redact_sensitive(str(message))}")
         if "output_text.delta" in event_type:
             delta = event.get("delta")
             if isinstance(delta, str):
@@ -788,7 +803,8 @@ def _extract_responses_sse_text(body: str) -> str:
             if isinstance(response, dict):
                 completed_payload = response
             if event_type == "response.failed":
-                raise RuntimeError(f"LLM stream failed: {event.get('response') or raw}")
+                failure_payload = event.get("response") or raw
+                raise RuntimeError(f"LLM stream failed: {redact_sensitive(str(failure_payload))}")
     if delta_parts:
         return "".join(delta_parts)
     if item_parts:
@@ -809,16 +825,7 @@ def _decode_responses_body(body: str) -> str:
 
 
 def _chat_completions_endpoint(base_url: str, *, endpoint: str = "", append_v1: bool = True) -> str:
-    explicit = str(endpoint or "").strip().rstrip("/")
-    if explicit:
-        return explicit
-    root = str(base_url or "").strip().rstrip("/") or "https://api.openai.com"
-    if root.endswith("/chat/completions"):
-        return root
-    if root.endswith("/v1"):
-        return root + "/chat/completions"
-    suffix = "/v1/chat/completions" if append_v1 else "/chat/completions"
-    return root + suffix
+    return _shared_chat_completions_endpoint(base_url, endpoint=endpoint, append_v1=append_v1)
 
 
 def _call_chat_completions_llm(
@@ -876,8 +883,9 @@ def _call_codex_responses_llm(prompt: str, *, model: str, base_url: str, api_key
         "Authorization": f"Bearer {api_key}",
         **_codex_cloudflare_headers(api_key),
     }
+    endpoint_url = _responses_endpoint(base_url)
     request = urllib.request.Request(
-        _responses_endpoint(base_url),
+        endpoint_url,
         data=json.dumps(payload).encode("utf-8"),
         headers=headers,
         method="POST",
@@ -886,8 +894,8 @@ def _call_codex_responses_llm(prompt: str, *, model: str, base_url: str, api_key
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = response.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")[:500]
-        raise RuntimeError(f"LLM HTTP {exc.code}: {body}") from exc
+        body = redact_sensitive(exc.read().decode("utf-8", errors="replace")[:500])
+        raise RuntimeError(f"LLM HTTP {exc.code} at {endpoint_url}: {body}") from exc
     return _decode_responses_body(body)
 
 
@@ -920,7 +928,13 @@ def call_llm(
     )
 
 
-def infer_scope(conn: sqlite3.Connection, *, fallback_user_id: str = "", runtime_config: dict[str, Any] | None = None) -> ScopeProfile:
+def infer_scope(
+    conn: sqlite3.Connection,
+    *,
+    fallback_platform: str = "cli",
+    fallback_user_id: str = "",
+    runtime_config: dict[str, Any] | None = None,
+) -> ScopeProfile:
     row = conn.execute(
         """
         SELECT platform, user_id, chat_id, thread_id, gateway_session_key,
@@ -942,7 +956,7 @@ def infer_scope(conn: sqlite3.Connection, *, fallback_user_id: str = "", runtime
             """
         ).fetchone()
     scope = RuntimeScope(
-        platform=str(row["platform"] if row else "telegram") or "telegram",
+        platform=str(row["platform"] if row else fallback_platform) or fallback_platform or "cli",
         user_id=str(row["user_id"] if row else fallback_user_id) or fallback_user_id or "local",
         chat_id=str(row["chat_id"] if row else ""),
         thread_id=str(row["thread_id"] if row else ""),
@@ -957,6 +971,7 @@ def infer_scope(conn: sqlite3.Connection, *, fallback_user_id: str = "", runtime
         scope_id=build_scope_id(scope, runtime_config),
         shared_scope_id=build_shared_scope_id(scope, runtime_config),
         accessible_scope_ids=accessible_scope_ids(scope, runtime_config),
+        writable_scope_ids=writable_scope_ids(scope, runtime_config),
     )
 
 
@@ -1136,11 +1151,13 @@ def apply_candidates(
         seen_candidate_keys.add(key)
 
         match_id, match_content, score = find_match(conn, scope, candidate)
+        match_scope_id = _memory_scope_id(conn, match_id) if match_id else ""
+        match_is_writable = bool(match_scope_id and match_scope_id in set(_profile_writable_scope_ids(scope)))
         if match_id and score >= 0.88:
             counts["skipped"] += 1
             actions.append({"action": "skip", "reason": "existing memory covers candidate", "id": match_id, "score": round(score, 4)})
             continue
-        if match_id and score >= 0.55 and not is_conflicting(match_content, candidate.content):
+        if match_id and match_is_writable and score >= 0.55 and not is_conflicting(match_content, candidate.content):
             merged = merge_memory_text(match_content, candidate.content)
             if merged == match_content:
                 counts["skipped"] += 1
@@ -1154,13 +1171,14 @@ def apply_candidates(
                     memory_id=match_id,
                     content=merged,
                     target=candidate.target,
-                    scope_ids=scope.accessible_scope_ids,
+                    scope_ids=_profile_writable_scope_ids(scope),
                 )
                 if updated:
                     merge_candidate_metadata(conn, memory_id=match_id, candidate=candidate, run_id=run_id)
                     record_digest_source(conn, memory_id=match_id, run_id=run_id, candidate=candidate)
                     conn.commit()
                     if vector_runtime is not None:
+                        row_scope = conn.execute("SELECT scope_id FROM memories WHERE id = ?", (match_id,)).fetchone()
                         upsert_vector_record(
                             vector_runtime,
                             id=match_id,
@@ -1169,7 +1187,7 @@ def apply_candidates(
                             content=merged,
                             summary=summary,
                             updated_at=updated_at,
-                            scope_id=scope.shared_scope_id,
+                            scope_id=str(row_scope["scope_id"] if row_scope is not None else scope.shared_scope_id),
                         )
             continue
 
@@ -1217,11 +1235,12 @@ def apply_candidates(
 
 
 def cleanup_exact_duplicates(conn: sqlite3.Connection, scope: ScopeProfile, vector_runtime: DigestVectorRuntime | None) -> int:
-    groups = exact_duplicate_groups(conn, scope_ids=scope.accessible_scope_ids)
+    writable_scopes = _profile_writable_scope_ids(scope)
+    groups = exact_duplicate_groups(conn, scope_ids=writable_scopes)
     delete_ids = [memory_id for group in groups for memory_id in group["delete_ids"]]
     if not delete_ids:
         return 0
-    deleted = delete_rows(conn, delete_ids, scope_ids=scope.accessible_scope_ids)
+    deleted = delete_rows(conn, delete_ids, scope_ids=writable_scopes)
     if vector_runtime is not None and vector_runtime._vector_store is not None:
         try:
             vector_runtime._vector_store.delete_by_ids(delete_ids)
@@ -1303,7 +1322,9 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
     started_at = datetime.now(timezone.utc).isoformat()
     llm_config = resolve_llm_config(hermes_home, options)
     runtime_config = load_runtime_config(Path(__file__).resolve().parent, storage_dir)
-    scope = infer_scope(conn, fallback_user_id=next((bundle.user_id for bundle in bundles if bundle.user_id), ""), runtime_config=runtime_config)
+    fallback_platform = next((bundle.source for bundle in bundles if bundle.source), "cli")
+    fallback_user_id = next((bundle.user_id for bundle in bundles if bundle.user_id), "")
+    scope = infer_scope(conn, fallback_platform=fallback_platform, fallback_user_id=fallback_user_id, runtime_config=runtime_config)
     vector_runtime: DigestVectorRuntime | None = None
     try:
         vector_runtime = None if options.dry_run else DigestVectorRuntime(hermes_home=hermes_home, conn=conn, scope=scope)
