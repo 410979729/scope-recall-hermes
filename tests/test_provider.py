@@ -262,6 +262,65 @@ def test_sync_turn_strips_image_attachment_markers_before_journal(provider):
     assert "screenshot" not in combined.lower()
 
 
+def test_on_pre_compress_stages_sanitized_messages_in_journal_without_direct_memory(provider, monkeypatch):
+    digest_calls = []
+    monkeypatch.setattr(provider, "_maybe_start_background_journal_digest", lambda: digest_calls.append("scheduled"))
+
+    note = provider.on_pre_compress(
+        [
+            {
+                "role": "user",
+                "content": (
+                    "We decided scope-recall release workflow uses PyPI Trusted Publishing after 2FA.\n"
+                    "[Image attached at: /tmp/hermes-home/image_cache/img_ccf883cb57da.jpg]"
+                ),
+            },
+            {
+                "role": "assistant",
+                "content": "Implementation note: keep workflow pypi.yml and environment pypi for OIDC publishing.",
+            },
+        ]
+    )
+
+    assert "Scope Recall" in note
+    assert "compression" in note.lower()
+    assert digest_calls == ["scheduled"]
+    with provider._lock:
+        rows = provider._require_conn().execute("SELECT role, content, metadata FROM journal_entries ORDER BY id").fetchall()
+        memory_count = provider._require_conn().execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+    assert memory_count == 0
+    assert [row["role"] for row in rows] == ["user", "assistant"]
+    combined = "\n".join(row["content"] for row in rows)
+    assert "Trusted Publishing" in combined
+    assert "pypi.yml" in combined
+    assert "image_cache" not in combined
+    metadata = [json.loads(row["metadata"] or "{}") for row in rows]
+    assert all(item.get("source") == "pre-compression" for item in metadata)
+
+
+def test_on_pre_compress_filters_wrappers_tools_trivial_acks_and_secrets(provider, monkeypatch):
+    monkeypatch.setattr(provider, "_maybe_start_background_journal_digest", lambda: None)
+
+    note = provider.on_pre_compress(
+        [
+            {"role": "system", "content": "[CONTEXT COMPACTION — REFERENCE ONLY] stale wrapper text"},
+            {"role": "tool", "content": "Tool output says password=super-secret-value should never be staged."},
+            {"role": "user", "content": "api_key=sk-" + "a" * 30},
+            {"role": "assistant", "content": "好的"},
+            {"role": "user", "content": "Project Orion decision: keep SQLite truth before rebuilding vector companions."},
+        ]
+    )
+
+    assert "1" in note
+    with provider._lock:
+        rows = provider._require_conn().execute("SELECT role, content FROM journal_entries ORDER BY id").fetchall()
+        memory_count = provider._require_conn().execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+    assert memory_count == 0
+    assert [(row["role"], row["content"]) for row in rows] == [
+        ("user", "Project Orion decision: keep SQLite truth before rebuilding vector companions.")
+    ]
+
+
 def test_sync_turn_rejects_context_handoff_payload_from_loaded_config(provider):
     provider.sync_turn(
         "## Active Task\n审计 LanceDB/vector 同步、重复与检索质量\n\n## Remaining Work\n进一步优化内容卫生处理",
@@ -1350,8 +1409,10 @@ def test_stats_report_vector_state(provider):
     payload = json.loads(provider.handle_tool_call("scope_recall_stats", {}))
     assert payload["provider"] == "scope-recall"
     assert payload["vector"]["enabled"] is True
-    assert payload["vector"]["backend"] == "lancedb"
+    assert payload["vector"]["backend"] in {"lancedb", "sqlite-bruteforce"}
     assert payload["vector"]["ready"] is True
+    if payload["vector"]["backend"] == "sqlite-bruteforce":
+        assert "fallback" in payload["vector"]["message"].lower()
 
 
 def test_lexical_recall_matches_response_style_aliases(tmp_path):

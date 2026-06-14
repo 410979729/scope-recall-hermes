@@ -2,6 +2,15 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [1.2.0] - 2026-06-14
+
+### Added
+- Added `ScopeRecallMemoryProvider.on_pre_compress()` so Hermes context-compression boundaries stage sanitized user/assistant messages into the journal before old turns are summarized/discarded.
+- Added regression coverage proving pre-compression staging strips image attachment metadata, filters wrappers/tool output/secret-like text/trivial acknowledgements, and never writes raw compression-boundary content directly into durable memory.
+
+### Changed
+- Relaxed vector stats regression coverage to accept the designed `sqlite-bruteforce` fallback when LanceDB/PyArrow is unavailable or unsafe, while still requiring a ready vector companion and fallback evidence.
+
 ## [1.1.2] - 2026-06-14
 
 ### Fixed

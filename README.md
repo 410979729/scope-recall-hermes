@@ -20,7 +20,7 @@ Current-turn recall · Journal-first capture · Durable shared memory · Backgro
 
 This repository, `scope-recall-hermes`, is the Hermes implementation. The Python distribution package is `hermes-scope-recall`, the Python import/package spelling is `scope_recall`, and the Hermes plugin ID/provider name remains `scope-recall` for runtime compatibility. The OpenClaw sibling implementation lives at [`scope-recall-openclaw`](https://github.com/410979729/scope-recall-openclaw).
 
-Version `1.1.2` continues the stable V1 release line for the documented interfaces, packaged as a public release candidate for broader field testing. It keeps the V1 compatibility contract in [`docs/stability.md`](docs/stability.md), preserves the supported standalone install shape added in v1.1.0, strips gateway image attachment markers before journal/capture storage, and keeps the v1.1.1 journal quality gate that prevents assistant-only acknowledgements from becoming durable memories. It also keeps native-safe LanceDB probing and automatic SQLite vector fallback for non-AVX hosts.
+Version `1.2.0` continues the stable V1 release line for the documented interfaces and adds compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook. It keeps the V1 compatibility contract in [`docs/stability.md`](docs/stability.md), preserves the supported standalone install shape added in v1.1.0, strips gateway image attachment markers before journal/capture storage, and keeps the v1.1.1 journal quality gate that prevents assistant-only acknowledgements from becoming durable memories. It also keeps native-safe LanceDB probing and automatic SQLite vector fallback for non-AVX hosts.
 
 It uses a **three-layer design**:
 
