@@ -20,7 +20,7 @@ Current-turn recall · Journal-first capture · Permanent shared memory · Backg
 
 This repository, `scope-recall-hermes`, is the Hermes implementation. The Python package name and Hermes plugin ID intentionally remain `scope-recall` for runtime compatibility. The OpenClaw sibling implementation lives at [`scope-recall-openclaw`](https://github.com/410979729/scope-recall-openclaw).
 
-Version `1.0.15` continues the first stable V1 release line for the documented interfaces, packaged as a public release candidate for broader field testing. It keeps the V1 compatibility contract in [`docs/stability.md`](docs/stability.md) while tightening endpoint handling, sensitive-error redaction, journal/tool-trace boundaries, cross-platform mutation scopes, and vector/update consistency on top of the v1.0.14 opt-in canonical identity and provider-specific endpoint support.
+Version `1.0.16` continues the stable V1 release line for the documented interfaces, packaged as a public release candidate for broader field testing. It keeps the V1 compatibility contract in [`docs/stability.md`](docs/stability.md) while adding native-safe LanceDB probing and automatic SQLite vector fallback for non-AVX hosts on top of the v1.0.15 audit fixes.
 
 It uses a **three-layer design**:
 
@@ -258,6 +258,7 @@ Minimal default shape:
   "vector": {
     "enabled": true,
     "backend": "lancedb",
+    "fallback_backend": "sqlite-bruteforce",
     "sync_mode": "incremental",
     "embedder": {
       "provider": "openai-compatible",
@@ -277,8 +278,8 @@ Minimal default shape:
 
 Vector backend choices:
 
-- `lancedb` — default ANN companion, best for normal hosts; install with `python -m pip install -e ".[lancedb]"`.
-- `sqlite-bruteforce` — pure-Python/SQLite companion for non-AVX CPUs or hosts where importing LanceDB/PyArrow is unsafe; install with `python -m pip install -e .` and set `vector.backend` accordingly.
+- `lancedb` — default ANN companion, best for normal hosts; install with `python -m pip install -e ".[lancedb]"`. Scope Recall probes LanceDB/PyArrow in a child process before importing them in the Hermes process, so SIGILL/illegal-instruction wheels are treated as unavailable instead of crashing the agent.
+- `sqlite-bruteforce` — pure-Python/SQLite companion for non-AVX CPUs or hosts where importing LanceDB/PyArrow is unsafe; install with `python -m pip install -e .` and set `vector.backend` accordingly, or keep the default `vector.fallback_backend: sqlite-bruteforce` to fall back automatically when LanceDB is absent or unsafe.
 
 Both backends are rebuildable caches. `$HERMES_HOME/scope-recall/memory.sqlite3` remains the truth source.
 

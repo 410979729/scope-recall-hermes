@@ -6,7 +6,7 @@ from typing import Any
 from .embedders import build_embedder
 from .gating import config_bool
 from .sqlite_vector_store import SQLiteBruteForceVectorStore
-from .vector_store import LanceVectorStore
+from .vector_store import LanceVectorStore, native_vector_dependency_status
 
 logger = logging.getLogger(__name__)
 
@@ -17,14 +17,36 @@ def mark_vector_needs_repair(provider: Any, exc: Exception | str) -> None:
     provider._vector_message = str(exc)
 
 
+def _normalize_vector_backend(value: Any) -> str:
+    backend = str(value or "lancedb").strip().lower()
+    if backend == "sqlite":
+        return "sqlite-bruteforce"
+    return backend
+
+
+def _append_vector_message(provider: Any, message: str) -> None:
+    current = str(getattr(provider, "_vector_message", "") or "")
+    provider._vector_message = f"{current}; {message}" if current else message
+
+
+def _open_sqlite_vector_store(provider: Any, *, table_name: str, dimensions: int, metric: str) -> None:
+    temp_store = SQLiteBruteForceVectorStore(
+        provider._storage_dir / "vector.sqlite3",
+        table_name=table_name,
+        dimensions=dimensions,
+        metric=metric,
+    )
+    temp_store.open()
+    provider._vector_store = temp_store
+    provider._vector_backend = "sqlite-bruteforce"
+
+
 def _open_vector_store(provider: Any, *, dimensions: int) -> None:
     if provider._storage_dir is None:
         raise RuntimeError("storage not initialized")
     table_name = str((provider._vector_config or {}).get("table_name") or "memories")
     metric = str((provider._retrieval_config or {}).get("metric") or "cosine")
-    backend = str(getattr(provider, "_vector_backend", "") or "lancedb").strip().lower()
-    if backend == "sqlite":
-        backend = "sqlite-bruteforce"
+    backend = _normalize_vector_backend(getattr(provider, "_vector_backend", "") or "lancedb")
     try:
         old_store = provider._vector_store
         if old_store is not None:
@@ -33,14 +55,7 @@ def _open_vector_store(provider: Any, *, dimensions: int) -> None:
         pass
 
     if backend == "sqlite-bruteforce":
-        temp_store = SQLiteBruteForceVectorStore(
-            provider._storage_dir / "vector.sqlite3",
-            table_name=table_name,
-            dimensions=dimensions,
-            metric=metric,
-        )
-        temp_store.open()
-        provider._vector_store = temp_store
+        _open_sqlite_vector_store(provider, table_name=table_name, dimensions=dimensions, metric=metric)
         return
 
     if backend != "lancedb":
@@ -49,8 +64,18 @@ def _open_vector_store(provider: Any, *, dimensions: int) -> None:
     vector_dir = provider._storage_dir / "lancedb"
     temp_store = LanceVectorStore(vector_dir, table_name=table_name, dimensions=dimensions, metric=metric)
     if not temp_store.is_available():
-        raise RuntimeError("lancedb/pyarrow is not installed")
+        fallback_backend = _normalize_vector_backend((provider._vector_config or {}).get("fallback_backend") or "")
+        if fallback_backend == "sqlite-bruteforce":
+            status = native_vector_dependency_status()
+            detail = f"returncode={status.get('returncode')}" if status.get("returncode") is not None else str(status.get("stderr") or "not installed")
+            _append_vector_message(provider, f"lancedb unavailable or unsafe ({detail}); using sqlite-bruteforce fallback")
+            _open_sqlite_vector_store(provider, table_name=table_name, dimensions=dimensions, metric=metric)
+            return
+        status = native_vector_dependency_status()
+        detail = f"returncode={status.get('returncode')}" if status.get("returncode") is not None else str(status.get("stderr") or "not installed")
+        raise RuntimeError(f"lancedb/pyarrow is not installed or unsafe ({detail})")
     temp_store.open()
+    provider._vector_backend = "lancedb"
 
     schema_dimensions = 0
     try:

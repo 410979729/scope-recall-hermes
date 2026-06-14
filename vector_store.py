@@ -1,27 +1,89 @@
 from __future__ import annotations
 
+import importlib
 import logging
+import subprocess
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
 
 logger = logging.getLogger(__name__)
 
+_NATIVE_VECTOR_PROBE: dict[str, Any] | None = None
+_NATIVE_VECTOR_PROBE_TIMEOUT = 10.0
+
+
+def _trim_probe_output(value: str, *, limit: int = 500) -> str:
+    text = (value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
+def _probe_native_vector_dependencies() -> dict[str, Any]:
+    """Probe LanceDB/PyArrow in a child process before importing in-process.
+
+    Some LanceDB/PyArrow wheels can terminate Python with SIGILL on old CPUs
+    without AVX/AVX2. A normal try/except around ``import lancedb`` cannot catch
+    that because the current process is already gone. The child-process probe
+    turns native crashes into an ordinary non-zero return code so the provider
+    can fall back to a safe vector backend.
+    """
+
+    global _NATIVE_VECTOR_PROBE
+    if _NATIVE_VECTOR_PROBE is not None:
+        return dict(_NATIVE_VECTOR_PROBE)
+    script = "import lancedb; import pyarrow; print('ok')"
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            text=True,
+            capture_output=True,
+            timeout=_NATIVE_VECTOR_PROBE_TIMEOUT,
+            check=False,
+        )
+        status = {
+            "safe": result.returncode == 0,
+            "returncode": int(result.returncode),
+            "stdout": _trim_probe_output(result.stdout),
+            "stderr": _trim_probe_output(result.stderr),
+        }
+    except subprocess.TimeoutExpired as exc:  # pragma: no cover - defensive
+        status = {
+            "safe": False,
+            "returncode": None,
+            "stdout": _trim_probe_output(getattr(exc, "stdout", "") or ""),
+            "stderr": f"native dependency import probe timed out after {_NATIVE_VECTOR_PROBE_TIMEOUT:.1f}s",
+        }
+    except Exception as exc:  # pragma: no cover - defensive
+        status = {"safe": False, "returncode": None, "stdout": "", "stderr": str(exc)}
+    _NATIVE_VECTOR_PROBE = status
+    return dict(status)
+
+
+def native_vector_dependency_status() -> dict[str, Any]:
+    return _probe_native_vector_dependencies()
+
 
 def _optional_lancedb():
+    status = _probe_native_vector_dependencies()
+    if not status.get("safe"):
+        return None
     try:
-        import lancedb  # type: ignore
+        return importlib.import_module("lancedb")  # type: ignore[no-any-return]
     except Exception:  # pragma: no cover - optional dependency
         return None
-    return lancedb
 
 
 def _optional_pyarrow():
+    status = _probe_native_vector_dependencies()
+    if not status.get("safe"):
+        return None
     try:
-        import pyarrow as pa  # type: ignore
+        return importlib.import_module("pyarrow")  # type: ignore[no-any-return]
     except Exception:  # pragma: no cover - optional dependency
         return None
-    return pa
 
 
 
