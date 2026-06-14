@@ -2,11 +2,11 @@
 
 <div align="center">
 
-**Hermes current-turn memory provider with journal-first semantic capture, permanent recall, SQLite truth storage, and optional vector companions**
+**Hermes current-turn memory provider with journal-first semantic capture, durable recall, SQLite truth storage, and optional vector companions**
 
 *Give Hermes durable memory that can follow the same user across windows/chats while keeping local scratch context from bleeding into the wrong place.*
 
-Current-turn recall · Journal-first capture · Permanent shared memory · Background digest · Local scratch scopes · SQLite truth · LanceDB/SQLite companion · Hybrid RRF retrieval
+Current-turn recall · Journal-first capture · Durable shared memory · Background digest · Local scratch scopes · SQLite truth · LanceDB/SQLite companion · Hybrid RRF retrieval
 
 [![CI](https://github.com/410979729/scope-recall-hermes/actions/workflows/ci.yml/badge.svg)](https://github.com/410979729/scope-recall-hermes/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -16,11 +16,11 @@ Current-turn recall · Journal-first capture · Permanent shared memory · Backg
 
 </div>
 
-`scope-recall` is a Hermes local memory provider built for **current-turn recall** and **permanent semantic memory**. Durable user/project/ops/memory facts are shared across windows/chats for the same user + agent identity; raw general turn captures stay local to the current chat/thread/session.
+`scope-recall` is a Hermes local memory provider built for **current-turn recall** and **durable semantic memory**. Durable user/project/ops/memory facts are shared across windows/chats for the same user + agent identity; raw general turn captures stay local to the current chat/thread/session.
 
-This repository, `scope-recall-hermes`, is the Hermes implementation. The Python package name and Hermes plugin ID intentionally remain `scope-recall` for runtime compatibility. The OpenClaw sibling implementation lives at [`scope-recall-openclaw`](https://github.com/410979729/scope-recall-openclaw).
+This repository, `scope-recall-hermes`, is the Hermes implementation. The Python distribution package is `hermes-scope-recall`, the Python import/package spelling is `scope_recall`, and the Hermes plugin ID/provider name remains `scope-recall` for runtime compatibility. The OpenClaw sibling implementation lives at [`scope-recall-openclaw`](https://github.com/410979729/scope-recall-openclaw).
 
-Version `1.0.16` continues the stable V1 release line for the documented interfaces, packaged as a public release candidate for broader field testing. It keeps the V1 compatibility contract in [`docs/stability.md`](docs/stability.md) while adding native-safe LanceDB probing and automatic SQLite vector fallback for non-AVX hosts on top of the v1.0.15 audit fixes.
+Version `1.1.0` continues the stable V1 release line for the documented interfaces, packaged as a public release candidate for broader field testing. It keeps the V1 compatibility contract in [`docs/stability.md`](docs/stability.md) while adding the supported standalone install shape: `pip install hermes-scope-recall` plus `hermes-scope-recall install`, alongside native-safe LanceDB probing and automatic SQLite vector fallback for non-AVX hosts.
 
 It uses a **three-layer design**:
 
@@ -164,33 +164,30 @@ This pairing is useful for long-lived Hermes agents where you want both scoped r
 
 ## Quick start
 
-### Option A: Clone into a Hermes plugin directory
+### Option A: PyPI-style standalone install
+
+Install the provider package in the same Python environment that runs Hermes:
 
 ```bash
-cd "$HERMES_HOME/plugins"
-git clone https://github.com/410979729/scope-recall-hermes.git scope-recall
-cd scope-recall
-python -m pip install -e ".[lancedb]"
-```
-
-Then configure Hermes to use the provider name:
-
-```yaml
-memory:
-  provider: scope-recall
+python -m pip install "hermes-scope-recall[lancedb]"
+hermes-scope-recall install --hermes-home "${HERMES_HOME:-$HOME/.hermes}"
+hermes config set memory.provider scope-recall
+hermes memory setup
 ```
 
 For a local smoke check after installation:
 
 ```bash
+hermes-scope-recall verify --hermes-home "${HERMES_HOME:-$HOME/.hermes}"
 hermes memory status
 ```
 
 If LanceDB/PyArrow native wheels are unsafe on the target CPU, install without extras and select the native-free backend instead:
 
 ```bash
-python -m pip install -e .
-python scripts/repair.vector_index.py --hermes-home "$HERMES_HOME" --backend sqlite-bruteforce --dry-run
+python -m pip install hermes-scope-recall
+hermes-scope-recall install --hermes-home "${HERMES_HOME:-$HOME/.hermes}"
+python "$HERMES_HOME/plugins/scope-recall/scripts/repair.vector_index.py" --hermes-home "$HERMES_HOME" --backend sqlite-bruteforce --dry-run
 ```
 
 ```json
@@ -201,9 +198,26 @@ python scripts/repair.vector_index.py --hermes-home "$HERMES_HOME" --backend sql
 }
 ```
 
-### Option B: Manual download / unpacked plugin install
+### Option B: Clone into a Hermes plugin directory for development
 
-Current Hermes plugin discovery expects an **unpacked plugin directory** named with the public provider spelling: `$HERMES_HOME/plugins/scope-recall/`. The Python import/package spelling remains `scope_recall`; see [`docs/naming.md`](docs/naming.md) for the naming contract.
+```bash
+cd "$HERMES_HOME/plugins"
+git clone https://github.com/410979729/scope-recall-hermes.git scope-recall
+cd scope-recall
+python -m pip install -e ".[lancedb]"
+hermes config set memory.provider scope-recall
+hermes memory setup
+```
+
+Use this editable install shape when developing the provider itself. Plain `pytest` from an unrelated Python environment is not a valid compatibility check; use the Hermes venv and include the Hermes source on `PYTHONPATH` when you need to exercise Hermes discovery directly:
+
+```bash
+PYTHONPATH=/path/to/hermes-agent:$(pwd) /path/to/hermes-agent/venv/bin/python -m pytest -q
+```
+
+### Option C: Manual download / unpacked plugin install
+
+Hermes plugin discovery expects an **unpacked plugin directory** named with the public provider spelling: `$HERMES_HOME/plugins/scope-recall/`. The Python distribution package is `hermes-scope-recall`, the Python import/package spelling remains `scope_recall`, and the Hermes provider name remains `scope-recall`; see [`docs/naming.md`](docs/naming.md) for the naming contract.
 
 `scope-recall` V1 targets the current Hermes runtime line, which requires Python 3.11 or newer. If you download a release archive instead of cloning:
 
@@ -211,13 +225,13 @@ Current Hermes plugin discovery expects an **unpacked plugin directory** named w
 2. run `python -m pip install -e "$HERMES_HOME/plugins/scope-recall[lancedb]"` for the default LanceDB path, or install without extras and set `vector.backend: sqlite-bruteforce` on native-sensitive hosts
 3. set `memory.provider: scope-recall`
 4. restart/reload the Hermes process that should use the provider
-5. verify with `hermes memory status`
+5. verify with `hermes-scope-recall verify --hermes-home "$HERMES_HOME"` and `hermes memory status`
 
 Important boundary:
 
-- the wheel build is verified for packaging sanity and importability
-- the primary Hermes install shape for V1 is still an unpacked local plugin directory
-- do not read wheel build success as proof that Hermes can discover or install this plugin directly from a wheel alone
+- `hermes-scope-recall install` copies the provider into `$HERMES_HOME/plugins/scope-recall/`; provider-owned data remains in `$HERMES_HOME/scope-recall/`.
+- the configured vector companion is rebuildable from SQLite truth.
+- wheel build/import success is not enough by itself; release validation also runs Hermes-home installer and provider-discovery smokes.
 
 ---
 
@@ -533,7 +547,7 @@ Runtime fallback remains available:
 - `queue_prefetch()` is intentionally a no-op
 - this avoids stale next-turn injection from the previous topic
 
-### Permanent shared recall
+### Durable shared recall
 
 - `user`, `memory`, `project`, and `ops` rows are durable shared memories for the same user + agent identity
 - they can be recalled from another chat/window when the new query is semantically relevant

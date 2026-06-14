@@ -1,6 +1,6 @@
 # Scope Recall V1 stability contract
 
-`scope-recall` 1.0.16 keeps the V1 compatibility contract while adding native-safe LanceDB probing and automatic SQLite vector fallback for non-AVX hosts on top of the v1.0.15 endpoint, redaction, journal/tool-trace, cross-platform mutation-scope, and vector/update consistency fixes.
+`scope-recall` 1.1.0 keeps the V1 compatibility contract while adding the `hermes-scope-recall` standalone distribution and installer path on top of the v1.0.16 native-safe LanceDB probing and automatic SQLite vector fallback for non-AVX hosts.
 
 This document defines the stable V1 compatibility surface and the areas that may evolve in patch or minor releases.
 
@@ -14,13 +14,13 @@ The legacy `lancepro` naming exists only as a transition compatibility path. New
 
 ## Stable V1 install shape
 
-The supported Hermes install shape for V1 is an unpacked local plugin directory:
+The supported Hermes install shape for V1 is an unpacked local plugin directory. The `hermes-scope-recall` distribution installs the package into Python and then copies a complete provider directory into:
 
 ```text
 $HERMES_HOME/plugins/scope-recall/
 ```
 
-Wheel builds are release-artifact sanity checks and provide an importable Python package named `scope_recall`, but Hermes plugin discovery is still directory-based unless Hermes itself adds a wheel/entry-point plugin loader later.
+The distribution package name is `hermes-scope-recall`, the Python import package is `scope_recall`, and the Hermes provider/plugin ID is `scope-recall`.
 
 V1 targets the current Hermes runtime line and therefore requires Python 3.11 or newer.
 

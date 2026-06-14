@@ -6,8 +6,8 @@
 
 Use the hyphenated spelling when the name is a user-facing project, plugin, provider, storage, or display identity:
 
-- GitHub repository name: `scope-recall`
-- package distribution name in `pyproject.toml`: `scope-recall`
+- GitHub repository name: `scope-recall-hermes`
+- PyPI/distribution package name: `hermes-scope-recall`
 - `plugin.yaml` provider name: `scope-recall`
 - Hermes config value: `memory.provider: scope-recall`
 - unpacked Hermes plugin directory: `$HERMES_HOME/plugins/scope-recall/`
@@ -39,12 +39,21 @@ import scope_recall
 
 ## Install-shape rule
 
-For Hermes runtime discovery, use the hyphenated plugin directory:
+For normal Hermes runtime discovery, install the distribution package and let its installer copy a complete provider directory to the hyphenated plugin path:
+
+```bash
+python -m pip install "hermes-scope-recall[lancedb]"
+hermes-scope-recall install --hermes-home "${HERMES_HOME:-$HOME/.hermes}"
+hermes config set memory.provider scope-recall
+hermes memory setup
+```
+
+For development, clone this repository directly into the same hyphenated plugin directory:
 
 ```bash
 mkdir -p "$HERMES_HOME/plugins"
-git clone https://github.com/410979729/scope-recall.git "$HERMES_HOME/plugins/scope-recall"
-python -m pip install -e "$HERMES_HOME/plugins/scope-recall"
+git clone https://github.com/410979729/scope-recall-hermes.git "$HERMES_HOME/plugins/scope-recall"
+python -m pip install -e "$HERMES_HOME/plugins/scope-recall[lancedb]"
 hermes config set memory.provider scope-recall
 ```
 

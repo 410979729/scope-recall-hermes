@@ -3,8 +3,8 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "scope-recall"
-version = "1.0.16"
+name = "hermes-scope-recall"
+version = "1.1.0"
 description = "Hermes scoped memory provider with journal-first capture, SQLite truth, vector companions, and hybrid RRF retrieval."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,6 +22,9 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
 ]
 dependencies = []
+
+[project.scripts]
+hermes-scope-recall = "scope_recall.installer:main"
 
 [project.optional-dependencies]
 lancedb = [
@@ -49,13 +52,22 @@ packages = ["scope_recall"]
 package-dir = {"scope_recall" = "."}
 
 [tool.setuptools.package-data]
-"scope_recall" = ["py.typed"]
-
-[tool.setuptools.data-files]
-"" = ["plugin.yaml", "config.json", "README.md", "DESIGN.md", "CHANGELOG.md", "CONTRIBUTING.md", ".env.example"]
-"docs" = ["docs/*.md", "SECURITY.md"]
-"scripts" = ["scripts/*.py"]
-".github/workflows" = [".github/workflows/*.yml"]
+"scope_recall" = [
+  "py.typed",
+  "pyproject.toml",
+  "plugin.yaml",
+  "config.json",
+  "README.md",
+  "DESIGN.md",
+  "CHANGELOG.md",
+  "CONTRIBUTING.md",
+  "LICENSE",
+  "SECURITY.md",
+  "MANIFEST.in",
+  ".env.example",
+  "docs/*.md",
+  "scripts/*.py",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

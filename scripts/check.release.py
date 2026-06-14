@@ -22,8 +22,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-PACKAGE_VERSION = "1.0.16"
-WHEEL_DATA_PREFIX = f"scope_recall-{PACKAGE_VERSION}.data/data"
+PACKAGE_VERSION = "1.1.0"
+WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
 EXTERNAL_TEST_DIRS = {".hermes-agent-src"}
 SECRET_PATTERNS = {
@@ -57,12 +57,14 @@ REQUIRED_SOURCE_FILES = {
     "scripts/report.hygiene.py",
     "scripts/migrate.legacy_hygiene.py",
     "scripts/doctor.py",
+    "installer.py",
     "py.typed",
 }
 REQUIRED_WHEEL = {
     "scope_recall/__init__.py",
     "scope_recall/artifacts.py",
     "scope_recall/provider.py",
+    "scope_recall/installer.py",
     "scope_recall/capture_llm.py",
     "scope_recall/capture_filters.py",
     "scope_recall/memory_ops.py",
@@ -77,27 +79,30 @@ REQUIRED_WHEEL = {
     "scope_recall/nightly_digest.py",
     "scope_recall/sqlite_vector_store.py",
     "scope_recall/py.typed",
-    f"{WHEEL_DATA_PREFIX}/plugin.yaml",
-    f"{WHEEL_DATA_PREFIX}/config.json",
-    f"{WHEEL_DATA_PREFIX}/README.md",
-    f"{WHEEL_DATA_PREFIX}/DESIGN.md",
-    f"{WHEEL_DATA_PREFIX}/CHANGELOG.md",
-    f"{WHEEL_DATA_PREFIX}/CONTRIBUTING.md",
-    f"{WHEEL_DATA_PREFIX}/docs/SECURITY.md",
-    f"{WHEEL_DATA_PREFIX}/.env.example",
-    f"{WHEEL_DATA_PREFIX}/docs/migration.md",
-    f"{WHEEL_DATA_PREFIX}/docs/differences-from-memory-lancedb-pro.md",
-    f"{WHEEL_DATA_PREFIX}/docs/external-shared-memory.md",
-    f"{WHEEL_DATA_PREFIX}/docs/stability.md",
-    f"{WHEEL_DATA_PREFIX}/docs/naming.md",
-    f"{WHEEL_DATA_PREFIX}/docs/hermes-upstream-recommendation-plan.md",
-    f"{WHEEL_DATA_PREFIX}/scripts/import.openclaw.memory_lancedb_pro.py",
-    f"{WHEEL_DATA_PREFIX}/scripts/nightly-digest.py",
-    f"{WHEEL_DATA_PREFIX}/scripts/journal-digest.py",
-    f"{WHEEL_DATA_PREFIX}/scripts/repair.vector_index.py",
-    f"{WHEEL_DATA_PREFIX}/scripts/report.hygiene.py",
-    f"{WHEEL_DATA_PREFIX}/scripts/migrate.legacy_hygiene.py",
-    f"{WHEEL_DATA_PREFIX}/scripts/doctor.py",
+    "scope_recall/pyproject.toml",
+    "scope_recall/plugin.yaml",
+    "scope_recall/config.json",
+    "scope_recall/README.md",
+    "scope_recall/DESIGN.md",
+    "scope_recall/CHANGELOG.md",
+    "scope_recall/CONTRIBUTING.md",
+    "scope_recall/LICENSE",
+    "scope_recall/SECURITY.md",
+    "scope_recall/MANIFEST.in",
+    "scope_recall/.env.example",
+    "scope_recall/docs/migration.md",
+    "scope_recall/docs/differences-from-memory-lancedb-pro.md",
+    "scope_recall/docs/external-shared-memory.md",
+    "scope_recall/docs/stability.md",
+    "scope_recall/docs/naming.md",
+    "scope_recall/docs/hermes-upstream-recommendation-plan.md",
+    "scope_recall/scripts/import.openclaw.memory_lancedb_pro.py",
+    "scope_recall/scripts/nightly-digest.py",
+    "scope_recall/scripts/journal-digest.py",
+    "scope_recall/scripts/repair.vector_index.py",
+    "scope_recall/scripts/report.hygiene.py",
+    "scope_recall/scripts/migrate.legacy_hygiene.py",
+    "scope_recall/scripts/doctor.py",
 }
 STABLE_TOOL_NAMES = {
     "scope_recall_store",
@@ -212,10 +217,10 @@ def wheel_check() -> dict[str, object]:
         dist = pathlib.Path(tmp)
         result = run([sys.executable, "-m", "pip", "wheel", ".", "--no-deps", "-w", str(dist)])
         fail_if_bad(result)
-        wheels = list(dist.glob("scope_recall-*.whl"))
+        wheels = list(dist.glob("hermes_scope_recall-*.whl"))
         if len(wheels) != 1:
             raise SystemExit(f"expected one wheel, found {wheels}")
-        expected_name = f"scope_recall-{PACKAGE_VERSION}-py3-none-any.whl"
+        expected_name = f"{WHEEL_DIST_PREFIX}-py3-none-any.whl"
         if wheels[0].name != expected_name:
             raise SystemExit(f"expected wheel {expected_name}, got {wheels[0].name}")
         with zipfile.ZipFile(wheels[0]) as zf:
@@ -233,7 +238,56 @@ def wheel_check() -> dict[str, object]:
         env["PYTHONPATH"] = str(install_dir)
         result = run([sys.executable, "-c", "import scope_recall; print(scope_recall.__all__)"], cwd=dist, env=env)
         fail_if_bad(result)
-        return {"wheel": wheels[0].name, "file_count": len(names), "import_stdout": result["stdout"].strip()}
+        hermes_home = dist / "hermes-home"
+        smoke = """
+import json
+from pathlib import Path
+from scope_recall import installer
+home = Path(__import__('os').environ['SCOPE_RECALL_TEST_HOME'])
+installed = installer.install(home)
+verified = installer.verify(home)
+assert installed['ok'] is True, installed
+assert installed['installed'] is True, installed
+assert verified['ok'] is True, verified
+plugin_dir = home / 'plugins' / 'scope-recall'
+assert (plugin_dir / 'plugin.yaml').is_file(), plugin_dir
+assert (plugin_dir / 'provider.py').is_file(), plugin_dir
+print(json.dumps({'plugin_dir': str(plugin_dir), 'version': verified['manifest_version']}, sort_keys=True))
+"""
+        env["SCOPE_RECALL_TEST_HOME"] = str(hermes_home)
+        install_smoke = run([sys.executable, "-c", smoke], cwd=dist, env=env)
+        fail_if_bad(install_smoke)
+        install_payload = json.loads(str(install_smoke["stdout"]))
+        plugin_dir = pathlib.Path(str(install_payload["plugin_dir"]))
+        doctor = run(
+            [
+                sys.executable,
+                str(plugin_dir / "scripts" / "doctor.py"),
+                "--json",
+                "--source-root",
+                str(plugin_dir),
+            ],
+            cwd=dist,
+            env=env,
+        )
+        fail_if_bad(doctor)
+        doctor_payload = json.loads(str(doctor["stdout"]))
+        if not doctor_payload.get("ok") or doctor_payload.get("source", {}).get("pyproject_version") != PACKAGE_VERSION:
+            raise SystemExit(json.dumps({"doctor": doctor_payload}, ensure_ascii=False, indent=2))
+        return {
+            "wheel": wheels[0].name,
+            "file_count": len(names),
+            "import_stdout": str(result["stdout"]).strip(),
+            "install_smoke": str(install_smoke["stdout"]).strip(),
+            "doctor_smoke": json.dumps(
+                {
+                    "ok": doctor_payload.get("ok"),
+                    "pyproject_version": doctor_payload.get("source", {}).get("pyproject_version"),
+                    "plugin_version": doctor_payload.get("source", {}).get("plugin_version"),
+                },
+                sort_keys=True,
+            ),
+        }
 
 
 def cleanup_generated() -> None:
