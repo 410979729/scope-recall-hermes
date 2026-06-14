@@ -2,6 +2,12 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [1.2.1] - 2026-06-14
+
+### Fixed
+- Preserved surrounding user text when gateway image attachment markers or local `image_cache/img_*` paths appear inline rather than on their own line, while still stripping the attachment metadata before journal/capture storage.
+- Added regression coverage for inline attachment marker sanitization so pre-compression journal staging cannot silently drop the user's actual sentence.
+
 ## [1.2.0] - 2026-06-14
 
 ### Added

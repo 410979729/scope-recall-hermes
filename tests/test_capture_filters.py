@@ -130,6 +130,18 @@ def test_attachment_markers_are_removed_before_capture_filtering():
     assert result.reason == ""
 
 
+def test_inline_attachment_marker_preserves_surrounding_text():
+    text = "Question before [Image attached at: /tmp/hermes-home/image_cache/img_ccf883cb57da.jpg] after"
+
+    sanitized = sanitize_capture_text(text)
+    result = should_capture_text(text)
+
+    assert sanitized == "Question before after"
+    assert "image_cache" not in sanitized
+    assert result.allowed is True
+    assert result.reason == ""
+
+
 def test_attachment_only_payload_is_rejected_after_sanitizing():
     text = """[Image attached at: /tmp/hermes-home/image_cache/img_ccf883cb57da.jpg]
 [inline image/jpeg data omitted]
