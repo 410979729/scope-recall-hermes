@@ -1,6 +1,6 @@
 # Scope Recall V1 stability contract
 
-`scope-recall` 1.2.1 keeps the V1 compatibility contract while preserving compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook and keeping surrounding user text when gateway image attachment markers appear inline. It preserves the `hermes-scope-recall` standalone distribution and installer path, strips gateway image attachment markers before journal/capture storage, tightens journal quality gates for assistant-only acknowledgements, and retains the v1.0.16 native-safe LanceDB probing and automatic SQLite vector fallback for non-AVX hosts.
+`scope-recall` 1.3.0 keeps the V1 compatibility contract while adding `scope_recall_profile`, a compact high-level profile/context surface for durable user/memory/project/ops rows, optional local `general` scratch, and live Hermes curated memory files. It preserves compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, the `hermes-scope-recall` standalone distribution and installer path, attachment-marker sanitization, journal ACK quality gates, native-safe LanceDB probing, and automatic SQLite vector fallback for non-AVX hosts.
 
 This document defines the stable V1 compatibility surface and the areas that may evolve in patch or minor releases.
 
@@ -77,6 +77,7 @@ The following tool names are stable for V1:
 - `scope_recall_store_secret_index`
 - `scope_recall_search`
 - `scope_recall_context`
+- `scope_recall_profile`
 - `scope_recall_probe`
 - `scope_recall_related`
 - `scope_recall_feedback`

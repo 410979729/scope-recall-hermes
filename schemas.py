@@ -251,6 +251,30 @@ SCOPE_RECALL_CONTEXT_SCHEMA = {
     },
 }
 
+SCOPE_RECALL_PROFILE_SCHEMA = {
+    "name": "scope_recall_profile",
+    "description": (
+        "Build a compact high-level Scope Recall profile/context surface from accessible durable memory, "
+        "optional local scratch, and live curated USER/MEMORY files without exposing raw journal rows."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Optional current task/query used to select project/ops/context rows."},
+            "entity": {"type": "string", "description": "Optional entity/person/project to focus project/ops/context rows."},
+            "targets": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["user", "memory", "project", "ops", "general"]},
+                "description": "Optional target sections to include. Defaults to user/memory/project/ops; general requires include_general=true or explicit target.",
+            },
+            "include_general": {"type": "boolean", "description": "Include current local general scratch/session rows; default false."},
+            "include_curated": {"type": "boolean", "description": "Include live Hermes USER.md/MEMORY.md entries when curated-memory policy allows it; default true."},
+            "limit": {"type": "integer", "description": "Maximum memories per section."},
+            "max_chars": {"type": "integer", "description": "Maximum characters for the rendered compact profile/context block."},
+        },
+    },
+}
+
 SCOPE_RECALL_PROBE_SCHEMA = {
     "name": "scope_recall_probe",
     "description": "Probe all accessible Scope Recall memories attached to an entity.",

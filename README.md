@@ -20,7 +20,7 @@ Current-turn recall · Journal-first capture · Durable shared memory · Backgro
 
 This repository, `scope-recall-hermes`, is the Hermes implementation. The Python distribution package is `hermes-scope-recall`, the Python import/package spelling is `scope_recall`, and the Hermes plugin ID/provider name remains `scope-recall` for runtime compatibility. The OpenClaw sibling implementation lives at [`scope-recall-openclaw`](https://github.com/410979729/scope-recall-openclaw).
 
-Version `1.2.1` continues the stable V1 release line for the documented interfaces, keeps compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, and preserves surrounding user text when gateway image attachment markers appear inline. It keeps the V1 compatibility contract in [`docs/stability.md`](docs/stability.md), preserves the supported standalone install shape added in v1.1.0, strips gateway image attachment markers before journal/capture storage, and keeps the v1.1.1 journal quality gate that prevents assistant-only acknowledgements from becoming durable memories. It also keeps native-safe LanceDB probing and automatic SQLite vector fallback for non-AVX hosts.
+Version `1.3.0` continues the stable V1 release line for the documented interfaces and adds `scope_recall_profile`, a compact high-level profile/context surface for durable user/memory/project/ops rows, optional local `general` scratch, and live Hermes curated memory files. It keeps compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, preserves surrounding user text when gateway image attachment markers appear inline, keeps the supported standalone install shape added in v1.1.0, and retains native-safe LanceDB probing with automatic SQLite vector fallback for non-AVX hosts.
 
 It uses a **three-layer design**:
 
@@ -135,7 +135,7 @@ Most agent memory pain is not just "wrong memory was recalled". The bigger user-
 | Current-turn recall | `prefetch(query)` retrieves against the active user query; `queue_prefetch()` is intentionally a no-op |
 | Storage authority | SQLite is the durable truth; vector backends are rebuildable companion state |
 | Hybrid retrieval | SQLite lexical/FTS/BM25 candidates + configured vector companion candidates + RRF reranking + bounded prompt rendering |
-| Entity/context layer | SQLite entity index, entity probe/related tools, compact query context, trust feedback |
+| Entity/context layer | SQLite entity index, entity probe/related tools, compact query context, compact profile/context surface, trust feedback |
 | Background digest | Profile-scoped journal/nightly consolidation for durable facts, workflow summaries, and sanitized tool-chain evidence |
 | Memory scope model | shared durable scope for user/project/ops/memory facts; local scope for general scratch captures |
 | Built-in memory integration | Hermes curated `USER.md` / `MEMORY.md` are live-read, not mirrored into SQLite. In gateway contexts with an explicit `user_id`, curated-file recall is opt-in/allowlisted to avoid cross-user leakage from global profile files. |
