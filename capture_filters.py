@@ -47,6 +47,34 @@ SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"),
 )
 
+ATTACHMENT_LINE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^\[Image attached at:\s*.*\]\s*$", re.IGNORECASE),
+    re.compile(r"^\[inline image/[^\]]*data omitted\]\s*$", re.IGNORECASE),
+    re.compile(r"^\[screenshot\]\s*$", re.IGNORECASE),
+    re.compile(r".*[/\\]image_cache[/\\]img_[A-Za-z0-9_-]+\.(?:jpe?g|png|webp|gif)\b.*", re.IGNORECASE),
+)
+
+
+def sanitize_capture_text(text: Any) -> str:
+    """Remove gateway attachment markers before capture/journal storage.
+
+    The LLM may receive images through Hermes' native vision path, but Scope
+    Recall should not persist local cache paths or inline-image placeholders as
+    memory material. Keep the user's surrounding text so a screenshot question
+    can still be represented without leaking `/image_cache/img_*.jpg` paths.
+    """
+    cleaned = clean_text(text)
+    if not cleaned:
+        return ""
+    kept_lines: list[str] = []
+    for line in cleaned.splitlines():
+        stripped = line.strip()
+        if any(pattern.match(stripped) for pattern in ATTACHMENT_LINE_PATTERNS):
+            continue
+        kept_lines.append(line.rstrip())
+    sanitized = "\n".join(kept_lines).strip()
+    return re.sub(r"\n{3,}", "\n\n", sanitized)
+
 
 def contains_secret_like_text(text: str) -> bool:
     return any(pattern.search(text) for pattern in SECRET_PATTERNS)
@@ -107,7 +135,7 @@ def _normalize_skip_pattern(pattern: str) -> str:
 
 
 def should_capture_text(text: Any, config: dict[str, Any] | None = None) -> CaptureFilterResult:
-    cleaned = clean_text(text)
+    cleaned = sanitize_capture_text(text)
     if not cleaned:
         return CaptureFilterResult(False, "empty")
     if is_trivial(cleaned):
