@@ -51,7 +51,13 @@ ATTACHMENT_LINE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^\[Image attached at:\s*.*\]\s*$", re.IGNORECASE),
     re.compile(r"^\[inline image/[^\]]*data omitted\]\s*$", re.IGNORECASE),
     re.compile(r"^\[screenshot\]\s*$", re.IGNORECASE),
-    re.compile(r".*[/\\]image_cache[/\\]img_[A-Za-z0-9_-]+\.(?:jpe?g|png|webp|gif)\b.*", re.IGNORECASE),
+)
+
+INLINE_ATTACHMENT_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\[Image attached at:\s*[^\]]*\]", re.IGNORECASE),
+    re.compile(r"\[inline image/[^\]]*data omitted\]", re.IGNORECASE),
+    re.compile(r"\[screenshot\]", re.IGNORECASE),
+    re.compile(r"(?:[A-Za-z]:)?[^\s\]]*[/\\]image_cache[/\\]img_[A-Za-z0-9_-]+\.(?:jpe?g|png|webp|gif)\b", re.IGNORECASE),
 )
 
 
@@ -71,7 +77,12 @@ def sanitize_capture_text(text: Any) -> str:
         stripped = line.strip()
         if any(pattern.match(stripped) for pattern in ATTACHMENT_LINE_PATTERNS):
             continue
-        kept_lines.append(line.rstrip())
+        sanitized_line = line.rstrip()
+        for pattern in INLINE_ATTACHMENT_PATTERNS:
+            sanitized_line = pattern.sub("", sanitized_line)
+        sanitized_line = re.sub(r"[ \t]{2,}", " ", sanitized_line).strip()
+        if sanitized_line:
+            kept_lines.append(sanitized_line)
     sanitized = "\n".join(kept_lines).strip()
     return re.sub(r"\n{3,}", "\n\n", sanitized)
 
