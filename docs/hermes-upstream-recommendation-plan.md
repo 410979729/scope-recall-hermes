@@ -36,16 +36,18 @@ Primary differentiators:
 
 ## Upstream readiness status
 
-Status after the `v1.0.9` release and upstream RFC submission. Completed items were verified for that release; re-run the repository hygiene checks before any follow-up release or upstream PR.
+Status after the `v1.1.0` installer/distribution work. Completed items must still be re-verified immediately before tag/release/upstream PR, but this is the target evidence shape for proposed standalone-provider visibility.
 
 ### Repository hygiene
 
 - [ ] Current follow-up branch working tree is clean before merge/release.
-- [x] `pyproject.toml`, `plugin.yaml`, README version badge/text, `CHANGELOG.md`, and latest git tag agree.
+- [ ] Latest git tag agrees with `pyproject.toml`, `plugin.yaml`, README version text, and `CHANGELOG.md` after the `v1.1.0` release tag is created.
 - [x] `python -m pytest -q` passes locally.
 - [x] `python scripts/check.release.py` passes locally.
 - [x] CI passes on Python 3.11 and 3.12.
-- [x] Release docs do not overclaim Hermes wheel/entry-point discovery; current supported shape is an unpacked `$HERMES_HOME/plugins/scope-recall/` directory.
+- [x] Release docs document the supported standalone install shape: Python distribution `hermes-scope-recall`, provider ID `scope-recall`, unpacked provider directory `$HERMES_HOME/plugins/scope-recall/`.
+- [x] Clean-venv installer smoke verifies both native-free and `[lancedb]` installs can run `hermes-scope-recall install` and `verify`.
+- [x] Hermes memory-provider discovery smoke verifies `discover_memory_providers()` and `load_memory_provider("scope-recall")` work against the clean-installed provider directory.
 
 ### Public issue closure
 
@@ -108,10 +110,19 @@ We understand Hermes' current policy that new in-tree memory providers under `pl
 ## Install and activation
 
 ```bash
-mkdir -p "$HERMES_HOME/plugins"
-git clone https://github.com/410979729/scope-recall.git "$HERMES_HOME/plugins/scope-recall"
-python -m pip install -e "$HERMES_HOME/plugins/scope-recall"
+python -m pip install "hermes-scope-recall[lancedb]"
+hermes-scope-recall install --hermes-home "${HERMES_HOME:-$HOME/.hermes}"
 hermes config set memory.provider scope-recall
+hermes memory setup
+hermes memory status
+```
+
+Native-free / no-AVX path:
+
+```bash
+python -m pip install hermes-scope-recall
+hermes-scope-recall install --hermes-home "${HERMES_HOME:-$HOME/.hermes}"
+# set vector.backend=sqlite-bruteforce in $HERMES_HOME/scope-recall/config.json when needed
 hermes memory status
 ```
 

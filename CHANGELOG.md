@@ -2,6 +2,18 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [1.1.0] - 2026-06-14
+
+### Added
+- Added the `hermes-scope-recall` standalone distribution shape with a `hermes-scope-recall` console script.
+- Added `hermes-scope-recall install` to copy the provider into `$HERMES_HOME/plugins/scope-recall/` without touching provider-owned data under `$HERMES_HOME/scope-recall/`.
+- Added `hermes-scope-recall verify` plus installer tests covering dry-run, forced replacement safety, Hermes memory-provider discovery, and CLI round trips.
+
+### Changed
+- Renamed the Python distribution package from `scope-recall` to `hermes-scope-recall` while preserving the Hermes provider ID `scope-recall` and Python import package `scope_recall`.
+- Packaged plugin metadata, docs, and operator scripts inside the wheel package so the installer can register a complete unpacked Hermes provider from site-packages.
+- Updated README install guidance for the supported standalone-provider path proposed for Hermes upstream documentation.
+
 ## [1.0.16] - 2026-06-14
 
 ### Fixed
