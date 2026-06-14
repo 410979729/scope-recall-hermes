@@ -2,6 +2,15 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [1.3.0] - 2026-06-14
+
+### Added
+- Added `scope_recall_profile`, a compact high-level profile/context surface over accessible durable `user`/`memory`/`project`/`ops` rows, optional local `general` scratch, and live Hermes curated `USER.md`/`MEMORY.md` entries.
+- Added regression coverage proving the profile surface is registered as a provider tool, live-reads curated memory without copying it into SQLite, preserves gateway user isolation, recalls durable rows across sessions for the same user, and excludes local `general` scratch unless requested.
+
+### Changed
+- Documented why this is a minor release: it adds a new public tool/API surface without breaking the V1 storage or runtime compatibility contract.
+
 ## [1.2.1] - 2026-06-14
 
 ### Fixed

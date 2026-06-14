@@ -21,6 +21,7 @@ from .gating import clean_text, compact_text, config_bool, dedup_key, normalize_
 from .governance import extract_candidates
 from .memory_ops import (
     context_payload,
+    profile_payload,
     benchmark_queries,
     dedupe_memories,
     delete_memories,
@@ -47,6 +48,7 @@ from .schemas import (
     SCOPE_RECALL_DEDUPE_SCHEMA,
     SCOPE_RECALL_BENCHMARK_SCHEMA,
     SCOPE_RECALL_CONTEXT_SCHEMA,
+    SCOPE_RECALL_PROFILE_SCHEMA,
     SCOPE_RECALL_EXPLAIN_SCHEMA,
     SCOPE_RECALL_EXPORT_SCHEMA,
     SCOPE_RECALL_FEEDBACK_SCHEMA,
@@ -674,6 +676,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA,
             SCOPE_RECALL_SEARCH_SCHEMA,
             SCOPE_RECALL_CONTEXT_SCHEMA,
+            SCOPE_RECALL_PROFILE_SCHEMA,
             SCOPE_RECALL_PROBE_SCHEMA,
             SCOPE_RECALL_RELATED_SCHEMA,
             SCOPE_RECALL_FEEDBACK_SCHEMA,
@@ -767,6 +770,28 @@ class ScopeRecallMemoryProvider(MemoryProvider):
 
     def _context_payload(self, *, query: str, limit: int = 5, max_chars: int = 900) -> dict[str, Any]:
         return context_payload(self, query=query, limit=limit, max_chars=max_chars)
+
+    def _profile_payload(
+        self,
+        *,
+        query: str = "",
+        entity: str = "",
+        targets: list[str] | None = None,
+        include_general: bool = False,
+        include_curated: bool = True,
+        limit: int = 5,
+        max_chars: int = 1200,
+    ) -> dict[str, Any]:
+        return profile_payload(
+            self,
+            query=query,
+            entity=entity,
+            targets=targets,
+            include_general=include_general,
+            include_curated=include_curated,
+            limit=limit,
+            max_chars=max_chars,
+        )
 
     def _probe_entity(self, *, entity: str, limit: int = 10) -> dict[str, Any]:
         return probe_entity(self, entity=entity, limit=limit)

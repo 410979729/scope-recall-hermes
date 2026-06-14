@@ -39,6 +39,7 @@ class ScopeRecallToolService:
             "scope_recall_store_secret_index": self._handle_store_secret_index,
             "scope_recall_search": self._handle_search,
             "scope_recall_context": self._handle_context,
+            "scope_recall_profile": self._handle_profile,
             "scope_recall_probe": self._handle_probe,
             "scope_recall_related": self._handle_related,
             "scope_recall_feedback": self._handle_feedback,
@@ -182,6 +183,21 @@ class ScopeRecallToolService:
                 query=query,
                 limit=self._limit(args),
                 max_chars=max(120, min(4000, int(args.get("max_chars") or 900))),
+            )
+        )
+
+    def _handle_profile(self, args: dict[str, Any]) -> str:
+        query = self._clean_query(args) if args.get("query") else ""
+        entity = str(args.get("entity") or "").strip()
+        return self._json(
+            self.provider._profile_payload(
+                query=query,
+                entity=entity,
+                targets=self._targets_arg(args),
+                include_general=self._bool_arg(args, "include_general", False),
+                include_curated=self._bool_arg(args, "include_curated", True),
+                limit=self._limit(args),
+                max_chars=max(120, min(4000, int(args.get("max_chars") or 1200))),
             )
         )
 
@@ -374,6 +390,24 @@ class ScopeRecallToolService:
 
     def _limit(self, args: dict[str, Any]) -> int:
         return max(1, min(20, int(args.get("limit") or 5)))
+
+    def _targets_arg(self, args: dict[str, Any]) -> list[str] | None:
+        raw_targets = args.get("targets")
+        if raw_targets is None:
+            return None
+        if isinstance(raw_targets, str):
+            candidates = [item.strip() for item in raw_targets.split(",")]
+        elif isinstance(raw_targets, list):
+            candidates = [str(item).strip() for item in raw_targets]
+        else:
+            candidates = []
+        allowed = {"user", "memory", "project", "ops", "general"}
+        output: list[str] = []
+        for target in candidates:
+            normalized = target.lower()
+            if normalized in allowed and normalized not in output:
+                output.append(normalized)
+        return output or None
 
     def _bool_arg(self, args: dict[str, Any], key: str, default: bool) -> bool:
         value = args.get(key, default)

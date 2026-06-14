@@ -40,6 +40,154 @@ def test_scope_recall_plugin_loads_from_hermes_home_plugins():
     assert plugin.name == "scope-recall"
 
 
+def test_profile_tool_schema_is_registered(provider):
+    names = {schema["name"] for schema in provider.get_tool_schemas()}
+
+    assert "scope_recall_profile" in names
+
+
+def test_profile_surface_live_reads_curated_memory_without_sqlite_duplication(tmp_path):
+    _write_scope_recall_config(
+        tmp_path,
+        {
+            "vector": {"enabled": False},
+            "curated_memory": {"mode": "profile-global"},
+        },
+    )
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir(parents=True, exist_ok=True)
+    (memories_dir / "USER.md").write_text("Joy prefers version bumps to include a clear semver rationale.\n", encoding="utf-8")
+
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    plugin.initialize(
+        "session-profile-curated",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="joy",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        payload = json.loads(plugin.handle_tool_call("scope_recall_profile", {"max_chars": 1200}))
+        with plugin._lock:
+            memory_count = plugin._require_conn().execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+    finally:
+        plugin.shutdown()
+
+    assert payload["surface"] == "profile"
+    assert payload["curated"]["count"] == 1
+    assert "semver rationale" in payload["context"]
+    assert any(item["source"] == "builtin-curated" for item in payload["sections"]["user"]["items"])
+    assert memory_count == 0
+
+
+def test_profile_surface_respects_gateway_user_isolation_and_multisession_durable_recall(tmp_path):
+    _write_scope_recall_config(tmp_path, {"vector": {"enabled": False}})
+
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    plugin.initialize(
+        "session-profile-a",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="joy",
+        chat_id="chat-a",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        stored = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_store",
+                {
+                    "target": "user",
+                    "content": "Joy profile surface test preference: answer release-governance questions with concise evidence tables.",
+                },
+            )
+        )
+        assert stored["stored"] is True
+    finally:
+        plugin.shutdown()
+
+    same_user = load_memory_provider("scope-recall")
+    assert same_user is not None
+    same_user.initialize(
+        "session-profile-b",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="joy",
+        chat_id="chat-b",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        same_payload = json.loads(same_user.handle_tool_call("scope_recall_profile", {"max_chars": 1200}))
+    finally:
+        same_user.shutdown()
+
+    other_user = load_memory_provider("scope-recall")
+    assert other_user is not None
+    other_user.initialize(
+        "session-profile-c",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="other-user",
+        chat_id="chat-c",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        other_payload = json.loads(other_user.handle_tool_call("scope_recall_profile", {"max_chars": 1200}))
+    finally:
+        other_user.shutdown()
+
+    assert "release-governance questions" in same_payload["context"]
+    assert same_payload["sections"]["user"]["count"] == 1
+    assert "release-governance questions" not in other_payload["context"]
+    assert other_payload["sections"]["user"]["count"] == 0
+
+
+def test_profile_surface_includes_local_general_only_when_requested(tmp_path):
+    _write_scope_recall_config(tmp_path, {"vector": {"enabled": False}})
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    plugin.initialize(
+        "session-profile-general",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="joy",
+        chat_id="chat-general",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        stored = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_store",
+                {
+                    "target": "general",
+                    "content": "Local profile scratch highlight: this temporary chat context should appear only when general is requested.",
+                },
+            )
+        )
+        assert stored["stored"] is True
+        default_payload = json.loads(plugin.handle_tool_call("scope_recall_profile", {"max_chars": 1200}))
+        general_payload = json.loads(plugin.handle_tool_call("scope_recall_profile", {"include_general": True, "max_chars": 1200}))
+    finally:
+        plugin.shutdown()
+
+    assert "temporary chat context" not in default_payload["context"]
+    assert default_payload["sections"]["general"]["count"] == 0
+    assert "temporary chat context" in general_payload["context"]
+    assert general_payload["sections"]["general"]["count"] == 1
+
+
 def test_sync_turn_does_not_store_raw_user_turns_by_default(provider):
     provider.sync_turn(
         [{"type": "text", "text": "We deploy services with uv run after structured gateway messages."}],

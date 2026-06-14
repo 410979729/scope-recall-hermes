@@ -10,7 +10,8 @@ from .gating import compact_text
 from .graph import clamp_float, compact_context_lines, load_metadata, normalize_entity
 from .governance import classify_memory, is_conflicting, merge_memory_text, semantic_similarity
 from .models import recall_scope_mode
-from .sql_store import delete_rows, exact_duplicate_groups, iter_curated_entries, update_row
+from .sql_store import curated_recall_item_id, delete_rows, exact_duplicate_groups, iter_curated_entries, update_row
+from .storage_views import _curated_memory_allowed
 from .vector_runtime import mark_vector_needs_repair, setup_vector_layer, upsert_vector_record
 
 
@@ -485,6 +486,205 @@ def _row_payload(row: Any) -> dict[str, Any]:
         "importance": clamp_float(metadata.get("importance"), default=0.5),
         "entities": metadata.get("entities") if isinstance(metadata.get("entities"), list) else [],
         "tags": metadata.get("tags") if isinstance(metadata.get("tags"), list) else [],
+    }
+
+
+def _profile_targets(targets: list[str] | None, *, include_general: bool) -> list[str]:
+    allowed = ["user", "memory", "project", "ops", "general"]
+    if targets:
+        output = [target for target in targets if target in allowed]
+    else:
+        output = ["user", "memory", "project", "ops"]
+    if include_general and "general" not in output:
+        output.append("general")
+    if not include_general and targets is None and "general" in output:
+        output.remove("general")
+    deduped: list[str] = []
+    for target in output:
+        if target not in deduped:
+            deduped.append(target)
+    return deduped
+
+
+def _profile_row_payload(row: Any) -> dict[str, Any]:
+    metadata = load_metadata(row["metadata"] if "metadata" in row.keys() else "{}")
+    return {
+        "id": str(row["id"]),
+        "target": str(row["target"]),
+        "source": str(row["source"]),
+        "summary": str(row["summary"]),
+        "content": compact_text(str(row["content"]), 360),
+        "updated_at": str(row["updated_at"]),
+        "scope_mode": str(metadata.get("scope_mode") or recall_scope_mode(str(row["target"]), str(row["source"]))),
+        "memory_type": str(metadata.get("memory_type") or metadata.get("category") or ""),
+        "trust": clamp_float(metadata.get("trust"), default=0.5),
+        "importance": clamp_float(metadata.get("importance"), default=0.5),
+        "confidence": clamp_float(metadata.get("confidence"), default=0.5),
+        "entities": metadata.get("entities") if isinstance(metadata.get("entities"), list) else [],
+    }
+
+
+def _profile_curated_items(provider: Any, *, targets: list[str], limit: int) -> list[dict[str, Any]]:
+    if not _curated_memory_allowed(provider):
+        return []
+    items: list[dict[str, Any]] = []
+    for target, content, updated_at in iter_curated_entries(provider._hermes_home):
+        if target not in targets:
+            continue
+        metadata = classify_memory(content, target, "builtin-curated")
+        items.append(
+            {
+                "id": curated_recall_item_id(target, content),
+                "target": target,
+                "source": "builtin-curated",
+                "summary": compact_text(content, 220),
+                "content": compact_text(content, 360),
+                "updated_at": updated_at,
+                "scope_mode": "curated-live",
+                "memory_type": str(metadata.get("memory_type") or metadata.get("category") or ""),
+                "trust": clamp_float(metadata.get("trust"), default=0.5),
+                "importance": clamp_float(metadata.get("importance"), default=0.5),
+                "confidence": clamp_float(metadata.get("confidence"), default=0.5),
+                "entities": metadata.get("entities") if isinstance(metadata.get("entities"), list) else [],
+            }
+        )
+    return items[: max(1, limit)]
+
+
+def _profile_relevant_ids(provider: Any, *, query: str, entity: str, limit: int) -> set[str]:
+    relevant: set[str] = set()
+    if query:
+        for item in provider._recall_service.search_memories(query, limit=max(10, min(50, limit * 4))):
+            relevant.add(str(item.id))
+    normalized_entity = normalize_entity(entity)
+    if normalized_entity:
+        with provider._lock:
+            rows = provider._require_conn().execute(
+                f"""
+                SELECT m.id
+                FROM memory_entities e
+                JOIN memories m ON m.id = e.memory_id
+                WHERE e.entity = ? AND m.scope_id IN ({_scope_placeholders(provider)})
+                LIMIT ?
+                """,
+                [normalized_entity, *_accessible_scope_params(provider), max(10, min(100, limit * 8))],
+            ).fetchall()
+        relevant.update(str(row["id"]) for row in rows)
+    return relevant
+
+
+def _profile_rows_for_target(
+    provider: Any,
+    *,
+    target: str,
+    limit: int,
+    relevant_ids: set[str],
+    filter_to_relevance: bool,
+) -> list[dict[str, Any]]:
+    params: list[Any] = [target, *_accessible_scope_params(provider)]
+    relevance_clause = ""
+    if filter_to_relevance:
+        if not relevant_ids:
+            return []
+        relevance_clause = f" AND id IN ({','.join('?' for _ in relevant_ids)})"
+        params.extend(sorted(relevant_ids))
+    params.append(max(1, limit))
+    with provider._lock:
+        rows = provider._require_conn().execute(
+            f"""
+            SELECT *
+            FROM memories
+            WHERE target = ? AND scope_id IN ({_scope_placeholders(provider)}){relevance_clause}
+            ORDER BY
+                CASE source
+                    WHEN 'tool-store' THEN 0
+                    WHEN 'journal-digest' THEN 1
+                    WHEN 'nightly-digest' THEN 2
+                    ELSE 3
+                END,
+                updated_at DESC,
+                id DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    return [_profile_row_payload(row) for row in rows]
+
+
+def profile_payload(
+    provider: Any,
+    *,
+    query: str = "",
+    entity: str = "",
+    targets: list[str] | None = None,
+    include_general: bool = False,
+    include_curated: bool = True,
+    limit: int = 5,
+    max_chars: int = 1200,
+) -> dict[str, Any]:
+    limit = max(1, min(20, int(limit or 5)))
+    max_chars = max(120, min(4000, int(max_chars or 1200)))
+    selected_targets = _profile_targets(targets, include_general=include_general)
+    relevant_ids = _profile_relevant_ids(provider, query=query, entity=entity, limit=limit)
+    relevance_requested = bool(query.strip() or entity.strip())
+
+    sections: dict[str, dict[str, Any]] = {
+        target: {"count": 0, "items": []}
+        for target in ["user", "memory", "project", "ops", "general"]
+    }
+    all_items: list[dict[str, Any]] = []
+    for target in selected_targets:
+        filter_to_relevance = relevance_requested and target in {"project", "ops"}
+        items = _profile_rows_for_target(
+            provider,
+            target=target,
+            limit=limit,
+            relevant_ids=relevant_ids,
+            filter_to_relevance=filter_to_relevance,
+        )
+        sections[target] = {"count": len(items), "items": items}
+        all_items.extend(items)
+
+    curated_items: list[dict[str, Any]] = []
+    if include_curated:
+        curated_items = _profile_curated_items(provider, targets=selected_targets, limit=limit)
+        for item in curated_items:
+            target = str(item.get("target") or "memory")
+            section_items = sections.setdefault(target, {"count": 0, "items": []})["items"]
+            section_items.append(item)
+            sections[target]["count"] = len(section_items)
+        all_items = [*curated_items, *all_items]
+
+    context = compact_context_lines(all_items, max_chars=max_chars)
+    rendered_count = len([line for line in context.splitlines() if line.strip()])
+    return {
+        "provider": provider.name,
+        "surface": "profile",
+        "query": query,
+        "entity": normalize_entity(entity),
+        "targets": selected_targets,
+        "include_general": bool(include_general or (targets is not None and "general" in selected_targets)),
+        "context": context,
+        "sections": sections,
+        "curated": {"count": len(curated_items), "items": curated_items},
+        "scope": {
+            "scope_id": provider._scope_id,
+            "shared_scope_id": provider._shared_scope_id,
+            "accessible_scope_count": len(provider._accessible_scope_ids),
+        },
+        "budget": {
+            "limit_per_section": limit,
+            "max_chars": max_chars,
+            "rendered_chars": len(context),
+            "rendered_items": rendered_count,
+            "candidate_items": len(all_items),
+            "truncated": rendered_count < len(all_items),
+        },
+        "notes": [
+            "SQLite memories are read from the current accessible scope set only.",
+            "Hermes curated USER.md/MEMORY.md entries are live-read when policy allows; they are not copied into SQLite.",
+            "Raw journal rows are not exposed by this profile surface.",
+        ],
     }
 
 
