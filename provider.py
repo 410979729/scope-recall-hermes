@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 from agent.memory_provider import MemoryProvider
 
 from .capture import enqueue_store, flush_writer, shutdown_writer, start_writer
-from .capture_filters import should_capture_text
+from .capture_filters import sanitize_capture_text, should_capture_text
 from .capture_llm import extract_capture_candidates
 from .config import load_runtime_config, save_runtime_config
 from .journal import append_journal_entry, ensure_journal_schema, run_journal_digest
@@ -274,8 +274,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         if self._scope.agent_context != "primary":
             return
 
-        clean_user = self._clean_text(user_content)
-        clean_assistant = self._clean_text(assistant_content)
+        clean_user = sanitize_capture_text(self._clean_text(user_content))
+        clean_assistant = sanitize_capture_text(self._clean_text(assistant_content))
         min_capture = int(self._config_value("min_capture_length", 40))
         user_filter = should_capture_text(clean_user, self._config)
         assistant_filter = should_capture_text(clean_assistant, self._config)

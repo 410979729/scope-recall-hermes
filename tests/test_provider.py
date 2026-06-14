@@ -241,6 +241,27 @@ def test_sync_turn_accepts_structured_content_when_raw_capture_is_explicitly_ena
     assert "uv run" in result.lower()
 
 
+def test_sync_turn_strips_image_attachment_markers_before_journal(provider):
+    provider.sync_turn(
+        "现在要我扫码，我去哪扫啊\n\n"
+        "[Image attached at: /tmp/hermes-home/image_cache/img_ccf883cb57da.jpg]\n"
+        "[inline image/jpeg data omitted]\n"
+        "[screenshot]",
+        "Use an authenticator app or manual setup key.",
+    )
+    provider.flush(timeout=2.0)
+
+    with provider._lock:
+        rows = provider._require_conn().execute("SELECT role, content FROM journal_entries ORDER BY id").fetchall()
+
+    user_rows = [row["content"] for row in rows if row["role"] == "user"]
+    assert user_rows == ["现在要我扫码，我去哪扫啊"]
+    combined = "\n".join(row["content"] for row in rows)
+    assert "image_cache" not in combined
+    assert "inline image" not in combined.lower()
+    assert "screenshot" not in combined.lower()
+
+
 def test_sync_turn_rejects_context_handoff_payload_from_loaded_config(provider):
     provider.sync_turn(
         "## Active Task\n审计 LanceDB/vector 同步、重复与检索质量\n\n## Remaining Work\n进一步优化内容卫生处理",

@@ -2,6 +2,12 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [1.1.2] - 2026-06-14
+
+### Fixed
+- Sanitized gateway image attachment markers before capture/journal storage, removing local `image_cache/img_*` paths and inline image placeholders while preserving the user's surrounding text.
+- Added regression coverage so screenshot-only payloads are rejected as empty and screenshot questions are journaled without local image paths.
+
 ## [1.1.1] - 2026-06-14
 
 ### Fixed

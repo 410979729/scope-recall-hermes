@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from scope_recall.capture_filters import should_capture_text
+from scope_recall.capture_filters import sanitize_capture_text, should_capture_text
 
 
 def test_recent_telegram_history_wrapper_is_rejected():
@@ -113,6 +113,34 @@ def test_short_assistant_acknowledgements_are_rejected(text):
 
     assert result.allowed is False
     assert result.reason == "trivial"
+
+
+def test_attachment_markers_are_removed_before_capture_filtering():
+    text = """现在要我扫码，我去哪扫啊
+
+[Image attached at: /tmp/hermes-home/image_cache/img_ccf883cb57da.jpg]
+[inline image/jpeg data omitted]
+[screenshot]"""
+
+    sanitized = sanitize_capture_text(text)
+    result = should_capture_text(text)
+
+    assert sanitized == "现在要我扫码，我去哪扫啊"
+    assert result.allowed is True
+    assert result.reason == ""
+
+
+def test_attachment_only_payload_is_rejected_after_sanitizing():
+    text = """[Image attached at: /tmp/hermes-home/image_cache/img_ccf883cb57da.jpg]
+[inline image/jpeg data omitted]
+[screenshot]"""
+
+    sanitized = sanitize_capture_text(text)
+    result = should_capture_text(text)
+
+    assert sanitized == ""
+    assert result.allowed is False
+    assert result.reason == "empty"
 
 
 def test_ordinary_memory_fact_is_allowed():
