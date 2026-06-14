@@ -1,6 +1,6 @@
 # Scope Recall V1 stability contract
 
-`scope-recall` 1.0.15 keeps the V1 compatibility contract while tightening endpoint handling, sensitive-error redaction, journal/tool-trace boundaries, cross-platform mutation scopes, and vector/update consistency on top of the v1.0.14 opt-in canonical identity and provider-specific endpoint support.
+`scope-recall` 1.0.16 keeps the V1 compatibility contract while adding native-safe LanceDB probing and automatic SQLite vector fallback for non-AVX hosts on top of the v1.0.15 endpoint, redaction, journal/tool-trace, cross-platform mutation-scope, and vector/update consistency fixes.
 
 This document defines the stable V1 compatibility surface and the areas that may evolve in patch or minor releases.
 
@@ -113,7 +113,7 @@ V1 supports these retrieval modes:
 - `vector`
 - `hybrid`
 
-The default config uses hybrid retrieval with SQLite lexical/BM25 recall, weighted reciprocal-rank fusion metadata, and a LanceDB vector companion. Operators can set `vector.backend=sqlite-bruteforce` for a native-free/non-AVX companion.
+The default config uses hybrid retrieval with SQLite lexical/BM25 recall, weighted reciprocal-rank fusion metadata, and a LanceDB vector companion. Operators can set `vector.backend=sqlite-bruteforce` for a native-free/non-AVX companion. V1 probes LanceDB/PyArrow native imports in a child process before importing them in the Hermes process; when `vector.fallback_backend=sqlite-bruteforce`, an absent or SIGILL-prone LanceDB stack automatically falls back to the pure SQLite companion instead of crashing the agent.
 
 Embedder policy:
 

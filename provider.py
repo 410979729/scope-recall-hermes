@@ -166,6 +166,12 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 "choices": ["lancedb", "sqlite-bruteforce"],
             },
             {
+                "key": "vector.fallback_backend",
+                "description": "Safe backend used automatically when LanceDB/PyArrow cannot be imported safely",
+                "default": "sqlite-bruteforce",
+                "choices": ["sqlite-bruteforce", "disabled"],
+            },
+            {
                 "key": "vector.embedder.provider",
                 "description": "Embedding backend for the vector layer (API or local model)",
                 "default": "openai-compatible",

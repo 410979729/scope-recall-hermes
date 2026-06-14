@@ -108,6 +108,7 @@
   "vector": {
     "enabled": true,
     "backend": "lancedb",
+    "fallback_backend": "sqlite-bruteforce",
     "table_name": "memories",
     "top_k": 8,
     "sync_mode": "incremental",

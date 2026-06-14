@@ -2,6 +2,16 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [1.0.16] - 2026-06-14
+
+### Fixed
+- Probed LanceDB/PyArrow native imports in a child process before importing them inside Hermes, so no-AVX/AVX2 hosts that hit `Illegal instruction` are treated as unsupported instead of crashing the agent process.
+- Added automatic `sqlite-bruteforce` vector fallback when the configured LanceDB companion is absent or unsafe and `vector.fallback_backend=sqlite-bruteforce` is set.
+
+### Changed
+- Added `vector.fallback_backend` to the default config and setup schema.
+- Documented the native-safe vector path for non-AVX hosts and bumped package, plugin, release-check metadata, README, and stability docs to `1.0.16`.
+
 ## [1.0.15] - 2026-06-13
 
 ### Fixed

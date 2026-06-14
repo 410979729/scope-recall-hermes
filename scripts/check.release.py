@@ -22,7 +22,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-PACKAGE_VERSION = "1.0.15"
+PACKAGE_VERSION = "1.0.16"
 WHEEL_DATA_PREFIX = f"scope_recall-{PACKAGE_VERSION}.data/data"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
 EXTERNAL_TEST_DIRS = {".hermes-agent-src"}
@@ -187,7 +187,7 @@ def metadata_check() -> dict[str, object]:
         "stable classifier": "Development Status :: 4 - Beta",
         "public contributors": "scope-recall contributors",
         "changelog v1": f"## [{PACKAGE_VERSION}]",
-        "readme v1": "first stable V1 release line",
+        "readme v1": "stable V1 release line",
         "stability truth source": "SQLite is the truth source",
         "stability tools": "scope_recall_stats",
     }
