@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from scope_recall.capture_filters import should_capture_text
 
 
@@ -92,6 +94,25 @@ def test_background_process_tool_notification_is_rejected():
 
     assert result.allowed is False
     assert "Background process" in result.reason
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Understood.",
+        "Noted.",
+        "Acknowledged.",
+        "Done.",
+        "明白了。",
+        "了解。",
+        "好的。",
+    ],
+)
+def test_short_assistant_acknowledgements_are_rejected(text):
+    result = should_capture_text(text)
+
+    assert result.allowed is False
+    assert result.reason == "trivial"
 
 
 def test_ordinary_memory_fact_is_allowed():

@@ -1,5 +1,5 @@
 name: scope-recall
-version: 1.1.0
+version: 1.1.1
 description: Scoped local memory provider with journal-first capture, SQLite truth, vector companions, and hybrid RRF retrieval.
 hooks:
   - on_turn_start

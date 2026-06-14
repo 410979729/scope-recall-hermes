@@ -144,6 +144,23 @@ def test_heuristic_journal_digest_does_not_promote_tool_content():
     assert heuristic_journal_candidates(entries) == []
 
 
+def test_heuristic_journal_digest_does_not_promote_assistant_only_acknowledgement():
+    entries = [
+        JournalEntry(
+            1,
+            "local-scope",
+            "shared-scope",
+            "session-assistant-only",
+            1,
+            "assistant",
+            "Understood.",
+            "2026-06-13T00:00:00+00:00",
+        )
+    ]
+
+    assert heuristic_journal_candidates(entries) == []
+
+
 def test_nightly_infer_scope_accepts_explicit_fallback_platform_for_empty_db():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row

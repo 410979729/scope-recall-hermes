@@ -517,7 +517,7 @@ def heuristic_journal_candidates(entries: list[JournalEntry]) -> list[JournalDig
     for key, session_entries in groups.items():
         for segment_index, group_entries in enumerate(_segment_session_entries(session_entries), start=1):
             digest_entries = [entry for entry in group_entries if entry.role != "tool"]
-            if not digest_entries:
+            if not digest_entries or not any(entry.role == "user" for entry in digest_entries):
                 continue
             combined = "\n".join(f"{entry.role}: {entry.content}" for entry in digest_entries)
             target, memory_type, tags = _classify_target_and_type(combined)
@@ -904,6 +904,20 @@ def _journal_session_bundles(entries: list[JournalEntry]) -> list[SessionBundle]
                     tool_name=str(entry.metadata.get("tool_name") or ""),
                 )
             )
+        if not messages or not any(message.role == "user" for message in messages):
+            if original_roles == {"tool"}:
+                bundles.append(
+                    SessionBundle(
+                        id=session_id,
+                        source="journal-tool-only",
+                        title=session_id,
+                        messages=[],
+                        tool_names=_unique(tool_names, limit=24),
+                        is_task=bool(tool_names),
+                        completed=False,
+                    )
+                )
+            continue
         title = compact_text(next((message.content for message in messages if message.role == "user"), session_id), 100)
         text = "\n".join(message.content for message in messages).lower()
         is_task = bool(tool_names) or any(token in text for token in ["fix", "debug", "deploy", "release", "verify", "修", "排障", "部署", "验证", "实现"])
