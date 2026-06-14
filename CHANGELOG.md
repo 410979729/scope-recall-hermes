@@ -2,6 +2,13 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [1.1.1] - 2026-06-14
+
+### Fixed
+- Treated short assistant acknowledgement messages such as `Understood.`, `Noted.`, and common Chinese ACKs as trivial capture input so they cannot enter the journal.
+- Prevented assistant-only journal rows from being promoted by heuristic or LLM journal digest, including legacy rows created before the ACK filter.
+- Added memory-quality regression tests proving assistant-only acknowledgements are skipped rather than becoming durable memories.
+
 ## [1.1.0] - 2026-06-14
 
 ### Added

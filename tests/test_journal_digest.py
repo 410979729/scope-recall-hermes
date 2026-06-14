@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import Path
 
 from scope_recall.models import RuntimeScope
+import scope_recall.journal as journal_module
 from scope_recall.scope import build_scope_id, build_shared_scope_id, accessible_scope_ids
 from scope_recall.sql_store import delete_rows, ensure_schema, store_row
 from scope_recall.journal import (
@@ -263,6 +264,40 @@ def test_journal_digest_dry_run_does_not_mutate_existing_database(tmp_path):
     assert before == after == ""
     assert conn.execute("SELECT COUNT(*) FROM journal_digest_runs").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+
+
+def test_journal_digest_does_not_promote_assistant_only_legacy_rows(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    storage = hermes_home / "scope-recall"
+    storage.mkdir(parents=True)
+    (storage / "config.json").write_text(json.dumps({"vector": {"enabled": False}, "journal": {"extractor": "llm"}}), encoding="utf-8")
+    conn = _open_memory_db(storage / "memory.sqlite3")
+    scope = _scope()
+    _insert_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=build_scope_id(scope),
+        shared_scope_id=build_shared_scope_id(scope),
+        session_id="assistant-only-legacy",
+        turn_number=1,
+        role="assistant",
+        text="I will remember this deployment procedure for next time.",
+    )
+
+    def fail_call_llm(*_args, **_kwargs):
+        raise AssertionError("assistant-only journal rows must not be sent to LLM digest")
+
+    monkeypatch.setattr(journal_module, "call_llm", fail_call_llm)
+
+    result = run_journal_digest(hermes_home=hermes_home, extractor="llm", scope=scope, interval_label="test", limit_entries=50)
+
+    assert result["ok"] is True
+    assert result["processed_entries"] == 1
+    assert result["candidates"] == 0
+    assert result["inserted"] == 0
+    assert result["skipped"] == 1
+    assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM journal_entries WHERE processed_run_id != ''").fetchone()[0] == 1
 
 
 def test_journal_digest_without_scope_processes_each_shared_scope(tmp_path):

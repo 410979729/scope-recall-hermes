@@ -1,6 +1,6 @@
 # Scope Recall V1 stability contract
 
-`scope-recall` 1.1.0 keeps the V1 compatibility contract while adding the `hermes-scope-recall` standalone distribution and installer path on top of the v1.0.16 native-safe LanceDB probing and automatic SQLite vector fallback for non-AVX hosts.
+`scope-recall` 1.1.1 keeps the V1 compatibility contract while preserving the `hermes-scope-recall` standalone distribution and installer path, tightening journal quality gates for assistant-only acknowledgements, and retaining the v1.0.16 native-safe LanceDB probing and automatic SQLite vector fallback for non-AVX hosts.
 
 This document defines the stable V1 compatibility surface and the areas that may evolve in patch or minor releases.
 
