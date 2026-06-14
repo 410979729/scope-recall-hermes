@@ -409,6 +409,64 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 session_id=self._session_id,
             )
 
+    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+        if not messages or not config_bool(self._config, "auto_capture", True):
+            return ""
+        if self._scope.agent_context != "primary":
+            return ""
+        journal_config = self._journal_config()
+        if not config_bool(journal_config, "enabled", True):
+            return ""
+
+        filter_config = dict(self._config)
+        filter_config["capture_hard_max_chars"] = -1
+        appended = 0
+        roles: set[str] = set()
+        with self._lock:
+            conn = self._require_conn()
+            ensure_journal_schema(conn)
+            for index, message in enumerate(messages, start=1):
+                if not isinstance(message, dict):
+                    continue
+                role = str(message.get("role") or message.get("type") or "").strip().lower()
+                # Tool traces are handled by on_session_end with explicit
+                # provenance. Do not stage raw tool/system wrapper content at
+                # compression boundaries.
+                if role not in {"user", "assistant"}:
+                    continue
+                content = sanitize_capture_text(self._clean_text(message.get("content")))
+                if not content:
+                    continue
+                if not should_capture_text(content, filter_config).allowed:
+                    continue
+                inserted_id = append_journal_entry(
+                    conn,
+                    scope=self._scope,
+                    scope_id=self._scope_id,
+                    shared_scope_id=self._shared_scope_id,
+                    session_id=self._session_id,
+                    turn_number=index,
+                    role=role,
+                    content=content,
+                    metadata={
+                        "source": "pre-compression",
+                        "compression_boundary": True,
+                        "message_index": index,
+                    },
+                )
+                if inserted_id:
+                    appended += 1
+                    roles.add(role)
+        if not appended:
+            return ""
+        self._maybe_start_background_journal_digest()
+        role_label = "/".join(sorted(roles)) if roles else "message"
+        plural = "entry" if appended == 1 else "entries"
+        return (
+            f"Scope Recall staged {appended} sanitized {role_label} compression-boundary journal {plural} "
+            "for the normal journal digest/merge-upsert path; raw tool output, wrappers, and secret-like text were filtered."
+        )
+
     def on_memory_write(
         self,
         action: str,
@@ -760,7 +818,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
     def _vector_text(self, summary: str, content: str) -> str:
         return clean_text(f"{summary}\n{content}")
 
-    def _clean_text(self, text: str) -> str:
+    def _clean_text(self, text: Any) -> str:
         return clean_text(text)
 
     def _normalize_query(self, query: str, char_limit: int) -> str:
