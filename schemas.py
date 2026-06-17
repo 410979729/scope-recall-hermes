@@ -237,6 +237,139 @@ SCOPE_RECALL_BENCHMARK_SCHEMA = {
     },
 }
 
+SCOPE_RECALL_PLAYBOOK_CREATE_SCHEMA = {
+    "name": "scope_recall_playbook_create",
+    "description": "Create a procedural playbook candidate row. Maintenance-only; promotion requires scope_recall_playbook_review after independent review.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "description": "Optional stable playbook id."},
+            "payload": {"type": "object", "description": "procedural_playbook.v1 payload."},
+            "status": {"type": "string", "enum": ["candidate"], "description": "Optional; create only accepts candidate."},
+            "confidence": {"type": "number", "description": "Initial confidence 0..1."},
+            "created_from_episode_id": {"type": "string"},
+            "evidence_anchors": {"type": "array", "items": {}},
+            "related_skills": {"type": "array", "items": {"type": "string"}},
+            "environment_constraints": {"type": "object"},
+            "metadata": {"type": "object"},
+        },
+        "required": ["payload"],
+    },
+}
+
+SCOPE_RECALL_PLAYBOOK_SEARCH_SCHEMA = {
+    "name": "scope_recall_playbook_search",
+    "description": "Search accessible procedural playbooks by task/query/status. Read-only and scope-filtered before ranking.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Task query or trigger text."},
+            "task_class": {"type": "string", "description": "Optional exact task class filter."},
+            "status": {"type": "string", "description": "Optional status filter."},
+            "limit": {"type": "integer", "description": "Maximum results."},
+        },
+    },
+}
+
+SCOPE_RECALL_PLAYBOOK_INSPECT_SCHEMA = {
+    "name": "scope_recall_playbook_inspect",
+    "description": "Inspect one accessible procedural playbook with versions and recent runs.",
+    "parameters": {
+        "type": "object",
+        "properties": {"id": {"type": "string", "description": "Playbook id."}},
+        "required": ["id"],
+    },
+}
+
+SCOPE_RECALL_EXPERIENCE_PREFLIGHT_SCHEMA = {
+    "name": "scope_recall_experience_preflight",
+    "description": "Render a bounded Experience Kernel packet for a task query. Read-only; default runtime injection remains disabled unless configured.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Current task query."},
+            "limit": {"type": "integer", "description": "Candidate playbook limit."},
+        },
+        "required": ["query"],
+    },
+}
+
+SCOPE_RECALL_PLAYBOOK_FEEDBACK_SCHEMA = {
+    "name": "scope_recall_playbook_feedback",
+    "description": "Record outcome feedback for a playbook run and update counters/confidence/status.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "description": "Playbook id."},
+            "outcome": {"type": "string", "enum": ["success", "partial", "failed", "stale", "misleading", "unknown"]},
+            "decision": {"type": "string", "enum": ["direct_reuse", "guided_reuse", "no_reuse"]},
+            "evidence": {"type": "array", "items": {}},
+            "outcome_reason": {"type": "string"},
+            "model_name": {"type": "string"},
+            "tool_call_count": {"type": "integer"},
+            "token_estimate": {"type": "integer"},
+        },
+        "required": ["id", "outcome"],
+    },
+}
+
+SCOPE_RECALL_PLAYBOOK_REVIEW_SCHEMA = {
+    "name": "scope_recall_playbook_review",
+    "description": "Review/promote/quarantine/supersede a playbook. Maintenance-only.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "description": "Playbook id."},
+            "action": {"type": "string", "enum": ["review", "reviewed", "promote", "promoted", "needs_review", "quarantine", "quarantined", "supersede", "superseded"]},
+            "reason": {"type": "string"},
+            "superseded_by": {"type": "string"},
+        },
+        "required": ["id", "action"],
+    },
+}
+
+SCOPE_RECALL_EXPERIENCE_STATS_SCHEMA = {
+    "name": "scope_recall_experience_stats",
+    "description": "Show Experience Kernel playbook/run counts for accessible scopes.",
+    "parameters": {"type": "object", "properties": {}},
+}
+
+SCOPE_RECALL_EXPERIENCE_PROMOTE_SCHEMA = {
+    "name": "scope_recall_experience_promote",
+    "description": "自动从 journal 任务轨迹中提取可复用经验手册。维护工具；默认 dry-run，不要求用户人工逐条复审。",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "dry_run": {"type": "boolean", "description": "Inspect only; default true."},
+            "limit_sessions": {"type": "integer", "description": "Maximum recent sessions to inspect."},
+        },
+    },
+}
+
+SCOPE_RECALL_FORGETTING_REPORT_SCHEMA = {
+    "name": "scope_recall_forgetting_report",
+    "description": "生成只读遗忘/归档报告，找出重复、低价值、运行噪声和疑似敏感记忆。维护工具。",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "limit": {"type": "integer", "description": "Maximum examples per report category; default 200."},
+        },
+    },
+}
+
+SCOPE_RECALL_FORGETTING_RUN_SCHEMA = {
+    "name": "scope_recall_forgetting_run",
+    "description": "执行遗忘机制。默认 dry-run；非 dry-run 默认软归档，不物理删除普通记忆。维护工具。",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "dry_run": {"type": "boolean", "description": "Inspect only; default true."},
+            "hard_delete": {"type": "boolean", "description": "Allow hard delete for explicit hard-delete candidates; default false."},
+            "limit": {"type": "integer", "description": "Maximum candidates to process."},
+        },
+    },
+}
+
 SCOPE_RECALL_CONTEXT_SCHEMA = {
     "name": "scope_recall_context",
     "description": "Build a compact task-relevant memory context block plus structured evidence for a query.",

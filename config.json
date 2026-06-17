@@ -57,6 +57,27 @@
   ],
   "enable_tools": true,
   "maintenance_tools_enabled": false,
+  "experience": {
+    "enabled": true,
+    "prefetch_enabled": false,
+    "min_query_chars": 8,
+    "direct_reuse_min_confidence": 0.82,
+    "allow_risky_direct_reuse": false,
+    "packet_max_chars": 1400,
+    "auto_promotion_enabled": false,
+    "auto_promote_low_risk": true,
+    "promotion_min_entries": 3,
+    "promotion_min_tool_entries": 1,
+    "promotion_require_verification": true
+  },
+  "forgetting": {
+    "enabled": true,
+    "soft_archive_default": true,
+    "archive_very_short": true,
+    "archive_assistant_scratch": true,
+    "archive_duplicates": true,
+    "hard_delete_sensitive": true
+  },
   "curated_memory": {
     "mode": "single-user",
     "allowed_user_ids": []

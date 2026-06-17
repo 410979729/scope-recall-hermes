@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from scope_recall.capture_filters import sanitize_capture_text, should_capture_text
+from scope_recall.capture_filters import redact_secret_like_text, sanitize_capture_text, should_capture_text
 
 
 def test_recent_telegram_history_wrapper_is_rejected():
@@ -38,6 +38,20 @@ def test_secret_assignment_with_is_is_rejected():
 
     assert result.allowed is False
     assert result.reason == "secret-like-content"
+
+
+def test_private_key_redaction_removes_entire_pem_block():
+    text = """Use this key:
+-----BEGIN PRIVATE KEY-----
+notreallybase64butsecretbody
+-----END PRIVATE KEY-----
+done"""
+
+    redacted = redact_secret_like_text(text)
+
+    assert "[REDACTED_SECRET]" in redacted
+    assert "notreallybase64butsecretbody" not in redacted
+    assert "END PRIVATE KEY" not in redacted
 
 
 def test_secret_index_like_multiline_metadata_is_not_cross_line_rejected():

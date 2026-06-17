@@ -1538,6 +1538,34 @@ def test_subagent_context_cannot_expose_or_use_tools(tmp_path):
         plugin.shutdown()
 
 
+def test_enable_tools_false_hides_and_blocks_tool_execution(tmp_path):
+    _write_scope_recall_config(tmp_path, {"enable_tools": False, "vector": {"enabled": False}})
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    plugin.initialize(
+        "session-tools-disabled",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+        user_id="joy",
+    )
+    try:
+        assert plugin.get_tool_schemas() == []
+        payload = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_store",
+                {"content": "disabled tools must not persist this", "target": "memory"},
+            )
+        )
+        assert payload["error"]
+        with plugin._lock:
+            assert plugin._require_conn().execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+    finally:
+        plugin.shutdown()
+
+
 def test_hybrid_recall_uses_vector_companion_for_semantic_match(provider):
     payload = json.loads(
         provider.handle_tool_call(

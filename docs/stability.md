@@ -1,6 +1,6 @@
 # Scope Recall V1 stability contract
 
-`scope-recall` 1.3.0 keeps the V1 compatibility contract while adding `scope_recall_profile`, a compact high-level profile/context surface for durable user/memory/project/ops rows, optional local `general` scratch, and live Hermes curated memory files. It preserves compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, the `hermes-scope-recall` standalone distribution and installer path, attachment-marker sanitization, journal ACK quality gates, native-safe LanceDB probing, and automatic SQLite vector fallback for non-AVX hosts.
+`scope-recall` 1.4.0 keeps the V1 compatibility contract while adding the conservative Experience Kernel MVP for reviewed procedural playbooks, read-only preflight packets, scoped feedback accounting, and replay benchmarking. It preserves `scope_recall_profile`, compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, the `hermes-scope-recall` standalone distribution and installer path, attachment-marker sanitization, journal ACK quality gates, native-safe LanceDB probing, and automatic SQLite vector fallback for non-AVX hosts.
 
 This document defines the stable V1 compatibility surface and the areas that may evolve in patch or minor releases.
 
@@ -58,6 +58,11 @@ V1 keeps these behavior boundaries stable:
 - maintenance tools (`scope_recall_dedupe`, `scope_recall_govern`, `scope_recall_hygiene`, and `scope_recall_repair`) are hidden and fail closed unless `maintenance_tools_enabled=true`
 - `scope_recall_hygiene` is read-only and never performs cleanup; operators must explicitly run a separate delete/merge/dedupe action after reviewing its output
 - `scope_recall_export` is available for scoped exports by default; `scope_only=false` requires `maintenance_tools_enabled=true`
+- Experience Kernel runtime prompt injection remains disabled by default through `experience.prefetch_enabled=false`; when enabled, preflight packets are advisory scaffolds and live user instructions/current evidence override old experience
+- Experience Kernel create/review and automatic promotion tools are hidden and fail closed unless `maintenance_tools_enabled=true`; ordinary read-only search/inspect/preflight/stats and scoped feedback tools remain available when `experience.enabled=true`
+- automatic experience promotion remains an explicit maintenance action by default: `scope_recall_experience_promote` scans evidence-backed journal task traces, writes task episodes, auto-promotes only low-risk verified playbooks, and keeps high-risk playbooks in `needs_review`
+- forgetting tools are hidden and fail closed unless `maintenance_tools_enabled=true`; `scope_recall_forgetting_report` is read-only, and `scope_recall_forgetting_run` defaults to dry-run/soft archive rather than physical deletion
+- `scope_recall_playbook_create` only writes `candidate`; promotion requires `scope_recall_playbook_review`, and direct reuse is blocked by confidence, reuse-policy, stale-fact, and risky-capability gates
 - `scope_recall_store_secret_index` may store searchable credential indexes, vault references, and non-reversible fingerprint prefixes, but plaintext secret values must not be stored in SQLite content, metadata, FTS, vector text, exports, logs, or chat replies
 - durable `user`/`memory`/`project`/`ops` rows are shared across windows/chats for the same platform + agent workspace + agent identity + user id by default
 - when `identity.cross_platform_shared_scope=true` and explicit aliases map platform accounts to a canonical user, durable rows use a canonical `agent_workspace + agent_identity + canonical_user` shared scope
@@ -93,6 +98,16 @@ The following tool names are stable for V1:
 - `scope_recall_inspect`
 - `scope_recall_explain`
 - `scope_recall_benchmark`
+- `scope_recall_playbook_create`
+- `scope_recall_playbook_search`
+- `scope_recall_playbook_inspect`
+- `scope_recall_experience_preflight`
+- `scope_recall_playbook_feedback`
+- `scope_recall_playbook_review`
+- `scope_recall_experience_stats`
+- `scope_recall_experience_promote`
+- `scope_recall_forgetting_report`
+- `scope_recall_forgetting_run`
 
 Patch/minor releases may add fields to JSON responses. Existing documented fields should not be removed in the V1 line unless they are unsafe or clearly erroneous, in which case the changelog must call out the compatibility impact. V1 rejects ordinary `scope_recall_update` / `scope_recall_merge` attempts that would move a row between shared durable and local scratch modes; such migrations require an explicit future maintenance path.
 

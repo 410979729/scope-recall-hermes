@@ -48,9 +48,191 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     )
     ensure_memory_columns(conn)
     ensure_graph_schema(conn)
+    ensure_experience_schema(conn)
     rebuild_fts_if_empty(conn)
     backfill_memory_entities(conn)
     conn.commit()
+
+
+def ensure_experience_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS task_episodes (
+            id TEXT PRIMARY KEY,
+            scope_id TEXT NOT NULL,
+            shared_scope_id TEXT NOT NULL DEFAULT '',
+            session_id TEXT NOT NULL,
+            task_class TEXT NOT NULL DEFAULT '',
+            task_goal TEXT NOT NULL,
+            user_intent TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'open',
+            outcome TEXT NOT NULL DEFAULT 'unknown',
+            started_at TEXT NOT NULL,
+            ended_at TEXT,
+            message_ids TEXT NOT NULL DEFAULT '[]',
+            journal_entry_ids TEXT NOT NULL DEFAULT '[]',
+            tool_names TEXT NOT NULL DEFAULT '[]',
+            evidence TEXT NOT NULL DEFAULT '[]',
+            verification TEXT NOT NULL DEFAULT '[]',
+            environment TEXT NOT NULL DEFAULT '{}',
+            metadata TEXT NOT NULL DEFAULT '{}'
+        );
+
+        CREATE TABLE IF NOT EXISTS procedural_playbooks (
+            id TEXT PRIMARY KEY,
+            scope_id TEXT NOT NULL,
+            shared_scope_id TEXT NOT NULL DEFAULT '',
+            task_class TEXT NOT NULL,
+            title TEXT NOT NULL,
+            trigger TEXT NOT NULL,
+            goal TEXT NOT NULL,
+            preconditions TEXT NOT NULL DEFAULT '[]',
+            steps TEXT NOT NULL DEFAULT '[]',
+            pitfalls TEXT NOT NULL DEFAULT '[]',
+            verification TEXT NOT NULL DEFAULT '[]',
+            cleanup TEXT NOT NULL DEFAULT '[]',
+            evidence_anchors TEXT NOT NULL DEFAULT '[]',
+            related_skills TEXT NOT NULL DEFAULT '[]',
+            environment_constraints TEXT NOT NULL DEFAULT '{}',
+            reuse_policy TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'candidate',
+            confidence REAL NOT NULL DEFAULT 0.50,
+            success_count INTEGER NOT NULL DEFAULT 0,
+            failure_count INTEGER NOT NULL DEFAULT 0,
+            stale_count INTEGER NOT NULL DEFAULT 0,
+            created_from_episode_id TEXT NOT NULL DEFAULT '',
+            superseded_by TEXT NOT NULL DEFAULT '',
+            last_used_at TEXT,
+            last_verified_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            metadata TEXT NOT NULL DEFAULT '{}'
+        );
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS procedural_playbooks_fts USING fts5(
+            playbook_id UNINDEXED,
+            title,
+            trigger,
+            goal,
+            preconditions,
+            steps,
+            pitfalls,
+            verification
+        );
+
+        CREATE TABLE IF NOT EXISTS playbook_versions (
+            id TEXT PRIMARY KEY,
+            playbook_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            change_type TEXT NOT NULL,
+            change_reason TEXT NOT NULL DEFAULT '',
+            snapshot TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS experience_runs (
+            id TEXT PRIMARY KEY,
+            playbook_id TEXT NOT NULL,
+            episode_id TEXT NOT NULL DEFAULT '',
+            scope_id TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            confidence_at_use REAL NOT NULL DEFAULT 0.0,
+            preconditions_checked TEXT NOT NULL DEFAULT '[]',
+            steps_completed TEXT NOT NULL DEFAULT '[]',
+            evidence TEXT NOT NULL DEFAULT '[]',
+            outcome TEXT NOT NULL DEFAULT 'unknown',
+            outcome_reason TEXT NOT NULL DEFAULT '',
+            model_name TEXT NOT NULL DEFAULT '',
+            tool_call_count INTEGER NOT NULL DEFAULT 0,
+            token_estimate INTEGER NOT NULL DEFAULT 0,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            metadata TEXT NOT NULL DEFAULT '{}'
+        );
+
+        CREATE TABLE IF NOT EXISTS reflection_events (
+            id TEXT PRIMARY KEY,
+            episode_id TEXT NOT NULL,
+            playbook_id TEXT NOT NULL DEFAULT '',
+            scope_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            evidence TEXT NOT NULL DEFAULT '[]',
+            mistakes TEXT NOT NULL DEFAULT '[]',
+            root_causes TEXT NOT NULL DEFAULT '[]',
+            corrections TEXT NOT NULL DEFAULT '[]',
+            proposed_updates TEXT NOT NULL DEFAULT '[]',
+            applied_updates TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            metadata TEXT NOT NULL DEFAULT '{}'
+        );
+
+        CREATE TABLE IF NOT EXISTS fact_freshness (
+            id TEXT PRIMARY KEY,
+            subject_type TEXT NOT NULL,
+            subject_id TEXT NOT NULL,
+            fact_key TEXT NOT NULL,
+            truth_type TEXT NOT NULL,
+            validator_kind TEXT NOT NULL DEFAULT '',
+            validator_spec TEXT NOT NULL DEFAULT '{}',
+            ttl_days INTEGER NOT NULL DEFAULT 0,
+            last_checked_at TEXT,
+            valid_until TEXT,
+            status TEXT NOT NULL DEFAULT 'unknown',
+            stale_reason TEXT NOT NULL DEFAULT '',
+            superseded_by TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS skill_anchors (
+            id TEXT PRIMARY KEY,
+            playbook_id TEXT NOT NULL,
+            skill_name TEXT NOT NULL,
+            load_policy TEXT NOT NULL DEFAULT 'optional_reference',
+            reason TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS skill_conflicts (
+            id TEXT PRIMARY KEY,
+            playbook_id TEXT NOT NULL,
+            skill_name TEXT NOT NULL DEFAULT '',
+            conflicting_source TEXT NOT NULL DEFAULT '',
+            conflict_summary TEXT NOT NULL,
+            resolution TEXT NOT NULL DEFAULT 'needs_live_check',
+            status TEXT NOT NULL DEFAULT 'open',
+            created_at TEXT NOT NULL,
+            resolved_at TEXT,
+            metadata TEXT NOT NULL DEFAULT '{}'
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_task_episodes_scope_status
+            ON task_episodes(scope_id, status, started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_task_episodes_shared_scope
+            ON task_episodes(shared_scope_id, status, started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_experience_playbooks_scope_task_status
+            ON procedural_playbooks(scope_id, task_class, status, confidence DESC);
+        CREATE INDEX IF NOT EXISTS idx_experience_playbooks_shared_scope
+            ON procedural_playbooks(shared_scope_id, task_class, status, confidence DESC);
+        CREATE INDEX IF NOT EXISTS idx_playbook_versions_playbook_version
+            ON playbook_versions(playbook_id, version DESC);
+        CREATE INDEX IF NOT EXISTS idx_experience_runs_playbook_started
+            ON experience_runs(playbook_id, started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_experience_runs_scope_outcome
+            ON experience_runs(scope_id, outcome, started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_reflection_events_scope_created
+            ON reflection_events(scope_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_fact_freshness_subject
+            ON fact_freshness(subject_type, subject_id, fact_key);
+        CREATE INDEX IF NOT EXISTS idx_fact_freshness_status
+            ON fact_freshness(status, valid_until);
+        CREATE INDEX IF NOT EXISTS idx_skill_anchors_playbook
+            ON skill_anchors(playbook_id, skill_name);
+        CREATE INDEX IF NOT EXISTS idx_skill_conflicts_playbook_status
+            ON skill_conflicts(playbook_id, status);
+        """
+    )
 
 
 def _add_memory_column(conn: sqlite3.Connection, column: str) -> None:

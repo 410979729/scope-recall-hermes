@@ -33,4 +33,4 @@ def _register_package_alias(repo_root: Path) -> None:
 
 _REPO_ROOT = _install_plugin()
 _register_package_alias(_REPO_ROOT)
-os.environ.setdefault("HERMES_HOME", _TEST_HERMES_HOME.name)
+os.environ["HERMES_HOME"] = _TEST_HERMES_HOME.name

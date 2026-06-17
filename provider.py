@@ -48,15 +48,25 @@ from .schemas import (
     SCOPE_RECALL_DEDUPE_SCHEMA,
     SCOPE_RECALL_BENCHMARK_SCHEMA,
     SCOPE_RECALL_CONTEXT_SCHEMA,
+    SCOPE_RECALL_EXPERIENCE_PREFLIGHT_SCHEMA,
+    SCOPE_RECALL_EXPERIENCE_PROMOTE_SCHEMA,
+    SCOPE_RECALL_EXPERIENCE_STATS_SCHEMA,
     SCOPE_RECALL_PROFILE_SCHEMA,
     SCOPE_RECALL_EXPLAIN_SCHEMA,
     SCOPE_RECALL_EXPORT_SCHEMA,
     SCOPE_RECALL_FEEDBACK_SCHEMA,
+    SCOPE_RECALL_FORGETTING_REPORT_SCHEMA,
+    SCOPE_RECALL_FORGETTING_RUN_SCHEMA,
     SCOPE_RECALL_FORGET_SCHEMA,
     SCOPE_RECALL_GOVERN_SCHEMA,
     SCOPE_RECALL_HYGIENE_SCHEMA,
     SCOPE_RECALL_INSPECT_SCHEMA,
     SCOPE_RECALL_MERGE_SCHEMA,
+    SCOPE_RECALL_PLAYBOOK_CREATE_SCHEMA,
+    SCOPE_RECALL_PLAYBOOK_FEEDBACK_SCHEMA,
+    SCOPE_RECALL_PLAYBOOK_INSPECT_SCHEMA,
+    SCOPE_RECALL_PLAYBOOK_REVIEW_SCHEMA,
+    SCOPE_RECALL_PLAYBOOK_SEARCH_SCHEMA,
     SCOPE_RECALL_PROBE_SCHEMA,
     SCOPE_RECALL_REPAIR_SCHEMA,
     SCOPE_RECALL_RELATED_SCHEMA,
@@ -71,6 +81,7 @@ from .sql_store import ensure_schema
 from .storage_views import search_curated_memories, search_db_memories, search_vector_memories
 from .tooling import ScopeRecallToolService
 from .vector_runtime import setup_vector_layer
+from .experience_preflight import experience_preflight
 
 logger = logging.getLogger(__name__)
 
@@ -267,10 +278,32 @@ class ScopeRecallMemoryProvider(MemoryProvider):
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         del session_id
-        return render_current_turn_recall(self, query)
+        recall_block = render_current_turn_recall(self, query)
+        raw_experience_config = self._config.get("experience")
+        experience_config = raw_experience_config if isinstance(raw_experience_config, dict) else {}
+        if not config_bool(experience_config, "enabled", True):
+            return recall_block
+        if not config_bool(experience_config, "prefetch_enabled", False):
+            return recall_block
+        try:
+            with self._lock:
+                packet = experience_preflight(
+                    self._require_conn(),
+                    query=query,
+                    accessible_scope_ids=self._accessible_scope_ids,
+                    config=self._config,
+                ).get("packet", "")
+        except Exception:
+            logger.exception("Scope Recall experience preflight failed")
+            packet = ""
+        if not packet:
+            return recall_block
+        return f"{recall_block}\n\n{packet}" if recall_block else str(packet)
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "", messages: list[dict[str, Any]] | None = None) -> None:
         del session_id
+        if messages:
+            self._append_session_tool_journal(messages)
         if not config_bool(self._config, "auto_capture", True):
             return
         if self._scope.agent_context != "primary":
@@ -689,12 +722,41 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             SCOPE_RECALL_EXPLAIN_SCHEMA,
             SCOPE_RECALL_BENCHMARK_SCHEMA,
         ]
-        if config_bool(config, "maintenance_tools_enabled", False):
-            schemas.extend([SCOPE_RECALL_DEDUPE_SCHEMA, SCOPE_RECALL_GOVERN_SCHEMA, SCOPE_RECALL_REPAIR_SCHEMA, SCOPE_RECALL_HYGIENE_SCHEMA])
+        raw_experience_config = config.get("experience")
+        experience_config: dict[str, Any] = dict(raw_experience_config) if isinstance(raw_experience_config, dict) else {}
+        experience_enabled = config_bool(experience_config, "enabled", True)
+        if experience_enabled:
+            schemas.extend(
+                [
+                    SCOPE_RECALL_PLAYBOOK_SEARCH_SCHEMA,
+                    SCOPE_RECALL_PLAYBOOK_INSPECT_SCHEMA,
+                    SCOPE_RECALL_EXPERIENCE_PREFLIGHT_SCHEMA,
+                    SCOPE_RECALL_PLAYBOOK_FEEDBACK_SCHEMA,
+                    SCOPE_RECALL_EXPERIENCE_STATS_SCHEMA,
+                ]
+            )
+        if experience_enabled and config_bool(config, "maintenance_tools_enabled", False):
+            schemas.extend(
+                [
+                    SCOPE_RECALL_DEDUPE_SCHEMA,
+                    SCOPE_RECALL_GOVERN_SCHEMA,
+                    SCOPE_RECALL_REPAIR_SCHEMA,
+                    SCOPE_RECALL_HYGIENE_SCHEMA,
+                    SCOPE_RECALL_PLAYBOOK_CREATE_SCHEMA,
+                    SCOPE_RECALL_PLAYBOOK_REVIEW_SCHEMA,
+                    SCOPE_RECALL_EXPERIENCE_PROMOTE_SCHEMA,
+                    SCOPE_RECALL_FORGETTING_REPORT_SCHEMA,
+                    SCOPE_RECALL_FORGETTING_RUN_SCHEMA,
+                ]
+            )
         return schemas
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         del kwargs
+        if not config_bool(self._schema_config(), "enable_tools", True):
+            from tools.registry import tool_error
+
+            return tool_error("scope-recall tools are disabled by configuration")
         if self._scope.agent_context != "primary":
             from tools.registry import tool_error
 
