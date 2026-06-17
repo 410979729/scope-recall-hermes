@@ -824,9 +824,11 @@ def test_llm_digest_auth_failure_quarantines_without_retrying(tmp_path, monkeypa
 
     attempts = {"count": 0}
 
+    raw_key = "sk-" + "a" * 30
+
     def forbidden_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float, api_mode: str = "chat_completions", endpoint: str = "", append_v1: bool = True) -> str:
         attempts["count"] += 1
-        raise RuntimeError("HTTP 403 Forbidden")
+        raise RuntimeError(f"HTTP 403 Forbidden: Incorrect API key provided: {raw_key}")
 
     monkeypatch.setattr(journal_module, "call_llm", forbidden_call_llm)
 
@@ -839,11 +841,15 @@ def test_llm_digest_auth_failure_quarantines_without_retrying(tmp_path, monkeypa
     rejection = conn.execute("SELECT reason, candidate FROM journal_rejections WHERE journal_entry_id = ?", (entry_id,)).fetchone()
     assert rejection["reason"] == "dead-letter:auth"
     assert "auth after 1 attempt" in rejection["candidate"]
+    assert raw_key not in rejection["candidate"]
+    assert "[REDACTED_SECRET]" in rejection["candidate"]
     run = conn.execute("SELECT metadata FROM journal_digest_runs WHERE id = ?", (result["run_id"],)).fetchone()
     metadata = json.loads(run["metadata"])
     assert metadata["quarantine_counts"] == {"dead_letter": 1}
     assert metadata["extractor_errors"][0]["kind"] == "auth"
     assert metadata["extractor_errors"][0]["retryable"] is False
+    assert raw_key not in metadata["extractor_errors"][0]["message"]
+    assert "[REDACTED_SECRET]" in metadata["extractor_errors"][0]["message"]
 
 
 def test_journal_digest_dynamic_limit_scales_up_when_backlog_is_large(tmp_path, monkeypatch):
