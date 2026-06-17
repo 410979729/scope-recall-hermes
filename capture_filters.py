@@ -42,10 +42,11 @@ SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"(?:[ \t]*(?::|=|是)[ \t]*|[ \t]+is[ \t]+)[^\s]+",
         re.IGNORECASE,
     ),
-    # Provider-specific and transport token forms that often appear without labels.
-    re.compile(r"s" r"k-[A-Za-z0-9][A-Za-z0-9_-]{18,}"),
-    re.compile(r"g" r"h[pousr]_[A-Za-z0-9_]{20,}"),
-    re.compile(r"bea" r"rer\s+[A-Za-z0-9._\-~+/=]{16,}", re.IGNORECASE),
+    # Provider-specific and transport token forms that often appear without labels,
+    # including partially masked values returned by upstream auth errors.
+    re.compile(r"s" r"k-[A-Za-z0-9_*][A-Za-z0-9_*-]{8,}"),
+    re.compile(r"g" r"h[pousr]_[A-Za-z0-9_*_]{20,}"),
+    re.compile(r"bea" r"rer\s+[A-Za-z0-9._\-~+/=*]{16,}", re.IGNORECASE),
 )
 
 ATTACHMENT_LINE_PATTERNS: tuple[re.Pattern[str], ...] = (
