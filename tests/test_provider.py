@@ -469,6 +469,52 @@ def test_on_pre_compress_filters_wrappers_tools_trivial_acks_and_secrets(provide
     ]
 
 
+def test_session_end_tool_trace_sanitizes_attachment_markers_before_journal(provider, monkeypatch):
+    monkeypatch.setattr(provider, "_run_session_end_journal_digest", lambda: None)
+
+    provider.on_session_end(
+        [
+            {
+                "role": "tool",
+                "name": "browser_vision",
+                "content": (
+                    "Visual smoke result: login button is visible.\n"
+                    "[Image attached at: /tmp/hermes-home/image_cache/img_ccf883cb57da.jpg]\n"
+                    "[inline image/jpeg data omitted]\n"
+                    "Screenshot evidence captured."
+                ),
+            }
+        ]
+    )
+
+    with provider._lock:
+        rows = provider._require_conn().execute("SELECT role, content FROM journal_entries ORDER BY id").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["role"] == "tool"
+    assert "login button is visible" in rows[0]["content"]
+    assert "image_cache" not in rows[0]["content"]
+    assert "Image attached" not in rows[0]["content"]
+    assert "inline image" not in rows[0]["content"].lower()
+
+
+def test_session_end_tool_trace_filters_low_value_and_secret_outputs(provider, monkeypatch):
+    monkeypatch.setattr(provider, "_run_session_end_journal_digest", lambda: None)
+
+    provider.on_session_end(
+        [
+            {"role": "tool", "name": "todo", "content": '{"todos": [{"content": "temporary checklist"}]}'},
+            {"role": "tool", "name": "terminal", "content": "api_key=sk-" + "a" * 30},
+            {"role": "tool", "name": "terminal", "content": "Release gate output: 332 tests passed and wheel smoke passed."},
+        ]
+    )
+
+    with provider._lock:
+        rows = provider._require_conn().execute("SELECT role, content FROM journal_entries ORDER BY id").fetchall()
+    assert [(row["role"], row["content"]) for row in rows] == [
+        ("tool", "Tool execution trace (terminal): Release gate output: 332 tests passed and wheel smoke passed.")
+    ]
+
+
 def test_sync_turn_rejects_context_handoff_payload_from_loaded_config(provider):
     provider.sync_turn(
         "## Active Task\n审计 LanceDB/vector 同步、重复与检索质量\n\n## Remaining Work\n进一步优化内容卫生处理",

@@ -9,9 +9,15 @@ All notable changes to `scope-recall` will be documented in this file.
 - Hardened the Experience Kernel MVP so `experience.enabled=false` is a global kill switch, create can only write `candidate`, promotion requires review, secret-like playbook/feedback text is rejected before persistence, legacy secret-like rows are redacted before tool/preflight output, corrupt core playbook JSON fails closed, `reuse_policy` is enforced before direct reuse, shared-scope feedback cannot demote global playbooks, terminal playbook statuses reject feedback, and CJK queries are not misclassified by whitespace-only low-signal checks.
 - Added the first automatic reusable-experience loop: `scope_recall_experience_promote` scans evidence-backed journal task traces, writes `task_episodes`, creates reusable experience handbooks, auto-promotes low-risk verified handbooks, and keeps high-risk handbooks in `needs_review` for later agent review instead of requiring Joy to manually inspect raw memory rows.
 - Added the first forgetting loop: `scope_recall_forgetting_report` and `scope_recall_forgetting_run` identify duplicate, scratch, tiny, wrapper-noise, and secret-like memory rows; the default action is soft archive via metadata, with hard delete reserved for explicit hard-delete candidates.
+- Added journal backlog observability to `scripts/doctor.py`, including unprocessed role distribution, oldest backlog age, attachment/path contamination counts, configurable warn/fail thresholds, and operator recommendations for digest throughput and tool-trace hygiene.
 
 ### Changed
 - Kept Experience runtime injection disabled by default while exposing read-only playbook search/inspect/preflight/stats and scoped feedback tools for operator-guided reuse.
+- Journal digest now dynamically raises the per-run entry limit when backlog exceeds the configured threshold, capped by `journal.max_entries_per_digest_ceiling`, so old queues can drain without permanently over-provisioning normal runs.
+
+### Fixed
+- Sanitized session-end tool traces with the same `sanitize_capture_text()` / `should_capture_text()` path used for user and assistant capture, preventing image attachment markers, `image_cache/img_*` paths, secret-like text, and low-value tool dumps from entering new journal rows.
+- Classified failed LLM journal digest batches as `retry-exhausted:<kind>` or `dead-letter:<kind>` in journal rejections and run metadata, preserving retry/dead-letter evidence instead of leaving opaque quarantine rows.
 
 ## [1.3.0] - 2026-06-14
 

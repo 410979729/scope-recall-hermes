@@ -6,7 +6,10 @@ import json
 import sqlite3
 from pathlib import Path
 
+from scope_recall.journal import append_journal_entry, ensure_journal_schema
+from scope_recall.models import RuntimeScope
 from scope_recall.experience_store import create_playbook, record_playbook_feedback, review_playbook
+from scope_recall.scope import build_scope_id, build_shared_scope_id
 from scope_recall.sql_store import ensure_schema
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -67,6 +70,10 @@ def _payload() -> dict:
         "cleanup": [],
         "reuse_policy": {"default_decision": "guided_reuse"},
     }
+
+
+def _scope() -> RuntimeScope:
+    return RuntimeScope(platform="telegram", user_id="joy", chat_id="dm", agent_identity="yuheng", agent_workspace="hermes")
 
 
 def test_doctor_reports_experience_schema_and_counts(tmp_path):
@@ -179,3 +186,44 @@ def test_doctor_reports_missing_experience_fts_table(tmp_path):
     assert payload["status"] == "schema_missing"
     assert "procedural_playbooks_fts" in payload["missing_tables"]
     assert recommendations
+
+
+def test_doctor_reports_journal_backlog_distribution_and_threshold_failures(tmp_path):
+    doctor = _load_doctor_module()
+    storage = tmp_path / "scope-recall"
+    storage.mkdir(parents=True)
+    conn = sqlite3.connect(storage / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    scope = _scope()
+    try:
+        ensure_schema(conn)
+        ensure_journal_schema(conn)
+        scope_id = build_scope_id(scope)
+        shared_scope_id = build_shared_scope_id(scope)
+        for index, role in enumerate(["tool", "tool", "assistant", "user"], start=1):
+            append_journal_entry(
+                conn,
+                scope=scope,
+                scope_id=scope_id,
+                shared_scope_id=shared_scope_id,
+                session_id="backlog-session",
+                turn_number=index,
+                role=role,
+                content=f"Backlog smoke {role} entry {index} with image_cache/img_{index}.jpg marker.",
+            )
+    finally:
+        conn.close()
+
+    payload, check, recommendations = doctor.journal_report(
+        tmp_path,
+        enabled=True,
+        journal_config={"backlog_warn_entries": 2, "backlog_fail_entries": 3, "backlog_max_age_hours": 0},
+    )
+
+    assert check["ok"] is False
+    assert payload["entries"]["unprocessed"] == 4
+    assert payload["backlog"]["unprocessed_by_role"] == {"assistant": 1, "tool": 2, "user": 1}
+    assert payload["backlog"]["contamination_counts"]["image_cache/img_"]["unprocessed"] == 4
+    assert payload["backlog"]["thresholds"]["fail_entries"] == 3
+    assert any("journal backlog has 4 unprocessed" in failure for failure in check["failures"])
+    assert any("tool trace hygiene" in item.lower() or "digest" in item.lower() for item in recommendations)

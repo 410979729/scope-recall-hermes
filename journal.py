@@ -1128,6 +1128,47 @@ def _coerce_positive_int(value: Any, default: int) -> int:
     return max(1, parsed)
 
 
+def _journal_unprocessed_count(conn: sqlite3.Connection) -> int:
+    return int(
+        conn.execute("SELECT COUNT(*) FROM journal_entries WHERE processed_run_id IS NULL OR processed_run_id = ''").fetchone()[0]
+    )
+
+
+def _dynamic_journal_digest_limit(conn: sqlite3.Connection, *, configured_limit: int, journal_config: dict[str, Any]) -> int:
+    if not _config_bool(journal_config, "dynamic_max_entries_enabled", True):
+        return configured_limit
+    backlog = _journal_unprocessed_count(conn)
+    threshold = _coerce_positive_int(journal_config.get("dynamic_backlog_threshold"), configured_limit * 4)
+    if backlog <= threshold:
+        return configured_limit
+    default_ceiling = max(configured_limit, 500)
+    ceiling = _coerce_positive_int(journal_config.get("max_entries_per_digest_ceiling"), default_ceiling)
+    return min(backlog, max(configured_limit, ceiling))
+
+
+def _quarantine_classification(error: Exception) -> tuple[str, dict[str, Any]]:
+    if isinstance(error, JournalDigestLLMError):
+        classification = "retry_exhausted" if error.retryable else "dead_letter"
+        reason_prefix = "retry-exhausted" if error.retryable else "dead-letter"
+        return f"{reason_prefix}:{error.error_kind}", {
+            "classification": classification,
+            "kind": error.error_kind,
+            "retryable": bool(error.retryable),
+            "attempts": int(error.attempts),
+            "message": str(error)[:400],
+        }
+    kind, retryable = _classify_llm_digest_error(error)
+    classification = "retry_exhausted" if retryable else "dead_letter"
+    reason_prefix = "retry-exhausted" if retryable else "dead-letter"
+    return f"{reason_prefix}:{kind}", {
+        "classification": classification,
+        "kind": kind,
+        "retryable": retryable,
+        "attempts": 1,
+        "message": f"{type(error).__name__}: {str(error)[:400]}",
+    }
+
+
 def _coerce_nonnegative_float(value: Any, default: float) -> float:
     try:
         parsed = float(value)
@@ -1264,6 +1305,9 @@ def run_journal_digest(
     try:
         ensure_schema(conn)
         ensure_journal_schema(conn)
+        if limit_entries is None:
+            effective_limit = _dynamic_journal_digest_limit(conn, configured_limit=configured_limit, journal_config=journal_config)
+        backlog_before = _journal_unprocessed_count(conn)
         active_scopes = [scope] if scope is not None else _unprocessed_scopes(conn, limit=effective_limit)
         if not active_scopes:
             return {
@@ -1283,7 +1327,8 @@ def run_journal_digest(
         processed_entry_ids: list[int] = []
         counts = Counter()
         extractor_counts = Counter()
-        extractor_errors: list[str] = []
+        quarantine_counts = Counter()
+        extractor_errors: list[Any] = []
         actions: list[dict[str, Any]] = []
         for active_scope in active_scopes:
             remaining = max(0, effective_limit - total_loaded_entries)
@@ -1308,16 +1353,19 @@ def run_journal_digest(
                 if requested_extractor != "llm":
                     raise
                 scope_extractor_used = "llm-quarantine"
-                extractor_error = str(exc)[:1000]
+                quarantine_reason, quarantine_meta = _quarantine_classification(exc)
+                extractor_error = quarantine_meta
                 candidates = []
                 quarantine_entry_ids = [int(entry.id) for entry in entries]
                 counts["skipped"] += len(quarantine_entry_ids)
+                quarantine_counts[str(quarantine_meta["classification"])] += len(quarantine_entry_ids)
                 actions.append(
                     {
                         "action": "skip",
-                        "reason": "llm digest failed; quarantined",
+                        "reason": quarantine_reason,
                         "entry_count": len(quarantine_entry_ids),
                         "entry_ids": quarantine_entry_ids[:20],
+                        "classification": quarantine_meta,
                     }
                 )
                 if not dry_run:
@@ -1325,7 +1373,7 @@ def run_journal_digest(
                         conn,
                         run_id=run_id,
                         entries=entries,
-                        reason="llm digest failed; quarantined",
+                        reason=quarantine_reason,
                         error=exc,
                     )
                 processed_entry_ids.extend(quarantine_entry_ids)
@@ -1441,6 +1489,8 @@ def run_journal_digest(
                             "extractor_used": extractor_used,
                             "extractor_counts": dict(extractor_counts),
                             "extractor_errors": extractor_errors[:5],
+                            "quarantine_counts": dict(quarantine_counts),
+                            "backlog_before": backlog_before,
                             "limit_entries": effective_limit,
                             "retention_days": retention_days,
                             "pruned_journal_entries": pruned_entries,
@@ -1462,6 +1512,8 @@ def run_journal_digest(
             "skipped": counts.get("skipped", 0),
             "extractor_requested": requested_extractor,
             "extractor_used": extractor_used,
+            "quarantine_counts": dict(quarantine_counts),
+            "backlog_before": backlog_before,
             "limit_entries": effective_limit,
             "pruned_journal_entries": pruned_entries,
             "actions": actions[:50],
