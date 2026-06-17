@@ -786,13 +786,16 @@ def test_llm_digest_failure_retries_then_quarantines_without_fallback_memory(tmp
     assert row["processed_run_id"] == result["run_id"]
     assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
     rejection = conn.execute("SELECT reason, candidate FROM journal_rejections WHERE journal_entry_id = ?", (entry_id,)).fetchone()
-    assert rejection["reason"] == "llm digest failed; quarantined"
+    assert rejection["reason"] == "retry-exhausted:timeout"
     assert "timeout after 2 attempt" in rejection["candidate"]
     run = conn.execute("SELECT status, extractor, error, metadata FROM journal_digest_runs WHERE id = ?", (result["run_id"],)).fetchone()
     assert run["status"] == "ok"
     assert run["extractor"] == "llm-quarantine"
     assert run["error"] is None
-    assert "timeout after 2 attempt" in run["metadata"]
+    metadata = json.loads(run["metadata"])
+    assert metadata["quarantine_counts"] == {"retry_exhausted": 1}
+    assert metadata["extractor_errors"][0]["kind"] == "timeout"
+    assert metadata["extractor_errors"][0]["retryable"] is True
 
 
 def test_llm_digest_auth_failure_quarantines_without_retrying(tmp_path, monkeypatch):
@@ -833,8 +836,57 @@ def test_llm_digest_auth_failure_quarantines_without_retrying(tmp_path, monkeypa
     assert result["extractor_used"] == "llm-quarantine"
     row = conn.execute("SELECT processed_run_id FROM journal_entries WHERE id = ?", (entry_id,)).fetchone()
     assert row["processed_run_id"] == result["run_id"]
-    rejection = conn.execute("SELECT candidate FROM journal_rejections WHERE journal_entry_id = ?", (entry_id,)).fetchone()
+    rejection = conn.execute("SELECT reason, candidate FROM journal_rejections WHERE journal_entry_id = ?", (entry_id,)).fetchone()
+    assert rejection["reason"] == "dead-letter:auth"
     assert "auth after 1 attempt" in rejection["candidate"]
+    run = conn.execute("SELECT metadata FROM journal_digest_runs WHERE id = ?", (result["run_id"],)).fetchone()
+    metadata = json.loads(run["metadata"])
+    assert metadata["quarantine_counts"] == {"dead_letter": 1}
+    assert metadata["extractor_errors"][0]["kind"] == "auth"
+    assert metadata["extractor_errors"][0]["retryable"] is False
+
+
+def test_journal_digest_dynamic_limit_scales_up_when_backlog_is_large(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    storage = hermes_home / "scope-recall"
+    storage.mkdir(parents=True)
+    (storage / "config.json").write_text(
+        json.dumps(
+            {
+                "vector": {"enabled": False},
+                "journal": {
+                    "extractor": "llm",
+                    "max_entries_per_digest": 2,
+                    "dynamic_max_entries_enabled": True,
+                    "dynamic_backlog_threshold": 3,
+                    "max_entries_per_digest_ceiling": 5,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    conn = _open_memory_db(storage / "memory.sqlite3")
+    scope = _scope()
+    for index in range(5):
+        append_journal_entry(
+            conn,
+            scope=scope,
+            scope_id=build_scope_id(scope),
+            shared_scope_id=build_shared_scope_id(scope),
+            session_id="dynamic-limit-session",
+            turn_number=index + 1,
+            role="user",
+            content=f"Dynamic backlog smoke valuable user event {index}: release hygiene should process more entries when backlog is large.",
+        )
+
+    monkeypatch.setattr(journal_module, "_collect_journal_candidates", lambda *args, **kwargs: ([], "llm", None))
+
+    result = run_journal_digest(hermes_home=hermes_home, scope=scope, interval_label="test")
+
+    assert result["limit_entries"] == 5
+    assert result["processed_entries"] == 5
+    assert result["skipped"] == 5
+    assert conn.execute("SELECT COUNT(*) FROM journal_entries WHERE processed_run_id = ''").fetchone()[0] == 0
 
 
 def test_journal_capture_keeps_long_english_text_that_only_looks_base64ish(tmp_path):

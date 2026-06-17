@@ -33,6 +33,19 @@
     "digest_interval_hours": 2,
     "retention_days": 0,
     "max_entries_per_digest": 500,
+    "dynamic_max_entries_enabled": true,
+    "dynamic_backlog_threshold": 2000,
+    "max_entries_per_digest_ceiling": 1200,
+    "backlog_warn_entries": 500,
+    "backlog_fail_entries": 3000,
+    "backlog_max_age_hours": 72,
+    "tool_trace_skip_names": [
+      "todo",
+      "skill_view",
+      "skills_list"
+    ],
+    "tool_trace_hard_max_chars": 4000,
+    "tool_trace_max_chars": 1800,
     "endpoint": "",
     "append_v1": true
   },

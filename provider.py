@@ -85,6 +85,8 @@ from .experience_preflight import experience_preflight
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_TOOL_TRACE_SKIP_NAMES = {"todo", "skill_view", "skills_list"}
+
 
 class ScopeRecallMemoryProvider(MemoryProvider):
     def __init__(self) -> None:
@@ -566,16 +568,36 @@ class ScopeRecallMemoryProvider(MemoryProvider):
 
     def _tool_journal_content(self, message: Dict[str, Any]) -> str:
         tool_name = str(message.get("name") or message.get("tool_name") or message.get("recipient") or "").strip()
+        journal_config = self._journal_config()
+        skip_names = set(DEFAULT_TOOL_TRACE_SKIP_NAMES)
+        raw_skip_names = journal_config.get("tool_trace_skip_names")
+        if isinstance(raw_skip_names, str):
+            skip_names.add(raw_skip_names.strip().lower())
+        elif isinstance(raw_skip_names, (list, tuple, set)):
+            skip_names.update(str(item).strip().lower() for item in raw_skip_names if str(item).strip())
+        if tool_name.lower() in skip_names:
+            return ""
         raw_content = message.get("content")
         if raw_content is None:
             raw_content = message.get("output")
         if raw_content is None:
             raw_content = message.get("result")
-        content = clean_text(raw_content)
+        content = sanitize_capture_text(clean_text(raw_content))
         if not content:
             return ""
+        filter_config = dict(self._config)
+        try:
+            filter_config["capture_hard_max_chars"] = int(journal_config.get("tool_trace_hard_max_chars") or 4000)
+        except (TypeError, ValueError):
+            filter_config["capture_hard_max_chars"] = 4000
+        if not should_capture_text(content, filter_config).allowed:
+            return ""
         prefix = f"Tool execution trace ({tool_name})" if tool_name else "Tool execution trace"
-        return compact_text(f"{prefix}: {content}", 1800)
+        try:
+            max_chars = int(journal_config.get("tool_trace_max_chars") or 1800)
+        except (TypeError, ValueError):
+            max_chars = 1800
+        return compact_text(f"{prefix}: {content}", max(200, max_chars))
 
     def _coerce_journal_float(self, journal_config: dict[str, Any], key: str, default: float) -> float:
         try:

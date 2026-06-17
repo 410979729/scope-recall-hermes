@@ -269,7 +269,29 @@ def journal_enabled_from_config(config: dict[str, Any]) -> bool:
     return bool(value)
 
 
-def journal_report(hermes_home: Path, *, enabled: bool = True) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+def coerce_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def journal_backlog_age_hours(oldest_created_at: str) -> float:
+    if not oldest_created_at:
+        return 0.0
+    try:
+        from datetime import datetime, timezone
+
+        created = datetime.fromisoformat(str(oldest_created_at).replace("Z", "+00:00"))
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - created.astimezone(timezone.utc)).total_seconds() / 3600.0)
+    except Exception:
+        return 0.0
+
+
+def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    journal_config = journal_config or {}
     recommendations: list[str] = []
     storage_dir = hermes_home / "scope-recall"
     db_path = storage_dir / "memory.sqlite3"
@@ -319,6 +341,38 @@ def journal_report(hermes_home: Path, *, enabled: bool = True) -> tuple[dict[str
                 ORDER BY created_at ASC LIMIT 1
                 """
             ).fetchone()
+            unprocessed_by_role = {
+                str(row["role"]): int(row["count"])
+                for row in conn.execute(
+                    """
+                    SELECT role, COUNT(*) AS count
+                    FROM journal_entries
+                    WHERE processed_run_id IS NULL OR processed_run_id = ''
+                    GROUP BY role
+                    ORDER BY role
+                    """
+                )
+            }
+            contamination_counts: dict[str, dict[str, int]] = {}
+            for marker in ("image_cache/img_", "[Image attached at:", "[inline image/", "/tmp/hermes", ".hermes/"):
+                contamination_counts[marker] = {
+                    "all": int(conn.execute("SELECT COUNT(*) FROM journal_entries WHERE content LIKE ?", (f"%{marker}%",)).fetchone()[0]),
+                    "unprocessed": int(
+                        conn.execute(
+                            "SELECT COUNT(*) FROM journal_entries WHERE (processed_run_id IS NULL OR processed_run_id = '') AND content LIKE ?",
+                            (f"%{marker}%",),
+                        ).fetchone()[0]
+                    ),
+                    "tool_unprocessed": int(
+                        conn.execute(
+                            """
+                            SELECT COUNT(*) FROM journal_entries
+                            WHERE (processed_run_id IS NULL OR processed_run_id = '') AND role = 'tool' AND content LIKE ?
+                            """,
+                            (f"%{marker}%",),
+                        ).fetchone()[0]
+                    ),
+                }
             last_run = conn.execute(
                 """
                 SELECT id, started_at, finished_at, status, extractor, processed_entries, inserted, updated, skipped
@@ -333,11 +387,34 @@ def journal_report(hermes_home: Path, *, enabled: bool = True) -> tuple[dict[str
         return {"enabled": True, "path": str(db_path), "status": "error", "error": str(exc)}, {"ok": False, "failures": [f"journal health error: {exc}"]}, recommendations
 
     failures: list[str] = []
+    warn_entries = max(0, coerce_int(journal_config.get("backlog_warn_entries"), 500))
+    fail_entries = max(0, coerce_int(journal_config.get("backlog_fail_entries"), 3000))
+    max_age_hours = max(0, coerce_int(journal_config.get("backlog_max_age_hours"), 72))
+    oldest_value = oldest_unprocessed["created_at"] if oldest_unprocessed else ""
+    backlog_age = journal_backlog_age_hours(oldest_value)
+    contaminated_unprocessed = sum(item["unprocessed"] for item in contamination_counts.values())
+    contaminated_tool_unprocessed = sum(item["tool_unprocessed"] for item in contamination_counts.values())
     if orphan_sources:
         failures.append(f"memory_journal_sources contains {orphan_sources} orphan link(s)")
         recommendations.append("Run hygiene/repair or delete orphan memory_journal_sources before release.")
     if unprocessed_entries:
         recommendations.append("Run scripts/journal-digest.py to promote staged journal entries into durable memories.")
+    if warn_entries and unprocessed_entries >= warn_entries:
+        recommendations.append(
+            f"Journal backlog has {unprocessed_entries} unprocessed entrie(s); increase/dynamically adjust max_entries_per_digest and verify digest throughput."
+        )
+    if fail_entries and unprocessed_entries > fail_entries:
+        failures.append(f"journal backlog has {unprocessed_entries} unprocessed entrie(s), above fail threshold {fail_entries}")
+    if max_age_hours and backlog_age > max_age_hours:
+        failures.append(f"journal backlog oldest unprocessed entry is {backlog_age:.1f}h old, above threshold {max_age_hours}h")
+    if contaminated_unprocessed:
+        recommendations.append(
+            f"Journal backlog contains {contaminated_unprocessed} unprocessed attachment/path marker hit(s); verify tool trace hygiene and sanitize_capture_text coverage."
+        )
+    if contaminated_tool_unprocessed:
+        recommendations.append(
+            f"Tool trace hygiene: {contaminated_tool_unprocessed} unprocessed tool trace marker hit(s) remain; run digest/cleanup after deploying sanitized ingestion."
+        )
 
     payload = {
         "enabled": True,
@@ -348,7 +425,13 @@ def journal_report(hermes_home: Path, *, enabled: bool = True) -> tuple[dict[str
             "total": total_entries,
             "processed": processed_entries,
             "unprocessed": unprocessed_entries,
-            "oldest_unprocessed": oldest_unprocessed["created_at"] if oldest_unprocessed else "",
+            "oldest_unprocessed": oldest_value,
+        },
+        "backlog": {
+            "unprocessed_by_role": dict(sorted(unprocessed_by_role.items())),
+            "oldest_unprocessed_age_hours": round(backlog_age, 3),
+            "contamination_counts": contamination_counts,
+            "thresholds": {"warn_entries": warn_entries, "fail_entries": fail_entries, "max_age_hours": max_age_hours},
         },
         "digest_runs": digest_runs,
         "last_digest_run": dict(last_run) if last_run else {},
@@ -627,7 +710,13 @@ def main() -> int:
         runtime_config = load_runtime_config(source_root, hermes_home)
         expected_embedder = expected_embedder_from_config(runtime_config)
         sqlite_payload, sqlite_check, sqlite_recommendations = sqlite_report(hermes_home)
-        journal_payload, journal_check, journal_recommendations = journal_report(hermes_home, enabled=journal_enabled_from_config(runtime_config))
+        raw_journal = runtime_config.get("journal")
+        journal_config = raw_journal if isinstance(raw_journal, dict) else {}
+        journal_payload, journal_check, journal_recommendations = journal_report(
+            hermes_home,
+            enabled=journal_enabled_from_config(runtime_config),
+            journal_config=journal_config,
+        )
         experience_payload, experience_check, experience_recommendations = experience_report(hermes_home)
         if vector_enabled_from_config(runtime_config):
             backend = vector_backend_from_config(runtime_config)
