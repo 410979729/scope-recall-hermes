@@ -54,6 +54,24 @@ done"""
     assert "END PRIVATE KEY" not in redacted
 
 
+def test_redaction_removes_partially_masked_provider_keys_from_error_text():
+    masked_key = "sk-" + "a" * 5 + "*" * 23 + "5916"
+    text = f"Incorrect API key provided: {masked_key}"
+
+    redacted = redact_secret_like_text(text)
+
+    assert masked_key not in redacted
+    assert "[REDACTED_SECRET]" in redacted
+
+
+def test_partially_masked_provider_key_is_rejected():
+    masked_key = "sk-" + "a" * 5 + "*" * 23 + "5916"
+    result = should_capture_text(f"Incorrect API key provided: {masked_key}")
+
+    assert result.allowed is False
+    assert result.reason == "secret-like-content"
+
+
 def test_secret_index_like_multiline_metadata_is_not_cross_line_rejected():
     result = should_capture_text("Secret index: Scope Recall smoke dummy credential\nKind: api_key\nVault ref: vault://smoke/scope-recall/dummy")
 

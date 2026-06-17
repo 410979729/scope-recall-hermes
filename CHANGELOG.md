@@ -18,7 +18,7 @@ All notable changes to `scope-recall` will be documented in this file.
 ### Fixed
 - Sanitized session-end tool traces with the same `sanitize_capture_text()` / `should_capture_text()` path used for user and assistant capture, preventing image attachment markers, `image_cache/img_*` paths, secret-like text, and low-value tool dumps from entering new journal rows.
 - Classified failed LLM journal digest batches as `retry-exhausted:<kind>` or `dead-letter:<kind>` in journal rejections and run metadata, preserving retry/dead-letter evidence instead of leaving opaque quarantine rows.
-- Redacted secret-like strings from journal digest quarantine error messages before storing rejection snippets or run metadata.
+- Redacted raw and partially masked provider key strings from journal digest quarantine error messages before storing rejection snippets or run metadata.
 
 ## [1.3.0] - 2026-06-14
 
