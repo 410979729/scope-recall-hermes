@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .capture_filters import should_capture_text
+from .capture_filters import redact_secret_like_text, should_capture_text
 from .config import load_runtime_config
 from .gating import clean_text, compact_text, dedup_key
 from .governance import is_conflicting, merge_memory_text, normalize_memory_type, semantic_similarity
@@ -693,7 +693,7 @@ def _quarantine_journal_entries(conn: sqlite3.Connection, *, run_id: str, entrie
         entry_ids=entry_ids,
         reason=reason,
         candidate=JournalDigestCandidate(
-            content=f"{reason}: {type(error).__name__}: {str(error)[:400]}",
+            content=redact_secret_like_text(f"{reason}: {type(error).__name__}: {str(error)[:400]}"),
             target="memory",
             entry_ids=entry_ids,
         ),
@@ -1150,12 +1150,13 @@ def _quarantine_classification(error: Exception) -> tuple[str, dict[str, Any]]:
     if isinstance(error, JournalDigestLLMError):
         classification = "retry_exhausted" if error.retryable else "dead_letter"
         reason_prefix = "retry-exhausted" if error.retryable else "dead-letter"
+        sanitized = redact_secret_like_text(str(error)[:400])
         return f"{reason_prefix}:{error.error_kind}", {
             "classification": classification,
             "kind": error.error_kind,
             "retryable": bool(error.retryable),
             "attempts": int(error.attempts),
-            "message": str(error)[:400],
+            "message": sanitized,
         }
     kind, retryable = _classify_llm_digest_error(error)
     classification = "retry_exhausted" if retryable else "dead_letter"
@@ -1165,7 +1166,7 @@ def _quarantine_classification(error: Exception) -> tuple[str, dict[str, Any]]:
         "kind": kind,
         "retryable": retryable,
         "attempts": 1,
-        "message": f"{type(error).__name__}: {str(error)[:400]}",
+        "message": redact_secret_like_text(f"{type(error).__name__}: {str(error)[:400]}"),
     }
 
 
