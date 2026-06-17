@@ -14,7 +14,7 @@ def test_distribution_metadata_exposes_official_standalone_install_shape():
     pyproject = tomllib.loads((PLUGIN_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert pyproject["project"]["name"] == "hermes-scope-recall"
-    assert pyproject["project"]["version"] == "1.3.0"
+    assert pyproject["project"]["version"] == "1.4.0"
     assert pyproject["project"]["scripts"] == {
         "hermes-scope-recall": "scope_recall.installer:main"
     }
@@ -49,7 +49,7 @@ def test_installer_copy_ignores_only_relative_artifacts_not_venv_ancestor(tmp_pa
     for rel in ["__init__.py", "provider.py", "plugin.yaml", "config.json"]:
         target = fake_source / rel
         if rel == "plugin.yaml":
-            content = "name: scope-recall\nversion: 1.3.0\n"
+            content = "name: scope-recall\nversion: 1.4.0\n"
         elif rel == "__init__.py":
             content = '"""register_memory_provider marker for Hermes discovery."""\n'
         else:
@@ -142,7 +142,7 @@ def test_installer_excludes_local_secret_state_and_symlink_artifacts(tmp_path, m
     for rel in ["__init__.py", "provider.py", "plugin.yaml", "config.json"]:
         target = fake_source / rel
         if rel == "plugin.yaml":
-            content = "name: scope-recall\nversion: 1.3.0\n"
+            content = "name: scope-recall\nversion: 1.4.0\n"
         elif rel == "__init__.py":
             content = '"""register_memory_provider marker for Hermes discovery."""\n'
         else:

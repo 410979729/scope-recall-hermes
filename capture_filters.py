@@ -34,6 +34,8 @@ DEFAULT_CAPTURE_SKIP_PATTERNS: tuple[str, ...] = (
 )
 
 SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # PEM private-key blocks must be redacted as a whole, not just the BEGIN line.
+    re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"),
     # Common assignment forms: api_key=..., api key: ..., token is ..., private-key = ...
     re.compile(
         r"(?:api[_ \t-]?key|token|secret|password|passwd|credential(?:[_ \t-]?[a-z0-9_]+)?|private[_ \t-]?key)"
@@ -44,7 +46,6 @@ SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"s" r"k-[A-Za-z0-9][A-Za-z0-9_-]{18,}"),
     re.compile(r"g" r"h[pousr]_[A-Za-z0-9_]{20,}"),
     re.compile(r"bea" r"rer\s+[A-Za-z0-9._\-~+/=]{16,}", re.IGNORECASE),
-    re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"),
 )
 
 ATTACHMENT_LINE_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -89,6 +90,16 @@ def sanitize_capture_text(text: Any) -> str:
 
 def contains_secret_like_text(text: str) -> bool:
     return any(pattern.search(text) for pattern in SECRET_PATTERNS)
+
+
+def redact_secret_like_text(text: Any) -> str:
+    cleaned = clean_text(text)
+    if not cleaned:
+        return ""
+    redacted = cleaned
+    for pattern in SECRET_PATTERNS:
+        redacted = pattern.sub("[REDACTED_SECRET]", redacted)
+    return redacted
 
 
 def _configured_patterns(config: dict[str, Any] | None) -> tuple[str, ...]:

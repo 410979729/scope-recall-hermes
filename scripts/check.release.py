@@ -22,7 +22,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-PACKAGE_VERSION = "1.3.0"
+PACKAGE_VERSION = "1.4.0"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
 EXTERNAL_TEST_DIRS = {".hermes-agent-src"}
@@ -49,6 +49,7 @@ REQUIRED_SOURCE_FILES = {
     "docs/external-shared-memory.md",
     "docs/stability.md",
     "docs/naming.md",
+    "docs/experience.kernel.md",
     "docs/hermes-upstream-recommendation-plan.md",
     "scripts/import.openclaw.memory_lancedb_pro.py",
     "scripts/nightly-digest.py",
@@ -57,6 +58,13 @@ REQUIRED_SOURCE_FILES = {
     "scripts/report.hygiene.py",
     "scripts/migrate.legacy_hygiene.py",
     "scripts/doctor.py",
+    "scripts/experience-replay.py",
+    "experience_models.py",
+    "experience_store.py",
+    "experience_preflight.py",
+    "experience_replay.py",
+    "experience_promotion.py",
+    "forgetting.py",
     "installer.py",
     "py.typed",
 }
@@ -74,6 +82,12 @@ REQUIRED_WHEEL = {
     "scope_recall/prompting.py",
     "scope_recall/schemas.py",
     "scope_recall/secret_index.py",
+    "scope_recall/experience_models.py",
+    "scope_recall/experience_store.py",
+    "scope_recall/experience_preflight.py",
+    "scope_recall/experience_replay.py",
+    "scope_recall/experience_promotion.py",
+    "scope_recall/forgetting.py",
     "scope_recall/hygiene.py",
     "scope_recall/journal.py",
     "scope_recall/nightly_digest.py",
@@ -95,6 +109,7 @@ REQUIRED_WHEEL = {
     "scope_recall/docs/external-shared-memory.md",
     "scope_recall/docs/stability.md",
     "scope_recall/docs/naming.md",
+    "scope_recall/docs/experience.kernel.md",
     "scope_recall/docs/hermes-upstream-recommendation-plan.md",
     "scope_recall/scripts/import.openclaw.memory_lancedb_pro.py",
     "scope_recall/scripts/nightly-digest.py",
@@ -103,12 +118,14 @@ REQUIRED_WHEEL = {
     "scope_recall/scripts/report.hygiene.py",
     "scope_recall/scripts/migrate.legacy_hygiene.py",
     "scope_recall/scripts/doctor.py",
+    "scope_recall/scripts/experience-replay.py",
 }
 STABLE_TOOL_NAMES = {
     "scope_recall_store",
     "scope_recall_store_secret_index",
     "scope_recall_search",
     "scope_recall_context",
+    "scope_recall_profile",
     "scope_recall_probe",
     "scope_recall_related",
     "scope_recall_feedback",
@@ -124,6 +141,16 @@ STABLE_TOOL_NAMES = {
     "scope_recall_inspect",
     "scope_recall_explain",
     "scope_recall_benchmark",
+    "scope_recall_playbook_create",
+    "scope_recall_playbook_search",
+    "scope_recall_playbook_inspect",
+    "scope_recall_experience_preflight",
+    "scope_recall_playbook_feedback",
+    "scope_recall_playbook_review",
+    "scope_recall_experience_stats",
+    "scope_recall_experience_promote",
+    "scope_recall_forgetting_report",
+    "scope_recall_forgetting_run",
 }
 
 

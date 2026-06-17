@@ -10,6 +10,17 @@ from tools.registry import tool_error
 from .capture_filters import CaptureFilterResult, should_capture_text
 from .gating import config_bool
 from .graph import clamp_float
+from .experience_preflight import experience_preflight
+from .experience_promotion import promote_experiences
+from .experience_store import (
+    create_playbook,
+    experience_stats,
+    inspect_playbook,
+    record_playbook_feedback,
+    review_playbook,
+    search_playbooks,
+)
+from .forgetting import build_forgetting_report, run_forgetting
 from .secret_index import build_secret_index
 
 logger = logging.getLogger(__name__)
@@ -55,6 +66,16 @@ class ScopeRecallToolService:
             "scope_recall_inspect": self._handle_inspect,
             "scope_recall_explain": self._handle_explain,
             "scope_recall_benchmark": self._handle_benchmark,
+            "scope_recall_playbook_create": self._handle_playbook_create,
+            "scope_recall_playbook_search": self._handle_playbook_search,
+            "scope_recall_playbook_inspect": self._handle_playbook_inspect,
+            "scope_recall_experience_preflight": self._handle_experience_preflight,
+            "scope_recall_playbook_feedback": self._handle_playbook_feedback,
+            "scope_recall_playbook_review": self._handle_playbook_review,
+            "scope_recall_experience_stats": self._handle_experience_stats,
+            "scope_recall_experience_promote": self._handle_experience_promote,
+            "scope_recall_forgetting_report": self._handle_forgetting_report,
+            "scope_recall_forgetting_run": self._handle_forgetting_run,
         }
         handler = handlers.get(normalized)
         if handler is None:
@@ -351,6 +372,32 @@ class ScopeRecallToolService:
         limit = max(1, min(1000, int(args.get("limit") or 200)))
         return self._json(self.provider._hygiene_report(limit=limit))
 
+    def _handle_forgetting_report(self, args: dict[str, Any]) -> str:
+        if not self._operator_mode_enabled():
+            return tool_error("scope_recall_forgetting_report requires maintenance_tools_enabled=true")
+        limit = max(1, min(1000, int(args.get("limit") or 200)))
+        with self.provider._lock:
+            payload = build_forgetting_report(
+                self.provider._require_conn(),
+                accessible_scope_ids=self.provider._accessible_scope_ids,
+                limit=limit,
+            )
+        return self._json(payload)
+
+    def _handle_forgetting_run(self, args: dict[str, Any]) -> str:
+        if not self._operator_mode_enabled():
+            return tool_error("scope_recall_forgetting_run requires maintenance_tools_enabled=true")
+        limit = max(1, min(1000, int(args.get("limit") or 200)))
+        with self.provider._lock:
+            payload = run_forgetting(
+                self.provider._require_conn(),
+                accessible_scope_ids=self.provider._accessible_scope_ids,
+                dry_run=self._bool_arg(args, "dry_run", True),
+                hard_delete=self._bool_arg(args, "hard_delete", False),
+                limit=limit,
+            )
+        return self._json(payload)
+
     def _handle_stats(self, args: dict[str, Any]) -> str:
         del args
         return self._json(self.provider._stats_payload())
@@ -381,6 +428,168 @@ class ScopeRecallToolService:
         if not queries:
             return tool_error("queries is required")
         return self._json(self.provider._benchmark_queries(queries=queries, limit=self._limit(args)))
+
+    def _playbook_scope_id(self) -> str:
+        return str(getattr(self.provider, "_shared_scope_id", "") or getattr(self.provider, "_scope_id", ""))
+
+    def _playbook_shared_scope_id(self) -> str:
+        return str(getattr(self.provider, "_shared_pool_scope_id", "") or "")
+
+    def _experience_enabled(self) -> bool:
+        raw_config = self.provider._config.get("experience") if isinstance(self.provider._config, dict) else {}
+        config = dict(raw_config) if isinstance(raw_config, dict) else {}
+        return config_bool(config, "enabled", True)
+
+    def _experience_disabled_error(self) -> str:
+        return tool_error("Experience Kernel is disabled")
+
+    def _handle_playbook_create(self, args: dict[str, Any]) -> str:
+        if not self._experience_enabled():
+            return self._experience_disabled_error()
+        if not self._operator_mode_enabled():
+            return tool_error("scope_recall_playbook_create requires maintenance_tools_enabled=true")
+        payload = args.get("payload")
+        if not isinstance(payload, dict):
+            return tool_error("payload object is required")
+        confidence = args.get("confidence")
+        if confidence is None:
+            confidence_value = None
+        else:
+            try:
+                confidence_value = float(confidence)
+            except (TypeError, ValueError):
+                return tool_error("confidence must be numeric")
+        with self.provider._lock:
+            playbook = create_playbook(
+                self.provider._require_conn(),
+                playbook_id=str(args.get("id") or "").strip() or None,
+                scope_id=self._playbook_scope_id(),
+                shared_scope_id=self._playbook_shared_scope_id(),
+                payload=payload,
+                status=str(args.get("status") or "candidate"),
+                confidence=confidence_value,
+                created_from_episode_id=str(args.get("created_from_episode_id") or ""),
+                evidence_anchors=args.get("evidence_anchors") if isinstance(args.get("evidence_anchors"), list) else [],
+                related_skills=args.get("related_skills") if isinstance(args.get("related_skills"), list) else [],
+                environment_constraints=args.get("environment_constraints") if isinstance(args.get("environment_constraints"), dict) else {},
+                metadata=args.get("metadata") if isinstance(args.get("metadata"), dict) else {},
+            )
+        return self._json({"created": True, "playbook": playbook})
+
+    def _handle_playbook_search(self, args: dict[str, Any]) -> str:
+        if not self._experience_enabled():
+            return self._experience_disabled_error()
+        query = self._clean_query(args) if args.get("query") else ""
+        with self.provider._lock:
+            results = search_playbooks(
+                self.provider._require_conn(),
+                query=query,
+                accessible_scope_ids=self.provider._accessible_scope_ids,
+                limit=self._limit(args),
+                task_class=str(args.get("task_class") or ""),
+                status=str(args.get("status") or ""),
+            )
+        return self._json({"count": len(results), "results": results})
+
+    def _handle_playbook_inspect(self, args: dict[str, Any]) -> str:
+        if not self._experience_enabled():
+            return self._experience_disabled_error()
+        playbook_id = str(args.get("id") or "").strip()
+        if not playbook_id:
+            return tool_error("id is required")
+        with self.provider._lock:
+            payload = inspect_playbook(
+                self.provider._require_conn(),
+                playbook_id=playbook_id,
+                accessible_scope_ids=self.provider._accessible_scope_ids,
+            )
+        return self._json(payload)
+
+    def _handle_experience_preflight(self, args: dict[str, Any]) -> str:
+        query = self._clean_query(args)
+        if not query:
+            return tool_error("query is required")
+        with self.provider._lock:
+            payload = experience_preflight(
+                self.provider._require_conn(),
+                query=query,
+                accessible_scope_ids=self.provider._accessible_scope_ids,
+                config=self.provider._config,
+                limit=self._limit(args),
+            )
+        return self._json(payload)
+
+    def _handle_playbook_feedback(self, args: dict[str, Any]) -> str:
+        if not self._experience_enabled():
+            return self._experience_disabled_error()
+        playbook_id = str(args.get("id") or "").strip()
+        if not playbook_id:
+            return tool_error("id is required")
+        outcome = str(args.get("outcome") or "").strip()
+        if not outcome:
+            return tool_error("outcome is required")
+        raw_evidence = args.get("evidence") or []
+        evidence = raw_evidence if isinstance(raw_evidence, list) else [str(raw_evidence)]
+        with self.provider._lock:
+            payload = record_playbook_feedback(
+                self.provider._require_conn(),
+                playbook_id=playbook_id,
+                scope_id=self._playbook_scope_id(),
+                outcome=outcome,
+                accessible_scope_ids=self.provider._accessible_scope_ids,
+                decision=str(args.get("decision") or "guided_reuse"),
+                evidence=evidence,
+                outcome_reason=self.provider._clean_text(str(args.get("outcome_reason") or "")),
+                model_name=str(args.get("model_name") or ""),
+                tool_call_count=int(args.get("tool_call_count") or 0),
+                token_estimate=int(args.get("token_estimate") or 0),
+            )
+        return self._json(payload)
+
+    def _handle_playbook_review(self, args: dict[str, Any]) -> str:
+        if not self._experience_enabled():
+            return self._experience_disabled_error()
+        if not self._operator_mode_enabled():
+            return tool_error("scope_recall_playbook_review requires maintenance_tools_enabled=true")
+        playbook_id = str(args.get("id") or "").strip()
+        if not playbook_id:
+            return tool_error("id is required")
+        with self.provider._lock:
+            payload = review_playbook(
+                self.provider._require_conn(),
+                playbook_id=playbook_id,
+                accessible_scope_ids=self.provider._accessible_scope_ids,
+                action=str(args.get("action") or ""),
+                reason=self.provider._clean_text(str(args.get("reason") or "")),
+                superseded_by=str(args.get("superseded_by") or ""),
+            )
+        return self._json(payload)
+
+    def _handle_experience_stats(self, args: dict[str, Any]) -> str:
+        if not self._experience_enabled():
+            return self._experience_disabled_error()
+        del args
+        with self.provider._lock:
+            payload = experience_stats(self.provider._require_conn(), accessible_scope_ids=self.provider._accessible_scope_ids)
+        return self._json(payload)
+
+    def _handle_experience_promote(self, args: dict[str, Any]) -> str:
+        if not self._experience_enabled():
+            return self._experience_disabled_error()
+        if not self._operator_mode_enabled():
+            return tool_error("scope_recall_experience_promote requires maintenance_tools_enabled=true")
+        limit_sessions = max(1, min(100, int(args.get("limit_sessions") or 20)))
+        with self.provider._lock:
+            payload = promote_experiences(
+                self.provider._require_conn(),
+                accessible_scope_ids=self.provider._accessible_scope_ids,
+                scope_id=self._playbook_scope_id(),
+                shared_scope_id=self._playbook_shared_scope_id(),
+                config=self.provider._config,
+                limit_sessions=limit_sessions,
+                dry_run=self._bool_arg(args, "dry_run", True),
+            )
+        return self._json(payload)
 
     def _clean_query(self, args: dict[str, Any]) -> str:
         return self.provider._normalize_query(

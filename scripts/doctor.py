@@ -18,6 +18,28 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+try:
+    from scope_recall.capture_filters import redact_secret_like_text
+except Exception:  # pragma: no cover - keeps the standalone doctor script usable from source checkouts
+    def redact_secret_like_text(text: Any) -> str:
+        value = "" if text is None else str(text)
+        value = re.sub(
+            r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
+            "[REDACTED_SECRET]",
+            value,
+        )
+        value = re.sub(
+            r"(?:api[_ \t-]?key|token|secret|password|passwd|credential(?:[_ \t-]?[a-z0-9_]+)?|private[_ \t-]?key)"
+            r"(?:[ \t]*(?::|=|是)[ \t]*|[ \t]+is[ \t]+)[^\s]+",
+            "[REDACTED_SECRET]",
+            value,
+            flags=re.IGNORECASE,
+        )
+        value = re.sub(r"s" r"k-[A-Za-z0-9][A-Za-z0-9_-]{18,}", "[REDACTED_SECRET]", value)
+        value = re.sub(r"g" r"h[pousr]_[A-Za-z0-9_]{20,}", "[REDACTED_SECRET]", value)
+        value = re.sub(r"bea" r"rer\s+[A-Za-z0-9._\-~+/=]{16,}", "[REDACTED_SECRET]", value, flags=re.IGNORECASE)
+        return value
+
 DEFAULT_SOURCE_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -527,6 +549,67 @@ def vector_report(
     return payload, {"ok": False, "failures": [f"unsupported vector backend: {normalized}"]}, ["Set vector.backend to 'lancedb' or 'sqlite-bruteforce'."]
 
 
+def experience_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    recommendations: list[str] = []
+    db_path = hermes_home / "scope-recall" / "memory.sqlite3"
+    required_tables = {
+        "task_episodes",
+        "procedural_playbooks",
+        "procedural_playbooks_fts",
+        "playbook_versions",
+        "experience_runs",
+        "reflection_events",
+        "fact_freshness",
+        "skill_anchors",
+        "skill_conflicts",
+    }
+    if not db_path.exists():
+        return {"enabled": True, "status": "missing", "path": str(db_path)}, {"ok": False, "failures": [f"SQLite truth DB not found: {db_path}"]}, [
+            "Initialize scope-recall with the current plugin to create Experience Kernel tables."
+        ]
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            missing = sorted(required_tables - tables)
+            if missing:
+                recommendations.append("Initialize scope-recall with the current plugin so ensure_schema() creates Experience Kernel tables.")
+                return {
+                    "enabled": True,
+                    "path": str(db_path),
+                    "status": "schema_missing",
+                    "missing_tables": missing,
+                }, {"ok": False, "failures": [f"experience tables missing: {missing}"]}, recommendations
+            playbook_total = int(conn.execute("SELECT COUNT(*) FROM procedural_playbooks").fetchone()[0])
+            playbook_by_status = {
+                redact_secret_like_text(row["status"]): int(row["count"])
+                for row in conn.execute("SELECT status, COUNT(*) AS count FROM procedural_playbooks GROUP BY status")
+            }
+            run_total = int(conn.execute("SELECT COUNT(*) FROM experience_runs").fetchone()[0])
+            run_by_outcome = {
+                redact_secret_like_text(row["outcome"]): int(row["count"])
+                for row in conn.execute("SELECT outcome, COUNT(*) AS count FROM experience_runs GROUP BY outcome")
+            }
+            stale_facts = int(conn.execute("SELECT COUNT(*) FROM fact_freshness WHERE status IN ('stale', 'needs_live_check')").fetchone()[0])
+        finally:
+            conn.close()
+    except Exception as exc:
+        recommendations.append("Repair or restore the SQLite truth DB before trusting Experience Kernel status.")
+        return {"enabled": True, "path": str(db_path), "status": "error", "error": str(exc)}, {"ok": False, "failures": [f"experience health error: {exc}"]}, recommendations
+
+    payload = {
+        "enabled": True,
+        "path": str(db_path),
+        "status": "ready",
+        "tables": sorted(required_tables),
+        "playbooks": {"total": playbook_total, "by_status": dict(sorted(playbook_by_status.items()))},
+        "runs": {"total": run_total, "by_outcome": dict(sorted(run_by_outcome.items()))},
+        "stale_facts": stale_facts,
+    }
+    return payload, {"ok": True, "failures": []}, recommendations
+
+
 def disabled_vector_report() -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     payload = {"enabled": False, "status": "disabled", "ready": False}
     return payload, {"ok": True, "failures": []}, []
@@ -545,6 +628,7 @@ def main() -> int:
         expected_embedder = expected_embedder_from_config(runtime_config)
         sqlite_payload, sqlite_check, sqlite_recommendations = sqlite_report(hermes_home)
         journal_payload, journal_check, journal_recommendations = journal_report(hermes_home, enabled=journal_enabled_from_config(runtime_config))
+        experience_payload, experience_check, experience_recommendations = experience_report(hermes_home)
         if vector_enabled_from_config(runtime_config):
             backend = vector_backend_from_config(runtime_config)
             vector_payload, vector_check, vector_recommendations = vector_report(hermes_home, expected_embedder=expected_embedder, backend=backend)
@@ -558,13 +642,16 @@ def main() -> int:
             "vector_backend": backend,
             "sqlite": sqlite_payload,
             "journal": journal_payload,
+            "experience": experience_payload,
             "vector": vector_payload,
         }
         checks["sqlite_truth"] = sqlite_check
         checks["journal_provenance"] = journal_check
+        checks["experience_kernel"] = experience_check
         checks["vector_companion"] = vector_check
         recommendations.extend(sqlite_recommendations)
         recommendations.extend(journal_recommendations)
+        recommendations.extend(experience_recommendations)
         recommendations.extend(vector_recommendations)
 
     payload["ok"] = all(bool(check.get("ok")) for check in checks.values())
