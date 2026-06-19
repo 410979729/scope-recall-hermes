@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import queue
 import sqlite3
@@ -12,7 +13,7 @@ from typing import Any, Dict, List, Optional
 from agent.memory_provider import MemoryProvider
 
 from .capture import enqueue_store, flush_writer, shutdown_writer, start_writer
-from .capture_filters import sanitize_capture_text, should_capture_text
+from .capture_filters import contains_secret_like_text, redact_secret_like_text, sanitize_capture_text, sanitize_report_text, should_capture_text
 from .capture_llm import extract_capture_candidates
 from .config import load_runtime_config, save_runtime_config
 from .journal import append_journal_entry, ensure_journal_schema, run_journal_digest
@@ -82,6 +83,8 @@ from .storage_views import search_curated_memories, search_db_memories, search_v
 from .tooling import ScopeRecallToolService
 from .vector_runtime import setup_vector_layer
 from .experience_preflight import experience_preflight
+from .experience_promotion import promote_experiences
+from .experience_store import backfill_skill_anchors
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +253,10 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         ensure_schema(self._conn)
+        try:
+            backfill_skill_anchors(self._conn)
+        except Exception:
+            logger.exception("Scope Recall skill-anchor backfill failed")
         ensure_journal_schema(self._conn)
         setup_vector_layer(self)
         start_writer(self)
@@ -582,22 +589,48 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             raw_content = message.get("output")
         if raw_content is None:
             raw_content = message.get("result")
-        content = sanitize_capture_text(clean_text(raw_content))
-        if not content:
+        raw_clean = clean_text(raw_content)
+        if contains_secret_like_text(raw_clean):
             return ""
+        content = sanitize_capture_text(redact_secret_like_text(raw_clean))
         filter_config = dict(self._config)
         try:
             filter_config["capture_hard_max_chars"] = int(journal_config.get("tool_trace_hard_max_chars") or 4000)
         except (TypeError, ValueError):
             filter_config["capture_hard_max_chars"] = 4000
-        if not should_capture_text(content, filter_config).allowed:
-            return ""
-        prefix = f"Tool execution trace ({tool_name})" if tool_name else "Tool execution trace"
+        include_preview = config_bool(journal_config, "tool_trace_include_output_preview", False)
+        output_chars = len(content)
+        safe_fields: list[str] = []
+        if tool_name:
+            safe_fields.append(f"tool={tool_name}")
+        safe_fields.append(f"output_chars={output_chars}")
+        parsed: Any = None
+        if content:
+            try:
+                parsed = json.loads(content)
+            except Exception:
+                parsed = None
+        if isinstance(parsed, dict):
+            for key in ("exit_code", "status", "ok", "success", "skipped", "deleted", "updated", "inserted"):
+                if key in parsed and isinstance(parsed.get(key), (str, int, float, bool)):
+                    safe_fields.append(f"{key}={parsed.get(key)}")
+            error = parsed.get("error")
+            if error:
+                safe_fields.append(f"error={compact_text(sanitize_report_text(str(error)), 160)}")
+        if include_preview and content and should_capture_text(content, filter_config).allowed:
+            try:
+                preview_chars = int(journal_config.get("tool_trace_preview_max_chars") or 500)
+            except (TypeError, ValueError):
+                preview_chars = 500
+            safe_fields.append(f"preview={compact_text(content, max(120, preview_chars))}")
+        elif content:
+            safe_fields.append("output_preview=omitted")
+        prefix = f"Tool execution summary ({tool_name})" if tool_name else "Tool execution summary"
         try:
             max_chars = int(journal_config.get("tool_trace_max_chars") or 1800)
         except (TypeError, ValueError):
             max_chars = 1800
-        return compact_text(f"{prefix}: {content}", max(200, max_chars))
+        return compact_text(f"{prefix}: " + "; ".join(safe_fields), max(200, max_chars))
 
     def _coerce_journal_float(self, journal_config: dict[str, Any], key: str, default: float) -> float:
         try:
@@ -656,7 +689,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             limit_entries = 500
         extractor = str(journal_config.get("extractor") or "llm").strip().lower()
         try:
-            run_journal_digest(
+            result = run_journal_digest(
                 hermes_home=self._hermes_home,
                 extractor=extractor,
                 scope=self._background_digest_scope(),
@@ -664,6 +697,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 limit_entries=max(1, limit_entries),
                 dry_run=False,
             )
+            if result.get("ok", result.get("status") == "ok"):
+                self._maybe_run_auto_experience_promotion(trigger="background-journal-digest")
         except Exception:
             logger.exception("Scope Recall background journal digest failed")
 
@@ -684,7 +719,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             logger.info("Scope Recall session-end journal digest skipped: llm extractor requires scheduled/background digest")
             return
         try:
-            run_journal_digest(
+            result = run_journal_digest(
                 hermes_home=self._hermes_home,
                 extractor=extractor,
                 scope=self._scope,
@@ -692,8 +727,38 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 limit_entries=max(1, limit_entries),
                 dry_run=False,
             )
+            if result.get("ok", result.get("status") == "ok"):
+                self._maybe_run_auto_experience_promotion(trigger="session-end-journal-digest")
         except Exception:
             logger.exception("Scope Recall session-end journal digest failed")
+
+    def _maybe_run_auto_experience_promotion(self, *, trigger: str) -> None:
+        if self._scope.agent_context != "primary":
+            return
+        raw_experience_config = self._config.get("experience")
+        experience_config = raw_experience_config if isinstance(raw_experience_config, dict) else {}
+        if not config_bool(experience_config, "enabled", True):
+            return
+        if not config_bool(experience_config, "auto_promotion_enabled", False):
+            return
+        try:
+            limit_sessions = int(experience_config.get("auto_promotion_limit_sessions") or 20)
+        except (TypeError, ValueError):
+            limit_sessions = 20
+        try:
+            with self._lock:
+                result = promote_experiences(
+                    self._require_conn(),
+                    accessible_scope_ids=self._accessible_scope_ids,
+                    scope_id=self._scope_id,
+                    shared_scope_id=self._shared_scope_id,
+                    config=self._config,
+                    limit_sessions=max(1, limit_sessions),
+                    dry_run=False,
+                )
+            logger.info("Scope Recall auto experience promotion after %s: %s", trigger, result)
+        except Exception:
+            logger.exception("Scope Recall auto experience promotion failed after %s", trigger)
 
     def on_session_switch(
         self,

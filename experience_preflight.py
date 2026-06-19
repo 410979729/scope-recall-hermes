@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping, Sequence
 
-from .capture_filters import redact_secret_like_text
+from .capture_filters import sanitize_report_text
 from .experience_models import RISKY_CAPABILITY_CLASSES
 from .experience_store import search_playbooks
 from .gating import compact_text
@@ -60,7 +60,7 @@ def _risky_capabilities(playbook: Mapping[str, Any]) -> list[str]:
 
 
 def _safe_text(value: Any) -> str:
-    return redact_secret_like_text(value).strip()
+    return sanitize_report_text(value).strip()
 
 
 def _policy_bool(policy: Mapping[str, Any], key: str, default: bool | None = None) -> bool | None:
@@ -192,6 +192,12 @@ def experience_preflight(
     allow_risky_direct = _bool_config(cfg, "allow_risky_direct_reuse", False)
     risky = _risky_capabilities(selected)
     raw_policy = selected.get("reuse_policy")
+    raw_governance = selected.get("skill_governance")
+    governance: Mapping[str, Any] = raw_governance if isinstance(raw_governance, Mapping) else {}
+    if governance.get("open_conflicts"):
+        no_reuse_reasons.append("open_skill_conflict")
+    if governance.get("missing_anchors"):
+        reasons.append("missing_skill_anchor")
     policy: Mapping[str, Any] = raw_policy if isinstance(raw_policy, Mapping) else {}
     default_decision = str(policy.get("default_decision") or "").strip().lower()
     if default_decision and default_decision not in {"direct_reuse", "guided_reuse", "no_reuse"}:

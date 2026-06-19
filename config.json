@@ -46,6 +46,8 @@
     ],
     "tool_trace_hard_max_chars": 4000,
     "tool_trace_max_chars": 1800,
+    "tool_trace_include_output_preview": false,
+    "tool_trace_preview_max_chars": 500,
     "endpoint": "",
     "append_v1": true
   },
@@ -72,12 +74,13 @@
   "maintenance_tools_enabled": false,
   "experience": {
     "enabled": true,
-    "prefetch_enabled": false,
+    "prefetch_enabled": true,
     "min_query_chars": 8,
     "direct_reuse_min_confidence": 0.82,
     "allow_risky_direct_reuse": false,
     "packet_max_chars": 1400,
     "auto_promotion_enabled": false,
+    "auto_promotion_limit_sessions": 20,
     "auto_promote_low_risk": true,
     "promotion_min_entries": 3,
     "promotion_min_tool_entries": 1,

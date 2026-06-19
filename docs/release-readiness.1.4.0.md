@@ -11,7 +11,7 @@ Version `1.4.0` adds the conservative Experience Kernel MVP on top of the stable
 - scope-filtered playbook search/inspect/preflight/stats tools;
 - maintenance-gated playbook create/review tools;
 - scoped feedback accounting in `experience_runs`;
-- optional runtime preflight packet rendering, disabled by default;
+- bounded runtime preflight packet rendering, enabled by default in the current source candidate and disableable with `experience.prefetch_enabled=false`;
 - read-only replay benchmarking through `scripts/experience-replay.py`;
 - doctor visibility for Experience Kernel tables and counts.
 
@@ -25,7 +25,7 @@ The following commands were run from the repository root before this note was ad
 | metadata check through `scripts/check.release.py` internals | `ok: true`, no missing source, no failures |
 | `python -m ruff check .` | `All checks passed!` |
 | `git diff --check` | exit code `0`, no whitespace errors |
-| `python -m pytest -q` | `327 passed, 2 warnings` |
+| `python -m pytest -q` | `355 passed, 1 skipped, 1 warning` |
 | `python scripts/check.release.py` | `ok: true` |
 
 Release-gate artifact smoke from `python scripts/check.release.py`:
@@ -33,7 +33,7 @@ Release-gate artifact smoke from `python scripts/check.release.py`:
 | Surface | Result |
 |---|---|
 | Wheel name | `hermes_scope_recall-1.4.0-py3-none-any.whl` |
-| Wheel file count | `73` |
+| Wheel file count | `76` |
 | Import smoke | `['register']` |
 | Installer smoke | installed plugin manifest version `1.4.0` |
 | Doctor smoke on installed wheel copy | `ok: true`, plugin version `1.4.0`, pyproject version `1.4.0` |
@@ -70,7 +70,8 @@ This proves the minimal reusable-experience loop exists, but it does **not** pro
 
 - Source-tree gates and wheel/install smoke prove the package candidate is locally coherent.
 - They do not prove that a long-running Hermes gateway has already loaded this exact code; runtime freshness requires restart/reload approval and a post-restart smoke on the target service.
-- Runtime Experience packet injection remains disabled by default through `experience.prefetch_enabled=false`.
+- Runtime Experience packet injection is enabled by default through `experience.prefetch_enabled=true`, but remains bounded/advisory and can be disabled with `experience.prefetch_enabled=false`.
+- Automatic Experience promotion is enabled by default after successful journal digest through `experience.auto_promotion_enabled=true`; it remains evidence-gated and can be disabled with `experience.auto_promotion_enabled=false`.
 - Playbook create/review remains maintenance-gated; ordinary runtime exposure is limited to read-only search/inspect/preflight/stats plus scoped feedback when `experience.enabled=true`.
 - Claims should stay conservative: framework-ready and minimal-loop-proven, not mature automated experience curation.
 

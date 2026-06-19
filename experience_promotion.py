@@ -8,7 +8,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
-from .capture_filters import contains_secret_like_text, redact_secret_like_text
+from .capture_filters import contains_secret_like_text, sanitize_report_text
 from .experience_store import create_playbook, review_playbook
 from .gating import compact_text
 from .sql_store import ensure_schema
@@ -265,6 +265,75 @@ def _playbook_exists_for_episode(conn: sqlite3.Connection, episode_id: str) -> b
     return conn.execute("SELECT 1 FROM procedural_playbooks WHERE created_from_episode_id = ?", (episode_id,)).fetchone() is not None
 
 
+def _metadata_journal_entry_ids(raw: object) -> set[int]:
+    if not raw:
+        return set()
+    try:
+        metadata = json.loads(str(raw))
+    except (TypeError, ValueError):
+        return set()
+    values = metadata.get("journal_entry_ids") if isinstance(metadata, dict) else None
+    if not isinstance(values, list):
+        return set()
+    ids: set[int] = set()
+    for value in values:
+        try:
+            ids.add(int(value))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
+def _similar_playbook_exists(
+    conn: sqlite3.Connection,
+    *,
+    accessible_scope_ids: Sequence[str],
+    task_class: str,
+    title: str,
+    entry_ids: Sequence[int],
+    min_overlap_ratio: float = 0.75,
+) -> dict[str, Any] | None:
+    """Detect near-duplicate auto playbooks from overlapping journal windows."""
+
+    candidate_ids = {int(value) for value in entry_ids}
+    if not candidate_ids:
+        return None
+    scopes = [str(scope_id) for scope_id in accessible_scope_ids if str(scope_id)]
+    if not scopes:
+        return None
+    placeholders = ",".join("?" for _ in scopes)
+    rows = conn.execute(
+        f"""
+        SELECT id, status, metadata
+        FROM procedural_playbooks
+        WHERE scope_id IN ({placeholders})
+          AND task_class = ?
+          AND title = ?
+          AND status IN ('candidate', 'needs_review', 'reviewed', 'promoted')
+        ORDER BY updated_at DESC, created_at DESC
+        """,
+        [*scopes, task_class, title],
+    ).fetchall()
+    for row in rows:
+        existing_ids = _metadata_journal_entry_ids(row["metadata"])
+        if not existing_ids:
+            continue
+        overlap = len(candidate_ids & existing_ids)
+        if not overlap:
+            continue
+        ratio = overlap / max(1, min(len(candidate_ids), len(existing_ids)))
+        if ratio >= min_overlap_ratio:
+            return {
+                "id": str(row["id"]),
+                "status": str(row["status"]),
+                "overlap": overlap,
+                "candidate_ids": len(candidate_ids),
+                "existing_ids": len(existing_ids),
+                "overlap_ratio": round(ratio, 4),
+            }
+    return None
+
+
 def _insert_episode(
     conn: sqlite3.Connection,
     *,
@@ -302,7 +371,7 @@ def _insert_episode(
             str(entries[-1]["created_at"]),
             _json_dumps(ids),
             _json_dumps(tool_names),
-            _json_dumps([compact_text(str(entry["content"] or ""), 260) for entry in entries if str(entry["role"] or "") in {"tool", "assistant"}][:8]),
+            _json_dumps([sanitize_report_text(compact_text(str(entry["content"] or ""), 260)) for entry in entries if str(entry["role"] or "") in {"tool", "assistant"}][:8]),
             _json_dumps(verification),
             _json_dumps({"auto_extracted": True, "risk_level": risk_level, "created_at": now}),
         ),
@@ -367,6 +436,18 @@ def promote_experiences(
             result["duplicates_skipped"] += 1
             continue
         title = _title(task_class, text)
+        entry_ids = [int(entry["id"]) for entry in entries]
+        similar = _similar_playbook_exists(
+            conn,
+            accessible_scope_ids=accessible_scope_ids,
+            task_class=task_class,
+            title=title,
+            entry_ids=entry_ids,
+        )
+        if similar is not None:
+            result["duplicates_skipped"] += 1
+            result["items"].append({"action": "skip", "reason": "similar_playbook_exists", "similar_playbook": similar})
+            continue
         playbook_id = _hash_id("pb_auto", episode_id, title)
         if dry_run:
             result["episodes_created"] += 1
@@ -410,7 +491,7 @@ def promote_experiences(
                 "risk_level": risk_level,
                 "source": "experience_promotion",
                 "journal_entry_ids": [int(entry["id"]) for entry in entries],
-                "safe_summary": redact_secret_like_text(compact_text(text, 500)),
+                "safe_summary": sanitize_report_text(compact_text(text, 500)),
             },
         )
         result["handbooks_created"] += 1

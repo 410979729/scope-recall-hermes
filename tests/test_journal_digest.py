@@ -5,8 +5,13 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from scope_recall.models import RuntimeScope
 import scope_recall.journal as journal_module
+from scope_recall.forgetting import build_forgetting_report
+from scope_recall.hygiene import build_hygiene_report
+from scope_recall.memory_ops import feedback_memory
 from scope_recall.scope import build_scope_id, build_shared_scope_id, accessible_scope_ids
 from scope_recall.sql_store import delete_rows, ensure_schema, store_row
 from scope_recall.journal import (
@@ -18,6 +23,7 @@ from scope_recall.journal import (
     heuristic_journal_candidates,
     load_unprocessed_journal_entries,
     run_journal_digest,
+    _call_llm_with_retries,
     _insert_journal_entry,
 )
 
@@ -76,6 +82,115 @@ def test_journal_entries_are_provenance_not_durable_memory(tmp_path):
     entries = load_unprocessed_journal_entries(conn, scope_ids=accessible_scope_ids(scope), limit=10)
     assert [entry.role for entry in entries] == ["user", "assistant"]
     assert all(entry.processed_run_id == "" for entry in entries)
+
+
+def test_rejected_journal_candidate_is_redacted_before_persisting(tmp_path):
+    conn = _open_memory_db(tmp_path / "memory.sqlite3")
+    scope = _scope()
+    entry_id = append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=build_scope_id(scope),
+        shared_scope_id=build_shared_scope_id(scope),
+        session_id="secret-rejection",
+        turn_number=1,
+        role="user",
+        content="临时输入里包含敏感信息，不应进入 durable memory。",
+    )
+    candidate = JournalDigestCandidate(
+        content="长期记忆候选里误含 api_key=" + "sk-" + "B" * 24 + "，应被过滤且 rejection 也必须脱敏。",
+        target="memory",
+        entry_ids=[entry_id],
+    )
+
+    result = apply_journal_candidates(conn, None, scope, run_id="redaction-test", candidates=[candidate])
+
+    assert result["counts"]["skipped"] == 1
+    row = conn.execute("SELECT candidate FROM journal_rejections WHERE journal_entry_id = ?", (entry_id,)).fetchone()
+    assert row is not None
+    assert "[REDACTED_SECRET]" in row["candidate"]
+    assert "sk-" not in row["candidate"]
+
+
+def test_feedback_and_governance_previews_redact_secret_like_text(tmp_path):
+    conn = _open_memory_db(tmp_path / "memory.sqlite3")
+    scope = _scope()
+    scope_id = build_scope_id(scope)
+    secret = "sk-" + "C" * 24
+    store_row(
+        conn,
+        memory_id="m-secret-preview",
+        scope_id=scope_id,
+        platform=scope.platform,
+        user_id=scope.user_id,
+        chat_id=scope.chat_id,
+        thread_id=scope.thread_id,
+        gateway_session_key=scope.gateway_session_key,
+        agent_identity=scope.agent_identity,
+        agent_workspace=scope.agent_workspace,
+        session_id="preview-session",
+        source="turn-assistant",
+        target="general",
+        content=("assistant scratch api_key=" + secret + " wrote /home/a/private/output.log ") * 160,
+        allow_duplicate=True,
+    )
+
+    class FakeProvider:
+        _accessible_scope_ids = [scope_id]
+        _writable_scope_ids = [scope_id]
+
+        def __init__(self, connection):
+            self._conn = connection
+            self._lock = type("NoopLock", (), {"__enter__": lambda s: None, "__exit__": lambda s, *args: False})()
+
+        def _require_conn(self):
+            return self._conn
+
+    feedback_memory(FakeProvider(conn), memory_id="m-secret-preview", rating="helpful", note="note token=" + secret)
+    feedback_note = conn.execute("SELECT note FROM memory_feedback WHERE memory_id = ?", ("m-secret-preview",)).fetchone()["note"]
+    assert "[REDACTED_SECRET]" in feedback_note
+    assert "sk-" not in feedback_note
+
+    forgetting = build_forgetting_report(conn, accessible_scope_ids=[scope_id], limit=10)
+    forgetting_text = json.dumps(forgetting, ensure_ascii=False)
+    assert "[REDACTED_SECRET]" in forgetting_text
+    assert "[REDACTED_PATH]" in forgetting_text
+    assert "sk-" not in forgetting_text
+    assert "/home/a/private" not in forgetting_text
+
+    hygiene = build_hygiene_report(conn, limit=10)
+    hygiene_text = json.dumps(hygiene, ensure_ascii=False)
+    assert "[REDACTED_SECRET]" in hygiene_text
+    assert "[REDACTED_PATH]" in hygiene_text
+    assert "sk-" not in hygiene_text
+    assert "/home/a/private" not in hygiene_text
+
+
+def test_journal_llm_retry_error_redacts_secret_like_exception(monkeypatch):
+    secret = "sk-" + "D" * 24
+
+    def fake_call_llm(*args, **kwargs):  # noqa: ARG001
+        raise RuntimeError("provider failed with api_key=" + secret)
+
+    monkeypatch.setattr(journal_module, "call_llm", fake_call_llm)
+
+    with pytest.raises(Exception) as excinfo:
+        _call_llm_with_retries(
+            "prompt",
+            model="test-model",
+            base_url="https://example.invalid",
+            api_key="",
+            timeout=1,
+            api_mode="chat_completions",
+            endpoint="/v1/chat/completions",
+            append_v1=False,
+            max_attempts=1,
+            retry_delay=0,
+        )
+
+    message = str(excinfo.value)
+    assert "[REDACTED_SECRET]" in message
+    assert "sk-" not in message
 
 
 def test_journal_entry_preserves_long_turns_as_chunks(tmp_path):

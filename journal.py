@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .capture_filters import redact_secret_like_text, should_capture_text
+from .capture_filters import sanitize_report_text, should_capture_text
 from .config import load_runtime_config
 from .gating import clean_text, compact_text, dedup_key
 from .governance import is_conflicting, merge_memory_text, normalize_memory_type, semantic_similarity
@@ -675,7 +675,7 @@ def _record_journal_sources(conn: sqlite3.Connection, *, memory_id: str, run_id:
 
 def _record_journal_rejection(conn: sqlite3.Connection, *, run_id: str, entry_ids: list[int], reason: str, candidate: JournalDigestCandidate) -> None:
     now = now_iso()
-    snippet = compact_text(candidate.content, 500)
+    snippet = compact_text(sanitize_report_text(candidate.content), 500)
     conn.executemany(
         """
         INSERT OR REPLACE INTO journal_rejections(journal_entry_id, run_id, reason, candidate, created_at)
@@ -693,7 +693,7 @@ def _quarantine_journal_entries(conn: sqlite3.Connection, *, run_id: str, entrie
         entry_ids=entry_ids,
         reason=reason,
         candidate=JournalDigestCandidate(
-            content=redact_secret_like_text(f"{reason}: {type(error).__name__}: {str(error)[:400]}"),
+            content=sanitize_report_text(f"{reason}: {type(error).__name__}: {str(error)[:400]}"),
             target="memory",
             entry_ids=entry_ids,
         ),
@@ -1150,7 +1150,7 @@ def _quarantine_classification(error: Exception) -> tuple[str, dict[str, Any]]:
     if isinstance(error, JournalDigestLLMError):
         classification = "retry_exhausted" if error.retryable else "dead_letter"
         reason_prefix = "retry-exhausted" if error.retryable else "dead-letter"
-        sanitized = redact_secret_like_text(str(error)[:400])
+        sanitized = sanitize_report_text(str(error)[:400])
         return f"{reason_prefix}:{error.error_kind}", {
             "classification": classification,
             "kind": error.error_kind,
@@ -1166,7 +1166,7 @@ def _quarantine_classification(error: Exception) -> tuple[str, dict[str, Any]]:
         "kind": kind,
         "retryable": retryable,
         "attempts": 1,
-        "message": redact_secret_like_text(f"{type(error).__name__}: {str(error)[:400]}"),
+        "message": sanitize_report_text(f"{type(error).__name__}: {str(error)[:400]}"),
     }
 
 
@@ -1238,7 +1238,7 @@ def _call_llm_with_retries(
             last_kind, last_retryable = _classify_llm_digest_error(exc)
             if (not last_retryable) or attempt >= max_attempts:
                 raise JournalDigestLLMError(
-                    f"{last_kind} after {attempt} attempt(s): {type(exc).__name__}: {str(exc)[:400]}",
+                    f"{last_kind} after {attempt} attempt(s): {type(exc).__name__}: {sanitize_report_text(str(exc)[:400])}",
                     attempts=attempt,
                     error_kind=last_kind,
                     retryable=last_retryable,
@@ -1247,7 +1247,7 @@ def _call_llm_with_retries(
                 time.sleep(retry_delay)
     assert last_error is not None
     raise JournalDigestLLMError(
-        f"{last_kind} after {max_attempts} attempt(s): {type(last_error).__name__}: {str(last_error)[:400]}",
+        f"{last_kind} after {max_attempts} attempt(s): {type(last_error).__name__}: {sanitize_report_text(str(last_error)[:400])}",
         attempts=max_attempts,
         error_kind=last_kind,
         retryable=last_retryable,
@@ -1527,7 +1527,7 @@ def run_journal_digest(
                 INSERT OR REPLACE INTO journal_digest_runs(id, started_at, finished_at, status, extractor, interval_label, error)
                 VALUES (?, ?, ?, 'error', ?, ?, ?)
                 """,
-                (run_id, started_at, now_iso(), requested_extractor, interval_label, str(exc)[:1000]),
+                (run_id, started_at, now_iso(), requested_extractor, interval_label, sanitize_report_text(str(exc)[:1000])),
             )
             conn.commit()
         raise
@@ -1571,7 +1571,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(compact, ensure_ascii=False))
         return 0 if result.get("ok") else 1
     except Exception as exc:
-        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), flush=True)
+        print(json.dumps({"ok": False, "error": sanitize_report_text(str(exc))}, ensure_ascii=False), flush=True)
         return 1
 
 

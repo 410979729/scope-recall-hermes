@@ -2,17 +2,32 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [Unreleased]
+
+## [1.4.1] - 2026-06-19
+
+### Changed
+- Kept Experience preflight packet injection enabled by default but made background reusable-experience promotion opt-in (`experience.auto_promotion_enabled=false`) until the review queue has enough field feedback.
+- Nightly digest runs that fall back from LLM extraction to heuristic extraction now record `ok_with_fallback` instead of plain `ok`, preserving success while making degraded provider health visible.
+
+### Fixed
+- Hardened report/evidence surfaces so session-end tool capture stores safe summaries by default, tool JSON errors redact local paths, journal rejections/errors, feedback notes, hygiene/forgetting previews, and Experience evidence use a shared report sanitizer for secrets, private paths, attachment markers, and raw tool traces.
+- Made release-gate sentence-transformers coverage deterministic by mocking local encoder behavior in default tests and moving real HF model loading behind an explicit `SCOPE_RECALL_RUN_SENTENCE_TRANSFORMERS_INTEGRATION=1` integration test, preventing release readiness from depending on network/cache/GPU state.
+- Preserved manual Skill governance anchors during Experience playbook anchor sync/backfill; source-managed related-skill anchors are now inserted only when missing instead of deleting and rebuilding all anchors for a playbook.
+- Wired `experience.auto_promotion_enabled` into successful background/session-end journal digest runs so automatic reusable-experience promotion can run without manually calling `scope_recall_experience_promote`.
+- Added Skill anchor/conflict enforcement for Experience Playbooks: promoted playbooks write `skill_anchors`, startup backfills anchors for existing promoted playbooks with `related_skills`, open conflicts force `no_reuse`, missing anchors degrade direct reuse to guided reuse, and stale/misleading feedback opens Skill conflict records.
+
 ## [1.4.0] - 2026-06-17
 
 ### Added
-- Added the conservative Experience Kernel MVP: procedural playbook schema/tables, deterministic `procedural_playbook.v1` validation with per-step `capability_class`, scope-filtered playbook create/search/inspect/preflight/review/feedback/stats tools, feedback run counters, optional prefetch packet rendering disabled by default, doctor visibility for Experience tables, and a read-only `scripts/experience-replay.py` benchmark for comparing baseline coverage against Experience packets.
+- Added the conservative Experience Kernel MVP: procedural playbook schema/tables, deterministic `procedural_playbook.v1` validation with per-step `capability_class`, scope-filtered playbook create/search/inspect/preflight/review/feedback/stats tools, feedback run counters, bounded preflight packet rendering controlled by `experience.prefetch_enabled`, doctor visibility for Experience tables, and a read-only `scripts/experience-replay.py` benchmark for comparing baseline coverage against Experience packets.
 - Hardened the Experience Kernel MVP so `experience.enabled=false` is a global kill switch, create can only write `candidate`, promotion requires review, secret-like playbook/feedback text is rejected before persistence, legacy secret-like rows are redacted before tool/preflight output, corrupt core playbook JSON fails closed, `reuse_policy` is enforced before direct reuse, shared-scope feedback cannot demote global playbooks, terminal playbook statuses reject feedback, and CJK queries are not misclassified by whitespace-only low-signal checks.
 - Added the first automatic reusable-experience loop: `scope_recall_experience_promote` scans evidence-backed journal task traces, writes `task_episodes`, creates reusable experience handbooks, auto-promotes low-risk verified handbooks, and keeps high-risk handbooks in `needs_review` for later agent review instead of requiring Joy to manually inspect raw memory rows.
 - Added the first forgetting loop: `scope_recall_forgetting_report` and `scope_recall_forgetting_run` identify duplicate, scratch, tiny, wrapper-noise, and secret-like memory rows; the default action is soft archive via metadata, with hard delete reserved for explicit hard-delete candidates.
 - Added journal backlog observability to `scripts/doctor.py`, including unprocessed role distribution, oldest backlog age, attachment/path contamination counts, configurable warn/fail thresholds, and operator recommendations for digest throughput and tool-trace hygiene.
 
 ### Changed
-- Kept Experience runtime injection disabled by default while exposing read-only playbook search/inspect/preflight/stats and scoped feedback tools for operator-guided reuse.
+- Experience runtime injection is now enabled by default in the current source candidate through `experience.prefetch_enabled=true`; set `experience.prefetch_enabled=false` to keep runtime injection silent while exposing read-only playbook search/inspect/preflight/stats and scoped feedback tools for operator-guided reuse.
 - Journal digest now dynamically raises the per-run entry limit when backlog exceeds the configured threshold, capped by `journal.max_entries_per_digest_ceiling`, so old queues can drain without permanently over-provisioning normal runs.
 
 ### Fixed

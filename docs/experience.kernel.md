@@ -1,6 +1,6 @@
 # Experience Kernel MVP
 
-`scope-recall` now includes an opt-in Experience Kernel MVP for reusable procedural playbooks. In user-facing language, a playbook is a **可复用经验手册**: a checkable procedure distilled from a successful task. SQLite remains the truth store, vector/FTS surfaces are rebuildable indexes, and runtime prompt injection is disabled unless explicitly configured.
+`scope-recall` now includes an enabled-by-default but kill-switchable Experience Kernel MVP for reusable procedural playbooks. In user-facing language, a playbook is a **可复用经验手册**: a checkable procedure distilled from a successful task. SQLite remains the truth store, vector/FTS surfaces are rebuildable indexes, and bounded runtime prompt injection is enabled by default through `experience.prefetch_enabled=true`; set it to `false` to keep runtime injection silent while retaining read-only tooling.
 
 ## What it does
 
@@ -18,17 +18,17 @@ The automatic promotion path is conservative. It does **not** trust raw transcri
 
 ## Safety defaults
 
-Default config:
+Default config in the current source candidate:
 
 ```json
 {
   "experience": {
     "enabled": true,
-    "prefetch_enabled": false,
+    "prefetch_enabled": true,
     "direct_reuse_min_confidence": 0.82,
     "allow_risky_direct_reuse": false,
     "packet_max_chars": 1400,
-    "auto_promotion_enabled": false,
+    "auto_promotion_enabled": true,
     "auto_promote_low_risk": true,
     "promotion_min_entries": 3,
     "promotion_min_tool_entries": 1,
@@ -48,9 +48,9 @@ Default config:
 Important defaults:
 
 - `experience.enabled=true`: Experience Kernel tools are available. Set `false` as a global kill switch; runtime preflight returns `no_reuse`, runtime injection stays silent, and non-preflight Experience tools are hidden/blocked.
-- `experience.prefetch_enabled=false`: no runtime Experience packet is injected by default.
-- `experience.auto_promotion_enabled=false`: automatic background promotion is not yet run by default; use the maintenance tool to run the first controlled loop.
-- `experience.auto_promote_low_risk=true`: when promotion is explicitly run, low-risk verified handbooks can be enabled without Joy manually reviewing raw logs.
+- `experience.prefetch_enabled=true`: matching promoted playbooks may append a bounded advisory runtime packet to normal recall. Set `false` to keep runtime injection silent while retaining read-only tools.
+- `experience.auto_promotion_enabled=true`: successful background/session-end journal digest runs may launch conservative automatic promotion. Set `false` to require manual `scope_recall_experience_promote` runs.
+- `experience.auto_promote_low_risk=true`: low-risk verified handbooks can be enabled without Joy manually reviewing raw logs; high-risk or under-verified handbooks remain gated by review/status.
 - `allow_risky_direct_reuse=false`: playbooks with `service_control`, `network_or_remote`, `cross_instance`, `credential_adjacent`, or `destructive_or_irreversible` steps are downgraded to guided reuse unless explicitly allowed.
 - `forgetting.soft_archive_default=true`: forgetting defaults to metadata archive/hide rather than physical deletion.
 - `scope_recall_playbook_create` and `scope_recall_playbook_review` require `maintenance_tools_enabled=true`.
@@ -104,17 +104,17 @@ Every step must also carry `evidence_required`; a playbook is a checkable proced
 
 ## Runtime prefetch
 
-The normal `prefetch()` memory block is unchanged unless this config is set:
+The provider appends a bounded Experience Kernel packet by default only when a matching promoted playbook exists and the query is non-trivial. Operators can silence runtime packet injection without disabling the read-only Experience tools:
 
 ```json
 {
   "experience": {
-    "prefetch_enabled": true
+    "prefetch_enabled": false
   }
 }
 ```
 
-When enabled, the provider appends a bounded Experience Kernel packet only when a matching promoted playbook exists and the query is non-trivial. The packet is explicitly advisory:
+The packet is explicitly advisory:
 
 > use this as a scaffold only; live evidence and current user instruction override old experience.
 
