@@ -49,6 +49,15 @@ SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"bea" r"rer\s+[A-Za-z0-9._\-~+/=*]{16,}", re.IGNORECASE),
 )
 
+PRIVATE_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(?<![A-Za-z0-9])(?:/home|/Users|/root)/[^\s\]})>'\"]+"),
+    re.compile(r"(?<![A-Za-z0-9])~/(?:[^\s\]})>'\"]+)", re.IGNORECASE),
+    re.compile(r"(?<![A-Za-z0-9])(?:[A-Za-z]:)?\\\\Users\\\\[^\s\]})>'\"]+", re.IGNORECASE),
+    re.compile(r"(?<![A-Za-z0-9])/tmp/(?:hermes|scope|pytest|tmp)[^\s\]})>'\"]*", re.IGNORECASE),
+)
+
+TOOL_TRACE_LINE_RE = re.compile(r"\bTool execution trace(?:\s*\(([^)]*)\))?:[^\n\r]*(?:[\n\r]|$)", re.IGNORECASE)
+
 ATTACHMENT_LINE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^\[Image attached at:\s*.*\]\s*$", re.IGNORECASE),
     re.compile(r"^\[inline image/[^\]]*data omitted\]\s*$", re.IGNORECASE),
@@ -101,6 +110,47 @@ def redact_secret_like_text(text: Any) -> str:
     for pattern in SECRET_PATTERNS:
         redacted = pattern.sub("[REDACTED_SECRET]", redacted)
     return redacted
+
+
+def redact_private_paths(text: Any) -> str:
+    cleaned = clean_text(text)
+    if not cleaned:
+        return ""
+    redacted = cleaned
+    for pattern in INLINE_ATTACHMENT_PATTERNS:
+        redacted = pattern.sub("[REDACTED_PATH]", redacted)
+    for pattern in PRIVATE_PATH_PATTERNS:
+        redacted = pattern.sub("[REDACTED_PATH]", redacted)
+    return redacted
+
+
+def sanitize_report_text(text: Any) -> str:
+    """Redact sensitive details for report/evidence surfaces.
+
+    This is stricter than normal capture sanitization: user-visible and durable
+    audit surfaces should not echo raw tool stdout, plaintext secrets, local
+    filesystem paths, or gateway attachment cache paths.
+    """
+    cleaned = sanitize_capture_text(text)
+    if not cleaned:
+        return ""
+
+    def _tool_summary(match: re.Match[str]) -> str:
+        tool = (match.group(1) or "").strip()
+        suffix = f" ({tool})" if tool else ""
+        raw_line = match.group(0)
+        markers: list[str] = []
+        if contains_secret_like_text(raw_line):
+            markers.append("[REDACTED_SECRET]")
+        if redact_private_paths(raw_line) != clean_text(raw_line):
+            markers.append("[REDACTED_PATH]")
+        marker_suffix = " " + " ".join(markers) if markers else ""
+        return f"Tool execution summary{suffix}: output omitted{marker_suffix}"
+
+    redacted = TOOL_TRACE_LINE_RE.sub(_tool_summary, cleaned)
+    redacted = redact_secret_like_text(redacted)
+    redacted = redact_private_paths(redacted)
+    return clean_text(redacted)
 
 
 def _configured_patterns(config: dict[str, Any] | None) -> tuple[str, ...]:

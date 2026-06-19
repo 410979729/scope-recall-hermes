@@ -24,7 +24,38 @@ if PACKAGE_NAME not in sys.modules:
     package.__path__ = [str(PLUGIN_ROOT)]
     sys.modules[PACKAGE_NAME] = package
 
-build_embedder = importlib.import_module(f"{PACKAGE_NAME}.embedders").build_embedder
+embedders_module = importlib.import_module(f"{PACKAGE_NAME}.embedders")
+build_embedder = embedders_module.build_embedder
+
+
+class _FakeSentenceTransformer:
+    def __init__(self, model: str, **kwargs):
+        self.model = model
+        self.kwargs = kwargs
+
+    def get_embedding_dimension(self) -> int:
+        return 384
+
+    def encode(self, items, *, normalize_embeddings=True, convert_to_numpy=True):
+        del normalize_embeddings, convert_to_numpy
+        return [[1.0, *([0.0] * 383)] for _ in items]
+
+
+def _install_fake_sentence_transformer(monkeypatch):
+    try:
+        import sentence_transformers as sentence_transformers_pkg
+
+        monkeypatch.setattr(sentence_transformers_pkg, "SentenceTransformer", _FakeSentenceTransformer, raising=False)
+    except Exception:
+        pass
+    monkeypatch.setattr(embedders_module, "SentenceTransformer", _FakeSentenceTransformer)
+    embedders_module._SENTENCE_TRANSFORMER_CACHE.clear()
+    for module in list(sys.modules.values()):
+        if getattr(module, "__file__", "") and str(getattr(module, "__file__", "")).endswith("/embedders.py"):
+            monkeypatch.setattr(module, "SentenceTransformer", _FakeSentenceTransformer, raising=False)
+            cache = getattr(module, "_SENTENCE_TRANSFORMER_CACHE", None)
+            if isinstance(cache, dict):
+                cache.clear()
 
 
 
@@ -585,8 +616,8 @@ def test_sentence_transformers_embedder_builds_local_interface_without_loading_w
     assert embedder.is_available() is sentence_transformers_available
 
 
-@pytest.mark.skipif(not bool(__import__('importlib').util.find_spec('sentence_transformers')), reason='sentence-transformers not installed')
-def test_sentence_transformers_embedder_can_encode_locally_when_requested():
+def test_sentence_transformers_embedder_can_encode_locally_when_requested(monkeypatch):
+    _install_fake_sentence_transformer(monkeypatch)
     embedder = build_embedder(
         {
             "provider": "sentence-transformers",
@@ -595,11 +626,29 @@ def test_sentence_transformers_embedder_can_encode_locally_when_requested():
     )
     vectors = embedder.embed_texts(["scope recall local embedder smoke test"])
     assert len(vectors) == 1
+    assert len(vectors[0]) == 384
+
+
+@pytest.mark.skipif(
+    os.getenv("SCOPE_RECALL_RUN_SENTENCE_TRANSFORMERS_INTEGRATION") != "1"
+    or not bool(importlib.util.find_spec("sentence_transformers")),
+    reason="real sentence-transformers integration is opt-in because it may download/load HF model weights",
+)
+def test_sentence_transformers_embedder_real_model_integration():
+    embedder = build_embedder(
+        {
+            "provider": "sentence-transformers",
+            "model": "sentence-transformers/all-MiniLM-L6-v2",
+            "device": "cpu",
+        }
+    )
+    vectors = embedder.embed_texts(["scope recall local embedder smoke test"])
+    assert len(vectors) == 1
     assert len(vectors[0]) >= 384
 
 
-@pytest.mark.skipif(not bool(__import__('importlib').util.find_spec('sentence_transformers')), reason='sentence-transformers not installed')
-def test_sentence_transformers_provider_path_uses_local_vector_dimensions(tmp_path):
+def test_sentence_transformers_provider_path_uses_local_vector_dimensions(tmp_path, monkeypatch):
+    _install_fake_sentence_transformer(monkeypatch)
     config_path = tmp_path / "scope-recall" / "config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(

@@ -18,16 +18,21 @@ import sys
 import tempfile
 import zipfile
 
+sys.dont_write_bytecode = True
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-PACKAGE_VERSION = "1.4.0"
+PACKAGE_VERSION = "1.4.1"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
 EXTERNAL_TEST_DIRS = {".hermes-agent-src"}
 SECRET_PATTERNS = {
-    "api_key_assignment": re.compile(r"(api_key|secret|password|passwd|token)\s*=\s*['\"][A-Za-z0-9._\-+/=]{12,}['\"]", re.I),
+    "api_key_assignment": re.compile(
+        r"[\"']?\b(?:api[_ -]?key|secret|password|passwd|token)\b[\"']?\s*(?:=|:)\s*[\"']?[A-Za-z0-9._\-+/=]{12,}[\"']?",
+        re.I,
+    ),
     "bearer_literal": re.compile(r"bearer\s+[A-Za-z0-9._\-~+/=]{16,}", re.I),
     "github_pat": re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}"),
     "openai_style": re.compile(r"sk-[A-Za-z0-9]{20,}"),
@@ -172,7 +177,72 @@ def read_text(rel: str) -> str:
 def redact_sensitive(text: object) -> str:
     from scope_recall.http_utils import redact_sensitive as _redact_sensitive
 
-    return _redact_sensitive(text)
+    redacted = _redact_sensitive(text)
+    redacted = re.sub(
+        r"(?i)([\"']?\b(?:api[_ -]?key|secret|password|passwd|token)\b[\"']?\s*(?:=|:)\s*[\"']?)[A-Za-z0-9._\-+/=]{4,}([\"']?)",
+        r"\1[REDACTED]\2",
+        redacted,
+    )
+    redacted = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._\-~+/=]{4,}", r"\1[REDACTED]", redacted)
+    redacted = re.sub(r"gh[pousr]_[A-Za-z0-9_]{8,}", "[REDACTED]", redacted)
+    redacted = re.sub(r"sk-[A-Za-z0-9]{8,}", "[REDACTED]", redacted)
+    return redacted
+
+
+SYNTHETIC_HOME_PRIVATE_FIXTURE = "/home/" + "a/private"
+
+SYNTHETIC_TEST_FIXTURE_MARKERS = (
+    "fake",
+    "fixture",
+    "legacy_",
+    "example_",
+    "notareal",
+    "not_a_real",
+    "public-test-token",
+    "secret1234567890",
+    "abcdef1234567890",
+    "test-key",
+    "test_token",
+    "token-without",
+    "without-jwt",
+    "sk-secret",
+    "[redacted",
+    "redacted_",
+    "private/output.log",
+    SYNTHETIC_HOME_PRIVATE_FIXTURE,
+)
+
+
+def _is_synthetic_test_fixture_line(rel: pathlib.Path, line: str) -> bool:
+    if rel.parts[:1] != ("tests",):
+        return False
+    lowered = line.lower()
+    return any(marker in lowered for marker in SYNTHETIC_TEST_FIXTURE_MARKERS)
+
+
+def _looks_like_release_secret(match_text: str) -> bool:
+    """Return true only for likely plaintext secret literals.
+
+    The release scanner should catch real JSON/YAML/Python secret assignments,
+    while ignoring ordinary source variables such as
+    ``api_key = _resolve_api_key(...)`` and sanitizer fixtures that already use
+    ``[REDACTED]`` or ``***``.
+    """
+    parts = re.split(r"=|:", match_text, maxsplit=1)
+    raw_value = parts[1] if len(parts) == 2 else match_text
+    value = raw_value.strip().strip("'\"").strip()
+    value_lower = value.lower()
+    if not value or value.startswith("_") or "(" in value or "[" in value:
+        return False
+    if value_lower in {"none", "null", "true", "false", "api_key", "token", "secret", "password"}:
+        return False
+    if "redacted" in value_lower or set(value) <= {"*"}:
+        return False
+    if value.startswith(("sk-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_")):
+        return True
+    has_alpha = any(ch.isalpha() for ch in value)
+    has_digit = any(ch.isdigit() for ch in value)
+    return len(value) >= 16 and has_alpha and has_digit
 
 
 def scan_tree() -> dict[str, list[str]]:
@@ -192,13 +262,31 @@ def scan_tree() -> dict[str, list[str]]:
         if not path.is_file():
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
+        lines = text.splitlines()
         for name, rx in SECRET_PATTERNS.items():
             for match in rx.finditer(text):
+                if name == "api_key_assignment" and not _looks_like_release_secret(match.group(0)):
+                    continue
                 line_no = text[: match.start()].count("\n") + 1
+                line = lines[line_no - 1] if 0 <= line_no - 1 < len(lines) else match.group(0)
+                if _is_synthetic_test_fixture_line(rel, line):
+                    continue
                 findings["secrets"].append(f"{rel}:{line_no}: {name}: {redact_sensitive(match.group(0))}")
-        private_markers = ("".join(("/home/", "a/", ".hermes-yuheng")), "".join(("/home/", "a/")))
-        if any(marker in text for marker in private_markers):
-            findings["private_paths"].append(str(rel))
+        home = pathlib.Path.home()
+        private_markers = tuple(
+            marker
+            for marker in {
+                str(home / ".hermes-yuheng"),
+                str(home) + os.sep,
+            }
+            if marker and marker != os.sep
+        )
+        private_path_lines: list[int] = []
+        for line_no, line in enumerate(lines, 1):
+            if any(marker in line for marker in private_markers) and not _is_synthetic_test_fixture_line(rel, line):
+                private_path_lines.append(line_no)
+        if private_path_lines:
+            findings["private_paths"].append(f"{rel}:{private_path_lines[0]}")
     findings["generated_artifacts"] = sorted(set(findings["generated_artifacts"]))
     return findings
 

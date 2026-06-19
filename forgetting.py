@@ -6,7 +6,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
-from .capture_filters import contains_secret_like_text, should_capture_text
+from .capture_filters import contains_secret_like_text, sanitize_report_text, should_capture_text
 from .gating import compact_text
 from .sql_store import ensure_schema
 
@@ -42,7 +42,7 @@ def _preview(row: sqlite3.Row, *, reason: str, superseded_by: str = "") -> dict[
         "source": str(row["source"] or ""),
         "updated_at": str(row["updated_at"] or ""),
         "reason": reason,
-        "preview": compact_text(str(row["content"] or ""), 180),
+        "preview": compact_text(sanitize_report_text(str(row["content"] or "")), 180),
     }
     if superseded_by:
         item["superseded_by"] = superseded_by

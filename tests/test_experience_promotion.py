@@ -58,7 +58,7 @@ def test_low_risk_verified_task_auto_creates_and_promotes_experience_handbook():
         session_id="session-docs",
         turn=2,
         role="tool",
-        content="Tool execution trace (terminal): python -m pytest tests/test_release.py -q -> 5 passed; ruff ok; docs smoke ok.",
+        content="Tool execution trace (terminal): python -m pytest tests/test_release.py -q -> 5 passed; wrote /home/a/private/output.log; ruff ok; docs smoke ok.",
     )
     _append(
         conn,
@@ -86,6 +86,12 @@ def test_low_risk_verified_task_auto_creates_and_promotes_experience_handbook():
     assert episode is not None
     assert episode["outcome"] == "success"
     assert "pytest" in episode["tool_names"]
+    evidence = json.loads(episode["evidence"])
+    evidence_text = json.dumps(evidence, ensure_ascii=False)
+    assert "Tool execution summary (terminal): output omitted" in evidence_text
+    assert "Tool execution trace" not in evidence_text
+    assert "/home/a/private" not in evidence_text
+    assert "[REDACTED_PATH]" in evidence_text
 
     row = conn.execute("SELECT * FROM procedural_playbooks").fetchone()
     assert row is not None
@@ -153,3 +159,39 @@ def test_high_risk_task_creates_candidate_but_does_not_auto_promote():
     assert "授权" in row["pitfalls"] or "push" in row["pitfalls"].lower()
     metadata = json.loads(row["metadata"])
     assert metadata["risk_level"] == "high"
+
+def test_overlapping_auto_promotion_window_skips_similar_existing_playbook():
+    conn = _conn()
+    scope = _scope()
+    scope_id = build_scope_id(scope)
+    shared_scope_id = build_shared_scope_id(scope)
+
+    _append(conn, scope=scope, session_id="release-overlap", turn=1, role="user", content="检查 scope-recall 是否可以推送仓库并发布。")
+    _append(conn, scope=scope, session_id="release-overlap", turn=2, role="tool", content="pytest 357 passed; ruff ok; release gate ok; git push 需要授权。")
+    _append(conn, scope=scope, session_id="release-overlap", turn=3, role="assistant", content="完成：发布候选检查通过，push/tag 需等待 Joy 授权。")
+
+    first = promote_experiences(
+        conn,
+        accessible_scope_ids=accessible_scope_ids(scope),
+        scope_id=scope_id,
+        shared_scope_id=shared_scope_id,
+        config={"experience": {"auto_promote_low_risk": True}},
+        dry_run=False,
+    )
+    assert first["handbooks_created"] == 1
+
+    _append(conn, scope=scope, session_id="release-overlap", turn=4, role="assistant", content="补充：测试通过，release gate ok，仍然不能自动 push/tag。")
+
+    second = promote_experiences(
+        conn,
+        accessible_scope_ids=accessible_scope_ids(scope),
+        scope_id=scope_id,
+        shared_scope_id=shared_scope_id,
+        config={"experience": {"auto_promote_low_risk": True}},
+        dry_run=False,
+    )
+
+    assert second["handbooks_created"] == 0
+    assert second["duplicates_skipped"] >= 1
+    assert second["items"][0]["reason"] == "similar_playbook_exists"
+    assert conn.execute("SELECT COUNT(*) FROM procedural_playbooks").fetchone()[0] == 1

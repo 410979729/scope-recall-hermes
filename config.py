@@ -45,6 +45,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "tool_trace_skip_names": ["todo", "skill_view", "skills_list"],
         "tool_trace_hard_max_chars": 4000,
         "tool_trace_max_chars": 1800,
+        "tool_trace_include_output_preview": False,
+        "tool_trace_preview_max_chars": 500,
     },
     "per_turn_extraction": {
         "enabled": False,
@@ -69,12 +71,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "maintenance_tools_enabled": False,
     "experience": {
         "enabled": True,
-        "prefetch_enabled": False,
+        "prefetch_enabled": True,
         "min_query_chars": 8,
         "direct_reuse_min_confidence": 0.82,
         "allow_risky_direct_reuse": False,
         "packet_max_chars": 1400,
         "auto_promotion_enabled": False,
+        "auto_promotion_limit_sessions": 20,
         "auto_promote_low_risk": True,
         "promotion_min_entries": 3,
         "promotion_min_tool_entries": 1,

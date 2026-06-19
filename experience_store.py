@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
-from .capture_filters import contains_secret_like_text, redact_secret_like_text
+from .capture_filters import contains_secret_like_text, sanitize_report_text
 from .experience_models import (
     PLAYBOOK_STATUSES,
     RISKY_CAPABILITY_CLASSES,
@@ -78,13 +78,13 @@ def _reject_secret_like_value(value: Any, *, path: str = "payload") -> None:
             _reject_secret_like_value(item, path=f"{path}[{index}]")
 
 
-def _redact_secret_like_value(value: Any) -> Any:
+def _sanitize_report_value(value: Any) -> Any:
     if isinstance(value, str):
-        return redact_secret_like_text(value)
+        return sanitize_report_text(value)
     if isinstance(value, Mapping):
-        return {redact_secret_like_text(str(key)): _redact_secret_like_value(item) for key, item in value.items()}
+        return {sanitize_report_text(str(key)): _sanitize_report_value(item) for key, item in value.items()}
     if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
-        return [_redact_secret_like_value(item) for item in value]
+        return [_sanitize_report_value(item) for item in value]
     return value
 
 
@@ -92,9 +92,9 @@ def _redact_run(row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
     for key in ("decision", "outcome", "outcome_reason", "model_name"):
         if key in item:
-            item[key] = redact_secret_like_text(item[key])
+            item[key] = sanitize_report_text(item[key])
     if "evidence" in item:
-        item["evidence"] = redact_secret_like_text(item["evidence"])
+        item["evidence"] = sanitize_report_text(item["evidence"])
     return item
 
 
@@ -128,6 +128,117 @@ def _playbook_payload(playbook: ProceduralPlaybook) -> dict[str, Any]:
         "status": playbook.status,
         "confidence": playbook.confidence,
     }
+
+
+def _related_skill_names(value: Any) -> list[str]:
+    raw = value
+    if isinstance(raw, str):
+        raw = _json_loads(raw, [])
+    if not isinstance(raw, Sequence) or isinstance(raw, (bytes, bytearray, str)):
+        return []
+    names: list[str] = []
+    for item in raw:
+        name = sanitize_report_text(str(item or "").strip())
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _sync_skill_anchors_for_playbook(conn: sqlite3.Connection, row: sqlite3.Row, *, reason: str = "") -> None:
+    playbook_id = str(row["id"])
+    skills = _related_skill_names(row["related_skills"])
+    if not skills:
+        return
+    existing = {
+        str(existing_row["skill_name"])
+        for existing_row in conn.execute(
+            "SELECT skill_name FROM skill_anchors WHERE playbook_id = ?",
+            (playbook_id,),
+        ).fetchall()
+    }
+    now = _now_iso()
+    safe_reason = sanitize_report_text(str(reason or "playbook promoted"))[:1000]
+    for skill_name in skills:
+        if skill_name in existing:
+            continue
+        conn.execute(
+            """
+            INSERT INTO skill_anchors(id, playbook_id, skill_name, load_policy, reason, created_at)
+            VALUES (?, ?, ?, 'optional_reference', ?, ?)
+            """,
+            (f"ska_{uuid.uuid4().hex}", playbook_id, skill_name, safe_reason, now),
+        )
+
+
+def _skill_governance_for_playbook(conn: sqlite3.Connection, playbook_id: str, related_skills: Sequence[str]) -> dict[str, Any]:
+    anchors = [
+        {"skill_name": str(row["skill_name"]), "load_policy": str(row["load_policy"]), "reason": str(row["reason"])}
+        for row in conn.execute(
+            "SELECT skill_name, load_policy, reason FROM skill_anchors WHERE playbook_id = ? ORDER BY skill_name",
+            (playbook_id,),
+        ).fetchall()
+    ]
+    open_conflicts = [
+        {
+            "skill_name": str(row["skill_name"]),
+            "conflicting_source": str(row["conflicting_source"]),
+            "conflict_summary": sanitize_report_text(str(row["conflict_summary"])),
+            "resolution": str(row["resolution"]),
+        }
+        for row in conn.execute(
+            """
+            SELECT skill_name, conflicting_source, conflict_summary, resolution
+            FROM skill_conflicts
+            WHERE playbook_id = ? AND status = 'open'
+            ORDER BY created_at DESC
+            """,
+            (playbook_id,),
+        ).fetchall()
+    ]
+    anchored = {item["skill_name"] for item in anchors}
+    missing = [skill for skill in related_skills if skill and skill not in anchored]
+    return {"anchors": anchors, "open_conflicts": open_conflicts, "missing_anchors": missing}
+
+
+def _attach_skill_governance(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, Any]:
+    related_skills = _related_skill_names(payload.get("related_skills") or [])
+    if not related_skills:
+        payload["skill_governance"] = {"anchors": [], "open_conflicts": [], "missing_anchors": []}
+        return payload
+    payload["skill_governance"] = _skill_governance_for_playbook(conn, str(payload.get("id") or ""), related_skills)
+    return payload
+
+
+def backfill_skill_anchors(conn: sqlite3.Connection, *, limit: int = 1000) -> dict[str, Any]:
+    """Ensure existing promoted playbooks with related skills have DB anchors."""
+
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM procedural_playbooks
+        WHERE status = 'promoted'
+          AND related_skills IS NOT NULL
+          AND related_skills NOT IN ('', '[]')
+        ORDER BY updated_at DESC
+        LIMIT ?
+        """,
+        (max(1, int(limit or 1000)),),
+    ).fetchall()
+    checked = 0
+    backfilled = 0
+    for row in rows:
+        skills = _related_skill_names(row["related_skills"])
+        if not skills:
+            continue
+        checked += 1
+        governance = _skill_governance_for_playbook(conn, str(row["id"]), skills)
+        if not governance.get("missing_anchors"):
+            continue
+        _sync_skill_anchors_for_playbook(conn, row, reason="startup backfill for promoted playbook related_skills")
+        backfilled += 1
+    if backfilled:
+        conn.commit()
+    return {"checked": checked, "backfilled": backfilled}
 
 
 def _serialize_row(row: sqlite3.Row, *, match_source: str = "", score: float = 0.0) -> dict[str, Any]:
@@ -183,7 +294,7 @@ def _serialize_row(row: sqlite3.Row, *, match_source: str = "", score: float = 0
         payload["match_source"] = match_source
     if score:
         payload["score"] = round(score, 4)
-    return _redact_secret_like_value(payload)
+    return _sanitize_report_value(payload)
 
 
 def create_playbook(
@@ -215,6 +326,12 @@ def create_playbook(
     _reject_secret_like_value(metadata or {}, path="metadata")
     _reject_secret_like_value(playbook_id or "", path="playbook_id")
     _reject_secret_like_value(created_from_episode_id or "", path="created_from_episode_id")
+    normalized_payload = dict(_sanitize_report_value(normalized_payload))
+    safe_evidence_anchors = _sanitize_report_value(list(evidence_anchors or []))
+    safe_related_skills = _sanitize_report_value(list(related_skills or []))
+    safe_environment_constraints = _sanitize_report_value(dict(environment_constraints or {}))
+    safe_metadata = _sanitize_report_value(dict(metadata or {}))
+    safe_created_from_episode_id = sanitize_report_text(created_from_episode_id or "")
     normalized_payload["status"] = "candidate"
     if confidence is not None:
         normalized_payload["confidence"] = confidence
@@ -236,16 +353,16 @@ def create_playbook(
         "pitfalls": _json_dumps([dict(item) for item in playbook.pitfalls]),
         "verification": _json_dumps(list(playbook.verification)),
         "cleanup": _json_dumps(list(playbook.cleanup)),
-        "evidence_anchors": _json_dumps(list(evidence_anchors or [])),
-        "related_skills": _json_dumps(list(related_skills or [])),
-        "environment_constraints": _json_dumps(dict(environment_constraints or {})),
+        "evidence_anchors": _json_dumps(safe_evidence_anchors),
+        "related_skills": _json_dumps(safe_related_skills),
+        "environment_constraints": _json_dumps(safe_environment_constraints),
         "reuse_policy": _json_dumps(dict(playbook.reuse_policy)),
         "status": playbook.status,
         "confidence": float(playbook.confidence),
-        "created_from_episode_id": str(created_from_episode_id or ""),
+        "created_from_episode_id": safe_created_from_episode_id,
         "created_at": now,
         "updated_at": now,
-        "metadata": _json_dumps(dict(metadata or {})),
+        "metadata": _json_dumps(safe_metadata),
     }
     conn.execute(
         """
@@ -289,7 +406,7 @@ def create_playbook(
     )
     conn.commit()
     row = conn.execute("SELECT * FROM procedural_playbooks WHERE id = ?", (pid,)).fetchone()
-    return _serialize_row(row)
+    return _attach_skill_governance(conn, _serialize_row(row))
 
 
 def _lexical_score(row: sqlite3.Row, query: str) -> float:
@@ -365,22 +482,28 @@ def search_playbooks(
         scored = [(_lexical_score(row_by_id[str(fts_row["playbook_id"])], query), "fts", row_by_id[str(fts_row["playbook_id"])]) for fts_row in fts_rows]
         scored = [item for item in scored if item[0] > 0]
         scored.sort(key=lambda item: (item[0], float(item[2]["confidence"]), str(item[2]["updated_at"])), reverse=True)
-        return [_serialize_row(row, match_source=source, score=score) for score, source, row in scored[: max(1, min(50, int(limit or 5)))]]
+        return [
+            _attach_skill_governance(conn, _serialize_row(row, match_source=source, score=score))
+            for score, source, row in scored[: max(1, min(50, int(limit or 5)))]
+        ]
 
     scored: list[tuple[float, str, sqlite3.Row]] = []
     for row in rows:
         scored.append((_lexical_score(row, query), "recent", row))
     scored.sort(key=lambda item: (item[0], float(item[2]["confidence"]), str(item[2]["updated_at"])), reverse=True)
-    return [_serialize_row(row, match_source=source, score=score) for score, source, row in scored[: max(1, min(50, int(limit or 5)))]]
+    return [
+        _attach_skill_governance(conn, _serialize_row(row, match_source=source, score=score))
+        for score, source, row in scored[: max(1, min(50, int(limit or 5)))]
+    ]
 
 
 def inspect_playbook(conn: sqlite3.Connection, *, playbook_id: str, accessible_scope_ids: Sequence[str]) -> dict[str, Any]:
     scope_sql, scope_params = _scope_predicate(accessible_scope_ids)
     row = conn.execute(f"SELECT * FROM procedural_playbooks WHERE id = ? AND {scope_sql}", [playbook_id, *scope_params]).fetchone()
     if row is None:
-        return {"found": False, "id": redact_secret_like_text(playbook_id)}
+        return {"found": False, "id": sanitize_report_text(playbook_id)}
     versions = [
-        _redact_secret_like_value(dict(item))
+        _sanitize_report_value(dict(item))
         for item in conn.execute(
             "SELECT id, version, change_type, change_reason, created_at FROM playbook_versions WHERE playbook_id = ? ORDER BY version DESC",
             (playbook_id,),
@@ -399,7 +522,7 @@ def inspect_playbook(conn: sqlite3.Connection, *, playbook_id: str, accessible_s
             [playbook_id, *run_scope_params],
         ).fetchall()
     ]
-    return {"found": True, "playbook": _serialize_row(row), "versions": versions, "runs": runs}
+    return {"found": True, "playbook": _attach_skill_governance(conn, _serialize_row(row)), "versions": versions, "runs": runs}
 
 
 def _next_version(conn: sqlite3.Connection, playbook_id: str) -> int:
@@ -433,6 +556,8 @@ def review_playbook(
         raise ExperienceValidationError("unsupported review action")
     _reject_secret_like_value(reason, path="review.reason")
     _reject_secret_like_value(superseded_by, path="review.superseded_by")
+    safe_reason = sanitize_report_text(reason)
+    safe_superseded_by = sanitize_report_text(superseded_by)
     inspected = inspect_playbook(conn, playbook_id=playbook_id, accessible_scope_ids=accessible_scope_ids)
     if not inspected.get("found"):
         return {"reviewed": False, "id": playbook_id, "error": "not_found"}
@@ -440,15 +565,17 @@ def review_playbook(
     version = _next_version(conn, playbook_id)
     conn.execute(
         "UPDATE procedural_playbooks SET status = ?, superseded_by = ?, updated_at = ? WHERE id = ?",
-        (status, superseded_by if status == "superseded" else "", now, playbook_id),
+        (status, safe_superseded_by if status == "superseded" else "", now, playbook_id),
     )
     updated = conn.execute("SELECT * FROM procedural_playbooks WHERE id = ?", (playbook_id,)).fetchone()
+    if status == "promoted":
+        _sync_skill_anchors_for_playbook(conn, updated, reason=safe_reason or "playbook promoted")
     conn.execute(
         """
         INSERT INTO playbook_versions(id, playbook_id, version, change_type, change_reason, snapshot, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (f"pbv_{uuid.uuid4().hex}", playbook_id, version, status, reason, _json_dumps(_serialize_row(updated)), now),
+        (f"pbv_{uuid.uuid4().hex}", playbook_id, version, status, safe_reason, _json_dumps(_serialize_row(updated)), now),
     )
     conn.commit()
     return {"reviewed": True, "id": playbook_id, "status": status, "version": version}
@@ -465,6 +592,52 @@ def _recompute_confidence(row: sqlite3.Row) -> float:
     recent_failure_penalty = 0.15 if failure and (failure >= success) else 0.0
     value = 0.65 * base + 0.30 * outcome_score + review_bonus - stale_penalty - recent_failure_penalty
     return max(0.0, min(0.95, value))
+
+
+def _record_skill_conflicts_from_feedback(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    outcome: str,
+    outcome_reason: str = "",
+    created_at: str,
+) -> int:
+    if outcome not in {"stale", "misleading"}:
+        return 0
+    playbook_id = str(row["id"])
+    skills = _related_skill_names(row["related_skills"])
+    if not skills:
+        return 0
+    summary = sanitize_report_text(str(outcome_reason or f"Playbook feedback marked this experience as {outcome}."))[:1200]
+    inserted = 0
+    for skill_name in skills:
+        existing = conn.execute(
+            """
+            SELECT 1 FROM skill_conflicts
+            WHERE playbook_id = ? AND skill_name = ? AND status = 'open' AND conflicting_source = 'feedback'
+            """,
+            (playbook_id, skill_name),
+        ).fetchone()
+        if existing:
+            continue
+        conn.execute(
+            """
+            INSERT INTO skill_conflicts(
+                id, playbook_id, skill_name, conflicting_source, conflict_summary,
+                resolution, status, created_at, metadata
+            ) VALUES (?, ?, ?, 'feedback', ?, 'needs_agent_review', 'open', ?, ?)
+            """,
+            (
+                f"sc_{uuid.uuid4().hex}",
+                playbook_id,
+                skill_name,
+                summary,
+                created_at,
+                _json_dumps({"outcome": outcome}),
+            ),
+        )
+        inserted += 1
+    return inserted
 
 
 def record_playbook_feedback(
@@ -496,6 +669,9 @@ def record_playbook_feedback(
     _reject_secret_like_value(list(evidence or []), path="feedback.evidence")
     _reject_secret_like_value(outcome_reason, path="feedback.outcome_reason")
     _reject_secret_like_value(model_name, path="feedback.model_name")
+    safe_evidence = _sanitize_report_value(list(evidence or []))
+    safe_outcome_reason = sanitize_report_text(outcome_reason)
+    safe_model_name = sanitize_report_text(model_name)
     now = _now_iso()
     current_status = str(row["status"])
     if current_status in {"quarantined", "superseded"}:
@@ -514,10 +690,10 @@ def record_playbook_feedback(
             scope_id,
             normalized_decision,
             float(row["confidence"]),
-            _json_dumps(list(evidence or [])),
+            _json_dumps(safe_evidence),
             normalized_outcome,
-            outcome_reason,
-            model_name,
+            safe_outcome_reason,
+            safe_model_name,
             int(tool_call_count or 0),
             int(token_estimate or 0),
             now,
@@ -553,6 +729,13 @@ def record_playbook_feedback(
         (success_delta, failure_delta, stale_delta, new_status, now, now, playbook_id),
     )
     updated = conn.execute("SELECT * FROM procedural_playbooks WHERE id = ?", (playbook_id,)).fetchone()
+    opened_conflicts = _record_skill_conflicts_from_feedback(
+        conn,
+        row,
+        outcome=normalized_outcome,
+        outcome_reason=safe_outcome_reason,
+        created_at=now,
+    )
     new_confidence = _recompute_confidence(updated)
     conn.execute("UPDATE procedural_playbooks SET confidence = ? WHERE id = ?", (new_confidence, playbook_id))
     conn.commit()
@@ -567,6 +750,7 @@ def record_playbook_feedback(
         "success_count": int(final["success_count"]),
         "failure_count": int(final["failure_count"]),
         "stale_count": int(final["stale_count"]),
+        "skill_conflicts_opened": opened_conflicts,
     }
 
 
@@ -576,7 +760,7 @@ def experience_stats(conn: sqlite3.Connection, *, accessible_scope_ids: Sequence
     ids = [str(row["id"]) for row in rows]
     by_status: dict[str, int] = {}
     for row in rows:
-        status = redact_secret_like_text(row["status"])
+        status = sanitize_report_text(row["status"])
         by_status[status] = by_status.get(status, 0) + 1
     by_outcome: dict[str, int] = {}
     total_runs = 0
@@ -592,7 +776,7 @@ def experience_stats(conn: sqlite3.Connection, *, accessible_scope_ids: Sequence
             """,
             [*ids, *run_scope_params],
         ):
-            outcome = redact_secret_like_text(row[0])
+            outcome = sanitize_report_text(row[0])
             count = int(row[1])
             by_outcome[outcome] = count
             total_runs += count

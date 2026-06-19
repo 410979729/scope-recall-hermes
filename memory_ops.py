@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .capture import store_now
+from .capture_filters import sanitize_report_text
 from .gating import compact_text
 from .graph import clamp_float, compact_context_lines, load_metadata, normalize_entity
 from .governance import classify_memory, is_conflicting, merge_memory_text, semantic_similarity
@@ -810,9 +811,10 @@ def feedback_memory(provider: Any, *, memory_id: str, rating: str, note: str = "
         metadata["helpful_count"] = helpful_count
         metadata["unhelpful_count"] = unhelpful_count
         metadata_json = json.dumps(metadata, ensure_ascii=False, sort_keys=True)
+        safe_note = sanitize_report_text(note)[:240]
         conn.execute(
             "INSERT INTO memory_feedback(memory_id, rating, note, created_at) VALUES (?, ?, ?, ?)",
-            (memory_id, rating_value, note[:240], datetime.now(timezone.utc).isoformat()),
+            (memory_id, rating_value, safe_note, datetime.now(timezone.utc).isoformat()),
         )
         conn.execute(
             f"UPDATE memories SET metadata = ? WHERE id = ? AND scope_id IN ({_scope_placeholders(provider, writable=True)})",

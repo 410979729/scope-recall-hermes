@@ -8,6 +8,7 @@ import pytest
 from plugins.memory import load_memory_provider
 from tools.memory_tool import MemoryStore, memory_tool
 
+from scope_recall.journal import append_journal_entry
 from scope_recall.models import RuntimeScope
 from scope_recall.scope import build_scope_id
 
@@ -38,6 +39,270 @@ def test_scope_recall_plugin_loads_from_hermes_home_plugins():
     plugin = load_memory_provider("scope-recall")
     assert plugin is not None
     assert plugin.name == "scope-recall"
+
+
+def test_tool_journal_content_defaults_to_safe_summary_without_raw_output(provider):
+    content = json.dumps(
+        {
+            "output": "pytest passed with private details",
+            "exit_code": 0,
+            "error": None,
+        }
+    )
+
+    journal_content = provider._tool_journal_content({"name": "terminal", "content": content})
+
+    assert journal_content.startswith("Tool execution summary (terminal):")
+    assert "Tool execution trace" not in journal_content
+    assert "exit_code=0" in journal_content
+    assert "output_preview=omitted" in journal_content
+    assert "pytest passed" not in journal_content
+
+    assert provider._tool_journal_content({"name": "terminal", "content": "api_key=" + "sk-" + "A" * 24}) == ""
+
+    error_content = json.dumps({"exit_code": 1, "error": "Traceback wrote /home/a/private/project/output.log"})
+    error_journal_content = provider._tool_journal_content({"name": "terminal", "content": error_content})
+    assert "[REDACTED_PATH]" in error_journal_content
+    assert "/home/a/private" not in error_journal_content
+
+
+def test_background_digest_auto_promotion_runs_when_enabled(tmp_path, monkeypatch):
+    _write_scope_recall_config(
+        tmp_path,
+        {
+            "vector": {"enabled": False},
+            "journal": {
+                "enabled": True,
+                "background_digest_enabled": True,
+                "background_digest_synchronous": True,
+                "digest_interval_hours": 0.001,
+                "max_entries_per_digest": 5,
+                "extractor": "heuristic",
+            },
+            "experience": {
+                "enabled": True,
+                "auto_promotion_enabled": True,
+                "auto_promotion_limit_sessions": 7,
+                "auto_promote_low_risk": True,
+            },
+        },
+    )
+    calls = {"digest": 0, "promote": []}
+
+    def fake_digest(**kwargs):
+        calls["digest"] += 1
+        assert kwargs["dry_run"] is False
+        return {"ok": True, "processed_entries": 1}
+
+    def fake_promote(conn, **kwargs):
+        calls["promote"].append(kwargs)
+        assert conn is not None
+        return {"handbooks_created": 1, "handbooks_promoted": 1}
+
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    monkeypatch.setitem(plugin._run_background_journal_digest.__globals__, "run_journal_digest", fake_digest)
+    monkeypatch.setitem(plugin._run_background_journal_digest.__globals__, "promote_experiences", fake_promote)
+    plugin.initialize(
+        "session-auto-promotion",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="joy",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        plugin._run_background_journal_digest(plugin._journal_config())
+    finally:
+        plugin.shutdown()
+
+    assert calls["digest"] == 1
+    assert len(calls["promote"]) == 1
+    assert calls["promote"][0]["dry_run"] is False
+    assert calls["promote"][0]["limit_sessions"] == 7
+    assert calls["promote"][0]["scope_id"]
+    assert calls["promote"][0]["accessible_scope_ids"]
+
+
+def test_background_digest_auto_promotion_creates_playbook_from_journal(tmp_path, monkeypatch):
+    _write_scope_recall_config(
+        tmp_path,
+        {
+            "vector": {"enabled": False},
+            "journal": {
+                "enabled": True,
+                "background_digest_enabled": True,
+                "background_digest_synchronous": True,
+                "digest_interval_hours": 0.001,
+                "max_entries_per_digest": 5,
+                "extractor": "heuristic",
+            },
+            "experience": {
+                "enabled": True,
+                "auto_promotion_enabled": True,
+                "auto_promotion_limit_sessions": 5,
+                "auto_promote_low_risk": True,
+            },
+        },
+    )
+    calls = {"digest": 0}
+
+    def fake_digest(**kwargs):
+        calls["digest"] += 1
+        return {"ok": True, "processed_entries": 3}
+
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    monkeypatch.setitem(plugin._run_background_journal_digest.__globals__, "run_journal_digest", fake_digest)
+    plugin.initialize(
+        "session-docs",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="joy",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        with plugin._lock:
+            conn = plugin._require_conn()
+            append_journal_entry(
+                conn,
+                scope=plugin._scope,
+                scope_id=plugin._scope_id,
+                shared_scope_id=plugin._shared_scope_id,
+                session_id="session-docs",
+                turn_number=1,
+                role="user",
+                content="检查 scope-recall 文档链接和发布说明是否一致。",
+            )
+            append_journal_entry(
+                conn,
+                scope=plugin._scope,
+                scope_id=plugin._scope_id,
+                shared_scope_id=plugin._shared_scope_id,
+                session_id="session-docs",
+                turn_number=2,
+                role="tool",
+                content="Tool execution trace (terminal): python -m pytest tests/test_release.py -q -> 5 passed; ruff ok; docs smoke ok.",
+            )
+            append_journal_entry(
+                conn,
+                scope=plugin._scope,
+                scope_id=plugin._scope_id,
+                shared_scope_id=plugin._shared_scope_id,
+                session_id="session-docs",
+                turn_number=3,
+                role="assistant",
+                content="完成：文档检查通过，测试通过，验证完成。下次可以复用这套检查流程。",
+            )
+        plugin._run_background_journal_digest(plugin._journal_config())
+        with plugin._lock:
+            row = plugin._require_conn().execute("SELECT status, title FROM procedural_playbooks").fetchone()
+    finally:
+        plugin.shutdown()
+
+    assert calls["digest"] == 1
+    assert row is not None
+    assert row["status"] == "promoted"
+    assert "scope-recall" in row["title"].lower()
+
+
+def test_background_digest_auto_promotion_is_opt_in_by_default(tmp_path, monkeypatch):
+    _write_scope_recall_config(
+        tmp_path,
+        {
+            "vector": {"enabled": False},
+            "journal": {
+                "enabled": True,
+                "background_digest_enabled": True,
+                "background_digest_synchronous": True,
+                "digest_interval_hours": 0.001,
+                "max_entries_per_digest": 5,
+                "extractor": "heuristic",
+            },
+            "experience": {"enabled": True},
+        },
+    )
+    calls = {"digest": 0, "promote": 0}
+
+    def fake_digest(**kwargs):
+        calls["digest"] += 1
+        return {"ok": True, "processed_entries": 1}
+
+    def fake_promote(conn, **kwargs):
+        calls["promote"] += 1
+        return {"handbooks_created": 1}
+
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    monkeypatch.setitem(plugin._run_background_journal_digest.__globals__, "run_journal_digest", fake_digest)
+    monkeypatch.setitem(plugin._run_background_journal_digest.__globals__, "promote_experiences", fake_promote)
+    plugin.initialize(
+        "session-auto-promotion-default-off",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="joy",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        plugin._run_background_journal_digest(plugin._journal_config())
+    finally:
+        plugin.shutdown()
+
+    assert calls["digest"] == 1
+    assert calls["promote"] == 0
+
+
+def test_background_digest_auto_promotion_runs_when_enabled_by_config(tmp_path, monkeypatch):
+    _write_scope_recall_config(
+        tmp_path,
+        {
+            "vector": {"enabled": False},
+            "journal": {
+                "enabled": True,
+                "background_digest_enabled": True,
+                "background_digest_synchronous": True,
+                "digest_interval_hours": 0.001,
+                "max_entries_per_digest": 5,
+                "extractor": "heuristic",
+            },
+            "experience": {"enabled": True, "auto_promotion_enabled": True},
+        },
+    )
+    calls = {"digest": 0, "promote": 0}
+
+    def fake_digest(**kwargs):
+        calls["digest"] += 1
+        return {"ok": True, "processed_entries": 1}
+
+    def fake_promote(conn, **kwargs):
+        calls["promote"] += 1
+        return {"handbooks_created": 1}
+
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    monkeypatch.setitem(plugin._run_background_journal_digest.__globals__, "run_journal_digest", fake_digest)
+    monkeypatch.setitem(plugin._run_background_journal_digest.__globals__, "promote_experiences", fake_promote)
+    plugin.initialize(
+        "session-auto-promotion-enabled",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="joy",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        plugin._run_background_journal_digest(plugin._journal_config())
+    finally:
+        plugin.shutdown()
+
+    assert calls["digest"] == 1
+    assert calls["promote"] == 1
 
 
 def test_profile_tool_schema_is_registered(provider):
@@ -251,8 +516,9 @@ def test_on_session_end_captures_tool_trace_but_does_not_promote_it_with_heurist
             journal_row = plugin._require_conn().execute("SELECT content FROM journal_entries ORDER BY id DESC LIMIT 1").fetchone()
             memory = plugin._require_conn().execute("SELECT content FROM memories WHERE source = 'journal-digest'").fetchone()
         assert journal_row is not None
-        assert "Tool execution trace" in journal_row["content"]
-        assert "orphan links" in journal_row["content"]
+        assert "Tool execution summary (exec_command)" in journal_row["content"]
+        assert "output_preview=omitted" in journal_row["content"]
+        assert "orphan links" not in journal_row["content"]
         assert memory is None
     finally:
         plugin.shutdown()
@@ -491,7 +757,9 @@ def test_session_end_tool_trace_sanitizes_attachment_markers_before_journal(prov
         rows = provider._require_conn().execute("SELECT role, content FROM journal_entries ORDER BY id").fetchall()
     assert len(rows) == 1
     assert rows[0]["role"] == "tool"
-    assert "login button is visible" in rows[0]["content"]
+    assert "Tool execution summary (browser_vision)" in rows[0]["content"]
+    assert "output_preview=omitted" in rows[0]["content"]
+    assert "login button is visible" not in rows[0]["content"]
     assert "image_cache" not in rows[0]["content"]
     assert "Image attached" not in rows[0]["content"]
     assert "inline image" not in rows[0]["content"].lower()
@@ -510,9 +778,11 @@ def test_session_end_tool_trace_filters_low_value_and_secret_outputs(provider, m
 
     with provider._lock:
         rows = provider._require_conn().execute("SELECT role, content FROM journal_entries ORDER BY id").fetchall()
-    assert [(row["role"], row["content"]) for row in rows] == [
-        ("tool", "Tool execution trace (terminal): Release gate output: 332 tests passed and wheel smoke passed.")
-    ]
+    assert len(rows) == 1
+    assert rows[0]["role"] == "tool"
+    assert rows[0]["content"].startswith("Tool execution summary (terminal):")
+    assert "Release gate output" not in rows[0]["content"]
+    assert "output_preview=omitted" in rows[0]["content"]
 
 
 def test_sync_turn_rejects_context_handoff_payload_from_loaded_config(provider):

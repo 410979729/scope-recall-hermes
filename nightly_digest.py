@@ -121,6 +121,9 @@ class DigestOptions:
     append_v1: bool | None = None
     api_key: str = ""
     timeout: float = 60.0
+    max_attempts: int = 2
+    retry_delay: float = 1.0
+    allow_heuristic_fallback: bool = True
     verbose: bool = False
 
 
@@ -928,6 +931,78 @@ def call_llm(
     )
 
 
+def _classify_llm_error(exc: Exception) -> tuple[str, bool]:
+    message = str(exc or "").lower()
+    if isinstance(exc, TimeoutError) or "timeout" in message or "timed out" in message:
+        return "timeout", True
+    if "429" in message or "rate limit" in message or "too many requests" in message:
+        return "rate_limit", True
+    if any(token in message for token in ("500", "502", "503", "504", "server error", "bad gateway", "service unavailable", "gateway timeout")):
+        return "server", True
+    if any(token in message for token in ("connection", "network", "temporarily", "reset by peer", "remote end closed")):
+        return "network", True
+    if any(token in message for token in ("401", "403", "unauthorized", "forbidden", "invalid api key", "permission")):
+        return "auth", False
+    if any(token in message for token in ("402", "quota", "billing", "insufficient_quota")):
+        return "quota", False
+    if any(token in message for token in ("json", "parse", "decode")):
+        return "parse", False
+    return "unknown", True
+
+
+def _call_llm_with_retries(
+    prompt: str,
+    *,
+    model: str,
+    base_url: str,
+    api_key: str,
+    timeout: float,
+    api_mode: str,
+    endpoint: str = "",
+    append_v1: bool = True,
+    max_attempts: int = 1,
+    retry_delay: float = 0.0,
+) -> str:
+    last_error: Exception | None = None
+    last_kind = "unknown"
+    last_retryable = True
+    attempts = max(1, int(max_attempts or 1))
+    for attempt in range(1, attempts + 1):
+        try:
+            return call_llm(
+                prompt,
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
+                timeout=timeout,
+                api_mode=api_mode,
+                endpoint=endpoint,
+                append_v1=append_v1,
+            )
+        except Exception as exc:
+            last_error = exc
+            last_kind, last_retryable = _classify_llm_error(exc)
+            if (not last_retryable) or attempt >= attempts:
+                break
+            if retry_delay > 0:
+                time.sleep(max(0.0, float(retry_delay)))
+    assert last_error is not None
+    raise RuntimeError(
+        f"{last_kind} after {attempts} attempt(s): {type(last_error).__name__}: {redact_sensitive(str(last_error)[:400])}"
+    ) from last_error
+
+
+def _fallback_event(*, bundle: SessionBundle, exc: Exception, attempts: int) -> dict[str, Any]:
+    kind, retryable = _classify_llm_error(exc)
+    return {
+        "session_id": bundle.id,
+        "kind": kind,
+        "retryable": retryable,
+        "attempts": max(1, int(attempts or 1)),
+        "message": redact_sensitive(f"{type(exc).__name__}: {str(exc)[:240]}"),
+    }
+
+
 def infer_scope(
     conn: sqlite3.Connection,
     *,
@@ -1255,28 +1330,45 @@ def collect_candidates(
     options: DigestOptions,
     llm_config: dict[str, Any],
     existing_context: list[str],
+    fallback_events: list[dict[str, Any]] | None = None,
 ) -> list[DigestCandidate]:
     candidates: list[DigestCandidate] = []
+    fallback_events = fallback_events if fallback_events is not None else []
     for bundle in bundles:
         if options.extractor == "heuristic":
             candidates.extend(heuristic_candidates(bundle))
             continue
         bundle_candidates: list[DigestCandidate] = []
+        llm_failed = False
         for chunk in session_chunks(bundle, chunk_chars=options.chunk_chars, max_session_chars=options.max_session_chars):
             prompt = build_prompt(bundle, chunk, existing_context)
-            raw = call_llm(
-                prompt,
-                model=llm_config["model"],
-                base_url=llm_config["base_url"],
-                api_key=llm_config["api_key"],
-                timeout=options.timeout,
-                api_mode=llm_config.get("api_mode", "chat_completions"),
-                endpoint=str(llm_config.get("endpoint") or ""),
-                append_v1=bool(llm_config.get("append_v1", True)),
-            )
+            try:
+                raw = _call_llm_with_retries(
+                    prompt,
+                    model=llm_config["model"],
+                    base_url=llm_config["base_url"],
+                    api_key=llm_config["api_key"],
+                    timeout=options.timeout,
+                    api_mode=llm_config.get("api_mode", "chat_completions"),
+                    endpoint=str(llm_config.get("endpoint") or ""),
+                    append_v1=bool(llm_config.get("append_v1", True)),
+                    max_attempts=options.max_attempts,
+                    retry_delay=options.retry_delay,
+                )
+            except Exception as exc:
+                event = _fallback_event(bundle=bundle, exc=exc, attempts=options.max_attempts)
+                if (not options.allow_heuristic_fallback) or not event["retryable"]:
+                    raise
+                fallback_events.append(event)
+                bundle_candidates.extend(heuristic_candidates(bundle))
+                llm_failed = True
+                break
             parsed = parse_llm_candidates(raw, bundle=bundle)
             if parsed:
                 bundle_candidates.extend(parsed)
+        if llm_failed:
+            candidates.extend(bundle_candidates)
+            continue
         if not bundle_candidates:
             bundle_candidates.extend(heuristic_candidates(bundle))
         candidates.extend(bundle_candidates)
@@ -1329,10 +1421,12 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
     try:
         vector_runtime = None if options.dry_run else DigestVectorRuntime(hermes_home=hermes_home, conn=conn, scope=scope)
         existing = existing_memory_context(conn, scope)
-        candidates = collect_candidates(bundles, options=options, llm_config=llm_config, existing_context=existing)
+        fallback_events: list[dict[str, Any]] = []
+        candidates = collect_candidates(bundles, options=options, llm_config=llm_config, existing_context=existing, fallback_events=fallback_events)
         applied = apply_candidates(conn, vector_runtime, scope, run_id=run_id, candidates=candidates, dry_run=options.dry_run, runtime_config=runtime_config)
         counts = Counter(applied["counts"])
-        status = "dry_run" if options.dry_run else "ok"
+        extractor_used = "heuristic" if options.extractor == "heuristic" else ("heuristic-fallback" if fallback_events else "llm")
+        status = "dry_run" if options.dry_run else ("ok_with_fallback" if fallback_events else "ok")
         result = {
             "ok": True,
             "status": status,
@@ -1347,6 +1441,8 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
             "skipped": counts.get("skipped", 0),
             "deleted": counts.get("deleted", 0),
             "extractor": options.extractor,
+            "extractor_used": extractor_used,
+            "extractor_fallbacks": fallback_events[:20],
             "model": llm_config.get("model", ""),
             "actions": applied["actions"][:50],
         }
@@ -1367,12 +1463,20 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
                     options.extractor,
                     llm_config.get("model", ""),
                     0,
-                    "ok",
+                    status,
                     result["inserted"],
                     result["updated"],
                     result["skipped"],
                     result["deleted"],
-                    json.dumps({"sessions": len(bundles), "task_sessions": result["task_sessions"]}, ensure_ascii=False),
+                    json.dumps(
+                        {
+                            "sessions": len(bundles),
+                            "task_sessions": result["task_sessions"],
+                            "extractor_used": extractor_used,
+                            "extractor_fallbacks": fallback_events[:20],
+                        },
+                        ensure_ascii=False,
+                    ),
                 ),
             )
             conn.commit()
@@ -1396,7 +1500,7 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
                     llm_config.get("model", ""),
                     0,
                     "error",
-                    str(exc)[:1000],
+                    redact_sensitive(str(exc)[:1000]),
                 ),
             )
             conn.commit()
@@ -1423,6 +1527,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--append-v1", action=argparse.BooleanOptionalAction, default=None, help="Append /v1 before /chat/completions for base URLs")
     parser.add_argument("--api-key", default="", help=argparse.SUPPRESS)
     parser.add_argument("--timeout", type=float, default=60.0, help="LLM request timeout seconds")
+    parser.add_argument("--llm-max-attempts", type=int, default=2, help="LLM retry attempts before falling back or failing")
+    parser.add_argument("--llm-retry-delay", type=float, default=1.0, help="Seconds to wait between retryable LLM failures")
+    parser.add_argument("--no-heuristic-fallback", action="store_true", help="Fail instead of using heuristic extraction after retryable LLM failures")
     parser.add_argument("--verbose", action="store_true", help="Print detailed JSON")
     return parser
 
@@ -1443,6 +1550,9 @@ def options_from_args(args: argparse.Namespace) -> DigestOptions:
         append_v1=args.append_v1,
         api_key=str(args.api_key or ""),
         timeout=float(args.timeout or 60.0),
+        max_attempts=max(1, int(args.llm_max_attempts or 1)),
+        retry_delay=max(0.0, float(args.llm_retry_delay or 0.0)),
+        allow_heuristic_fallback=not bool(args.no_heuristic_fallback),
         verbose=bool(args.verbose),
     )
 

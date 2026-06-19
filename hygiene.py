@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any
 
-from .capture_filters import should_capture_text
+from .capture_filters import sanitize_report_text, should_capture_text
 from .gating import compact_text
 from .governance import extract_candidates
 from .sql_store import fts_integrity_report
@@ -24,7 +24,7 @@ def _preview(row: Any) -> dict[str, Any]:
         "source": str(row["source"]),
         "updated_at": str(row["updated_at"]),
         "chars": len(content),
-        "preview": compact_text(content, 180),
+        "preview": compact_text(sanitize_report_text(content), 180),
     }
 
 
@@ -125,7 +125,7 @@ def build_hygiene_report(conn: Any, vector_store: Any = None, limit: int = 200) 
                     "id": memory_id,
                     "target": target,
                     "updated_at": str(record.get("updated_at") or ""),
-                    "preview": compact_text(str(record.get("content") or record.get("summary") or ""), 180),
+                    "preview": compact_text(sanitize_report_text(str(record.get("content") or record.get("summary") or "")), 180),
                 }
             )
 

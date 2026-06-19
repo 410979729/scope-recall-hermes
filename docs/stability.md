@@ -1,6 +1,6 @@
 # Scope Recall V1 stability contract
 
-`scope-recall` 1.4.0 keeps the V1 compatibility contract while adding the conservative Experience Kernel MVP for reviewed procedural playbooks, read-only preflight packets, scoped feedback accounting, and replay benchmarking. It preserves `scope_recall_profile`, compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, the `hermes-scope-recall` standalone distribution and installer path, attachment-marker sanitization, journal ACK quality gates, native-safe LanceDB probing, and automatic SQLite vector fallback for non-AVX hosts.
+`scope-recall` 1.4.1 keeps the V1 compatibility contract while adding the conservative Experience Kernel MVP for reviewed procedural playbooks, read-only preflight packets, scoped feedback accounting, and replay benchmarking. It preserves `scope_recall_profile`, compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, the `hermes-scope-recall` standalone distribution and installer path, attachment-marker sanitization, journal ACK quality gates, native-safe LanceDB probing, and automatic SQLite vector fallback for non-AVX hosts.
 
 This document defines the stable V1 compatibility surface and the areas that may evolve in patch or minor releases.
 
@@ -58,9 +58,9 @@ V1 keeps these behavior boundaries stable:
 - maintenance tools (`scope_recall_dedupe`, `scope_recall_govern`, `scope_recall_hygiene`, and `scope_recall_repair`) are hidden and fail closed unless `maintenance_tools_enabled=true`
 - `scope_recall_hygiene` is read-only and never performs cleanup; operators must explicitly run a separate delete/merge/dedupe action after reviewing its output
 - `scope_recall_export` is available for scoped exports by default; `scope_only=false` requires `maintenance_tools_enabled=true`
-- Experience Kernel runtime prompt injection remains disabled by default through `experience.prefetch_enabled=false`; when enabled, preflight packets are advisory scaffolds and live user instructions/current evidence override old experience
-- Experience Kernel create/review and automatic promotion tools are hidden and fail closed unless `maintenance_tools_enabled=true`; ordinary read-only search/inspect/preflight/stats and scoped feedback tools remain available when `experience.enabled=true`
-- automatic experience promotion remains an explicit maintenance action by default: `scope_recall_experience_promote` scans evidence-backed journal task traces, writes task episodes, auto-promotes only low-risk verified playbooks, and keeps high-risk playbooks in `needs_review`
+- Experience Kernel runtime prompt injection is enabled by default through `experience.prefetch_enabled=true`, but packets remain advisory scaffolds and live user instructions/current evidence override old experience; operators can set `experience.prefetch_enabled=false` as a runtime injection kill switch.
+- Experience Kernel create/review and maintenance promotion tools are hidden and fail closed unless `maintenance_tools_enabled=true`; ordinary read-only search/inspect/preflight/stats and scoped feedback tools remain available when `experience.enabled=true`.
+- automatic experience promotion is enabled by default after successful journal digest through `experience.auto_promotion_enabled=true`; it still requires evidence-backed task traces, writes task episodes, auto-promotes only low-risk verified playbooks, and keeps high-risk playbooks gated by status/review. Operators can set `experience.auto_promotion_enabled=false` to return to manual promotion only.
 - forgetting tools are hidden and fail closed unless `maintenance_tools_enabled=true`; `scope_recall_forgetting_report` is read-only, and `scope_recall_forgetting_run` defaults to dry-run/soft archive rather than physical deletion
 - `scope_recall_playbook_create` only writes `candidate`; promotion requires `scope_recall_playbook_review`, and direct reuse is blocked by confidence, reuse-policy, stale-fact, and risky-capability gates
 - `scope_recall_store_secret_index` may store searchable credential indexes, vault references, and non-reversible fingerprint prefixes, but plaintext secret values must not be stored in SQLite content, metadata, FTS, vector text, exports, logs, or chat replies
@@ -71,6 +71,7 @@ V1 keeps these behavior boundaries stable:
 - scoped mutation actions operate only on writable current scopes: local runtime scope plus the current shared/canonical durable scope; legacy platform aliases remain read-only unless an explicit migration tool writes them
 - `sync_turn()` defaults to journal-first staging; legacy per-turn durable extraction must be explicitly enabled through `per_turn_extraction.enabled=true`
 - `scripts/journal-digest.py` may add or update durable rows from staged journal entries, but raw journal rows themselves are not recalled or indexed into the vector companion
+- session-end tool capture stores tool execution summaries by default, not raw tool output; `journal.tool_trace_include_output_preview=false` is the safe default and must only be enabled for explicit debugging with redaction still applied
 - `scripts/nightly-digest.py` may add or update durable rows, but it must not store raw `system` rows or raw `tool` output; task workflows are stored only as sanitized summaries with optional tool-name and verification metadata
 - recall suppresses rows whose metadata lifecycle is `superseded`, `obsolete`, `rejected`, or `archived`; `archived` is used by the legacy hygiene migrator for old scratch rows that remain auditable but should not be recalled
 

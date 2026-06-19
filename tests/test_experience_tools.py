@@ -109,15 +109,150 @@ def test_playbook_tool_flow_create_search_inspect_preflight_feedback(provider):
     feedback = json.loads(
         provider.handle_tool_call(
             "scope_recall_playbook_feedback",
-            {"id": "pb_tool", "outcome": "success", "decision": "direct_reuse", "evidence": ["fixture checked"]},
+            {
+                "id": "pb_tool",
+                "outcome": "success",
+                "decision": "direct_reuse",
+                "evidence": ["terminal raw: wrote /home/a/private/output.log and 355 passed"],
+                "outcome_reason": "verified from /home/a/private/output.log",
+                "model_name": "model at /home/a/private/model.bin",
+            },
         )
     )
     assert feedback["recorded"] is True
     assert feedback["success_count"] == 1
+    with provider._lock:
+        run = provider._require_conn().execute("SELECT evidence, outcome_reason, model_name FROM experience_runs WHERE playbook_id = ?", ("pb_tool",)).fetchone()
+    run_text = json.dumps(dict(run), ensure_ascii=False)
+    assert "[REDACTED_PATH]" in run_text
+    assert "/home/a/private" not in run_text
 
     stats = json.loads(provider.handle_tool_call("scope_recall_experience_stats", {}))
     assert stats["playbooks"]["total"] == 1
     assert stats["runs"]["total"] == 1
+
+
+def test_promoting_playbook_writes_skill_anchors(provider):
+    created = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_playbook_create",
+            {
+                "id": "pb_anchor",
+                "payload": _payload(),
+                "status": "candidate",
+                "confidence": 0.9,
+                "related_skills": ["debugging-and-quality-workflows", "hermes-service-control-guardrails"],
+            },
+        )
+    )
+    assert created["created"] is True
+
+    reviewed = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_playbook_review",
+            {"id": "pb_anchor", "action": "promote", "reason": "fixture review"},
+        )
+    )
+    assert reviewed["reviewed"] is True
+
+    with provider._lock:
+        rows = provider._require_conn().execute(
+            "SELECT skill_name, load_policy, reason FROM skill_anchors WHERE playbook_id = ? ORDER BY skill_name",
+            ("pb_anchor",),
+        ).fetchall()
+
+    assert [row["skill_name"] for row in rows] == ["debugging-and-quality-workflows", "hermes-service-control-guardrails"]
+    assert {row["load_policy"] for row in rows} == {"optional_reference"}
+    assert all("fixture review" in row["reason"] for row in rows)
+
+
+def test_preflight_blocks_playbook_with_open_skill_conflict(provider):
+    provider.handle_tool_call(
+        "scope_recall_playbook_create",
+        {
+            "id": "pb_conflict",
+            "payload": _payload(),
+            "status": "candidate",
+            "confidence": 0.9,
+            "related_skills": ["debugging-and-quality-workflows"],
+        },
+    )
+    provider.handle_tool_call("scope_recall_playbook_review", {"id": "pb_conflict", "action": "promote", "reason": "fixture review"})
+    with provider._lock:
+        provider._require_conn().execute(
+            """
+            INSERT INTO skill_conflicts(id, playbook_id, skill_name, conflicting_source, conflict_summary, status, created_at)
+            VALUES ('sc_fixture', 'pb_conflict', 'debugging-and-quality-workflows', 'skill', 'Skill changed and contradicts this playbook.', 'open', '2026-01-01T00:00:00+00:00')
+            """
+        )
+        provider._require_conn().commit()
+
+    preflight = json.loads(provider.handle_tool_call("scope_recall_experience_preflight", {"query": "Need one-way headscale ACL"}))
+
+    assert preflight["decision"] == "no_reuse"
+    assert "open_skill_conflict" in preflight["reasons"]
+
+
+def test_preflight_degrades_direct_reuse_when_promoted_playbook_has_related_skills_but_no_anchors(provider):
+    provider.handle_tool_call(
+        "scope_recall_playbook_create",
+        {
+            "id": "pb_missing_anchor",
+            "payload": _payload(),
+            "status": "candidate",
+            "confidence": 0.95,
+            "related_skills": ["debugging-and-quality-workflows"],
+        },
+    )
+    provider.handle_tool_call("scope_recall_playbook_review", {"id": "pb_missing_anchor", "action": "promote", "reason": "fixture review"})
+    with provider._lock:
+        provider._require_conn().execute("DELETE FROM skill_anchors WHERE playbook_id = ?", ("pb_missing_anchor",))
+        provider._require_conn().commit()
+
+    preflight = json.loads(provider.handle_tool_call("scope_recall_experience_preflight", {"query": "Need one-way headscale ACL"}))
+
+    assert preflight["decision"] == "guided_reuse"
+    assert "missing_skill_anchor" in preflight["reasons"]
+
+
+def test_feedback_stale_opens_skill_conflict_for_related_skills(provider):
+    provider.handle_tool_call(
+        "scope_recall_playbook_create",
+        {
+            "id": "pb_feedback_conflict",
+            "payload": _payload(),
+            "status": "candidate",
+            "confidence": 0.9,
+            "related_skills": ["debugging-and-quality-workflows"],
+        },
+    )
+    provider.handle_tool_call("scope_recall_playbook_review", {"id": "pb_feedback_conflict", "action": "promote", "reason": "fixture review"})
+
+    feedback = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_playbook_feedback",
+            {
+                "id": "pb_feedback_conflict",
+                "outcome": "stale",
+                "decision": "guided_reuse",
+                "outcome_reason": "Skill procedure changed; old steps need review.",
+            },
+        )
+    )
+
+    assert feedback["recorded"] is True
+    assert feedback["status"] == "needs_review"
+    assert feedback["skill_conflicts_opened"] == 1
+    with provider._lock:
+        row = provider._require_conn().execute(
+            "SELECT skill_name, conflicting_source, status, conflict_summary FROM skill_conflicts WHERE playbook_id = ?",
+            ("pb_feedback_conflict",),
+        ).fetchone()
+    assert row is not None
+    assert row["skill_name"] == "debugging-and-quality-workflows"
+    assert row["conflicting_source"] == "feedback"
+    assert row["status"] == "open"
+    assert "Skill procedure changed" in row["conflict_summary"]
 
 
 def test_auto_experience_and_forgetting_tools_smoke(provider):
@@ -142,7 +277,7 @@ def test_auto_experience_and_forgetting_tools_smoke(provider):
     assert "archived" in dry
 
 
-def test_experience_prefetch_is_disabled_by_default(provider):
+def test_experience_prefetch_can_be_disabled_by_config(provider):
     provider.handle_tool_call(
         "scope_recall_playbook_create",
         {"id": "pb_tool", "payload": _payload(), "status": "candidate", "confidence": 0.9},

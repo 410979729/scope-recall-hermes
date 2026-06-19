@@ -443,6 +443,50 @@ def test_dry_run_does_not_write_digest_rows(tmp_path):
     assert not (hermes_home / "scope-recall" / "memory.sqlite3").exists()
 
 
+def test_llm_digest_timeout_falls_back_to_heuristic_and_records_degraded_ok(tmp_path, monkeypatch):
+    import scope_recall.nightly_digest as nightly_digest
+
+    day = date(2026, 6, 1)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    _write_config(hermes_home)
+    _create_state_db(hermes_home / "state.db", day)
+
+    def fake_urlopen(request, timeout):  # noqa: ARG001
+        raise TimeoutError("The read operation timed out")
+
+    monkeypatch.setattr(nightly_digest.urllib.request, "urlopen", fake_urlopen)
+    fake_digest_key = "fake" + "-digest-key"
+
+    result = run_digest(
+        DigestOptions(
+            hermes_home=hermes_home,
+            digest_date=day,
+            extractor="llm",
+            api_key=fake_digest_key,
+            max_attempts=1,
+            retry_delay=0,
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "ok_with_fallback"
+    assert result["inserted"] == 1
+    assert result["extractor_used"] == "heuristic-fallback"
+    assert result["extractor_fallbacks"][0]["kind"] == "timeout"
+
+    conn = sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    try:
+        run = conn.execute("SELECT status, error, metadata FROM nightly_digest_runs").fetchone()
+        assert run["status"] == "ok_with_fallback"
+        assert run["error"] is None
+        metadata = json.loads(run["metadata"])
+        assert metadata["extractor_fallbacks"][0]["kind"] == "timeout"
+    finally:
+        conn.close()
+
+
 def test_heuristic_digest_preserves_external_artifact_anchors(tmp_path):
     day = date(2026, 6, 1)
     hermes_home = tmp_path / "hermes"
