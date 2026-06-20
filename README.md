@@ -20,7 +20,7 @@ Current-turn recall · Journal-first capture · Durable shared memory · Backgro
 
 This repository, `scope-recall-hermes`, is the Hermes implementation. The Python distribution package is `hermes-scope-recall`, the Python import/package spelling is `scope_recall`, and the Hermes plugin ID/provider name remains `scope-recall` for runtime compatibility. The OpenClaw sibling implementation lives at [`scope-recall-openclaw`](https://github.com/410979729/scope-recall-openclaw).
 
-Version `1.4.1` continues the stable V1 release line and adds a conservative Experience Kernel MVP for reviewed procedural playbooks, scope-filtered playbook search/inspect/preflight tools, feedback counters, replay benchmarking, and doctor visibility. The current source candidate enables bounded advisory Experience packet injection and operator-gated automatic promotion, with `experience.prefetch_enabled=false` and `experience.auto_promotion_enabled=true` available as an explicit opt-in for background promotion. It keeps the `scope_recall_profile` surface added in v1.3.0, compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, inline attachment-marker sanitization, the supported standalone install shape added in v1.1.0, and native-safe LanceDB probing with automatic SQLite vector fallback for non-AVX hosts.
+Version `1.4.2` continues the stable V1 release line and adds a conservative Experience Kernel MVP for reviewed procedural playbooks, scope-filtered playbook search/inspect/preflight tools, feedback counters, replay benchmarking, and doctor visibility. Runtime Experience packet injection is enabled by default through `experience.prefetch_enabled=true` and can be disabled with `experience.prefetch_enabled=false`; background automatic promotion remains an explicit operator opt-in through `experience.auto_promotion_enabled=true`, with low-risk verified playbooks promoted automatically and high-risk playbooks left for review. It keeps the `scope_recall_profile` surface added in v1.3.0, compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, inline attachment-marker sanitization, the supported standalone install shape added in v1.1.0, and native-safe LanceDB probing with automatic SQLite vector fallback for non-AVX hosts.
 
 It uses a **three-layer design**:
 
@@ -815,6 +815,10 @@ python scripts/repair.vector_index.py --hermes-home "$HERMES_HOME"
 ### Hosted embeddings are unavailable
 
 The provider should degrade to `local-hash`. That keeps the system usable but lowers semantic quality. Set `SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY` in your private environment to use the configured hosted path.
+
+### Automatic Experience promotion does not run
+
+Background Experience promotion is opt-in. Set `experience.auto_promotion_enabled=true` in `$HERMES_HOME/scope-recall/config.json`, then restart or reload the Hermes process so the provider reads the new runtime config. Automatic promotion still requires evidence-backed task episodes and verification gates; high-risk playbooks stay in review instead of being promoted silently.
 
 ### OpenClaw `.lance` data does not appear automatically
 

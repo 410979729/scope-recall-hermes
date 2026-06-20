@@ -632,6 +632,22 @@ def vector_report(
     return payload, {"ok": False, "failures": [f"unsupported vector backend: {normalized}"]}, ["Set vector.backend to 'lancedb' or 'sqlite-bruteforce'."]
 
 
+def experience_config_summary(config: dict[str, Any]) -> dict[str, Any]:
+    raw_experience = config.get("experience")
+    experience_config: dict[str, Any] = raw_experience if isinstance(raw_experience, dict) else {}
+    keys = (
+        "enabled",
+        "prefetch_enabled",
+        "auto_promotion_enabled",
+        "auto_promotion_limit_sessions",
+        "auto_promote_low_risk",
+        "promotion_min_entries",
+        "promotion_min_tool_entries",
+        "promotion_require_verification",
+    )
+    return {key: experience_config.get(key) for key in keys if key in experience_config}
+
+
 def experience_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     recommendations: list[str] = []
     db_path = hermes_home / "scope-recall" / "memory.sqlite3"
@@ -693,6 +709,92 @@ def experience_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any]
     return payload, {"ok": True, "failures": []}, recommendations
 
 
+def nightly_digest_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    recommendations: list[str] = []
+    db_path = hermes_home / "scope-recall" / "memory.sqlite3"
+    required_tables = {"nightly_digest_runs"}
+    if not db_path.exists():
+        return {"enabled": True, "status": "missing", "path": str(db_path)}, {"ok": False, "failures": [f"SQLite truth DB not found: {db_path}"]}, [
+            "Initialize scope-recall or restore memory.sqlite3 before trusting nightly digest status."
+        ]
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            missing = sorted(required_tables - tables)
+            if missing:
+                return {
+                    "enabled": True,
+                    "path": str(db_path),
+                    "status": "not_initialized",
+                    "missing_tables": missing,
+                }, {"ok": True, "failures": []}, ["Run scripts/nightly-digest.py once if this deployment uses nightly digest consolidation."]
+            total_runs = int(conn.execute("SELECT COUNT(*) FROM nightly_digest_runs").fetchone()[0])
+            rows = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT id, digest_date, started_at, finished_at, extractor, model, dry_run,
+                           status, inserted, updated, skipped, deleted, error
+                    FROM nightly_digest_runs
+                    ORDER BY started_at DESC
+                    LIMIT 10
+                    """
+                )
+            ]
+            by_status = {
+                redact_secret_like_text(row["status"]): int(row["count"])
+                for row in conn.execute("SELECT status, COUNT(*) AS count FROM nightly_digest_runs GROUP BY status")
+            }
+        finally:
+            conn.close()
+    except Exception as exc:
+        recommendations.append("Repair or restore the SQLite truth DB before trusting nightly digest status.")
+        return {"enabled": True, "path": str(db_path), "status": "error", "error": str(exc)}, {"ok": False, "failures": [f"nightly digest health error: {exc}"]}, recommendations
+
+    for row in rows:
+        row["error"] = redact_secret_like_text(row.get("error") or "")
+
+    latest = rows[0] if rows else {}
+    latest_status = str(latest.get("status") or "")
+    consecutive_errors = 0
+    for row in rows:
+        if str(row.get("status") or "") != "error":
+            break
+        consecutive_errors += 1
+
+    recent_errors = [row for row in rows if str(row.get("status") or "") == "error"]
+    recent_fallbacks = [row for row in rows if "fallback" in str(row.get("status") or "")]
+    failures: list[str] = []
+    if latest_status == "error":
+        failures.append(f"latest nightly digest run failed: {latest.get('error') or latest.get('started_at')}")
+    if consecutive_errors >= 3:
+        failures.append(f"nightly digest has {consecutive_errors} consecutive error run(s)")
+    if recent_fallbacks:
+        recommendations.append("Nightly digest recently used fallback; inspect extractor/model timeout and provider health before relying on automated summaries.")
+    if recent_errors and latest_status != "error":
+        recommendations.append("Recent nightly digest errors exist but the latest run recovered; keep monitoring timeout/fallback trends.")
+
+    status = "ready"
+    if failures:
+        status = "needs_attention"
+    elif recent_fallbacks or recent_errors:
+        status = "degraded"
+
+    payload = {
+        "enabled": True,
+        "path": str(db_path),
+        "status": status,
+        "tables": sorted(required_tables),
+        "runs": {"total": total_runs, "by_status": dict(sorted(by_status.items()))},
+        "latest_run": latest,
+        "recent_runs": rows,
+        "consecutive_errors": consecutive_errors,
+    }
+    return payload, {"ok": not failures, "failures": failures}, recommendations
+
+
 def disabled_vector_report() -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     payload = {"enabled": False, "status": "disabled", "ready": False}
     return payload, {"ok": True, "failures": []}, []
@@ -718,6 +820,8 @@ def main() -> int:
             journal_config=journal_config,
         )
         experience_payload, experience_check, experience_recommendations = experience_report(hermes_home)
+        experience_payload["config"] = experience_config_summary(runtime_config)
+        nightly_payload, nightly_check, nightly_recommendations = nightly_digest_report(hermes_home)
         if vector_enabled_from_config(runtime_config):
             backend = vector_backend_from_config(runtime_config)
             vector_payload, vector_check, vector_recommendations = vector_report(hermes_home, expected_embedder=expected_embedder, backend=backend)
@@ -732,15 +836,18 @@ def main() -> int:
             "sqlite": sqlite_payload,
             "journal": journal_payload,
             "experience": experience_payload,
+            "nightly_digest": nightly_payload,
             "vector": vector_payload,
         }
         checks["sqlite_truth"] = sqlite_check
         checks["journal_provenance"] = journal_check
         checks["experience_kernel"] = experience_check
+        checks["nightly_digest"] = nightly_check
         checks["vector_companion"] = vector_check
         recommendations.extend(sqlite_recommendations)
         recommendations.extend(journal_recommendations)
         recommendations.extend(experience_recommendations)
+        recommendations.extend(nightly_recommendations)
         recommendations.extend(vector_recommendations)
 
     payload["ok"] = all(bool(check.get("ok")) for check in checks.values())

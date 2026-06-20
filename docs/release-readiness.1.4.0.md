@@ -71,7 +71,7 @@ This proves the minimal reusable-experience loop exists, but it does **not** pro
 - Source-tree gates and wheel/install smoke prove the package candidate is locally coherent.
 - They do not prove that a long-running Hermes gateway has already loaded this exact code; runtime freshness requires restart/reload approval and a post-restart smoke on the target service.
 - Runtime Experience packet injection is enabled by default through `experience.prefetch_enabled=true`, but remains bounded/advisory and can be disabled with `experience.prefetch_enabled=false`.
-- Automatic Experience promotion is enabled by default after successful journal digest through `experience.auto_promotion_enabled=true`; it remains evidence-gated and can be disabled with `experience.auto_promotion_enabled=false`.
+- Automatic Experience promotion is opt-in after successful journal digest through `experience.auto_promotion_enabled=false` by default; when enabled, it remains evidence-gated.
 - Playbook create/review remains maintenance-gated; ordinary runtime exposure is limited to read-only search/inspect/preflight/stats plus scoped feedback when `experience.enabled=true`.
 - Claims should stay conservative: framework-ready and minimal-loop-proven, not mature automated experience curation.
 

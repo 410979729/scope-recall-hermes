@@ -28,7 +28,7 @@ Default config in the current source candidate:
     "direct_reuse_min_confidence": 0.82,
     "allow_risky_direct_reuse": false,
     "packet_max_chars": 1400,
-    "auto_promotion_enabled": true,
+    "auto_promotion_enabled": false,
     "auto_promote_low_risk": true,
     "promotion_min_entries": 3,
     "promotion_min_tool_entries": 1,
@@ -49,7 +49,7 @@ Important defaults:
 
 - `experience.enabled=true`: Experience Kernel tools are available. Set `false` as a global kill switch; runtime preflight returns `no_reuse`, runtime injection stays silent, and non-preflight Experience tools are hidden/blocked.
 - `experience.prefetch_enabled=true`: matching promoted playbooks may append a bounded advisory runtime packet to normal recall. Set `false` to keep runtime injection silent while retaining read-only tools.
-- `experience.auto_promotion_enabled=true`: successful background/session-end journal digest runs may launch conservative automatic promotion. Set `false` to require manual `scope_recall_experience_promote` runs.
+- `experience.auto_promotion_enabled=false`: successful background/session-end journal digest runs do not launch automatic promotion unless explicitly enabled. Set `true` to allow conservative evidence-gated automatic promotion; manual `scope_recall_experience_promote` remains available.
 - `experience.auto_promote_low_risk=true`: low-risk verified handbooks can be enabled without Joy manually reviewing raw logs; high-risk or under-verified handbooks remain gated by review/status.
 - `allow_risky_direct_reuse=false`: playbooks with `service_control`, `network_or_remote`, `cross_instance`, `credential_adjacent`, or `destructive_or_irreversible` steps are downgraded to guided reuse unless explicitly allowed.
 - `forgetting.soft_archive_default=true`: forgetting defaults to metadata archive/hide rather than physical deletion.
