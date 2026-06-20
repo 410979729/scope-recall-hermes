@@ -6,6 +6,8 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [1.4.3] - 2026-06-20
 
+This is the first public release after `v1.4.0`; the GitHub release notes for `v1.4.3` include the cumulative `v1.4.1`, `v1.4.2`, and `v1.4.3` changes.
+
 ### Changed
 - Defaulted `experience.auto_promote_low_risk` to `false` so automatic Experience scans create candidate playbooks unless low-risk auto-promotion is explicitly enabled.
 
@@ -15,7 +17,7 @@ All notable changes to `scope-recall` will be documented in this file.
 - Nightly digest now records `ok_with_fallback` and `extractor_used=heuristic-fallback` when LLM output is empty, unparsable, or filtered out before heuristic fallback writes candidates.
 - Preserved already parsed LLM candidates when a later chunk explicitly returns `action=skip`, and continued parsing later chunks when an earlier chunk returns `action=skip`.
 - Marked LLM fallback runs as `error` when heuristic fallback also produces no candidates.
-- Made the OpenClaw `memory-lancedb-pro` importer import LanceDB lazily so tests and non-import workflows do not require the optional LanceDB dependency.
+- Made the optional legacy `memory-lancedb-pro` migration importer load LanceDB lazily. This importer is only used when importing existing OpenClaw memory stores into scope-recall; normal Hermes runtime, tests, and non-import workflows do not require OpenClaw or LanceDB.
 
 ## [1.4.2] - 2026-06-20
 
