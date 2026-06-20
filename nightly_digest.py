@@ -519,7 +519,7 @@ def build_prompt(bundle: SessionBundle, chunk: str, existing_context: list[str])
     )
 
 
-def parse_llm_candidates(raw: str, *, bundle: SessionBundle) -> list[DigestCandidate]:
+def _parse_llm_candidates_with_status(raw: str, *, bundle: SessionBundle) -> tuple[list[DigestCandidate], str]:
     text = raw.strip()
     fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if fenced:
@@ -527,13 +527,21 @@ def parse_llm_candidates(raw: str, *, bundle: SessionBundle) -> list[DigestCandi
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
-        return []
+        return [], "parse"
     items = parsed if isinstance(parsed, list) else [parsed]
+    if not items:
+        return [], "empty"
     candidates: list[DigestCandidate] = []
+    skipped = 0
+    filtered = 0
+    dict_items = 0
     for item in items:
         if not isinstance(item, dict):
+            filtered += 1
             continue
+        dict_items += 1
         if str(item.get("action") or "").strip().lower() == "skip":
+            skipped += 1
             continue
         content = redact_sensitive(clean_text(str(item.get("content") or "")))
         target = str(item.get("target") or "memory").strip().lower()
@@ -558,6 +566,17 @@ def parse_llm_candidates(raw: str, *, bundle: SessionBundle) -> list[DigestCandi
         )
         if candidate_is_allowed(candidate):
             candidates.append(candidate)
+        else:
+            filtered += 1
+    if candidates:
+        return candidates, "parsed"
+    if dict_items > 0 and skipped == dict_items and filtered == 0:
+        return [], "explicit_skip"
+    return [], "filtered"
+
+
+def parse_llm_candidates(raw: str, *, bundle: SessionBundle) -> list[DigestCandidate]:
+    candidates, _status = _parse_llm_candidates_with_status(raw, bundle=bundle)
     return candidates
 
 
@@ -1363,9 +1382,30 @@ def collect_candidates(
                 bundle_candidates.extend(heuristic_candidates(bundle))
                 llm_failed = True
                 break
-            parsed = parse_llm_candidates(raw, bundle=bundle)
+            parsed, parse_status = _parse_llm_candidates_with_status(raw, bundle=bundle)
             if parsed:
                 bundle_candidates.extend(parsed)
+            elif parse_status == "explicit_skip":
+                continue
+            elif parse_status in {"empty", "parse", "filtered"}:
+                if not options.allow_heuristic_fallback:
+                    raise RuntimeError(f"LLM extraction produced no usable candidates: {parse_status}")
+                heuristic = heuristic_candidates(bundle)
+                fallback_events.append(
+                    {
+                        "session_id": bundle.id,
+                        "kind": f"llm_{parse_status}" if heuristic else f"llm_{parse_status}_no_candidates",
+                        "retryable": True,
+                        "attempts": max(1, int(options.max_attempts or 1)),
+                        "message": (
+                            f"LLM output produced no usable candidates ({parse_status}); "
+                            + ("heuristic fallback used." if heuristic else "heuristic fallback also produced no candidates.")
+                        ),
+                    }
+                )
+                bundle_candidates.extend(heuristic)
+                llm_failed = True
+                break
         if llm_failed:
             candidates.extend(bundle_candidates)
             continue
@@ -1426,9 +1466,11 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
         applied = apply_candidates(conn, vector_runtime, scope, run_id=run_id, candidates=candidates, dry_run=options.dry_run, runtime_config=runtime_config)
         counts = Counter(applied["counts"])
         extractor_used = "heuristic" if options.extractor == "heuristic" else ("heuristic-fallback" if fallback_events else "llm")
-        status = "dry_run" if options.dry_run else ("ok_with_fallback" if fallback_events else "ok")
+        no_candidate_fallback = bool(fallback_events) and not candidates and any(str(event.get("kind") or "").endswith("_no_candidates") for event in fallback_events)
+        status = "dry_run" if options.dry_run else ("error" if no_candidate_fallback else ("ok_with_fallback" if fallback_events else "ok"))
+        error = "LLM extraction fell back to heuristic but no candidates were produced." if no_candidate_fallback else None
         result = {
-            "ok": True,
+            "ok": not no_candidate_fallback,
             "status": status,
             "run_id": run_id,
             "digest_date": str(options.digest_date),
@@ -1444,6 +1486,7 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
             "extractor_used": extractor_used,
             "extractor_fallbacks": fallback_events[:20],
             "model": llm_config.get("model", ""),
+            "error": error,
             "actions": applied["actions"][:50],
         }
         if not options.dry_run:
@@ -1451,8 +1494,8 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
                 """
                 INSERT INTO nightly_digest_runs(
                     id, digest_date, source_db, started_at, finished_at, extractor, model, dry_run,
-                    status, inserted, updated, skipped, deleted, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    status, inserted, updated, skipped, deleted, metadata, error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -1477,6 +1520,7 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
                         },
                         ensure_ascii=False,
                     ),
+                    error,
                 ),
             )
             conn.commit()

@@ -195,3 +195,112 @@ def test_overlapping_auto_promotion_window_skips_similar_existing_playbook():
     assert second["duplicates_skipped"] >= 1
     assert second["items"][0]["reason"] == "similar_playbook_exists"
     assert conn.execute("SELECT COUNT(*) FROM procedural_playbooks").fetchone()[0] == 1
+
+
+def test_failed_final_state_does_not_create_or_promote_even_after_success_tokens():
+    conn = _conn()
+    scope = _scope()
+    scope_id = build_scope_id(scope)
+    shared_scope_id = build_shared_scope_id(scope)
+
+    _append(conn, scope=scope, session_id="failed-after-pass", turn=1, role="user", content="修复 scope-recall release gate。")
+    _append(conn, scope=scope, session_id="failed-after-pass", turn=2, role="tool", content="pytest 10 passed; ruff ok; release gate ok")
+    _append(
+        conn,
+        scope=scope,
+        session_id="failed-after-pass",
+        turn=3,
+        role="assistant",
+        content="但是最终失败：发布被阻塞，问题未完成，仍有 error 需要修。",
+    )
+
+    result = promote_experiences(
+        conn,
+        accessible_scope_ids=accessible_scope_ids(scope),
+        scope_id=scope_id,
+        shared_scope_id=shared_scope_id,
+        config={"experience": {"auto_promote_low_risk": True}},
+        dry_run=False,
+    )
+
+    assert result["handbooks_created"] == 0
+    assert result["handbooks_promoted"] == 0
+    assert result["skipped"] == 1
+    assert result["items"][0]["reason"] == "final_failure_signal"
+    assert conn.execute("SELECT COUNT(*) FROM procedural_playbooks").fetchone()[0] == 0
+
+
+def test_previous_success_current_failure_does_not_promote():
+    conn = _conn()
+    scope = _scope()
+    scope_id = build_scope_id(scope)
+    shared_scope_id = build_shared_scope_id(scope)
+
+    _append(conn, scope=scope, session_id="mixed-failure", turn=1, role="user", content="继续修复插件。")
+    _append(conn, scope=scope, session_id="mixed-failure", turn=2, role="tool", content="previous run: pytest passed. current run: failed with error in test_provider")
+    _append(conn, scope=scope, session_id="mixed-failure", turn=3, role="assistant", content="未完成：还有失败测试，不能沉淀为经验。")
+
+    result = promote_experiences(
+        conn,
+        accessible_scope_ids=accessible_scope_ids(scope),
+        scope_id=scope_id,
+        shared_scope_id=shared_scope_id,
+        config={"experience": {"auto_promote_low_risk": True}},
+        dry_run=False,
+    )
+
+    assert result["handbooks_created"] == 0
+    assert result["handbooks_promoted"] == 0
+    assert result["items"][0]["completion_state"] == "failed"
+    assert conn.execute("SELECT COUNT(*) FROM procedural_playbooks").fetchone()[0] == 0
+
+
+def test_low_risk_default_creates_candidate_without_auto_promoting():
+    conn = _conn()
+    scope = _scope()
+    scope_id = build_scope_id(scope)
+    shared_scope_id = build_shared_scope_id(scope)
+
+    _append(conn, scope=scope, session_id="default-low-risk", turn=1, role="user", content="检查文档。")
+    _append(conn, scope=scope, session_id="default-low-risk", turn=2, role="tool", content="pytest 5 passed; ruff ok")
+    _append(conn, scope=scope, session_id="default-low-risk", turn=3, role="assistant", content="完成：测试通过，验证完成。")
+
+    result = promote_experiences(
+        conn,
+        accessible_scope_ids=accessible_scope_ids(scope),
+        scope_id=scope_id,
+        shared_scope_id=shared_scope_id,
+        config={"experience": {}},
+        dry_run=False,
+    )
+
+    assert result["handbooks_created"] == 1
+    assert result["handbooks_promoted"] == 0
+    row = conn.execute("SELECT status FROM procedural_playbooks").fetchone()
+    assert row is not None
+    assert row["status"] == "candidate"
+
+def test_non_failure_words_do_not_block_verified_promotion():
+    conn = _conn()
+    scope = _scope()
+    scope_id = build_scope_id(scope)
+    shared_scope_id = build_shared_scope_id(scope)
+
+    _append(conn, scope=scope, session_id="non-failure-words", turn=1, role="user", content="检查 GitHub issues 和 redacted 输出。")
+    _append(conn, scope=scope, session_id="non-failure-words", turn=2, role="tool", content="pytest 5 passed; ruff ok; no errors found; cannot find open issues; output redacted.")
+    _append(conn, scope=scope, session_id="non-failure-words", turn=3, role="assistant", content="完成：检查通过，验证完成。")
+
+    result = promote_experiences(
+        conn,
+        accessible_scope_ids=accessible_scope_ids(scope),
+        scope_id=scope_id,
+        shared_scope_id=shared_scope_id,
+        config={"experience": {"auto_promote_low_risk": True}},
+        dry_run=False,
+    )
+
+    assert result["handbooks_created"] == 1
+    assert result["handbooks_promoted"] == 1
+    row = conn.execute("SELECT status FROM procedural_playbooks").fetchone()
+    assert row is not None
+    assert row["status"] == "promoted"

@@ -487,6 +487,94 @@ def test_llm_digest_timeout_falls_back_to_heuristic_and_records_degraded_ok(tmp_
         conn.close()
 
 
+def test_llm_empty_array_falls_back_and_records_degraded_ok(tmp_path, monkeypatch):
+    import scope_recall.nightly_digest as nightly_digest
+
+    day = date(2026, 6, 1)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    _write_config(hermes_home)
+    _create_state_db(hermes_home / "state.db", day)
+
+    def fake_call_llm_with_retries(*args, **kwargs):  # noqa: ARG001
+        return "[]"
+
+    monkeypatch.setattr(nightly_digest, "_call_llm_with_retries", fake_call_llm_with_retries)
+
+    result = run_digest(
+        DigestOptions(
+            hermes_home=hermes_home,
+            digest_date=day,
+            extractor="llm",
+            api_key="fake-digest-key",
+            max_attempts=1,
+            retry_delay=0,
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "ok_with_fallback"
+    assert result["inserted"] == 1
+    assert result["extractor_used"] == "heuristic-fallback"
+    assert result["extractor_fallbacks"][0]["kind"] == "llm_empty"
+
+    conn = sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    try:
+        run = conn.execute("SELECT status, error, metadata FROM nightly_digest_runs").fetchone()
+        assert run["status"] == "ok_with_fallback"
+        assert run["error"] is None
+        metadata = json.loads(run["metadata"])
+        assert metadata["extractor_used"] == "heuristic-fallback"
+        assert metadata["extractor_fallbacks"][0]["kind"] == "llm_empty"
+    finally:
+        conn.close()
+
+
+def test_llm_bad_json_falls_back_and_records_degraded_ok(tmp_path, monkeypatch):
+    import scope_recall.nightly_digest as nightly_digest
+
+    day = date(2026, 6, 1)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    _write_config(hermes_home)
+    _create_state_db(hermes_home / "state.db", day)
+
+    def fake_call_llm_with_retries(*args, **kwargs):  # noqa: ARG001
+        return "not json at all"
+
+    monkeypatch.setattr(nightly_digest, "_call_llm_with_retries", fake_call_llm_with_retries)
+
+    result = run_digest(
+        DigestOptions(
+            hermes_home=hermes_home,
+            digest_date=day,
+            extractor="llm",
+            api_key="fake-digest-key",
+            max_attempts=1,
+            retry_delay=0,
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "ok_with_fallback"
+    assert result["inserted"] == 1
+    assert result["extractor_used"] == "heuristic-fallback"
+    assert result["extractor_fallbacks"][0]["kind"] == "llm_parse"
+
+    conn = sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    try:
+        run = conn.execute("SELECT status, error, metadata FROM nightly_digest_runs").fetchone()
+        assert run["status"] == "ok_with_fallback"
+        assert run["error"] is None
+        metadata = json.loads(run["metadata"])
+        assert metadata["extractor_used"] == "heuristic-fallback"
+        assert metadata["extractor_fallbacks"][0]["kind"] == "llm_parse"
+    finally:
+        conn.close()
+
+
 def test_heuristic_digest_preserves_external_artifact_anchors(tmp_path):
     day = date(2026, 6, 1)
     hermes_home = tmp_path / "hermes"
@@ -511,5 +599,158 @@ def test_heuristic_digest_preserves_external_artifact_anchors(tmp_path):
         metadata = json.loads(row["metadata"])
         assert metadata["artifacts"][0]["kind"] == "github_issue"
         assert metadata["artifacts"][0]["number"] == 42864
+    finally:
+        conn.close()
+
+def test_llm_explicit_skip_after_candidate_keeps_previous_chunk_candidate(tmp_path, monkeypatch):
+    import scope_recall.nightly_digest as nightly_digest
+
+    day = date(2026, 6, 1)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    _write_config(hermes_home)
+    _create_state_db(hermes_home / "state.db", day, content_suffix=" " + "补充材料 " * 80)
+
+    calls = {"count": 0}
+
+    def fake_call_llm_with_retries(*args, **kwargs):  # noqa: ARG001
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return json.dumps(
+                [
+                    {
+                        "action": "insert",
+                        "content": "scope-recall 多 chunk 审计流程：先保留第一段有效候选，后续 explicit skip 不应丢弃已有候选。",
+                        "target": "ops",
+                        "memory_type": "workflow",
+                        "importance": 0.7,
+                        "confidence": 0.8,
+                        "entities": ["scope-recall"],
+                        "tags": ["nightly-digest"],
+                        "reason": "regression",
+                    }
+                ],
+                ensure_ascii=False,
+            )
+        return json.dumps([{"action": "skip", "reason": "covered"}])
+
+    monkeypatch.setattr(nightly_digest, "_call_llm_with_retries", fake_call_llm_with_retries)
+
+    result = run_digest(
+        DigestOptions(
+            hermes_home=hermes_home,
+            digest_date=day,
+            extractor="llm",
+            api_key="fake-digest-key",
+            max_attempts=1,
+            retry_delay=0,
+            chunk_chars=80,
+            max_session_chars=4000,
+        )
+    )
+
+    assert calls["count"] >= 2
+    assert result["ok"] is True
+    assert result["status"] == "ok"
+    assert result["inserted"] == 1
+    assert result["extractor_fallbacks"] == []
+
+
+def test_llm_explicit_skip_before_candidate_continues_to_next_chunk(tmp_path, monkeypatch):
+    import scope_recall.nightly_digest as nightly_digest
+
+    day = date(2026, 6, 1)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    _write_config(hermes_home)
+    _create_state_db(hermes_home / "state.db", day, content_suffix=" " + "后续材料 " * 80)
+
+    calls = {"count": 0}
+
+    def fake_call_llm_with_retries(*args, **kwargs):  # noqa: ARG001
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return json.dumps([{"action": "skip", "reason": "first chunk has no reusable content"}])
+        return json.dumps(
+            [
+                {
+                    "action": "insert",
+                    "content": "scope-recall 多 chunk 审计流程：第一个 chunk explicit skip 后，后续 chunk 的有效候选仍必须被解析写入。",
+                    "target": "ops",
+                    "memory_type": "workflow",
+                    "importance": 0.7,
+                    "confidence": 0.8,
+                    "entities": ["scope-recall"],
+                    "tags": ["nightly-digest"],
+                    "reason": "regression",
+                }
+            ],
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(nightly_digest, "_call_llm_with_retries", fake_call_llm_with_retries)
+
+    result = run_digest(
+        DigestOptions(
+            hermes_home=hermes_home,
+            digest_date=day,
+            extractor="llm",
+            api_key="fake-digest-key",
+            max_attempts=1,
+            retry_delay=0,
+            chunk_chars=80,
+            max_session_chars=4000,
+        )
+    )
+
+    assert calls["count"] >= 2
+    assert result["ok"] is True
+    assert result["status"] == "ok"
+    assert result["inserted"] == 1
+    assert result["candidates"] == 1
+    assert result["extractor_used"] == "llm"
+    assert result["extractor_fallbacks"] == []
+
+
+def test_llm_empty_and_empty_heuristic_records_error(tmp_path, monkeypatch):
+    import scope_recall.nightly_digest as nightly_digest
+
+    day = date(2026, 6, 1)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    _write_config(hermes_home)
+    _create_state_db(hermes_home / "state.db", day)
+
+    def fake_call_llm_with_retries(*args, **kwargs):  # noqa: ARG001
+        return "[]"
+
+    monkeypatch.setattr(nightly_digest, "_call_llm_with_retries", fake_call_llm_with_retries)
+    monkeypatch.setattr(nightly_digest, "heuristic_candidates", lambda bundle: [])
+
+    result = run_digest(
+        DigestOptions(
+            hermes_home=hermes_home,
+            digest_date=day,
+            extractor="llm",
+            api_key="fake-digest-key",
+            max_attempts=1,
+            retry_delay=0,
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "error"
+    assert result["candidates"] == 0
+    assert result["extractor_fallbacks"][0]["kind"] == "llm_empty_no_candidates"
+    assert "no candidates" in result["error"]
+
+    conn = sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    try:
+        run = conn.execute("SELECT status, error, metadata FROM nightly_digest_runs").fetchone()
+        assert run["status"] == "error"
+        assert "no candidates" in run["error"]
+        metadata = json.loads(run["metadata"])
+        assert metadata["extractor_fallbacks"][0]["kind"] == "llm_empty_no_candidates"
     finally:
         conn.close()

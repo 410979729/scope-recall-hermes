@@ -78,7 +78,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "packet_max_chars": 1400,
         "auto_promotion_enabled": False,
         "auto_promotion_limit_sessions": 20,
-        "auto_promote_low_risk": True,
+        "auto_promote_low_risk": False,
         "promotion_min_entries": 3,
         "promotion_min_tool_entries": 1,
         "promotion_require_verification": True,

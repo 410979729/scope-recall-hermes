@@ -1,14 +1,27 @@
 # Changelog
 
+All notable changes to `scope-recall` will be documented in this file.
+
+## [Unreleased]
+
+## [1.4.3] - 2026-06-20
+
+### Changed
+- Defaulted `experience.auto_promote_low_risk` to `false` so automatic Experience scans create candidate playbooks unless low-risk auto-promotion is explicitly enabled.
+
+### Fixed
+- Blocked Experience auto-promotion for final-failure or incomplete task traces even when earlier logs contain `passed`/`ok` success tokens.
+- Tightened final-failure detection to avoid false positives from words such as `cannot`, `no errors`, or `redacted`.
+- Nightly digest now records `ok_with_fallback` and `extractor_used=heuristic-fallback` when LLM output is empty, unparsable, or filtered out before heuristic fallback writes candidates.
+- Preserved already parsed LLM candidates when a later chunk explicitly returns `action=skip`, and continued parsing later chunks when an earlier chunk returns `action=skip`.
+- Marked LLM fallback runs as `error` when heuristic fallback also produces no candidates.
+- Made the OpenClaw `memory-lancedb-pro` importer import LanceDB lazily so tests and non-import workflows do not require the optional LanceDB dependency.
+
 ## [1.4.2] - 2026-06-20
 
 - Clarified Experience Kernel runtime docs so default prefetch and operator-enabled automatic promotion are described as separate controls.
 - Added doctor visibility for nightly digest health, including latest status, recent fallback/error rows, and consecutive failure counts.
 - Added release regression coverage for the Experience docs/schema promotion contract and nightly digest doctor reporting.
-
-All notable changes to `scope-recall` will be documented in this file.
-
-## [Unreleased]
 
 ## [1.4.1] - 2026-06-19
 

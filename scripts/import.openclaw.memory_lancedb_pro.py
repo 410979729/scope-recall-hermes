@@ -17,8 +17,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import lancedb
-
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME = "scope_recall_script_runtime"
 if PACKAGE_NAME not in sys.modules:
@@ -51,6 +49,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dry-run", action="store_true", help="Inspect only; do not write target SQLite")
     return p.parse_args()
 
+
+def connect_lancedb(source: Path):
+    try:
+        import lancedb  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise RuntimeError("lancedb is required only for importing OpenClaw memory-lancedb-pro sources; install scope-recall[lancedb] or lancedb to run this importer.") from exc
+    return lancedb.connect(str(source))
 
 
 def map_row(row: dict[str, Any], scope_prefix: str) -> ImportedMemoryRow:
@@ -220,7 +225,11 @@ def main() -> int:
         print(json.dumps({"ok": False, "error": f"source not found: {source}"}, ensure_ascii=False))
         return 1
 
-    db = lancedb.connect(str(source))
+    try:
+        db = connect_lancedb(source)
+    except RuntimeError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        return 1
     listed = db.list_tables()
     tables = list(getattr(listed, "tables", listed))
     if "memories" not in tables:
