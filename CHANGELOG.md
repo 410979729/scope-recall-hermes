@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.2] - 2026-06-20
+
+- Clarified Experience Kernel runtime docs so default prefetch and operator-enabled automatic promotion are described as separate controls.
+- Added doctor visibility for nightly digest health, including latest status, recent fallback/error rows, and consecutive failure counts.
+- Added release regression coverage for the Experience docs/schema promotion contract and nightly digest doctor reporting.
+
 All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]

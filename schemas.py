@@ -283,7 +283,7 @@ SCOPE_RECALL_PLAYBOOK_INSPECT_SCHEMA = {
 
 SCOPE_RECALL_EXPERIENCE_PREFLIGHT_SCHEMA = {
     "name": "scope_recall_experience_preflight",
-    "description": "Render a bounded Experience Kernel packet for a task query. Read-only; default runtime injection remains disabled unless configured.",
+    "description": "Render a bounded Experience Kernel packet for a task query. Read-only; runtime injection follows experience.prefetch_enabled and can be disabled in config.",
     "parameters": {
         "type": "object",
         "properties": {

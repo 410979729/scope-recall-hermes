@@ -368,6 +368,98 @@ def test_doctor_expected_embedder_loads_profile_dotenv_before_fallback(tmp_path,
 
 
 
+def test_doctor_experience_config_summary_reports_auto_promotion_flag():
+    spec = importlib.util.spec_from_file_location("scope_recall_doctor", DOCTOR_PATH)
+    assert spec is not None
+    assert spec.loader is not None
+    doctor = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(doctor)
+
+    payload = doctor.experience_config_summary(
+        {
+            "experience": {
+                "enabled": True,
+                "prefetch_enabled": True,
+                "auto_promotion_enabled": True,
+                "auto_promotion_limit_sessions": 20,
+                "promotion_require_verification": True,
+            },
+            "vector": {"embedder": {"api_key": "should-not-appear"}},
+        }
+    )
+
+    assert payload == {
+        "enabled": True,
+        "prefetch_enabled": True,
+        "auto_promotion_enabled": True,
+        "auto_promotion_limit_sessions": 20,
+        "promotion_require_verification": True,
+    }
+    assert "should-not-appear" not in str(payload)
+
+
+def test_doctor_nightly_digest_report_surfaces_fallback_and_recent_errors(tmp_path):
+    spec = importlib.util.spec_from_file_location("scope_recall_doctor", DOCTOR_PATH)
+    assert spec is not None
+    assert spec.loader is not None
+    doctor = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(doctor)
+
+    storage = tmp_path / "scope-recall"
+    storage.mkdir(parents=True)
+    conn = sqlite3.connect(storage / "memory.sqlite3")
+    try:
+        conn.execute(
+            """
+            CREATE TABLE nightly_digest_runs (
+                id TEXT PRIMARY KEY,
+                digest_date TEXT NOT NULL,
+                source_db TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                extractor TEXT NOT NULL,
+                model TEXT,
+                dry_run INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                inserted INTEGER NOT NULL DEFAULT 0,
+                updated INTEGER NOT NULL DEFAULT 0,
+                skipped INTEGER NOT NULL DEFAULT 0,
+                deleted INTEGER NOT NULL DEFAULT 0,
+                error TEXT,
+                metadata TEXT NOT NULL DEFAULT '{}'
+            )
+            """
+        )
+        rows = [
+            ("run-1", "2026-06-17", "memory.sqlite3", "2026-06-17T15:00:00+00:00", "2026-06-17T15:01:00+00:00", "llm", "model", 0, "error", 0, 0, 0, 0, "The read operation timed out", "{}"),
+            ("run-2", "2026-06-18", "memory.sqlite3", "2026-06-18T15:00:00+00:00", "2026-06-18T15:01:00+00:00", "llm", "model", 0, "ok", 1, 0, 0, 0, None, "{}"),
+            ("run-3", "2026-06-19", "memory.sqlite3", "2026-06-19T15:00:00+00:00", "2026-06-19T15:01:00+00:00", "llm", "model", 0, "ok_with_fallback", 2, 0, 0, 0, None, "{}"),
+        ]
+        conn.executemany(
+            """
+            INSERT INTO nightly_digest_runs (
+                id, digest_date, source_db, started_at, finished_at, extractor, model, dry_run,
+                status, inserted, updated, skipped, deleted, error, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    payload, check, recommendations = doctor.nightly_digest_report(tmp_path)
+
+    assert payload["status"] == "degraded"
+    assert payload["latest_run"]["status"] == "ok_with_fallback"
+    assert payload["runs"]["by_status"] == {"error": 1, "ok": 1, "ok_with_fallback": 1}
+    assert payload["consecutive_errors"] == 0
+    assert check == {"ok": True, "failures": []}
+    joined = "\n".join(recommendations)
+    assert "fallback" in joined
+    assert "Recent nightly digest errors" in joined
+
+
 def test_doctor_vector_report_accepts_sqlite_bruteforce_backend(tmp_path):
     spec = importlib.util.spec_from_file_location("scope_recall_doctor", DOCTOR_PATH)
     assert spec is not None
