@@ -14,7 +14,7 @@ The MVP supports this loop:
 6. `scope_recall_forgetting_report` and `scope_recall_forgetting_run` keep ordinary memories from growing without bound by soft-archiving duplicates, scratch rows, tiny low-value rows, and wrapper noise.
 7. Doctor reports Experience Kernel table health and playbook/run counts.
 
-The automatic promotion path is conservative. It does **not** trust raw transcripts directly: it requires success and verification signals, writes a task episode first, auto-promotes only low-risk verified handbooks, and marks high-risk handbooks as `needs_review` for later agent review. Joy does not need to manually inspect raw memory rows.
+The automatic promotion path is conservative. It does **not** trust raw transcripts directly: it requires final successful closure plus verification signals, writes a task episode first, and defaults to creating candidate playbooks instead of silently promoting them. Low-risk verified handbooks are auto-promoted only when `experience.auto_promote_low_risk=true` is explicitly enabled; high-risk handbooks remain gated by `needs_review` for later agent review. Joy does not need to manually inspect raw memory rows.
 
 ## Safety defaults
 
@@ -29,7 +29,7 @@ Default config in the current source candidate:
     "allow_risky_direct_reuse": false,
     "packet_max_chars": 1400,
     "auto_promotion_enabled": false,
-    "auto_promote_low_risk": true,
+    "auto_promote_low_risk": false,
     "promotion_min_entries": 3,
     "promotion_min_tool_entries": 1,
     "promotion_require_verification": true
@@ -50,7 +50,7 @@ Important defaults:
 - `experience.enabled=true`: Experience Kernel tools are available. Set `false` as a global kill switch; runtime preflight returns `no_reuse`, runtime injection stays silent, and non-preflight Experience tools are hidden/blocked.
 - `experience.prefetch_enabled=true`: matching promoted playbooks may append a bounded advisory runtime packet to normal recall. Set `false` to keep runtime injection silent while retaining read-only tools.
 - `experience.auto_promotion_enabled=false`: successful background/session-end journal digest runs do not launch automatic promotion unless explicitly enabled. Set `true` to allow conservative evidence-gated automatic promotion; manual `scope_recall_experience_promote` remains available.
-- `experience.auto_promote_low_risk=true`: low-risk verified handbooks can be enabled without Joy manually reviewing raw logs; high-risk or under-verified handbooks remain gated by review/status.
+- `experience.auto_promote_low_risk=false`: even when automatic promotion scans are enabled, low-risk verified handbooks are created as candidates by default. Set `true` only when the deployment is ready to promote low-risk verified playbooks automatically; high-risk, under-verified, or final-failure handbooks remain gated by review/status.
 - `allow_risky_direct_reuse=false`: playbooks with `service_control`, `network_or_remote`, `cross_instance`, `credential_adjacent`, or `destructive_or_irreversible` steps are downgraded to guided reuse unless explicitly allowed.
 - `forgetting.soft_archive_default=true`: forgetting defaults to metadata archive/hide rather than physical deletion.
 - `scope_recall_playbook_create` and `scope_recall_playbook_review` require `maintenance_tools_enabled=true`.

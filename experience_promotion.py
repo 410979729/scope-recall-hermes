@@ -25,6 +25,51 @@ SUCCESS_TOKENS = (
     "成功",
 )
 
+FAILURE_PATTERNS = (
+    r"\bblocked\b",
+    r"\bblocker\b",
+    r"\bfailed\b",
+    r"\bfailure\b",
+    r"\bfailing\b",
+    r"\bfails\b",
+    r"\btraceback\b",
+    r"\bexception\b",
+    r"\berrors?\b(?!\s*(?:0|zero|none|found|detected|remaining))",
+    r"\bnot\s+completed?\b",
+    r"\bincomplete\b",
+    r"\bstill\s+(?:failing|fails|blocked)\b",
+    r"\btests?\s+failed\b",
+    r"失败",
+    r"未完成",
+    r"没完成",
+    r"没有完成",
+    r"阻塞",
+    r"报错",
+    r"仍有问题",
+    r"还有问题",
+    r"仍然失败",
+    r"还有失败",
+    r"不能沉淀",
+    r"不能发布",
+    r"不可发布",
+)
+
+_FAILURE_RE = re.compile("|".join(f"(?:{pattern})" for pattern in FAILURE_PATTERNS), re.IGNORECASE)
+
+COMPLETION_TOKENS = (
+    "完成",
+    "通过",
+    "已验证",
+    "验证完成",
+    "验证通过",
+    "成功",
+    "done",
+    "fixed",
+    "success",
+    "passed",
+    "green",
+)
+
 VERIFICATION_TOKENS = (
     "pytest",
     "ruff",
@@ -102,8 +147,48 @@ def _contains_any(text: str, tokens: Sequence[str]) -> bool:
     return any(token.lower() in lowered for token in tokens)
 
 
+def _has_failure_signal(text: str) -> bool:
+    return bool(_FAILURE_RE.search(text or ""))
+
+
 def _entry_text(entries: Sequence[sqlite3.Row]) -> str:
     return "\n".join(str(entry["content"] or "") for entry in entries)
+
+
+def _tail_text(entries: Sequence[sqlite3.Row], *, roles: set[str] | None = None, limit: int = 4) -> str:
+    selected: list[str] = []
+    allowed_roles = roles or {"assistant", "tool"}
+    for entry in reversed(entries):
+        if str(entry["role"] or "") not in allowed_roles:
+            continue
+        content = str(entry["content"] or "").strip()
+        if content:
+            selected.append(content)
+        if len(selected) >= limit:
+            break
+    return "\n".join(reversed(selected))
+
+
+def _completion_state(entries: Sequence[sqlite3.Row]) -> tuple[str, str]:
+    """Classify whether the final task state is safe to promote.
+
+    Historical logs can contain earlier success tokens followed by later failure
+    or blocker signals. Automatic promotion trusts the final closure, not any
+    isolated ``passed``/``ok`` token anywhere in the transcript.
+    """
+
+    text = _entry_text(entries)
+    tail = _tail_text(entries)
+    assistant_tail = _tail_text(entries, roles={"assistant"}, limit=3)
+    if _has_failure_signal(tail) or _has_failure_signal(assistant_tail):
+        return "failed", "final_failure_signal"
+    if _contains_any(assistant_tail, COMPLETION_TOKENS) or _contains_any(tail, COMPLETION_TOKENS):
+        return "success", "final_success_signal"
+    if _has_failure_signal(text):
+        return "uncertain", "historical_failure_signal"
+    if _contains_any(text, SUCCESS_TOKENS):
+        return "uncertain", "success_not_final"
+    return "unknown", "no_completion_signal"
 
 
 def _tool_names(entries: Sequence[sqlite3.Row]) -> list[str]:
@@ -398,7 +483,7 @@ def promote_experiences(
     min_entries = int(experience_config.get("promotion_min_entries") or 3)
     min_tool_entries = int(experience_config.get("promotion_min_tool_entries") or 1)
     require_verification = _coerce_bool(experience_config, "promotion_require_verification", True)
-    auto_promote_low_risk = _coerce_bool(experience_config, "auto_promote_low_risk", True)
+    auto_promote_low_risk = _coerce_bool(experience_config, "auto_promote_low_risk", False)
     result: dict[str, Any] = {
         "dry_run": bool(dry_run),
         "episodes_created": 0,
@@ -422,6 +507,11 @@ def promote_experiences(
         tool_names = _tool_names(entries)
         tool_entry_count = sum(1 for entry in entries if str(entry["role"] or "") == "tool")
         verification = _verification(entries)
+        completion_state, completion_reason = _completion_state(entries)
+        if completion_state != "success":
+            result["skipped"] += 1
+            result["items"].append({"action": "skip", "reason": completion_reason, "completion_state": completion_state})
+            continue
         if tool_entry_count < min_tool_entries or not _contains_any(text, SUCCESS_TOKENS):
             result["skipped"] += 1
             continue

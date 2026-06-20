@@ -16,7 +16,7 @@ def test_experience_defaults_enable_prefetch_but_not_auto_promotion(tmp_path):
     assert config["experience"]["enabled"] is True
     assert config["experience"]["prefetch_enabled"] is True
     assert config["experience"]["auto_promotion_enabled"] is False
-    assert config["experience"]["auto_promote_low_risk"] is True
+    assert config["experience"]["auto_promote_low_risk"] is False
 
 
 def test_experience_docs_and_schema_match_default_promotion_contract():
