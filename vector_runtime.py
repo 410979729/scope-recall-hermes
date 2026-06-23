@@ -68,7 +68,9 @@ def _open_vector_store(provider: Any, *, dimensions: int) -> None:
         if fallback_backend == "sqlite-bruteforce":
             status = native_vector_dependency_status()
             detail = f"returncode={status.get('returncode')}" if status.get("returncode") is not None else str(status.get("stderr") or "not installed")
-            _append_vector_message(provider, f"lancedb unavailable or unsafe ({detail}); using sqlite-bruteforce fallback")
+            message = f"lancedb unavailable or unsafe ({detail}); using sqlite-bruteforce fallback"
+            _append_vector_message(provider, message)
+            logger.warning("Scope Recall vector backend fallback: %s", message)
             _open_sqlite_vector_store(provider, table_name=table_name, dimensions=dimensions, metric=metric)
             return
         status = native_vector_dependency_status()
@@ -97,6 +99,12 @@ def _open_vector_store(provider: Any, *, dimensions: int) -> None:
 
 
 def setup_vector_layer(provider: Any) -> None:
+    old_store = getattr(provider, "_vector_store", None)
+    if old_store is not None:
+        try:
+            old_store.close()
+        except Exception:
+            logger.debug("Scope Recall vector store close during setup failed", exc_info=True)
     provider._vector_enabled = config_bool(provider._vector_config or {}, "enabled", False)
     provider._vector_backend = str((provider._vector_config or {}).get("backend") or "lancedb")
     provider._vector_ready = False

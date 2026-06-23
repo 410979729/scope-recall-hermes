@@ -142,6 +142,7 @@ Most agent memory pain is not just "wrong memory was recalled". The bigger user-
 | Governance | deterministic exact dedupe, conservative near-duplicate merge, filtering, metadata, decay review |
 | Migration | local `lancepro` auto-migration; OpenClaw `memory-lancedb-pro` import is explicit |
 | Offline bootstrap | deterministic `local-hash` fallback when hosted embeddings are unavailable |
+| Maintainer contracts | [`docs/contract.matrix.md`](docs/contract.matrix.md) maps major feature contracts to source files, targeted tests, release gates, and dynamic probes so large-context changes stay evidence-backed |
 
 ---
 
@@ -174,6 +175,8 @@ hermes-scope-recall install --hermes-home "${HERMES_HOME:-$HOME/.hermes}"
 hermes config set memory.provider scope-recall
 hermes memory setup
 ```
+
+`hermes memory setup` now writes the provider config and bootstraps an empty `$HERMES_HOME/scope-recall/memory.sqlite3` truth/journal schema plus sqlite-bruteforce `$HERMES_HOME/scope-recall/vector.sqlite3` metadata when the SQLite companion is configured directly or as the native-safe fallback. `hermes-scope-recall verify` and operator checks therefore do not have to wait for the first live message to trigger lazy provider initialization.
 
 For a local smoke check after installation:
 

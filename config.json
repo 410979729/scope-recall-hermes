@@ -42,7 +42,8 @@
     "tool_trace_skip_names": [
       "todo",
       "skill_view",
-      "skills_list"
+      "skills_list",
+      "session_messages"
     ],
     "tool_trace_hard_max_chars": 4000,
     "tool_trace_max_chars": 1800,

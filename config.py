@@ -42,7 +42,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "backlog_warn_entries": 500,
         "backlog_fail_entries": 3000,
         "backlog_max_age_hours": 72,
-        "tool_trace_skip_names": ["todo", "skill_view", "skills_list"],
+        "tool_trace_skip_names": ["todo", "skill_view", "skills_list", "session_messages"],
         "tool_trace_hard_max_chars": 4000,
         "tool_trace_max_chars": 1800,
         "tool_trace_include_output_preview": False,
@@ -120,6 +120,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "vector": {
         "enabled": True,
         "backend": "lancedb",
+        "fallback_backend": "sqlite-bruteforce",
         "table_name": "memories",
         "top_k": 8,
         "sync_mode": "incremental",

@@ -4,6 +4,15 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Added `docs/contract.matrix.md`, a maintainer gate matrix that maps each major scope-recall contract to source files, targeted tests, release gates, and dynamic probes so large-context changes do not rely on an agent remembering the whole plugin.
+
+### Fixed
+- Made the SQLite brute-force vector companion safe to use from background journal/digest threads by opening the connection with `check_same_thread=False`, serializing access with a local lock, and closing/reopening the companion cleanly when `setup_vector_layer()` is rerun after a `needs_repair` state.
+- Skipped `session_messages` tool dumps in session-end tool-trace journaling so current-session MCP readbacks cannot be restaged as memory-provider evidence.
+- Enabled the native-safe `sqlite-bruteforce` vector fallback by default when LanceDB/PyArrow are absent or unsafe on non-AVX hosts.
+- Bootstrapped the empty SQLite truth/journal schema and sqlite-bruteforce `vector_meta` records during `hermes memory setup` config saves so operators can verify installation before the first live message lazily initializes the provider.
+
 ## [1.4.3] - 2026-06-20
 
 This is the first public release after `v1.4.0`; the GitHub release notes for `v1.4.3` include the cumulative `v1.4.1`, `v1.4.2`, and `v1.4.3` changes.

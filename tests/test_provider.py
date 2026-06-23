@@ -1,5 +1,6 @@
 import importlib
 import json
+import sqlite3
 import threading
 import time
 
@@ -41,6 +42,58 @@ def test_scope_recall_plugin_loads_from_hermes_home_plugins():
     assert plugin.name == "scope-recall"
 
 
+def test_save_config_bootstraps_empty_sqlite_schema(tmp_path):
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    db_path = tmp_path / "scope-recall" / "memory.sqlite3"
+    assert not db_path.exists()
+
+    plugin.save_config({"vector": {"enabled": False}}, str(tmp_path))
+
+    assert db_path.is_file()
+    conn = sqlite3.connect(db_path)
+    try:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    finally:
+        conn.close()
+    assert {"memories", "journal_entries", "journal_digest_runs", "memory_journal_sources"} <= tables
+
+
+def test_save_config_bootstraps_sqlite_vector_meta_for_install_verification(tmp_path, monkeypatch):
+    monkeypatch.delenv("SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY", raising=False)
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    vector_db_path = tmp_path / "scope-recall" / "vector.sqlite3"
+    assert not vector_db_path.exists()
+
+    plugin.save_config(
+        {
+            "vector": {
+                "enabled": True,
+                "backend": "lancedb",
+                "fallback_backend": "sqlite-bruteforce",
+                "table_name": "memories",
+                "embedder": {
+                    "provider": "openai-compatible",
+                    "model": "gemini-embedding-001",
+                    "api_key_env": ["SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY"],
+                },
+                "fallback_embedder": {"provider": "local-hash", "dimensions": 8, "model": "hash-v1"},
+            }
+        },
+        str(tmp_path),
+    )
+
+    assert vector_db_path.is_file()
+    conn = sqlite3.connect(vector_db_path)
+    try:
+        meta = dict(conn.execute("SELECT key, value FROM vector_meta").fetchall())
+    finally:
+        conn.close()
+    assert meta["table_name"] == "memories"
+    assert meta["dimensions"] == "8"
+
+
 def test_tool_journal_content_defaults_to_safe_summary_without_raw_output(provider):
     content = json.dumps(
         {
@@ -64,6 +117,45 @@ def test_tool_journal_content_defaults_to_safe_summary_without_raw_output(provid
     error_journal_content = provider._tool_journal_content({"name": "terminal", "content": error_content})
     assert "[REDACTED_PATH]" in error_journal_content
     assert "/home/a/private" not in error_journal_content
+
+
+def test_tool_journal_content_skips_session_message_dumps(provider):
+    huge_session_dump = json.dumps(
+        {
+            "messages": [
+                {
+                    "role": "tool",
+                    "content": "x" * 200_000,
+                }
+            ]
+        }
+    )
+
+    assert (
+        provider._tool_journal_content(
+            {
+                "name": "mcp_hermes_studio_use_hermes_studio_use_session_messages",
+                "content": huge_session_dump,
+            }
+        )
+        == ""
+    )
+
+
+def test_append_session_tool_journal_skips_session_message_dumps(provider):
+    provider._append_session_tool_journal(
+        [
+            {
+                "role": "tool",
+                "name": "mcp_hermes_studio_use_hermes_studio_use_session_messages",
+                "content": json.dumps({"messages": [{"role": "tool", "content": "x" * 200_000}]}),
+            }
+        ]
+    )
+
+    with provider._lock:
+        row = provider._require_conn().execute("SELECT COUNT(*) FROM journal_entries WHERE role = 'tool'").fetchone()
+    assert row[0] == 0
 
 
 def test_background_digest_auto_promotion_runs_when_enabled(tmp_path, monkeypatch):
