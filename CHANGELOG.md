@@ -4,6 +4,8 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.4.4] - 2026-06-23
+
 ### Added
 - Added `docs/contract.matrix.md`, a maintainer gate matrix that maps each major scope-recall contract to source files, targeted tests, release gates, and dynamic probes so large-context changes do not rely on an agent remembering the whole plugin.
 
