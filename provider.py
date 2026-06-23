@@ -17,7 +17,7 @@ from .capture_filters import contains_secret_like_text, redact_secret_like_text,
 from .capture_llm import extract_capture_candidates
 from .config import load_runtime_config, save_runtime_config
 from .journal import append_journal_entry, ensure_journal_schema, run_journal_digest
-from .embedders import BaseEmbedder
+from .embedders import BaseEmbedder, build_embedder
 from .gating import clean_text, compact_text, config_bool, dedup_key, normalize_query, should_skip_retrieval
 from .governance import extract_candidates
 from .memory_ops import (
@@ -79,6 +79,7 @@ from .schemas import (
 )
 from .scope import accessible_scope_ids, build_scope_id, build_shared_pool_scope_id, build_shared_scope_id, normalize_scope_identity, writable_scope_ids
 from .sql_store import ensure_schema
+from .sqlite_vector_store import SQLiteBruteForceVectorStore
 from .storage_views import search_curated_memories, search_db_memories, search_vector_memories
 from .tooling import ScopeRecallToolService
 from .vector_runtime import setup_vector_layer
@@ -89,6 +90,7 @@ from .experience_store import backfill_skill_anchors
 logger = logging.getLogger(__name__)
 
 DEFAULT_TOOL_TRACE_SKIP_NAMES = {"todo", "skill_view", "skills_list"}
+DEFAULT_TOOL_TRACE_SKIP_NAME_FRAGMENTS = {"session_messages"}
 
 
 class ScopeRecallMemoryProvider(MemoryProvider):
@@ -210,6 +212,56 @@ class ScopeRecallMemoryProvider(MemoryProvider):
 
     def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
         save_runtime_config(values or {}, hermes_home)
+        self._bootstrap_storage(hermes_home)
+
+    def _bootstrap_storage(self, hermes_home: str | os.PathLike[str]) -> None:
+        """Create the empty SQLite truth/journal schema during `hermes memory setup`.
+
+        Gateway sessions can lazily construct agents only after the first user
+        message. Bootstrapping here gives operators an immediate, visible setup
+        artifact instead of a false-negative "no database yet" verification gap.
+        """
+        storage_dir = Path(hermes_home).expanduser() / "scope-recall"
+        storage_dir.mkdir(parents=True, exist_ok=True)
+        db_path = storage_dir / "memory.sqlite3"
+        conn = sqlite3.connect(db_path, check_same_thread=False)
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            ensure_schema(conn)
+            ensure_journal_schema(conn)
+        finally:
+            conn.close()
+        runtime_config = load_runtime_config(self._plugin_dir, storage_dir)
+        self._bootstrap_sqlite_vector_companion(storage_dir, runtime_config)
+
+    def _bootstrap_sqlite_vector_companion(self, storage_dir: Path, runtime_config: dict[str, Any]) -> None:
+        """Create sqlite-bruteforce vector metadata when setup can do so safely."""
+        vector_config = dict((runtime_config or {}).get("vector") or {})
+        if not config_bool(vector_config, "enabled", False):
+            return
+        backend = str(vector_config.get("backend") or "lancedb").strip().lower()
+        fallback_backend = str(vector_config.get("fallback_backend") or "").strip().lower()
+        if "sqlite-bruteforce" not in {backend, fallback_backend}:
+            return
+
+        embedder_config = dict(vector_config.get("embedder") or {})
+        fallback_config = dict(vector_config.get("fallback_embedder") or {})
+        embedder = build_embedder(embedder_config)
+        if not embedder.is_available() and fallback_config:
+            fallback_embedder = build_embedder(fallback_config)
+            if fallback_embedder.is_available():
+                embedder = fallback_embedder
+        dimensions = int(getattr(embedder, "dimensions", 0) or fallback_config.get("dimensions") or embedder_config.get("dimensions") or 256)
+        table_name = str(vector_config.get("table_name") or "memories")
+        retrieval_config = dict((runtime_config or {}).get("retrieval") or {})
+        metric = str(retrieval_config.get("metric") or "cosine")
+        store = SQLiteBruteForceVectorStore(storage_dir / "vector.sqlite3", table_name=table_name, dimensions=dimensions, metric=metric)
+        try:
+            store.open()
+        finally:
+            store.close()
 
     def initialize(self, session_id: str, **kwargs) -> None:
         hermes_home = Path(kwargs.get("hermes_home") or "~/.hermes").expanduser()
@@ -582,7 +634,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             skip_names.add(raw_skip_names.strip().lower())
         elif isinstance(raw_skip_names, (list, tuple, set)):
             skip_names.update(str(item).strip().lower() for item in raw_skip_names if str(item).strip())
-        if tool_name.lower() in skip_names:
+        normalized_tool_name = tool_name.lower()
+        if normalized_tool_name in skip_names or any(fragment in normalized_tool_name for fragment in DEFAULT_TOOL_TRACE_SKIP_NAME_FRAGMENTS):
             return ""
         raw_content = message.get("content")
         if raw_content is None:

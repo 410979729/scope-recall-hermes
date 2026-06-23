@@ -55,6 +55,7 @@ REQUIRED_SOURCE_FILES = {
     "docs/stability.md",
     "docs/naming.md",
     "docs/experience.kernel.md",
+    "docs/contract.matrix.md",
     "docs/hermes-upstream-recommendation-plan.md",
     "scripts/import.openclaw.memory_lancedb_pro.py",
     "scripts/nightly-digest.py",
@@ -115,6 +116,7 @@ REQUIRED_WHEEL = {
     "scope_recall/docs/stability.md",
     "scope_recall/docs/naming.md",
     "scope_recall/docs/experience.kernel.md",
+    "scope_recall/docs/contract.matrix.md",
     "scope_recall/docs/hermes-upstream-recommendation-plan.md",
     "scope_recall/scripts/import.openclaw.memory_lancedb_pro.py",
     "scope_recall/scripts/nightly-digest.py",
@@ -310,8 +312,11 @@ def metadata_check() -> dict[str, object]:
         "readme v1": "stable V1 release line",
         "stability truth source": "SQLite is the truth source",
         "stability tools": "scope_recall_stats",
+        "contract matrix": "Scope Recall Contract Matrix",
+        "contract matrix truth source": "SQLite is the truth source. Vector stores, summaries, and derived indexes are",
+        "contract matrix stable tools": "Stable `scope_recall_*` tool names remain registered.",
     }
-    searchable = "\n".join([pyproject, plugin, readme, changelog, stability])
+    searchable = "\n".join([pyproject, plugin, readme, changelog, stability, read_text("docs/contract.matrix.md")])
     for label, snippet in required_snippets.items():
         if snippet not in searchable:
             failures.append(f"missing {label}: {snippet}")

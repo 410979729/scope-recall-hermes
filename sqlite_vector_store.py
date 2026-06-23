@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+import threading
 from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
@@ -23,6 +24,7 @@ class SQLiteBruteForceVectorStore:
         self._dimensions = int(dimensions)
         self._metric = (metric or "cosine").strip().lower()
         self._conn: sqlite3.Connection | None = None
+        self._lock = threading.RLock()
 
     @property
     def backend(self) -> str:
@@ -45,18 +47,19 @@ class SQLiteBruteForceVectorStore:
 
     def open(self) -> None:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self._db_path)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._ensure_schema()
-        stored_dimensions = self._get_meta_int("dimensions")
-        stored_table = self._get_meta_text("table_name")
-        if (stored_dimensions and stored_dimensions != self._dimensions) or (stored_table and stored_table != self._table_name):
-            self._conn.execute("DELETE FROM vector_records")
-        self._set_meta("dimensions", str(self._dimensions))
-        self._set_meta("table_name", self._table_name)
-        self._conn.commit()
+        with self._lock:
+            self._conn = sqlite3.connect(self._db_path, check_same_thread=False, timeout=30.0)
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+            self._ensure_schema()
+            stored_dimensions = self._get_meta_int("dimensions")
+            stored_table = self._get_meta_text("table_name")
+            if (stored_dimensions and stored_dimensions != self._dimensions) or (stored_table and stored_table != self._table_name):
+                self._conn.execute("DELETE FROM vector_records")
+            self._set_meta("dimensions", str(self._dimensions))
+            self._set_meta("table_name", self._table_name)
+            self._conn.commit()
 
     def _ensure_schema(self) -> None:
         conn = self._require_conn()
@@ -115,55 +118,60 @@ class SQLiteBruteForceVectorStore:
         payload = list(rows)
         if not payload:
             return
-        conn = self._require_conn()
-        for row in payload:
-            memory_id = str(row.get("id") or "")
-            if not memory_id:
-                continue
-            vector = self._coerce_vector(row.get("vector"))
-            conn.execute(
-                """
-                INSERT INTO vector_records(id, scope_id, source, target, content, summary, updated_at, vector_json)
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    scope_id = excluded.scope_id,
-                    source = excluded.source,
-                    target = excluded.target,
-                    content = excluded.content,
-                    summary = excluded.summary,
-                    updated_at = excluded.updated_at,
-                    vector_json = excluded.vector_json
-                """,
-                (
-                    memory_id,
-                    str(row.get("scope_id") or ""),
-                    str(row.get("source") or ""),
-                    str(row.get("target") or ""),
-                    str(row.get("content") or ""),
-                    str(row.get("summary") or ""),
-                    str(row.get("updated_at") or ""),
-                    json.dumps(vector, separators=(",", ":")),
-                ),
-            )
-        conn.commit()
+        with self._lock:
+            conn = self._require_conn()
+            for row in payload:
+                memory_id = str(row.get("id") or "")
+                if not memory_id:
+                    continue
+                vector = self._coerce_vector(row.get("vector"))
+                conn.execute(
+                    """
+                    INSERT INTO vector_records(id, scope_id, source, target, content, summary, updated_at, vector_json)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        scope_id = excluded.scope_id,
+                        source = excluded.source,
+                        target = excluded.target,
+                        content = excluded.content,
+                        summary = excluded.summary,
+                        updated_at = excluded.updated_at,
+                        vector_json = excluded.vector_json
+                    """,
+                    (
+                        memory_id,
+                        str(row.get("scope_id") or ""),
+                        str(row.get("source") or ""),
+                        str(row.get("target") or ""),
+                        str(row.get("content") or ""),
+                        str(row.get("summary") or ""),
+                        str(row.get("updated_at") or ""),
+                        json.dumps(vector, separators=(",", ":")),
+                    ),
+                )
+            conn.commit()
 
     def delete_by_ids(self, ids: list[str]) -> None:
         ids = [str(item) for item in ids if str(item)]
         if not ids:
             return
         placeholders = ",".join("?" for _ in ids)
-        self._require_conn().execute(f"DELETE FROM vector_records WHERE id IN ({placeholders})", ids)
-        self._require_conn().commit()
+        with self._lock:
+            conn = self._require_conn()
+            conn.execute(f"DELETE FROM vector_records WHERE id IN ({placeholders})", ids)
+            conn.commit()
 
     def list_ids(self) -> list[str]:
-        rows = self._require_conn().execute("SELECT id FROM vector_records ORDER BY id").fetchall()
+        with self._lock:
+            rows = self._require_conn().execute("SELECT id FROM vector_records ORDER BY id").fetchall()
         return [str(row["id"]) for row in rows]
 
     def _rows(self, where: str = "", params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
         sql = "SELECT id, scope_id, source, target, content, summary, updated_at, vector_json FROM vector_records"
         if where:
             sql += f" WHERE {where}"
-        return self._require_conn().execute(sql, params).fetchall()
+        with self._lock:
+            return self._require_conn().execute(sql, params).fetchall()
 
     def list_records(self) -> dict[str, dict[str, Any]]:
         output: dict[str, dict[str, Any]] = {}
@@ -184,20 +192,21 @@ class SQLiteBruteForceVectorStore:
 
     def repair_records(self, desired_records: dict[str, dict[str, Any]]) -> int:
         desired_ids = set(str(memory_id) for memory_id in desired_records)
-        keep: list[dict[str, Any]] = []
-        for row in self._rows():
-            record = self._row_to_record(row, include_vector=True)
-            memory_id = str(record.get("id") or "")
-            desired = desired_records.get(memory_id)
-            if not memory_id or memory_id not in desired_ids or desired is None:
-                continue
-            if str(record.get("updated_at") or "") != str(desired.get("updated_at") or ""):
-                continue
-            keep.append(record)
-        conn = self._require_conn()
-        conn.execute("DELETE FROM vector_records")
-        conn.commit()
-        self.upsert_records(keep)
+        with self._lock:
+            keep: list[dict[str, Any]] = []
+            for row in self._rows():
+                record = self._row_to_record(row, include_vector=True)
+                memory_id = str(record.get("id") or "")
+                desired = desired_records.get(memory_id)
+                if not memory_id or memory_id not in desired_ids or desired is None:
+                    continue
+                if str(record.get("updated_at") or "") != str(desired.get("updated_at") or ""):
+                    continue
+                keep.append(record)
+            conn = self._require_conn()
+            conn.execute("DELETE FROM vector_records")
+            conn.commit()
+            self.upsert_records(keep)
         return len(keep)
 
     def search(self, vector: list[float], *, scope_id: str, limit: int) -> list[dict[str, Any]]:
@@ -218,12 +227,14 @@ class SQLiteBruteForceVectorStore:
         return candidates[: max(0, int(limit))]
 
     def count_rows(self) -> int:
-        return int(self._require_conn().execute("SELECT COUNT(*) FROM vector_records").fetchone()[0])
+        with self._lock:
+            return int(self._require_conn().execute("SELECT COUNT(*) FROM vector_records").fetchone()[0])
 
     def close(self) -> None:
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
+        with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
 
     def _row_to_record(self, row: sqlite3.Row, *, include_vector: bool) -> dict[str, Any]:
         record: dict[str, Any] = {

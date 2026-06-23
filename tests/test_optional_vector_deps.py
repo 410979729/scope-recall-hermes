@@ -105,3 +105,36 @@ def test_vector_runtime_falls_back_to_sqlite_backend_when_lancedb_probe_sigills(
         assert "lancedb unavailable" in provider._vector_message.lower()
     finally:
         provider._vector_store.close()
+
+
+def test_default_vector_config_falls_back_to_sqlite_backend_when_lancedb_probe_sigills(monkeypatch, tmp_path):
+    import scope_recall.vector_store as vector_store
+    from scope_recall.config import DEFAULT_CONFIG
+    from scope_recall.vector_runtime import _open_vector_store
+
+    class Result:
+        returncode = 132
+        stderr = "Illegal instruction"
+        stdout = ""
+
+    class Provider:
+        _storage_dir = tmp_path
+        _vector_config = dict(DEFAULT_CONFIG["vector"])
+        _retrieval_config = {"metric": "cosine"}
+        _vector_backend = "lancedb"
+        _vector_store = None
+        _vector_message = ""
+
+    monkeypatch.setattr(vector_store, "_NATIVE_VECTOR_PROBE", None, raising=False)
+    monkeypatch.setattr(vector_store, "subprocess", type("SubprocessStub", (), {"run": staticmethod(lambda *args, **kwargs: Result())}), raising=False)
+    provider = Provider()
+
+    _open_vector_store(provider, dimensions=2)
+
+    try:
+        assert DEFAULT_CONFIG["vector"]["fallback_backend"] == "sqlite-bruteforce"
+        assert provider._vector_store.backend == "sqlite-bruteforce"
+        assert provider._vector_backend == "sqlite-bruteforce"
+        assert "using sqlite-bruteforce fallback" in provider._vector_message.lower()
+    finally:
+        provider._vector_store.close()
