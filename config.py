@@ -111,6 +111,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "vector_only_min_score": 0.68,
         "include_general": "same-scope",
         "general_weight": 0.35,
+        "general_min_importance": 0.2,
+        "entity_scope_filter_enabled": True,
         "metric": "cosine",
         "fusion_strategy": "rrf",
         "bm25_weight": 0.15,

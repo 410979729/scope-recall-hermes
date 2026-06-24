@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime, timezone
 from typing import Any
 
 from .gating import query_tokens
-from .graph import apply_quality_weight, entity_distance_scores, entity_overlap_bonus, metadata_entities, query_entities as graph_query_entities
+from .graph import apply_quality_weight, entity_distance_scores, entity_overlap_bonus, metadata_entities, normalize_entity, query_entities as graph_query_entities
 from .models import RecallItem
 from .scoring import combine_scores, reciprocal_rank_fusion
 
@@ -46,6 +47,43 @@ _TEMPORAL_DURABLE_TYPES = {
 _TEMPORAL_EPISODIC_TYPES = {"episodic", "summary"}
 _TEMPORAL_TEMPORARY_TYPES = {"scratch", "temporary", "temporary_state", "tool_trace"}
 
+_ENTITY_SCOPE_STOPWORDS = {
+    "api",
+    "base",
+    "is",
+    "url",
+    "uri",
+    "current",
+    "latest",
+    "like",
+    "likes",
+    "our",
+    "prod",
+    "response",
+    "releases",
+    "rollout",
+    "style",
+    "deploy",
+    "deployment",
+    "rollback",
+    "run",
+    "runbook",
+    "command",
+    "production",
+    "worker",
+    "queue",
+    "drain",
+    "server",
+    "service",
+    "services",
+    "systemctl",
+    "memory",
+    "scope-recall",
+    "scope",
+    "recall",
+    "use",
+}
+
 
 class RecallService:
     def __init__(self, provider: Any) -> None:
@@ -55,8 +93,8 @@ class RecallService:
     def search_memories(self, query: str, *, limit: int) -> list[RecallItem]:
         retrieval_cfg = self.provider._retrieval_config or {}
         candidate_pool = max(limit, int(retrieval_cfg.get("candidate_pool") or limit))
-        lexical_candidates = self.provider._search_db_memories(query, limit=candidate_pool)
-        vector_candidates = self.provider._search_vector_memories(query, limit=candidate_pool)
+        lexical_candidates = self._filter_recall_lifecycle(self.provider._search_db_memories(query, limit=candidate_pool))
+        vector_candidates = self._filter_recall_lifecycle(self.provider._search_vector_memories(query, limit=candidate_pool))
         curated_candidates = self.provider._search_curated_memories(query)
         rrf_by_id = self._rrf_scores(lexical_candidates, vector_candidates, curated_candidates)
         for item in lexical_candidates + vector_candidates + curated_candidates:
@@ -167,6 +205,11 @@ class RecallService:
             item.score = base_score
             lexical_score = float(meta.get("lexical_score") or 0.0)
             vector_score = float(meta.get("vector_score") or 0.0)
+            if self._entity_scope_mismatch(query, item, meta):
+                meta["rejected_reason"] = "entity_scope_mismatch"
+                item.metadata = meta
+                rejected.append(item)
+                continue
             if lexical_score <= 0.0 and vector_score > 0.0 and base_score < vector_only_min_score:
                 meta["rejected_reason"] = "vector_only_below_min_score"
                 item.metadata = meta
@@ -220,6 +263,64 @@ class RecallService:
             ),
             reverse=True,
         )[:limit]
+
+    def _project_entities(self, text: str) -> set[str]:
+        output: set[str] = set()
+        for match in re.finditer(r"\bproject\s+([a-z0-9][a-z0-9_-]{1,40})\b", str(text or ""), flags=re.IGNORECASE):
+            output.add(f"project:{match.group(1).lower()}")
+        return output
+
+    def _scope_entities(self, values: list[str]) -> set[str]:
+        output: set[str] = set()
+        for value in values:
+            normalized = normalize_entity(value)
+            if not normalized or normalized in _ENTITY_SCOPE_STOPWORDS:
+                continue
+            if len(normalized) < 3 and not normalized.startswith("project:"):
+                continue
+            output.add(normalized)
+        return output
+
+    def _query_scope_entities(self, query: str) -> set[str]:
+        raw = str(query or "")
+        values = list(graph_query_entities(raw))
+        # Prefer explicit-looking names from the query. Plain lowercase nouns are
+        # too noisy for isolation (e.g. "style", "prod", "run") and are filtered
+        # through `_ENTITY_SCOPE_STOPWORDS` before becoming hard mismatch signals.
+        values.extend(match.group(1) for match in re.finditer(r"`([^`\n]{2,80})`", raw))
+        values.extend(match.group(0) for match in re.finditer(r"\b[A-Z][A-Za-z0-9_.:/#-]{2,63}\b", raw))
+        values.extend(match.group(0) for match in re.finditer(r"[\u4e00-\u9fff]{2,12}", raw))
+        return self._scope_entities(values)
+
+    def _entity_scope_mismatch(self, query: str, item: RecallItem, meta: dict[str, Any]) -> bool:
+        retrieval_cfg = self.provider._retrieval_config or {}
+        enabled = retrieval_cfg.get("entity_scope_filter_enabled", True)
+        if isinstance(enabled, str):
+            enabled = enabled.strip().lower() in {"1", "true", "yes", "on"}
+        if not enabled:
+            return False
+        # Project-prefixed entities are a hard isolation signal; generic named
+        # entities are a conservative fallback. Do not collapse this to token
+        # overlap only, or shared terms like API/deploy/rollback will bleed
+        # memories across projects.
+        query_projects = self._project_entities(query)
+        entity_text = "\n".join(str(entity) for entity in metadata_entities(meta))
+        item_projects = self._project_entities("\n".join([entity_text, item.content, item.summary]))
+        if query_projects:
+            if not item_projects:
+                return False
+            return not bool(query_projects & item_projects)
+        item_scope_entities = self._scope_entities(metadata_entities(meta, item.content, item.target))
+        if not item_scope_entities:
+            return False
+        query_scope_entities = self._query_scope_entities(query)
+        query_lower = str(query or "").lower()
+        for entity in item_scope_entities:
+            if len(entity) >= 3 and entity in query_lower:
+                query_scope_entities.add(entity)
+        if not query_scope_entities:
+            return False
+        return not bool(query_scope_entities & item_scope_entities)
 
     def _config_bool(self, value: Any, default: bool = False) -> bool:
         if value is None:
@@ -433,6 +534,19 @@ class RecallService:
             scope_id = str((item.metadata or {}).get("scope_id") or "")
             if mode == "same-scope" and scope_id and scope_id != str(self.provider._scope_id):
                 continue
+            min_general_importance = retrieval_cfg.get("general_min_importance")
+            if mode != "always" and min_general_importance is not None:
+                try:
+                    min_importance = float(min_general_importance)
+                except (TypeError, ValueError):
+                    min_importance = -1.0
+                raw_importance = (item.metadata or {}).get("importance")
+                try:
+                    importance = float(raw_importance) if raw_importance not in (None, "") else 0.0
+                except (TypeError, ValueError):
+                    importance = 0.0
+                if min_importance >= 0.0 and importance < min_importance:
+                    continue
             if general_weight < 1.0:
                 meta = dict(item.metadata or {})
                 for key in ("lexical_score", "vector_score", "bm25_score", "rrf_score"):

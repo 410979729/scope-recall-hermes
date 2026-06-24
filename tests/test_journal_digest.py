@@ -256,6 +256,39 @@ def test_journal_llm_retry_error_redacts_secret_like_exception(monkeypatch):
     assert "sk-" not in message
 
 
+def test_heuristic_digest_ignores_template_noise_for_classification():
+    entries = [
+        JournalEntry(
+            id=1,
+            scope_id="scope",
+            shared_scope_id="shared",
+            session_id="lunch",
+            turn_number=1,
+            role="user",
+            content="今天午饭吃什么？",
+            created_at="2026-01-01T00:00:00+00:00",
+        ),
+        JournalEntry(
+            id=2,
+            scope_id="scope",
+            shared_scope_id="shared",
+            session_id="lunch",
+            turn_number=1,
+            role="assistant",
+            content="Operations workflow summary from journal digest: deploy restart systemctl service.",
+            created_at="2026-01-01T00:00:01+00:00",
+        ),
+    ]
+
+    candidates = heuristic_journal_candidates(entries)
+
+    assert candidates
+    assert candidates[0].target != "ops"
+    assert candidates[0].memory_type != "workflow"
+    assert candidates[0].entry_ids == [1]
+    assert "systemctl" not in candidates[0].content
+
+
 def test_journal_entry_preserves_long_turns_as_chunks(tmp_path):
     conn = _open_memory_db(tmp_path / "memory.sqlite3")
     scope = _scope()
@@ -289,6 +322,8 @@ def test_heuristic_digest_avoids_template_and_role_transcript_noise():
     entries = [
         JournalEntry(1, "s", "shared", "same-session", 1, "user", "排查 scope-recall journal backlog 为什么反复出现。", "2026-06-12T00:00:01+00:00"),
         JournalEntry(2, "s", "shared", "same-session", 2, "assistant", "修复 skip 分支推进 watermark，并用 doctor 验证 backlog 清零。", "2026-06-12T00:00:02+00:00"),
+        JournalEntry(3, "s", "shared", "same-session", 3, "assistant", "Operations workflow summary from journal digest: user: 继续 assistant: 完成：测试通过。", "2026-06-12T00:00:03+00:00"),
+        JournalEntry(4, "s", "shared", "same-session", 4, "assistant", "Journal digest memory decision/workflow about user: 重启完了吗 assistant: 已完成。", "2026-06-12T00:00:04+00:00"),
     ]
 
     candidates = heuristic_journal_candidates(entries)

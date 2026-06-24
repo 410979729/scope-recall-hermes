@@ -4,6 +4,7 @@ import json
 import sqlite3
 
 from scope_recall.forgetting import build_forgetting_report, run_forgetting
+from scope_recall.governance_cleanup import rollback_cleanup_batch
 from scope_recall.sql_store import ensure_schema, store_row
 
 
@@ -71,6 +72,20 @@ def test_forgetting_report_is_read_only_and_finds_soft_archive_candidates():
     assert report["hard_delete_candidates"]["count"] == 0
 
 
+def test_forgetting_report_does_not_rebuild_stale_fts_index():
+    conn = _conn()
+    _insert(conn, memory_id="assistant-1", target="general", source="turn-assistant", content="Assistant scratch prose.")
+    conn.execute("DELETE FROM memories_fts")
+    conn.commit()
+    before = conn.total_changes
+
+    report = build_forgetting_report(conn, accessible_scope_ids=["local-scope"], limit=20)
+
+    assert conn.total_changes == before
+    assert report["soft_archive_candidates"]["count"] == 1
+    assert conn.execute("SELECT COUNT(*) FROM memories_fts").fetchone()[0] == 0
+
+
 def test_forgetting_report_flags_journal_template_transcript_noise_for_soft_archive():
     conn = _conn()
     _insert(
@@ -102,7 +117,8 @@ def test_forgetting_run_soft_archives_without_physical_delete_by_default():
     assert dry["archived"] >= 2
     assert _metadata(conn, "assistant-1").get("lifecycle") != "archived"
 
-    applied = run_forgetting(conn, accessible_scope_ids=["shared-scope", "local-scope"], dry_run=False)
+    applied = run_forgetting(conn, accessible_scope_ids=["shared-scope", "local-scope"], dry_run=False, batch_id="forget-batch")
+    assert applied["batch_id"] == "forget-batch"
     assert applied["archived"] >= 2
     assert applied["deleted"] == 0
     assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 4
@@ -117,9 +133,36 @@ def test_forgetting_run_soft_archives_without_physical_delete_by_default():
     assert dup2_meta["superseded_by"] == "dup-1"
 
     assert _metadata(conn, "keep-1").get("lifecycle") != "archived"
+    audit_count = conn.execute(
+        "SELECT COUNT(*) FROM governance_audit_events WHERE batch_id = ? AND event_type = 'forgetting' AND action = 'soft_archive'",
+        ("forget-batch",),
+    ).fetchone()[0]
+    assert audit_count == applied["archived"]
 
     second = run_forgetting(conn, accessible_scope_ids=["shared-scope", "local-scope"], dry_run=False)
     assert second["archived"] == 0
+
+
+def test_forgetting_soft_archive_batch_can_be_rolled_back_from_governance_audit():
+    conn = _conn()
+    _insert(conn, memory_id="assistant-rollback", target="general", source="turn-assistant", content="Assistant scratch prose to archive.")
+
+    applied = run_forgetting(conn, accessible_scope_ids=["local-scope"], dry_run=False, batch_id="forget-rollback-batch")
+    assert applied["archived"] == 1
+    assert _metadata(conn, "assistant-rollback")["lifecycle"] == "archived"
+
+    dry = rollback_cleanup_batch(conn, batch_id="forget-rollback-batch", dry_run=True)
+    assert dry["rollback_candidates"] == 1
+    assert dry["restored"] == 0
+
+    rolled = rollback_cleanup_batch(conn, batch_id="forget-rollback-batch", dry_run=False)
+    assert rolled["restored"] == 1
+    assert _metadata(conn, "assistant-rollback").get("lifecycle") != "archived"
+    rollback_audit = conn.execute(
+        "SELECT COUNT(*) FROM governance_audit_events WHERE batch_id = ? AND event_type = 'forgetting' AND action = 'rollback_soft_archive'",
+        ("forget-rollback-batch",),
+    ).fetchone()[0]
+    assert rollback_audit == 1
 
 
 def test_forgetting_soft_archive_persists_after_connection_reopen(tmp_path):
@@ -149,6 +192,11 @@ class FakeVectorStore:
 
     def delete_by_ids(self, ids: list[str]) -> None:
         self.deleted_ids.append(list(ids))
+
+
+class FailingVectorStore:
+    def delete_by_ids(self, ids: list[str]) -> None:  # noqa: ARG002
+        raise RuntimeError("vector delete failed with api_key=" + "sk-" + "V" * 24)
 
 
 def test_forgetting_hard_delete_removes_vector_records():
@@ -183,8 +231,10 @@ def test_forgetting_hard_delete_removes_vector_records():
         dry_run=False,
         hard_delete=True,
         vector_store=vector_store,
+        batch_id="hard-batch",
     )
 
+    assert applied["batch_id"] == "hard-batch"
     assert applied["deleted"] == 1
     assert applied["delete_ids"] == ["secret-row"]
     assert vector_store.deleted_ids == [["secret-row"]]
@@ -197,3 +247,56 @@ def test_forgetting_hard_delete_removes_vector_records():
     assert keep_meta["conflict_review_count"] == 0
     assert keep_meta["needs_conflict_review"] is False
     assert "contradicts" not in keep_meta["relation_types"]
+    audit = conn.execute(
+        "SELECT before_json, after_json FROM governance_audit_events WHERE batch_id = ? AND event_type = 'forgetting' AND action = 'hard_delete'",
+        ("hard-batch",),
+    ).fetchone()
+    assert audit is not None
+    before_json = audit["before_json"]
+    assert json.loads(before_json)["id"] == "secret-row"
+    assert "sk-" not in before_json
+    assert "[REDACTED_SECRET]" in before_json
+    assert json.loads(audit["after_json"])["deleted"] is True
+
+
+def test_forgetting_hard_delete_keeps_sql_truth_when_vector_delete_fails():
+    conn = _conn()
+    secret = "sk-" + "G" * 24
+    _insert(conn, memory_id="secret-row", target="ops", content="Temporary token=" + secret + " should be hard-deleted.")
+
+    applied = run_forgetting(
+        conn,
+        accessible_scope_ids=["shared-scope", "local-scope"],
+        dry_run=False,
+        hard_delete=True,
+        vector_store=FailingVectorStore(),
+        batch_id="hard-vector-fail",
+    )
+
+    assert applied["deleted"] == 0
+    assert applied["delete_ids"] == []
+    assert "[REDACTED_SECRET]" in applied["vector_error"]
+    assert "sk-" not in applied["vector_error"]
+    assert conn.execute("SELECT COUNT(*) FROM memories WHERE id = ?", ("secret-row",)).fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM governance_audit_events WHERE batch_id = 'hard-vector-fail'").fetchone()[0] == 0
+
+
+def test_forgetting_hard_delete_requires_vector_store_by_default():
+    conn = _conn()
+    secret = "sk-" + "H" * 24
+    _insert(conn, memory_id="secret-row", target="ops", content="Temporary api_key=" + secret + " should be hard-deleted.")
+
+    applied = run_forgetting(
+        conn,
+        accessible_scope_ids=["shared-scope", "local-scope"],
+        dry_run=False,
+        hard_delete=True,
+        vector_store=None,
+        batch_id="hard-no-vector",
+    )
+
+    assert applied["deleted"] == 0
+    assert applied["delete_ids"] == []
+    assert "vector_store is required" in applied["vector_error"]
+    assert conn.execute("SELECT COUNT(*) FROM memories WHERE id = ?", ("secret-row",)).fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM governance_audit_events WHERE batch_id = 'hard-no-vector'").fetchone()[0] == 0

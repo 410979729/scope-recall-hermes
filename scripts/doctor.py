@@ -19,8 +19,23 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from scope_recall.capture_filters import redact_secret_like_text
+    from scope_recall.capture_filters import contains_secret_like_text, redact_secret_like_text, sanitize_report_text
 except Exception:  # pragma: no cover - keeps the standalone doctor script usable from source checkouts
+    def contains_secret_like_text(text: Any) -> bool:
+        value = "" if text is None else str(text)
+        return bool(
+            re.search(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----", value)
+            or re.search(
+                r"(?:api[_ \t-]?key|token|secret|password|passwd|credential(?:[_ \t-]?[a-z0-9_]+)?|private[_ \t-]?key)"
+                r"(?:[ \t]*(?::|=|是)[ \t]*|[ \t]+is[ \t]+)[^\s]+",
+                value,
+                flags=re.IGNORECASE,
+            )
+            or re.search(r"s" r"k-[A-Za-z0-9][A-Za-z0-9_-]{18,}", value)
+            or re.search(r"g" r"h[pousr]_[A-Za-z0-9_]{20,}", value)
+            or re.search(r"bea" r"rer\s+[A-Za-z0-9._\-~+/=]{16,}", value, flags=re.IGNORECASE)
+        )
+
     def redact_secret_like_text(text: Any) -> str:
         value = "" if text is None else str(text)
         value = re.sub(
@@ -39,6 +54,9 @@ except Exception:  # pragma: no cover - keeps the standalone doctor script usabl
         value = re.sub(r"g" r"h[pousr]_[A-Za-z0-9_]{20,}", "[REDACTED_SECRET]", value)
         value = re.sub(r"bea" r"rer\s+[A-Za-z0-9._\-~+/=]{16,}", "[REDACTED_SECRET]", value, flags=re.IGNORECASE)
         return value
+
+    def sanitize_report_text(text: Any) -> str:
+        return redact_secret_like_text(text)
 
 DEFAULT_SOURCE_ROOT = Path(__file__).resolve().parents[1]
 
@@ -258,6 +276,54 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
     return sqlite_payload, {"ok": True, "failures": []}, recommendations
 
 
+def memory_secret_report(hermes_home: Path, *, sample_limit: int = 10) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    recommendations: list[str] = []
+    db_path = hermes_home / "scope-recall" / "memory.sqlite3"
+    if not db_path.exists():
+        return {"status": "missing", "path": str(db_path), "active_secret_like_count": 0, "samples": []}, {"ok": True, "failures": []}, recommendations
+    samples: list[dict[str, Any]] = []
+    active_secret_like_count = 0
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "memories" not in tables:
+                return {"status": "schema_missing", "path": str(db_path), "active_secret_like_count": 0, "samples": []}, {"ok": True, "failures": []}, recommendations
+            for row in conn.execute("SELECT id, scope_id, source, target, content, summary, updated_at, metadata FROM memories"):
+                try:
+                    metadata = json.loads(str(row["metadata"] or "{}"))
+                except Exception:
+                    metadata = {}
+                if str(metadata.get("lifecycle") or "").strip().lower() == "archived":
+                    continue
+                content = str(row["content"] or "")
+                if not contains_secret_like_text(content):
+                    continue
+                active_secret_like_count += 1
+                if len(samples) < max(0, int(sample_limit)):
+                    samples.append(
+                        {
+                            "id": str(row["id"]),
+                            "scope_id": str(row["scope_id"] or ""),
+                            "source": str(row["source"] or ""),
+                            "target": str(row["target"] or ""),
+                            "updated_at": str(row["updated_at"] or ""),
+                            "preview": sanitize_report_text(content)[:220],
+                        }
+                    )
+        finally:
+            conn.close()
+    except Exception as exc:
+        recommendations.append("Repair or restore the SQLite truth DB before trusting memory secret-scan status.")
+        return {"status": "error", "path": str(db_path), "error": str(exc), "active_secret_like_count": 0, "samples": []}, {"ok": False, "failures": [f"memory secret scan error: {exc}"]}, recommendations
+
+    payload = {"status": "ready", "path": str(db_path), "active_secret_like_count": active_secret_like_count, "samples": samples}
+    if active_secret_like_count:
+        recommendations.append("Active memory rows contain plaintext secret-like content; archive or hard-delete them and store only secret indexes/vault refs.")
+    return payload, {"ok": active_secret_like_count == 0, "failures": [f"active plaintext secret-like memory rows: {active_secret_like_count}"] if active_secret_like_count else []}, recommendations
+
+
 def journal_enabled_from_config(config: dict[str, Any]) -> bool:
     raw_journal = config.get("journal")
     journal_config: dict[str, Any] = raw_journal if isinstance(raw_journal, dict) else {}
@@ -380,6 +446,77 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
                 ORDER BY started_at DESC LIMIT 1
                 """
             ).fetchone()
+            digest_status_counts = {
+                str(row["status"] or "unknown"): int(row["count"])
+                for row in conn.execute(
+                    "SELECT COALESCE(status, 'unknown') AS status, COUNT(*) AS count FROM journal_digest_runs GROUP BY COALESCE(status, 'unknown') ORDER BY status"
+                )
+            }
+            digest_extractor_counts = {
+                str(row["extractor"] or "unknown"): {"runs": int(row["runs"]), "processed_entries": int(row["processed_entries"] or 0)}
+                for row in conn.execute(
+                    """
+                    SELECT COALESCE(extractor, 'unknown') AS extractor, COUNT(*) AS runs, COALESCE(SUM(processed_entries), 0) AS processed_entries
+                    FROM journal_digest_runs
+                    GROUP BY COALESCE(extractor, 'unknown')
+                    ORDER BY extractor
+                    """
+                )
+            }
+            recent_runs = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT id, started_at, status, extractor, processed_entries, inserted, updated, skipped
+                    FROM journal_digest_runs
+                    ORDER BY started_at DESC
+                    LIMIT 25
+                    """
+                )
+            ]
+            recent_status_counts: dict[str, int] = {}
+            recent_extractor_counts: dict[str, int] = {}
+            for row in recent_runs:
+                recent_status_counts[str(row.get("status") or "unknown")] = recent_status_counts.get(str(row.get("status") or "unknown"), 0) + 1
+                recent_extractor_counts[str(row.get("extractor") or "unknown")] = recent_extractor_counts.get(str(row.get("extractor") or "unknown"), 0) + 1
+            retry_exhausted_rejections = int(
+                conn.execute("SELECT COUNT(*) FROM journal_rejections WHERE reason LIKE 'retry-exhausted:%'").fetchone()[0]
+            )
+            dead_letter_rejections = int(
+                conn.execute("SELECT COUNT(*) FROM journal_rejections WHERE reason LIKE 'dead-letter:%'").fetchone()[0]
+            )
+            retry_replay_candidates = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM journal_rejections AS r
+                    JOIN journal_entries AS e ON e.id = r.journal_entry_id
+                    LEFT JOIN memory_journal_sources AS s ON s.journal_entry_id = e.id
+                    WHERE r.reason LIKE 'retry-exhausted:%'
+                      AND COALESCE(e.processed_run_id, '') != ''
+                      AND s.memory_id IS NULL
+                    """
+                ).fetchone()[0]
+            )
+            dead_letter_replay_candidates = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM journal_rejections AS r
+                    JOIN journal_entries AS e ON e.id = r.journal_entry_id
+                    LEFT JOIN memory_journal_sources AS s ON s.journal_entry_id = e.id
+                    WHERE r.reason LIKE 'dead-letter:%'
+                      AND COALESCE(e.processed_run_id, '') != ''
+                      AND s.memory_id IS NULL
+                    """
+                ).fetchone()[0]
+            )
+            quarantine_runs = int(
+                conn.execute("SELECT COUNT(*) FROM journal_digest_runs WHERE extractor = 'llm-quarantine'").fetchone()[0]
+            )
+            fallback_runs = int(
+                conn.execute("SELECT COUNT(*) FROM journal_digest_runs WHERE extractor IN ('heuristic-fallback', 'llm-fallback') OR status = 'ok_with_fallback'").fetchone()[0]
+            )
         finally:
             conn.close()
     except Exception as exc:
@@ -390,6 +527,14 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
     warn_entries = max(0, coerce_int(journal_config.get("backlog_warn_entries"), 500))
     fail_entries = max(0, coerce_int(journal_config.get("backlog_fail_entries"), 3000))
     max_age_hours = max(0, coerce_int(journal_config.get("backlog_max_age_hours"), 72))
+    max_entries_per_digest = max(1, coerce_int(journal_config.get("max_entries_per_digest"), 500))
+    dynamic_threshold = max(0, coerce_int(journal_config.get("dynamic_backlog_threshold"), warn_entries or 500))
+    ceiling = max(max_entries_per_digest, coerce_int(journal_config.get("max_entries_per_digest_ceiling"), max_entries_per_digest))
+    if unprocessed_entries >= max(dynamic_threshold, 1):
+        recommended_batch_size = min(ceiling, max(max_entries_per_digest, unprocessed_entries))
+    else:
+        recommended_batch_size = max_entries_per_digest
+    estimated_runs_to_clear = 0 if unprocessed_entries == 0 else max(1, (unprocessed_entries + recommended_batch_size - 1) // recommended_batch_size)
     oldest_value = oldest_unprocessed["created_at"] if oldest_unprocessed else ""
     backlog_age = journal_backlog_age_hours(oldest_value)
     contaminated_unprocessed = sum(item["unprocessed"] for item in contamination_counts.values())
@@ -415,6 +560,33 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
         recommendations.append(
             f"Tool trace hygiene: {contaminated_tool_unprocessed} unprocessed tool trace marker hit(s) remain; run digest/cleanup after deploying sanitized ingestion."
         )
+    digest_health_status = "ready"
+    digest_health_reasons: list[str] = []
+    recent_bad_runs = sum(recent_status_counts.get(status, 0) for status in ("error", "retry_scheduled", "dead_letter"))
+    recent_fallback_runs = recent_status_counts.get("ok_with_fallback", 0) + recent_extractor_counts.get("heuristic-fallback", 0)
+    recent_quarantine_runs = recent_extractor_counts.get("llm-quarantine", 0)
+    if recent_bad_runs or recent_quarantine_runs:
+        digest_health_status = "degraded"
+        digest_health_reasons.append("recent_digest_failures_or_quarantine")
+        recommendations.append("Journal digest recently failed or quarantined LLM batches; inspect retry/dead-letter health before relying on automated summaries.")
+    if recent_fallback_runs:
+        digest_health_status = "degraded"
+        digest_health_reasons.append("recent_heuristic_fallback")
+        recommendations.append("Journal digest recently used heuristic fallback; verify LLM extractor health and quality flags.")
+    if quarantine_runs:
+        digest_health_reasons.append("historical_llm_quarantine")
+        recommendations.append(f"Journal digest has {quarantine_runs} historical llm-quarantine run(s); replay or classify them through retry/dead-letter tooling.")
+    if retry_exhausted_rejections or dead_letter_rejections:
+        digest_health_reasons.append("historical_retry_or_dead_letter_rejections")
+        recommendations.append(
+            f"Journal rejections include retry/dead-letter evidence (retry_exhausted={retry_exhausted_rejections}, dead_letter={dead_letter_rejections}); add replay/cleanup before declaring digest fully healthy."
+        )
+    if retry_replay_candidates:
+        digest_health_reasons.append("retry_replay_queue_nonempty")
+        recommendations.append(f"Journal recovery queue has {retry_replay_candidates} retry-exhausted entrie(s) eligible for replay; run scripts/journal.recovery.py dry-run/apply then journal-digest.")
+    if dead_letter_replay_candidates:
+        digest_health_reasons.append("dead_letter_replay_queue_nonempty")
+        recommendations.append(f"Journal recovery queue has {dead_letter_replay_candidates} dead-letter entrie(s); only replay after fixing auth/quota/config root cause.")
 
     payload = {
         "enabled": True,
@@ -432,8 +604,32 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
             "oldest_unprocessed_age_hours": round(backlog_age, 3),
             "contamination_counts": contamination_counts,
             "thresholds": {"warn_entries": warn_entries, "fail_entries": fail_entries, "max_age_hours": max_age_hours},
+            "batch_policy": {
+                "max_entries_per_digest": max_entries_per_digest,
+                "dynamic_backlog_threshold": dynamic_threshold,
+                "max_entries_per_digest_ceiling": ceiling,
+                "recommended_batch_size": recommended_batch_size,
+                "estimated_runs_to_clear": estimated_runs_to_clear,
+            },
         },
         "digest_runs": digest_runs,
+        "digest_health": {
+            "status": digest_health_status,
+            "reasons": digest_health_reasons,
+            "status_counts": digest_status_counts,
+            "extractor_counts": digest_extractor_counts,
+            "recent_status_counts": recent_status_counts,
+            "recent_extractor_counts": recent_extractor_counts,
+            "fallback_runs": fallback_runs,
+            "llm_quarantine_runs": quarantine_runs,
+            "retry_exhausted_rejections": retry_exhausted_rejections,
+            "dead_letter_rejections": dead_letter_rejections,
+            "recovery_queue": {
+                "retry_exhausted_candidates": retry_replay_candidates,
+                "dead_letter_candidates": dead_letter_replay_candidates,
+            },
+            "recent_runs": recent_runs[:10],
+        },
         "last_digest_run": dict(last_run) if last_run else {},
         "source_links": source_links,
         "rejections": rejections,
@@ -486,10 +682,57 @@ def run_vector_search_smoke(table: Any, *, dimensions: int, row_count: int) -> s
     return "ok"
 
 
+def sqlite_indexable_memory_count(hermes_home: Path, *, index_general: bool = False) -> int:
+    db_path = hermes_home / "scope-recall" / "memory.sqlite3"
+    if not db_path.exists():
+        return 0
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("SELECT target, metadata FROM memories").fetchall()
+    finally:
+        conn.close()
+    count = 0
+    for row in rows:
+        if not index_general and str(row["target"] or "") == "general":
+            continue
+        try:
+            metadata = json.loads(str(row["metadata"] or "{}"))
+        except Exception:
+            metadata = {}
+        lifecycle = str(metadata.get("lifecycle") or "").strip().lower() if isinstance(metadata, dict) else ""
+        if lifecycle in {"superseded", "obsolete", "rejected", "archived"}:
+            continue
+        count += 1
+    return count
+
+
+def apply_vector_truth_consistency(
+    payload: dict[str, Any],
+    *,
+    hermes_home: Path,
+    index_general: bool,
+    recommendations: list[str],
+) -> tuple[dict[str, Any], dict[str, Any], list[str]] | None:
+    expected_rows = sqlite_indexable_memory_count(hermes_home, index_general=index_general)
+    payload["expected_indexable_rows"] = expected_rows
+    row_count = int(payload.get("row_count") or 0)
+    if expected_rows > 0 and row_count <= 0:
+        payload.update({"status": "needs_repair", "ready": False})
+        message = "vector companion is empty while SQLite truth has indexable active memories"
+        recommendations.append("Vector companion is empty but SQLite truth has active indexable rows; run scripts/repair.vector_index.py.")
+        return payload, {"ok": False, "failures": [message]}, recommendations
+    if expected_rows > 0 and row_count < expected_rows:
+        payload["status"] = "degraded"
+        recommendations.append("Vector companion has fewer rows than active SQLite truth; schedule scripts/repair.vector_index.py to rebuild the companion.")
+    return None
+
+
 def lancedb_vector_report(
     hermes_home: Path,
     *,
     expected_embedder: dict[str, Any] | None = None,
+    index_general: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     recommendations: list[str] = []
     vector_dir = hermes_home / "scope-recall" / "lancedb"
@@ -534,6 +777,9 @@ def lancedb_vector_report(
                 }
             )
             return payload, {"ok": False, "failures": [error]}, recommendations
+        consistency = apply_vector_truth_consistency(payload, hermes_home=hermes_home, index_general=index_general, recommendations=recommendations)
+        if consistency is not None:
+            return consistency
         return payload, {"ok": True, "failures": []}, recommendations
     except Exception as exc:
         recommendations.append("LanceDB companion is unreadable; run scripts/repair.vector_index.py to rebuild it from SQLite truth.")
@@ -559,6 +805,7 @@ def sqlite_vector_report(
     hermes_home: Path,
     *,
     expected_embedder: dict[str, Any] | None = None,
+    index_general: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     recommendations: list[str] = []
     vector_path = hermes_home / "scope-recall" / "vector.sqlite3"
@@ -610,6 +857,9 @@ def sqlite_vector_report(
                 }
             )
             return payload, {"ok": False, "failures": [error]}, recommendations
+        consistency = apply_vector_truth_consistency(payload, hermes_home=hermes_home, index_general=index_general, recommendations=recommendations)
+        if consistency is not None:
+            return consistency
         return payload, {"ok": True, "failures": []}, recommendations
     except Exception as exc:
         recommendations.append("sqlite-bruteforce companion is unreadable; run scripts/repair.vector_index.py to rebuild it from SQLite truth.")
@@ -622,12 +872,13 @@ def vector_report(
     *,
     expected_embedder: dict[str, Any] | None = None,
     backend: str = "lancedb",
+    index_general: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     normalized = "sqlite-bruteforce" if str(backend or "lancedb").strip().lower() == "sqlite" else str(backend or "lancedb").strip().lower()
     if normalized == "sqlite-bruteforce":
-        return sqlite_vector_report(hermes_home, expected_embedder=expected_embedder)
+        return sqlite_vector_report(hermes_home, expected_embedder=expected_embedder, index_general=index_general)
     if normalized == "lancedb":
-        return lancedb_vector_report(hermes_home, expected_embedder=expected_embedder)
+        return lancedb_vector_report(hermes_home, expected_embedder=expected_embedder, index_general=index_general)
     payload = {"backend": normalized, "status": "unsupported", "ready": False}
     return payload, {"ok": False, "failures": [f"unsupported vector backend: {normalized}"]}, ["Set vector.backend to 'lancedb' or 'sqlite-bruteforce'."]
 
@@ -691,11 +942,67 @@ def experience_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any]
                 for row in conn.execute("SELECT outcome, COUNT(*) AS count FROM experience_runs GROUP BY outcome")
             }
             stale_facts = int(conn.execute("SELECT COUNT(*) FROM fact_freshness WHERE status IN ('stale', 'needs_live_check')").fetchone()[0])
+            promoted_missing_verified_at = int(
+                conn.execute("SELECT COUNT(*) FROM procedural_playbooks WHERE status = 'promoted' AND COALESCE(last_verified_at, '') = ''").fetchone()[0]
+            )
+            duplicate_groups = [
+                {
+                    "task_class": redact_secret_like_text(str(row["task_class"] or "")),
+                    "title": redact_secret_like_text(str(row["title"] or "")),
+                    "count": int(row["count"]),
+                    "statuses": redact_secret_like_text(str(row["statuses"] or "")),
+                }
+                for row in conn.execute(
+                    """
+                    SELECT task_class, title, COUNT(*) AS count, GROUP_CONCAT(status, ',') AS statuses
+                    FROM procedural_playbooks
+                    WHERE status NOT IN ('superseded', 'quarantined')
+                    GROUP BY task_class, title
+                    HAVING COUNT(*) > 1
+                    ORDER BY count DESC, title ASC
+                    LIMIT 10
+                    """
+                )
+            ]
+            misleading_runs = int(conn.execute("SELECT COUNT(*) FROM experience_runs WHERE outcome = 'misleading'").fetchone()[0])
+            stale_runs = int(conn.execute("SELECT COUNT(*) FROM experience_runs WHERE outcome = 'stale'").fetchone()[0])
+            unresolved_feedback = {
+                str(row["outcome"]): int(row["count"])
+                for row in conn.execute(
+                    """
+                    SELECT r.outcome, COUNT(*) AS count
+                    FROM experience_runs AS r
+                    JOIN procedural_playbooks AS p ON p.id = r.playbook_id
+                    WHERE r.outcome IN ('misleading', 'stale')
+                      AND p.status NOT IN ('quarantined', 'superseded')
+                    GROUP BY r.outcome
+                    """
+                ).fetchall()
+            }
+            unresolved_misleading_runs = int(unresolved_feedback.get("misleading", 0))
+            unresolved_stale_runs = int(unresolved_feedback.get("stale", 0))
         finally:
             conn.close()
     except Exception as exc:
         recommendations.append("Repair or restore the SQLite truth DB before trusting Experience Kernel status.")
         return {"enabled": True, "path": str(db_path), "status": "error", "error": str(exc)}, {"ok": False, "failures": [f"experience health error: {exc}"]}, recommendations
+
+    needs_review_count = int(playbook_by_status.get("needs_review", 0))
+    promoted_count = int(playbook_by_status.get("promoted", 0))
+    quarantined_count = int(playbook_by_status.get("quarantined", 0))
+    needs_review_ratio = (needs_review_count / playbook_total) if playbook_total else 0.0
+    if needs_review_ratio >= 0.5 and playbook_total:
+        recommendations.append(f"Experience promotion funnel is review-heavy ({needs_review_count}/{playbook_total} needs_review); tighten promotion scoring and dedupe candidates.")
+    if duplicate_groups:
+        recommendations.append(f"Experience playbooks contain {len(duplicate_groups)} duplicate title/task-class group(s); run dedupe/merge review before auto-promotion.")
+    if promoted_missing_verified_at:
+        recommendations.append(f"{promoted_missing_verified_at} promoted playbook(s) lack last_verified_at; require verification feedback before direct reuse.")
+    if unresolved_misleading_runs or unresolved_stale_runs:
+        recommendations.append(
+            f"Experience feedback includes unresolved stale/misleading outcomes "
+            f"(stale={unresolved_stale_runs}/{stale_runs}, misleading={unresolved_misleading_runs}/{misleading_runs}); "
+            "quarantine or review affected playbooks."
+        )
 
     payload = {
         "enabled": True,
@@ -703,6 +1010,20 @@ def experience_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any]
         "status": "ready",
         "tables": sorted(required_tables),
         "playbooks": {"total": playbook_total, "by_status": dict(sorted(playbook_by_status.items()))},
+        "promotion_funnel": {
+            "needs_review": needs_review_count,
+            "promoted": promoted_count,
+            "quarantined": quarantined_count,
+            "needs_review_ratio": round(needs_review_ratio, 3),
+            "duplicate_groups": duplicate_groups,
+            "promoted_missing_last_verified_at": promoted_missing_verified_at,
+            "feedback": {
+                "stale": stale_runs,
+                "misleading": misleading_runs,
+                "unresolved_stale": unresolved_stale_runs,
+                "unresolved_misleading": unresolved_misleading_runs,
+            },
+        },
         "runs": {"total": run_total, "by_outcome": dict(sorted(run_by_outcome.items()))},
         "stale_facts": stale_facts,
     }
@@ -812,6 +1133,7 @@ def main() -> int:
         runtime_config = load_runtime_config(source_root, hermes_home)
         expected_embedder = expected_embedder_from_config(runtime_config)
         sqlite_payload, sqlite_check, sqlite_recommendations = sqlite_report(hermes_home)
+        secret_payload, secret_check, secret_recommendations = memory_secret_report(hermes_home)
         raw_journal = runtime_config.get("journal")
         journal_config = raw_journal if isinstance(raw_journal, dict) else {}
         journal_payload, journal_check, journal_recommendations = journal_report(
@@ -824,7 +1146,19 @@ def main() -> int:
         nightly_payload, nightly_check, nightly_recommendations = nightly_digest_report(hermes_home)
         if vector_enabled_from_config(runtime_config):
             backend = vector_backend_from_config(runtime_config)
-            vector_payload, vector_check, vector_recommendations = vector_report(hermes_home, expected_embedder=expected_embedder, backend=backend)
+            raw_vector_config = runtime_config.get("vector")
+            vector_config = raw_vector_config if isinstance(raw_vector_config, dict) else {}
+            raw_index_general = vector_config.get("index_general", False)
+            if isinstance(raw_index_general, str):
+                index_general = raw_index_general.strip().lower() in {"1", "true", "yes", "on"}
+            else:
+                index_general = bool(raw_index_general)
+            vector_payload, vector_check, vector_recommendations = vector_report(
+                hermes_home,
+                expected_embedder=expected_embedder,
+                backend=backend,
+                index_general=index_general,
+            )
         else:
             backend = "disabled"
             vector_payload, vector_check, vector_recommendations = disabled_vector_report()
@@ -834,17 +1168,20 @@ def main() -> int:
             "expected_embedder": expected_embedder,
             "vector_backend": backend,
             "sqlite": sqlite_payload,
+            "memory_secret_scan": secret_payload,
             "journal": journal_payload,
             "experience": experience_payload,
             "nightly_digest": nightly_payload,
             "vector": vector_payload,
         }
         checks["sqlite_truth"] = sqlite_check
+        checks["memory_secret_scan"] = secret_check
         checks["journal_provenance"] = journal_check
         checks["experience_kernel"] = experience_check
         checks["nightly_digest"] = nightly_check
         checks["vector_companion"] = vector_check
         recommendations.extend(sqlite_recommendations)
+        recommendations.extend(secret_recommendations)
         recommendations.extend(journal_recommendations)
         recommendations.extend(experience_recommendations)
         recommendations.extend(nightly_recommendations)

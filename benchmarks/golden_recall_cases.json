@@ -1,0 +1,77 @@
+{
+  "name": "commercial_recall_quality_v1",
+  "description": "Golden recall cases for commercial scope-recall readiness: durable procedure retrieval, low-value exclusion, archived old-fact exclusion, and topic isolation.",
+  "config": {
+    "vector": {"enabled": false},
+    "retrieval": {"mode": "lexical", "min_score": 0.0, "include_general": "same-scope"}
+  },
+  "setup": [
+    {
+      "label": "atlas_deploy",
+      "content": "Project Atlas production deploy command is uv run atlas-server --env prod. Always run pytest before deploy.",
+      "target": "project",
+      "memory_type": "procedure",
+      "importance": 0.92,
+      "entities": ["Project Atlas"]
+    },
+    {
+      "label": "atlas_low_value_general",
+      "content": "Temporary Project Atlas dinner note: Joy likes warm soup tonight after deployment discussion.",
+      "target": "general",
+      "memory_type": "episodic",
+      "importance": 0.1,
+      "entities": ["Project Atlas"]
+    },
+    {
+      "label": "northstar_old_archived",
+      "content": "Northstar API base URL is https://old-api.invalid/v1. This fact was replaced by a newer live check.",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.4,
+      "entities": ["Northstar"],
+      "lifecycle": "archived"
+    },
+    {
+      "label": "northstar_current",
+      "content": "Northstar API base URL is https://api.northstar.example/v2 according to the latest live configuration check.",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.9,
+      "entities": ["Northstar"]
+    },
+    {
+      "label": "zephyr_ops",
+      "content": "Project Zephyr rollback runbook uses systemctl restart zephyr-worker after verifying queue drain metrics.",
+      "target": "ops",
+      "memory_type": "procedure",
+      "importance": 0.85,
+      "entities": ["Project Zephyr"]
+    }
+  ],
+  "cases": [
+    {
+      "name": "procedure beats low-value general",
+      "query": "Project Atlas production deploy command",
+      "expected_labels": ["atlas_deploy"],
+      "forbidden_labels": ["atlas_low_value_general"],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "archived old fact is excluded",
+      "query": "Northstar API base URL current latest configuration",
+      "expected_labels": ["northstar_current"],
+      "forbidden_labels": ["northstar_old_archived"],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "topic isolation avoids atlas on zephyr rollback",
+      "query": "Project Zephyr rollback worker queue drain",
+      "expected_labels": ["zephyr_ops"],
+      "forbidden_labels": ["atlas_deploy", "atlas_low_value_general"],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    }
+  ]
+}

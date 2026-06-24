@@ -503,8 +503,21 @@ def _classify_target_and_type(text: str) -> tuple[str, str, list[str]]:
     return "memory", "summary", ["journal-digest"]
 
 
+def _looks_like_historical_template_noise(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if lowered.startswith("operations workflow summary from journal digest:") or lowered.startswith("operations workflow summary"):
+        return True
+    if lowered.startswith("journal digest memory"):
+        return True
+    return False
+
+
 def _digest_role_summary(entries: list[JournalEntry], role: str, *, limit: int) -> str:
-    chunks = [entry.content.strip() for entry in entries if entry.role == role and entry.content.strip()]
+    chunks = [
+        entry.content.strip()
+        for entry in entries
+        if entry.role == role and entry.content.strip() and not _looks_like_historical_template_noise(entry.content)
+    ]
     if not chunks:
         return ""
     return compact_text("；".join(chunks), limit)
@@ -542,16 +555,20 @@ def heuristic_journal_candidates(entries: list[JournalEntry]) -> list[JournalDig
     candidates: list[JournalDigestCandidate] = []
     for key, session_entries in groups.items():
         for segment_index, group_entries in enumerate(_segment_session_entries(session_entries), start=1):
-            digest_entries = [entry for entry in group_entries if entry.role != "tool"]
+            digest_entries = [
+                entry
+                for entry in group_entries
+                if entry.role != "tool" and not _looks_like_historical_template_noise(entry.content)
+            ]
             if not digest_entries or not any(entry.role == "user" for entry in digest_entries):
                 continue
             combined = "\n".join(f"{entry.role}: {entry.content}" for entry in digest_entries)
             target, memory_type, tags = _classify_target_and_type(combined)
-            session_ids = _unique([entry.session_id for entry in group_entries], limit=12)
-            entry_ids = [entry.id for entry in group_entries]
-            entities = _entry_entities(group_entries)
+            session_ids = _unique([entry.session_id for entry in digest_entries], limit=12)
+            entry_ids = [entry.id for entry in digest_entries]
+            entities = _entry_entities(digest_entries)
             segment_key = f"{key}:segment:{segment_index}"
-            topic_label = _topic_label(group_entries, segment_key.replace("session:", "session "))
+            topic_label = _topic_label(digest_entries, segment_key.replace("session:", "session "))
             content = _heuristic_candidate_content(target, topic_label, digest_entries)
             candidates.append(
                 JournalDigestCandidate(
@@ -561,7 +578,7 @@ def heuristic_journal_candidates(entries: list[JournalEntry]) -> list[JournalDig
                     importance=0.78 if target in {"memory", "ops"} else 0.62,
                     confidence=0.78,
                     entities=entities,
-                    tags=_unique([*tags, *_topic_tags(group_entries), key, segment_key], limit=16),
+                    tags=_unique([*tags, *_topic_tags(digest_entries), key, segment_key], limit=16),
                     reason="journal digest grouped related consecutive conversation turns",
                     entry_ids=entry_ids,
                     session_ids=session_ids,
@@ -747,6 +764,11 @@ def _candidate_allowed(candidate: JournalDigestCandidate) -> bool:
     if candidate.target not in JOURNAL_TARGETS:
         return False
     if len(candidate.content) < 40:
+        return False
+    if _looks_like_historical_template_noise(candidate.content):
+        return False
+    lowered = candidate.content.lower()
+    if "operations workflow summary from journal digest:" in lowered or "journal digest memory" in lowered:
         return False
     return should_capture_text(candidate.content).allowed
 

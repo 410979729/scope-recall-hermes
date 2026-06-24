@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-scope-recall"
-version = "1.4.5"
+version = "1.5.0"
 description = "Hermes scoped memory provider with journal-first capture, SQLite truth, vector companions, and hybrid RRF retrieval."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -68,6 +68,7 @@ package-dir = {"scope_recall" = "."}
   ".env.example",
   "docs/*.md",
   "scripts/*.py",
+  "benchmarks/*.json",
 ]
 
 [tool.pytest.ini_options]
