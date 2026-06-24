@@ -17,6 +17,7 @@ from plugins.memory import load_memory_provider
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "import.openclaw.memory_lancedb_pro.py"
 DOCTOR_PATH = Path(__file__).resolve().parents[1] / "scripts" / "doctor.py"
 REPAIR_PATH = Path(__file__).resolve().parents[1] / "scripts" / "repair.vector_index.py"
+CHECK_RELEASE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "check.release.py"
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME = "scope_recall"
 if PACKAGE_NAME not in sys.modules:
@@ -91,6 +92,49 @@ def test_readme_documents_artifact_anchors_and_secret_indexes():
     assert "secret_value_stored" in readme
     assert "plaintext secret" in readme
     assert "SQL/FTS/vector" in readme
+
+
+def test_release_git_tree_check_ignores_ci_runtime_checkout(monkeypatch):
+    spec = importlib.util.spec_from_file_location("scope_recall_check_release", CHECK_RELEASE_PATH)
+    assert spec is not None
+    assert spec.loader is not None
+    release_check = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(release_check)
+
+    monkeypatch.setattr(
+        release_check,
+        "run",
+        lambda _cmd: {
+            "returncode": 0,
+            "stdout": "?? .hermes-agent-src/\n?? docs/new.md\n M README.md\n",
+            "stderr": "",
+        },
+    )
+
+    result = release_check.git_tree_check(allow_dirty=False)
+
+    assert result["ok"] is False
+    assert "?? .hermes-agent-src/" not in result["untracked"]
+    assert "?? docs/new.md" in result["untracked"]
+    assert " M README.md" in result["dirty"]
+
+
+def test_release_git_tree_check_allows_only_known_scratch(monkeypatch):
+    spec = importlib.util.spec_from_file_location("scope_recall_check_release_scratch", CHECK_RELEASE_PATH)
+    assert spec is not None
+    assert spec.loader is not None
+    release_check = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(release_check)
+
+    monkeypatch.setattr(
+        release_check,
+        "run",
+        lambda _cmd: {"returncode": 0, "stdout": "?? .hermes-agent-src/\n?? .hermes/\n?? build/\n", "stderr": ""},
+    )
+
+    result = release_check.git_tree_check(allow_dirty=False)
+
+    assert result == {"ok": True, "allow_dirty": False, "dirty": [], "untracked": []}
 
 
 def test_doctor_script_reports_source_versions():

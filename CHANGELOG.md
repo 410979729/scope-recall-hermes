@@ -4,6 +4,11 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-06-24
+
+### Fixed
+- Fixed strict release-gate dirty-tree checks in CI by ignoring known local/runtime scratch directories such as `.hermes-agent-src/` while still blocking real tracked or untracked source changes.
+
 ## [1.5.0] - 2026-06-24
 
 ### Added

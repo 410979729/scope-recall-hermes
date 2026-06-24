@@ -14,7 +14,7 @@ def test_distribution_metadata_exposes_official_standalone_install_shape():
     pyproject = tomllib.loads((PLUGIN_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert pyproject["project"]["name"] == "hermes-scope-recall"
-    assert pyproject["project"]["version"] == "1.5.0"
+    assert pyproject["project"]["version"] == "1.5.1"
     assert pyproject["project"]["scripts"] == {
         "hermes-scope-recall": "scope_recall.installer:main"
     }

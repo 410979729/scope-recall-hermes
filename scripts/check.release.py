@@ -25,7 +25,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-PACKAGE_VERSION = "1.5.0"
+PACKAGE_VERSION = "1.5.1"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
 LOCAL_ONLY_DIRS = {".hermes"}
@@ -205,11 +205,30 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _git_status_path(line: str) -> str:
+    if len(line) < 4:
+        return ""
+    return line[3:].strip()
+
+
+def _is_ignorable_git_status_line(line: str) -> bool:
+    path = _git_status_path(line)
+    if not path:
+        return False
+    parts = pathlib.PurePosixPath(path).parts
+    top_level = parts[0] if parts else ""
+    return top_level in LOCAL_ONLY_DIRS or top_level in EXTERNAL_TEST_DIRS or top_level in GENERATED_DIRS
+
+
 def git_tree_check(*, allow_dirty: bool) -> dict[str, object]:
     result = run(["git", "status", "--porcelain=v1"])
     if result["returncode"] != 0:
         return {"ok": False, "error": result}
-    lines = [line for line in str(result["stdout"]).splitlines() if line.strip()]
+    lines = [
+        line
+        for line in str(result["stdout"]).splitlines()
+        if line.strip() and not _is_ignorable_git_status_line(line)
+    ]
     untracked = [line for line in lines if line.startswith("?? ")]
     dirty = [line for line in lines if not line.startswith("?? ")]
     return {
