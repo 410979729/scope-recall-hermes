@@ -104,6 +104,16 @@
     "cli_user_id_fallback": "local",
     "user_aliases": {}
   },
+  "shared_pool": {
+    "enabled": false,
+    "pool_id": "default",
+    "write_enabled": false,
+    "allowed_targets": [
+      "memory",
+      "project",
+      "ops"
+    ]
+  },
   "retrieval": {
     "mode": "hybrid",
     "lexical_weight": 0.45,
@@ -141,7 +151,52 @@
     "freshness_max_weight": 0.42,
     "metadata_weight": 0.08,
     "entity_weight": 0.06,
-    "entity_distance_weight": 0.04
+    "entity_distance_weight": 0.04,
+    "relation_rerank_enabled": false,
+    "relation_rerank_weight": 0.04,
+    "relation_supersedes_boost": 0.04,
+    "relation_supports_boost": 0.04,
+    "relation_superseded_penalty": 0.0,
+    "relation_contradicts_penalty": 0.0,
+    "relation_contradiction_mode": "surface",
+    "temporal_decay_enabled": false,
+    "temporal_decay_weight": 0.0,
+    "temporal_decay_half_life_days": 180.0,
+    "temporal_decay_floor": 0.65,
+    "temporal_policy_enabled": true,
+    "temporal_policy_weights": {
+      "durable_fact": 0.25,
+      "episodic": 0.8,
+      "temporary": 1.0,
+      "default": 1.0
+    },
+    "temporal_policy_durable_types": [
+      "constraint",
+      "decision",
+      "environment_fact",
+      "fact",
+      "factual",
+      "memory",
+      "ops",
+      "ops_procedure",
+      "preference",
+      "procedure",
+      "project",
+      "project_fact",
+      "resource",
+      "user_preference",
+      "workflow"
+    ],
+    "temporal_policy_episodic_types": [
+      "episodic",
+      "summary"
+    ],
+    "temporal_policy_temporary_types": [
+      "scratch",
+      "temporary",
+      "temporary_state",
+      "tool_trace"
+    ]
   },
   "vector": {
     "enabled": true,

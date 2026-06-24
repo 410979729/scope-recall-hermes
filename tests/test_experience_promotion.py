@@ -255,6 +255,30 @@ def test_previous_success_current_failure_does_not_promote():
     assert conn.execute("SELECT COUNT(*) FROM procedural_playbooks").fetchone()[0] == 0
 
 
+def test_low_signal_user_goal_does_not_create_generic_playbook():
+    conn = _conn()
+    scope = _scope()
+    scope_id = build_scope_id(scope)
+    shared_scope_id = build_shared_scope_id(scope)
+
+    _append(conn, scope=scope, session_id="low-signal", turn=1, role="user", content="继续")
+    _append(conn, scope=scope, session_id="low-signal", turn=2, role="tool", content="pytest 5 passed; ruff ok; release gate ok")
+    _append(conn, scope=scope, session_id="low-signal", turn=3, role="assistant", content="完成：检查通过，验证完成。")
+
+    result = promote_experiences(
+        conn,
+        accessible_scope_ids=accessible_scope_ids(scope),
+        scope_id=scope_id,
+        shared_scope_id=shared_scope_id,
+        config={"experience": {"auto_promote_low_risk": True}},
+        dry_run=False,
+    )
+
+    assert result["handbooks_created"] == 0
+    assert result["items"][0]["reason"] == "low_signal_goal"
+    assert conn.execute("SELECT COUNT(*) FROM procedural_playbooks").fetchone()[0] == 0
+
+
 def test_low_risk_default_creates_candidate_without_auto_promoting():
     conn = _conn()
     scope = _scope()

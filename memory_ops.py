@@ -13,7 +13,7 @@ from .governance import classify_memory, is_conflicting, merge_memory_text, sema
 from .models import recall_scope_mode
 from .sql_store import curated_recall_item_id, delete_rows, exact_duplicate_groups, iter_curated_entries, update_row
 from .storage_views import _curated_memory_allowed
-from .vector_runtime import mark_vector_needs_repair, setup_vector_layer, upsert_vector_record
+from .vector_runtime import mark_vector_needs_repair, refresh_vector_audit, setup_vector_layer, upsert_vector_record
 
 
 def _scope_params(provider: Any, *, writable: bool = False) -> list[str]:
@@ -35,6 +35,13 @@ def _writable_scope_params(provider: Any) -> list[str]:
     return _scope_params(provider, writable=True)
 
 
+def _normalized_scope_mode(provider: Any, target: str, source: str = "", scope_mode: str | None = None) -> str:
+    requested = str(scope_mode or "").strip().lower().replace("-", "_")
+    if requested in {"shared", "local", "shared_pool"}:
+        return requested
+    return provider._scope_mode_for(target, source) if hasattr(provider, "_scope_mode_for") else recall_scope_mode(target, source)
+
+
 def store_memory_now(
     provider: Any,
     *,
@@ -45,9 +52,11 @@ def store_memory_now(
     metadata: dict[str, Any] | None = None,
     allow_duplicate: bool = False,
     semantic_merge: bool = True,
+    scope_mode: str | None = None,
 ) -> tuple[str, bool, str]:
+    resolved_scope_mode = _normalized_scope_mode(provider, target, source, scope_mode)
     if semantic_merge and not allow_duplicate and target in {"user", "ops", "project"}:
-        merge_id, merged_content = find_semantic_merge_candidate(provider, content, target)
+        merge_id, merged_content = find_semantic_merge_candidate(provider, content, target, scope_mode=resolved_scope_mode)
         if merge_id:
             if merged_content.strip() == content.strip():
                 return merge_id, False, "duplicate"
@@ -61,6 +70,7 @@ def store_memory_now(
         session_id=session_id,
         metadata=metadata,
         allow_duplicate=allow_duplicate,
+        scope_mode=resolved_scope_mode,
     )
     if inserted:
         _mark_conflicts_for_memory(provider, memory_id=memory_id, content=content, target=target)
@@ -68,12 +78,72 @@ def store_memory_now(
     return memory_id, inserted, outcome
 
 
-def _mark_conflicts_for_memory(provider: Any, *, memory_id: str, content: str, target: str) -> int:
-    """Record deterministic contradiction edges for a newly inserted memory."""
+def _conflict_peer_ids(conn: Any, memory_id: str) -> list[str]:
+    rows = conn.execute(
+        """
+        SELECT target_memory_id AS peer_id
+        FROM memory_relations
+        WHERE source_memory_id = ? AND relation_type = 'contradicts'
+        UNION
+        SELECT source_memory_id AS peer_id
+        FROM memory_relations
+        WHERE target_memory_id = ? AND relation_type = 'contradicts'
+        """,
+        (memory_id, memory_id),
+    ).fetchall()
+    return sorted({str(row["peer_id"]) for row in rows if str(row["peer_id"]) and str(row["peer_id"]) != memory_id})
+
+
+def _sync_conflict_metadata(conn: Any, memory_id: str) -> None:
+    row = conn.execute("SELECT metadata FROM memories WHERE id = ?", (memory_id,)).fetchone()
+    if row is None:
+        return
+    metadata_payload = load_metadata(row["metadata"] if row is not None else "{}")
+    conflict_ids = _conflict_peer_ids(conn, memory_id)
+    relation_types = metadata_payload.get("relation_types")
+    if not isinstance(relation_types, list):
+        relation_types = []
+    relation_types = [str(item) for item in relation_types if str(item) and str(item) != "contradicts"]
+    if conflict_ids:
+        relation_types.append("contradicts")
+        metadata_payload["conflict_review_ids"] = conflict_ids
+        metadata_payload["conflict_count"] = len(conflict_ids)
+        metadata_payload["conflict_review_count"] = len(conflict_ids)
+        metadata_payload["needs_conflict_review"] = True
+    else:
+        metadata_payload["conflict_review_ids"] = []
+        metadata_payload["conflict_count"] = 0
+        metadata_payload["conflict_review_count"] = 0
+        metadata_payload["needs_conflict_review"] = False
+    metadata_payload["relation_types"] = relation_types
+    conn.execute(
+        "UPDATE memories SET metadata = ? WHERE id = ?",
+        (json.dumps(metadata_payload, ensure_ascii=False, sort_keys=True), memory_id),
+    )
+
+
+def _sync_conflict_metadata_for_ids(conn: Any, memory_ids: set[str]) -> None:
+    for related_id in sorted({str(memory_id) for memory_id in memory_ids if str(memory_id)}):
+        _sync_conflict_metadata(conn, related_id)
+
+
+def _mark_conflicts_for_memory(provider: Any, *, memory_id: str, content: str, target: str, rebuild_existing: bool = False) -> int:
+    """Record deterministic contradiction edges for a memory and keep conflict metadata current."""
 
     conn = provider._require_conn()
     now = datetime.now(timezone.utc).isoformat()
     with provider._lock:
+        affected_ids: set[str] = {memory_id}
+        if rebuild_existing:
+            affected_ids.update(_conflict_peer_ids(conn, memory_id))
+            conn.execute(
+                """
+                DELETE FROM memory_relations
+                WHERE relation_type = 'contradicts'
+                  AND (source_memory_id = ? OR target_memory_id = ?)
+                """,
+                (memory_id, memory_id),
+            )
         rows = conn.execute(
             """
             SELECT id, content
@@ -85,9 +155,8 @@ def _mark_conflicts_for_memory(provider: Any, *, memory_id: str, content: str, t
             [memory_id, target, *_writable_scope_params(provider)],
         ).fetchall()
         conflicting_ids = [str(row["id"]) for row in rows if is_conflicting(str(row["content"]), content)]
-        if not conflicting_ids:
-            return 0
         for target_id in conflicting_ids:
+            affected_ids.add(target_id)
             for source_id, related_id in ((memory_id, target_id), (target_id, memory_id)):
                 conn.execute(
                     """
@@ -96,63 +165,29 @@ def _mark_conflicts_for_memory(provider: Any, *, memory_id: str, content: str, t
                     """,
                     (source_id, related_id, 0.74, f"conflict-review: contradicts memory {related_id}", now),
                 )
-            old_row = conn.execute("SELECT metadata FROM memories WHERE id = ?", (target_id,)).fetchone()
-            old_metadata = load_metadata(old_row["metadata"] if old_row is not None else "{}")
-            old_relation_types = old_metadata.get("relation_types")
-            if not isinstance(old_relation_types, list):
-                old_relation_types = []
-            if "contradicts" not in old_relation_types:
-                old_relation_types.append("contradicts")
-            old_conflict_ids = old_metadata.get("conflict_review_ids")
-            if not isinstance(old_conflict_ids, list):
-                old_conflict_ids = []
-            old_metadata.update(
-                {
-                    "relation_types": old_relation_types,
-                    "conflict_review_ids": sorted({*map(str, old_conflict_ids), memory_id}),
-                    "conflict_review_count": int(old_metadata.get("conflict_review_count") or 0) + 1,
-                    "needs_conflict_review": True,
-                }
-            )
-            conn.execute(
-                "UPDATE memories SET metadata = ? WHERE id = ?",
-                (json.dumps(old_metadata, ensure_ascii=False, sort_keys=True), target_id),
-            )
-        row = conn.execute("SELECT metadata FROM memories WHERE id = ?", (memory_id,)).fetchone()
-        metadata_payload = load_metadata(row["metadata"] if row is not None else "{}")
-        relation_types = metadata_payload.get("relation_types")
-        if not isinstance(relation_types, list):
-            relation_types = []
-        if "contradicts" not in relation_types:
-            relation_types.append("contradicts")
-        existing_conflicts = metadata_payload.get("conflict_review_ids")
-        conflict_review_ids = existing_conflicts if isinstance(existing_conflicts, list) else []
-        metadata_payload["relation_types"] = relation_types
-        metadata_payload["conflict_review_ids"] = sorted({*map(str, conflict_review_ids), *conflicting_ids})
-        metadata_payload["conflict_count"] = int(metadata_payload.get("conflict_count") or 0) + len(conflicting_ids)
-        metadata_payload["conflict_review_count"] = int(metadata_payload.get("conflict_review_count") or 0) + len(conflicting_ids)
-        metadata_payload["needs_conflict_review"] = True
-        conn.execute(
-            "UPDATE memories SET metadata = ? WHERE id = ?",
-            (json.dumps(metadata_payload, ensure_ascii=False, sort_keys=True), memory_id),
-        )
-        conn.commit()
+        if rebuild_existing or conflicting_ids:
+            _sync_conflict_metadata_for_ids(conn, affected_ids)
+            conn.commit()
     return len(conflicting_ids)
 
 
-def find_semantic_merge_candidate(provider: Any, content: str, target: str) -> tuple[str, str]:
+def find_semantic_merge_candidate(provider: Any, content: str, target: str, *, scope_mode: str | None = None) -> tuple[str, str]:
     threshold = float(provider._config_value("semantic_merge_threshold", 0.72))
     conn = provider._require_conn()
+    resolved_scope_mode = _normalized_scope_mode(provider, target, "tool-store", scope_mode)
+    scope_id = _expected_scope_id_for_mode(provider, resolved_scope_mode)
+    if not scope_id or scope_id not in _writable_scope_params(provider):
+        return "", ""
     with provider._lock:
         rows = conn.execute(
             """
             SELECT id, content
             FROM memories
-            WHERE scope_id IN ({}) AND target = ?
+            WHERE scope_id = ? AND target = ?
             ORDER BY updated_at DESC
             LIMIT 50
-            """.format(_scope_placeholders(provider, writable=True)),
-            [*_writable_scope_params(provider), target],
+            """,
+            [scope_id, target],
         ).fetchall()
     best_id = ""
     best_content = ""
@@ -174,11 +209,27 @@ def find_semantic_merge_candidate(provider: Any, content: str, target: str) -> t
 
 
 def _expected_scope_id_for_mode(provider: Any, mode: str) -> str:
-    return provider._shared_scope_id if mode == "shared" else provider._scope_id
+    normalized = str(mode or "").strip().lower().replace("-", "_")
+    if normalized == "shared_pool":
+        return str(getattr(provider, "_shared_pool_scope_id", "") or "")
+    if normalized == "shared":
+        return str(getattr(provider, "_shared_scope_id", "") or "")
+    return str(getattr(provider, "_scope_id", "") or "")
 
 
 def _row_scope_mode(provider: Any, row: Any) -> str:
-    return "shared" if str(row["scope_id"]) == provider._shared_scope_id else "local"
+    scope_id = str(row["scope_id"])
+    if scope_id and scope_id == str(getattr(provider, "_shared_pool_scope_id", "") or ""):
+        return "shared_pool"
+    return "shared" if scope_id == provider._shared_scope_id else "local"
+
+
+def _target_scope_mode_for_existing(provider: Any, row: Any, target: str) -> str:
+    existing_mode = _row_scope_mode(provider, row)
+    default_mode = recall_scope_mode(target, str(row["source"]))
+    if existing_mode == "shared_pool" and default_mode == "shared":
+        return "shared_pool"
+    return default_mode
 
 
 def update_memory(provider: Any, memory_id: str, content: str, target: str | None = None) -> tuple[bool, str, str]:
@@ -192,7 +243,7 @@ def update_memory(provider: Any, memory_id: str, content: str, target: str | Non
         if existing is None:
             return False, "", ""
         new_target = target or str(existing["target"])
-        new_mode = recall_scope_mode(new_target, str(existing["source"]))
+        new_mode = _target_scope_mode_for_existing(provider, existing, new_target)
         if str(existing["scope_id"]) != _expected_scope_id_for_mode(provider, new_mode):
             return False, "target changes between shared durable and local scratch scopes are not allowed", ""
         updated, summary, updated_at = update_row(
@@ -209,6 +260,13 @@ def update_memory(provider: Any, memory_id: str, content: str, target: str | Non
             [memory_id, *_writable_scope_params(provider)],
         ).fetchone()
         if row is not None:
+            _mark_conflicts_for_memory(
+                provider,
+                memory_id=memory_id,
+                content=str(row["content"]),
+                target=str(row["target"]),
+                rebuild_existing=True,
+            )
             upsert_vector_record(
                 provider,
                 id=memory_id,
@@ -256,7 +314,7 @@ def merge_memories(provider: Any, target_id: str, source_ids: list[str], content
             "deleted": 0,
         }
     requested_target = target or str(target_row["target"])
-    requested_mode = recall_scope_mode(requested_target, str(target_row["source"]))
+    requested_mode = _target_scope_mode_for_existing(provider, target_row, requested_target)
     if target_scope_id != _expected_scope_id_for_mode(provider, requested_mode):
         return {
             "merged": False,
@@ -695,9 +753,10 @@ def context_payload(provider: Any, *, query: str, limit: int = 5, max_chars: int
     entity_counts: dict[str, int] = {}
     for item in results:
         metadata = load_metadata(item.metadata or {})
-        entities = metadata.get("entities") if isinstance(metadata.get("entities"), list) else []
+        raw_entities = metadata.get("entities")
+        entities = [str(entity) for entity in raw_entities] if isinstance(raw_entities, list) else []
         for entity in entities:
-            entity_counts[str(entity)] = entity_counts.get(str(entity), 0) + 1
+            entity_counts[entity] = entity_counts.get(entity, 0) + 1
         records.append(
             {
                 "id": item.id,
@@ -878,46 +937,172 @@ def inspect_memory(provider: Any, *, memory_id: str) -> dict[str, Any]:
 def explain_query(provider: Any, *, query: str, limit: int = 5) -> dict[str, Any]:
     results = provider._recall_service.search_memories(query, limit=max(1, min(20, limit)))
     payload_results: list[dict[str, Any]] = []
-    for item in results:
+
+    def _component_float(metadata: dict[str, Any], key: str, default: float = 0.0) -> float:
+        try:
+            return float(metadata.get(key, default) or default)
+        except (TypeError, ValueError):
+            return default
+
+    component_keys = (
+        "lexical_score",
+        "bm25_score",
+        "vector_score",
+        "rrf_score",
+        "pre_quality_score",
+        "quality_weight_applied",
+        "metadata_weight",
+        "entity_overlap_bonus",
+        "entity_distance_score",
+        "entity_distance_weight",
+        "entity_distance_bonus",
+        "relation_evidence_count",
+        "relation_rerank_bonus",
+        "pre_decay_score",
+        "base_score",
+        "temporal_decay_multiplier",
+        "temporal_decay_weight",
+        "temporal_policy_weight",
+        "recency_bonus",
+        "final_score",
+        "general_weight",
+        "trust",
+        "importance",
+        "confidence",
+        "min_score",
+        "vector_only_min_score",
+    )
+    def _payload_for_item(item: Any, rank: int) -> dict[str, Any]:
         metadata = dict(item.metadata or {})
-        components = {
-            "lexical_score": float(metadata.get("lexical_score") or 0.0),
-            "bm25_score": float(metadata.get("bm25_score") or 0.0),
-            "vector_score": float(metadata.get("vector_score") or 0.0),
-            "base_score": float(metadata.get("base_score") or item.score or 0.0),
-            "temporal_decay_multiplier": float(metadata.get("temporal_decay_multiplier") or 1.0),
-            "trust": clamp_float(metadata.get("trust"), default=0.5),
+        components: dict[str, Any] = {
+            key: _component_float(metadata, key, 1.0 if key in {"temporal_decay_multiplier", "general_weight"} else 0.0)
+            for key in component_keys
         }
-        payload_results.append(
-            {
-                "id": item.id,
-                "target": item.target,
-                "source": item.source,
-                "summary": item.summary,
-                "score": round(item.score, 4),
-                "updated_at": item.updated_at,
-                "components": components,
-            }
-        )
-    return {"query": query, "count": len(payload_results), "results": payload_results}
+        components["final_score"] = float(item.score or components.get("final_score") or 0.0)
+        components["relation_evidence_types"] = metadata.get("relation_evidence_types") if isinstance(metadata.get("relation_evidence_types"), list) else []
+        components["relation_evidence_ids"] = metadata.get("relation_evidence_ids") if isinstance(metadata.get("relation_evidence_ids"), list) else []
+        components["relation_rerank_enabled"] = bool(metadata.get("relation_rerank_enabled") or False)
+        components["temporal_policy_class"] = str(metadata.get("temporal_policy_class") or "")
+        components["rejected_reason"] = str(metadata.get("rejected_reason") or "")
+        return {
+            "rank": rank,
+            "id": item.id,
+            "target": item.target,
+            "source": item.source,
+            "summary": item.summary,
+            "score": round(item.score, 4),
+            "updated_at": item.updated_at,
+            "components": components,
+        }
+
+    for rank, item in enumerate(results, start=1):
+        payload_results.append(_payload_for_item(item, rank))
+    rejected_candidates = list(getattr(provider._recall_service, "last_rejected_candidates", []) or [])
+    rejected_payload = [_payload_for_item(item, rank) for rank, item in enumerate(rejected_candidates[: max(1, min(20, limit))], start=1)]
+    return {
+        "query": query,
+        "count": len(payload_results),
+        "results": payload_results,
+        "rejected_count": len(rejected_candidates),
+        "rejected_candidates": rejected_payload,
+    }
 
 
-def benchmark_queries(provider: Any, *, queries: list[str], limit: int = 5) -> dict[str, Any]:
-    normalized_queries = [str(query).strip() for query in queries if str(query).strip()]
+def _benchmark_id_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        candidates = [value]
+    elif isinstance(value, list):
+        candidates = [str(item) for item in value]
+    else:
+        candidates = []
+    output: list[str] = []
+    for item in candidates:
+        clean = str(item or "").strip()
+        if clean and clean not in output:
+            output.append(clean)
+    return output
+
+
+def _benchmark_cases(queries: list[str] | None, cases: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    if cases:
+        normalized: list[dict[str, Any]] = []
+        for case in cases:
+            if not isinstance(case, dict):
+                continue
+            query = str(case.get("query") or "").strip()
+            if not query:
+                continue
+            normalized.append(dict(case, query=query))
+        return normalized
+    return [{"query": str(query).strip()} for query in (queries or []) if str(query).strip()]
+
+
+def benchmark_queries(
+    provider: Any,
+    *,
+    queries: list[str] | None = None,
+    cases: list[dict[str, Any]] | None = None,
+    limit: int = 5,
+    auto_explain_on_fail: bool = False,
+) -> dict[str, Any]:
+    normalized_cases = _benchmark_cases(queries, cases)
     rows: list[dict[str, Any]] = []
-    for query in normalized_queries:
+    aggregate_failures: list[str] = []
+    bounded_limit = max(1, min(20, limit))
+    for case in normalized_cases:
+        query = str(case.get("query") or "").strip()
         started = time.perf_counter()
-        results = provider._recall_service.search_memories(query, limit=max(1, min(20, limit)))
+        results = provider._recall_service.search_memories(query, limit=bounded_limit)
         latency_ms = (time.perf_counter() - started) * 1000.0
-        rows.append(
-            {
-                "query": query,
-                "count": len(results),
-                "latency_ms": round(latency_ms, 3),
-                "top_score": round(results[0].score, 4) if results else 0.0,
-            }
-        )
-    return {"query_count": len(normalized_queries), "limit": max(1, min(20, limit)), "results": rows}
+        ids = [str(item.id) for item in results]
+        ranks = {memory_id: index for index, memory_id in enumerate(ids, start=1)}
+        failures: list[str] = []
+        expected_ids = _benchmark_id_list(case.get("expected_ids"))
+        forbidden_ids = _benchmark_id_list(case.get("forbidden_ids"))
+        min_rank_raw = case.get("min_rank")
+        try:
+            min_rank = int(min_rank_raw) if min_rank_raw is not None else 0
+        except (TypeError, ValueError):
+            min_rank = 0
+        min_top_score_raw = case.get("min_top_score")
+        try:
+            min_top_score = float(min_top_score_raw) if min_top_score_raw is not None else 0.0
+        except (TypeError, ValueError):
+            min_top_score = 0.0
+        raw_top_score = float(results[0].score) if results else 0.0
+        top_score = round(raw_top_score, 4)
+        for expected_id in expected_ids:
+            rank = ranks.get(expected_id)
+            if rank is None:
+                failures.append(f"expected_id_missing:{expected_id}")
+            elif min_rank > 0 and rank > min_rank:
+                failures.append(f"expected_id_rank_too_low:{expected_id}:rank={rank}:min_rank={min_rank}")
+        for forbidden_id in forbidden_ids:
+            if forbidden_id in ranks:
+                failures.append(f"forbidden_id_present:{forbidden_id}:rank={ranks[forbidden_id]}")
+        if min_top_score_raw is not None and top_score < min_top_score:
+            failures.append(f"top_score_below_min:{top_score}:min_top_score={min_top_score}")
+        row: dict[str, Any] = {
+            "query": query,
+            "count": len(results),
+            "latency_ms": round(latency_ms, 3),
+            "top_score": top_score,
+            "raw_top_score": raw_top_score,
+            "ids": ids,
+            "passed": not failures,
+            "failures": failures,
+        }
+        if failures and auto_explain_on_fail:
+            row["explain"] = explain_query(provider, query=query, limit=bounded_limit)
+        rows.append(row)
+        aggregate_failures.extend(f"{query}: {failure}" for failure in failures)
+    return {
+        "query_count": len(normalized_cases),
+        "limit": bounded_limit,
+        "passed": not aggregate_failures,
+        "failures": aggregate_failures,
+        "results": rows,
+    }
 
 
 def stats_payload(provider: Any) -> dict[str, Any]:
@@ -951,6 +1136,10 @@ def stats_payload(provider: Any) -> dict[str, Any]:
     vector_table = ""
     vector_embedder: dict[str, Any] = {}
     if provider._vector_store is not None:
+        try:
+            refresh_vector_audit(provider)
+        except Exception:
+            pass
         vector_path = str(provider._vector_store.db_path)
         vector_table = provider._vector_store.table_name
     if provider._embedder is not None:
@@ -968,6 +1157,7 @@ def stats_payload(provider: Any) -> dict[str, Any]:
         "shared_pool_scope_memories": shared_pool,
         "shared_pool": {
             "enabled": bool(getattr(provider, "_shared_pool_enabled", False)),
+            "write_enabled": bool(getattr(provider, "_shared_pool_write_enabled", False)),
             "pool_id": str(getattr(provider, "_shared_pool_id", "") or ""),
             "scope_id": shared_pool_scope_id,
             "memories": shared_pool,

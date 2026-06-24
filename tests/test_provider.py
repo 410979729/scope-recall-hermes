@@ -989,6 +989,148 @@ def test_conflicting_new_memory_records_review_relation_without_hiding_old(provi
     assert old_payload["id"] in result_ids
 
 
+def test_update_memory_rebuilds_conflict_review_relations(provider):
+    old_payload = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_store",
+            {"content": "Project Lyra deploy command is uv run deploy-old.", "target": "ops", "memory_type": "procedure"},
+        )
+    )
+    changed_payload = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_store",
+            {"content": "Project Lyra rollback window is 30 minutes.", "target": "ops", "memory_type": "procedure"},
+        )
+    )
+    assert old_payload["stored"] is True
+    assert changed_payload["stored"] is True
+
+    updated = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_update",
+            {
+                "id": changed_payload["id"],
+                "content": "Project Lyra deploy command is not uv run deploy-old.",
+                "target": "ops",
+            },
+        )
+    )
+    assert updated["updated"] is True
+
+    with provider._lock:
+        conn = provider._require_conn()
+        relation_count = conn.execute(
+            """
+            SELECT COUNT(*) FROM memory_relations
+            WHERE relation_type = 'contradicts'
+              AND ((source_memory_id = ? AND target_memory_id = ?)
+                OR (source_memory_id = ? AND target_memory_id = ?))
+            """,
+            (changed_payload["id"], old_payload["id"], old_payload["id"], changed_payload["id"]),
+        ).fetchone()[0]
+        old_meta = json.loads(conn.execute("SELECT metadata FROM memories WHERE id = ?", (old_payload["id"],)).fetchone()["metadata"])
+        new_meta = json.loads(conn.execute("SELECT metadata FROM memories WHERE id = ?", (changed_payload["id"],)).fetchone()["metadata"])
+
+    assert relation_count == 2
+    assert old_meta["needs_conflict_review"] is True
+    assert changed_payload["id"] in old_meta["conflict_review_ids"]
+    assert old_payload["id"] in new_meta["conflict_review_ids"]
+
+
+def test_update_memory_clears_stale_conflict_review_relations(provider):
+    old_payload = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_store",
+            {"content": "Project Cygnus deploy command is uv run deploy-old.", "target": "ops", "memory_type": "procedure"},
+        )
+    )
+    changed_payload = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_store",
+            {
+                "content": "Project Cygnus deploy command is not uv run deploy-old.",
+                "target": "ops",
+                "memory_type": "procedure",
+            },
+        )
+    )
+    assert old_payload["stored"] is True
+    assert changed_payload["stored"] is True
+
+    updated = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_update",
+            {
+                "id": changed_payload["id"],
+                "content": "Project Cygnus rollback window is 30 minutes.",
+                "target": "ops",
+            },
+        )
+    )
+    assert updated["updated"] is True
+
+    with provider._lock:
+        conn = provider._require_conn()
+        relation_count = conn.execute(
+            """
+            SELECT COUNT(*) FROM memory_relations
+            WHERE relation_type = 'contradicts'
+              AND ((source_memory_id = ? AND target_memory_id = ?)
+                OR (source_memory_id = ? AND target_memory_id = ?))
+            """,
+            (changed_payload["id"], old_payload["id"], old_payload["id"], changed_payload["id"]),
+        ).fetchone()[0]
+        old_meta = json.loads(conn.execute("SELECT metadata FROM memories WHERE id = ?", (old_payload["id"],)).fetchone()["metadata"])
+        new_meta = json.loads(conn.execute("SELECT metadata FROM memories WHERE id = ?", (changed_payload["id"],)).fetchone()["metadata"])
+
+    assert relation_count == 0
+    assert changed_payload["id"] not in old_meta.get("conflict_review_ids", [])
+    assert old_payload["id"] not in new_meta.get("conflict_review_ids", [])
+    assert old_meta.get("needs_conflict_review") is not True
+    assert new_meta.get("needs_conflict_review") is not True
+    assert "contradicts" not in old_meta.get("relation_types", [])
+    assert "contradicts" not in new_meta.get("relation_types", [])
+
+
+def test_update_memory_preserves_feedback_metadata(provider):
+    payload = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_store",
+            {
+                "content": "Project Vega release command is uv run release.",
+                "target": "ops",
+                "memory_type": "procedure",
+                "importance": 0.9,
+            },
+        )
+    )
+    assert payload["stored"] is True
+    feedback = json.loads(provider.handle_tool_call("scope_recall_feedback", {"id": payload["id"], "rating": "helpful"}))
+    assert feedback["updated"] is True
+    assert feedback["feedback_count"] == 1
+
+    updated = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_update",
+            {
+                "id": payload["id"],
+                "content": "Project Vega release command is uv run release --prod.",
+                "target": "ops",
+            },
+        )
+    )
+    assert updated["updated"] is True
+
+    with provider._lock:
+        row = provider._require_conn().execute("SELECT metadata FROM memories WHERE id = ?", (payload["id"],)).fetchone()
+    metadata = json.loads(row["metadata"])
+    assert metadata["feedback_count"] == 1
+    assert metadata["helpful_count"] == 1
+    assert metadata["trust"] == feedback["trust"]
+    assert metadata["importance"] == 0.9
+    assert metadata["memory_type"] == "procedure"
+
+
 def test_governance_reports_dirty_history_candidates_without_mutating_lifecycle(provider):
     provider._config["maintenance_tools_enabled"] = True
     scratch_payload = json.loads(
@@ -2476,6 +2618,28 @@ def test_vector_search_error_degrades_to_lexical_and_marks_needs_repair(provider
     assert "gateway restart command" in result["results"][0]["content"]
     stats = json.loads(provider.handle_tool_call("scope_recall_stats", {}))
     assert stats["vector"]["status"] == "needs_repair"
+
+
+def test_stats_refreshes_vector_audit_counts(provider, monkeypatch):
+    provider.handle_tool_call("scope_recall_store", {"content": "Stats should refresh vector audit counts.", "target": "ops"})
+    provider.flush(timeout=5.0)
+    if provider._vector_store is None:
+        pytest.skip("vector store unavailable in this lane")
+    provider._vector_row_count = 0
+    provider._vector_unique_id_count = 0
+    provider._vector_duplicate_row_count = 0
+
+    monkeypatch.setattr(
+        provider._vector_store,
+        "audit_counts",
+        lambda: {"physical_rows": 7, "unique_ids": 6, "duplicate_rows": 1, "duplicate_ids": 1},
+    )
+
+    stats = json.loads(provider.handle_tool_call("scope_recall_stats", {}))
+
+    assert stats["vector"]["row_count"] == 7
+    assert stats["vector"]["unique_id_count"] == 6
+    assert stats["vector"]["duplicate_row_count"] == 1
 
 
 def test_repair_tool_rebuilds_vector_companion(provider):

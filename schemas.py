@@ -10,6 +10,11 @@ SCOPE_RECALL_STORE_SCHEMA = {
                 "description": "Category. user/memory/project/ops are shared durable; general stays local to the current chat/thread/session.",
                 "enum": ["user", "memory", "project", "ops", "general"],
             },
+            "scope_mode": {
+                "type": "string",
+                "description": "Optional write scope override. Use shared_pool only when shared_pool.write_enabled is explicitly enabled.",
+                "enum": ["shared", "local", "shared_pool"],
+            },
             "memory_type": {
                 "type": "string",
                 "description": "Optional semantic type used for governance and ranking.",
@@ -213,7 +218,7 @@ SCOPE_RECALL_INSPECT_SCHEMA = {
 
 SCOPE_RECALL_EXPLAIN_SCHEMA = {
     "name": "scope_recall_explain",
-    "description": "Explain Scope Recall retrieval results with lexical, BM25, vector, decay, and trust components.",
+    "description": "Explain Scope Recall retrieval results with lexical, BM25, vector, RRF, entity, decay, recency, and trust components.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -226,14 +231,45 @@ SCOPE_RECALL_EXPLAIN_SCHEMA = {
 
 SCOPE_RECALL_BENCHMARK_SCHEMA = {
     "name": "scope_recall_benchmark",
-    "description": "Run read-only Scope Recall query latency smoke checks.",
+    "description": "Run read-only Scope Recall query latency smoke checks or assertion cases.",
     "parameters": {
         "type": "object",
         "properties": {
-            "queries": {"type": "array", "items": {"type": "string"}, "description": "Queries to benchmark."},
+            "queries": {
+                "anyOf": [
+                    {"type": "array", "items": {"type": "string"}},
+                    {"type": "string"},
+                ],
+                "description": "Simple query latency checks. Accepts a string or an array of strings.",
+            },
+            "cases": {
+                "type": "array",
+                "description": "Assertion cases with query plus optional expected_ids, forbidden_ids, min_rank, and min_top_score.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "expected_ids": {
+                            "anyOf": [
+                                {"type": "array", "items": {"type": "string"}},
+                                {"type": "string"},
+                            ]
+                        },
+                        "forbidden_ids": {
+                            "anyOf": [
+                                {"type": "array", "items": {"type": "string"}},
+                                {"type": "string"},
+                            ]
+                        },
+                        "min_rank": {"type": "integer"},
+                        "min_top_score": {"type": "number"},
+                    },
+                    "required": ["query"],
+                },
+            },
+            "auto_explain_on_fail": {"type": "boolean", "description": "Include scope_recall_explain payload for failed assertion cases."},
             "limit": {"type": "integer", "description": "Maximum results per query."},
         },
-        "required": ["queries"],
     },
 }
 

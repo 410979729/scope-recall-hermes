@@ -227,7 +227,7 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
         self._active_key_index = 0
 
     def is_available(self) -> bool:
-        return bool(OpenAI and self._api_keys)
+        return bool(OpenAI is not None and self._api_keys)
 
     def describe(self) -> dict[str, Any]:
         payload = super().describe()
@@ -236,7 +236,7 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
         return payload
 
     def _client_or_raise(self):
-        if not self.is_available():
+        if not self.is_available() or OpenAI is None:
             raise RuntimeError(f"{self.provider} embedder is not configured")
         if self._client is None:
             self._client = OpenAI(api_key=self._api_keys[self._active_key_index], base_url=self._base_url)

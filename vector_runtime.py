@@ -136,9 +136,10 @@ def setup_vector_layer(provider: Any) -> None:
         provider._vector_status = "degraded"
         provider._vector_message = provider._vector_message or f"embedder {provider._embedder.provider} unavailable"
         return
-    if provider._embedder.provider == "sentence-transformers" and hasattr(provider._embedder, "_model_or_raise"):
+    model_or_raise = getattr(provider._embedder, "_model_or_raise", None)
+    if provider._embedder.provider == "sentence-transformers" and callable(model_or_raise):
         try:
-            provider._embedder._model_or_raise()
+            model_or_raise()
         except Exception as exc:
             provider._vector_status = "degraded"
             provider._vector_message = str(exc)

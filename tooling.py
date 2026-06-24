@@ -22,6 +22,7 @@ from .experience_store import (
 )
 from .forgetting import build_forgetting_report, run_forgetting
 from .secret_index import build_secret_index
+from .vector_runtime import mark_vector_needs_repair
 
 logger = logging.getLogger(__name__)
 
@@ -101,8 +102,63 @@ class ScopeRecallToolService:
         content = self.provider._clean_text(str(args.get("content") or ""))
         if not content:
             return tool_error("content is required")
-        target = str(args.get("target") or "memory")
-        scope_mode = self.provider._scope_mode_for(target, "tool-store")
+        target = str(args.get("target") or "memory").strip().lower()
+        requested_scope_mode = str(args.get("scope_mode") or "").strip().lower().replace("-", "_")
+        if requested_scope_mode in {"shared", "local", "shared_pool"}:
+            scope_mode = requested_scope_mode
+        else:
+            scope_mode = self.provider._scope_mode_for(target, "tool-store")
+        if scope_mode == "shared_pool":
+            shared_pool_config = self.provider._config.get("shared_pool") if isinstance(self.provider._config, dict) else {}
+            shared_pool_config = shared_pool_config if isinstance(shared_pool_config, dict) else {}
+            allowed_targets = shared_pool_config.get("allowed_targets")
+            allowed_target_set = {"memory", "project", "ops"}
+            if isinstance(allowed_targets, list):
+                configured = {str(item).strip().lower() for item in allowed_targets if str(item).strip()}
+                if configured:
+                    allowed_target_set = configured
+            if not getattr(self.provider, "_shared_pool_enabled", False):
+                return self._json(
+                    {
+                        "stored": False,
+                        "duplicate": False,
+                        "merged": False,
+                        "skipped": True,
+                        "skip_reason": "shared_pool_disabled",
+                        "id": "",
+                        "target": target,
+                        "scope_mode": scope_mode,
+                        "receipt": self._receipt("shared_pool_write_rejected", target=target, scope_mode=scope_mode, reason="shared_pool_disabled"),
+                    }
+                )
+            if not getattr(self.provider, "_shared_pool_write_enabled", False):
+                return self._json(
+                    {
+                        "stored": False,
+                        "duplicate": False,
+                        "merged": False,
+                        "skipped": True,
+                        "skip_reason": "shared_pool_write_disabled",
+                        "id": "",
+                        "target": target,
+                        "scope_mode": scope_mode,
+                        "receipt": self._receipt("shared_pool_write_rejected", target=target, scope_mode=scope_mode, reason="shared_pool_write_disabled"),
+                    }
+                )
+            if target not in allowed_target_set:
+                return self._json(
+                    {
+                        "stored": False,
+                        "duplicate": False,
+                        "merged": False,
+                        "skipped": True,
+                        "skip_reason": "shared_pool_target_not_allowed",
+                        "id": "",
+                        "target": target,
+                        "scope_mode": scope_mode,
+                        "receipt": self._receipt("shared_pool_write_rejected", target=target, scope_mode=scope_mode, reason="shared_pool_target_not_allowed"),
+                    }
+                )
         filter_result = self._storage_filter(content)
         if not filter_result.allowed:
             return self._json(
@@ -124,6 +180,7 @@ class ScopeRecallToolService:
             target=target,
             session_id=self.provider._session_id,
             metadata=self._store_metadata(args),
+            scope_mode=scope_mode,
         )
         return self._json(
             {
@@ -277,20 +334,24 @@ class ScopeRecallToolService:
         if not updated:
             return tool_error("id not found")
         row = self.provider._require_conn().execute(
-            "SELECT source, target FROM memories WHERE id = ?",
+            "SELECT source, target, scope_id FROM memories WHERE id = ?",
             (memory_id,),
         ).fetchone()
         actual_target = str(row["target"]) if row is not None else (target or "")
         source = str(row["source"]) if row is not None else ""
+        if row is not None and str(row["scope_id"]) == str(getattr(self.provider, "_shared_pool_scope_id", "") or ""):
+            scope_mode = "shared_pool"
+        else:
+            scope_mode = self.provider._scope_mode_for(actual_target, source)
         return self._json(
             {
                 "updated": True,
                 "id": memory_id,
                 "target": actual_target,
-                "scope_mode": self.provider._scope_mode_for(actual_target, source),
+                "scope_mode": scope_mode,
                 "summary": summary,
                 "updated_at": updated_at,
-                "receipt": self._receipt("updated", target=actual_target, id=memory_id, scope_mode=self.provider._scope_mode_for(actual_target, source)),
+                "receipt": self._receipt("updated", target=actual_target, id=memory_id, scope_mode=scope_mode),
             }
         )
 
@@ -391,11 +452,14 @@ class ScopeRecallToolService:
         with self.provider._lock:
             payload = run_forgetting(
                 self.provider._require_conn(),
-                accessible_scope_ids=self.provider._accessible_scope_ids,
+                accessible_scope_ids=self.provider._writable_scope_ids,
                 dry_run=self._bool_arg(args, "dry_run", True),
                 hard_delete=self._bool_arg(args, "hard_delete", False),
                 limit=limit,
+                vector_store=self.provider._vector_store,
             )
+        if payload.get("vector_error"):
+            mark_vector_needs_repair(self.provider, str(payload.get("vector_error") or "forgetting vector delete failed"))
         return self._json(payload)
 
     def _handle_stats(self, args: dict[str, Any]) -> str:
@@ -415,6 +479,19 @@ class ScopeRecallToolService:
         return self._json(self.provider._explain_query(query=query, limit=self._limit(args)))
 
     def _handle_benchmark(self, args: dict[str, Any]) -> str:
+        char_limit = int(self.provider._config_value("query_char_limit", 1000))
+        raw_cases = args.get("cases") or []
+        cases: list[dict[str, Any]] = []
+        if isinstance(raw_cases, list):
+            for raw_case in raw_cases:
+                if not isinstance(raw_case, dict):
+                    continue
+                query = self.provider._normalize_query(str(raw_case.get("query") or ""), char_limit)
+                if not query:
+                    continue
+                case = dict(raw_case)
+                case["query"] = query
+                cases.append(case)
         raw_queries = args.get("queries") or []
         if isinstance(raw_queries, str):
             queries = [raw_queries]
@@ -422,12 +499,18 @@ class ScopeRecallToolService:
             queries = [str(query) for query in raw_queries]
         else:
             queries = []
-        char_limit = int(self.provider._config_value("query_char_limit", 1000))
         queries = [self.provider._normalize_query(query, char_limit) for query in queries]
         queries = [query for query in queries if query]
-        if not queries:
-            return tool_error("queries is required")
-        return self._json(self.provider._benchmark_queries(queries=queries, limit=self._limit(args)))
+        if not queries and not cases:
+            return tool_error("queries or cases is required")
+        return self._json(
+            self.provider._benchmark_queries(
+                queries=queries,
+                cases=cases,
+                limit=self._limit(args),
+                auto_explain_on_fail=self._bool_arg(args, "auto_explain_on_fail", False),
+            )
+        )
 
     def _playbook_scope_id(self) -> str:
         return str(getattr(self.provider, "_shared_scope_id", "") or getattr(self.provider, "_scope_id", ""))

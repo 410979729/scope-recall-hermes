@@ -109,6 +109,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._scope_id = ""
         self._shared_scope_id = ""
         self._shared_pool_enabled = False
+        self._shared_pool_write_enabled = False
         self._shared_pool_id = ""
         self._shared_pool_scope_id = ""
         self._accessible_scope_ids: list[str] = []
@@ -293,10 +294,13 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         raw_shared_pool_config = self._config.get("shared_pool")
         shared_pool_config = raw_shared_pool_config if isinstance(raw_shared_pool_config, dict) else {}
         self._shared_pool_enabled = config_bool(shared_pool_config, "enabled", False)
+        self._shared_pool_write_enabled = self._shared_pool_enabled and config_bool(shared_pool_config, "write_enabled", False)
         self._shared_pool_id = str(shared_pool_config.get("pool_id") or "default") if self._shared_pool_enabled else ""
         self._shared_pool_scope_id = build_shared_pool_scope_id(self._scope, self._shared_pool_id) if self._shared_pool_enabled else ""
         if self._shared_pool_scope_id and self._shared_pool_scope_id not in self._accessible_scope_ids:
             self._accessible_scope_ids.append(self._shared_pool_scope_id)
+        if self._shared_pool_write_enabled and self._shared_pool_scope_id and self._shared_pool_scope_id not in self._writable_scope_ids:
+            self._writable_scope_ids.append(self._shared_pool_scope_id)
         self._current_turn = 0
         self._last_recall_turns = {}
 
@@ -931,6 +935,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         metadata: Optional[Dict[str, Any]] = None,
         allow_duplicate: bool = False,
         semantic_merge: bool = True,
+        scope_mode: str | None = None,
     ) -> tuple[str, bool, str]:
         return store_memory_now(
             self,
@@ -941,6 +946,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             metadata=metadata,
             allow_duplicate=allow_duplicate,
             semantic_merge=semantic_merge,
+            scope_mode=scope_mode,
         )
 
     def _find_semantic_merge_candidate(self, content: str, target: str) -> tuple[str, str]:
@@ -1010,8 +1016,15 @@ class ScopeRecallMemoryProvider(MemoryProvider):
     def _explain_query(self, *, query: str, limit: int = 5) -> dict[str, Any]:
         return explain_query(self, query=query, limit=limit)
 
-    def _benchmark_queries(self, *, queries: list[str], limit: int = 5) -> dict[str, Any]:
-        return benchmark_queries(self, queries=queries, limit=limit)
+    def _benchmark_queries(
+        self,
+        *,
+        queries: list[str] | None = None,
+        cases: list[dict[str, Any]] | None = None,
+        limit: int = 5,
+        auto_explain_on_fail: bool = False,
+    ) -> dict[str, Any]:
+        return benchmark_queries(self, queries=queries, cases=cases, limit=limit, auto_explain_on_fail=auto_explain_on_fail)
 
     def _search_vector_memories(self, query: str, *, limit: int) -> List[RecallItem]:
         return search_vector_memories(self, query, limit=limit)

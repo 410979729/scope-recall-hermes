@@ -253,7 +253,8 @@ def _curated_memory_allowed(provider: Any) -> bool:
     if mode in {"disabled", "off", "false", "none"}:
         return False
 
-    user_id = str(getattr(provider, "_scope", None).user_id or "")
+    scope = getattr(provider, "_scope", None)
+    user_id = str(getattr(scope, "user_id", "") or "")
     allowed = [str(item).strip() for item in (cfg.get("allowed_user_ids") or []) if str(item).strip()]
     if allowed:
         return bool(user_id and user_id in allowed)

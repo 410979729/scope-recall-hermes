@@ -23,3 +23,6 @@ review-report.*.md
 .env
 .env.*
 !.env.example
+
+# Hermes local planning/session scratch.
+.hermes/
