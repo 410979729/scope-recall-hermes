@@ -112,6 +112,69 @@ def test_rejected_journal_candidate_is_redacted_before_persisting(tmp_path):
     assert "sk-" not in row["candidate"]
 
 
+def test_skipped_journal_candidates_still_advance_watermark(tmp_path):
+    conn = _open_memory_db(tmp_path / "memory.sqlite3")
+    scope = _scope()
+    scope_id = build_scope_id(scope)
+    shared_scope_id = build_shared_scope_id(scope)
+    existing_entry_id = append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=scope_id,
+        shared_scope_id=shared_scope_id,
+        session_id="existing-covered",
+        turn_number=1,
+        role="user",
+        content="Project Atlas deploy command is already stored.",
+    )
+    filtered_entry_id = append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=scope_id,
+        shared_scope_id=shared_scope_id,
+        session_id="filtered-candidate",
+        turn_number=1,
+        role="user",
+        content="tiny",
+    )
+    stored_content = "Project Atlas deploy command is already stored in durable memory for backlog draining."
+    store_row(
+        conn,
+        memory_id="existing-covered-memory",
+        scope_id=shared_scope_id,
+        platform=scope.platform,
+        user_id=scope.user_id,
+        chat_id=scope.chat_id,
+        thread_id=scope.thread_id,
+        gateway_session_key=scope.gateway_session_key,
+        agent_identity=scope.agent_identity,
+        agent_workspace=scope.agent_workspace,
+        session_id="existing-covered",
+        source="journal-digest",
+        target="memory",
+        content=stored_content,
+    )
+
+    result = apply_journal_candidates(
+        conn,
+        None,
+        scope,
+        run_id="skip-watermark-test",
+        candidates=[
+            JournalDigestCandidate(content=stored_content, target="memory", entry_ids=[existing_entry_id]),
+            JournalDigestCandidate(content="too short", target="memory", entry_ids=[filtered_entry_id]),
+        ],
+    )
+
+    assert result["counts"]["skipped"] == 2
+    assert set(result["processed_entry_ids"]) == {existing_entry_id, filtered_entry_id}
+    rejection_ids = {
+        int(row["journal_entry_id"])
+        for row in conn.execute("SELECT journal_entry_id FROM journal_rejections WHERE run_id = ?", ("skip-watermark-test",)).fetchall()
+    }
+    assert rejection_ids == {existing_entry_id, filtered_entry_id}
+
+
 def test_feedback_and_governance_previews_redact_secret_like_text(tmp_path):
     conn = _open_memory_db(tmp_path / "memory.sqlite3")
     scope = _scope()
@@ -220,6 +283,24 @@ def test_journal_entry_preserves_long_turns_as_chunks(tmp_path):
     metadata = [json.loads(row["metadata"]) for row in rows]
     assert {item["original_content_hash"] for item in metadata} == {hashlib.sha256(long_text.encode("utf-8")).hexdigest()}
     assert [item["chunk_index"] for item in metadata] == list(range(1, len(rows) + 1))
+
+
+def test_heuristic_digest_avoids_template_and_role_transcript_noise():
+    entries = [
+        JournalEntry(1, "s", "shared", "same-session", 1, "user", "排查 scope-recall journal backlog 为什么反复出现。", "2026-06-12T00:00:01+00:00"),
+        JournalEntry(2, "s", "shared", "same-session", 2, "assistant", "修复 skip 分支推进 watermark，并用 doctor 验证 backlog 清零。", "2026-06-12T00:00:02+00:00"),
+    ]
+
+    candidates = heuristic_journal_candidates(entries)
+
+    assert candidates
+    content = candidates[0].content
+    assert "Operations workflow summary" not in content
+    assert "Journal digest memory" not in content
+    assert "user:" not in content.lower()
+    assert "assistant:" not in content.lower()
+    assert "backlog" in content
+    assert "watermark" in content
 
 
 def test_heuristic_digest_splits_unrelated_topics_inside_one_session():
@@ -470,7 +551,7 @@ def test_journal_digest_does_not_overmerge_distinct_sessions(tmp_path):
     assert any("RRF" in content or "BM25" in content for content in contents)
 
 
-def test_journal_digest_records_rejections_without_advancing_watermark_for_filtered_candidates(tmp_path):
+def test_journal_digest_records_rejections_and_advances_watermark_for_filtered_candidates(tmp_path):
     conn = _open_memory_db(tmp_path / "memory.sqlite3")
     scope = _scope()
     candidate = JournalDigestCandidate(
@@ -483,7 +564,7 @@ def test_journal_digest_records_rejections_without_advancing_watermark_for_filte
     result = apply_journal_candidates(conn, None, scope, run_id="run-reject", candidates=[candidate], dry_run=False)
 
     assert result["counts"]["skipped"] == 1
-    assert result["processed_entry_ids"] == []
+    assert result["processed_entry_ids"] == [123]
     row = conn.execute("SELECT reason, candidate FROM journal_rejections WHERE journal_entry_id = 123").fetchone()
     assert row is not None
     assert row["reason"] == "candidate filtered"

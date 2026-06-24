@@ -503,6 +503,32 @@ def _classify_target_and_type(text: str) -> tuple[str, str, list[str]]:
     return "memory", "summary", ["journal-digest"]
 
 
+def _digest_role_summary(entries: list[JournalEntry], role: str, *, limit: int) -> str:
+    chunks = [entry.content.strip() for entry in entries if entry.role == role and entry.content.strip()]
+    if not chunks:
+        return ""
+    return compact_text("；".join(chunks), limit)
+
+
+def _heuristic_candidate_content(target: str, topic_label: str, entries: list[JournalEntry]) -> str:
+    user_summary = _digest_role_summary(entries, "user", limit=300)
+    assistant_summary = _digest_role_summary(entries, "assistant", limit=520)
+    parts: list[str] = []
+    if target == "ops":
+        parts.append("可复用运维流程")
+    elif target == "memory":
+        parts.append("可复用记忆治理决策")
+    else:
+        parts.append("可复用对话事实摘要")
+    if topic_label:
+        parts.append(f"主题：{topic_label}")
+    if user_summary:
+        parts.append(f"用户意图/约束：{user_summary}")
+    if assistant_summary:
+        parts.append(f"处理/结论：{assistant_summary}")
+    return "。".join(parts) + "。"
+
+
 def heuristic_journal_candidates(entries: list[JournalEntry]) -> list[JournalDigestCandidate]:
     if not entries:
         return []
@@ -526,13 +552,7 @@ def heuristic_journal_candidates(entries: list[JournalEntry]) -> list[JournalDig
             entities = _entry_entities(group_entries)
             segment_key = f"{key}:segment:{segment_index}"
             topic_label = _topic_label(group_entries, segment_key.replace("session:", "session "))
-            summary = compact_text(combined, 900)
-            if target == "memory":
-                content = f"Journal digest memory decision/workflow about {topic_label}: {summary}"
-            elif target == "ops":
-                content = f"Operations workflow summary from journal digest: {summary}"
-            else:
-                content = f"Journal digest task/topic summary about {topic_label}: {summary}"
+            content = _heuristic_candidate_content(target, topic_label, digest_entries)
             candidates.append(
                 JournalDigestCandidate(
                     content=content,
@@ -761,6 +781,7 @@ def apply_journal_candidates(
         if not _candidate_allowed(candidate):
             counts["skipped"] += 1
             actions.append({"action": "skip", "reason": "candidate filtered", "entry_ids": candidate.entry_ids})
+            processed_entry_ids.update(int(entry_id) for entry_id in candidate.entry_ids)
             if not dry_run:
                 _record_journal_rejection(conn, run_id=run_id, entry_ids=candidate.entry_ids, reason="candidate filtered", candidate=candidate)
                 conn.commit()
@@ -771,6 +792,7 @@ def apply_journal_candidates(
         if match_id and score >= 0.88:
             counts["skipped"] += 1
             actions.append({"action": "skip", "reason": "existing memory covers candidate", "id": match_id, "score": round(score, 4), "entry_ids": candidate.entry_ids})
+            processed_entry_ids.update(int(entry_id) for entry_id in candidate.entry_ids)
             if not dry_run:
                 _record_journal_rejection(conn, run_id=run_id, entry_ids=candidate.entry_ids, reason="existing memory covers candidate", candidate=candidate)
                 conn.commit()

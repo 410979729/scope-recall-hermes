@@ -20,7 +20,7 @@ Current-turn recall · Journal-first capture · Durable shared memory · Backgro
 
 This repository, `scope-recall-hermes`, is the Hermes implementation. The Python distribution package is `hermes-scope-recall`, the Python import/package spelling is `scope_recall`, and the Hermes plugin ID/provider name remains `scope-recall` for runtime compatibility. The OpenClaw sibling implementation lives at [`scope-recall-openclaw`](https://github.com/410979729/scope-recall-openclaw).
 
-Version `1.4.4` continues the stable V1 release line with safer SQLite vector fallback behavior, install-time SQLite/vector metadata bootstrap, and protection against `session_messages` tool dumps being restaged as memory evidence. Runtime Experience packet injection is enabled by default through `experience.prefetch_enabled=true` and can be disabled with `experience.prefetch_enabled=false`; background automatic promotion remains an explicit operator opt-in through `experience.auto_promotion_enabled=true`, and low-risk auto-promotion remains a second explicit opt-in through `experience.auto_promote_low_risk=true`. By default, successful low-risk scans create candidate playbooks, high-risk playbooks stay review-gated, and final-failure traces are not promoted. It keeps the `scope_recall_profile` surface added in v1.3.0, compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, inline attachment-marker sanitization, the supported standalone install shape added in v1.1.0, and native-safe LanceDB probing with automatic SQLite vector fallback for non-AVX hosts.
+Version `1.4.5` continues the stable V1 release line with stronger audit/release gates, type-aware temporal recall, relation-aware explain evidence, explicit shared-pool write policy, rejected-candidate explain visibility, safer forgetting/vector cleanup, and journal/Experience noise controls. Runtime Experience packet injection is enabled by default through `experience.prefetch_enabled=true` and can be disabled with `experience.prefetch_enabled=false`; background automatic promotion remains an explicit operator opt-in through `experience.auto_promotion_enabled=true`, and low-risk auto-promotion remains a second explicit opt-in through `experience.auto_promote_low_risk=true`. By default, successful low-risk scans create candidate playbooks, high-risk playbooks stay review-gated, and final-failure or low-signal traces are not promoted. It keeps the `scope_recall_profile` surface added in v1.3.0, compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, inline attachment-marker sanitization, the supported standalone install shape added in v1.1.0, and native-safe LanceDB probing with automatic SQLite vector fallback for non-AVX hosts.
 
 It uses a **three-layer design**:
 
@@ -666,6 +666,15 @@ scope_recall_explain
 scope_recall_benchmark
 ```
 
+Release `1.4.5` tightens the audit/observability tools:
+
+- `scope_recall_update` re-runs the deterministic conflict/relation review after a row changes, while preserving accumulated feedback counts, feedback-adjusted trust, conflict-review metadata, and higher existing importance scores.
+- `scope_recall_explain` reports rank-aligned retrieval evidence for lexical/BM25/vector/RRF scores, metadata quality adjustment, entity overlap/distance bonuses, relation evidence/rerank contribution, memory-type temporal policy, temporal decay, recency bonus, threshold settings, and final score.
+- `scope_recall_benchmark` still accepts simple `queries`, and also accepts assertion `cases` with `expected_ids`, `forbidden_ids`, `min_rank`, `min_top_score`, and `auto_explain_on_fail` for regression checks.
+- `memory_type` now informs temporal decay policy: durable facts/preferences/procedures decay less aggressively than episodic or temporary/scratch evidence, and explain exposes the applied policy class/weight.
+- `memory_relations` are surfaced in explain by default; relation-aware reranking remains feature-gated through `retrieval.relation_rerank_enabled` and is conservative by default.
+- `shared_pool` remains read-only unless `shared_pool.write_enabled=true`; explicit shared-pool writes require `scope_mode="shared_pool"` and are limited to configured durable targets.
+
 Operator-only maintenance tools are hidden from the default schema and require `maintenance_tools_enabled=true`:
 
 ```text
@@ -719,6 +728,14 @@ Example `scope_recall_stats` shape:
   "scope_memories": 7,
   "local_scope_memories": 3,
   "shared_scope_memories": 4,
+  "shared_pool_scope_memories": 0,
+  "shared_pool": {
+    "enabled": false,
+    "write_enabled": false,
+    "pool_id": "",
+    "scope_id": "",
+    "memories": 0
+  },
   "vector": {
     "enabled": true,
     "ready": true,

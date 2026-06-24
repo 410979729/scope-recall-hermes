@@ -13,6 +13,18 @@ from .experience_store import create_playbook, review_playbook
 from .gating import compact_text
 from .sql_store import ensure_schema
 
+LOW_SIGNAL_GOALS = {
+    "继续",
+    "继续。",
+    "进度如何",
+    "进度如何了",
+    "进度怎么样",
+    "在吗",
+    "新会话测试ok",
+    "新会话测试OK",
+}
+
+
 SUCCESS_TOKENS = (
     "passed",
     "pass",
@@ -230,6 +242,28 @@ def _first_user_goal(entries: Sequence[sqlite3.Row]) -> str:
     return compact_text(str(entries[0]["content"] or ""), 180) if entries else "自动提取的任务"
 
 
+def _goal_signal_key(goal: str) -> str:
+    return re.sub(r"[\s\W_]+", "", goal, flags=re.UNICODE).lower()
+
+
+def _low_signal_goal(goal: str) -> bool:
+    stripped = goal.strip()
+    key = _goal_signal_key(stripped)
+    low_signal_keys = {_goal_signal_key(item) for item in LOW_SIGNAL_GOALS}
+    if key in low_signal_keys:
+        return True
+    lowered = stripped.lower()
+    if lowered.startswith("只回答") or lowered.startswith("只回复"):
+        return True
+    return False
+
+
+def _title_suffix(goal: str) -> str:
+    words = re.findall(r"[\w\u4e00-\u9fff-]+", goal)[:10]
+    suffix = " ".join(words).strip()
+    return compact_text(suffix or "自动提取任务", 48)
+
+
 def _task_class(text: str) -> str:
     lowered = text.lower()
     if "scope-recall" in lowered and any(token in lowered for token in ("release", "push", "version", "发布", "推送", "版本")):
@@ -241,16 +275,17 @@ def _task_class(text: str) -> str:
     return "agent_verified_task"
 
 
-def _title(task_class: str, text: str) -> str:
+def _title(task_class: str, text: str, goal: str = "") -> str:
+    suffix = _title_suffix(goal or text)
     if task_class == "scope_recall_release_closeout":
-        return "scope-recall 发布候选收口经验手册"
+        return compact_text(f"scope-recall 发布收口：{suffix}", 80)
     if task_class == "scope_recall_quality_check":
-        return "scope-recall 质量检查经验手册"
+        return compact_text(f"scope-recall 质量检查：{suffix}", 80)
     if task_class == "hermes_operations":
-        return "Hermes 操作经验手册"
+        return compact_text(f"Hermes 操作：{suffix}", 80)
     words = re.findall(r"[\w\u4e00-\u9fff-]+", text)[:8]
-    suffix = " ".join(words) if words else "自动提取任务"
-    return compact_text(f"{suffix} 经验手册", 80)
+    fallback = " ".join(words) if words else suffix
+    return compact_text(f"{fallback} 经验手册", 80)
 
 
 def _payload(*, task_class: str, title: str, goal: str, text: str, risk_level: str, tool_names: list[str], verification: list[str]) -> dict[str, Any]:
@@ -276,7 +311,7 @@ def _payload(*, task_class: str, title: str, goal: str, text: str, risk_level: s
         "task_class": task_class,
         "title": title,
         "trigger": f"遇到类似任务：{goal}",
-        "goal": "复用已验证的执行顺序，减少重复踩坑，同时保留现场核验。",
+        "goal": compact_text(f"复用已验证流程处理：{goal}", 220),
         "preconditions": [
             {"id": "p1", "check": "确认当前任务与经验手册目标一致。", "evidence_required": "用户请求或任务描述"},
             {"id": "p2", "check": "复用前重新读取现场状态。", "evidence_required": "本轮工具输出或文件/服务状态"},
@@ -519,13 +554,17 @@ def promote_experiences(
             result["skipped"] += 1
             continue
         goal = _first_user_goal(entries)
+        if _low_signal_goal(goal):
+            result["skipped"] += 1
+            result["items"].append({"action": "skip", "reason": "low_signal_goal", "goal": sanitize_report_text(goal)})
+            continue
         task_class = _task_class(text)
         risk_level = _risk_level(text)
         episode_id = _hash_id("episode_auto", scope_id, entries[0]["session_id"], [int(entry["id"]) for entry in entries])
         if _episode_exists(conn, episode_id) or _playbook_exists_for_episode(conn, episode_id):
             result["duplicates_skipped"] += 1
             continue
-        title = _title(task_class, text)
+        title = _title(task_class, text, goal)
         entry_ids = [int(entry["id"]) for entry in entries]
         similar = _similar_playbook_exists(
             conn,

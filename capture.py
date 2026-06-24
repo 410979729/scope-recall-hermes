@@ -102,15 +102,22 @@ def store_now(
     session_id: str,
     metadata: dict[str, Any] | None = None,
     allow_duplicate: bool = False,
+    scope_mode: str | None = None,
 ) -> tuple[str, bool]:
     if not should_capture_text(content, provider._config).allowed:
         return "", False
     conn = provider._require_conn()
     memory_id = uuid.uuid4().hex
-    scope_mode = recall_scope_mode(target, source)
-    row_scope_id = provider._shared_scope_id if scope_mode == "shared" else provider._scope_id
+    requested_scope_mode = str(scope_mode or "").strip().lower()
+    if requested_scope_mode not in {"shared", "local", "shared_pool"}:
+        requested_scope_mode = recall_scope_mode(target, source)
+    row_scope_id = provider._scope_id
+    if requested_scope_mode == "shared":
+        row_scope_id = provider._shared_scope_id
+    elif requested_scope_mode == "shared_pool":
+        row_scope_id = provider._shared_pool_scope_id
     metadata_payload = dict(metadata or {})
-    metadata_payload.setdefault("scope_mode", scope_mode)
+    metadata_payload.setdefault("scope_mode", requested_scope_mode)
     metadata_payload.setdefault("runtime_scope_id", provider._scope_id)
     metadata_payload.setdefault("shared_scope_id", provider._shared_scope_id)
     metadata_payload.setdefault("raw_platform", provider._scope.platform)

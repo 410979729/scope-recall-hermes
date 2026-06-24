@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Any, Sequence
+from typing import Any, Protocol, Sequence
 
 from .capture_filters import contains_secret_like_text, sanitize_report_text, should_capture_text
 from .gating import compact_text
-from .sql_store import ensure_schema
+from .sql_store import delete_rows, ensure_schema
+
+
+class VectorDeleteStore(Protocol):
+    def delete_by_ids(self, ids: list[str]) -> None: ...
 
 VERY_SHORT_CHARS = 12
 
@@ -69,6 +74,17 @@ def _already_archived(row: sqlite3.Row) -> bool:
     return str(_json_loads(row["metadata"]).get("lifecycle") or "") == "archived"
 
 
+def _journal_template_transcript_noise(row: sqlite3.Row) -> bool:
+    source = str(row["source"] or "")
+    if source != "journal-digest":
+        return False
+    content = str(row["content"] or "")
+    lowered = content.lower()
+    template_prefix = lowered.startswith("operations workflow summary from journal digest:") or lowered.startswith("journal digest memory")
+    role_transcript = bool(re.search(r"(?:^|[\s。；;])(?:user|assistant):", lowered))
+    return template_prefix or role_transcript
+
+
 def build_forgetting_report(conn: sqlite3.Connection, *, accessible_scope_ids: Sequence[str], limit: int = 200) -> dict[str, Any]:
     """构建只读遗忘报告。
 
@@ -99,6 +115,8 @@ def build_forgetting_report(conn: sqlite3.Connection, *, accessible_scope_ids: S
             continue
         if target == "general" and source == "turn-assistant":
             soft_by_id.setdefault(str(row["id"]), _preview(row, reason="assistant-prose-scratch"))
+        if _journal_template_transcript_noise(row):
+            soft_by_id.setdefault(str(row["id"]), _preview(row, reason="journal-template-transcript-noise"))
         if len(content.strip()) <= VERY_SHORT_CHARS:
             soft_by_id.setdefault(str(row["id"]), _preview(row, reason="very-short-low-value"))
         metadata = _json_loads(row["metadata"])
@@ -172,6 +190,7 @@ def run_forgetting(
     dry_run: bool = True,
     hard_delete: bool = False,
     limit: int = 200,
+    vector_store: VectorDeleteStore | None = None,
 ) -> dict[str, Any]:
     report = build_forgetting_report(conn, accessible_scope_ids=accessible_scope_ids, limit=limit)
     soft_items = report["soft_archive_candidates"]["items"]
@@ -186,7 +205,6 @@ def run_forgetting(
     if dry_run:
         return result
     archived = 0
-    deleted = 0
     for item in soft_items:
         if _archive_memory(
             conn,
@@ -195,10 +213,21 @@ def run_forgetting(
             superseded_by=str(item.get("superseded_by") or ""),
         ):
             archived += 1
-    for item in hard_items:
-        if _delete_memory(conn, str(item["id"])):
-            deleted += 1
-    conn.commit()
+    if archived:
+        conn.commit()
+    deleted = delete_rows(conn, [str(item["id"]) for item in hard_items])
+    deleted_ids = [str(item["id"]) for item in hard_items if str(item.get("id") or "")]
+    vector_deleted = 0
+    vector_error = ""
+    if deleted_ids and vector_store is not None:
+        try:
+            vector_store.delete_by_ids(deleted_ids)
+            vector_deleted = len(deleted_ids)
+        except Exception as exc:
+            vector_error = sanitize_report_text(str(exc))
     result["archived"] = archived
     result["deleted"] = deleted
+    result["vector_deleted"] = vector_deleted
+    if vector_error:
+        result["vector_error"] = vector_error
     return result

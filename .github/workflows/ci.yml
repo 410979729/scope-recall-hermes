@@ -9,12 +9,36 @@ on:
 
 jobs:
   test:
-    name: Python ${{ matrix.python-version }}
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.11', '3.12']
+        include:
+          - name: release-lancedb-py311
+            python-version: '3.11'
+            install-target: ".[lancedb,dev]"
+            command: python scripts/check.release.py
+          - name: release-lancedb-py312
+            python-version: '3.12'
+            install-target: ".[lancedb,dev]"
+            command: python scripts/check.release.py
+          - name: sqlite-only-no-extras-py312
+            python-version: '3.12'
+            install-target: '.[dev]'
+            command: python -m pytest -q tests/test_optional_vector_deps.py tests/test_sqlite_vector_store.py tests/test_benchmark_regression_cases.py
+          - name: vector-disabled-py312
+            python-version: '3.12'
+            install-target: '.[dev]'
+            command: python -m pytest -q tests/test_roadmap_observability.py tests/test_benchmark_regression_cases.py tests/test_provider.py::test_save_config_bootstraps_empty_sqlite_schema
+          - name: optional-jieba-missing-py312
+            python-version: '3.12'
+            install-target: '.[dev]'
+            command: python -m pytest -q tests/test_retrieval_rrf_graph.py tests/test_optional_vector_deps.py
+          - name: type-check-py312
+            python-version: '3.12'
+            install-target: '.[dev]'
+            command: pyright
 
     steps:
       - name: Check out scope-recall
@@ -31,11 +55,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e .hermes-agent-src
 
-      - name: Install scope-recall test dependencies
+      - name: Install scope-recall lane dependencies
         run: |
-          python -m pip install -e ".[lancedb,dev]"
+          python -m pip install -e "${{ matrix.install-target }}"
 
-      - name: Run full V1 release gate
+      - name: Run lane gate
         env:
           PYTHONPATH: ${{ github.workspace }}/.hermes-agent-src:${{ github.workspace }}
-        run: python scripts/check.release.py
+        run: ${{ matrix.command }}

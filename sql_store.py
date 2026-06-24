@@ -441,12 +441,43 @@ def update_row(
     new_target = target or str(row["target"])
     summary = compact_text(content, 220)
     updated_at = now_iso()
-    metadata_payload: dict[str, Any] = {}
+    old_metadata: dict[str, Any] = {}
     try:
-        metadata_payload.update(json.loads(str(row["metadata"] or "{}")))
+        old_metadata.update(json.loads(str(row["metadata"] or "{}")))
     except Exception:
         pass
-    metadata_payload.update(classify_memory(content, new_target, str(row["source"])))
+    classified_metadata = classify_memory(content, new_target, str(row["source"]))
+    metadata_payload = dict(old_metadata)
+    metadata_payload.update(classified_metadata)
+
+    # Updates should reclassify content/target-derived policy fields, but must
+    # not erase accumulated quality/governance evidence that came from explicit
+    # feedback or prior conflict review.
+    for protected_key in (
+        "feedback_count",
+        "helpful_count",
+        "unhelpful_count",
+        "relation_types",
+        "conflict_count",
+        "conflict_review_count",
+        "conflict_review_ids",
+        "needs_conflict_review",
+    ):
+        if protected_key in old_metadata:
+            metadata_payload[protected_key] = old_metadata[protected_key]
+    try:
+        feedback_count = int(old_metadata.get("feedback_count") or 0)
+    except (TypeError, ValueError):
+        feedback_count = 0
+    if feedback_count > 0 and "trust" in old_metadata:
+        metadata_payload["trust"] = old_metadata["trust"]
+    try:
+        old_importance = float(old_metadata.get("importance") or 0.0)
+        new_importance = float(classified_metadata.get("importance") or 0.0)
+    except (TypeError, ValueError):
+        old_importance = new_importance = 0.0
+    if old_importance > new_importance:
+        metadata_payload["importance"] = old_metadata["importance"]
     metadata_payload = merge_artifact_metadata(metadata_payload, content)
     metadata_json = json.dumps(metadata_payload, ensure_ascii=False, sort_keys=True)
     conn.execute(
@@ -462,6 +493,50 @@ def update_row(
     sync_memory_entities(conn, memory_id=memory_id, content=content, target=new_target, metadata=metadata_payload)
     conn.commit()
     return True, summary, updated_at
+
+
+def _sync_conflict_metadata_after_relation_delete(conn: sqlite3.Connection, memory_ids: list[str]) -> None:
+    for memory_id in sorted({str(item) for item in memory_ids if str(item)}):
+        row = conn.execute("SELECT metadata FROM memories WHERE id = ?", (memory_id,)).fetchone()
+        if row is None:
+            continue
+        try:
+            metadata = json.loads(str(row["metadata"] or "{}"))
+        except Exception:
+            metadata = {}
+        relation_rows = conn.execute(
+            """
+            SELECT target_memory_id AS peer_id
+            FROM memory_relations
+            WHERE source_memory_id = ? AND relation_type = 'contradicts'
+            UNION
+            SELECT source_memory_id AS peer_id
+            FROM memory_relations
+            WHERE target_memory_id = ? AND relation_type = 'contradicts'
+            """,
+            (memory_id, memory_id),
+        ).fetchall()
+        conflict_ids = sorted({str(rel["peer_id"]) for rel in relation_rows if str(rel["peer_id"]) and str(rel["peer_id"]) != memory_id})
+        relation_types = metadata.get("relation_types")
+        if not isinstance(relation_types, list):
+            relation_types = []
+        relation_types = [str(item) for item in relation_types if str(item) and str(item) != "contradicts"]
+        if conflict_ids:
+            relation_types.append("contradicts")
+            metadata["conflict_review_ids"] = conflict_ids
+            metadata["conflict_count"] = len(conflict_ids)
+            metadata["conflict_review_count"] = len(conflict_ids)
+            metadata["needs_conflict_review"] = True
+        else:
+            metadata["conflict_review_ids"] = []
+            metadata["conflict_count"] = 0
+            metadata["conflict_review_count"] = 0
+            metadata["needs_conflict_review"] = False
+        metadata["relation_types"] = relation_types
+        conn.execute(
+            "UPDATE memories SET metadata = ? WHERE id = ?",
+            (json.dumps(metadata, ensure_ascii=False, sort_keys=True), memory_id),
+        )
 
 
 def delete_rows(
@@ -497,14 +572,32 @@ def delete_rows(
         return 0
     placeholders = ",".join("?" for _ in scoped_ids)
     before = int(conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0])
+    conflict_peer_rows = conn.execute(
+        f"""
+        SELECT target_memory_id AS peer_id
+        FROM memory_relations
+        WHERE relation_type = 'contradicts' AND source_memory_id IN ({placeholders})
+        UNION
+        SELECT source_memory_id AS peer_id
+        FROM memory_relations
+        WHERE relation_type = 'contradicts' AND target_memory_id IN ({placeholders})
+        """,
+        [*scoped_ids, *scoped_ids],
+    ).fetchall()
+    conflict_peer_ids = [str(row["peer_id"]) for row in conflict_peer_rows if str(row["peer_id"]) and str(row["peer_id"]) not in scoped_ids]
     conn.execute(f"DELETE FROM memories_fts WHERE memory_id IN ({placeholders})", scoped_ids)
     conn.execute(f"DELETE FROM memory_entities WHERE memory_id IN ({placeholders})", scoped_ids)
     conn.execute(f"DELETE FROM memory_feedback WHERE memory_id IN ({placeholders})", scoped_ids)
+    conn.execute(
+        f"DELETE FROM memory_relations WHERE source_memory_id IN ({placeholders}) OR target_memory_id IN ({placeholders})",
+        [*scoped_ids, *scoped_ids],
+    )
     if _table_exists(conn, "memory_digest_sources"):
         conn.execute(f"DELETE FROM memory_digest_sources WHERE memory_id IN ({placeholders})", scoped_ids)
     if _table_exists(conn, "memory_journal_sources"):
         conn.execute(f"DELETE FROM memory_journal_sources WHERE memory_id IN ({placeholders})", scoped_ids)
     conn.execute(f"DELETE FROM memories WHERE id IN ({placeholders})", scoped_ids)
+    _sync_conflict_metadata_after_relation_delete(conn, conflict_peer_ids)
     conn.commit()
     after = int(conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0])
     return max(0, before - after)

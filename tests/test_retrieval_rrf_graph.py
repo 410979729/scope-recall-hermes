@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import importlib.abc
+import sys
+
 from scope_recall.scoring import reciprocal_rank_fusion
-from scope_recall.graph import entity_distance_scores
+from scope_recall.graph import entity_distance_scores, extract_entities
 
 
 def test_reciprocal_rank_fusion_rewards_cross_signal_results():
@@ -49,3 +52,21 @@ def test_entity_distance_scores_prefers_neighboring_memories_over_unrelated_enti
     scores = entity_distance_scores(query_entities, memory_entities, relations, max_depth=2)
 
     assert scores["direct"] > scores["neighbor"] > scores.get("far", 0.0)
+
+
+def test_extract_entities_keeps_hinted_cjk_entities_when_jieba_is_missing():
+    class BlockJieba(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname == "jieba" or fullname.startswith("jieba."):
+                raise ImportError(f"blocked optional dependency {fullname}")
+            return None
+
+    blocker = BlockJieba()
+    sys.meta_path.insert(0, blocker)
+    try:
+        entities = extract_entities("Joy 的自然码双拼输入法配置需要保留", target="user")
+    finally:
+        sys.meta_path.remove(blocker)
+
+    assert "自然码" in entities
+    assert "双拼" in entities

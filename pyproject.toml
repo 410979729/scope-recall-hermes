@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-scope-recall"
-version = "1.4.4"
+version = "1.4.5"
 description = "Hermes scoped memory provider with journal-first capture, SQLite truth, vector companions, and hybrid RRF retrieval."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -39,6 +39,7 @@ dev = [
   "pytest",
   "ruff",
   "wheel",
+  "pyright",
 ]
 
 [project.urls]
@@ -71,3 +72,34 @@ package-dir = {"scope_recall" = "."}
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+
+[tool.pyright]
+include = [
+  "config.py",
+  "embedders.py",
+  "graph.py",
+  "memory_ops.py",
+  "recall.py",
+  "schemas.py",
+  "scoring.py",
+  "sqlite_vector_store.py",
+  "sql_store.py",
+  "storage_views.py",
+  "tooling.py",
+  "vector_runtime.py",
+]
+exclude = [
+  ".git",
+  ".hermes",
+  ".hermes-agent-src",
+  ".pytest_cache",
+  ".ruff_cache",
+  "build",
+  "dist",
+  "scripts",
+  "tests",
+]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+reportMissingImports = "warning"
+reportMissingTypeStubs = "none"

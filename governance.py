@@ -309,7 +309,11 @@ def merge_metadata(metadata_payload: dict[str, Any], raw_metadata: Any) -> dict[
             incoming = str(value or "").strip().lower()
             if incoming in {"sensitive", "secret-index"}:
                 metadata_payload["sensitivity"] = incoming
-        elif meta_key in {"kind", "lifecycle", "authority", "confidence", "expires_at", "category", "tier", "scope_mode"}:
+        elif meta_key == "scope_mode":
+            incoming = str(value or "").strip().lower()
+            if incoming == "shared_pool":
+                metadata_payload["scope_mode"] = incoming
+        elif meta_key in {"kind", "lifecycle", "authority", "confidence", "expires_at", "category", "tier"}:
             continue
         else:
             metadata_payload[meta_key] = value

@@ -4,6 +4,27 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.4.5] - 2026-06-24
+
+### Added
+- Expanded `scope_recall_explain` so each returned row includes rank-aligned retrieval evidence for lexical/BM25/vector/RRF scores, metadata quality adjustment, entity overlap/distance bonuses, relation evidence/rerank contribution, memory-type temporal policy, temporal decay, recency bonus, threshold settings, and final score.
+- Added rejected-candidate visibility to `scope_recall_explain`, including `rejected_count` and score-threshold rejection reasons for candidates filtered out before final ranking.
+- Added assertion-case support to `scope_recall_benchmark`: cases can declare `expected_ids`, `forbidden_ids`, `min_rank`, `min_top_score`, and `auto_explain_on_fail` while preserving the legacy `queries` latency-smoke mode.
+- Added benchmark regression cases and a CI/type-check matrix covering full extras, sqlite-only/native-free paths, missing optional jieba, shared-pool configuration, and pyright checks.
+- Added memory-type-aware temporal policy so durable facts/preferences/procedures decay less aggressively than episodic or temporary evidence, with policy class/weight surfaced in explain.
+- Added persisted `memory_relations` evidence to recall/explain and feature-gated relation-aware reranking through `retrieval.relation_rerank_enabled`.
+- Added explicit `shared_pool` write policy: the pool remains read-only by default, `scope_mode="shared_pool"` writes require `shared_pool.write_enabled=true`, and writes are limited to configured durable targets.
+
+### Fixed
+- Made `scope_recall_update` re-run deterministic conflict/relation review after content or target changes so updates receive the same contradiction evidence as newly stored memories.
+- Preserved accumulated feedback metadata during updates, including feedback counts, feedback-adjusted trust, conflict-review fields, and higher existing importance scores.
+- Fixed journal digest skip/covered-candidate paths so filtered or already-covered candidates still advance the processed watermark instead of leaving permanent backlog.
+- Fixed `scope_recall_forgetting_run` soft-archive persistence and hard-delete vector consistency, including vector record deletion and relation cleanup.
+- Kept conflict-review metadata in sync on peer memories when related rows are deleted.
+- Prevented heuristic journal digest from producing template/transcript-shaped durable memories such as `Operations workflow summary`, `Journal digest memory`, `user:`, or `assistant:` wrappers.
+- Prevented low-signal Experience playbooks such as “继续”, “进度如何”, and fixed reply smoke tests from being auto-created as reusable procedures.
+- Fixed explicit `scope_mode` handling so `local`, `shared`, and `shared_pool` writes are respected, semantic merge stays inside the selected scope, and shared-pool rows can be updated/merged when write-enabled.
+
 ## [1.4.4] - 2026-06-23
 
 ### Added

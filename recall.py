@@ -26,10 +26,31 @@ _FRESHNESS_BASE_WEIGHT = 0.22
 _FRESHNESS_STEP_WEIGHT = 0.1
 _FRESHNESS_MAX_WEIGHT = 0.42
 
+_TEMPORAL_DURABLE_TYPES = {
+    "constraint",
+    "decision",
+    "environment_fact",
+    "fact",
+    "factual",
+    "memory",
+    "ops",
+    "ops_procedure",
+    "preference",
+    "procedure",
+    "project",
+    "project_fact",
+    "resource",
+    "user_preference",
+    "workflow",
+}
+_TEMPORAL_EPISODIC_TYPES = {"episodic", "summary"}
+_TEMPORAL_TEMPORARY_TYPES = {"scratch", "temporary", "temporary_state", "tool_trace"}
+
 
 class RecallService:
     def __init__(self, provider: Any) -> None:
         self.provider = provider
+        self.last_rejected_candidates: list[RecallItem] = []
 
     def search_memories(self, query: str, *, limit: int) -> list[RecallItem]:
         retrieval_cfg = self.provider._retrieval_config or {}
@@ -75,6 +96,7 @@ class RecallService:
         results = self._filter_recall_lifecycle(results)
         results = self._apply_general_policy(results)
         entity_graph_scores = self._entity_graph_scores(query, results)
+        relation_evidence = self._persisted_relation_evidence([item.id for item in results])
         min_score = float(retrieval_cfg.get("min_score") or self.provider._config_value("min_score", 0.18))
         # Vector-only matches have no lexical evidence, so they must clear a
         # substantially higher bar than the broad vector candidate threshold.
@@ -82,43 +104,80 @@ class RecallService:
         # preventing mid-confidence neighbor drift from injecting stale topics.
         vector_only_min_score = float(retrieval_cfg.get("vector_only_min_score") or 0.68)
         filtered: list[RecallItem] = []
+        rejected: list[RecallItem] = []
+        self.last_rejected_candidates = []
         for item in results:
             meta = dict(item.metadata or {})
-            base_score = self.final_score(meta)
-            base_score = apply_quality_weight(
-                base_score,
+            pre_quality_score = self.final_score(meta)
+            metadata_weight = float(retrieval_cfg.get("metadata_weight") or 0.08)
+            quality_adjusted_score = apply_quality_weight(
+                pre_quality_score,
                 meta,
-                weight=float(retrieval_cfg.get("metadata_weight") or 0.08),
+                weight=metadata_weight,
             )
-            base_score = max(
-                0.0,
-                min(
-                    1.0,
-                    base_score
-                    + entity_overlap_bonus(
-                        query,
-                        meta,
-                        weight=float(retrieval_cfg.get("entity_weight") or 0.06),
-                    )
-                    + entity_graph_scores.get(item.id, 0.0) * float(retrieval_cfg.get("entity_distance_weight", 0.04)),
-                ),
-            )
-            if item.id in entity_graph_scores:
-                meta["entity_distance_score"] = entity_graph_scores[item.id]
+            entity_weight = float(retrieval_cfg.get("entity_weight") or 0.06)
+            entity_overlap = entity_overlap_bonus(query, meta, weight=entity_weight)
+            entity_distance_score = entity_graph_scores.get(item.id, 0.0)
+            entity_distance_weight = float(retrieval_cfg.get("entity_distance_weight", 0.04))
+            entity_distance_bonus = entity_distance_score * entity_distance_weight
+            relation_payload = relation_evidence.get(item.id, {})
+            relation_rerank_bonus = self._relation_rerank_bonus(relation_payload)
+            base_score = max(0.0, min(1.0, quality_adjusted_score + entity_overlap + entity_distance_bonus + relation_rerank_bonus))
             decay_multiplier = self._temporal_decay_multiplier(meta, item.updated_at)
+            policy_class, policy_weight = self._temporal_policy(meta, item.target)
+            decay_weight = 0.0
+            pre_decay_score = base_score
+            try:
+                existing_recency_bonus = float(meta.get("recency_bonus") or 0.0)
+            except (TypeError, ValueError):
+                existing_recency_bonus = 0.0
             if decay_multiplier < 1.0:
-                decay_weight = max(0.0, min(1.0, float(retrieval_cfg.get("temporal_decay_weight") or 0.0)))
+                base_decay_weight = max(0.0, min(1.0, float(retrieval_cfg.get("temporal_decay_weight") or 0.0)))
+                decay_weight = max(0.0, min(1.0, base_decay_weight * policy_weight))
                 base_score *= (1.0 - decay_weight) + decay_weight * decay_multiplier
-            meta["temporal_decay_multiplier"] = decay_multiplier
-            meta["base_score"] = base_score
+            meta.update(
+                {
+                    "pre_quality_score": pre_quality_score,
+                    "quality_weight_applied": quality_adjusted_score - pre_quality_score,
+                    "metadata_weight": metadata_weight,
+                    "entity_overlap_bonus": entity_overlap,
+                    "entity_distance_score": entity_distance_score,
+                    "entity_distance_weight": entity_distance_weight,
+                    "entity_distance_bonus": entity_distance_bonus,
+                    "relation_evidence_count": int(relation_payload.get("count") or 0),
+                    "relation_evidence_types": relation_payload.get("types") or [],
+                    "relation_evidence_ids": relation_payload.get("ids") or [],
+                    "relation_rerank_bonus": relation_rerank_bonus,
+                    "relation_rerank_enabled": self._config_bool(retrieval_cfg.get("relation_rerank_enabled"), False),
+                    "pre_decay_score": pre_decay_score,
+                    "temporal_decay_multiplier": decay_multiplier,
+                    "temporal_decay_weight": decay_weight,
+                    "temporal_policy_class": policy_class,
+                    "temporal_policy_weight": policy_weight,
+                    "base_score": base_score,
+                    "recency_bonus": existing_recency_bonus,
+                    "final_score": base_score,
+                    "min_score": min_score,
+                    "vector_only_min_score": vector_only_min_score,
+                    "rejected_reason": "",
+                }
+            )
+            meta.setdefault("general_weight", 1.0)
             item.metadata = meta
             item.score = base_score
             lexical_score = float(meta.get("lexical_score") or 0.0)
             vector_score = float(meta.get("vector_score") or 0.0)
             if lexical_score <= 0.0 and vector_score > 0.0 and base_score < vector_only_min_score:
+                meta["rejected_reason"] = "vector_only_below_min_score"
+                item.metadata = meta
+                rejected.append(item)
                 continue
             if base_score >= min_score:
                 filtered.append(item)
+            else:
+                meta["rejected_reason"] = "below_min_score"
+                item.metadata = meta
+                rejected.append(item)
 
         freshness_weight = self._freshness_weight(query)
         timestamps = [self._timestamp_value(item.updated_at) for item in filtered]
@@ -137,6 +196,19 @@ class RecallService:
                 item.metadata = dict(item.metadata or {})
                 item.metadata["recency_bonus"] = bonus
                 item.score += bonus
+                item.metadata["final_score"] = item.score
+
+        ranked_rejected = sorted(
+            rejected,
+            key=lambda item: (
+                item.score,
+                float((item.metadata or {}).get("base_score") or 0.0),
+                item.updated_at,
+                item.id,
+            ),
+            reverse=True,
+        )
+        self.last_rejected_candidates = ranked_rejected
 
         return sorted(
             filtered,
@@ -148,6 +220,130 @@ class RecallService:
             ),
             reverse=True,
         )[:limit]
+
+    def _config_bool(self, value: Any, default: bool = False) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    def _persisted_relation_evidence(self, memory_ids: list[str]) -> dict[str, dict[str, Any]]:
+        ids = sorted({str(memory_id) for memory_id in memory_ids if str(memory_id)})
+        if not ids or not hasattr(self.provider, "_require_conn"):
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        evidence: dict[str, dict[str, Any]] = {}
+
+        def _payload(memory_id: str) -> dict[str, Any]:
+            payload = evidence.setdefault(
+                memory_id,
+                {
+                    "count": 0,
+                    "types": set(),
+                    "ids": set(),
+                    "outgoing": {},
+                    "incoming": {},
+                },
+            )
+            return payload
+
+        def _append(memory_id: str, *, direction: str, relation_type: str, related_id: str, confidence: float) -> None:
+            payload = _payload(memory_id)
+            payload["count"] = int(payload.get("count") or 0) + 1
+            payload["types"].add(relation_type)
+            payload["ids"].add(related_id)
+            direction_bucket = payload[direction]
+            relation_rows = direction_bucket.setdefault(relation_type, [])
+            relation_rows.append({"id": related_id, "confidence": confidence})
+
+        try:
+            lock = getattr(self.provider, "_lock", None)
+            if lock is None:
+                rows = self.provider._require_conn().execute(
+                    f"""
+                    SELECT source_memory_id, target_memory_id, relation_type, confidence
+                    FROM memory_relations
+                    WHERE source_memory_id IN ({placeholders}) OR target_memory_id IN ({placeholders})
+                    """,
+                    [*ids, *ids],
+                ).fetchall()
+            else:
+                with lock:
+                    rows = self.provider._require_conn().execute(
+                        f"""
+                        SELECT source_memory_id, target_memory_id, relation_type, confidence
+                        FROM memory_relations
+                        WHERE source_memory_id IN ({placeholders}) OR target_memory_id IN ({placeholders})
+                        """,
+                        [*ids, *ids],
+                    ).fetchall()
+        except Exception:
+            return {}
+
+        id_set = set(ids)
+        for row in rows:
+            source_id = str(row["source_memory_id"])
+            target_id = str(row["target_memory_id"])
+            relation_type = str(row["relation_type"] or "").strip().lower()
+            if not relation_type:
+                continue
+            try:
+                confidence = max(0.0, min(1.0, float(row["confidence"] or 0.0)))
+            except (TypeError, ValueError):
+                confidence = 0.0
+            if source_id in id_set:
+                _append(source_id, direction="outgoing", relation_type=relation_type, related_id=target_id, confidence=confidence)
+            if target_id in id_set:
+                _append(target_id, direction="incoming", relation_type=relation_type, related_id=source_id, confidence=confidence)
+
+        normalized: dict[str, dict[str, Any]] = {}
+        for memory_id, payload in evidence.items():
+            normalized[memory_id] = {
+                "count": int(payload.get("count") or 0),
+                "types": sorted(payload.get("types") or []),
+                "ids": sorted(payload.get("ids") or []),
+                "outgoing": payload.get("outgoing") or {},
+                "incoming": payload.get("incoming") or {},
+            }
+        return normalized
+
+    def _relation_rerank_bonus(self, evidence: dict[str, Any]) -> float:
+        retrieval_cfg = self.provider._retrieval_config or {}
+        if not evidence or not self._config_bool(retrieval_cfg.get("relation_rerank_enabled"), False):
+            return 0.0
+        raw_outgoing = evidence.get("outgoing")
+        outgoing = raw_outgoing if isinstance(raw_outgoing, dict) else {}
+        raw_incoming = evidence.get("incoming")
+        incoming = raw_incoming if isinstance(raw_incoming, dict) else {}
+
+        def _confidence_sum(rows: Any) -> float:
+            if not isinstance(rows, list):
+                return 0.0
+            total = 0.0
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    total += max(0.0, min(1.0, float(row.get("confidence") or 0.0)))
+                except (TypeError, ValueError):
+                    continue
+            return total
+
+        supersedes_boost = max(0.0, min(0.5, float(retrieval_cfg.get("relation_supersedes_boost") or retrieval_cfg.get("relation_rerank_weight") or 0.04)))
+        supports_boost = max(0.0, min(0.5, float(retrieval_cfg.get("relation_supports_boost") or retrieval_cfg.get("relation_rerank_weight") or 0.04)))
+        superseded_penalty = max(0.0, min(0.5, float(retrieval_cfg.get("relation_superseded_penalty") or 0.0)))
+        contradicts_penalty = max(0.0, min(0.5, float(retrieval_cfg.get("relation_contradicts_penalty") or 0.0)))
+
+        bonus = 0.0
+        bonus += supersedes_boost * _confidence_sum(outgoing.get("supersedes"))
+        bonus += supports_boost * _confidence_sum(outgoing.get("supports"))
+        bonus += supports_boost * _confidence_sum(incoming.get("supports"))
+        bonus -= superseded_penalty * _confidence_sum(incoming.get("supersedes"))
+        bonus -= contradicts_penalty * (_confidence_sum(outgoing.get("contradicts")) + _confidence_sum(incoming.get("contradicts")))
+        return max(-0.5, min(0.5, bonus))
 
     def _entity_graph_scores(self, query: str, items: list[RecallItem]) -> dict[str, float]:
         query_entity_values = graph_query_entities(query)
@@ -275,6 +471,45 @@ class RecallService:
                 base = (base * (1.0 - rrf_weight)) + (rrf_score * rrf_weight)
             return max(0.0, min(1.0, base))
         return lexical
+
+    def _temporal_policy(self, meta: dict[str, Any], target: str) -> tuple[str, float]:
+        retrieval_cfg = self.provider._retrieval_config or {}
+        enabled = retrieval_cfg.get("temporal_policy_enabled", True)
+        if isinstance(enabled, str):
+            enabled = enabled.strip().lower() in {"1", "true", "yes", "on"}
+        if not enabled:
+            return "disabled", 1.0
+
+        def _configured_set(key: str, defaults: set[str]) -> set[str]:
+            raw = retrieval_cfg.get(key)
+            if isinstance(raw, list):
+                values = {str(item).strip().lower() for item in raw if str(item).strip()}
+                return values or set(defaults)
+            return set(defaults)
+
+        def _weight(class_name: str, default: float) -> float:
+            raw_weights = retrieval_cfg.get("temporal_policy_weights")
+            configured = raw_weights.get(class_name) if isinstance(raw_weights, dict) else retrieval_cfg.get(f"temporal_policy_{class_name}_weight")
+            try:
+                value = float(configured if configured is not None else default)
+            except (TypeError, ValueError):
+                value = default
+            return max(0.0, min(1.0, value))
+
+        memory_type = str(meta.get("memory_type") or meta.get("type") or meta.get("category") or "").strip().lower()
+        lifecycle = str(meta.get("lifecycle") or meta.get("tier") or "").strip().lower()
+        target_value = str(target or "").strip().lower()
+        durable_types = _configured_set("temporal_policy_durable_types", _TEMPORAL_DURABLE_TYPES)
+        episodic_types = _configured_set("temporal_policy_episodic_types", _TEMPORAL_EPISODIC_TYPES)
+        temporary_types = _configured_set("temporal_policy_temporary_types", _TEMPORAL_TEMPORARY_TYPES)
+
+        if memory_type in episodic_types:
+            return "episodic", _weight("episodic", 0.8)
+        if memory_type in temporary_types or lifecycle in temporary_types or target_value == "general":
+            return "temporary", _weight("temporary", 1.0)
+        if memory_type in durable_types:
+            return "durable_fact", _weight("durable_fact", 0.25)
+        return "default", _weight("default", 1.0)
 
     def _temporal_decay_multiplier(self, meta: dict[str, Any], updated_at: str) -> float:
         retrieval_cfg = self.provider._retrieval_config or {}
