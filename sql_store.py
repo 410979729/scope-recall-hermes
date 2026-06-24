@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .artifacts import enrich_content_with_artifact_anchors, merge_artifact_metadata
+from .capture_filters import sanitize_report_text
 from .gating import compact_text, dedup_key
 from .governance import classify_memory, merge_metadata
 from .graph import backfill_memory_entities, ensure_graph_schema, sync_memory_entities
@@ -49,9 +50,118 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     ensure_memory_columns(conn)
     ensure_graph_schema(conn)
     ensure_experience_schema(conn)
+    ensure_governance_schema(conn)
     rebuild_fts_if_empty(conn)
     backfill_memory_entities(conn)
     conn.commit()
+
+
+def ensure_governance_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS governance_audit_events (
+            id TEXT PRIMARY KEY,
+            event_type TEXT NOT NULL,
+            action TEXT NOT NULL,
+            scope_id TEXT NOT NULL DEFAULT '',
+            target_id TEXT NOT NULL DEFAULT '',
+            batch_id TEXT NOT NULL DEFAULT '',
+            before_json TEXT NOT NULL DEFAULT '{}',
+            after_json TEXT NOT NULL DEFAULT '{}',
+            reason TEXT NOT NULL DEFAULT '',
+            actor TEXT NOT NULL DEFAULT 'scope-recall',
+            dry_run INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+        """
+    )
+    existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(governance_audit_events)").fetchall()}
+    migrations = {
+        "event_type": "ALTER TABLE governance_audit_events ADD COLUMN event_type TEXT NOT NULL DEFAULT ''",
+        "action": "ALTER TABLE governance_audit_events ADD COLUMN action TEXT NOT NULL DEFAULT ''",
+        "scope_id": "ALTER TABLE governance_audit_events ADD COLUMN scope_id TEXT NOT NULL DEFAULT ''",
+        "target_id": "ALTER TABLE governance_audit_events ADD COLUMN target_id TEXT NOT NULL DEFAULT ''",
+        "batch_id": "ALTER TABLE governance_audit_events ADD COLUMN batch_id TEXT NOT NULL DEFAULT ''",
+        "before_json": "ALTER TABLE governance_audit_events ADD COLUMN before_json TEXT NOT NULL DEFAULT '{}'",
+        "after_json": "ALTER TABLE governance_audit_events ADD COLUMN after_json TEXT NOT NULL DEFAULT '{}'",
+        "reason": "ALTER TABLE governance_audit_events ADD COLUMN reason TEXT NOT NULL DEFAULT ''",
+        "actor": "ALTER TABLE governance_audit_events ADD COLUMN actor TEXT NOT NULL DEFAULT 'scope-recall'",
+        "dry_run": "ALTER TABLE governance_audit_events ADD COLUMN dry_run INTEGER NOT NULL DEFAULT 0",
+        "created_at": "ALTER TABLE governance_audit_events ADD COLUMN created_at TEXT NOT NULL DEFAULT ''",
+    }
+    for column, statement in migrations.items():
+        if column not in existing:
+            conn.execute(statement)
+    conn.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS idx_governance_audit_batch
+            ON governance_audit_events(batch_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_governance_audit_target
+            ON governance_audit_events(target_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_governance_audit_type_action
+            ON governance_audit_events(event_type, action, created_at);
+        """
+    )
+
+
+def _redact_governance_payload(value: Any) -> Any:
+    """Redact report/audit payloads before they become durable governance rows.
+
+    Defensive boundary: governance audit survives cleanup/forgetting actions.
+    Never bypass this helper in `record_governance_audit_event`, or hard-deleted
+    secrets can be resurrected from `before_json`/`after_json`.
+    """
+
+    if isinstance(value, dict):
+        return {str(key): _redact_governance_payload(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_governance_payload(item) for item in value]
+    if isinstance(value, tuple):
+        return [_redact_governance_payload(item) for item in value]
+    if isinstance(value, str):
+        return sanitize_report_text(value)
+    return value
+
+
+def record_governance_audit_event(
+    conn: sqlite3.Connection,
+    *,
+    event_id: str,
+    event_type: str,
+    action: str,
+    scope_id: str = "",
+    target_id: str = "",
+    batch_id: str = "",
+    before: Any | None = None,
+    after: Any | None = None,
+    reason: str = "",
+    actor: str = "scope-recall",
+    dry_run: bool = False,
+    created_at: str | None = None,
+) -> None:
+    ensure_governance_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO governance_audit_events (
+            id, event_type, action, scope_id, target_id, batch_id,
+            before_json, after_json, reason, actor, dry_run, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event_id,
+            event_type,
+            action,
+            scope_id,
+            target_id,
+            batch_id,
+            json.dumps(_redact_governance_payload(before if before is not None else {}), ensure_ascii=False, sort_keys=True),
+            json.dumps(_redact_governance_payload(after if after is not None else {}), ensure_ascii=False, sort_keys=True),
+            sanitize_report_text(reason),
+            sanitize_report_text(actor or "scope-recall"),
+            1 if dry_run else 0,
+            created_at or now_iso(),
+        ),
+    )
 
 
 def ensure_experience_schema(conn: sqlite3.Connection) -> None:

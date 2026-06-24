@@ -11,6 +11,12 @@ from .scoring import bm25_to_score, lexical_score
 from .sql_store import curated_recall_item_id, iter_curated_entries
 from .vector_runtime import mark_vector_needs_repair
 
+# Defensive retrieval boundary: lifecycle filtering must happen in the candidate
+# SQL/vector-adapter layer, not only after merge/dedupe. Fresh archived rows can
+# otherwise consume LIMIT budget or suppress active duplicates.
+_ACTIVE_MEMORY_SQL = "COALESCE(json_extract(metadata, '$.lifecycle'), '') NOT IN ('superseded', 'obsolete', 'rejected', 'archived')"
+_ACTIVE_MEMORY_SQL_M = "COALESCE(json_extract(m.metadata, '$.lifecycle'), '') NOT IN ('superseded', 'obsolete', 'rejected', 'archived')"
+
 
 def _scope_placeholders(provider: Any) -> str:
     return ",".join("?" for _ in provider._accessible_scope_ids)
@@ -93,10 +99,10 @@ def search_db_memories(provider: Any, query: str, *, limit: int) -> list[RecallI
                     SELECT m.*, bm25(memories_fts) AS bm25_score
                     FROM memories_fts
                     JOIN memories m ON m.id = memories_fts.memory_id
-                    WHERE memories_fts MATCH ? AND m.scope_id IN ({})
+                    WHERE memories_fts MATCH ? AND m.scope_id IN ({}) AND {}
                     ORDER BY bm25(memories_fts) ASC, m.updated_at DESC
                     LIMIT ?
-                    """.format(_scope_placeholders(provider)),
+                    """.format(_scope_placeholders(provider), _ACTIVE_MEMORY_SQL_M),
                     [fts_query, *_accessible_scope_params(provider), candidate_pool],
                 ).fetchall()
             )
@@ -113,7 +119,7 @@ def search_db_memories(provider: Any, query: str, *, limit: int) -> list[RecallI
                     f"""
                     SELECT *
                     FROM memories
-                    WHERE ({clause}) AND scope_id IN ({_scope_placeholders(provider)})
+                    WHERE ({clause}) AND scope_id IN ({_scope_placeholders(provider)}) AND {_ACTIVE_MEMORY_SQL}
                     ORDER BY updated_at DESC
                     LIMIT ?
                     """,
@@ -133,7 +139,7 @@ def search_db_memories(provider: Any, query: str, *, limit: int) -> list[RecallI
                     f"""
                     SELECT *
                     FROM memories
-                    WHERE ({clause}) AND scope_id IN ({_scope_placeholders(provider)})
+                    WHERE ({clause}) AND scope_id IN ({_scope_placeholders(provider)}) AND {_ACTIVE_MEMORY_SQL}
                     ORDER BY updated_at DESC
                     LIMIT ?
                     """,
@@ -223,11 +229,17 @@ def search_vector_memories(provider: Any, query: str, *, limit: int) -> list[Rec
             id_metadata = {}
     results: list[RecallItem] = []
     for row in rows:
+        row_id = str(row.get("id") or "")
+        if row_ids and row_id not in id_metadata:
+            continue
         distance = float(row.get("_distance") or 0.0)
         vector_score = max(0.0, 1.0 - distance)
         if vector_score < threshold:
             continue
-        metadata = dict(id_metadata.get(str(row["id"])) or {})
+        metadata = dict(id_metadata.get(row_id) or {})
+        lifecycle = str(metadata.get("lifecycle") or "").strip().lower()
+        if lifecycle in {"superseded", "obsolete", "rejected", "archived"}:
+            continue
         metadata.update({"lexical_score": 0.0, "vector_score": vector_score, "scope_id": row.get("scope_id")})
         results.append(
             RecallItem(

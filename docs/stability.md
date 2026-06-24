@@ -1,6 +1,6 @@
 # Scope Recall V1 stability contract
 
-`scope-recall` 1.4.5 keeps the V1 compatibility contract while adding stronger audit/release gates, type-aware temporal recall, relation-aware explain evidence, explicit shared-pool write policy, safer forgetting/vector cleanup, and journal/Experience noise controls. It preserves `scope_recall_profile`, compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, the `hermes-scope-recall` standalone distribution and installer path, attachment-marker sanitization, journal ACK quality gates, native-safe LanceDB probing, and automatic SQLite vector fallback for non-AVX hosts.
+`scope-recall` 1.5.0 keeps the V1 compatibility contract while adding commercial governance and release-safety tooling: governance cleanup, journal recovery, operator dashboard reporting, packaged golden benchmarks, stricter release gates, fail-closed hard-delete safety, and stronger audit/release packaging checks. It preserves `scope_recall_profile`, compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, the `hermes-scope-recall` standalone distribution and installer path, attachment-marker sanitization, journal ACK quality gates, native-safe LanceDB probing, and automatic SQLite vector fallback for non-AVX hosts.
 
 This document defines the stable V1 compatibility surface and the areas that may evolve in patch or minor releases.
 

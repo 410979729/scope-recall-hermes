@@ -93,11 +93,92 @@ def test_doctor_reports_experience_schema_and_counts(tmp_path):
     payload, check, recommendations = doctor.experience_report(tmp_path)
 
     assert check == {"ok": True, "failures": []}
-    assert recommendations == []
     assert payload["status"] == "ready"
     assert payload["playbooks"]["total"] == 1
     assert payload["playbooks"]["by_status"] == {"promoted": 1}
+    assert payload["promotion_funnel"]["promoted"] == 1
+    assert payload["promotion_funnel"]["promoted_missing_last_verified_at"] == 1
     assert payload["runs"]["total"] == 1
+    assert any("lack last_verified_at" in item for item in recommendations)
+
+
+def test_doctor_experience_funnel_reports_duplicates_and_review_heavy_state(tmp_path):
+    doctor = _load_doctor_module()
+    storage = tmp_path / "scope-recall"
+    storage.mkdir(parents=True)
+    conn = sqlite3.connect(storage / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        for index in range(3):
+            create_playbook(
+                conn,
+                playbook_id=f"pb_dup_{index}",
+                scope_id="scope-a",
+                payload=_payload(),
+                status="candidate",
+                confidence=0.6,
+            )
+        conn.execute("UPDATE procedural_playbooks SET status = 'needs_review'")
+        conn.execute(
+            """
+            INSERT INTO experience_runs(
+                id, playbook_id, scope_id, decision, confidence_at_use, evidence, outcome,
+                outcome_reason, model_name, tool_call_count, token_estimate, started_at, finished_at
+            ) VALUES ('xrun_misleading', 'pb_dup_0', 'scope-a', 'guided_reuse', 0.5, '[]', 'misleading', 'bad', 'model', 1, 10, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:01+00:00')
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    payload, check, recommendations = doctor.experience_report(tmp_path)
+
+    assert check == {"ok": True, "failures": []}
+    funnel = payload["promotion_funnel"]
+    assert funnel["needs_review"] == 3
+    assert funnel["needs_review_ratio"] == 1.0
+    assert funnel["duplicate_groups"][0]["count"] == 3
+    assert funnel["feedback"]["misleading"] == 1
+    assert any("review-heavy" in item for item in recommendations)
+    assert any("duplicate" in item.lower() for item in recommendations)
+    assert any("misleading" in item for item in recommendations)
+
+
+def test_doctor_experience_feedback_recommendation_ignores_terminal_reviewed_playbooks(tmp_path):
+    doctor = _load_doctor_module()
+    storage = tmp_path / "scope-recall"
+    storage.mkdir(parents=True)
+    conn = sqlite3.connect(storage / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        create_playbook(conn, playbook_id="pb_bad", scope_id="scope-a", payload=_payload(), status="candidate", confidence=0.6)
+        record_playbook_feedback(
+            conn,
+            playbook_id="pb_bad",
+            scope_id="scope-a",
+            accessible_scope_ids=["scope-a"],
+            outcome="misleading",
+            evidence=["fixture"],
+        )
+        review_playbook(
+            conn,
+            playbook_id="pb_bad",
+            accessible_scope_ids=["scope-a"],
+            action="quarantine",
+            reason="fixture misleading playbook reviewed",
+        )
+    finally:
+        conn.close()
+
+    payload, check, recommendations = doctor.experience_report(tmp_path)
+
+    assert check == {"ok": True, "failures": []}
+    feedback = payload["promotion_funnel"]["feedback"]
+    assert feedback["misleading"] == 1
+    assert feedback["unresolved_misleading"] == 0
+    assert not any("misleading" in item for item in recommendations)
 
 
 def test_doctor_redacts_legacy_secret_like_experience_status_and_outcome(tmp_path):

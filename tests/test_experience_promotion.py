@@ -197,6 +197,33 @@ def test_overlapping_auto_promotion_window_skips_similar_existing_playbook():
     assert conn.execute("SELECT COUNT(*) FROM procedural_playbooks").fetchone()[0] == 1
 
 
+def test_generic_success_without_specific_evidence_is_rejected_by_quality_gate():
+    conn = _conn()
+    scope = _scope()
+    scope_id = build_scope_id(scope)
+    shared_scope_id = build_shared_scope_id(scope)
+
+    _append(conn, scope=scope, session_id="generic-success", turn=1, role="user", content="帮我检查一下这个事情是否已经处理好。")
+    _append(conn, scope=scope, session_id="generic-success", turn=2, role="tool", content="Tool output: ok, 验证完成。")
+    _append(conn, scope=scope, session_id="generic-success", turn=3, role="assistant", content="完成，成功，验证通过。")
+
+    result = promote_experiences(
+        conn,
+        accessible_scope_ids=accessible_scope_ids(scope),
+        scope_id=scope_id,
+        shared_scope_id=shared_scope_id,
+        config={"experience": {"auto_promote_low_risk": True}},
+        dry_run=False,
+    )
+
+    assert result["quality_rejected"] == 1
+    assert result["handbooks_created"] == 0
+    assert result["items"][0]["reason"] == "quality_gate"
+    assert "no_concrete_tool_names" in result["items"][0]["quality"]["reasons"]
+    assert "no_specific_commands_or_paths" in result["items"][0]["quality"]["reasons"]
+    assert conn.execute("SELECT COUNT(*) FROM procedural_playbooks").fetchone()[0] == 0
+
+
 def test_failed_final_state_does_not_create_or_promote_even_after_success_tokens():
     conn = _conn()
     scope = _scope()

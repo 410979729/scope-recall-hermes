@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Protocol, Sequence
 
 from .capture_filters import contains_secret_like_text, sanitize_report_text, should_capture_text
 from .gating import compact_text
-from .sql_store import delete_rows, ensure_schema
+from .sql_store import delete_rows, ensure_schema, record_governance_audit_event
 
 
 class VectorDeleteStore(Protocol):
@@ -54,6 +55,18 @@ def _preview(row: sqlite3.Row, *, reason: str, superseded_by: str = "") -> dict[
     return item
 
 
+def _snapshot(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": str(row["id"]),
+        "scope_id": str(row["scope_id"] or ""),
+        "source": str(row["source"] or ""),
+        "target": str(row["target"] or ""),
+        "summary": str(row["summary"] or ""),
+        "updated_at": str(row["updated_at"] or ""),
+        "metadata": _json_loads(row["metadata"]),
+    }
+
+
 def _scoped_rows(conn: sqlite3.Connection, accessible_scope_ids: Sequence[str]) -> list[sqlite3.Row]:
     scopes = [str(scope_id) for scope_id in accessible_scope_ids if str(scope_id)]
     if not scopes:
@@ -91,7 +104,6 @@ def build_forgetting_report(conn: sqlite3.Connection, *, accessible_scope_ids: S
     默认只提出“软归档”候选；物理删除只用于明确敏感内容或运行噪声。
     """
 
-    ensure_schema(conn)
     rows = _scoped_rows(conn, accessible_scope_ids)
     soft_by_id: dict[str, dict[str, Any]] = {}
     hard_by_id: dict[str, dict[str, Any]] = {}
@@ -155,7 +167,15 @@ def build_forgetting_report(conn: sqlite3.Connection, *, accessible_scope_ids: S
     }
 
 
-def _archive_memory(conn: sqlite3.Connection, *, memory_id: str, reason: str, superseded_by: str = "") -> bool:
+def _archive_memory(
+    conn: sqlite3.Connection,
+    *,
+    memory_id: str,
+    reason: str,
+    superseded_by: str = "",
+    batch_id: str = "",
+    actor: str = "scope-recall-forgetting",
+) -> bool:
     row = conn.execute("SELECT metadata FROM memories WHERE id = ?", (memory_id,)).fetchone()
     if row is None:
         return False
@@ -165,6 +185,9 @@ def _archive_memory(conn: sqlite3.Connection, *, memory_id: str, reason: str, su
     metadata["lifecycle"] = "archived"
     metadata["forget_reason"] = reason
     metadata["archived_at"] = _now_iso()
+    metadata["archived_by"] = actor
+    if batch_id:
+        metadata["rollback_batch_id"] = batch_id
     if superseded_by:
         metadata["superseded_by"] = superseded_by
     conn.execute("UPDATE memories SET metadata = ?, updated_at = ? WHERE id = ?", (_json_dumps(metadata), _now_iso(), memory_id))
@@ -191,12 +214,19 @@ def run_forgetting(
     hard_delete: bool = False,
     limit: int = 200,
     vector_store: VectorDeleteStore | None = None,
+    allow_sql_delete_without_vector: bool = False,
+    batch_id: str | None = None,
+    actor: str = "scope-recall-forgetting",
 ) -> dict[str, Any]:
+    if not dry_run:
+        ensure_schema(conn)
     report = build_forgetting_report(conn, accessible_scope_ids=accessible_scope_ids, limit=limit)
+    batch = batch_id or f"forgetting-{uuid.uuid4().hex}"
     soft_items = report["soft_archive_candidates"]["items"]
     hard_items = report["hard_delete_candidates"]["items"] if hard_delete else []
     result = {
         "dry_run": bool(dry_run),
+        "batch_id": batch,
         "archived": len(soft_items),
         "deleted": len(hard_items),
         "archive_ids": [item["id"] for item in soft_items],
@@ -205,26 +235,100 @@ def run_forgetting(
     if dry_run:
         return result
     archived = 0
+    now = _now_iso()
     for item in soft_items:
+        row = conn.execute(
+            "SELECT id, scope_id, source, target, summary, updated_at, metadata FROM memories WHERE id = ?",
+            (str(item["id"]),),
+        ).fetchone()
+        before = _snapshot(row) if row is not None else {}
         if _archive_memory(
             conn,
             memory_id=str(item["id"]),
             reason=str(item.get("reason") or "forgetting-run"),
             superseded_by=str(item.get("superseded_by") or ""),
+            batch_id=batch,
+            actor=actor,
         ):
             archived += 1
+            after_row = conn.execute(
+                "SELECT id, scope_id, source, target, summary, updated_at, metadata FROM memories WHERE id = ?",
+                (str(item["id"]),),
+            ).fetchone()
+            record_governance_audit_event(
+                conn,
+                event_id=f"gov_{uuid.uuid4().hex}",
+                event_type="forgetting",
+                action="soft_archive",
+                scope_id=str(item.get("scope_id") or before.get("scope_id") or ""),
+                target_id=str(item["id"]),
+                batch_id=batch,
+                before=before,
+                after=_snapshot(after_row) if after_row is not None else {},
+                reason=str(item.get("reason") or "forgetting-run"),
+                actor=actor,
+                dry_run=False,
+                created_at=now,
+            )
     if archived:
         conn.commit()
-    deleted = delete_rows(conn, [str(item["id"]) for item in hard_items])
     deleted_ids = [str(item["id"]) for item in hard_items if str(item.get("id") or "")]
     vector_deleted = 0
     vector_error = ""
+    if deleted_ids and vector_store is None and not allow_sql_delete_without_vector:
+        # Hard delete is destructive while vectors are rebuildable leak surfaces.
+        # Fail closed unless the operator explicitly accepts SQL-only deletion;
+        # otherwise a future direct script call can leave stale vector hits after
+        # SQLite truth has already been removed.
+        vector_error = "hard delete refused: vector_store is required before deleting SQLite truth"
+        result["archived"] = archived
+        result["deleted"] = 0
+        result["vector_deleted"] = 0
+        result["vector_error"] = vector_error
+        result["delete_ids"] = []
+        return result
     if deleted_ids and vector_store is not None:
         try:
+            # Delete the rebuildable companion first. If companion deletion fails,
+            # keep SQLite truth intact so the row can be retried or repaired from
+            # the authoritative store instead of leaving a stale vector-only leak.
             vector_store.delete_by_ids(deleted_ids)
             vector_deleted = len(deleted_ids)
         except Exception as exc:
             vector_error = sanitize_report_text(str(exc))
+            result["archived"] = archived
+            result["deleted"] = 0
+            result["vector_deleted"] = 0
+            result["vector_error"] = vector_error
+            result["delete_ids"] = []
+            return result
+    delete_snapshots: dict[str, dict[str, Any]] = {}
+    for memory_id in deleted_ids:
+        row = conn.execute(
+            "SELECT id, scope_id, source, target, summary, updated_at, metadata FROM memories WHERE id = ?",
+            (memory_id,),
+        ).fetchone()
+        if row is not None:
+            delete_snapshots[memory_id] = _snapshot(row)
+    deleted = delete_rows(conn, deleted_ids)
+    for memory_id, before in delete_snapshots.items():
+        record_governance_audit_event(
+            conn,
+            event_id=f"gov_{uuid.uuid4().hex}",
+            event_type="forgetting",
+            action="hard_delete",
+            scope_id=str(before.get("scope_id") or ""),
+            target_id=memory_id,
+            batch_id=batch,
+            before=before,
+            after={"id": memory_id, "deleted": True},
+            reason="secret-like-content",
+            actor=actor,
+            dry_run=False,
+            created_at=now,
+        )
+    if delete_snapshots:
+        conn.commit()
     result["archived"] = archived
     result["deleted"] = deleted
     result["vector_deleted"] = vector_deleted

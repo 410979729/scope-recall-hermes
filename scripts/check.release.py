@@ -8,6 +8,7 @@ Hermes runtime environment; it scans only this source tree.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import pathlib
@@ -24,9 +25,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-PACKAGE_VERSION = "1.4.5"
+PACKAGE_VERSION = "1.5.0"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
+LOCAL_ONLY_DIRS = {".hermes"}
 EXTERNAL_TEST_DIRS = {".hermes-agent-src"}
 SECRET_PATTERNS = {
     "api_key_assignment": re.compile(
@@ -57,6 +59,9 @@ REQUIRED_SOURCE_FILES = {
     "docs/experience.kernel.md",
     "docs/contract.matrix.md",
     "docs/hermes-upstream-recommendation-plan.md",
+    "docs/benchmark.golden.md",
+    "docs/governance.cleanup.md",
+    "benchmarks/golden_recall_cases.json",
     "scripts/import.openclaw.memory_lancedb_pro.py",
     "scripts/nightly-digest.py",
     "scripts/journal-digest.py",
@@ -65,12 +70,18 @@ REQUIRED_SOURCE_FILES = {
     "scripts/migrate.legacy_hygiene.py",
     "scripts/doctor.py",
     "scripts/experience-replay.py",
+    "scripts/benchmark.golden.py",
+    "scripts/governance.cleanup.py",
+    "scripts/journal.recovery.py",
+    "scripts/report.dashboard.py",
     "experience_models.py",
     "experience_store.py",
     "experience_preflight.py",
     "experience_replay.py",
     "experience_promotion.py",
     "forgetting.py",
+    "governance_cleanup.py",
+    "journal_recovery.py",
     "installer.py",
     "py.typed",
 }
@@ -94,6 +105,8 @@ REQUIRED_WHEEL = {
     "scope_recall/experience_replay.py",
     "scope_recall/experience_promotion.py",
     "scope_recall/forgetting.py",
+    "scope_recall/governance_cleanup.py",
+    "scope_recall/journal_recovery.py",
     "scope_recall/hygiene.py",
     "scope_recall/journal.py",
     "scope_recall/nightly_digest.py",
@@ -118,6 +131,9 @@ REQUIRED_WHEEL = {
     "scope_recall/docs/experience.kernel.md",
     "scope_recall/docs/contract.matrix.md",
     "scope_recall/docs/hermes-upstream-recommendation-plan.md",
+    "scope_recall/docs/benchmark.golden.md",
+    "scope_recall/docs/governance.cleanup.md",
+    "scope_recall/benchmarks/golden_recall_cases.json",
     "scope_recall/scripts/import.openclaw.memory_lancedb_pro.py",
     "scope_recall/scripts/nightly-digest.py",
     "scope_recall/scripts/journal-digest.py",
@@ -126,6 +142,10 @@ REQUIRED_WHEEL = {
     "scope_recall/scripts/migrate.legacy_hygiene.py",
     "scope_recall/scripts/doctor.py",
     "scope_recall/scripts/experience-replay.py",
+    "scope_recall/scripts/benchmark.golden.py",
+    "scope_recall/scripts/governance.cleanup.py",
+    "scope_recall/scripts/journal.recovery.py",
+    "scope_recall/scripts/report.dashboard.py",
 }
 STABLE_TOOL_NAMES = {
     "scope_recall_store",
@@ -170,6 +190,50 @@ def fail_if_bad(result: dict[str, object]) -> None:
     if result["returncode"] != 0:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         raise SystemExit(int(result["returncode"]))
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run scope-recall release readiness checks")
+    parser.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="Allow a dirty/untracked working tree while running development verification. Strict release mode fails dirty trees.",
+    )
+    # Accepted for operator compatibility: live doctor checks use this, but the
+    # release script intentionally avoids reading the live runtime by default.
+    parser.add_argument("--hermes-home", default="", help=argparse.SUPPRESS)
+    return parser.parse_args()
+
+
+def git_tree_check(*, allow_dirty: bool) -> dict[str, object]:
+    result = run(["git", "status", "--porcelain=v1"])
+    if result["returncode"] != 0:
+        return {"ok": False, "error": result}
+    lines = [line for line in str(result["stdout"]).splitlines() if line.strip()]
+    untracked = [line for line in lines if line.startswith("?? ")]
+    dirty = [line for line in lines if not line.startswith("?? ")]
+    return {
+        "ok": allow_dirty or not lines,
+        "allow_dirty": bool(allow_dirty),
+        "dirty": dirty,
+        "untracked": untracked,
+    }
+
+
+def benchmark_check() -> dict[str, object]:
+    result = run([sys.executable, "scripts/benchmark.golden.py"])
+    if result["returncode"] != 0:
+        return {"ok": False, "result": result}
+    try:
+        payload = json.loads(str(result["stdout"] or "{}"))
+    except json.JSONDecodeError as exc:
+        return {"ok": False, "error": f"invalid benchmark json: {exc}", "result": result}
+    return {
+        "ok": bool(payload.get("passed")),
+        "golden_name": payload.get("golden_name"),
+        "query_count": payload.get("query_count"),
+        "failures": payload.get("failures"),
+    }
 
 
 def read_text(rel: str) -> str:
@@ -252,6 +316,8 @@ def scan_tree() -> dict[str, list[str]]:
     for path in ROOT.rglob("*"):
         rel = path.relative_to(ROOT)
         if ".git" in rel.parts:
+            continue
+        if any(part in LOCAL_ONLY_DIRS for part in rel.parts):
             continue
         if any(part in EXTERNAL_TEST_DIRS for part in rel.parts):
             continue
@@ -424,7 +490,9 @@ def cleanup_generated() -> None:
 
 
 def main() -> int:
+    args = parse_args()
     cleanup_generated()
+    git_tree = git_tree_check(allow_dirty=bool(args.allow_dirty))
     metadata = metadata_check()
     for cmd in (
         [sys.executable, "-m", "ruff", "check", "."],
@@ -432,19 +500,25 @@ def main() -> int:
         [sys.executable, "-m", "compileall", "-q", "."],
     ):
         fail_if_bad(run(cmd))
+    benchmark = benchmark_check()
+    if not benchmark["ok"]:
+        print(json.dumps({"ok": False, "benchmark": benchmark}, ensure_ascii=False, indent=2))
+        return 1
     wheel = wheel_check()
     cleanup_generated()
     scan = scan_tree()
     blocking_scan = {key: value for key, value in scan.items() if value}
     failures: dict[str, object] = {}
+    if not git_tree["ok"]:
+        failures["git_tree"] = git_tree
     if not metadata["ok"]:
         failures["metadata"] = metadata
     if blocking_scan:
         failures["scan"] = blocking_scan
     if failures:
-        print(json.dumps({"ok": False, "failures": failures, "wheel": wheel}, ensure_ascii=False, indent=2))
+        print(json.dumps({"ok": False, "failures": failures, "benchmark": benchmark, "wheel": wheel}, ensure_ascii=False, indent=2))
         return 1
-    print(json.dumps({"ok": True, "metadata": metadata, "wheel": wheel, "scan": scan}, ensure_ascii=False, indent=2))
+    print(json.dumps({"ok": True, "git_tree": git_tree, "metadata": metadata, "benchmark": benchmark, "wheel": wheel, "scan": scan}, ensure_ascii=False, indent=2))
     return 0
 
 

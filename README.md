@@ -20,7 +20,7 @@ Current-turn recall · Journal-first capture · Durable shared memory · Backgro
 
 This repository, `scope-recall-hermes`, is the Hermes implementation. The Python distribution package is `hermes-scope-recall`, the Python import/package spelling is `scope_recall`, and the Hermes plugin ID/provider name remains `scope-recall` for runtime compatibility. The OpenClaw sibling implementation lives at [`scope-recall-openclaw`](https://github.com/410979729/scope-recall-openclaw).
 
-Version `1.4.5` continues the stable V1 release line with stronger audit/release gates, type-aware temporal recall, relation-aware explain evidence, explicit shared-pool write policy, rejected-candidate explain visibility, safer forgetting/vector cleanup, and journal/Experience noise controls. Runtime Experience packet injection is enabled by default through `experience.prefetch_enabled=true` and can be disabled with `experience.prefetch_enabled=false`; background automatic promotion remains an explicit operator opt-in through `experience.auto_promotion_enabled=true`, and low-risk auto-promotion remains a second explicit opt-in through `experience.auto_promote_low_risk=true`. By default, successful low-risk scans create candidate playbooks, high-risk playbooks stay review-gated, and final-failure or low-signal traces are not promoted. It keeps the `scope_recall_profile` surface added in v1.3.0, compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, inline attachment-marker sanitization, the supported standalone install shape added in v1.1.0, and native-safe LanceDB probing with automatic SQLite vector fallback for non-AVX hosts.
+Version `1.5.0` upgrades the stable V1 release line with commercial governance and release-safety tooling: governance cleanup, journal recovery, an operator dashboard, repository-owned golden benchmarks, stricter release gates, fail-closed hard-delete safety, and packaged benchmark fixtures. Runtime Experience packet injection is enabled by default through `experience.prefetch_enabled=true` and can be disabled with `experience.prefetch_enabled=false`; background automatic promotion remains an explicit operator opt-in through `experience.auto_promotion_enabled=true`, and low-risk auto-promotion remains a second explicit opt-in through `experience.auto_promote_low_risk=true`. By default, successful low-risk scans create candidate playbooks, high-risk playbooks stay review-gated, and final-failure or low-signal traces are not promoted. It keeps the `scope_recall_profile` surface added in v1.3.0, compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, inline attachment-marker sanitization, the supported standalone install shape added in v1.1.0, and native-safe LanceDB probing with automatic SQLite vector fallback for non-AVX hosts.
 
 It uses a **three-layer design**:
 
@@ -666,7 +666,14 @@ scope_recall_explain
 scope_recall_benchmark
 ```
 
-Release `1.4.5` tightens the audit/observability tools:
+Release `1.5.0` adds commercial governance and release-safety tooling:
+
+- `scripts/benchmark.golden.py` runs in an isolated temporary Hermes home by default, copies the current plugin source for provider discovery, and treats `--overwrite-config` as an explicit maintenance-only danger flag with backup/restore protection.
+- `scripts/check.release.py` now gates release readiness on golden benchmark success, dirty/untracked worktree visibility, wheel build/install smoke, doctor smoke, and secret/private-path scans.
+- `scripts/governance.cleanup.py`, `scripts/journal.recovery.py`, and `scripts/report.dashboard.py` provide operator workflows for auditable cleanup, staged journal recovery, and release-health summaries without exposing raw SQL mutation as the normal path.
+- Hard-delete forgetting now fails closed when no vector companion is provided, preventing SQLite truth deletion that could leave stale vector hits.
+
+Release `1.4.5` tightened the audit/observability tools:
 
 - `scope_recall_update` re-runs the deterministic conflict/relation review after a row changes, while preserving accumulated feedback counts, feedback-adjusted trust, conflict-review metadata, and higher existing importance scores.
 - `scope_recall_explain` reports rank-aligned retrieval evidence for lexical/BM25/vector/RRF scores, metadata quality adjustment, entity overlap/distance bonuses, relation evidence/rerank contribution, memory-type temporal policy, temporal decay, recency bonus, threshold settings, and final score.

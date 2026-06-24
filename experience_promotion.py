@@ -235,6 +235,76 @@ def _risk_level(text: str) -> str:
     return "high" if _contains_any(text, HIGH_RISK_TOKENS) else "low"
 
 
+SPECIFICITY_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bpython(?:3)?\s+-m\s+pytest\b", re.IGNORECASE),
+    re.compile(r"\bpytest\b", re.IGNORECASE),
+    re.compile(r"\b(?:ruff|pyright|doctor|release gate|systemctl|git|gh)\b", re.IGNORECASE),
+    re.compile(r"(?:^|\s)(?:scripts|tests|docs|\.github)/[^\s`'\"]+", re.IGNORECASE),
+    re.compile(r"(?:^|\s)/(?:home|data|etc|var|tmp)/[^\s`'\"]+"),
+    re.compile(r"\b\d+\s+passed\b", re.IGNORECASE),
+    re.compile(r"\bok=true\b", re.IGNORECASE),
+)
+
+
+def _promotion_quality(
+    entries: Sequence[sqlite3.Row],
+    *,
+    goal: str,
+    tool_names: list[str],
+    verification: list[str],
+    risk_level: str,
+) -> dict[str, Any]:
+    text = _entry_text(entries)
+    reasons: list[str] = []
+    score = 0.0
+    normalized_goal = _goal_signal_key(goal or "")
+    if goal and not _low_signal_goal(goal) and len(normalized_goal) >= 4:
+        score += 0.18
+    else:
+        reasons.append("weak_goal")
+    tool_entry_count = sum(1 for entry in entries if str(entry["role"] or "") == "tool")
+    concrete_tools = [name for name in tool_names if name != "tool"]
+    if tool_entry_count:
+        score += 0.12
+    else:
+        reasons.append("no_tool_evidence")
+    if concrete_tools:
+        score += 0.12
+    else:
+        reasons.append("no_concrete_tool_names")
+    if verification:
+        score += min(0.24, 0.12 + 0.04 * len(verification))
+    else:
+        reasons.append("no_verification_evidence")
+    specificity_hits = sum(1 for pattern in SPECIFICITY_PATTERNS if pattern.search(text))
+    if specificity_hits:
+        score += min(0.18, 0.08 + 0.04 * specificity_hits)
+    else:
+        reasons.append("no_specific_commands_or_paths")
+    if len(entries) <= 40:
+        score += 0.08
+    else:
+        reasons.append("oversized_episode_window")
+    if risk_level == "high":
+        if _contains_any(text, ("授权", "authorization", "confirm", "确认", "不能自动", "等待")):
+            score += 0.08
+        else:
+            reasons.append("high_risk_without_authorization_boundary")
+    elif risk_level == "low":
+        score += 0.08
+    if _has_failure_signal(_tail_text(entries)):
+        score = min(score, 0.35)
+        reasons.append("final_failure_signal")
+    score = round(min(score, 1.0), 3)
+    if score < 0.70:
+        decision = "reject"
+    elif score < 0.85 or risk_level == "high":
+        decision = "needs_review"
+    else:
+        decision = "auto_promote_eligible"
+    return {"score": score, "decision": decision, "reasons": reasons, "specificity_hits": specificity_hits, "tool_entry_count": tool_entry_count}
+
+
 def _first_user_goal(entries: Sequence[sqlite3.Row]) -> str:
     for entry in entries:
         if str(entry["role"] or "") == "user":
@@ -526,6 +596,7 @@ def promote_experiences(
         "handbooks_promoted": 0,
         "handbooks_needing_agent_review": 0,
         "duplicates_skipped": 0,
+        "quality_rejected": 0,
         "skipped": 0,
         "items": [],
     }
@@ -560,6 +631,12 @@ def promote_experiences(
             continue
         task_class = _task_class(text)
         risk_level = _risk_level(text)
+        quality = _promotion_quality(entries, goal=goal, tool_names=tool_names, verification=verification, risk_level=risk_level)
+        if quality["decision"] == "reject":
+            result["skipped"] += 1
+            result["quality_rejected"] += 1
+            result["items"].append({"action": "skip", "reason": "quality_gate", "quality": quality, "goal": sanitize_report_text(goal)})
+            continue
         episode_id = _hash_id("episode_auto", scope_id, entries[0]["session_id"], [int(entry["id"]) for entry in entries])
         if _episode_exists(conn, episode_id) or _playbook_exists_for_episode(conn, episode_id):
             result["duplicates_skipped"] += 1
@@ -581,11 +658,11 @@ def promote_experiences(
         if dry_run:
             result["episodes_created"] += 1
             result["handbooks_created"] += 1
-            if risk_level == "low" and auto_promote_low_risk:
+            if quality["decision"] == "auto_promote_eligible" and auto_promote_low_risk:
                 result["handbooks_promoted"] += 1
-            elif risk_level == "high":
+            elif quality["decision"] != "auto_promote_eligible":
                 result["handbooks_needing_agent_review"] += 1
-            result["items"].append({"action": "would_create", "episode_id": episode_id, "playbook_id": playbook_id, "risk_level": risk_level})
+            result["items"].append({"action": "would_create", "episode_id": episode_id, "playbook_id": playbook_id, "risk_level": risk_level, "quality": quality})
             continue
 
         _insert_episode(
@@ -603,6 +680,7 @@ def promote_experiences(
         )
         result["episodes_created"] += 1
         payload = _payload(task_class=task_class, title=title, goal=goal, text=text, risk_level=risk_level, tool_names=tool_names, verification=verification)
+        payload["confidence"] = max(float(payload["confidence"]), float(quality["score"]))
         created = create_playbook(
             conn,
             playbook_id=playbook_id,
@@ -621,31 +699,32 @@ def promote_experiences(
                 "source": "experience_promotion",
                 "journal_entry_ids": [int(entry["id"]) for entry in entries],
                 "safe_summary": sanitize_report_text(compact_text(text, 500)),
+                "quality_gate": quality,
             },
         )
         result["handbooks_created"] += 1
         status = created.get("status")
-        if risk_level == "low" and auto_promote_low_risk:
+        if quality["decision"] == "auto_promote_eligible" and auto_promote_low_risk:
             reviewed = review_playbook(
                 conn,
                 playbook_id=playbook_id,
                 accessible_scope_ids=[scope_id, shared_scope_id],
                 action="promote",
-                reason="自动提取经验自检通过：低风险且有验证证据。",
+                reason=f"自动提取经验自检通过：低风险、有验证证据，quality_score={quality['score']}。",
             )
             status = reviewed.get("status", status)
             result["handbooks_promoted"] += 1
-        elif risk_level == "high":
+        elif quality["decision"] != "auto_promote_eligible":
             reviewed = review_playbook(
                 conn,
                 playbook_id=playbook_id,
                 accessible_scope_ids=[scope_id, shared_scope_id],
                 action="needs_review",
-                reason="自动提取经验自检发现高风险动作；需要后续代理复核，不要求用户逐条复审。",
+                reason=f"自动提取经验质量门槛要求复核：risk={risk_level}, decision={quality['decision']}, score={quality['score']}。",
             )
             status = reviewed.get("status", status)
             result["handbooks_needing_agent_review"] += 1
-        result["items"].append({"action": "created", "episode_id": episode_id, "playbook_id": playbook_id, "risk_level": risk_level, "status": status})
+        result["items"].append({"action": "created", "episode_id": episode_id, "playbook_id": playbook_id, "risk_level": risk_level, "status": status, "quality": quality})
     if not dry_run:
         conn.commit()
     return result

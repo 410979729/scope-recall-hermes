@@ -4,6 +4,17 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-06-24
+
+### Added
+- Added governance cleanup, journal recovery, operator dashboard, and repository-owned golden benchmark release-readiness tooling.
+- Added golden benchmark cases to packaged artifacts and release metadata checks.
+
+### Fixed
+- Made `scripts/benchmark.golden.py` run in an isolated temporary Hermes home by default, copy the current plugin source for provider discovery, and keep any `--hermes-home` config read-only unless an explicit maintenance-only `--overwrite-config` flag is used with automatic backup/restore.
+- Made release readiness run the golden benchmark and report dirty/untracked worktree state so new files cannot be missed before a release.
+- Made hard-delete forgetting fail closed when no vector companion is provided, preventing SQL truth deletion that could leave stale vector hits.
+
 ## [1.4.5] - 2026-06-24
 
 ### Added
