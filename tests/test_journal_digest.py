@@ -175,6 +175,96 @@ def test_skipped_journal_candidates_still_advance_watermark(tmp_path):
     assert rejection_ids == {existing_entry_id, filtered_entry_id}
 
 
+def test_journal_digest_rejects_low_value_notification_log_and_tool_summary_candidates(tmp_path):
+    conn = _open_memory_db(tmp_path / "memory.sqlite3")
+    scope = _scope()
+    scope_id = build_scope_id(scope)
+    shared_scope_id = build_shared_scope_id(scope)
+    entry_ids = [
+        append_journal_entry(
+            conn,
+            scope=scope,
+            scope_id=scope_id,
+            shared_scope_id=shared_scope_id,
+            session_id="noise-digest",
+            turn_number=index,
+            role="user",
+            content=content,
+        )
+        for index, content in enumerate(
+            [
+                "QAS webhook notification: subscription update delivered successfully; no action required.",
+                "docker logs output showed transient INFO heartbeat lines and stdout noise only.",
+                "Tool execution summary: ran terminal, read_file, gh issue list, and printed task progress.",
+            ],
+            start=1,
+        )
+    ]
+    candidates = [
+        JournalDigestCandidate(
+            content="QAS webhook notification reported a subscription update and successful bot push delivery; no action required.",
+            target="ops",
+            memory_type="summary",
+            entry_ids=[entry_ids[0]],
+        ),
+        JournalDigestCandidate(
+            content="docker logs output consisted of transient INFO heartbeat lines, stdout noise, and pasted terminal output.",
+            target="ops",
+            memory_type="summary",
+            entry_ids=[entry_ids[1]],
+        ),
+        JournalDigestCandidate(
+            content="Tool execution summary: terminal/read_file/git commands were used and the task progress was printed.",
+            target="memory",
+            memory_type="tool_trace",
+            entry_ids=[entry_ids[2]],
+        ),
+    ]
+
+    result = apply_journal_candidates(conn, None, scope, run_id="low-value-gate", candidates=candidates)
+
+    assert result["counts"]["skipped"] == 3
+    assert set(result["processed_entry_ids"]) == set(entry_ids)
+    assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+    reasons = {row["reason"] for row in conn.execute("SELECT reason FROM journal_rejections").fetchall()}
+    assert "low-value-notification" in reasons
+    assert "low-value-log-or-tool-summary" in reasons
+    assert "low-value-tool-trace" in reasons
+
+
+def test_journal_digest_allows_reusable_root_cause_fix_workflow_candidate(tmp_path):
+    conn = _open_memory_db(tmp_path / "memory.sqlite3")
+    scope = _scope()
+    entry_id = append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=build_scope_id(scope),
+        shared_scope_id=build_shared_scope_id(scope),
+        session_id="valuable-digest",
+        turn_number=1,
+        role="user",
+        content="把 journalctl 日志里 database locked 的根因和修复流程记下来，后续排障要复用。",
+    )
+    candidate = JournalDigestCandidate(
+        content=(
+            "Reusable ops workflow: when journalctl or docker logs show SQLite database locked, root cause is usually a live "
+            "service holding the WAL; fix by identifying the holder with fuser, scheduling a safe restart window, then rerun doctor verification."
+        ),
+        target="ops",
+        memory_type="workflow",
+        entry_ids=[entry_id],
+    )
+
+    result = apply_journal_candidates(conn, None, scope, run_id="valuable-gate", candidates=[candidate])
+
+    assert result["counts"]["inserted"] == 1
+    assert result["processed_entry_ids"] == [entry_id]
+    row = conn.execute("SELECT target, content FROM memories").fetchone()
+    assert row["target"] == "ops"
+    assert "root cause" in row["content"]
+    assert conn.execute("SELECT COUNT(*) FROM journal_rejections").fetchone()[0] == 0
+
+
 def test_feedback_and_governance_previews_redact_secret_like_text(tmp_path):
     conn = _open_memory_db(tmp_path / "memory.sqlite3")
     scope = _scope()
@@ -602,7 +692,7 @@ def test_journal_digest_records_rejections_and_advances_watermark_for_filtered_c
     assert result["processed_entry_ids"] == [123]
     row = conn.execute("SELECT reason, candidate FROM journal_rejections WHERE journal_entry_id = 123").fetchone()
     assert row is not None
-    assert row["reason"] == "candidate filtered"
+    assert row["reason"] == "invalid-target"
 
 
 def test_journal_duplicate_store_row_links_evidence_without_rejection(tmp_path, monkeypatch):

@@ -874,7 +874,6 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             return []
         schemas = [
             SCOPE_RECALL_STORE_SCHEMA,
-            SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA,
             SCOPE_RECALL_SEARCH_SCHEMA,
             SCOPE_RECALL_CONTEXT_SCHEMA,
             SCOPE_RECALL_PROFILE_SCHEMA,
@@ -884,12 +883,14 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             SCOPE_RECALL_FORGET_SCHEMA,
             SCOPE_RECALL_UPDATE_SCHEMA,
             SCOPE_RECALL_MERGE_SCHEMA,
-            SCOPE_RECALL_EXPORT_SCHEMA,
-            SCOPE_RECALL_STATS_SCHEMA,
             SCOPE_RECALL_INSPECT_SCHEMA,
             SCOPE_RECALL_EXPLAIN_SCHEMA,
+            SCOPE_RECALL_EXPORT_SCHEMA,
+            SCOPE_RECALL_STATS_SCHEMA,
             SCOPE_RECALL_BENCHMARK_SCHEMA,
         ]
+        if config_bool(config, "secret_index_tools_enabled", False):
+            schemas.append(SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA)
         raw_experience_config = config.get("experience")
         experience_config: dict[str, Any] = dict(raw_experience_config) if isinstance(raw_experience_config, dict) else {}
         experience_enabled = config_bool(experience_config, "enabled", True)
