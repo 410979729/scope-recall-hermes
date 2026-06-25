@@ -121,6 +121,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._last_recall_turns: dict[str, int] = {}
         self._embedder: BaseEmbedder | None = None
         self._vector_store: Any | None = None
+        self._vector_lock = threading.RLock()
         self._vector_enabled = False
         self._vector_ready = False
         self._vector_status = "disabled"
@@ -133,8 +134,12 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._recall_service = RecallService(self)
         self._tool_service = ScopeRecallToolService(self)
         self._journal_digest_thread: threading.Thread | None = None
-        self._journal_digest_lock = threading.Lock()
+        self._journal_digest_lock = threading.RLock()
         self._last_journal_digest_started = 0.0
+        self._last_journal_digest_finished = 0.0
+        self._last_journal_digest_status = "never_run"
+        self._last_journal_digest_error = ""
+        self._journal_digest_consecutive_failures = 0
 
     @property
     def name(self) -> str:
@@ -725,6 +730,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             if self._last_journal_digest_started and now - self._last_journal_digest_started < interval_hours * 3600:
                 return
             self._last_journal_digest_started = now
+            self._last_journal_digest_status = "running"
+            self._last_journal_digest_error = ""
             if config_bool(journal_config, "background_digest_synchronous", False):
                 self._run_background_journal_digest(journal_config)
                 return
@@ -739,6 +746,10 @@ class ScopeRecallMemoryProvider(MemoryProvider):
 
     def _run_background_journal_digest(self, journal_config: dict[str, Any]) -> None:
         if self._hermes_home is None:
+            with self._journal_digest_lock:
+                self._last_journal_digest_status = "skipped"
+                self._last_journal_digest_error = "missing hermes_home"
+                self._last_journal_digest_finished = time.time()
             return
         try:
             limit_entries = int(journal_config.get("max_entries_per_digest") or 500)
@@ -754,9 +765,22 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 limit_entries=max(1, limit_entries),
                 dry_run=False,
             )
-            if result.get("ok", result.get("status") == "ok"):
+            ok = bool(result.get("ok", result.get("status") == "ok"))
+            status = "ok" if ok else str(result.get("status") or "error")
+            error = "" if ok else compact_text(sanitize_report_text(str(result.get("error") or result.get("message") or result)), 240)
+            with self._journal_digest_lock:
+                self._last_journal_digest_finished = time.time()
+                self._last_journal_digest_status = status
+                self._last_journal_digest_error = error
+                self._journal_digest_consecutive_failures = 0 if ok else self._journal_digest_consecutive_failures + 1
+            if ok:
                 self._maybe_run_auto_experience_promotion(trigger="background-journal-digest")
-        except Exception:
+        except Exception as exc:
+            with self._journal_digest_lock:
+                self._last_journal_digest_finished = time.time()
+                self._last_journal_digest_status = "error"
+                self._last_journal_digest_error = compact_text(sanitize_report_text(str(exc)), 240)
+                self._journal_digest_consecutive_failures += 1
             logger.exception("Scope Recall background journal digest failed")
 
     def _run_session_end_journal_digest(self) -> None:
@@ -1023,8 +1047,18 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         cases: list[dict[str, Any]] | None = None,
         limit: int = 5,
         auto_explain_on_fail: bool = False,
+        include_trace: bool = False,
+        prompt_budget_chars: int = 0,
     ) -> dict[str, Any]:
-        return benchmark_queries(self, queries=queries, cases=cases, limit=limit, auto_explain_on_fail=auto_explain_on_fail)
+        return benchmark_queries(
+            self,
+            queries=queries,
+            cases=cases,
+            limit=limit,
+            auto_explain_on_fail=auto_explain_on_fail,
+            include_trace=include_trace,
+            prompt_budget_chars=prompt_budget_chars,
+        )
 
     def _search_vector_memories(self, query: str, *, limit: int) -> List[RecallItem]:
         return search_vector_memories(self, query, limit=limit)

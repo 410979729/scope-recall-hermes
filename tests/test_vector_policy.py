@@ -59,6 +59,43 @@ class FakeVectorStore:
         }
 
 
+class LockSpy:
+    def __init__(self):
+        self.active = False
+        self.entered = 0
+
+    def __enter__(self):
+        self.active = True
+        self.entered += 1
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.active = False
+        return False
+
+
+class LockAssertingVectorStore(FakeVectorStore):
+    def __init__(self, lock):
+        super().__init__()
+        self.lock = lock
+
+    def delete_by_ids(self, ids):
+        assert self.lock.active
+        super().delete_by_ids(ids)
+
+    def upsert_records(self, rows):
+        assert self.lock.active
+        super().upsert_records(rows)
+
+    def repair_records(self, desired_records):
+        assert self.lock.active
+        return super().repair_records(desired_records)
+
+    def audit_counts(self):
+        assert self.lock.active
+        return super().audit_counts()
+
+
 class FakeProvider:
     def __init__(self, conn, *, index_general=False):
         self._conn = conn
@@ -66,6 +103,7 @@ class FakeProvider:
         self._vector_config = {"index_general": index_general}
         self._vector_ready = True
         self._vector_store = FakeVectorStore()
+        self._vector_lock = self._lock
         self._embedder = FakeEmbedder()
         self._scope_id = "local-scope"
         self._vector_row_count = 0
@@ -152,3 +190,29 @@ def test_general_can_be_indexed_only_when_explicitly_enabled():
     assert count == 1
     assert set(provider._vector_store.records) == {"general-1"}
     assert provider._embedder.embedded_texts
+
+
+def test_upsert_vector_record_mutates_store_under_vector_lock():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    provider = FakeProvider(conn, index_general=False)
+    lock = LockSpy()
+    provider._vector_lock = lock
+    provider._vector_store = LockAssertingVectorStore(lock)
+
+    upsert_vector_record(
+        provider,
+        id="memory-locked",
+        source="tool-store",
+        target="memory",
+        content="durable memory should be indexed under lock",
+        summary="durable memory should be indexed under lock",
+        updated_at="2026-05-01T00:00:00+00:00",
+        scope_id="shared-scope",
+    )
+
+    assert lock.entered >= 1
+    assert "memory-locked" in provider._vector_store.records
+
+

@@ -1,6 +1,11 @@
-# Scope Recall Golden Recall Benchmark
+# Scope Recall Golden and Retrieval-Regression Benchmarks
 
-This benchmark is the repository-owned recall quality gate for commercial memory readiness. It uses an isolated temporary Hermes home by default, stores labeled fixture memories through the public `scope_recall_store` tool, resolves labels to real runtime memory ids, and runs `scope_recall_benchmark` assertions.
+This document covers the two repository-owned recall quality gates:
+
+- `scripts/benchmark.golden.py`: commercial-quality golden cases backed by fixture JSON.
+- `scripts/benchmark.retrieval_regression.py`: synthetic Recall Funnel regression cases with configurable distractor rows, `candidate_pool`, `top_k`, and prompt-budget metrics.
+
+The golden benchmark is the commercial memory readiness gate. It uses an isolated temporary Hermes home by default, stores labeled fixture memories through the public `scope_recall_store` tool, resolves labels to real runtime memory ids, and runs `scope_recall_benchmark` assertions.
 
 ## What it covers
 
@@ -40,6 +45,32 @@ python3 scripts/benchmark.golden.py \
 ```
 
 Do not use `--overwrite-config` during normal release checks; the release gate runs the isolated default mode.
+
+## Run synthetic Recall Funnel regression
+
+```bash
+PYTHONPATH=/path/to/hermes-agent:/path/to/scope-recall \
+  python3 scripts/benchmark.retrieval_regression.py \
+  --distractors 60 \
+  --candidate-pool 24 \
+  --top-k 5 \
+  --prompt-budget-chars 1600
+```
+
+Expected high-level metrics:
+
+```json
+{
+  "passed": true,
+  "metrics": {
+    "known_answer_recall": 1.0,
+    "top_k_accuracy": 1.0,
+    "prompt_budget_hit_rate": 1.0
+  }
+}
+```
+
+The synthetic runner disables vectors by default so it can run on CI and contributor machines without API keys, LanceDB, or PyArrow. It is designed to catch candidate-pool, lexical/BM25, filter, and prompt-budget regressions before graph or memory-quality tuning.
 
 ## Fixture schema
 

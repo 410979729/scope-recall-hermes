@@ -123,6 +123,9 @@ Contract:
 - Reciprocal-rank fusion and score filters must not suppress all high-confidence
   exact matches without an explainable reason.
 - Vector-only candidates must meet vector policy thresholds.
+- Search/explain/benchmark paths must expose enough Recall Funnel evidence to
+  diagnose candidate-pool, filtering, and prompt-budget regressions without raw
+  prompt dumps.
 
 Primary files:
 
@@ -130,6 +133,9 @@ Primary files:
 - `scoring.py`
 - `storage_views.py`
 - `graph.py`
+- `memory_ops.py`
+- `tooling.py`
+- `schemas.py`
 - `vector_store.py`
 - `sqlite_vector_store.py`
 - `vector_runtime.py`
@@ -139,12 +145,15 @@ Primary tests and gates:
 
 - `pytest -q tests/test_retrieval_rrf_graph.py tests/test_retrieval_policy.py tests/test_scoring.py`
 - `pytest -q tests/test_vector_policy.py tests/test_sqlite_vector_store.py tests/test_optional_vector_deps.py`
+- `pytest -q tests/test_benchmark_regression_cases.py`
+- `PYTHONPATH=/path/to/hermes-agent:/path/to/scope-recall python scripts/benchmark.retrieval_regression.py`
 
 Dynamic probes:
 
 - Build a small known-answer corpus with exact, semantic, and misleading near
   matches.
-- Verify top results, excluded results, and explain output for each query.
+- Verify top results, excluded results, explain output, benchmark aggregate
+  metrics, and Recall Funnel stage/filter counts for each query.
 
 ### 5. Prompt rendering and context budgets
 

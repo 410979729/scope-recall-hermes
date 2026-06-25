@@ -4,7 +4,7 @@
 
 `scope-recall` is a Hermes local memory provider focused on **current-turn recall** plus **durable shared semantic memory**.
 
-It inherits the useful policy ideas from OpenClaw `memory-lancedb-pro`:
+It inherits useful policy ideas from OpenClaw `memory-lancedb-pro`:
 
 - no stale previous-turn injection
 - permanent shared memory for durable facts
@@ -12,7 +12,9 @@ It inherits the useful policy ideas from OpenClaw `memory-lancedb-pro`:
 - conservative gating
 - bounded recall budget
 
-But its implementation is intentionally split into three clear layers:
+But it is not a feature-parity target for the OpenClaw sibling. The Hermes implementation evolves toward Hermes-native memory behavior, with OpenClaw history handled through explicit import/migration boundaries rather than ongoing forced alignment.
+
+Its implementation is intentionally split into three clear layers:
 
 1. **Journal/provenance layer** for eligible raw conversation turns and evidence links
 2. **SQLite truth layer** for durable high-density memory rows
@@ -29,6 +31,7 @@ That split is deliberate. SQLite is the durable source of truth; the configured 
 5. Share durable `user`/`memory`/`project`/`ops` facts across windows/chats for the same user + agent identity.
 6. Isolate `general` scratch captures strongly enough for gateway multi-chat / multi-topic use.
 7. Preserve an offline-capable default path for local operation and open-source onboarding.
+8. Make retrieval quality observable through Recall Funnel traces and regression benchmarks before optimizing graph or memory-quality heuristics.
 
 ## V1 scope
 
@@ -40,6 +43,8 @@ V1 focuses on the local recall layer that every Hermes runtime can inspect and o
 - durable scoped recall for `user`/`memory`/`project`/`ops` facts
 - local isolation for `general` scratch captures
 - conservative governance primitives such as dedupe, trust metadata, decay review, relations, and explicit operator tools
+- Recall Funnel observability for search/explain/benchmark paths
+- synthetic retrieval-regression benchmarks that can run without vector dependencies or API keys
 - offline-capable bootstrap through deterministic local embeddings
 - bridge-friendly export/import surfaces for deployments with a central shared backend
 
@@ -186,6 +191,18 @@ That prevents good curated lexical hits from being suppressed merely because the
 
 SQLite FTS5 candidate discovery uses `bm25(memories_fts)` before recency tie-breaking. BM25 now also participates in final hybrid scoring with a bounded weight, while RRF reranking promotes memories that appear across lexical, vector, BM25, and curated rankings.
 
+### Recall Funnel observability
+
+Every `RecallService.search_memories()` call records the latest structured funnel trace on the provider service. Public tools expose it only when useful:
+
+- `scope_recall_search(include_trace=true)` includes the trace for the current query.
+- `scope_recall_explain` includes the trace alongside per-result scoring components and rejected candidates.
+- `scope_recall_benchmark(include_trace=true)` includes per-case traces and aggregates latency/quality metrics.
+
+The trace is intentionally bounded metadata, not raw prompt text. It records candidate-pool/default-top-k settings, lexical/vector/curated candidate counts, merge/dedupe counts, lifecycle/general/entity/vector/min-score filter counts, graph evidence counts, final returned ids/chars, and stage timings. This makes candidate explosions, prompt-budget pressure, and regression causes observable before tuning graph or memory-quality heuristics.
+
+`scripts/benchmark.retrieval_regression.py` builds an isolated Hermes home, inserts labeled fixture rows plus configurable distractors, and runs the benchmark tool with Recall Funnel traces. The default config disables vectors so CI and contributors can reproduce lexical/candidate-pool regressions without hosted API keys or native vector dependencies.
+
 ## Embedders
 
 ### Configured default: Gemini OpenAI-compatible API
@@ -331,6 +348,9 @@ Primary-agent default tools:
 - `scope_recall_merge`
 - `scope_recall_export` with `scope_only=true`
 - `scope_recall_stats`
+- `scope_recall_inspect`
+- `scope_recall_explain`
+- `scope_recall_benchmark`
 
 Operator-only maintenance tools require `maintenance_tools_enabled=true` and fail closed otherwise:
 
@@ -362,6 +382,7 @@ What is already real now:
 - journal/provenance staging and background journal digest exist
 - configured vector companion layer exists
 - hybrid retrieval with BM25 and RRF metadata exists
+- Recall Funnel traces and synthetic retrieval-regression benchmarks exist for search/explain/benchmark quality work
 - legacy local rename migration exists
 - focused tests for loading / hybrid recall / curated memory / stats pass
 - release docs include migration notes, upstream differences, a V1 stability contract, and an OpenClaw import script

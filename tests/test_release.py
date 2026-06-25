@@ -29,6 +29,24 @@ embedders_module = importlib.import_module(f"{PACKAGE_NAME}.embedders")
 build_embedder = embedders_module.build_embedder
 
 
+def _write_local_debug_vector_config(hermes_home: Path) -> None:
+    config_path = hermes_home / "scope-recall" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "vector": {
+                    "embedder": {"provider": "local-debug", "dimensions": 16, "model": "debug-hash-v1"},
+                    "fallback_embedder": {"provider": "local-debug", "dimensions": 16, "model": "debug-hash-v1"},
+                }
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 class _FakeSentenceTransformer:
     def __init__(self, model: str, **kwargs):
         self.model = model
@@ -73,6 +91,48 @@ def test_readme_public_version_matches_package_metadata():
 
     assert f"Version `{version}`" in readme
     assert "Version `1.0.6`" not in readme
+
+
+def test_default_config_includes_documented_retrieval_top_k():
+    config_module = importlib.import_module(f"{PACKAGE_NAME}.config")
+    source_config = json.loads((PLUGIN_ROOT / "config.json").read_text(encoding="utf-8"))
+
+    assert source_config["retrieval"]["top_k"] == 5
+    assert config_module.DEFAULT_CONFIG["retrieval"]["top_k"] == source_config["retrieval"]["top_k"]
+
+
+def test_scope_recall_stats_reports_journal_digest_health(tmp_path, monkeypatch):
+    config_path = tmp_path / "scope-recall" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps({"journal": {"background_digest_enabled": False}}, ensure_ascii=False) + "\n", encoding="utf-8")
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    plugin.initialize(
+        "session-journal-health",
+        hermes_home=str(tmp_path),
+        platform="cli",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        stats = json.loads(plugin.handle_tool_call("scope_recall_stats", {}))
+        assert stats["journal_digest"]["last_status"] == "never_run"
+        assert stats["journal_digest"]["consecutive_failures"] == 0
+
+        module = sys.modules[plugin.__class__.__module__]
+
+        def fail_digest(**_kwargs):
+            return {"ok": False, "status": "error", "error": "simulated digest failure at /home/a/private"}
+
+        monkeypatch.setattr(module, "run_journal_digest", fail_digest)
+        plugin._run_background_journal_digest({"extractor": "heuristic", "max_entries_per_digest": 1})
+        stats = json.loads(plugin.handle_tool_call("scope_recall_stats", {}))
+        assert stats["journal_digest"]["last_status"] == "error"
+        assert stats["journal_digest"]["consecutive_failures"] == 1
+        assert "[REDACTED_PATH]" in stats["journal_digest"]["last_error"]
+    finally:
+        plugin.shutdown()
 
 
 
@@ -838,6 +898,7 @@ def test_sentence_transformers_provider_path_uses_local_vector_dimensions(tmp_pa
 
 
 def test_incremental_vector_sync_removes_stale_rows(tmp_path):
+    _write_local_debug_vector_config(tmp_path)
     plugin = load_memory_provider("scope-recall")
     assert plugin is not None
     plugin.initialize(
@@ -896,6 +957,7 @@ def test_incremental_vector_sync_removes_stale_rows(tmp_path):
 
 
 def test_incremental_vector_sync_deduplicates_duplicate_ids(tmp_path):
+    _write_local_debug_vector_config(tmp_path)
     plugin = load_memory_provider("scope-recall")
     assert plugin is not None
     plugin.initialize(
