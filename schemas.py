@@ -94,6 +94,7 @@ SCOPE_RECALL_SEARCH_SCHEMA = {
         "properties": {
             "query": {"type": "string", "description": "What to search for."},
             "limit": {"type": "integer", "description": "Maximum results to return."},
+            "include_trace": {"type": "boolean", "description": "Include the structured Recall Funnel trace for this query."},
         },
         "required": ["query"],
     },
@@ -231,7 +232,7 @@ SCOPE_RECALL_EXPLAIN_SCHEMA = {
 
 SCOPE_RECALL_BENCHMARK_SCHEMA = {
     "name": "scope_recall_benchmark",
-    "description": "Run read-only Scope Recall query latency smoke checks or assertion cases.",
+    "description": "Run read-only Scope Recall query latency, Recall Funnel, or assertion regression checks.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -268,6 +269,8 @@ SCOPE_RECALL_BENCHMARK_SCHEMA = {
                 },
             },
             "auto_explain_on_fail": {"type": "boolean", "description": "Include scope_recall_explain payload for failed assertion cases."},
+            "include_trace": {"type": "boolean", "description": "Include per-query Recall Funnel traces in benchmark results."},
+            "prompt_budget_chars": {"type": "integer", "description": "Optional returned-character budget used to compute prompt_budget_hit_rate."},
             "limit": {"type": "integer", "description": "Maximum results per query."},
         },
     },

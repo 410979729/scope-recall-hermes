@@ -29,6 +29,24 @@ embedders_module = importlib.import_module(f"{PACKAGE_NAME}.embedders")
 build_embedder = embedders_module.build_embedder
 
 
+def _write_local_debug_vector_config(hermes_home: Path) -> None:
+    config_path = hermes_home / "scope-recall" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "vector": {
+                    "embedder": {"provider": "local-debug", "dimensions": 16, "model": "debug-hash-v1"},
+                    "fallback_embedder": {"provider": "local-debug", "dimensions": 16, "model": "debug-hash-v1"},
+                }
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 class _FakeSentenceTransformer:
     def __init__(self, model: str, **kwargs):
         self.model = model
@@ -838,6 +856,7 @@ def test_sentence_transformers_provider_path_uses_local_vector_dimensions(tmp_pa
 
 
 def test_incremental_vector_sync_removes_stale_rows(tmp_path):
+    _write_local_debug_vector_config(tmp_path)
     plugin = load_memory_provider("scope-recall")
     assert plugin is not None
     plugin.initialize(
@@ -896,6 +915,7 @@ def test_incremental_vector_sync_removes_stale_rows(tmp_path):
 
 
 def test_incremental_vector_sync_deduplicates_duplicate_ids(tmp_path):
+    _write_local_debug_vector_config(tmp_path)
     plugin = load_memory_provider("scope-recall")
     assert plugin is not None
     plugin.initialize(

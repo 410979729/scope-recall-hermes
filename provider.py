@@ -1023,8 +1023,18 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         cases: list[dict[str, Any]] | None = None,
         limit: int = 5,
         auto_explain_on_fail: bool = False,
+        include_trace: bool = False,
+        prompt_budget_chars: int = 0,
     ) -> dict[str, Any]:
-        return benchmark_queries(self, queries=queries, cases=cases, limit=limit, auto_explain_on_fail=auto_explain_on_fail)
+        return benchmark_queries(
+            self,
+            queries=queries,
+            cases=cases,
+            limit=limit,
+            auto_explain_on_fail=auto_explain_on_fail,
+            include_trace=include_trace,
+            prompt_budget_chars=prompt_budget_chars,
+        )
 
     def _search_vector_memories(self, query: str, *, limit: int) -> List[RecallItem]:
         return search_vector_memories(self, query, limit=limit)

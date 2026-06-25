@@ -1005,6 +1005,7 @@ def explain_query(provider: Any, *, query: str, limit: int = 5) -> dict[str, Any
         "results": payload_results,
         "rejected_count": len(rejected_candidates),
         "rejected_candidates": rejected_payload,
+        "funnel_trace": dict(getattr(provider._recall_service, "last_funnel_trace", {}) or {}),
     }
 
 
@@ -1037,6 +1038,32 @@ def _benchmark_cases(queries: list[str] | None, cases: list[dict[str, Any]] | No
     return [{"query": str(query).strip()} for query in (queries or []) if str(query).strip()]
 
 
+def _percentile(values: list[float], percentile: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return round(ordered[0], 3)
+    index = (len(ordered) - 1) * max(0.0, min(100.0, percentile)) / 100.0
+    lower = int(index)
+    upper = min(len(ordered) - 1, lower + 1)
+    if lower == upper:
+        return round(ordered[lower], 3)
+    fraction = index - lower
+    return round(ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction, 3)
+
+
+def _merge_filter_counts(total: dict[str, int], trace: dict[str, Any]) -> None:
+    filters = trace.get("filters") if isinstance(trace, dict) else {}
+    if not isinstance(filters, dict):
+        return
+    for key, value in filters.items():
+        try:
+            total[str(key)] = int(total.get(str(key), 0)) + int(value or 0)
+        except (TypeError, ValueError):
+            continue
+
+
 def benchmark_queries(
     provider: Any,
     *,
@@ -1044,16 +1071,30 @@ def benchmark_queries(
     cases: list[dict[str, Any]] | None = None,
     limit: int = 5,
     auto_explain_on_fail: bool = False,
+    include_trace: bool = False,
+    prompt_budget_chars: int = 0,
 ) -> dict[str, Any]:
     normalized_cases = _benchmark_cases(queries, cases)
     rows: list[dict[str, Any]] = []
     aggregate_failures: list[str] = []
     bounded_limit = max(1, min(20, limit))
+    latencies: list[float] = []
+    filter_counts: dict[str, int] = {}
+    expected_total = 0
+    expected_found = 0
+    cases_with_expected = 0
+    cases_with_expected_hit = 0
+    forbidden_violations = 0
+    prompt_budget_checked = 0
+    prompt_budget_hits = 0
     for case in normalized_cases:
         query = str(case.get("query") or "").strip()
         started = time.perf_counter()
         results = provider._recall_service.search_memories(query, limit=bounded_limit)
         latency_ms = (time.perf_counter() - started) * 1000.0
+        latencies.append(latency_ms)
+        trace = dict(getattr(provider._recall_service, "last_funnel_trace", {}) or {})
+        _merge_filter_counts(filter_counts, trace)
         ids = [str(item.id) for item in results]
         ranks = {memory_id: index for index, memory_id in enumerate(ids, start=1)}
         failures: list[str] = []
@@ -1071,14 +1112,24 @@ def benchmark_queries(
             min_top_score = 0.0
         raw_top_score = float(results[0].score) if results else 0.0
         top_score = round(raw_top_score, 4)
+        if expected_ids:
+            cases_with_expected += 1
+        case_expected_hit = False
         for expected_id in expected_ids:
+            expected_total += 1
             rank = ranks.get(expected_id)
             if rank is None:
                 failures.append(f"expected_id_missing:{expected_id}")
-            elif min_rank > 0 and rank > min_rank:
-                failures.append(f"expected_id_rank_too_low:{expected_id}:rank={rank}:min_rank={min_rank}")
+            else:
+                expected_found += 1
+                case_expected_hit = True
+                if min_rank > 0 and rank > min_rank:
+                    failures.append(f"expected_id_rank_too_low:{expected_id}:rank={rank}:min_rank={min_rank}")
+        if case_expected_hit:
+            cases_with_expected_hit += 1
         for forbidden_id in forbidden_ids:
             if forbidden_id in ranks:
+                forbidden_violations += 1
                 failures.append(f"forbidden_id_present:{forbidden_id}:rank={ranks[forbidden_id]}")
         if min_top_score_raw is not None and top_score < min_top_score:
             failures.append(f"top_score_below_min:{top_score}:min_top_score={min_top_score}")
@@ -1092,15 +1143,39 @@ def benchmark_queries(
             "passed": not failures,
             "failures": failures,
         }
+        if prompt_budget_chars > 0:
+            prompt_budget_checked += 1
+            returned_chars = int(((trace.get("final") or {}) if isinstance(trace.get("final"), dict) else {}).get("returned_chars") or 0)
+            row["prompt_budget_chars"] = prompt_budget_chars
+            row["returned_chars"] = returned_chars
+            row["prompt_budget_hit"] = returned_chars <= prompt_budget_chars
+            if row["prompt_budget_hit"]:
+                prompt_budget_hits += 1
+        if include_trace:
+            row["funnel_trace"] = trace
         if failures and auto_explain_on_fail:
             row["explain"] = explain_query(provider, query=query, limit=bounded_limit)
         rows.append(row)
         aggregate_failures.extend(f"{query}: {failure}" for failure in failures)
+    metrics: dict[str, Any] = {
+        "latency_ms_p50": _percentile(latencies, 50),
+        "latency_ms_p95": _percentile(latencies, 95),
+        "known_answer_recall": round(expected_found / expected_total, 4) if expected_total else None,
+        "top_k_accuracy": round(cases_with_expected_hit / cases_with_expected, 4) if cases_with_expected else None,
+        "expected_total": expected_total,
+        "expected_found": expected_found,
+        "forbidden_violations": forbidden_violations,
+        "filter_counts": filter_counts,
+    }
+    if prompt_budget_checked:
+        metrics["prompt_budget_hit_rate"] = round(prompt_budget_hits / prompt_budget_checked, 4)
+        metrics["prompt_budget_checked"] = prompt_budget_checked
     return {
         "query_count": len(normalized_cases),
         "limit": bounded_limit,
         "passed": not aggregate_failures,
         "failures": aggregate_failures,
+        "metrics": metrics,
         "results": rows,
     }
 

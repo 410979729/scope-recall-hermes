@@ -4,6 +4,17 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Added Recall Funnel traces for search/explain/benchmark paths, including candidate-pool sizing, per-stage candidate counts, filter counts, returned ids/chars, and retrieval timings.
+- Added benchmark aggregate metrics for latency percentiles, known-answer recall, top-k accuracy, forbidden-id violations, filter counts, and optional prompt-budget hit rate.
+- Added `scripts/benchmark.retrieval_regression.py`, an isolated synthetic benchmark that stress-tests lexical retrieval with distractor memories and Recall Funnel traces without requiring vector dependencies or API keys.
+
+### Changed
+- Added `retrieval.top_k` as the default tool result limit while preserving explicit per-call `limit` overrides.
+
+### Fixed
+- Made vector sync release tests use the deterministic `local-debug` embedder so release gates no longer depend on hosted embedding network availability.
+
 ## [1.5.1] - 2026-06-24
 
 ### Fixed

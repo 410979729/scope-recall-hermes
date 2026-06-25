@@ -492,6 +492,8 @@ hybrid scoring + RRF/BM25/entity-aware ranking + bounded prompt block
 | `scripts/journal-digest.py` | CLI wrapper for journal-first background digest |
 | `scripts/repair.vector_index.py` | Rebuild/repair the configured vector companion from SQLite truth |
 | `scripts/check.release.py` | Full V1 release gate used locally and by CI |
+| `scripts/benchmark.golden.py` | Isolated golden recall benchmark using repository-owned fixtures |
+| `scripts/benchmark.retrieval_regression.py` | Isolated synthetic Recall Funnel / retrieval-regression benchmark with configurable distractors |
 
 </details>
 
@@ -590,6 +592,17 @@ Default hybrid weights:
 - lexical: `0.45`
 - vector: `0.55`
 
+Default result sizing:
+
+- `retrieval.candidate_pool` controls how many lexical/vector candidates each source may feed into the ranking funnel before merge, filters, graph/entity bonuses, and final slicing.
+- `retrieval.top_k` controls the default tool result limit when a caller does not pass an explicit `limit`; explicit per-call `limit` still wins.
+
+Recall observability:
+
+- `scope_recall_search(..., include_trace=true)` returns the structured Recall Funnel for that query.
+- `scope_recall_explain` includes the same `funnel_trace` alongside rank-aligned scoring components and rejected candidates.
+- `scope_recall_benchmark(..., include_trace=true, prompt_budget_chars=N)` reports per-case traces plus aggregate latency, known-answer recall, top-k accuracy, forbidden-id violations, filter counts, and prompt-budget hit rate.
+
 Guardrail: if only one side has a score, that side is used directly instead of being unfairly damped by a missing partner score.
 
 ### Scope isolation
@@ -665,6 +678,13 @@ scope_recall_inspect
 scope_recall_explain
 scope_recall_benchmark
 ```
+
+The unreleased line adds Recall Funnel observability and retrieval-regression benchmarking:
+
+- `scope_recall_search(include_trace=true)`, `scope_recall_explain`, and `scope_recall_benchmark(include_trace=true)` expose structured candidate-pool, per-stage, filter, timing, and returned-character traces for the active query.
+- `scope_recall_benchmark` now returns aggregate quality metrics: latency percentiles, known-answer recall, top-k accuracy, forbidden-id violations, filter counts, and optional prompt-budget hit rate.
+- `scripts/benchmark.retrieval_regression.py` runs an isolated synthetic benchmark with configurable distractor rows, `candidate_pool`, and `top_k`, so retrieval regressions can be reproduced without API keys or vector dependencies.
+- `retrieval.top_k` controls the default tool result limit when no per-call `limit` is supplied.
 
 Release `1.5.1` fixes strict release-gate handling for CI runtime scratch directories while preserving the 1.5.0 commercial-governance feature set.
 
@@ -759,7 +779,7 @@ Example `scope_recall_stats` shape:
 | Tool | Purpose |
 | --- | --- |
 | `scope_recall_store` | Store a provider-owned memory row after deterministic governance checks |
-| `scope_recall_search` | Search the current local scratch scope plus shared durable scope with lexical/vector/hybrid retrieval |
+| `scope_recall_search` | Search the current local scratch scope plus shared durable scope with lexical/vector/hybrid retrieval; pass `include_trace=true` to inspect the Recall Funnel |
 | `scope_recall_context` | Render a compact task-relevant memory context block plus structured evidence for a query |
 | `scope_recall_probe` | Inspect accessible memories attached to a specific entity |
 | `scope_recall_related` | List entities that co-occur with a given entity in accessible memories |
@@ -772,6 +792,8 @@ Example `scope_recall_stats` shape:
 | `scope_recall_govern` | Operator-only: review tier distribution and decay/archive candidates |
 | `scope_recall_hygiene` | Operator-only, read-only: report memory-quality cleanup/promotion candidates without modifying rows |
 | `scope_recall_repair` | Operator-only: repair/rebuild the configured vector companion from SQLite truth |
+| `scope_recall_explain` | Explain rank-aligned retrieval evidence and include the latest Recall Funnel trace |
+| `scope_recall_benchmark` | Run latency, assertion, Recall Funnel, and quality-regression checks with aggregate metrics |
 | `scope_recall_stats` | Inspect storage, retrieval, scope, and vector health |
 
 ---
@@ -803,6 +825,8 @@ Do **not** point `scope-recall` directly at an OpenClaw `.lance` directory and c
 ## Compared with OpenClaw memory-lancedb-pro
 
 `scope-recall` was inspired by good public ideas in OpenClaw `memory-lancedb-pro`, especially current-turn recall, scoped memory boundaries, hybrid retrieval, and memory hygiene. It keeps those ideas in a Hermes-native implementation with SQLite truth storage and an explicit OpenClaw import path.
+
+This Hermes implementation is not a feature-parity target for the OpenClaw sibling. Each runtime should evolve toward the best native memory plugin for its own host platform; the OpenClaw path here remains an explicit migration/import boundary, not a forced alignment contract.
 
 | Area | OpenClaw `memory-lancedb-pro` | `scope-recall` V1 |
 | --- | --- | --- |
@@ -939,6 +963,8 @@ Current focused regression coverage includes:
 - governance metadata classification and decay review candidates
 - provider tools cover store/search/context/probe/related/feedback/forget/update/dedupe/merge/export/govern/repair/stats
 - explicit vector companion rebuild from SQLite truth via `scripts/repair.vector_index.py`
+- Recall Funnel traces for search/explain/benchmark, including stage counts, filter counts, timings, returned ids, and returned character budget evidence
+- synthetic retrieval regression with configurable distractor rows via `scripts/benchmark.retrieval_regression.py`
 - `scope_recall_stats` exposes physical rows, unique ids, and duplicate-row count
 - top-level `import scope_recall` stays light without Hermes runtime modules
 - `on_memory_write` remains an intentional observational no-op
