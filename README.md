@@ -20,7 +20,7 @@ Current-turn recall · Journal-first capture · Durable shared memory · Backgro
 
 This repository, `scope-recall-hermes`, is the Hermes implementation. The Python distribution package is `hermes-scope-recall`, the Python import/package spelling is `scope_recall`, and the Hermes plugin ID/provider name remains `scope-recall` for runtime compatibility. The OpenClaw sibling implementation lives at [`scope-recall-openclaw`](https://github.com/410979729/scope-recall-openclaw).
 
-Version `1.5.1` keeps the stable V1 commercial-governance line introduced in 1.5.0 and fixes strict release-gate handling for CI runtime scratch directories. The 1.5 line adds governance cleanup, journal recovery, an operator dashboard, repository-owned golden benchmarks, stricter release gates, fail-closed hard-delete safety, and packaged benchmark fixtures. Runtime Experience packet injection is enabled by default through `experience.prefetch_enabled=true` and can be disabled with `experience.prefetch_enabled=false`; background automatic promotion remains an explicit operator opt-in through `experience.auto_promotion_enabled=true`, and low-risk auto-promotion remains a second explicit opt-in through `experience.auto_promote_low_risk=true`. By default, successful low-risk scans create candidate playbooks, high-risk playbooks stay review-gated, and final-failure or low-signal traces are not promoted. It keeps the `scope_recall_profile` surface added in v1.3.0, compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, inline attachment-marker sanitization, the supported standalone install shape added in v1.1.0, and native-safe LanceDB probing with automatic SQLite vector fallback for non-AVX hosts.
+Version `1.5.2` adds Recall Funnel observability, synthetic retrieval-regression benchmarking, and release-audit hardening while preserving the stable V1 commercial-governance line introduced in 1.5.0. The 1.5 line includes governance cleanup, journal recovery, an operator dashboard, repository-owned golden benchmarks, stricter release gates, fail-closed hard-delete safety, packaged benchmark fixtures, and default-safe vector fallback behavior. Runtime Experience packet injection is enabled by default through `experience.prefetch_enabled=true` and can be disabled with `experience.prefetch_enabled=false`; background automatic promotion remains an explicit operator opt-in through `experience.auto_promotion_enabled=true`, and low-risk auto-promotion remains a second explicit opt-in through `experience.auto_promote_low_risk=true`. By default, successful low-risk scans create candidate playbooks, high-risk playbooks stay review-gated, and final-failure or low-signal traces are not promoted. It keeps the `scope_recall_profile` surface added in v1.3.0, compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, inline attachment-marker sanitization, the supported standalone install shape added in v1.1.0, and native-safe LanceDB probing with automatic SQLite vector fallback for non-AVX hosts.
 
 It uses a **three-layer design**:
 
@@ -681,12 +681,13 @@ scope_recall_explain
 scope_recall_benchmark
 ```
 
-The unreleased line adds Recall Funnel observability and retrieval-regression benchmarking:
+Release `1.5.2` adds Recall Funnel observability and retrieval-regression benchmarking:
 
 - `scope_recall_search(include_trace=true)`, `scope_recall_explain`, and `scope_recall_benchmark(include_trace=true)` expose structured candidate-pool, per-stage, filter, timing, and returned-character traces for the active query.
 - `scope_recall_benchmark` now returns aggregate quality metrics: latency percentiles, known-answer recall, top-k accuracy, forbidden-id violations, filter counts, and optional prompt-budget hit rate.
 - `scripts/benchmark.retrieval_regression.py` runs an isolated synthetic benchmark with configurable distractor rows, `candidate_pool`, and `top_k`, so retrieval regressions can be reproduced without API keys or vector dependencies.
 - `retrieval.top_k` controls the default tool result limit when no per-call `limit` is supplied.
+- Release-audit hardening synchronizes `retrieval.top_k` defaults, serializes vector companion mutations, exposes background journal digest health in `scope_recall_stats`, and caches configured capture skip regexes.
 
 Release `1.5.1` fixes strict release-gate handling for CI runtime scratch directories while preserving the 1.5.0 commercial-governance feature set.
 
