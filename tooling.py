@@ -243,14 +243,15 @@ class ScopeRecallToolService:
         query = self._clean_query(args)
         if not query:
             return tool_error("query is required")
-        limit = self._limit(args)
+        limit = self._retrieval_limit(args)
         results = self.provider._recall_service.search_memories(query, limit=limit)
-        return self._json(
-            {
-                "count": len(results),
-                "results": [self._serialize_recall_item(item) for item in results],
-            }
-        )
+        payload: dict[str, Any] = {
+            "count": len(results),
+            "results": [self._serialize_recall_item(item) for item in results],
+        }
+        if self._bool_arg(args, "include_trace", False):
+            payload["funnel_trace"] = dict(getattr(self.provider._recall_service, "last_funnel_trace", {}) or {})
+        return self._json(payload)
 
     def _handle_context(self, args: dict[str, Any]) -> str:
         query = self._clean_query(args)
@@ -476,7 +477,7 @@ class ScopeRecallToolService:
         query = self._clean_query(args)
         if not query:
             return tool_error("query is required")
-        return self._json(self.provider._explain_query(query=query, limit=self._limit(args)))
+        return self._json(self.provider._explain_query(query=query, limit=self._retrieval_limit(args)))
 
     def _handle_benchmark(self, args: dict[str, Any]) -> str:
         char_limit = int(self.provider._config_value("query_char_limit", 1000))
@@ -507,8 +508,10 @@ class ScopeRecallToolService:
             self.provider._benchmark_queries(
                 queries=queries,
                 cases=cases,
-                limit=self._limit(args),
+                limit=self._retrieval_limit(args),
                 auto_explain_on_fail=self._bool_arg(args, "auto_explain_on_fail", False),
+                include_trace=self._bool_arg(args, "include_trace", False),
+                prompt_budget_chars=max(0, int(args.get("prompt_budget_chars") or 0)),
             )
         )
 
@@ -682,6 +685,13 @@ class ScopeRecallToolService:
 
     def _limit(self, args: dict[str, Any]) -> int:
         return max(1, min(20, int(args.get("limit") or 5)))
+
+    def _retrieval_limit(self, args: dict[str, Any]) -> int:
+        if args.get("limit") is None:
+            default_limit = (getattr(self.provider, "_retrieval_config", {}) or {}).get("top_k") or 5
+        else:
+            default_limit = args.get("limit")
+        return max(1, min(20, int(default_limit or 5)))
 
     def _targets_arg(self, args: dict[str, Any]) -> list[str] | None:
         raw_targets = args.get("targets")

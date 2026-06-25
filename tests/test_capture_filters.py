@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from scope_recall.capture_filters import redact_secret_like_text, sanitize_capture_text, should_capture_text
+from scope_recall.capture_filters import _compiled_configured_patterns, _configured_patterns, redact_secret_like_text, sanitize_capture_text, should_capture_text
 
 
 def test_recent_telegram_history_wrapper_is_rejected():
@@ -24,6 +24,18 @@ def test_skill_review_meta_prompt_is_rejected():
 
     assert result.allowed is False
     assert "skill library" in result.reason
+
+
+def test_configured_skip_patterns_are_precompiled_and_cached():
+    config = {"capture_skip_patterns": [r"^NOISY WRAPPER", r"Project\s+Scratch"]}
+    patterns = _configured_patterns(config)
+
+    first = _compiled_configured_patterns(patterns)
+    second = _compiled_configured_patterns(patterns)
+
+    assert first is second
+    assert should_capture_text("NOISY WRAPPER\nignore me", config).allowed is False
+    assert should_capture_text("Project Scratch transient note", config).allowed is False
 
 
 def test_secret_like_text_is_rejected():

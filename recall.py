@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -89,14 +90,56 @@ class RecallService:
     def __init__(self, provider: Any) -> None:
         self.provider = provider
         self.last_rejected_candidates: list[RecallItem] = []
+        self.last_funnel_trace: dict[str, Any] = {}
 
     def search_memories(self, query: str, *, limit: int) -> list[RecallItem]:
+        started_at = time.perf_counter()
         retrieval_cfg = self.provider._retrieval_config or {}
-        candidate_pool = max(limit, int(retrieval_cfg.get("candidate_pool") or limit))
-        lexical_candidates = self._filter_recall_lifecycle(self.provider._search_db_memories(query, limit=candidate_pool))
-        vector_candidates = self._filter_recall_lifecycle(self.provider._search_vector_memories(query, limit=candidate_pool))
+        bounded_limit = max(1, int(limit or 1))
+        configured_candidate_pool = self._positive_int(retrieval_cfg.get("candidate_pool"), bounded_limit)
+        candidate_pool = max(bounded_limit, configured_candidate_pool)
+        configured_top_k = self._positive_int(retrieval_cfg.get("top_k"), bounded_limit)
+        vector_top_k = max(candidate_pool, self._positive_int((getattr(self.provider, "_vector_config", {}) or {}).get("top_k"), candidate_pool))
+        trace: dict[str, Any] = {
+            "query": query,
+            "limit": bounded_limit,
+            "configured_top_k": configured_top_k,
+            "candidate_pool": candidate_pool,
+            "configured_candidate_pool": configured_candidate_pool,
+            "vector_top_k": vector_top_k,
+            "accessible_scope_count": len(getattr(self.provider, "_accessible_scope_ids", []) or []),
+            "stages": {},
+            "filters": {
+                "lifecycle_removed": 0,
+                "general_policy_removed": 0,
+                "entity_scope_mismatch": 0,
+                "vector_only_below_min_score": 0,
+                "below_min_score": 0,
+            },
+            "timings_ms": {},
+        }
+
+        stage_start = time.perf_counter()
+        raw_lexical_candidates = self.provider._search_db_memories(query, limit=candidate_pool)
+        lexical_candidates = self._filter_recall_lifecycle(raw_lexical_candidates)
+        trace["filters"]["lifecycle_removed"] += max(0, len(raw_lexical_candidates) - len(lexical_candidates))
+        trace["stages"]["lexical"] = self._trace_stage(lexical_candidates, raw_count=len(raw_lexical_candidates))
+        trace["timings_ms"]["lexical"] = self._elapsed_ms(stage_start)
+
+        stage_start = time.perf_counter()
+        raw_vector_candidates = self.provider._search_vector_memories(query, limit=candidate_pool)
+        vector_candidates = self._filter_recall_lifecycle(raw_vector_candidates)
+        trace["filters"]["lifecycle_removed"] += max(0, len(raw_vector_candidates) - len(vector_candidates))
+        trace["stages"]["vector"] = self._trace_stage(vector_candidates, raw_count=len(raw_vector_candidates))
+        trace["timings_ms"]["vector"] = self._elapsed_ms(stage_start)
+
+        stage_start = time.perf_counter()
         curated_candidates = self.provider._search_curated_memories(query)
+        trace["stages"]["curated"] = self._trace_stage(curated_candidates)
+        trace["timings_ms"]["curated"] = self._elapsed_ms(stage_start)
+
         rrf_by_id = self._rrf_scores(lexical_candidates, vector_candidates, curated_candidates)
+        trace["stages"]["rrf"] = {"count": len(rrf_by_id), "ids": sorted(rrf_by_id)[:20]}
         for item in lexical_candidates + vector_candidates + curated_candidates:
             if item.id in rrf_by_id:
                 item.metadata = dict(item.metadata or {})
@@ -130,11 +173,25 @@ class RecallService:
             preferred.score = self.final_score(meta)
             merged[item_key] = preferred
 
+        trace["stages"]["merge"] = {
+            "input_count": len(lexical_candidates) + len(vector_candidates) + len(curated_candidates),
+            "output_count": len(merged),
+            "deduped_count": max(0, len(lexical_candidates) + len(vector_candidates) + len(curated_candidates) - len(merged)),
+        }
         results = list(merged.values())
+        before_lifecycle = len(results)
         results = self._filter_recall_lifecycle(results)
+        trace["filters"]["lifecycle_removed"] += max(0, before_lifecycle - len(results))
+        before_general = len(results)
         results = self._apply_general_policy(results)
+        trace["filters"]["general_policy_removed"] = max(0, before_general - len(results))
+        trace["stages"]["candidate_after_policy"] = self._trace_stage(results)
         entity_graph_scores = self._entity_graph_scores(query, results)
         relation_evidence = self._persisted_relation_evidence([item.id for item in results])
+        trace["stages"]["graph"] = {
+            "entity_scored_count": len(entity_graph_scores),
+            "relation_evidence_count": sum(int((payload or {}).get("count") or 0) for payload in relation_evidence.values()),
+        }
         min_score = float(retrieval_cfg.get("min_score") or self.provider._config_value("min_score", 0.18))
         # Vector-only matches have no lexical evidence, so they must clear a
         # substantially higher bar than the broad vector candidate threshold.
@@ -207,11 +264,13 @@ class RecallService:
             vector_score = float(meta.get("vector_score") or 0.0)
             if self._entity_scope_mismatch(query, item, meta):
                 meta["rejected_reason"] = "entity_scope_mismatch"
+                trace["filters"]["entity_scope_mismatch"] += 1
                 item.metadata = meta
                 rejected.append(item)
                 continue
             if lexical_score <= 0.0 and vector_score > 0.0 and base_score < vector_only_min_score:
                 meta["rejected_reason"] = "vector_only_below_min_score"
+                trace["filters"]["vector_only_below_min_score"] += 1
                 item.metadata = meta
                 rejected.append(item)
                 continue
@@ -219,6 +278,7 @@ class RecallService:
                 filtered.append(item)
             else:
                 meta["rejected_reason"] = "below_min_score"
+                trace["filters"]["below_min_score"] += 1
                 item.metadata = meta
                 rejected.append(item)
 
@@ -253,7 +313,7 @@ class RecallService:
         )
         self.last_rejected_candidates = ranked_rejected
 
-        return sorted(
+        ranked = sorted(
             filtered,
             key=lambda item: (
                 item.score,
@@ -262,7 +322,40 @@ class RecallService:
                 item.id,
             ),
             reverse=True,
-        )[:limit]
+        )
+        returned = ranked[:bounded_limit]
+        trace["stages"]["ranked"] = self._trace_stage(ranked)
+        trace["final"] = {
+            "returned_count": len(returned),
+            "returned_ids": [item.id for item in returned],
+            "returned_chars": sum(len(str(item.content or "")) for item in returned),
+            "rejected_count": len(ranked_rejected),
+        }
+        trace["timings_ms"]["total"] = self._elapsed_ms(started_at)
+        self.last_funnel_trace = trace
+        return returned
+
+    @staticmethod
+    def _positive_int(value: Any, default: int) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = int(default)
+        return max(1, parsed)
+
+    @staticmethod
+    def _elapsed_ms(started_at: float) -> float:
+        return round((time.perf_counter() - started_at) * 1000.0, 3)
+
+    @staticmethod
+    def _trace_stage(items: list[RecallItem], *, raw_count: int | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "count": len(items),
+            "ids": [item.id for item in items[:20]],
+        }
+        if raw_count is not None:
+            payload["raw_count"] = raw_count
+        return payload
 
     def _project_entities(self, text: str) -> set[str]:
         output: set[str] = set()
