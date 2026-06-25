@@ -249,6 +249,8 @@ Minimal default shape:
   "auto_recall": true,
   "auto_capture": true,
   "enable_tools": true,
+  "tool_schema_profile": "compact",
+  "tool_schema_extra_tools": [],
   "maintenance_tools_enabled": false,
   "secret_index_tools_enabled": false,
   "retrieval": {
@@ -663,30 +665,44 @@ This is a local deterministic governance layer, not a remote LLM extraction pipe
 
 ## Provider tools
 
-Primary-agent default tools:
+Primary-agent default tools use `tool_schema_profile: "compact"` to keep the base request small:
 
 ```text
 scope_recall_store
 scope_recall_search
 scope_recall_context
 scope_recall_profile
-scope_recall_probe
-scope_recall_related
-scope_recall_feedback
-scope_recall_forget
-scope_recall_update
-scope_recall_merge
-scope_recall_export
-scope_recall_stats
-scope_recall_inspect
-scope_recall_explain
-scope_recall_benchmark
-scope_recall_playbook_search
-scope_recall_playbook_inspect
-scope_recall_experience_preflight
-scope_recall_playbook_feedback
-scope_recall_experience_stats
+scope_recall_memory
+scope_recall_entity
 ```
+
+The compact profile replaces several overlapping schemas with two dispatch tools:
+
+- `scope_recall_memory(action=...)` covers `inspect`, `feedback`, `update`, `merge`, and `forget` by exact id.
+- `scope_recall_entity(action=...)` covers `probe` and `related` entity graph reads.
+
+Legacy individual tools remain direct-call compatible. To expose the pre-compact schema surface, set:
+
+```json
+{
+  "tool_schema_profile": "standard"
+}
+```
+
+To keep compact mode but expose selected diagnostics, use `tool_schema_extra_tools`:
+
+```json
+{
+  "tool_schema_profile": "compact",
+  "tool_schema_extra_tools": ["scope_recall_stats", "scope_recall_benchmark"]
+}
+```
+
+Schema-surface targets after the compact-profile change:
+
+- default compact: 6 tools, about 4.7 KB of JSON schema in repo-local measurement
+- standard profile: 20 tools, about 10.6 KB
+- maintenance/secret schema surfaces still require their explicit safety flags
 
 Release `1.5.2` adds Recall Funnel observability and retrieval-regression benchmarking:
 
@@ -746,6 +762,8 @@ Destructive cleanup is intentionally out-of-band: use the hygiene report first, 
 
 `scope_recall_export` defaults to the current accessible scope set: local scratch scope plus shared durable scope. Passing `scope_only=false` remains an operator maintenance action and fails closed unless `maintenance_tools_enabled=true`.
 
+`scope_recall_stats`, `scope_recall_export`, `scope_recall_explain`, `scope_recall_benchmark`, and Experience Kernel tools still work through direct tool calls, but are no longer part of the compact default schema unless `tool_schema_profile="standard"` or `tool_schema_extra_tools` exposes them.
+
 Backward-compatible aliases are still accepted internally for old `lancepro_*` tool names during transition.
 
 ### Tool quick reference
@@ -765,8 +783,11 @@ results = scope_recall_search(
     limit=3,
 )
 
-# Inspect truth/vector health.
-stats = scope_recall_stats()
+# Inspect/update by exact id through the compact memory dispatcher.
+inspected = scope_recall_memory(action="inspect", id=store["id"])
+
+# Probe entity memory through the compact entity dispatcher.
+entity = scope_recall_entity(action="probe", entity="this project", limit=3)
 ```
 
 Example `scope_recall_stats` shape:
@@ -799,23 +820,26 @@ Example `scope_recall_stats` shape:
 
 | Tool | Purpose |
 | --- | --- |
-| `scope_recall_store` | Store a provider-owned memory row after deterministic governance checks |
-| `scope_recall_search` | Search the current local scratch scope plus shared durable scope with lexical/vector/hybrid retrieval; pass `include_trace=true` to inspect the Recall Funnel |
-| `scope_recall_context` | Render a compact task-relevant memory context block plus structured evidence for a query |
-| `scope_recall_probe` | Inspect accessible memories attached to a specific entity |
-| `scope_recall_related` | List entities that co-occur with a given entity in accessible memories |
-| `scope_recall_feedback` | Mark a memory as helpful or unhelpful so trust scoring can adjust future recall |
-| `scope_recall_forget` | Delete memories by exact id/ids within the current accessible scope set; search or inspect first, then pass explicit ids |
-| `scope_recall_update` | Replace content/category within the current accessible scope set; shared/local target-mode changes are rejected |
+| `scope_recall_store` | Compact default: store a provider-owned memory row after deterministic governance checks |
+| `scope_recall_search` | Compact default: search local scratch plus shared durable scope; pass `include_trace=true` for Recall Funnel evidence |
+| `scope_recall_context` | Compact default: render a task-relevant memory context block plus structured evidence |
+| `scope_recall_profile` | Compact default: render a bounded high-level profile/context surface |
+| `scope_recall_memory` | Compact default: dispatch exact-id `inspect`, `feedback`, `update`, `merge`, and `forget` operations |
+| `scope_recall_entity` | Compact default: dispatch entity `probe` and `related` reads |
+| `scope_recall_probe` | Standard profile/direct-call: inspect accessible memories attached to a specific entity |
+| `scope_recall_related` | Standard profile/direct-call: list entities that co-occur with a given entity |
+| `scope_recall_feedback` | Standard profile/direct-call: mark a memory helpful/unhelpful for trust scoring |
+| `scope_recall_forget` | Standard profile/direct-call: delete memories by exact id/ids within the current accessible scope set |
+| `scope_recall_update` | Standard profile/direct-call: replace content/category within the current accessible scope set |
+| `scope_recall_merge` | Standard profile/direct-call: merge same-scope memories into a target row |
+| `scope_recall_export` | Standard profile/direct-call: export SQLite truth rows as JSON/JSONL; `scope_only=false` is maintenance-gated |
+| `scope_recall_explain` | Standard profile/direct-call: explain rank-aligned retrieval evidence and Recall Funnel trace |
+| `scope_recall_benchmark` | Standard profile/direct-call: run latency/assertion/quality-regression checks |
+| `scope_recall_stats` | Standard profile/direct-call: inspect storage, retrieval, scope, and vector health |
 | `scope_recall_dedupe` | Operator-only: inspect or collapse exact duplicate rows |
-| `scope_recall_merge` | Merge same-scope memories into a target row; shared/local mixing is rejected |
-| `scope_recall_export` | Export SQLite truth rows as JSON or JSONL; defaults to current accessible scope set |
 | `scope_recall_govern` | Operator-only: review tier distribution and decay/archive candidates |
 | `scope_recall_hygiene` | Operator-only, read-only: report memory-quality cleanup/promotion candidates without modifying rows |
 | `scope_recall_repair` | Operator-only: repair/rebuild the configured vector companion from SQLite truth |
-| `scope_recall_explain` | Explain rank-aligned retrieval evidence and include the latest Recall Funnel trace |
-| `scope_recall_benchmark` | Run latency, assertion, Recall Funnel, and quality-regression checks with aggregate metrics |
-| `scope_recall_stats` | Inspect storage, retrieval, scope, and vector health |
 
 ---
 

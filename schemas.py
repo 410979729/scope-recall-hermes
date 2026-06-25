@@ -1,23 +1,23 @@
 SCOPE_RECALL_STORE_SCHEMA = {
     "name": "scope_recall_store",
-    "description": "Store a Scope Recall memory. user/memory/project/ops targets are durable shared memories; general is local scratch.",
+    "description": "Store a Scope Recall memory; durable targets are user/memory/project/ops, general is local scratch.",
     "parameters": {
         "type": "object",
         "properties": {
-            "content": {"type": "string", "description": "Memory text to store."},
+            "content": {"type": "string", "description": "Memory text."},
             "target": {
                 "type": "string",
-                "description": "Category. user/memory/project/ops are shared durable; general stays local to the current chat/thread/session.",
+                "description": "Category; general stays local.",
                 "enum": ["user", "memory", "project", "ops", "general"],
             },
             "scope_mode": {
                 "type": "string",
-                "description": "Optional write scope override. Use shared_pool only when shared_pool.write_enabled is explicitly enabled.",
+                "description": "Optional write scope override.",
                 "enum": ["shared", "local", "shared_pool"],
             },
             "memory_type": {
                 "type": "string",
-                "description": "Optional semantic type used for governance and ranking.",
+                "description": "Semantic type for governance/ranking.",
                 "enum": [
                     "factual",
                     "preference",
@@ -35,17 +35,17 @@ SCOPE_RECALL_STORE_SCHEMA = {
             },
             "importance": {
                 "type": "number",
-                "description": "Optional 0..1 importance hint. Higher values are mildly favored in recall.",
+                "description": "Optional 0..1 importance hint.",
             },
             "entities": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional named entities to attach to this memory.",
+                "description": "Named entities.",
             },
             "tags": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional tags for filtering and audit.",
+                "description": "Tags for filtering/audit.",
             },
         },
         "required": ["content"],
@@ -88,15 +88,50 @@ SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA = {
 
 SCOPE_RECALL_SEARCH_SCHEMA = {
     "name": "scope_recall_search",
-    "description": "Search Scope Recall memories relevant to a query across the current local scope plus shared durable scope.",
+    "description": "Search accessible Scope Recall memories.",
     "parameters": {
         "type": "object",
         "properties": {
-            "query": {"type": "string", "description": "What to search for."},
-            "limit": {"type": "integer", "description": "Maximum results to return."},
-            "include_trace": {"type": "boolean", "description": "Include the structured Recall Funnel trace for this query."},
+            "query": {"type": "string", "description": "Search query."},
+            "limit": {"type": "integer", "description": "Max results."},
+            "include_trace": {"type": "boolean", "description": "Include Recall Funnel trace."},
         },
         "required": ["query"],
+    },
+}
+
+SCOPE_RECALL_MEMORY_SCHEMA = {
+    "name": "scope_recall_memory",
+    "description": "Compact memory operations: inspect, feedback, update, merge, or forget by exact id.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["inspect", "feedback", "update", "merge", "forget"], "description": "Operation."},
+            "id": {"type": "string", "description": "Memory id."},
+            "ids": {"type": "array", "items": {"type": "string"}, "description": "Memory ids for forget."},
+            "rating": {"type": "string", "description": "Feedback rating."},
+            "note": {"type": "string", "description": "Feedback note."},
+            "content": {"type": "string", "description": "Replacement or merged content."},
+            "target": {"type": "string", "enum": ["user", "memory", "project", "ops", "general"], "description": "Optional target."},
+            "target_id": {"type": "string", "description": "Merge target id."},
+            "source_ids": {"type": "array", "items": {"type": "string"}, "description": "Merge source ids."},
+            "source_candidate_id": {"type": "string", "description": "Optional merge audit candidate id."},
+        },
+        "required": ["action"],
+    },
+}
+
+SCOPE_RECALL_ENTITY_SCHEMA = {
+    "name": "scope_recall_entity",
+    "description": "Compact entity graph operations: probe memories for an entity or list related entities.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["probe", "related"], "description": "Entity operation."},
+            "entity": {"type": "string", "description": "Entity/person/project/service."},
+            "limit": {"type": "integer", "description": "Max results."},
+        },
+        "required": ["action", "entity"],
     },
 }
 

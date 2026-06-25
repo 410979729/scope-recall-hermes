@@ -99,6 +99,10 @@ def test_default_config_includes_documented_retrieval_top_k():
 
     assert source_config["retrieval"]["top_k"] == 5
     assert config_module.DEFAULT_CONFIG["retrieval"]["top_k"] == source_config["retrieval"]["top_k"]
+    assert source_config["tool_schema_profile"] == "compact"
+    assert config_module.DEFAULT_CONFIG["tool_schema_profile"] == "compact"
+    assert source_config["tool_schema_extra_tools"] == []
+    assert config_module.DEFAULT_CONFIG["tool_schema_extra_tools"] == []
 
 
 def test_scope_recall_stats_reports_journal_digest_health(tmp_path, monkeypatch):

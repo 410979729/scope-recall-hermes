@@ -51,6 +51,8 @@ class ScopeRecallToolService:
             "scope_recall_store_secret_index": self._handle_store_secret_index,
             "scope_recall_search": self._handle_search,
             "scope_recall_context": self._handle_context,
+            "scope_recall_memory": self._handle_memory,
+            "scope_recall_entity": self._handle_entity,
             "scope_recall_profile": self._handle_profile,
             "scope_recall_probe": self._handle_probe,
             "scope_recall_related": self._handle_related,
@@ -293,6 +295,35 @@ class ScopeRecallToolService:
         if not entity:
             return tool_error("entity is required")
         return self._json(self.provider._related_entities(entity=entity, limit=self._limit(args)))
+
+    def _handle_memory(self, args: dict[str, Any]) -> str:
+        action = str(args.get("action") or "").strip().lower().replace("-", "_")
+        aliases = {
+            "rate": "feedback",
+            "delete": "forget",
+            "remove": "forget",
+            "get": "inspect",
+        }
+        action = aliases.get(action, action)
+        if action == "inspect":
+            return self._handle_inspect(args)
+        if action == "feedback":
+            return self._handle_feedback(args)
+        if action == "update":
+            return self._handle_update(args)
+        if action == "merge":
+            return self._handle_merge(args)
+        if action == "forget":
+            return self._handle_forget(args)
+        return tool_error("action must be one of: inspect, feedback, update, merge, forget")
+
+    def _handle_entity(self, args: dict[str, Any]) -> str:
+        action = str(args.get("action") or "").strip().lower().replace("-", "_")
+        if action == "probe":
+            return self._handle_probe(args)
+        if action in {"related", "relations"}:
+            return self._handle_related(args)
+        return tool_error("action must be one of: probe, related")
 
     def _handle_feedback(self, args: dict[str, Any]) -> str:
         memory_id = str(args.get("id") or "").strip()
