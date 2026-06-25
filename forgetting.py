@@ -10,6 +10,7 @@ from typing import Any, Protocol, Sequence
 
 from .capture_filters import contains_secret_like_text, sanitize_report_text, should_capture_text
 from .gating import compact_text
+from .graph_relations import upsert_relation
 from .sql_store import delete_rows, ensure_schema, record_governance_audit_event
 
 
@@ -176,7 +177,7 @@ def _archive_memory(
     batch_id: str = "",
     actor: str = "scope-recall-forgetting",
 ) -> bool:
-    row = conn.execute("SELECT metadata FROM memories WHERE id = ?", (memory_id,)).fetchone()
+    row = conn.execute("SELECT scope_id, metadata FROM memories WHERE id = ?", (memory_id,)).fetchone()
     if row is None:
         return False
     metadata = _json_loads(row["metadata"])
@@ -191,6 +192,23 @@ def _archive_memory(
     if superseded_by:
         metadata["superseded_by"] = superseded_by
     conn.execute("UPDATE memories SET metadata = ?, updated_at = ? WHERE id = ?", (_json_dumps(metadata), _now_iso(), memory_id))
+    if superseded_by:
+        replacement = conn.execute("SELECT scope_id, metadata FROM memories WHERE id = ?", (superseded_by,)).fetchone()
+        replacement_meta = _json_loads(replacement["metadata"]) if replacement is not None else {}
+        replacement_lifecycle = str(replacement_meta.get("lifecycle") or "").strip().lower()
+        if (
+            replacement is not None
+            and str(replacement["scope_id"] or "") == str(row["scope_id"] or "")
+            and replacement_lifecycle not in {"superseded", "obsolete", "rejected", "archived"}
+        ):
+            upsert_relation(
+                conn,
+                source_memory_id=superseded_by,
+                target_memory_id=memory_id,
+                relation_type="supersedes",
+                confidence=0.95,
+                note="forgetting: metadata.superseded_by",
+            )
     return True
 
 

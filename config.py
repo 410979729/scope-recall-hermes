@@ -132,7 +132,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "relation_rerank_weight": 0.04,
         "relation_supersedes_boost": 0.04,
         "relation_supports_boost": 0.04,
-        "relation_superseded_penalty": 0.0,
+        "relation_superseded_penalty": 0.04,
         "relation_contradicts_penalty": 0.0,
         "relation_contradiction_mode": "surface",
         "temporal_decay_enabled": False,

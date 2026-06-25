@@ -81,6 +81,7 @@ REQUIRED_SOURCE_FILES = {
     "experience_replay.py",
     "experience_promotion.py",
     "forgetting.py",
+    "graph_relations.py",
     "governance_cleanup.py",
     "journal_recovery.py",
     "installer.py",
@@ -106,6 +107,7 @@ REQUIRED_WHEEL = {
     "scope_recall/experience_replay.py",
     "scope_recall/experience_promotion.py",
     "scope_recall/forgetting.py",
+    "scope_recall/graph_relations.py",
     "scope_recall/governance_cleanup.py",
     "scope_recall/journal_recovery.py",
     "scope_recall/hygiene.py",
@@ -145,6 +147,8 @@ REQUIRED_WHEEL = {
     "scope_recall/scripts/experience-replay.py",
     "scope_recall/scripts/benchmark.golden.py",
     "scope_recall/scripts/benchmark.retrieval_regression.py",
+    "scope_recall/scripts/benchmark.graph_relations.py",
+    "scope_recall/scripts/backfill.graph_relations.py",
     "scope_recall/scripts/governance.cleanup.py",
     "scope_recall/scripts/journal.recovery.py",
     "scope_recall/scripts/report.dashboard.py",
@@ -242,18 +246,27 @@ def git_tree_check(*, allow_dirty: bool) -> dict[str, object]:
 
 
 def benchmark_check() -> dict[str, object]:
-    result = run([sys.executable, "scripts/benchmark.golden.py"])
-    if result["returncode"] != 0:
-        return {"ok": False, "result": result}
+    golden_result = run([sys.executable, "scripts/benchmark.golden.py"])
+    if golden_result["returncode"] != 0:
+        return {"ok": False, "golden_result": golden_result}
     try:
-        payload = json.loads(str(result["stdout"] or "{}"))
+        golden_payload = json.loads(str(golden_result["stdout"] or "{}"))
     except json.JSONDecodeError as exc:
-        return {"ok": False, "error": f"invalid benchmark json: {exc}", "result": result}
+        return {"ok": False, "error": f"invalid golden benchmark json: {exc}", "golden_result": golden_result}
+    graph_result = run([sys.executable, "scripts/benchmark.graph_relations.py"])
+    if graph_result["returncode"] != 0:
+        return {"ok": False, "graph_result": graph_result}
+    try:
+        graph_payload = json.loads(str(graph_result["stdout"] or "{}"))
+    except json.JSONDecodeError as exc:
+        return {"ok": False, "error": f"invalid graph benchmark json: {exc}", "graph_result": graph_result}
     return {
-        "ok": bool(payload.get("passed")),
-        "golden_name": payload.get("golden_name"),
-        "query_count": payload.get("query_count"),
-        "failures": payload.get("failures"),
+        "ok": bool(golden_payload.get("passed")) and bool(graph_payload.get("passed")),
+        "golden_name": golden_payload.get("golden_name"),
+        "query_count": golden_payload.get("query_count"),
+        "failures": golden_payload.get("failures"),
+        "graph_name": graph_payload.get("benchmark_name"),
+        "graph_metrics": graph_payload.get("metrics"),
     }
 
 

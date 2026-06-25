@@ -9,6 +9,7 @@ from .capture import store_now
 from .capture_filters import sanitize_report_text
 from .gating import compact_text
 from .graph import clamp_float, compact_context_lines, load_metadata, normalize_entity
+from .graph_relations import HIDDEN_RELATION_PEER_LIFECYCLES, graph_relation_stats
 from .governance import classify_memory, is_conflicting, merge_memory_text, semantic_similarity
 from .models import recall_scope_mode
 from .sql_store import curated_recall_item_id, delete_rows, exact_duplicate_groups, iter_curated_entries, update_row
@@ -902,14 +903,21 @@ def inspect_memory(provider: Any, *, memory_id: str) -> dict[str, Any]:
             "SELECT rating, note, created_at FROM memory_feedback WHERE memory_id = ? ORDER BY created_at DESC",
             (memory_id,),
         ).fetchall()
+        scope_params = _accessible_scope_params(provider)
         relation_rows = conn.execute(
-            """
-            SELECT source_memory_id, target_memory_id, relation_type, confidence, note, created_at
-            FROM memory_relations
-            WHERE source_memory_id = ? OR target_memory_id = ?
-            ORDER BY created_at DESC
+            f"""
+            SELECT r.source_memory_id, r.target_memory_id, r.relation_type, r.confidence, r.note, r.created_at, peer.metadata AS peer_metadata
+            FROM memory_relations AS r
+            JOIN memories AS peer
+              ON peer.id = CASE
+                WHEN r.source_memory_id = ? THEN r.target_memory_id
+                ELSE r.source_memory_id
+              END
+            WHERE (r.source_memory_id = ? OR r.target_memory_id = ?)
+              AND peer.scope_id IN ({','.join('?' for _ in scope_params) or 'NULL'})
+            ORDER BY r.created_at DESC
             """,
-            (memory_id, memory_id),
+            [memory_id, memory_id, memory_id, *scope_params],
         ).fetchall()
     metadata = load_metadata(row["metadata"])
     memory = {
@@ -924,7 +932,14 @@ def inspect_memory(provider: Any, *, memory_id: str) -> dict[str, Any]:
         "metadata": metadata,
     }
     feedback = [dict(item) for item in feedback_rows]
-    relations = [dict(item) for item in relation_rows]
+    relations: list[dict[str, Any]] = []
+    for item in relation_rows:
+        relation = dict(item)
+        peer_metadata = load_metadata(relation.pop("peer_metadata", "{}"))
+        lifecycle = str(peer_metadata.get("lifecycle") or "").strip().lower()
+        if lifecycle in HIDDEN_RELATION_PEER_LIFECYCLES:
+            continue
+        relations.append(relation)
     return {
         "found": True,
         "id": memory_id,
@@ -1207,6 +1222,7 @@ def stats_payload(provider: Any) -> dict[str, Any]:
             """.format(_scope_placeholders(provider)),
             _accessible_scope_params(provider),
         ).fetchone()[0]
+        graph_stats = graph_relation_stats(conn, accessible_scope_ids=_accessible_scope_params(provider))
     vector_path = ""
     vector_table = ""
     vector_embedder: dict[str, Any] = {}
@@ -1239,6 +1255,7 @@ def stats_payload(provider: Any) -> dict[str, Any]:
         },
         "scope_entities": entities,
         "scope_feedback_rows": feedback_rows,
+        "graph": graph_stats,
         "curated_memories": len(iter_curated_entries(provider._hermes_home)),
         "migration": dict(provider._migration_info),
         "journal_digest": {

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .gating import query_tokens
-from .graph import apply_quality_weight, entity_distance_scores, entity_overlap_bonus, metadata_entities, normalize_entity, query_entities as graph_query_entities
+from .graph import apply_quality_weight, entity_distance_scores, entity_overlap_bonus, load_metadata, metadata_entities, normalize_entity, query_entities as graph_query_entities
 from .models import RecallItem
 from .scoring import combine_scores, reciprocal_rank_fusion
 
@@ -27,6 +27,7 @@ _FRESHNESS_HINTS = {
 _FRESHNESS_BASE_WEIGHT = 0.22
 _FRESHNESS_STEP_WEIGHT = 0.1
 _FRESHNESS_MAX_WEIGHT = 0.42
+_HIDDEN_RELATION_PEER_LIFECYCLES = {"superseded", "obsolete", "rejected", "archived"}
 
 _TEMPORAL_DURABLE_TYPES = {
     "constraint",
@@ -478,6 +479,44 @@ class RecallService:
             return {}
 
         id_set = set(ids)
+        peer_ids: set[str] = set()
+        for row in rows:
+            source_id = str(row["source_memory_id"])
+            target_id = str(row["target_memory_id"])
+            if source_id in id_set and target_id:
+                peer_ids.add(target_id)
+            if target_id in id_set and source_id:
+                peer_ids.add(source_id)
+        accessible_peer_ids: set[str] = set(peer_ids & id_set)
+        scope_ids = [str(scope_id) for scope_id in getattr(self.provider, "_accessible_scope_ids", []) or [] if str(scope_id)]
+        if peer_ids and scope_ids:
+            try:
+                peer_placeholders = ",".join("?" for _ in peer_ids)
+                scope_placeholders = ",".join("?" for _ in scope_ids)
+                lock = getattr(self.provider, "_lock", None)
+                if lock is None:
+                    peer_rows = self.provider._require_conn().execute(
+                        f"SELECT id, metadata FROM memories WHERE id IN ({peer_placeholders}) AND scope_id IN ({scope_placeholders})",
+                        [*sorted(peer_ids), *scope_ids],
+                    ).fetchall()
+                else:
+                    with lock:
+                        peer_rows = self.provider._require_conn().execute(
+                            f"SELECT id, metadata FROM memories WHERE id IN ({peer_placeholders}) AND scope_id IN ({scope_placeholders})",
+                            [*sorted(peer_ids), *scope_ids],
+                        ).fetchall()
+                for row in peer_rows:
+                    metadata = load_metadata(row["metadata"])
+                    lifecycle = str(metadata.get("lifecycle") or "").strip().lower()
+                    if lifecycle in _HIDDEN_RELATION_PEER_LIFECYCLES:
+                        continue
+                    accessible_peer_ids.add(str(row["id"]))
+            except Exception:
+                # Keep relations between already-returned candidates, but do not
+                # expose any extra peer ids when the scope lookup is unavailable
+                # (for example in lightweight tests without a memories table).
+                pass
+
         for row in rows:
             source_id = str(row["source_memory_id"])
             target_id = str(row["target_memory_id"])
@@ -488,9 +527,9 @@ class RecallService:
                 confidence = max(0.0, min(1.0, float(row["confidence"] or 0.0)))
             except (TypeError, ValueError):
                 confidence = 0.0
-            if source_id in id_set:
+            if source_id in id_set and target_id in accessible_peer_ids:
                 _append(source_id, direction="outgoing", relation_type=relation_type, related_id=target_id, confidence=confidence)
-            if target_id in id_set:
+            if target_id in id_set and source_id in accessible_peer_ids:
                 _append(target_id, direction="incoming", relation_type=relation_type, related_id=source_id, confidence=confidence)
 
         normalized: dict[str, dict[str, Any]] = {}
@@ -526,10 +565,21 @@ class RecallService:
                     continue
             return total
 
-        supersedes_boost = max(0.0, min(0.5, float(retrieval_cfg.get("relation_supersedes_boost") or retrieval_cfg.get("relation_rerank_weight") or 0.04)))
-        supports_boost = max(0.0, min(0.5, float(retrieval_cfg.get("relation_supports_boost") or retrieval_cfg.get("relation_rerank_weight") or 0.04)))
-        superseded_penalty = max(0.0, min(0.5, float(retrieval_cfg.get("relation_superseded_penalty") or 0.0)))
-        contradicts_penalty = max(0.0, min(0.5, float(retrieval_cfg.get("relation_contradicts_penalty") or 0.0)))
+        def _relation_weight(primary_key: str, *, fallback_key: str | None = "relation_rerank_weight", default: float = 0.04) -> float:
+            raw = retrieval_cfg.get(primary_key)
+            if raw is None or raw == "":
+                raw = retrieval_cfg.get(fallback_key) if fallback_key else None
+            if raw is None or raw == "":
+                raw = default
+            try:
+                return max(0.0, min(0.5, float(raw)))
+            except (TypeError, ValueError):
+                return max(0.0, min(0.5, default))
+
+        supersedes_boost = _relation_weight("relation_supersedes_boost")
+        supports_boost = _relation_weight("relation_supports_boost")
+        superseded_penalty = _relation_weight("relation_superseded_penalty")
+        contradicts_penalty = _relation_weight("relation_contradicts_penalty", fallback_key=None, default=0.0)
 
         bonus = 0.0
         bonus += supersedes_boost * _confidence_sum(outgoing.get("supersedes"))
