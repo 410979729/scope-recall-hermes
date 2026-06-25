@@ -5,7 +5,8 @@ All notable changes to `scope-recall` will be documented in this file.
 ## [Unreleased]
 
 ### Changed
-- Reduced the default primary-agent tool schema surface by hiding the low-frequency `scope_recall_store_secret_index` schema behind `secret_index_tools_enabled=true`; direct calls also fail closed unless the operator explicitly enables it.
+- Reduced the default primary-agent tool schema surface with a new `tool_schema_profile="compact"` default (6 tools, about 4.7 KB in repo-local measurement) that exposes core store/search/context/profile plus compact `scope_recall_memory` and `scope_recall_entity` dispatch tools; `tool_schema_profile="standard"` restores the legacy 20-tool read-only/diagnostic surface, and `tool_schema_extra_tools` can selectively expose diagnostics while staying compact.
+- Kept the low-frequency `scope_recall_store_secret_index` schema behind `secret_index_tools_enabled=true`; direct calls also fail closed unless the operator explicitly enables it.
 
 ### Fixed
 - Added a deterministic journal-digest durable-value gate so obvious webhook/notification/log/tool-summary noise is rejected before it can become durable `user`/`memory`/`project`/`ops` rows, while preserving reusable root-cause/fix/workflow candidates.

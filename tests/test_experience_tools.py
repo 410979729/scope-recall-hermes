@@ -19,6 +19,7 @@ def provider(tmp_path):
         tmp_path,
         {
             "vector": {"enabled": False},
+            "tool_schema_profile": "standard",
             "maintenance_tools_enabled": True,
             "experience": {"prefetch_enabled": False},
         },

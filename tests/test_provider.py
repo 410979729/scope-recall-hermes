@@ -1448,13 +1448,16 @@ def test_cross_platform_identity_mapping_shares_durable_memory_but_not_local_scr
 def test_maintenance_tool_schemas_require_operator_config(provider):
     schemas = provider.get_tool_schemas()
     names = {schema["name"] for schema in schemas}
-    assert {"scope_recall_context", "scope_recall_probe", "scope_recall_related", "scope_recall_feedback"} <= names
+    assert {"scope_recall_context", "scope_recall_memory", "scope_recall_entity"} <= names
+    assert "scope_recall_probe" not in names
+    assert "scope_recall_related" not in names
+    assert "scope_recall_feedback" not in names
     assert "scope_recall_store_secret_index" not in names
     assert "scope_recall_dedupe" not in names
     assert "scope_recall_govern" not in names
     assert "scope_recall_repair" not in names
-    assert "scope_recall_export" in names
-    assert "scope_recall_stats" in names
+    assert "scope_recall_export" not in names
+    assert "scope_recall_stats" not in names
     store_schema = next(schema for schema in schemas if schema["name"] == "scope_recall_store")
     memory_types = set(store_schema["parameters"]["properties"]["memory_type"]["enum"])
     assert {"workflow", "tool_trace", "summary", "pitfall", "decision"} <= memory_types

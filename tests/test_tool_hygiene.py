@@ -52,21 +52,71 @@ def _provider_with_config(tmp_path, config: dict):
     return plugin
 
 
-def test_default_schema_surface_hides_low_frequency_secret_index_tool(provider):
+def test_default_schema_surface_uses_compact_core_tools(provider):
     names = _schema_names(provider)
 
-    assert "scope_recall_store" in names
-    assert "scope_recall_search" in names
-    assert "scope_recall_profile" in names
-    assert "scope_recall_experience_preflight" in names
+    assert names == {
+        "scope_recall_store",
+        "scope_recall_search",
+        "scope_recall_context",
+        "scope_recall_profile",
+        "scope_recall_memory",
+        "scope_recall_entity",
+    }
     assert "scope_recall_store_secret_index" not in names
-    assert "scope_recall_export" in names
-    assert "scope_recall_stats" in names
-    assert "scope_recall_benchmark" in names
-    assert "scope_recall_experience_stats" in names
-    assert len(names) <= 21
+    assert "scope_recall_export" not in names
+    assert "scope_recall_stats" not in names
+    assert "scope_recall_benchmark" not in names
+    assert "scope_recall_experience_stats" not in names
 
     assert "secret_index_tools_enabled=true" in provider.handle_tool_call("scope_recall_store_secret_index", {"label": "test"})
+    assert "provider" in provider.handle_tool_call("scope_recall_stats", {})
+
+
+def test_standard_schema_profile_restores_legacy_read_only_tools(tmp_path):
+    plugin = _provider_with_config(
+        tmp_path,
+        {
+            "tool_schema_profile": "standard",
+            "vector": {"enabled": False},
+        },
+    )
+    try:
+        names = _schema_names(plugin)
+
+        assert "scope_recall_memory" not in names
+        assert "scope_recall_entity" not in names
+        assert "scope_recall_probe" in names
+        assert "scope_recall_related" in names
+        assert "scope_recall_feedback" in names
+        assert "scope_recall_export" in names
+        assert "scope_recall_stats" in names
+        assert "scope_recall_benchmark" in names
+        assert "scope_recall_experience_stats" in names
+        assert "scope_recall_store_secret_index" not in names
+        assert "scope_recall_govern" not in names
+        assert "scope_recall_forgetting_run" not in names
+    finally:
+        plugin.shutdown()
+
+
+def test_schema_extra_tools_expose_selected_diagnostics_without_standard_profile(tmp_path):
+    plugin = _provider_with_config(
+        tmp_path,
+        {
+            "tool_schema_extra_tools": ["scope_recall_stats", "scope_recall_benchmark", "scope_recall_store_secret_index"],
+            "vector": {"enabled": False},
+        },
+    )
+    try:
+        names = _schema_names(plugin)
+
+        assert "scope_recall_memory" in names
+        assert "scope_recall_stats" in names
+        assert "scope_recall_benchmark" in names
+        assert "scope_recall_store_secret_index" not in names
+    finally:
+        plugin.shutdown()
 
 
 def test_secret_index_schema_surface_is_explicit_opt_in(tmp_path):
@@ -81,14 +131,43 @@ def test_secret_index_schema_surface_is_explicit_opt_in(tmp_path):
         names = _schema_names(plugin)
 
         assert "scope_recall_store_secret_index" in names
-        assert "scope_recall_export" in names
-        assert "scope_recall_stats" in names
-        assert "scope_recall_benchmark" in names
-        assert "scope_recall_experience_stats" in names
+        assert "scope_recall_export" not in names
+        assert "scope_recall_stats" not in names
+        assert "scope_recall_benchmark" not in names
+        assert "scope_recall_experience_stats" not in names
         assert "scope_recall_govern" not in names
         assert "scope_recall_forgetting_run" not in names
     finally:
         plugin.shutdown()
+
+
+def test_compact_memory_and_entity_tools_dispatch_to_legacy_operations(provider):
+    created = _store(provider, "Compact schema memory entity AlphaProject prefers exact-id operations.", "project")
+    assert created["stored"] is True
+
+    inspected = json.loads(provider.handle_tool_call("scope_recall_memory", {"action": "inspect", "id": created["id"]}))
+    assert inspected["found"] is True
+    assert inspected["memory"]["id"] == created["id"]
+
+    feedback = json.loads(provider.handle_tool_call("scope_recall_memory", {"action": "feedback", "id": created["id"], "rating": "helpful"}))
+    assert feedback["updated"] is True
+
+    entity_probe = json.loads(provider.handle_tool_call("scope_recall_entity", {"action": "probe", "entity": "AlphaProject", "limit": 5}))
+    assert entity_probe["count"] >= 1
+
+    related = json.loads(provider.handle_tool_call("scope_recall_entity", {"action": "related", "entity": "AlphaProject", "limit": 5}))
+    assert "related" in related
+
+    updated = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_memory",
+            {"action": "update", "id": created["id"], "content": "Compact schema memory update keeps AlphaProject searchable."},
+        )
+    )
+    assert updated["updated"] is True
+
+    deleted = json.loads(provider.handle_tool_call("scope_recall_memory", {"action": "forget", "id": created["id"]}))
+    assert deleted["deleted"] == 1
 
 
 def test_tool_store_uses_capture_filter_for_secret_like_content(provider):
