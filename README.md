@@ -250,6 +250,7 @@ Minimal default shape:
   "auto_capture": true,
   "enable_tools": true,
   "maintenance_tools_enabled": false,
+  "secret_index_tools_enabled": false,
   "retrieval": {
     "mode": "hybrid",
     "lexical_weight": 0.45,
@@ -382,7 +383,7 @@ Nightly digest uses the same deterministic artifact extraction in addition to it
 
 ### Secret indexes, not plaintext secret storage
 
-`scope_recall_store_secret_index` stores a searchable credential index without putting plaintext secret values into the ordinary recall surface. Store the real password/token/API key/private key in an external vault or keyring, then store only the locator and safe metadata in `scope-recall`.
+`scope_recall_store_secret_index` stores a searchable credential index without putting plaintext secret values into the ordinary recall surface. Store the real password/token/API key/private key in an external vault or keyring, then store only the locator and safe metadata in `scope-recall`. To reduce the default tool schema footprint, this low-frequency tool is hidden and direct calls fail unless `secret_index_tools_enabled=true` is set.
 
 Example tool payload shape:
 
@@ -668,6 +669,7 @@ Primary-agent default tools:
 scope_recall_store
 scope_recall_search
 scope_recall_context
+scope_recall_profile
 scope_recall_probe
 scope_recall_related
 scope_recall_feedback
@@ -679,6 +681,11 @@ scope_recall_stats
 scope_recall_inspect
 scope_recall_explain
 scope_recall_benchmark
+scope_recall_playbook_search
+scope_recall_playbook_inspect
+scope_recall_experience_preflight
+scope_recall_playbook_feedback
+scope_recall_experience_stats
 ```
 
 Release `1.5.2` adds Recall Funnel observability and retrieval-regression benchmarking:
@@ -714,6 +721,17 @@ scope_recall_dedupe
 scope_recall_govern
 scope_recall_hygiene
 scope_recall_repair
+scope_recall_playbook_create
+scope_recall_playbook_review
+scope_recall_experience_promote
+scope_recall_forgetting_report
+scope_recall_forgetting_run
+```
+
+Secret-index tools are also hidden by default and require `secret_index_tools_enabled=true`:
+
+```text
+scope_recall_store_secret_index
 ```
 
 `scope_recall_hygiene` is read-only. It reports runtime-wrapper noise, assistant scratch prose, duplicate dedupe keys, very short/long rows, `general` rows present in the vector companion, likely promotion candidates, and likely delete candidates. It does not delete, merge, promote, or rewrite rows.
@@ -726,7 +744,7 @@ python scripts/report.hygiene.py --db "$HERMES_HOME/scope-recall/memory.sqlite3"
 
 Destructive cleanup is intentionally out-of-band: use the hygiene report first, then require an explicit operator decision before running any separate delete/merge/dedupe action. The shipped hygiene path is dry-run/report-only.
 
-`scope_recall_export` defaults to the current accessible scope set: local scratch scope plus shared durable scope. Passing `scope_only=false` is an operator maintenance action and fails closed unless `maintenance_tools_enabled=true`.
+`scope_recall_export` defaults to the current accessible scope set: local scratch scope plus shared durable scope. Passing `scope_only=false` remains an operator maintenance action and fails closed unless `maintenance_tools_enabled=true`.
 
 Backward-compatible aliases are still accepted internally for old `lancepro_*` tool names during transition.
 

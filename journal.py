@@ -512,6 +512,59 @@ def _looks_like_historical_template_noise(text: str) -> bool:
     return False
 
 
+LOW_VALUE_NOTIFICATION_RE = re.compile(
+    r"\b(?:webhook|web\s+hook|bot\s+(?:push|message|status)|notification|push\s+message|"
+    r"sign[-\s]?in|check[-\s]?in|subscription|subscribed|unsubscribe|qas)\b|"
+    r"(?:通知|推送|机器人消息|签到|签入|登录提醒|订阅(?:更新|通知)?)",
+    re.IGNORECASE,
+)
+LOW_VALUE_LOG_RE = re.compile(
+    r"\b(?:docker\s+logs?|journalctl|kubectl\s+logs?|stack\s+trace|traceback|stderr|stdout|"
+    r"shell\s+(?:prompt|output)|terminal\s+output|command\s+output|tool\s+(?:execution\s+)?summary|tool\s+result)\b|"
+    r"(?:工具执行摘要|工具结果|命令输出|终端输出|日志输出|堆栈|调用栈)",
+    re.IGNORECASE,
+)
+LOW_VALUE_PROGRESS_RE = re.compile(
+    r"\b(?:backup\s+path|temporary\s+file|run\s+result|task\s+progress|no\s+action\s+required|"
+    r"one[-\s]?off|status\s+update)\b|(?:临时文件|备份路径|任务进度|一次性|无需处理|状态更新)",
+    re.IGNORECASE,
+)
+HIGH_VALUE_DURABLE_SIGNAL_RE = re.compile(
+    r"\b(?:preference|prefers|constraint|policy|api\s+boundary|environment\s+fact|root\s+cause|"
+    r"fix|workaround|verification|verified|reusable|workflow|procedure|runbook|pitfall|"
+    r"design\s+decision|stable|must|should|requires?|rollback|guardrail)\b|"
+    r"(?:偏好|约束|边界|环境事实|根因|修复|验证|可复用|流程|步骤|规程|坑|设计决策|稳定|必须|应该|回滚|防护)",
+    re.IGNORECASE,
+)
+
+
+def _has_high_value_durable_signal(text: str) -> bool:
+    return bool(HIGH_VALUE_DURABLE_SIGNAL_RE.search(text or ""))
+
+
+def _low_value_promotion_reason(candidate: JournalDigestCandidate) -> str:
+    """Return a rejection reason for obvious journal-digest promotion noise.
+
+    Capture filters protect raw journal ingestion, but an LLM digest can rephrase
+    webhook/log/tool noise into a plausible durable fact.  This second gate is
+    intentionally conservative: only obvious notification/log/progress shapes are
+    blocked, and root-cause/fix/workflow/preference/constraint signals still pass.
+    """
+    text = clean_text(candidate.content)
+    if not text:
+        return "low-value-empty"
+    has_value_signal = _has_high_value_durable_signal(text)
+    if candidate.memory_type == "tool_trace" and not has_value_signal:
+        return "low-value-tool-trace"
+    if LOW_VALUE_NOTIFICATION_RE.search(text) and not has_value_signal:
+        return "low-value-notification"
+    if LOW_VALUE_LOG_RE.search(text) and not has_value_signal:
+        return "low-value-log-or-tool-summary"
+    if LOW_VALUE_PROGRESS_RE.search(text) and not has_value_signal:
+        return "low-value-progress"
+    return ""
+
+
 def _digest_role_summary(entries: list[JournalEntry], role: str, *, limit: int) -> str:
     chunks = [
         entry.content.strip()
@@ -760,17 +813,27 @@ def _merge_metadata(conn: sqlite3.Connection, *, memory_id: str, candidate: Jour
     sync_memory_entities(conn, memory_id=memory_id, content=str(row["content"]), target=str(row["target"]), metadata=existing)
 
 
-def _candidate_allowed(candidate: JournalDigestCandidate) -> bool:
+def _candidate_rejection_reason(candidate: JournalDigestCandidate) -> str:
     if candidate.target not in JOURNAL_TARGETS:
-        return False
+        return "invalid-target"
     if len(candidate.content) < 40:
-        return False
+        return "too-short"
     if _looks_like_historical_template_noise(candidate.content):
-        return False
+        return "historical-template-noise"
     lowered = candidate.content.lower()
     if "operations workflow summary from journal digest:" in lowered or "journal digest memory" in lowered:
-        return False
-    return should_capture_text(candidate.content).allowed
+        return "historical-template-noise"
+    capture_result = should_capture_text(candidate.content)
+    if not capture_result.allowed:
+        return f"capture-filter:{capture_result.reason or 'blocked'}"
+    low_value_reason = _low_value_promotion_reason(candidate)
+    if low_value_reason:
+        return low_value_reason
+    return ""
+
+
+def _candidate_allowed(candidate: JournalDigestCandidate) -> bool:
+    return not _candidate_rejection_reason(candidate)
 
 
 def _cross_platform_metadata(scope: RuntimeScope, config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -800,12 +863,13 @@ def apply_journal_candidates(
     actions: list[dict[str, Any]] = []
     processed_entry_ids: set[int] = set()
     for candidate in candidates:
-        if not _candidate_allowed(candidate):
+        rejection_reason = _candidate_rejection_reason(candidate)
+        if rejection_reason:
             counts["skipped"] += 1
-            actions.append({"action": "skip", "reason": "candidate filtered", "entry_ids": candidate.entry_ids})
+            actions.append({"action": "skip", "reason": rejection_reason, "entry_ids": candidate.entry_ids})
             processed_entry_ids.update(int(entry_id) for entry_id in candidate.entry_ids)
             if not dry_run:
-                _record_journal_rejection(conn, run_id=run_id, entry_ids=candidate.entry_ids, reason="candidate filtered", candidate=candidate)
+                _record_journal_rejection(conn, run_id=run_id, entry_ids=candidate.entry_ids, reason=rejection_reason, candidate=candidate)
                 conn.commit()
             continue
         match_id, match_content, score = _find_match(conn, scope_ids, candidate)

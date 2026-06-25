@@ -73,6 +73,7 @@
   ],
   "enable_tools": true,
   "maintenance_tools_enabled": false,
+  "secret_index_tools_enabled": false,
   "experience": {
     "enabled": true,
     "prefetch_enabled": true,

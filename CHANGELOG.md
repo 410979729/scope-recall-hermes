@@ -4,6 +4,12 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- Reduced the default primary-agent tool schema surface by hiding the low-frequency `scope_recall_store_secret_index` schema behind `secret_index_tools_enabled=true`; direct calls also fail closed unless the operator explicitly enables it.
+
+### Fixed
+- Added a deterministic journal-digest durable-value gate so obvious webhook/notification/log/tool-summary noise is rejected before it can become durable `user`/`memory`/`project`/`ops` rows, while preserving reusable root-cause/fix/workflow candidates.
+
 ## [1.5.2] - 2026-06-25
 
 ### Added

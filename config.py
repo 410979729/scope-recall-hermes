@@ -69,6 +69,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     ],
     "enable_tools": True,
     "maintenance_tools_enabled": False,
+    "secret_index_tools_enabled": False,
     "experience": {
         "enabled": True,
         "prefetch_enabled": True,
