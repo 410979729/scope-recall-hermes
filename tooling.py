@@ -196,6 +196,8 @@ class ScopeRecallToolService:
         )
 
     def _handle_store_secret_index(self, args: dict[str, Any]) -> str:
+        if not config_bool(self.provider._config, "secret_index_tools_enabled", False):
+            return tool_error("scope_recall_store_secret_index requires secret_index_tools_enabled=true")
         content, metadata = build_secret_index(args)
         target = str(args.get("target") or "ops").strip().lower()
         if target not in {"memory", "project", "ops"}:

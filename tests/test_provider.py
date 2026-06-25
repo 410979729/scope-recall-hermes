@@ -1449,7 +1449,7 @@ def test_maintenance_tool_schemas_require_operator_config(provider):
     schemas = provider.get_tool_schemas()
     names = {schema["name"] for schema in schemas}
     assert {"scope_recall_context", "scope_recall_probe", "scope_recall_related", "scope_recall_feedback"} <= names
-    assert "scope_recall_store_secret_index" in names
+    assert "scope_recall_store_secret_index" not in names
     assert "scope_recall_dedupe" not in names
     assert "scope_recall_govern" not in names
     assert "scope_recall_repair" not in names
@@ -1464,6 +1464,10 @@ def test_maintenance_tool_schemas_require_operator_config(provider):
     assert "scope_recall_dedupe" in operator_names
     assert "scope_recall_govern" in operator_names
     assert "scope_recall_repair" in operator_names
+
+    provider._config["secret_index_tools_enabled"] = True
+    secret_names = {schema["name"] for schema in provider.get_tool_schemas()}
+    assert "scope_recall_store_secret_index" in secret_names
 
 
 def test_tool_store_enriches_external_artifact_anchors(provider):
@@ -1495,6 +1499,7 @@ def test_tool_store_enriches_external_artifact_anchors(provider):
 
 
 def test_secret_index_tool_stores_vault_ref_without_plaintext_secret(provider):
+    provider._config["secret_index_tools_enabled"] = True
     secret_value = "correct-horse-battery-staple-12345"
     payload = json.loads(
         provider.handle_tool_call(
@@ -1530,6 +1535,7 @@ def test_secret_index_tool_stores_vault_ref_without_plaintext_secret(provider):
 
 
 def test_secret_index_allows_credential_label_with_api_key_kind(provider):
+    provider._config["secret_index_tools_enabled"] = True
     secret_value = "scope-recall-smoke-secret-should-not-persist-12345"
     payload = json.loads(
         provider.handle_tool_call(
