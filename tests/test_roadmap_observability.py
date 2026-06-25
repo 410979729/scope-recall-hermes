@@ -37,6 +37,7 @@ def _provider(tmp_path):
 def test_inspect_explain_and_benchmark_tools_are_registered(tmp_path):
     plugin = _provider(tmp_path)
     try:
+        plugin._config["tool_schema_profile"] = "standard"
         schemas = plugin.get_tool_schemas()
         names = {schema["name"] for schema in schemas}
 

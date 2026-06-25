@@ -49,6 +49,7 @@ from .schemas import (
     SCOPE_RECALL_DEDUPE_SCHEMA,
     SCOPE_RECALL_BENCHMARK_SCHEMA,
     SCOPE_RECALL_CONTEXT_SCHEMA,
+    SCOPE_RECALL_ENTITY_SCHEMA,
     SCOPE_RECALL_EXPERIENCE_PREFLIGHT_SCHEMA,
     SCOPE_RECALL_EXPERIENCE_PROMOTE_SCHEMA,
     SCOPE_RECALL_EXPERIENCE_STATS_SCHEMA,
@@ -62,6 +63,7 @@ from .schemas import (
     SCOPE_RECALL_GOVERN_SCHEMA,
     SCOPE_RECALL_HYGIENE_SCHEMA,
     SCOPE_RECALL_INSPECT_SCHEMA,
+    SCOPE_RECALL_MEMORY_SCHEMA,
     SCOPE_RECALL_MERGE_SCHEMA,
     SCOPE_RECALL_PLAYBOOK_CREATE_SCHEMA,
     SCOPE_RECALL_PLAYBOOK_FEEDBACK_SCHEMA,
@@ -872,7 +874,27 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             return []
         if self._scope.agent_context != "primary":
             return []
-        schemas = [
+
+        raw_experience_config = config.get("experience")
+        experience_config: dict[str, Any] = dict(raw_experience_config) if isinstance(raw_experience_config, dict) else {}
+        experience_enabled = config_bool(experience_config, "enabled", True)
+        maintenance_enabled = config_bool(config, "maintenance_tools_enabled", False)
+        secret_index_enabled = config_bool(config, "secret_index_tools_enabled", False)
+        profile = str(config.get("tool_schema_profile") or "compact").strip().lower().replace("-", "_")
+        if profile in {"legacy", "compat", "standard"}:
+            profile = "standard"
+        elif profile not in {"compact", "standard"}:
+            profile = "compact"
+
+        compact_schemas = [
+            SCOPE_RECALL_STORE_SCHEMA,
+            SCOPE_RECALL_SEARCH_SCHEMA,
+            SCOPE_RECALL_CONTEXT_SCHEMA,
+            SCOPE_RECALL_PROFILE_SCHEMA,
+            SCOPE_RECALL_MEMORY_SCHEMA,
+            SCOPE_RECALL_ENTITY_SCHEMA,
+        ]
+        standard_schemas = [
             SCOPE_RECALL_STORE_SCHEMA,
             SCOPE_RECALL_SEARCH_SCHEMA,
             SCOPE_RECALL_CONTEXT_SCHEMA,
@@ -889,35 +911,54 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             SCOPE_RECALL_STATS_SCHEMA,
             SCOPE_RECALL_BENCHMARK_SCHEMA,
         ]
-        if config_bool(config, "secret_index_tools_enabled", False):
-            schemas.append(SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA)
-        raw_experience_config = config.get("experience")
-        experience_config: dict[str, Any] = dict(raw_experience_config) if isinstance(raw_experience_config, dict) else {}
-        experience_enabled = config_bool(experience_config, "enabled", True)
+        schemas = list(standard_schemas if profile == "standard" else compact_schemas)
+
+        schema_by_name = {str(schema["name"]): schema for schema in [*compact_schemas, *standard_schemas]}
+        if secret_index_enabled:
+            schema_by_name[SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA["name"]] = SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA
+        experience_schemas = [
+            SCOPE_RECALL_PLAYBOOK_SEARCH_SCHEMA,
+            SCOPE_RECALL_PLAYBOOK_INSPECT_SCHEMA,
+            SCOPE_RECALL_EXPERIENCE_PREFLIGHT_SCHEMA,
+            SCOPE_RECALL_PLAYBOOK_FEEDBACK_SCHEMA,
+            SCOPE_RECALL_EXPERIENCE_STATS_SCHEMA,
+        ]
         if experience_enabled:
-            schemas.extend(
-                [
-                    SCOPE_RECALL_PLAYBOOK_SEARCH_SCHEMA,
-                    SCOPE_RECALL_PLAYBOOK_INSPECT_SCHEMA,
-                    SCOPE_RECALL_EXPERIENCE_PREFLIGHT_SCHEMA,
-                    SCOPE_RECALL_PLAYBOOK_FEEDBACK_SCHEMA,
-                    SCOPE_RECALL_EXPERIENCE_STATS_SCHEMA,
-                ]
-            )
-        if experience_enabled and config_bool(config, "maintenance_tools_enabled", False):
-            schemas.extend(
-                [
-                    SCOPE_RECALL_DEDUPE_SCHEMA,
-                    SCOPE_RECALL_GOVERN_SCHEMA,
-                    SCOPE_RECALL_REPAIR_SCHEMA,
-                    SCOPE_RECALL_HYGIENE_SCHEMA,
-                    SCOPE_RECALL_PLAYBOOK_CREATE_SCHEMA,
-                    SCOPE_RECALL_PLAYBOOK_REVIEW_SCHEMA,
-                    SCOPE_RECALL_EXPERIENCE_PROMOTE_SCHEMA,
-                    SCOPE_RECALL_FORGETTING_REPORT_SCHEMA,
-                    SCOPE_RECALL_FORGETTING_RUN_SCHEMA,
-                ]
-            )
+            schema_by_name.update({str(schema["name"]): schema for schema in experience_schemas})
+            if profile == "standard":
+                schemas.extend(experience_schemas)
+        maintenance_schemas = [
+            SCOPE_RECALL_DEDUPE_SCHEMA,
+            SCOPE_RECALL_GOVERN_SCHEMA,
+            SCOPE_RECALL_REPAIR_SCHEMA,
+            SCOPE_RECALL_HYGIENE_SCHEMA,
+            SCOPE_RECALL_PLAYBOOK_CREATE_SCHEMA,
+            SCOPE_RECALL_PLAYBOOK_REVIEW_SCHEMA,
+            SCOPE_RECALL_EXPERIENCE_PROMOTE_SCHEMA,
+            SCOPE_RECALL_FORGETTING_REPORT_SCHEMA,
+            SCOPE_RECALL_FORGETTING_RUN_SCHEMA,
+        ]
+        if experience_enabled and maintenance_enabled:
+            schema_by_name.update({str(schema["name"]): schema for schema in maintenance_schemas})
+            schemas.extend(maintenance_schemas)
+
+        if secret_index_enabled:
+            schemas.append(SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA)
+
+        extra_tools = config.get("tool_schema_extra_tools") or []
+        if isinstance(extra_tools, str):
+            extra_names = [item.strip() for item in extra_tools.split(",")]
+        elif isinstance(extra_tools, list):
+            extra_names = [str(item).strip() for item in extra_tools]
+        else:
+            extra_names = []
+        seen = {str(schema["name"]) for schema in schemas}
+        for name in extra_names:
+            schema = schema_by_name.get(name)
+            if schema is None or name in seen:
+                continue
+            schemas.append(schema)
+            seen.add(name)
         return schemas
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:

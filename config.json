@@ -72,6 +72,8 @@
     "<available_skills>[\\s\\S]*?</available_skills>"
   ],
   "enable_tools": true,
+  "tool_schema_profile": "compact",
+  "tool_schema_extra_tools": [],
   "maintenance_tools_enabled": false,
   "secret_index_tools_enabled": false,
   "experience": {
