@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from contextlib import AbstractContextManager, nullcontext
 import logging
-from typing import Any
+from typing import Any, cast
 
 from .embedders import build_embedder
 from .gating import config_bool
@@ -9,6 +10,18 @@ from .sqlite_vector_store import SQLiteBruteForceVectorStore
 from .vector_store import LanceVectorStore, native_vector_dependency_status
 
 logger = logging.getLogger(__name__)
+
+
+def _vector_mutation_lock(provider: Any) -> AbstractContextManager[Any]:
+    """Return the provider-level vector companion mutation lock.
+
+    Older tests and ad-hoc repair runtimes may not define `_vector_lock`; fall
+    back to the provider lock, then to a no-op context manager for compatibility.
+    """
+    lock = getattr(provider, "_vector_lock", None) or getattr(provider, "_lock", None)
+    if hasattr(lock, "__enter__") and hasattr(lock, "__exit__"):
+        return cast(AbstractContextManager[Any], lock)
+    return nullcontext()
 
 
 def mark_vector_needs_repair(provider: Any, exc: Exception | str) -> None:
@@ -164,14 +177,15 @@ def setup_vector_layer(provider: Any) -> None:
 
 
 def refresh_vector_audit(provider: Any) -> dict[str, int]:
-    if not provider._vector_store:
-        counts = {"physical_rows": 0, "unique_ids": 0, "duplicate_rows": 0, "duplicate_ids": 0}
-    else:
-        counts = provider._vector_store.audit_counts()
-    provider._vector_row_count = int(counts.get("physical_rows") or 0)
-    provider._vector_unique_id_count = int(counts.get("unique_ids") or 0)
-    provider._vector_duplicate_row_count = int(counts.get("duplicate_rows") or 0)
-    return counts
+    with _vector_mutation_lock(provider):
+        if not provider._vector_store:
+            counts = {"physical_rows": 0, "unique_ids": 0, "duplicate_rows": 0, "duplicate_ids": 0}
+        else:
+            counts = provider._vector_store.audit_counts()
+        provider._vector_row_count = int(counts.get("physical_rows") or 0)
+        provider._vector_unique_id_count = int(counts.get("unique_ids") or 0)
+        provider._vector_duplicate_row_count = int(counts.get("duplicate_rows") or 0)
+        return counts
 
 
 
@@ -187,57 +201,57 @@ def sync_vector_index(provider: Any) -> int:
         rows = conn.execute(
             "SELECT id, scope_id, source, target, content, summary, updated_at FROM memories ORDER BY updated_at ASC"
         ).fetchall()
-    if not rows:
-        existing = provider._vector_store.list_ids()
-        if existing:
-            provider._vector_store.delete_by_ids(existing)
-        refresh_vector_audit(provider)
-        return 0
+    with _vector_mutation_lock(provider):
+        if not rows:
+            existing = provider._vector_store.list_ids()
+            if existing:
+                provider._vector_store.delete_by_ids(existing)
+            refresh_vector_audit(provider)
+            return 0
 
-    desired = {str(row["id"]): row for row in rows if _should_index_target(provider, str(row["target"]))}
-    existing_records = provider._vector_store.list_records()
-    existing_ids = set(existing_records.keys())
-    desired_ids = set(desired.keys())
-
-    audit = refresh_vector_audit(provider)
-    stale_ids = sorted(existing_ids - desired_ids)
-    if stale_ids:
-        provider._vector_store.delete_by_ids(stale_ids)
-
-    if stale_ids or int(audit.get("duplicate_rows") or 0) > 0:
-        provider._vector_store.repair_records({memory_id: dict(row) for memory_id, row in desired.items()})
+        desired = {str(row["id"]): row for row in rows if _should_index_target(provider, str(row["target"]))}
         existing_records = provider._vector_store.list_records()
         existing_ids = set(existing_records.keys())
+        desired_ids = set(desired.keys())
 
-    changed_rows = []
-    for memory_id, row in desired.items():
-        current = existing_records.get(memory_id)
-        if current is None:
-            changed_rows.append(row)
-            continue
-        if str(current.get("updated_at") or "") != str(row["updated_at"] or ""):
-            changed_rows.append(row)
+        audit = refresh_vector_audit(provider)
+        stale_ids = sorted(existing_ids - desired_ids)
+        if stale_ids:
+            provider._vector_store.delete_by_ids(stale_ids)
 
-    if changed_rows:
-        texts = [provider._vector_text(row["summary"], row["content"]) for row in changed_rows]
-        vectors = provider._embedder.embed_texts(texts)
-        payload = []
-        for row, vector in zip(changed_rows, vectors):
-            payload.append(
-                {
-                    "id": row["id"],
-                    "scope_id": row["scope_id"],
-                    "source": row["source"],
-                    "target": row["target"],
-                    "content": row["content"],
-                    "summary": row["summary"],
-                    "updated_at": row["updated_at"],
-                    "vector": vector,
-                }
-            )
-        provider._vector_store.upsert_records(payload)
-    refresh_vector_audit(provider)
-    return len(desired)
+        if stale_ids or int(audit.get("duplicate_rows") or 0) > 0:
+            provider._vector_store.repair_records({memory_id: dict(row) for memory_id, row in desired.items()})
+            existing_records = provider._vector_store.list_records()
+
+        changed_rows = []
+        for memory_id, row in desired.items():
+            current = existing_records.get(memory_id)
+            if current is None:
+                changed_rows.append(row)
+                continue
+            if str(current.get("updated_at") or "") != str(row["updated_at"] or ""):
+                changed_rows.append(row)
+
+        if changed_rows:
+            texts = [provider._vector_text(row["summary"], row["content"]) for row in changed_rows]
+            vectors = provider._embedder.embed_texts(texts)
+            payload = []
+            for row, vector in zip(changed_rows, vectors):
+                payload.append(
+                    {
+                        "id": row["id"],
+                        "scope_id": row["scope_id"],
+                        "source": row["source"],
+                        "target": row["target"],
+                        "content": row["content"],
+                        "summary": row["summary"],
+                        "updated_at": row["updated_at"],
+                        "vector": vector,
+                    }
+                )
+            provider._vector_store.upsert_records(payload)
+        refresh_vector_audit(provider)
+        return len(desired)
 
 
 
@@ -252,33 +266,34 @@ def upsert_vector_record(
     updated_at: str,
     scope_id: str | None = None,
 ) -> None:
-    if not provider._vector_ready or not provider._vector_store or not provider._embedder:
-        return
-    if not _should_index_target(provider, target):
+    with _vector_mutation_lock(provider):
+        if not provider._vector_ready or not provider._vector_store or not provider._embedder:
+            return
+        if not _should_index_target(provider, target):
+            try:
+                provider._vector_store.delete_by_ids([id])
+                refresh_vector_audit(provider)
+            except Exception as exc:
+                mark_vector_needs_repair(provider, exc)
+                logger.warning("Scope Recall vector exclusion cleanup failed; SQLite truth row preserved and vector repair is needed: %s", exc)
+            return
         try:
-            provider._vector_store.delete_by_ids([id])
+            vector = provider._embedder.embed(provider._vector_text(summary, content))
+            provider._vector_store.upsert_records(
+                [
+                    {
+                        "id": id,
+                        "scope_id": scope_id or provider._scope_id,
+                        "source": source,
+                        "target": target,
+                        "content": content,
+                        "summary": summary,
+                        "updated_at": updated_at,
+                        "vector": vector,
+                    }
+                ]
+            )
             refresh_vector_audit(provider)
         except Exception as exc:
             mark_vector_needs_repair(provider, exc)
-            logger.warning("Scope Recall vector exclusion cleanup failed; SQLite truth row preserved and vector repair is needed: %s", exc)
-        return
-    try:
-        vector = provider._embedder.embed(provider._vector_text(summary, content))
-        provider._vector_store.upsert_records(
-            [
-                {
-                    "id": id,
-                    "scope_id": scope_id or provider._scope_id,
-                    "source": source,
-                    "target": target,
-                    "content": content,
-                    "summary": summary,
-                    "updated_at": updated_at,
-                    "vector": vector,
-                }
-            ]
-        )
-        refresh_vector_audit(provider)
-    except Exception as exc:
-        mark_vector_needs_repair(provider, exc)
-        logger.warning("Scope Recall vector upsert failed; SQLite truth row preserved and vector repair is needed: %s", exc)
+            logger.warning("Scope Recall vector upsert failed; SQLite truth row preserved and vector repair is needed: %s", exc)

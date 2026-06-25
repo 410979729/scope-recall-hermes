@@ -625,6 +625,8 @@ SQLite is the cardinality authority. During vector sync, the provider compares S
 
 `scope_recall_stats` reports:
 
+- `journal_digest.last_status` / `journal_digest.consecutive_failures` — background digest health for operator monitoring
+- `journal_digest.thread_alive` — whether a background digest worker is currently running
 - `vector.row_count` — physical vector companion row count
 - `vector.unique_id_count` — distinct vector ids
 - `vector.duplicate_row_count` — extra physical rows beyond one row per id

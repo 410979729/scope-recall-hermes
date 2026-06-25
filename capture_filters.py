@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 from .gating import clean_text, is_trivial
@@ -180,6 +181,17 @@ def _configured_patterns(config: dict[str, Any] | None) -> tuple[str, ...]:
     return tuple(patterns)
 
 
+@lru_cache(maxsize=64)
+def _compiled_configured_patterns(patterns: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
+    compiled: list[re.Pattern[str]] = []
+    for pattern in patterns:
+        try:
+            compiled.append(re.compile(pattern, flags=re.IGNORECASE | re.MULTILINE))
+        except re.error:
+            continue
+    return tuple(compiled)
+
+
 def _normalize_skip_pattern(pattern: str) -> str:
     """Fix common config escaping mistakes so patterns actually match.
 
@@ -221,8 +233,8 @@ def should_capture_text(text: Any, config: dict[str, Any] | None = None) -> Capt
     if contains_secret_like_text(cleaned):
         return CaptureFilterResult(False, "secret-like-content")
 
-    for pattern in _configured_patterns(config):
-        if re.search(pattern, cleaned, flags=re.IGNORECASE | re.MULTILINE):
-            return CaptureFilterResult(False, f"skip-pattern:{pattern}")
+    for pattern in _compiled_configured_patterns(_configured_patterns(config)):
+        if pattern.search(cleaned):
+            return CaptureFilterResult(False, f"skip-pattern:{pattern.pattern}")
 
     return CaptureFilterResult(True, "")

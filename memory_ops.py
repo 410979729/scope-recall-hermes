@@ -1241,6 +1241,14 @@ def stats_payload(provider: Any) -> dict[str, Any]:
         "scope_feedback_rows": feedback_rows,
         "curated_memories": len(iter_curated_entries(provider._hermes_home)),
         "migration": dict(provider._migration_info),
+        "journal_digest": {
+            "thread_alive": bool(getattr(provider, "_journal_digest_thread", None) is not None and provider._journal_digest_thread.is_alive()),
+            "last_started": float(getattr(provider, "_last_journal_digest_started", 0.0) or 0.0),
+            "last_finished": float(getattr(provider, "_last_journal_digest_finished", 0.0) or 0.0),
+            "last_status": str(getattr(provider, "_last_journal_digest_status", "never_run") or "never_run"),
+            "last_error": str(getattr(provider, "_last_journal_digest_error", "") or ""),
+            "consecutive_failures": int(getattr(provider, "_journal_digest_consecutive_failures", 0) or 0),
+        },
         "vector": {
             "enabled": provider._vector_enabled,
             "ready": provider._vector_ready,

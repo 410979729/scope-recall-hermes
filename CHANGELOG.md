@@ -14,6 +14,7 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ### Fixed
 - Made vector sync release tests use the deterministic `local-debug` embedder so release gates no longer depend on hosted embedding network availability.
+- Synchronized `retrieval.top_k` across packaged `config.json` and in-code default config, exposed background journal digest health in `scope_recall_stats`, cached configured capture skip regexes to reduce per-turn filter overhead, and serialized vector companion mutations behind a provider-level lock.
 
 ## [1.5.1] - 2026-06-24
 
