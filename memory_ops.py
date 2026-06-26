@@ -8,12 +8,13 @@ from typing import Any
 from .capture import store_now
 from .capture_filters import sanitize_report_text
 from .gating import compact_text
-from .graph import clamp_float, compact_context_lines, load_metadata, normalize_entity
+from .graph import clamp_float, compact_context_lines, lifecycle_visible_sql, load_metadata, normalize_entity
 from .governance import classify_memory, is_conflicting, merge_memory_text, semantic_similarity
 from .models import recall_scope_mode
 from .sql_store import curated_recall_item_id, delete_rows, exact_duplicate_groups, iter_curated_entries, update_row
 from .storage_views import _curated_memory_allowed
 from .vector_runtime import mark_vector_needs_repair, refresh_vector_audit, setup_vector_layer, upsert_vector_record
+
 
 
 def _scope_params(provider: Any, *, writable: bool = False) -> list[str]:
@@ -40,6 +41,21 @@ def _normalized_scope_mode(provider: Any, target: str, source: str = "", scope_m
     if requested in {"shared", "local", "shared_pool"}:
         return requested
     return provider._scope_mode_for(target, source) if hasattr(provider, "_scope_mode_for") else recall_scope_mode(target, source)
+
+
+def _payload_entities(metadata: dict[str, Any]) -> list[str]:
+    raw_entities = metadata.get("entities")
+    if not isinstance(raw_entities, list):
+        return []
+    seen: set[str] = set()
+    output: list[str] = []
+    for raw_entity in raw_entities:
+        entity = normalize_entity(raw_entity)
+        if not entity or entity in seen:
+            continue
+        seen.add(entity)
+        output.append(entity)
+    return output
 
 
 def store_memory_now(
@@ -146,12 +162,15 @@ def _mark_conflicts_for_memory(provider: Any, *, memory_id: str, content: str, t
             )
         rows = conn.execute(
             """
-            SELECT id, content
-            FROM memories
-            WHERE id != ? AND target = ? AND scope_id IN ({})
-            ORDER BY updated_at DESC
+            SELECT m.id, m.content
+            FROM memories m
+            WHERE m.id != ?
+              AND m.target = ?
+              AND m.scope_id IN ({})
+              AND {}
+            ORDER BY m.updated_at DESC
             LIMIT 50
-            """.format(_scope_placeholders(provider, writable=True)),
+            """.format(_scope_placeholders(provider, writable=True), lifecycle_visible_sql('m')),
             [memory_id, target, *_writable_scope_params(provider)],
         ).fetchall()
         conflicting_ids = [str(row["id"]) for row in rows if is_conflicting(str(row["content"]), content)]
@@ -180,11 +199,13 @@ def find_semantic_merge_candidate(provider: Any, content: str, target: str, *, s
         return "", ""
     with provider._lock:
         rows = conn.execute(
-            """
-            SELECT id, content
-            FROM memories
-            WHERE scope_id = ? AND target = ?
-            ORDER BY updated_at DESC
+            f"""
+            SELECT m.id, m.content
+            FROM memories m
+            WHERE m.scope_id = ?
+              AND m.target = ?
+              AND {lifecycle_visible_sql('m')}
+            ORDER BY m.updated_at DESC
             LIMIT 50
             """,
             [scope_id, target],
@@ -543,7 +564,7 @@ def _row_payload(row: Any) -> dict[str, Any]:
         "confidence": clamp_float(metadata.get("confidence"), default=0.5),
         "trust": clamp_float(metadata.get("trust"), default=0.5),
         "importance": clamp_float(metadata.get("importance"), default=0.5),
-        "entities": metadata.get("entities") if isinstance(metadata.get("entities"), list) else [],
+        "entities": _payload_entities(metadata),
         "tags": metadata.get("tags") if isinstance(metadata.get("tags"), list) else [],
     }
 
@@ -579,7 +600,7 @@ def _profile_row_payload(row: Any) -> dict[str, Any]:
         "trust": clamp_float(metadata.get("trust"), default=0.5),
         "importance": clamp_float(metadata.get("importance"), default=0.5),
         "confidence": clamp_float(metadata.get("confidence"), default=0.5),
-        "entities": metadata.get("entities") if isinstance(metadata.get("entities"), list) else [],
+        "entities": _payload_entities(metadata),
     }
 
 
@@ -604,7 +625,7 @@ def _profile_curated_items(provider: Any, *, targets: list[str], limit: int) -> 
                 "trust": clamp_float(metadata.get("trust"), default=0.5),
                 "importance": clamp_float(metadata.get("importance"), default=0.5),
                 "confidence": clamp_float(metadata.get("confidence"), default=0.5),
-                "entities": metadata.get("entities") if isinstance(metadata.get("entities"), list) else [],
+                "entities": _payload_entities(metadata),
             }
         )
     return items[: max(1, limit)]
@@ -623,13 +644,25 @@ def _profile_relevant_ids(provider: Any, *, query: str, entity: str, limit: int)
                 SELECT m.id
                 FROM memory_entities e
                 JOIN memories m ON m.id = e.memory_id
-                WHERE e.entity = ? AND m.scope_id IN ({_scope_placeholders(provider)})
+                WHERE e.entity = ?
+                  AND m.scope_id IN ({_scope_placeholders(provider)})
+                  AND {lifecycle_visible_sql('m')}
                 LIMIT ?
                 """,
                 [normalized_entity, *_accessible_scope_params(provider), max(10, min(100, limit * 8))],
             ).fetchall()
         relevant.update(str(row["id"]) for row in rows)
     return relevant
+
+
+def _profile_lifecycle_sql(alias: str = "m", *, include_candidates: bool = False) -> str:
+    if include_candidates:
+        return lifecycle_visible_sql(alias)
+    lifecycle_expr = (
+        f"LOWER(COALESCE(CASE WHEN json_valid({alias}.metadata) "
+        f"THEN json_extract({alias}.metadata, '$.lifecycle') ELSE 'promoted' END, 'promoted'))"
+    )
+    return f"{lifecycle_expr} = 'promoted'"
 
 
 def _profile_rows_for_target(
@@ -639,30 +672,33 @@ def _profile_rows_for_target(
     limit: int,
     relevant_ids: set[str],
     filter_to_relevance: bool,
+    include_candidates: bool,
 ) -> list[dict[str, Any]]:
     params: list[Any] = [target, *_accessible_scope_params(provider)]
     relevance_clause = ""
     if filter_to_relevance:
         if not relevant_ids:
             return []
-        relevance_clause = f" AND id IN ({','.join('?' for _ in relevant_ids)})"
+        relevance_clause = f" AND m.id IN ({','.join('?' for _ in relevant_ids)})"
         params.extend(sorted(relevant_ids))
     params.append(max(1, limit))
     with provider._lock:
         rows = provider._require_conn().execute(
             f"""
-            SELECT *
-            FROM memories
-            WHERE target = ? AND scope_id IN ({_scope_placeholders(provider)}){relevance_clause}
+            SELECT m.*
+            FROM memories m
+            WHERE m.target = ?
+              AND m.scope_id IN ({_scope_placeholders(provider)})
+              AND {_profile_lifecycle_sql('m', include_candidates=include_candidates)}{relevance_clause}
             ORDER BY
-                CASE source
+                CASE m.source
                     WHEN 'tool-store' THEN 0
                     WHEN 'journal-digest' THEN 1
                     WHEN 'nightly-digest' THEN 2
                     ELSE 3
                 END,
-                updated_at DESC,
-                id DESC
+                m.updated_at DESC,
+                m.id DESC
             LIMIT ?
             """,
             params,
@@ -677,6 +713,7 @@ def profile_payload(
     entity: str = "",
     targets: list[str] | None = None,
     include_general: bool = False,
+    include_candidates: bool = False,
     include_curated: bool = True,
     limit: int = 5,
     max_chars: int = 1200,
@@ -700,6 +737,7 @@ def profile_payload(
             limit=limit,
             relevant_ids=relevant_ids,
             filter_to_relevance=filter_to_relevance,
+            include_candidates=bool(include_candidates or target == "general"),
         )
         sections[target] = {"count": len(items), "items": items}
         all_items.extend(items)
@@ -723,6 +761,7 @@ def profile_payload(
         "entity": normalize_entity(entity),
         "targets": selected_targets,
         "include_general": bool(include_general or (targets is not None and "general" in selected_targets)),
+        "include_candidates": bool(include_candidates),
         "context": context,
         "sections": sections,
         "curated": {"count": len(curated_items), "items": curated_items},
@@ -741,6 +780,7 @@ def profile_payload(
         },
         "notes": [
             "SQLite memories are read from the current accessible scope set only.",
+            "SQLite profile rows default to lifecycle=promoted; pass include_candidates=true to include non-hidden candidate rows.",
             "Hermes curated USER.md/MEMORY.md entries are live-read when policy allows; they are not copied into SQLite.",
             "Raw journal rows are not exposed by this profile surface.",
         ],
@@ -753,8 +793,7 @@ def context_payload(provider: Any, *, query: str, limit: int = 5, max_chars: int
     entity_counts: dict[str, int] = {}
     for item in results:
         metadata = load_metadata(item.metadata or {})
-        raw_entities = metadata.get("entities")
-        entities = [str(entity) for entity in raw_entities] if isinstance(raw_entities, list) else []
+        entities = _payload_entities(metadata)
         for entity in entities:
             entity_counts[entity] = entity_counts.get(entity, 0) + 1
         records.append(
@@ -794,7 +833,9 @@ def probe_entity(provider: Any, *, entity: str, limit: int = 10) -> dict[str, An
             SELECT m.*
             FROM memory_entities e
             JOIN memories m ON m.id = e.memory_id
-            WHERE e.entity = ? AND m.scope_id IN ({_scope_placeholders(provider)})
+            WHERE e.entity = ?
+              AND m.scope_id IN ({_scope_placeholders(provider)})
+              AND {lifecycle_visible_sql('m')}
             ORDER BY
                 CASE m.target
                     WHEN 'user' THEN 0
@@ -823,7 +864,9 @@ def related_entities(provider: Any, *, entity: str, limit: int = 12) -> dict[str
                 SELECT e.memory_id
                 FROM memory_entities e
                 JOIN memories m ON m.id = e.memory_id
-                WHERE e.entity = ? AND m.scope_id IN ({_scope_placeholders(provider)})
+                WHERE e.entity = ?
+                  AND m.scope_id IN ({_scope_placeholders(provider)})
+                  AND {lifecycle_visible_sql('m')}
             )
             SELECT e.entity, COUNT(*) AS count
             FROM memory_entities e
@@ -833,9 +876,18 @@ def related_entities(provider: Any, *, entity: str, limit: int = 12) -> dict[str
             ORDER BY count DESC, e.entity ASC
             LIMIT ?
             """,
-            [normalized, *_accessible_scope_params(provider), normalized, max(1, min(50, limit))],
+            [normalized, *_accessible_scope_params(provider), normalized, max(50, min(200, max(1, int(limit)) * 8))],
         ).fetchall()
-    related = [{"entity": str(row["entity"]), "count": int(row["count"])} for row in rows]
+    related_counts: dict[str, int] = {}
+    for row in rows:
+        related_entity = normalize_entity(row["entity"])
+        if not related_entity or related_entity == normalized:
+            continue
+        related_counts[related_entity] = related_counts.get(related_entity, 0) + int(row["count"])
+    related = [
+        {"entity": entity, "count": count}
+        for entity, count in sorted(related_counts.items(), key=lambda item: (-item[1], item[0]))[: max(1, min(50, limit))]
+    ]
     return {"entity": normalized, "count": len(related), "related": related}
 
 

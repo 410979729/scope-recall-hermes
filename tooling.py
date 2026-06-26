@@ -278,6 +278,7 @@ class ScopeRecallToolService:
                 entity=entity,
                 targets=self._targets_arg(args),
                 include_general=self._bool_arg(args, "include_general", False),
+                include_candidates=self._bool_arg(args, "include_candidates", False),
                 include_curated=self._bool_arg(args, "include_curated", True),
                 limit=self._limit(args),
                 max_chars=max(120, min(4000, int(args.get("max_chars") or 1200))),

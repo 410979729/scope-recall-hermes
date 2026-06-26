@@ -27,7 +27,14 @@ class DummyProvider:
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(":memory:")
         self._conn.row_factory = sqlite3.Row
+        self._conn.execute("CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, scope_id TEXT NOT NULL DEFAULT '', metadata TEXT NOT NULL DEFAULT '{}')")
+        for item in self._items:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO memories(id, scope_id, metadata) VALUES (?, ?, ?)",
+                (item.id, str((item.metadata or {}).get("scope_id") or self._shared_scope_id), json.dumps(item.metadata or {}, ensure_ascii=False, sort_keys=True)),
+            )
         ensure_graph_schema(self._conn)
+        self._conn.commit()
 
     def _search_db_memories(self, query, *, limit):
         return self._items[:limit]
@@ -90,6 +97,40 @@ def test_explain_surfaces_persisted_contradiction_relations(tmp_path):
         assert "contradicts" in by_id[second["id"]]["components"]["relation_evidence_types"]
     finally:
         plugin.shutdown()
+
+
+def test_relation_evidence_ignores_lifecycle_hidden_peers():
+    active = _item("active-deploy-command", 0.82)
+    provider = DummyProvider(
+        {
+            "mode": "lexical",
+            "min_score": 0.01,
+            "relation_rerank_enabled": True,
+            "relation_supports_boost": 0.08,
+        },
+        [active],
+    )
+    try:
+        provider._require_conn().execute(
+            "INSERT OR REPLACE INTO memories(id, scope_id, metadata) VALUES ('archived-peer', 'shared-scope', ?)",
+            (json.dumps({"lifecycle": "archived", "scope_id": "shared-scope"}, ensure_ascii=False, sort_keys=True),),
+        )
+        provider._require_conn().execute(
+            """
+            INSERT INTO memory_relations(source_memory_id, target_memory_id, relation_type, confidence, note, created_at)
+            VALUES ('active-deploy-command', 'archived-peer', 'supports', 1.0, 'hidden peer test', '2026-06-01T00:00:00+00:00')
+            """
+        )
+        provider._require_conn().commit()
+
+        results = RecallService(provider).search_memories("Project Atlas deploy command", limit=1)
+
+        assert [item.id for item in results] == ["active-deploy-command"]
+        assert results[0].metadata["relation_evidence_count"] == 0
+        assert results[0].metadata["relation_evidence_ids"] == []
+        assert results[0].metadata["relation_rerank_bonus"] == 0.0
+    finally:
+        provider.close()
 
 
 def test_relation_rerank_boosts_superseding_candidate_when_enabled():

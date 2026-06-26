@@ -6,6 +6,7 @@ from typing import Any, cast
 
 from .embedders import build_embedder
 from .gating import config_bool
+from .graph import lifecycle_is_hidden, lifecycle_visible_sql, load_metadata
 from .sqlite_vector_store import SQLiteBruteForceVectorStore
 from .vector_store import LanceVectorStore, native_vector_dependency_status
 
@@ -199,7 +200,7 @@ def sync_vector_index(provider: Any) -> int:
     conn = provider._require_conn()
     with provider._lock:
         rows = conn.execute(
-            "SELECT id, scope_id, source, target, content, summary, updated_at FROM memories ORDER BY updated_at ASC"
+            f"SELECT id, scope_id, source, target, content, summary, updated_at, metadata FROM memories m WHERE {lifecycle_visible_sql('m')} ORDER BY updated_at ASC"
         ).fetchall()
     with _vector_mutation_lock(provider):
         if not rows:
@@ -265,9 +266,26 @@ def upsert_vector_record(
     summary: str,
     updated_at: str,
     scope_id: str | None = None,
+    metadata: dict[str, Any] | str | None = None,
 ) -> None:
     with _vector_mutation_lock(provider):
         if not provider._vector_ready or not provider._vector_store or not provider._embedder:
+            return
+        resolved_metadata = metadata
+        if resolved_metadata is None:
+            try:
+                row = provider._require_conn().execute("SELECT metadata FROM memories WHERE id = ?", (id,)).fetchone()
+                if row is not None:
+                    resolved_metadata = row["metadata"]
+            except Exception:
+                resolved_metadata = None
+        if lifecycle_is_hidden(load_metadata(resolved_metadata or {})):
+            try:
+                provider._vector_store.delete_by_ids([id])
+                refresh_vector_audit(provider)
+            except Exception as exc:
+                mark_vector_needs_repair(provider, exc)
+                logger.warning("Scope Recall vector lifecycle cleanup failed; SQLite truth row preserved and vector repair is needed: %s", exc)
             return
         if not _should_index_target(provider, target):
             try:

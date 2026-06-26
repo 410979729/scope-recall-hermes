@@ -10,6 +10,7 @@ from typing import Any, Protocol, Sequence
 
 from .capture_filters import contains_secret_like_text, sanitize_report_text, should_capture_text
 from .gating import compact_text
+from .graph import sync_memory_entities
 from .sql_store import delete_rows, ensure_schema, record_governance_audit_event
 
 
@@ -191,6 +192,8 @@ def _archive_memory(
     if superseded_by:
         metadata["superseded_by"] = superseded_by
     conn.execute("UPDATE memories SET metadata = ?, updated_at = ? WHERE id = ?", (_json_dumps(metadata), _now_iso(), memory_id))
+    conn.execute("DELETE FROM memory_entities WHERE memory_id = ?", (memory_id,))
+    conn.execute("DELETE FROM memory_relations WHERE source_memory_id = ? OR target_memory_id = ?", (memory_id, memory_id))
     return True
 
 
@@ -235,6 +238,8 @@ def run_forgetting(
     if dry_run:
         return result
     archived = 0
+    archived_ids: list[str] = []
+    archive_rollback_snapshots: dict[str, dict[str, Any]] = {}
     now = _now_iso()
     for item in soft_items:
         row = conn.execute(
@@ -251,6 +256,8 @@ def run_forgetting(
             actor=actor,
         ):
             archived += 1
+            archived_ids.append(str(item["id"]))
+            archive_rollback_snapshots[str(item["id"])] = before
             after_row = conn.execute(
                 "SELECT id, scope_id, source, target, summary, updated_at, metadata FROM memories WHERE id = ?",
                 (str(item["id"]),),
@@ -270,11 +277,43 @@ def run_forgetting(
                 dry_run=False,
                 created_at=now,
             )
+    archived_vector_deleted = 0
+    vector_error = ""
+    if archived_ids and vector_store is not None:
+        try:
+            vector_store.delete_by_ids(archived_ids)
+            archived_vector_deleted = len(archived_ids)
+        except Exception as exc:
+            conn.rollback()
+            for memory_id, before in archive_rollback_snapshots.items():
+                before_metadata = before.get("metadata") if isinstance(before.get("metadata"), dict) else {}
+                current = conn.execute("SELECT content, target FROM memories WHERE id = ?", (memory_id,)).fetchone()
+                conn.execute(
+                    "UPDATE memories SET metadata = ?, updated_at = ? WHERE id = ?",
+                    (_json_dumps(before_metadata), str(before.get("updated_at") or now), memory_id),
+                )
+                if current is not None:
+                    sync_memory_entities(
+                        conn,
+                        memory_id=memory_id,
+                        content=str(current["content"] or ""),
+                        target=str(current["target"] or ""),
+                        metadata=dict(before_metadata or {}),
+                    )
+            conn.execute("DELETE FROM governance_audit_events WHERE batch_id = ? AND event_type = 'forgetting' AND action = 'soft_archive'", (batch,))
+            conn.commit()
+            vector_error = sanitize_report_text(str(exc))
+            result["archived"] = 0
+            result["deleted"] = 0
+            result["archived_vector_deleted"] = 0
+            result["vector_deleted"] = 0
+            result["vector_error"] = vector_error
+            result["archive_ids"] = []
+            return result
     if archived:
         conn.commit()
     deleted_ids = [str(item["id"]) for item in hard_items if str(item.get("id") or "")]
     vector_deleted = 0
-    vector_error = ""
     if deleted_ids and vector_store is None and not allow_sql_delete_without_vector:
         # Hard delete is destructive while vectors are rebuildable leak surfaces.
         # Fail closed unless the operator explicitly accepts SQL-only deletion;
@@ -330,6 +369,7 @@ def run_forgetting(
     if delete_snapshots:
         conn.commit()
     result["archived"] = archived
+    result["archived_vector_deleted"] = archived_vector_deleted
     result["deleted"] = deleted
     result["vector_deleted"] = vector_deleted
     if vector_error:

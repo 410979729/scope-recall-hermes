@@ -20,7 +20,7 @@ Current-turn recall · Journal-first capture · Durable shared memory · Backgro
 
 This repository, `scope-recall-hermes`, is the Hermes implementation. The Python distribution package is `hermes-scope-recall`, the Python import/package spelling is `scope_recall`, and the Hermes plugin ID/provider name remains `scope-recall` for runtime compatibility. The OpenClaw sibling implementation lives at [`scope-recall-openclaw`](https://github.com/410979729/scope-recall-openclaw).
 
-Version `1.5.2` adds Recall Funnel observability, synthetic retrieval-regression benchmarking, and release-audit hardening while preserving the stable V1 commercial-governance line introduced in 1.5.0. The 1.5 line includes governance cleanup, journal recovery, an operator dashboard, repository-owned golden benchmarks, stricter release gates, fail-closed hard-delete safety, packaged benchmark fixtures, and default-safe vector fallback behavior. Runtime Experience packet injection is enabled by default through `experience.prefetch_enabled=true` and can be disabled with `experience.prefetch_enabled=false`; background automatic promotion remains an explicit operator opt-in through `experience.auto_promotion_enabled=true`, and low-risk auto-promotion remains a second explicit opt-in through `experience.auto_promote_low_risk=true`. By default, successful low-risk scans create candidate playbooks, high-risk playbooks stay review-gated, and final-failure or low-signal traces are not promoted. It keeps the `scope_recall_profile` surface added in v1.3.0, compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, inline attachment-marker sanitization, the supported standalone install shape added in v1.1.0, and native-safe LanceDB probing with automatic SQLite vector fallback for non-AVX hosts.
+Version `1.5.3` adds promoted-only profile lifecycle safety, candidate-memory promotion planning, graph-hygiene repair, and fail-closed vector-repair fallback handling while preserving the stable V1 commercial-governance line introduced in 1.5.0. The 1.5 line includes governance cleanup, journal recovery, an operator dashboard, repository-owned golden benchmarks, stricter release gates, fail-closed hard-delete safety, packaged benchmark fixtures, Recall Funnel observability, synthetic retrieval-regression benchmarking, and default-safe vector fallback behavior. Runtime Experience packet injection is enabled by default through `experience.prefetch_enabled=true` and can be disabled with `experience.prefetch_enabled=false`; background automatic promotion remains an explicit operator opt-in through `experience.auto_promotion_enabled=true`, and low-risk auto-promotion remains a second explicit opt-in through `experience.auto_promote_low_risk=true`. By default, successful low-risk scans create candidate playbooks, high-risk playbooks stay review-gated, and final-failure or low-signal traces are not promoted. It keeps the `scope_recall_profile` surface added in v1.3.0, compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, inline attachment-marker sanitization, the supported standalone install shape added in v1.1.0, and native-safe LanceDB probing with automatic SQLite vector fallback for non-AVX hosts.
 
 It uses a **three-layer design**:
 
@@ -234,6 +234,7 @@ Important boundary:
 
 - `hermes-scope-recall install` copies the provider into `$HERMES_HOME/plugins/scope-recall/`; provider-owned data remains in `$HERMES_HOME/scope-recall/`.
 - the configured vector companion is rebuildable from SQLite truth.
+- manual vector repairs should be inspected first with `python scripts/repair.vector_index.py --hermes-home "$HERMES_HOME" --dry-run`; the script fails closed if the primary configured embedder is unavailable and would otherwise fall back to `vector.fallback_embedder`. Export the configured primary embedder environment variable (for example `SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY`) or intentionally pass `--allow-fallback-embedder` before rebuilding with a fallback embedder.
 - wheel build/import success is not enough by itself; release validation also runs Hermes-home installer and provider-discovery smokes.
 
 ---
@@ -644,6 +645,24 @@ python scripts/repair.vector_index.py --hermes-home "$HERMES_HOME" --dry-run
 python scripts/repair.vector_index.py --hermes-home "$HERMES_HOME"
 ```
 
+### Candidate memory promotion
+
+`scope_recall_profile` defaults to `lifecycle=promoted` SQLite rows, so the compact profile behaves like a stable profile surface instead of mixing in ordinary candidate rows. Pass `include_candidates=true` only when an operator or debugging workflow intentionally wants non-hidden candidate rows in the profile payload. `include_general=true` remains the explicit switch for local `general` scratch rows.
+
+Candidate rows are not left invisible forever. Use the read-only promotion planner first:
+
+```bash
+python scripts/promote.memory_candidates.py --hermes-home "$HERMES_HOME" --dry-run
+```
+
+After reviewing the plan, apply safe promotions:
+
+```bash
+python scripts/promote.memory_candidates.py --hermes-home "$HERMES_HOME" --apply
+```
+
+Rows classified as low-value noise are only archived when the operator also passes `--archive-noise`; otherwise they remain candidate/needs-review. Applied promotions and archives write `governance_audit_events` with before/after metadata and a batch id. `scripts/doctor.py` reports `runtime.memory_candidate_debt` so candidate backlog count, age, promotable rows, and archive candidates are visible before relying on promoted-only profile behavior.
+
 ### Write-time governance
 
 Provider-owned captures apply a deterministic first line of governance before SQLite writes:
@@ -704,6 +723,13 @@ Schema-surface targets after the compact-profile change:
 - standard profile: 20 tools, about 10.6 KB
 - maintenance/secret schema surfaces still require their explicit safety flags
 
+Release `1.5.3` adds lifecycle-governed profile hardening and memory-companion maintenance:
+
+- `scope_recall_profile` defaults SQLite rows to explicit or legacy-promoted lifecycle rows; pass `include_candidates=true` to intentionally include non-hidden candidate rows.
+- `scripts/promote.memory_candidates.py` is a dry-run-by-default promotion planner/apply path for safe ordinary candidates, with governance audit events for applied mutations and redacted review output.
+- `scripts/repair.graph_hygiene.py` reports orphan/hidden-lifecycle graph companion rows and accepts explicit `--dry-run`; `--dry-run` wins over accidental `--apply`.
+- `scripts/repair.vector_index.py` fails closed when the primary configured embedder is unavailable unless the operator intentionally passes `--allow-fallback-embedder`.
+
 Release `1.5.2` adds Recall Funnel observability and retrieval-regression benchmarking:
 
 - `scope_recall_search(include_trace=true)`, `scope_recall_explain`, and `scope_recall_benchmark(include_trace=true)` expose structured candidate-pool, per-stage, filter, timing, and returned-character traces for the active query.
@@ -757,6 +783,18 @@ For an offline SQLite report without exposing the maintenance tool to agents:
 ```bash
 python scripts/report.hygiene.py --db "$HERMES_HOME/scope-recall/memory.sqlite3" --format markdown
 ```
+
+Graph companion hygiene is checked by `scripts/doctor.py`. Orphan graph rows are safe to remove because `memory_entities` and `memory_relations` are rebuildable companions over SQLite `memories` truth:
+
+```bash
+# read-only dry run
+python scripts/repair.graph_hygiene.py --hermes-home "$HERMES_HOME" --dry-run
+
+# apply only after reviewing the dry-run counts
+python scripts/repair.graph_hygiene.py --hermes-home "$HERMES_HOME" --apply
+```
+
+Entity graph read surfaces also hide lifecycle-removed memories (`archived`, `superseded`, `obsolete`, `rejected`) and filter common tool-trace entity noise such as `read_file`, `search_files`, `execute_code`, `skill_view`, and `session_search`.
 
 Destructive cleanup is intentionally out-of-band: use the hygiene report first, then require an explicit operator decision before running any separate delete/merge/dedupe action. The shipped hygiene path is dry-run/report-only.
 

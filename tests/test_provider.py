@@ -509,6 +509,67 @@ def test_profile_surface_respects_gateway_user_isolation_and_multisession_durabl
     assert other_payload["sections"]["user"]["count"] == 0
 
 
+def test_profile_surface_defaults_to_promoted_only_and_can_include_candidates(tmp_path):
+    _write_scope_recall_config(tmp_path, {"vector": {"enabled": False}})
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    plugin.initialize(
+        "session-profile-lifecycle",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="joy",
+        chat_id="chat-lifecycle",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        promoted = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_store",
+                {
+                    "target": "ops",
+                    "content": "Profile promoted-only regression: stable deploy workflow uses release gate evidence before rollout.",
+                },
+            )
+        )
+        candidate = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_store",
+                {
+                    "target": "ops",
+                    "content": "Temporary profile candidate regression: this provisional rollout note should require include_candidates.",
+                },
+            )
+        )
+        assert promoted["stored"] is True
+        assert candidate["stored"] is True
+        # Older installs may have stable rows without an explicit lifecycle key;
+        # promoted-only profile should continue treating those as promoted.
+        with plugin._lock:
+            conn = plugin._require_conn()
+            row = conn.execute("SELECT id, metadata FROM memories WHERE content LIKE ?", ("%stable deploy workflow%",)).fetchone()
+            metadata = json.loads(str(row["metadata"] or "{}"))
+            metadata.pop("lifecycle", None)
+            conn.execute("UPDATE memories SET metadata = ? WHERE id = ?", (json.dumps(metadata, ensure_ascii=False, sort_keys=True), row["id"]))
+            conn.commit()
+        default_payload = json.loads(plugin.handle_tool_call("scope_recall_profile", {"targets": ["ops"], "max_chars": 2000}))
+        candidate_payload = json.loads(
+            plugin.handle_tool_call("scope_recall_profile", {"targets": ["ops"], "include_candidates": True, "max_chars": 2000})
+        )
+    finally:
+        plugin.shutdown()
+
+    assert default_payload["include_candidates"] is False
+    assert "stable deploy workflow" in default_payload["context"]
+    assert "provisional rollout note" not in default_payload["context"]
+    assert default_payload["sections"]["ops"]["count"] == 1
+    assert candidate_payload["include_candidates"] is True
+    assert "stable deploy workflow" in candidate_payload["context"]
+    assert "provisional rollout note" in candidate_payload["context"]
+    assert candidate_payload["sections"]["ops"]["count"] == 2
+
+
 def test_profile_surface_includes_local_general_only_when_requested(tmp_path):
     _write_scope_recall_config(tmp_path, {"vector": {"enabled": False}})
     plugin = load_memory_provider("scope-recall")

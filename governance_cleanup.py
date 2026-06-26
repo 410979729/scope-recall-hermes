@@ -9,6 +9,7 @@ from typing import Any, Sequence
 
 from .capture_filters import sanitize_report_text
 from .gating import compact_text
+from .graph import sync_memory_entities
 from .sql_store import ensure_schema, record_governance_audit_event
 
 TEMPLATE_NOISE_REASONS = {
@@ -252,7 +253,7 @@ def rollback_cleanup_batch(
         after = _json_loads(audit["after_json"])
         before_metadata = before.get("metadata") if isinstance(before.get("metadata"), dict) else {}
         after_metadata = after.get("metadata") if isinstance(after.get("metadata"), dict) else {}
-        current = conn.execute("SELECT id, scope_id, source, target, summary, updated_at, metadata FROM memories WHERE id = ?", (target_id,)).fetchone()
+        current = conn.execute("SELECT id, scope_id, source, target, content, summary, updated_at, metadata FROM memories WHERE id = ?", (target_id,)).fetchone()
         if current is None:
             continue
         current_snapshot = _snapshot_row(current)
@@ -271,6 +272,13 @@ def rollback_cleanup_batch(
         conn.execute(
             "UPDATE memories SET metadata = ?, updated_at = ? WHERE id = ?",
             (_json_dumps(before_metadata), str(before.get("updated_at") or now), target_id),
+        )
+        sync_memory_entities(
+            conn,
+            memory_id=target_id,
+            content=str(current["content"] or ""),
+            target=str(current["target"] or ""),
+            metadata=dict(before_metadata or {}),
         )
         record_governance_audit_event(
             conn,

@@ -4,12 +4,25 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.5.3] - 2026-06-26
+
+### Added
+- Added `scripts/repair.graph_hygiene.py`, a dry-run-by-default maintenance script that reports and, with `--apply`, removes orphan `memory_entities` / `memory_relations` rows from the rebuildable SQLite graph companion.
+- Added `scripts/promote.memory_candidates.py`, a dry-run-by-default candidate-memory promotion planner/apply path that promotes safe ordinary `candidate` memories, optionally archives low-value noise with `--archive-noise`, and records governance audit events for applied mutations.
+- Added doctor visibility for ordinary candidate-memory debt, including candidate count, age, target/source distribution, promotable rows, archive candidates, and samples so promoted-only profile behavior cannot silently starve on stale candidates.
+
 ### Changed
+- `scope_recall_profile` now defaults SQLite rows to `lifecycle=promoted`; pass `include_candidates=true` to intentionally include non-hidden candidate rows while `include_general=true` remains the explicit switch for local scratch/general rows.
 - Reduced the default primary-agent tool schema surface with a new `tool_schema_profile="compact"` default (6 tools, about 4.7 KB in repo-local measurement) that exposes core store/search/context/profile plus compact `scope_recall_memory` and `scope_recall_entity` dispatch tools; `tool_schema_profile="standard"` restores the legacy 20-tool read-only/diagnostic surface, and `tool_schema_extra_tools` can selectively expose diagnostics while staying compact.
 - Kept the low-frequency `scope_recall_store_secret_index` schema behind `secret_index_tools_enabled=true`; direct calls also fail closed unless the operator explicitly enables it.
 
 ### Fixed
+- Added lifecycle filtering to entity/profile graph read paths so `scope_recall_entity`, `probe`, `related`, and profile entity lookup hide `archived`, `superseded`, `obsolete`, and `rejected` memories consistently with the main recall path.
+- Reduced deterministic entity-extraction noise from tool traces and filtered legacy noisy entity metadata/rows from graph read surfaces, including common tool tokens such as `read_file`, `search_files`, `execute_code`, `skill_view`, and `session_search`.
+- Added a SQLite doctor graph-hygiene check that reports orphan graph companion rows and marks the runtime store as needing repair when they are present.
 - Added a deterministic journal-digest durable-value gate so obvious webhook/notification/log/tool-summary noise is rejected before it can become durable `user`/`memory`/`project`/`ops` rows, while preserving reusable root-cause/fix/workflow candidates.
+- Made `scripts/repair.vector_index.py` fail closed when the primary configured vector embedder is unavailable; operators must explicitly pass `--allow-fallback-embedder` before rebuilding with `vector.fallback_embedder`, and dry-run reports primary/fallback availability plus existing-vs-planned dimensions.
+- Made maintenance dry-runs fail-safe: `scripts/repair.graph_hygiene.py` now accepts explicit `--dry-run`, `--dry-run` wins over accidental `--apply`, and candidate-promotion dry-run review output redacts secret-like text and private paths.
 
 ## [1.5.2] - 2026-06-25
 
