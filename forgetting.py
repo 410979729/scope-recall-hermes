@@ -5,12 +5,12 @@ import re
 import sqlite3
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone
 from typing import Any, Protocol, Sequence
 
 from .capture_filters import contains_secret_like_text, sanitize_report_text, should_capture_text
 from .gating import compact_text
 from .graph import sync_memory_entities
+from .maintenance_ops import json_dumps_stable, make_batch_id, now_utc_iso
 from .sql_store import delete_rows, ensure_schema, record_governance_audit_event
 
 
@@ -21,7 +21,7 @@ VERY_SHORT_CHARS = 12
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return now_utc_iso()
 
 
 def _json_loads(raw: Any) -> dict[str, Any]:
@@ -35,7 +35,7 @@ def _json_loads(raw: Any) -> dict[str, Any]:
 
 
 def _json_dumps(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return json_dumps_stable(value)
 
 
 def _limited(items: list[dict[str, Any]], limit: int) -> dict[str, Any]:
@@ -224,7 +224,7 @@ def run_forgetting(
     if not dry_run:
         ensure_schema(conn)
     report = build_forgetting_report(conn, accessible_scope_ids=accessible_scope_ids, limit=limit)
-    batch = batch_id or f"forgetting-{uuid.uuid4().hex}"
+    batch = batch_id or make_batch_id("forgetting")
     soft_items = report["soft_archive_candidates"]["items"]
     hard_items = report["hard_delete_candidates"]["items"] if hard_delete else []
     result = {

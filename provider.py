@@ -45,40 +45,7 @@ from .migration import migrate_legacy_scope_recall_storage
 from .models import RecallItem, RuntimeScope, recall_scope_mode
 from .recall import RecallService
 from .prompting import render_current_turn_recall
-from .schemas import (
-    SCOPE_RECALL_DEDUPE_SCHEMA,
-    SCOPE_RECALL_BENCHMARK_SCHEMA,
-    SCOPE_RECALL_CONTEXT_SCHEMA,
-    SCOPE_RECALL_ENTITY_SCHEMA,
-    SCOPE_RECALL_EXPERIENCE_PREFLIGHT_SCHEMA,
-    SCOPE_RECALL_EXPERIENCE_PROMOTE_SCHEMA,
-    SCOPE_RECALL_EXPERIENCE_STATS_SCHEMA,
-    SCOPE_RECALL_PROFILE_SCHEMA,
-    SCOPE_RECALL_EXPLAIN_SCHEMA,
-    SCOPE_RECALL_EXPORT_SCHEMA,
-    SCOPE_RECALL_FEEDBACK_SCHEMA,
-    SCOPE_RECALL_FORGETTING_REPORT_SCHEMA,
-    SCOPE_RECALL_FORGETTING_RUN_SCHEMA,
-    SCOPE_RECALL_FORGET_SCHEMA,
-    SCOPE_RECALL_GOVERN_SCHEMA,
-    SCOPE_RECALL_HYGIENE_SCHEMA,
-    SCOPE_RECALL_INSPECT_SCHEMA,
-    SCOPE_RECALL_MEMORY_SCHEMA,
-    SCOPE_RECALL_MERGE_SCHEMA,
-    SCOPE_RECALL_PLAYBOOK_CREATE_SCHEMA,
-    SCOPE_RECALL_PLAYBOOK_FEEDBACK_SCHEMA,
-    SCOPE_RECALL_PLAYBOOK_INSPECT_SCHEMA,
-    SCOPE_RECALL_PLAYBOOK_REVIEW_SCHEMA,
-    SCOPE_RECALL_PLAYBOOK_SEARCH_SCHEMA,
-    SCOPE_RECALL_PROBE_SCHEMA,
-    SCOPE_RECALL_REPAIR_SCHEMA,
-    SCOPE_RECALL_RELATED_SCHEMA,
-    SCOPE_RECALL_SEARCH_SCHEMA,
-    SCOPE_RECALL_STATS_SCHEMA,
-    SCOPE_RECALL_STORE_SCHEMA,
-    SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA,
-    SCOPE_RECALL_UPDATE_SCHEMA,
-)
+from .provider_schemas import build_config_schema, build_tool_schemas
 from .scope import accessible_scope_ids, build_scope_id, build_shared_pool_scope_id, build_shared_scope_id, normalize_scope_identity, writable_scope_ids
 from .sql_store import ensure_schema
 from .sqlite_vector_store import SQLiteBruteForceVectorStore
@@ -151,72 +118,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         return True
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
-        return [
-            {
-                "key": "auto_recall",
-                "description": "Enable current-turn memory recall",
-                "default": "true",
-                "choices": ["true", "false"],
-            },
-            {
-                "key": "auto_capture",
-                "description": "Capture turns into local memory",
-                "default": "true",
-                "choices": ["true", "false"],
-            },
-            {
-                "key": "capture_llm.enabled",
-                "description": "Use LLM to extract user+assistant turns into structured memory (requires API key)",
-                "default": "false",
-                "choices": ["true", "false"],
-            },
-            {
-                "key": "capture_raw_user",
-                "description": "Legacy fallback: store whole user turns as local scratch memory when no structured extraction candidate is found",
-                "default": "false",
-                "choices": ["true", "false"],
-            },
-            {
-                "key": "capture_llm.model",
-                "description": "LLM model for capture extraction (OpenAI-compatible)",
-                "default": "gpt-4o-mini",
-            },
-            {
-                "key": "vector.enabled",
-                "description": "Enable the rebuildable vector companion layer",
-                "default": "true",
-                "choices": ["true", "false"],
-            },
-            {
-                "key": "vector.backend",
-                "description": "Vector companion backend: LanceDB for ANN search, or sqlite-bruteforce for non-AVX/native-free hosts",
-                "default": "lancedb",
-                "choices": ["lancedb", "sqlite-bruteforce"],
-            },
-            {
-                "key": "vector.fallback_backend",
-                "description": "Safe backend used automatically when LanceDB/PyArrow cannot be imported safely",
-                "default": "sqlite-bruteforce",
-                "choices": ["sqlite-bruteforce", "disabled"],
-            },
-            {
-                "key": "vector.embedder.provider",
-                "description": "Embedding backend for the vector layer (API or local model)",
-                "default": "openai-compatible",
-                "choices": ["openai-compatible", "openai", "sentence-transformers", "local-hash"],
-            },
-            {
-                "key": "vector.embedder.model",
-                "description": "Embedding model name for the selected vector backend",
-                "default": "gemini-embedding-001",
-            },
-            {
-                "key": "maintenance_tools_enabled",
-                "description": "Enable operator-only maintenance tools such as dedupe, governance, and vector repair",
-                "default": "false",
-                "choices": ["true", "false"],
-            },
-        ]
+        return build_config_schema()
 
     def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
         save_runtime_config(values or {}, hermes_home)
@@ -869,97 +771,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         return config
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        config = self._schema_config()
-        if not config_bool(config, "enable_tools", True):
-            return []
-        if self._scope.agent_context != "primary":
-            return []
-
-        raw_experience_config = config.get("experience")
-        experience_config: dict[str, Any] = dict(raw_experience_config) if isinstance(raw_experience_config, dict) else {}
-        experience_enabled = config_bool(experience_config, "enabled", True)
-        maintenance_enabled = config_bool(config, "maintenance_tools_enabled", False)
-        secret_index_enabled = config_bool(config, "secret_index_tools_enabled", False)
-        profile = str(config.get("tool_schema_profile") or "compact").strip().lower().replace("-", "_")
-        if profile in {"legacy", "compat", "standard"}:
-            profile = "standard"
-        elif profile not in {"compact", "standard"}:
-            profile = "compact"
-
-        compact_schemas = [
-            SCOPE_RECALL_STORE_SCHEMA,
-            SCOPE_RECALL_SEARCH_SCHEMA,
-            SCOPE_RECALL_CONTEXT_SCHEMA,
-            SCOPE_RECALL_PROFILE_SCHEMA,
-            SCOPE_RECALL_MEMORY_SCHEMA,
-            SCOPE_RECALL_ENTITY_SCHEMA,
-        ]
-        standard_schemas = [
-            SCOPE_RECALL_STORE_SCHEMA,
-            SCOPE_RECALL_SEARCH_SCHEMA,
-            SCOPE_RECALL_CONTEXT_SCHEMA,
-            SCOPE_RECALL_PROFILE_SCHEMA,
-            SCOPE_RECALL_PROBE_SCHEMA,
-            SCOPE_RECALL_RELATED_SCHEMA,
-            SCOPE_RECALL_FEEDBACK_SCHEMA,
-            SCOPE_RECALL_FORGET_SCHEMA,
-            SCOPE_RECALL_UPDATE_SCHEMA,
-            SCOPE_RECALL_MERGE_SCHEMA,
-            SCOPE_RECALL_INSPECT_SCHEMA,
-            SCOPE_RECALL_EXPLAIN_SCHEMA,
-            SCOPE_RECALL_EXPORT_SCHEMA,
-            SCOPE_RECALL_STATS_SCHEMA,
-            SCOPE_RECALL_BENCHMARK_SCHEMA,
-        ]
-        schemas = list(standard_schemas if profile == "standard" else compact_schemas)
-
-        schema_by_name = {str(schema["name"]): schema for schema in [*compact_schemas, *standard_schemas]}
-        if secret_index_enabled:
-            schema_by_name[SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA["name"]] = SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA
-        experience_schemas = [
-            SCOPE_RECALL_PLAYBOOK_SEARCH_SCHEMA,
-            SCOPE_RECALL_PLAYBOOK_INSPECT_SCHEMA,
-            SCOPE_RECALL_EXPERIENCE_PREFLIGHT_SCHEMA,
-            SCOPE_RECALL_PLAYBOOK_FEEDBACK_SCHEMA,
-            SCOPE_RECALL_EXPERIENCE_STATS_SCHEMA,
-        ]
-        if experience_enabled:
-            schema_by_name.update({str(schema["name"]): schema for schema in experience_schemas})
-            if profile == "standard":
-                schemas.extend(experience_schemas)
-        maintenance_schemas = [
-            SCOPE_RECALL_DEDUPE_SCHEMA,
-            SCOPE_RECALL_GOVERN_SCHEMA,
-            SCOPE_RECALL_REPAIR_SCHEMA,
-            SCOPE_RECALL_HYGIENE_SCHEMA,
-            SCOPE_RECALL_PLAYBOOK_CREATE_SCHEMA,
-            SCOPE_RECALL_PLAYBOOK_REVIEW_SCHEMA,
-            SCOPE_RECALL_EXPERIENCE_PROMOTE_SCHEMA,
-            SCOPE_RECALL_FORGETTING_REPORT_SCHEMA,
-            SCOPE_RECALL_FORGETTING_RUN_SCHEMA,
-        ]
-        if experience_enabled and maintenance_enabled:
-            schema_by_name.update({str(schema["name"]): schema for schema in maintenance_schemas})
-            schemas.extend(maintenance_schemas)
-
-        if secret_index_enabled:
-            schemas.append(SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA)
-
-        extra_tools = config.get("tool_schema_extra_tools") or []
-        if isinstance(extra_tools, str):
-            extra_names = [item.strip() for item in extra_tools.split(",")]
-        elif isinstance(extra_tools, list):
-            extra_names = [str(item).strip() for item in extra_tools]
-        else:
-            extra_names = []
-        seen = {str(schema["name"]) for schema in schemas}
-        for name in extra_names:
-            schema = schema_by_name.get(name)
-            if schema is None or name in seen:
-                continue
-            schemas.append(schema)
-            seen.add(name)
-        return schemas
+        return build_tool_schemas(self._schema_config(), agent_context=self._scope.agent_context)
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         del kwargs

@@ -4,6 +4,16 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.5.4] - 2026-06-26
+
+### Changed
+- Split the scope-recall doctor into focused `doctor_*` modules while keeping `scripts/doctor.py` as the compatible CLI wrapper and preserving direct import re-exports used by tests/operators.
+- Centralized graph hygiene repair/counting, maintenance dry-run helpers, digest result payload builders, recall pipeline merge/rank helpers, and provider schema construction into dedicated modules so future governance work has smaller review surfaces.
+- Added release-gate coverage for the new refactor modules so wheel/source checks fail if they are accidentally omitted from packaged artifacts.
+
+### Fixed
+- Hardened doctor runtime checks by opening the SQLite truth DB with URI `mode=ro` and by narrowing the doctor wrapper import fallback to `ImportError` so real import-time bugs are not hidden.
+
 ## [1.5.3] - 2026-06-26
 
 ### Added

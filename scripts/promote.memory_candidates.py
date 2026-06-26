@@ -32,6 +32,7 @@ _ensure_source_import()
 
 from scope_recall.candidate_promotion import candidate_debt_report, candidate_rows, classify_candidate_row, load_metadata, now_iso  # noqa: E402
 from scope_recall.capture_filters import sanitize_report_text  # noqa: E402
+from scope_recall.maintenance_ops import connect_memory_db, effective_apply, memory_db_path  # noqa: E402
 from scope_recall.sql_store import ensure_governance_schema, record_governance_audit_event  # noqa: E402
 
 
@@ -48,7 +49,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def _db_path(hermes_home: Path) -> Path:
-    return hermes_home.expanduser() / "scope-recall" / "memory.sqlite3"
+    return memory_db_path(hermes_home)
 
 
 def _metadata_after(metadata: dict[str, Any], *, action: str, reason: str, batch_id: str, at: str) -> dict[str, Any]:
@@ -92,9 +93,8 @@ def promote_memory_candidates(
     if not db_path.exists():
         return {"ok": False, "status": "missing", "path": str(db_path), "error": "SQLite truth DB not found"}
 
-    mode = "rw" if apply else "ro"
     batch = batch_id or f"candidate-promotion-{now_iso().replace(':', '').replace('+', 'Z')}"
-    conn = sqlite3.connect(f"file:{db_path}?mode={mode}", uri=True, timeout=30.0)
+    conn = connect_memory_db(db_path, apply=apply, timeout=30.0)
     conn.execute("PRAGMA busy_timeout = 30000")
     conn.row_factory = sqlite3.Row
     try:
@@ -186,7 +186,7 @@ def main() -> int:
     args = parse_args()
     payload = promote_memory_candidates(
         Path(args.hermes_home),
-        apply=bool(args.apply and not args.dry_run),
+        apply=effective_apply(apply=args.apply, dry_run=args.dry_run),
         archive_noise=bool(args.archive_noise),
         limit=max(1, int(args.limit or 1000)),
         batch_id=str(args.batch_id or ""),

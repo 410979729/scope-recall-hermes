@@ -1,21 +1,16 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 import uuid
-from datetime import datetime, timezone
 from typing import Any, Sequence
 
 from .journal import ensure_journal_schema
+from .maintenance_ops import make_batch_id, now_utc_iso
 from .sql_store import ensure_schema, record_governance_audit_event
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _json_dumps(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return now_utc_iso()
 
 
 def _prefix_clause(reason_prefixes: Sequence[str]) -> tuple[str, list[str]]:
@@ -135,7 +130,7 @@ def schedule_replay(
     if not dry_run:
         ensure_schema(conn)
         ensure_journal_schema(conn)
-    batch = batch_id or f"journal-recovery-{uuid.uuid4().hex}"
+    batch = batch_id or make_batch_id("journal-recovery")
     candidates = find_replay_candidates(conn, reason_prefixes=reason_prefixes, limit=limit)
     result = {
         "dry_run": bool(dry_run),

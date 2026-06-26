@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-scope-recall"
-version = "1.5.3"
+version = "1.5.4"
 description = "Hermes scoped memory provider with journal-first capture, SQLite truth, vector companions, and hybrid RRF retrieval."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -78,10 +78,21 @@ pythonpath = ["."]
 include = [
   "candidate_promotion.py",
   "config.py",
+  "digest_run_results.py",
+  "doctor_common.py",
+  "doctor_experience.py",
+  "doctor_journal.py",
+  "doctor_source.py",
+  "doctor_sqlite.py",
+  "doctor_vector.py",
   "embedders.py",
+  "graph_hygiene.py",
+  "maintenance_ops.py",
   "graph.py",
   "memory_ops.py",
+  "provider_schemas.py",
   "recall.py",
+  "recall_pipeline.py",
   "schemas.py",
   "scoring.py",
   "sqlite_vector_store.py",
