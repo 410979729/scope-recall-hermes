@@ -9,6 +9,7 @@ from typing import Any
 from .gating import query_tokens
 from .graph import apply_quality_weight, entity_distance_scores, entity_overlap_bonus, lifecycle_visible_sql, metadata_entities, normalize_entity, query_entities as graph_query_entities
 from .models import RecallItem
+from .recall_pipeline import build_search_plan, final_trace_payload, initial_trace, merge_recall_candidates, rank_recall_items
 from .scoring import combine_scores, reciprocal_rank_fusion
 
 _FRESHNESS_HINTS = {
@@ -95,29 +96,18 @@ class RecallService:
     def search_memories(self, query: str, *, limit: int) -> list[RecallItem]:
         started_at = time.perf_counter()
         retrieval_cfg = self.provider._retrieval_config or {}
-        bounded_limit = max(1, int(limit or 1))
-        configured_candidate_pool = self._positive_int(retrieval_cfg.get("candidate_pool"), bounded_limit)
-        candidate_pool = max(bounded_limit, configured_candidate_pool)
-        configured_top_k = self._positive_int(retrieval_cfg.get("top_k"), bounded_limit)
-        vector_top_k = max(candidate_pool, self._positive_int((getattr(self.provider, "_vector_config", {}) or {}).get("top_k"), candidate_pool))
-        trace: dict[str, Any] = {
-            "query": query,
-            "limit": bounded_limit,
-            "configured_top_k": configured_top_k,
-            "candidate_pool": candidate_pool,
-            "configured_candidate_pool": configured_candidate_pool,
-            "vector_top_k": vector_top_k,
-            "accessible_scope_count": len(getattr(self.provider, "_accessible_scope_ids", []) or []),
-            "stages": {},
-            "filters": {
-                "lifecycle_removed": 0,
-                "general_policy_removed": 0,
-                "entity_scope_mismatch": 0,
-                "vector_only_below_min_score": 0,
-                "below_min_score": 0,
-            },
-            "timings_ms": {},
-        }
+        plan = build_search_plan(
+            limit=limit,
+            retrieval_config=retrieval_cfg,
+            vector_config=getattr(self.provider, "_vector_config", {}) or {},
+        )
+        bounded_limit = plan.bounded_limit
+        candidate_pool = plan.candidate_pool
+        trace: dict[str, Any] = initial_trace(
+            query=query,
+            plan=plan,
+            accessible_scope_count=len(getattr(self.provider, "_accessible_scope_ids", []) or []),
+        )
 
         stage_start = time.perf_counter()
         raw_lexical_candidates = self.provider._search_db_memories(query, limit=candidate_pool)
@@ -145,38 +135,18 @@ class RecallService:
                 item.metadata = dict(item.metadata or {})
                 item.metadata["rrf_score"] = rrf_by_id[item.id]
 
-        merged: dict[str, RecallItem] = {}
-        for item in lexical_candidates + vector_candidates + curated_candidates:
-            if item.id.startswith("curated:"):
-                item_key = item.id
-            else:
-                dedup_class = "scratch" if item.target == "general" else "durable"
-                item_key = f"{dedup_class}:{self.provider._dedup_key(item.content)}"
-            current = merged.get(item_key)
-            if current is None:
-                merged[item_key] = item
-                continue
-            incoming = dict(item.metadata or {})
-            preferred = self._preferred_duplicate(current, item)
-            other = item if preferred is current else current
-            meta = dict(preferred.metadata or {})
-            for meta_key, value in dict(other.metadata or {}).items():
-                meta.setdefault(meta_key, value)
-            current_meta = dict(current.metadata or {})
-            for meta_key in ("lexical_score", "vector_score", "base_score", "recency_bonus", "rrf_score"):
-                meta[meta_key] = max(
-                    float(meta.get(meta_key) or 0.0),
-                    float(incoming.get(meta_key) or 0.0),
-                    float(current_meta.get(meta_key) or 0.0),
-                )
-            preferred.metadata = meta
-            preferred.score = self.final_score(meta)
-            merged[item_key] = preferred
+        all_candidates = lexical_candidates + vector_candidates + curated_candidates
+        merged = merge_recall_candidates(
+            all_candidates,
+            content_dedup_key=self.provider._dedup_key,
+            preferred_duplicate=self._preferred_duplicate,
+            final_score=self.final_score,
+        )
 
         trace["stages"]["merge"] = {
-            "input_count": len(lexical_candidates) + len(vector_candidates) + len(curated_candidates),
+            "input_count": len(all_candidates),
             "output_count": len(merged),
-            "deduped_count": max(0, len(lexical_candidates) + len(vector_candidates) + len(curated_candidates) - len(merged)),
+            "deduped_count": max(0, len(all_candidates) - len(merged)),
         }
         results = list(merged.values())
         before_lifecycle = len(results)
@@ -301,36 +271,13 @@ class RecallService:
                 item.score += bonus
                 item.metadata["final_score"] = item.score
 
-        ranked_rejected = sorted(
-            rejected,
-            key=lambda item: (
-                item.score,
-                float((item.metadata or {}).get("base_score") or 0.0),
-                item.updated_at,
-                item.id,
-            ),
-            reverse=True,
-        )
+        ranked_rejected = rank_recall_items(rejected)
         self.last_rejected_candidates = ranked_rejected
 
-        ranked = sorted(
-            filtered,
-            key=lambda item: (
-                item.score,
-                float((item.metadata or {}).get("base_score") or 0.0),
-                item.updated_at,
-                item.id,
-            ),
-            reverse=True,
-        )
+        ranked = rank_recall_items(filtered)
         returned = ranked[:bounded_limit]
         trace["stages"]["ranked"] = self._trace_stage(ranked)
-        trace["final"] = {
-            "returned_count": len(returned),
-            "returned_ids": [item.id for item in returned],
-            "returned_chars": sum(len(str(item.content or "")) for item in returned),
-            "rejected_count": len(ranked_rejected),
-        }
+        trace["final"] = final_trace_payload(returned=returned, ranked_rejected=ranked_rejected)
         trace["timings_ms"]["total"] = self._elapsed_ms(started_at)
         self.last_funnel_trace = trace
         return returned

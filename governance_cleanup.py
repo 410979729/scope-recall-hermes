@@ -4,12 +4,12 @@ import json
 import re
 import sqlite3
 import uuid
-from datetime import datetime, timezone
 from typing import Any, Sequence
 
 from .capture_filters import sanitize_report_text
 from .gating import compact_text
 from .graph import sync_memory_entities
+from .maintenance_ops import json_dumps_stable, make_batch_id, now_utc_iso
 from .sql_store import ensure_schema, record_governance_audit_event
 
 TEMPLATE_NOISE_REASONS = {
@@ -21,7 +21,7 @@ TEMPLATE_NOISE_REASONS = {
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return now_utc_iso()
 
 
 def _json_loads(raw: Any) -> dict[str, Any]:
@@ -35,7 +35,7 @@ def _json_loads(raw: Any) -> dict[str, Any]:
 
 
 def _json_dumps(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return json_dumps_stable(value)
 
 
 def _is_archived(row: sqlite3.Row) -> bool:
@@ -151,7 +151,7 @@ def apply_cleanup(
 ) -> dict[str, Any]:
     if not dry_run:
         ensure_schema(conn)
-    batch = batch_id or f"cleanup-{uuid.uuid4().hex}"
+    batch = batch_id or make_batch_id("cleanup")
     candidates = find_cleanup_candidates(conn, scope_ids=scope_ids, include_archived=False, limit=limit)
     result = {
         "dry_run": bool(dry_run),

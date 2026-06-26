@@ -25,7 +25,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-PACKAGE_VERSION = "1.5.3"
+PACKAGE_VERSION = "1.5.4"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
 LOCAL_ONLY_DIRS = {".hermes"}
@@ -50,6 +50,17 @@ REQUIRED_SOURCE_FILES = {
     "pyproject.toml",
     "plugin.yaml",
     "config.json",
+    "digest_run_results.py",
+    "doctor_common.py",
+    "doctor_experience.py",
+    "doctor_journal.py",
+    "doctor_source.py",
+    "doctor_sqlite.py",
+    "doctor_vector.py",
+    "graph_hygiene.py",
+    "maintenance_ops.py",
+    "provider_schemas.py",
+    "recall_pipeline.py",
     ".env.example",
     "docs/migration.md",
     "docs/differences-from-memory-lancedb-pro.md",
@@ -116,6 +127,17 @@ REQUIRED_WHEEL = {
     "scope_recall/pyproject.toml",
     "scope_recall/plugin.yaml",
     "scope_recall/config.json",
+    "scope_recall/digest_run_results.py",
+    "scope_recall/doctor_common.py",
+    "scope_recall/doctor_experience.py",
+    "scope_recall/doctor_journal.py",
+    "scope_recall/doctor_source.py",
+    "scope_recall/doctor_sqlite.py",
+    "scope_recall/doctor_vector.py",
+    "scope_recall/graph_hygiene.py",
+    "scope_recall/maintenance_ops.py",
+    "scope_recall/provider_schemas.py",
+    "scope_recall/recall_pipeline.py",
     "scope_recall/README.md",
     "scope_recall/DESIGN.md",
     "scope_recall/CHANGELOG.md",

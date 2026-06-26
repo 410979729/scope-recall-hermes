@@ -16,6 +16,7 @@ from typing import Any
 
 from .capture_filters import sanitize_report_text, should_capture_text
 from .config import load_runtime_config
+from .digest_run_results import journal_digest_metadata, journal_digest_success_result, no_unprocessed_journal_result
 from .gating import clean_text, compact_text, dedup_key
 from .governance import is_conflicting, merge_memory_text, normalize_memory_type, semantic_similarity
 from .graph import normalize_entity
@@ -1419,17 +1420,7 @@ def run_journal_digest(
         backlog_before = _journal_unprocessed_count(conn)
         active_scopes = [scope] if scope is not None else _unprocessed_scopes(conn, limit=effective_limit)
         if not active_scopes:
-            return {
-                "ok": True,
-                "status": "no_unprocessed_journal",
-                "run_id": run_id,
-                "processed_entries": 0,
-                "inserted": 0,
-                "updated": 0,
-                "skipped": 0,
-                "extractor_requested": requested_extractor,
-                "extractor_used": extractor_used,
-            }
+            return no_unprocessed_journal_result(run_id=run_id, requested_extractor=requested_extractor, extractor_used=extractor_used)
 
         total_loaded_entries = 0
         total_candidates = 0
@@ -1552,17 +1543,7 @@ def run_journal_digest(
                 vector_runtime = None
 
         if total_loaded_entries == 0:
-            return {
-                "ok": True,
-                "status": "no_unprocessed_journal",
-                "run_id": run_id,
-                "processed_entries": 0,
-                "inserted": 0,
-                "updated": 0,
-                "skipped": 0,
-                "extractor_requested": requested_extractor,
-                "extractor_used": extractor_used,
-            }
+            return no_unprocessed_journal_result(run_id=run_id, requested_extractor=requested_extractor, extractor_used=extractor_used)
         unique_processed_entry_ids = sorted(set(processed_entry_ids))
         if extractor_counts:
             extractor_used = next(iter(extractor_counts)) if len(extractor_counts) == 1 else "mixed"
@@ -1590,43 +1571,40 @@ def run_journal_digest(
                     counts.get("updated", 0),
                     counts.get("skipped", 0),
                     json.dumps(
-                        {
-                            "candidate_count": total_candidates,
-                            "loaded_entries": total_loaded_entries,
-                            "actions": actions[:50],
-                            "extractor_requested": requested_extractor,
-                            "extractor_used": extractor_used,
-                            "extractor_counts": dict(extractor_counts),
-                            "extractor_errors": extractor_errors[:5],
-                            "quarantine_counts": dict(quarantine_counts),
-                            "backlog_before": backlog_before,
-                            "limit_entries": effective_limit,
-                            "retention_days": retention_days,
-                            "pruned_journal_entries": pruned_entries,
-                        },
+                        journal_digest_metadata(
+                            total_candidates=total_candidates,
+                            total_loaded_entries=total_loaded_entries,
+                            actions=actions,
+                            requested_extractor=requested_extractor,
+                            extractor_used=extractor_used,
+                            extractor_counts=extractor_counts,
+                            extractor_errors=extractor_errors,
+                            quarantine_counts=quarantine_counts,
+                            backlog_before=backlog_before,
+                            effective_limit=effective_limit,
+                            retention_days=retention_days,
+                            pruned_entries=pruned_entries,
+                        ),
                         ensure_ascii=False,
                     ),
                 ),
             )
             conn.commit()
-        return {
-            "ok": True,
-            "status": "dry_run" if dry_run else "ok",
-            "run_id": run_id,
-            "processed_entries": total_loaded_entries if dry_run else len(unique_processed_entry_ids),
-            "loaded_entries": total_loaded_entries,
-            "candidates": total_candidates,
-            "inserted": counts.get("inserted", 0),
-            "updated": counts.get("updated", 0),
-            "skipped": counts.get("skipped", 0),
-            "extractor_requested": requested_extractor,
-            "extractor_used": extractor_used,
-            "quarantine_counts": dict(quarantine_counts),
-            "backlog_before": backlog_before,
-            "limit_entries": effective_limit,
-            "pruned_journal_entries": pruned_entries,
-            "actions": actions[:50],
-        }
+        return journal_digest_success_result(
+            dry_run=dry_run,
+            run_id=run_id,
+            total_loaded_entries=total_loaded_entries,
+            processed_entry_count=len(unique_processed_entry_ids),
+            total_candidates=total_candidates,
+            counts=counts,
+            requested_extractor=requested_extractor,
+            extractor_used=extractor_used,
+            quarantine_counts=quarantine_counts,
+            backlog_before=backlog_before,
+            effective_limit=effective_limit,
+            pruned_entries=pruned_entries,
+            actions=actions,
+        )
     except Exception as exc:
         if not dry_run:
             ensure_journal_schema(conn)

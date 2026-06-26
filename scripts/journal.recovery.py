@@ -25,6 +25,7 @@ if PACKAGE_NAME not in sys.modules:
     spec.loader.exec_module(package)
 
 from scope_recall_journal_recovery_runtime.journal_recovery import recovery_report, schedule_replay  # noqa: E402
+from scope_recall_journal_recovery_runtime.maintenance_ops import effective_apply, memory_db_path  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -41,14 +42,15 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     hermes_home = Path(args.hermes_home).expanduser().resolve()
-    db_path = hermes_home / "scope-recall" / "memory.sqlite3"
+    db_path = memory_db_path(hermes_home)
+    should_apply = effective_apply(apply=args.apply, dry_run=False)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     prefixes = ["retry-exhausted:"]
     if args.include_dead_letter:
         prefixes.append("dead-letter:")
     try:
-        if args.apply:
+        if should_apply:
             payload = schedule_replay(conn, reason_prefixes=prefixes, limit=max(0, int(args.limit)), dry_run=False, batch_id=args.batch_id or None)
         else:
             payload = recovery_report(conn, reason_prefixes=prefixes, limit=max(0, int(args.limit)))
@@ -59,7 +61,7 @@ def main() -> int:
             print(
                 json.dumps(
                     {
-                        "dry_run": payload.get("dry_run", not args.apply),
+                        "dry_run": payload.get("dry_run", not should_apply),
                         "candidate_count": payload.get("candidate_count"),
                         "scheduled": payload.get("scheduled", 0),
                         "batch_id": payload.get("batch_id", ""),

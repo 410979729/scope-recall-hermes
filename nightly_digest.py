@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 from .artifacts import artifact_anchor_block, extract_artifacts
 from .capture_filters import should_capture_text
 from .config import load_runtime_config
+from .digest_run_results import nightly_digest_metadata, nightly_digest_result, nightly_status_payload
 from .gating import clean_text, compact_text, dedup_key
 from .governance import is_conflicting, merge_memory_text, normalize_memory_type, semantic_similarity
 from .graph import clamp_float, load_metadata, normalize_entity, sync_memory_entities
@@ -1466,29 +1467,24 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
         applied = apply_candidates(conn, vector_runtime, scope, run_id=run_id, candidates=candidates, dry_run=options.dry_run, runtime_config=runtime_config)
         counts = Counter(applied["counts"])
         extractor_used = "heuristic" if options.extractor == "heuristic" else ("heuristic-fallback" if fallback_events else "llm")
-        no_candidate_fallback = bool(fallback_events) and not candidates and any(str(event.get("kind") or "").endswith("_no_candidates") for event in fallback_events)
-        status = "dry_run" if options.dry_run else ("error" if no_candidate_fallback else ("ok_with_fallback" if fallback_events else "ok"))
-        error = "LLM extraction fell back to heuristic but no candidates were produced." if no_candidate_fallback else None
-        result = {
-            "ok": not no_candidate_fallback,
-            "status": status,
-            "run_id": run_id,
-            "digest_date": str(options.digest_date),
-            "source_db": str(db_path),
-            "sessions": len(bundles),
-            "task_sessions": sum(1 for bundle in bundles if bundle.is_task),
-            "candidates": len(candidates),
-            "inserted": counts.get("inserted", 0),
-            "updated": counts.get("updated", 0),
-            "skipped": counts.get("skipped", 0),
-            "deleted": counts.get("deleted", 0),
-            "extractor": options.extractor,
-            "extractor_used": extractor_used,
-            "extractor_fallbacks": fallback_events[:20],
-            "model": llm_config.get("model", ""),
-            "error": error,
-            "actions": applied["actions"][:50],
-        }
+        ok, status, error = nightly_status_payload(dry_run=options.dry_run, fallback_events=fallback_events, candidate_count=len(candidates))
+        result = nightly_digest_result(
+            ok=ok,
+            status=status,
+            run_id=run_id,
+            digest_date=str(options.digest_date),
+            source_db=str(db_path),
+            sessions=len(bundles),
+            task_sessions=sum(1 for bundle in bundles if bundle.is_task),
+            candidate_count=len(candidates),
+            counts=counts,
+            requested_extractor=options.extractor,
+            extractor_used=extractor_used,
+            fallback_events=fallback_events,
+            model=str(llm_config.get("model", "")),
+            error=error,
+            actions=applied["actions"],
+        )
         if not options.dry_run:
             conn.execute(
                 """
@@ -1512,12 +1508,12 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
                     result["skipped"],
                     result["deleted"],
                     json.dumps(
-                        {
-                            "sessions": len(bundles),
-                            "task_sessions": result["task_sessions"],
-                            "extractor_used": extractor_used,
-                            "extractor_fallbacks": fallback_events[:20],
-                        },
+                        nightly_digest_metadata(
+                            sessions=len(bundles),
+                            task_sessions=result["task_sessions"],
+                            extractor_used=extractor_used,
+                            fallback_events=fallback_events,
+                        ),
                         ensure_ascii=False,
                     ),
                     error,
