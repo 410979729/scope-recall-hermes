@@ -111,6 +111,13 @@ def test_forgetting_run_soft_archives_without_physical_delete_by_default():
     _insert(conn, memory_id="assistant-1", target="general", source="turn-assistant", content="Assistant scratch prose.")
     _insert(conn, memory_id="dup-1", target="memory", content="Duplicate durable note for forgetting.", allow_duplicate=True)
     _insert(conn, memory_id="dup-2", target="memory", content="Duplicate durable note for forgetting.", allow_duplicate=True)
+    conn.execute("INSERT OR REPLACE INTO memory_entities(memory_id, entity, weight, source) VALUES ('dup-2', 'duplicate-note', 1.0, 'fixture')")
+    conn.execute(
+        """
+        INSERT INTO memory_relations(source_memory_id, target_memory_id, relation_type, confidence, note, created_at)
+        VALUES ('dup-2', 'dup-1', 'supersedes', 0.5, 'soft archive graph cleanup fixture', '2026-01-01T00:00:00+00:00')
+        """
+    )
     _insert(conn, memory_id="keep-1", target="project", content="Joy 决定：scope-recall 需要自动经验提取与遗忘机制。")
 
     dry = run_forgetting(conn, accessible_scope_ids=["shared-scope", "local-scope"], dry_run=True)
@@ -131,6 +138,8 @@ def test_forgetting_run_soft_archives_without_physical_delete_by_default():
     dup2_meta = _metadata(conn, "dup-2")
     assert dup2_meta["lifecycle"] == "archived"
     assert dup2_meta["superseded_by"] == "dup-1"
+    assert conn.execute("SELECT COUNT(*) FROM memory_entities WHERE memory_id = 'dup-2'").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM memory_relations WHERE source_memory_id = 'dup-2' OR target_memory_id = 'dup-2'").fetchone()[0] == 0
 
     assert _metadata(conn, "keep-1").get("lifecycle") != "archived"
     audit_count = conn.execute(
@@ -197,6 +206,44 @@ class FakeVectorStore:
 class FailingVectorStore:
     def delete_by_ids(self, ids: list[str]) -> None:  # noqa: ARG002
         raise RuntimeError("vector delete failed with api_key=" + "sk-" + "V" * 24)
+
+
+def test_forgetting_soft_archive_removes_vector_records_when_store_is_available():
+    conn = _conn()
+    _insert(conn, memory_id="assistant-vector", target="general", source="turn-assistant", content="Assistant scratch prose to archive from vector.")
+    vector_store = FakeVectorStore()
+
+    applied = run_forgetting(
+        conn,
+        accessible_scope_ids=["local-scope"],
+        dry_run=False,
+        vector_store=vector_store,
+        batch_id="soft-vector-batch",
+    )
+
+    assert applied["archived"] == 1
+    assert applied["archived_vector_deleted"] == 1
+    assert vector_store.deleted_ids == [["assistant-vector"]]
+    assert _metadata(conn, "assistant-vector")["lifecycle"] == "archived"
+
+
+def test_forgetting_soft_archive_rolls_back_when_vector_delete_fails():
+    conn = _conn()
+    _insert(conn, memory_id="assistant-vector-fail", target="general", source="turn-assistant", content="Assistant scratch prose to archive from vector failure.")
+
+    applied = run_forgetting(
+        conn,
+        accessible_scope_ids=["local-scope"],
+        dry_run=False,
+        vector_store=FailingVectorStore(),
+        batch_id="soft-vector-fail",
+    )
+
+    assert applied["archived"] == 0
+    assert applied["archive_ids"] == []
+    assert "[REDACTED_SECRET]" in applied["vector_error"]
+    assert _metadata(conn, "assistant-vector-fail").get("lifecycle") != "archived"
+    assert conn.execute("SELECT COUNT(*) FROM governance_audit_events WHERE batch_id = 'soft-vector-fail'").fetchone()[0] == 0
 
 
 def test_forgetting_hard_delete_removes_vector_records():

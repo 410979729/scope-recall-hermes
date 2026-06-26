@@ -33,6 +33,12 @@ _COMMON_ENTITY_WORDS = {
     "into",
     "owns",
     "uses",
+    "used",
+    "called",
+    "returned",
+    "then",
+    "were",
+    "was",
     "services",
     "service",
     "model",
@@ -47,6 +53,43 @@ _COMMON_ENTITY_WORDS = {
     "production",
     "command",
     "context",
+    "tool",
+    "tools",
+    "execution",
+    "summary",
+    "output",
+    "preview",
+    "result",
+    "results",
+    "status",
+    "success",
+    "error",
+    "path",
+    "file",
+    "files",
+    "line",
+    "lines",
+    "json",
+    "terminal",
+    "patch",
+    "todo",
+    "browser",
+    "session",
+    "memory",
+    "operator",
+    "fact",
+    "durable",
+    "entity",
+    "graph",
+    "lookup",
+    "profile",
+    "current",
+    "decision",
+    "decisions",
+    "appear",
+    "appears",
+    "through",
+    "visible",
     "喜欢",
     "偏好",
     "希望",
@@ -59,6 +102,75 @@ _COMMON_ENTITY_WORDS = {
     "实体",
     "增强",
 }
+
+_HIDDEN_LIFECYCLE_VALUES = ("archived", "superseded", "obsolete", "rejected")
+_HIDDEN_LIFECYCLE_SET = set(_HIDDEN_LIFECYCLE_VALUES)
+
+
+def lifecycle_value(metadata: dict[str, Any] | str | None) -> str:
+    parsed = load_metadata(metadata or {})
+    return str(parsed.get("lifecycle") or "").strip().lower()
+
+
+def lifecycle_is_hidden(metadata: dict[str, Any] | str | None) -> bool:
+    return lifecycle_value(metadata) in _HIDDEN_LIFECYCLE_SET
+
+
+def lifecycle_visible_sql(alias: str = "m") -> str:
+    lifecycle_expr = f"LOWER(COALESCE(CASE WHEN json_valid({alias}.metadata) THEN json_extract({alias}.metadata, '$.lifecycle') ELSE '' END, ''))"
+    hidden_values = ",".join(f"'{value}'" for value in _HIDDEN_LIFECYCLE_VALUES)
+    return f"{lifecycle_expr} NOT IN ({hidden_values})"
+
+
+_TOOL_TRACE_ENTITY_WORDS = {
+    "read_file",
+    "search_files",
+    "execute_code",
+    "skill_view",
+    "skills_list",
+    "session_search",
+    "browser_console",
+    "browser_navigate",
+    "browser_snapshot",
+    "browser_click",
+    "browser_type",
+    "browser_scroll",
+    "browser_press",
+    "browser_vision",
+    "terminal",
+    "patch",
+    "write_file",
+    "todo",
+    "memory",
+    "scope_recall_search",
+    "scope_recall_context",
+    "scope_recall_profile",
+    "scope_recall_memory",
+    "scope_recall_entity",
+    "scope_recall_store",
+    "scope_recall_inspect",
+    "scope_recall_explain",
+    "scope_recall_probe",
+    "scope_recall_related",
+}
+
+_TOOL_TRACE_ENTITY_PREFIXES = (
+    "browser_",
+    "scope_recall_",
+    "mcp_",
+)
+
+_TOOL_TRACE_ENTITY_SUFFIXES = (
+    "_tool",
+    "_tools",
+    "_result",
+    "_results",
+    "_output",
+    "_preview",
+    "_cache",
+    "_path",
+    "_paths",
+)
 
 
 _CJK_HINT_TERMS = {
@@ -101,6 +213,23 @@ def clamp_float(value: Any, *, default: float = 0.5, minimum: float = 0.0, maxim
     return max(minimum, min(maximum, parsed))
 
 
+def _is_tool_trace_entity(lowered: str) -> bool:
+    if lowered in _TOOL_TRACE_ENTITY_WORDS:
+        return True
+    if any(lowered.startswith(prefix) for prefix in _TOOL_TRACE_ENTITY_PREFIXES):
+        return True
+    if any(lowered.endswith(suffix) for suffix in _TOOL_TRACE_ENTITY_SUFFIXES):
+        return True
+    # Most snake_case tokens from tool logs are implementation/procedure noise,
+    # not durable world entities. Stored legacy metadata can still contain such
+    # rows, so read surfaces also call normalize_entity as a defensive filter.
+    if "_" in lowered:
+        return True
+    if lowered.startswith(("/tmp/", "/home/", "file://")):
+        return True
+    return False
+
+
 def normalize_entity(value: Any) -> str:
     text = str(value or "").strip().strip("`\"'.,:;()[]{}<>")
     text = re.sub(r"\s+", " ", text)
@@ -108,6 +237,8 @@ def normalize_entity(value: Any) -> str:
         return ""
     lowered = text.lower()
     if lowered in _COMMON_ENTITY_WORDS or len(lowered) < 2:
+        return ""
+    if _is_tool_trace_entity(lowered):
         return ""
     return lowered[:96]
 
@@ -211,8 +342,10 @@ def ensure_graph_schema(conn: sqlite3.Connection) -> None:
 
 def sync_memory_entities(conn: sqlite3.Connection, *, memory_id: str, content: str, target: str, metadata: dict[str, Any] | str) -> None:
     parsed = load_metadata(metadata)
-    entities = metadata_entities(parsed, content, target)
     conn.execute("DELETE FROM memory_entities WHERE memory_id = ?", (memory_id,))
+    if lifecycle_is_hidden(parsed):
+        return
+    entities = metadata_entities(parsed, content, target)
     conn.executemany(
         "INSERT OR REPLACE INTO memory_entities(memory_id, entity, weight, source) VALUES (?, ?, ?, ?)",
         [(memory_id, entity, 1.0, "metadata") for entity in entities],
@@ -226,7 +359,7 @@ def backfill_memory_entities(conn: sqlite3.Connection) -> None:
     entity_count = int(conn.execute("SELECT COUNT(*) FROM memory_entities").fetchone()[0])
     if entity_count > 0:
         return
-    rows = conn.execute("SELECT id, content, target, metadata FROM memories").fetchall()
+    rows = conn.execute(f"SELECT id, content, target, metadata FROM memories m WHERE {lifecycle_visible_sql('m')}").fetchall()
     for row in rows:
         sync_memory_entities(
             conn,

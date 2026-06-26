@@ -475,6 +475,7 @@ SCOPE_RECALL_PROFILE_SCHEMA = {
                 "description": "Optional target sections to include. Defaults to user/memory/project/ops; general requires include_general=true or explicit target.",
             },
             "include_general": {"type": "boolean", "description": "Include current local general scratch/session rows; default false."},
+            "include_candidates": {"type": "boolean", "description": "Include non-hidden candidate SQLite rows in addition to promoted profile rows; default false."},
             "include_curated": {"type": "boolean", "description": "Include live Hermes USER.md/MEMORY.md entries when curated-memory policy allows it; default true."},
             "limit": {"type": "integer", "description": "Maximum memories per section."},
             "max_chars": {"type": "integer", "description": "Maximum characters for the rendered compact profile/context block."},

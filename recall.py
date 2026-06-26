@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .gating import query_tokens
-from .graph import apply_quality_weight, entity_distance_scores, entity_overlap_bonus, metadata_entities, normalize_entity, query_entities as graph_query_entities
+from .graph import apply_quality_weight, entity_distance_scores, entity_overlap_bonus, lifecycle_visible_sql, metadata_entities, normalize_entity, query_entities as graph_query_entities
 from .models import RecallItem
 from .scoring import combine_scores, reciprocal_rank_fusion
 
@@ -453,31 +453,34 @@ class RecallService:
             relation_rows = direction_bucket.setdefault(relation_type, [])
             relation_rows.append({"id": related_id, "confidence": confidence})
 
+        id_set = set(ids)
+        scopes = [str(scope_id) for scope_id in (getattr(self.provider, "_accessible_scope_ids", []) or []) if str(scope_id)]
+        scope_clause = ""
+        scope_params: list[str] = []
+        if scopes:
+            scope_placeholders = ",".join("?" for _ in scopes)
+            scope_clause = f" AND s.scope_id IN ({scope_placeholders}) AND t.scope_id IN ({scope_placeholders})"
+            scope_params = [*scopes, *scopes]
+        relation_sql = f"""
+                    SELECT r.source_memory_id, r.target_memory_id, r.relation_type, r.confidence
+                    FROM memory_relations r
+                    JOIN memories s ON s.id = r.source_memory_id
+                    JOIN memories t ON t.id = r.target_memory_id
+                    WHERE (r.source_memory_id IN ({placeholders}) OR r.target_memory_id IN ({placeholders}))
+                      AND {lifecycle_visible_sql('s')}
+                      AND {lifecycle_visible_sql('t')}{scope_clause}
+                    """
+        relation_params = [*ids, *ids, *scope_params]
         try:
             lock = getattr(self.provider, "_lock", None)
             if lock is None:
-                rows = self.provider._require_conn().execute(
-                    f"""
-                    SELECT source_memory_id, target_memory_id, relation_type, confidence
-                    FROM memory_relations
-                    WHERE source_memory_id IN ({placeholders}) OR target_memory_id IN ({placeholders})
-                    """,
-                    [*ids, *ids],
-                ).fetchall()
+                rows = self.provider._require_conn().execute(relation_sql, relation_params).fetchall()
             else:
                 with lock:
-                    rows = self.provider._require_conn().execute(
-                        f"""
-                        SELECT source_memory_id, target_memory_id, relation_type, confidence
-                        FROM memory_relations
-                        WHERE source_memory_id IN ({placeholders}) OR target_memory_id IN ({placeholders})
-                        """,
-                        [*ids, *ids],
-                    ).fetchall()
+                    rows = self.provider._require_conn().execute(relation_sql, relation_params).fetchall()
         except Exception:
             return {}
 
-        id_set = set(ids)
         for row in rows:
             source_id = str(row["source_memory_id"])
             target_id = str(row["target_memory_id"])

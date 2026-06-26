@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -247,6 +248,11 @@ def source_report(source_root: Path) -> tuple[dict[str, Any], dict[str, Any], li
     return source, check, recommendations
 
 
+def _lifecycle_visible_clause(alias: str = "m") -> str:
+    lifecycle_expr = f"LOWER(COALESCE(CASE WHEN json_valid({alias}.metadata) THEN json_extract({alias}.metadata, '$.lifecycle') ELSE '' END, ''))"
+    return f"{lifecycle_expr} NOT IN ('archived','superseded','obsolete','rejected')"
+
+
 def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     recommendations: list[str] = []
     storage_dir = hermes_home / "scope-recall"
@@ -263,8 +269,60 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
         try:
             tables = sorted(row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'"))
             memory_count = 0
+            graph_hygiene = {
+                "orphan_entities": 0,
+                "orphan_relations": 0,
+                "orphan_relation_sources": 0,
+                "orphan_relation_targets": 0,
+                "hidden_lifecycle_entities": 0,
+                "hidden_lifecycle_relations": 0,
+                "hidden_lifecycle_relation_sources": 0,
+                "hidden_lifecycle_relation_targets": 0,
+            }
             if "memories" in tables:
                 memory_count = int(conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0])
+            if {"memories", "memory_entities"} <= set(tables):
+                graph_hygiene["orphan_entities"] = int(
+                    conn.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM memory_entities e
+                        LEFT JOIN memories m ON m.id = e.memory_id
+                        WHERE m.id IS NULL
+                        """
+                    ).fetchone()[0]
+                )
+                graph_hygiene["hidden_lifecycle_entities"] = int(
+                    conn.execute(
+                        f"""
+                        SELECT COUNT(*)
+                        FROM memory_entities e
+                        JOIN memories m ON m.id = e.memory_id
+                        WHERE NOT ({_lifecycle_visible_clause('m')})
+                        """
+                    ).fetchone()[0]
+                )
+            if {"memories", "memory_relations"} <= set(tables):
+                relation_row = conn.execute(
+                    f"""
+                    SELECT
+                        SUM(CASE WHEN s.id IS NULL THEN 1 ELSE 0 END) AS orphan_sources,
+                        SUM(CASE WHEN t.id IS NULL THEN 1 ELSE 0 END) AS orphan_targets,
+                        SUM(CASE WHEN s.id IS NULL OR t.id IS NULL THEN 1 ELSE 0 END) AS orphan_relations,
+                        SUM(CASE WHEN s.id IS NOT NULL AND NOT ({_lifecycle_visible_clause('s')}) THEN 1 ELSE 0 END) AS hidden_sources,
+                        SUM(CASE WHEN t.id IS NOT NULL AND NOT ({_lifecycle_visible_clause('t')}) THEN 1 ELSE 0 END) AS hidden_targets,
+                        SUM(CASE WHEN (s.id IS NOT NULL AND NOT ({_lifecycle_visible_clause('s')})) OR (t.id IS NOT NULL AND NOT ({_lifecycle_visible_clause('t')})) THEN 1 ELSE 0 END) AS hidden_relations
+                    FROM memory_relations r
+                    LEFT JOIN memories s ON s.id = r.source_memory_id
+                    LEFT JOIN memories t ON t.id = r.target_memory_id
+                    """
+                ).fetchone()
+                graph_hygiene["orphan_relation_sources"] = int((relation_row or (0, 0, 0, 0, 0, 0))[0] or 0)
+                graph_hygiene["orphan_relation_targets"] = int((relation_row or (0, 0, 0, 0, 0, 0))[1] or 0)
+                graph_hygiene["orphan_relations"] = int((relation_row or (0, 0, 0, 0, 0, 0))[2] or 0)
+                graph_hygiene["hidden_lifecycle_relation_sources"] = int((relation_row or (0, 0, 0, 0, 0, 0))[3] or 0)
+                graph_hygiene["hidden_lifecycle_relation_targets"] = int((relation_row or (0, 0, 0, 0, 0, 0))[4] or 0)
+                graph_hygiene["hidden_lifecycle_relations"] = int((relation_row or (0, 0, 0, 0, 0, 0))[5] or 0)
         finally:
             conn.close()
     except Exception as exc:
@@ -272,8 +330,86 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
         sqlite_payload = {"path": str(db_path), "status": "error", "error": str(exc), "memory_count": 0, "tables": []}
         return sqlite_payload, {"ok": False, "failures": [f"SQLite truth DB error: {exc}"]}, recommendations
 
-    sqlite_payload = {"path": str(db_path), "status": "ready", "memory_count": memory_count, "tables": tables}
-    return sqlite_payload, {"ok": True, "failures": []}, recommendations
+    orphan_graph_rows = sum(int(value or 0) for value in graph_hygiene.values())
+    status = "needs_repair" if orphan_graph_rows else "ready"
+    failures: list[str] = []
+    if orphan_graph_rows:
+        failures.append(
+            "SQLite graph hygiene has orphan/hidden lifecycle rows: "
+            f"orphan_entities={graph_hygiene['orphan_entities']}, "
+            f"orphan_relations={graph_hygiene['orphan_relations']}, "
+            f"hidden_lifecycle_entities={graph_hygiene['hidden_lifecycle_entities']}, "
+            f"hidden_lifecycle_relations={graph_hygiene['hidden_lifecycle_relations']}"
+        )
+        recommendations.append(
+            "Graph hygiene orphan or hidden-lifecycle rows found; run scripts/repair.graph_hygiene.py --apply after reviewing the dry-run counts."
+        )
+    sqlite_payload = {
+        "path": str(db_path),
+        "status": status,
+        "memory_count": memory_count,
+        "tables": tables,
+        "graph_hygiene": graph_hygiene,
+    }
+    return sqlite_payload, {"ok": not failures, "failures": failures}, recommendations
+
+
+def memory_candidate_debt_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    recommendations: list[str] = []
+    db_path = hermes_home / "scope-recall" / "memory.sqlite3"
+    if not db_path.exists():
+        return {"status": "missing", "path": str(db_path), "candidate_count": 0}, {"ok": True, "failures": []}, recommendations
+    source_root = Path(__file__).resolve().parents[1]
+    source_parent = source_root.parent
+    for candidate_path in (str(source_parent), str(source_root)):
+        if candidate_path not in sys.path:
+            sys.path.insert(0, candidate_path)
+    try:
+        from scope_recall.candidate_promotion import candidate_debt_report
+    except Exception as exc:  # pragma: no cover - defensive standalone reporting
+        return {"status": "error", "path": str(db_path), "candidate_count": 0, "error": str(exc)}, {"ok": False, "failures": [f"candidate debt classifier import failed: {exc}"]}, [
+            "Repair the source checkout or installed package before relying on candidate-memory debt reporting."
+        ]
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            if "memories" not in tables:
+                return {"status": "schema_missing", "path": str(db_path), "candidate_count": 0}, {"ok": True, "failures": []}, recommendations
+            payload = candidate_debt_report(conn, limit=1000, sample_limit=8)
+        finally:
+            conn.close()
+    except Exception as exc:
+        return {"status": "error", "path": str(db_path), "candidate_count": 0, "error": str(exc)}, {"ok": False, "failures": [f"candidate debt report failed: {exc}"]}, [
+            "Repair or restore the SQLite truth DB before running candidate-memory promotion."
+        ]
+
+    payload["path"] = str(db_path)
+    candidate_count = int(payload.get("candidate_count") or 0)
+    by_action = payload.get("by_action") if isinstance(payload.get("by_action"), dict) else {}
+    promotable = int(by_action.get("promote", 0) or 0)
+    archival = int(by_action.get("archive", 0) or 0)
+    oldest_age_hours = float(payload.get("oldest_age_hours") or 0.0)
+    if candidate_count:
+        recommendations.append(
+            "Candidate memory debt exists; run scripts/promote.memory_candidates.py --dry-run, then --apply after reviewing the plan."
+        )
+    if promotable or archival:
+        recommendations.append(
+            f"Candidate promotion plan has promotable={promotable}, archive_candidates={archival}; apply promotions before switching profile behavior across releases."
+        )
+    if candidate_count >= 25 or oldest_age_hours >= 168:
+        recommendations.append(
+            f"Candidate memory backlog is aging/counting up (count={candidate_count}, oldest_age_hours={oldest_age_hours}); keep promotion/review drains scheduled."
+        )
+    failures: list[str] = []
+    # Candidate debt is a yellow operational signal, not a hard failure unless it
+    # grows far beyond normal review capacity. This keeps doctor usable on live
+    # systems while still surfacing the bottleneck that would starve promoted-only profile.
+    if candidate_count >= 500 or oldest_age_hours >= 720:
+        failures.append(f"candidate memory debt exceeds fail threshold: count={candidate_count}, oldest_age_hours={oldest_age_hours}")
+    return payload, {"ok": not failures, "failures": failures}, recommendations
 
 
 def memory_secret_report(hermes_home: Path, *, sample_limit: int = 10) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
@@ -659,6 +795,26 @@ def lancedb_table_names(db: Any) -> list[str]:
     return [str(name) for name in raw_tables]
 
 
+def lancedb_vector_ids(table: Any) -> list[str]:
+    rows: list[dict[str, Any]] = []
+    if hasattr(table, "to_list"):
+        try:
+            rows = list(table.to_list(columns=["id"]))
+        except TypeError:
+            rows = list(table.to_list())
+    elif hasattr(table, "to_arrow"):
+        arrow_table = table.to_arrow()
+        if "id" in getattr(arrow_table, "column_names", []):
+            arrow_table = arrow_table.select(["id"])
+        rows = arrow_table.to_pylist()
+    elif hasattr(table, "to_pandas"):
+        frame = table.to_pandas()
+        if "id" in getattr(frame, "columns", []):
+            frame = frame[["id"]]
+        rows = frame.to_dict(orient="records")
+    return [str(row.get("id") or "") for row in rows if str(row.get("id") or "")]
+
+
 def vector_dimensions(table: Any) -> int:
     try:
         vector_field = table.schema.field("vector")
@@ -682,17 +838,21 @@ def run_vector_search_smoke(table: Any, *, dimensions: int, row_count: int) -> s
     return "ok"
 
 
-def sqlite_indexable_memory_count(hermes_home: Path, *, index_general: bool = False) -> int:
+def sqlite_truth_db_exists(hermes_home: Path) -> bool:
+    return (hermes_home / "scope-recall" / "memory.sqlite3").exists()
+
+
+def sqlite_indexable_memory_ids(hermes_home: Path, *, index_general: bool = False) -> set[str]:
     db_path = hermes_home / "scope-recall" / "memory.sqlite3"
     if not db_path.exists():
-        return 0
+        return set()
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
-        rows = conn.execute("SELECT target, metadata FROM memories").fetchall()
+        rows = conn.execute("SELECT id, target, metadata FROM memories").fetchall()
     finally:
         conn.close()
-    count = 0
+    memory_ids: set[str] = set()
     for row in rows:
         if not index_general and str(row["target"] or "") == "general":
             continue
@@ -703,8 +863,14 @@ def sqlite_indexable_memory_count(hermes_home: Path, *, index_general: bool = Fa
         lifecycle = str(metadata.get("lifecycle") or "").strip().lower() if isinstance(metadata, dict) else ""
         if lifecycle in {"superseded", "obsolete", "rejected", "archived"}:
             continue
-        count += 1
-    return count
+        memory_id = str(row["id"] or "")
+        if memory_id:
+            memory_ids.add(memory_id)
+    return memory_ids
+
+
+def sqlite_indexable_memory_count(hermes_home: Path, *, index_general: bool = False) -> int:
+    return len(sqlite_indexable_memory_ids(hermes_home, index_general=index_general))
 
 
 def apply_vector_truth_consistency(
@@ -713,15 +879,39 @@ def apply_vector_truth_consistency(
     hermes_home: Path,
     index_general: bool,
     recommendations: list[str],
+    vector_ids: list[str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], list[str]] | None:
-    expected_rows = sqlite_indexable_memory_count(hermes_home, index_general=index_general)
+    truth_db_present = sqlite_truth_db_exists(hermes_home)
+    expected_ids = sqlite_indexable_memory_ids(hermes_home, index_general=index_general) if truth_db_present else set()
+    expected_rows = len(expected_ids)
     payload["expected_indexable_rows"] = expected_rows
+    payload["sqlite_truth_present"] = truth_db_present
     row_count = int(payload.get("row_count") or 0)
+    if not truth_db_present:
+        return None
     if expected_rows > 0 and row_count <= 0:
         payload.update({"status": "needs_repair", "ready": False})
         message = "vector companion is empty while SQLite truth has indexable active memories"
         recommendations.append("Vector companion is empty but SQLite truth has active indexable rows; run scripts/repair.vector_index.py.")
         return payload, {"ok": False, "failures": [message]}, recommendations
+    if vector_ids is not None:
+        vector_id_set = {str(memory_id) for memory_id in vector_ids if str(memory_id)}
+        stale_ids = sorted(vector_id_set - expected_ids)
+        missing_ids = sorted(expected_ids - vector_id_set)
+        payload["stale_vector_id_count"] = len(stale_ids)
+        payload["missing_vector_id_count"] = len(missing_ids)
+        payload["stale_vector_id_samples"] = stale_ids[:20]
+        payload["missing_vector_id_samples"] = missing_ids[:20]
+        if stale_ids:
+            payload.update({"status": "needs_repair", "ready": False})
+            message = f"vector companion has {len(stale_ids)} stale id(s) not present in active SQLite truth"
+            recommendations.append("Vector companion contains stale ids for missing or lifecycle-hidden SQLite rows; run scripts/repair.vector_index.py to rebuild from active SQLite truth.")
+            return payload, {"ok": False, "failures": [message]}, recommendations
+        if missing_ids:
+            payload.update({"status": "needs_repair", "ready": False})
+            message = f"vector companion is missing {len(missing_ids)} active SQLite truth id(s)"
+            recommendations.append("Vector companion is missing active SQLite truth rows; run scripts/repair.vector_index.py to rebuild the companion.")
+            return payload, {"ok": False, "failures": [message]}, recommendations
     if expected_rows > 0 and row_count < expected_rows:
         payload["status"] = "degraded"
         recommendations.append("Vector companion has fewer rows than active SQLite truth; schedule scripts/repair.vector_index.py to rebuild the companion.")
@@ -752,6 +942,7 @@ def lancedb_vector_report(
             return payload, {"ok": False, "failures": ["LanceDB table 'memories' is missing"]}, recommendations
         table = db.open_table("memories")
         row_count = int(table.count_rows())
+        vector_ids = lancedb_vector_ids(table)
         dimensions = vector_dimensions(table)
         search_smoke = run_vector_search_smoke(table, dimensions=dimensions, row_count=row_count)
         payload = {
@@ -761,10 +952,16 @@ def lancedb_vector_report(
             "ready": True,
             "tables": table_names,
             "row_count": row_count,
+            "unique_id_count": len(set(vector_ids)),
             "dimensions": dimensions,
             "search_smoke": search_smoke,
         }
         expected_dimensions = int((expected_embedder or {}).get("dimensions") or 0)
+        consistency = apply_vector_truth_consistency(payload, hermes_home=hermes_home, index_general=index_general, recommendations=recommendations, vector_ids=vector_ids)
+        consistency_failures: list[str] = []
+        if consistency is not None:
+            payload, consistency_check, recommendations = consistency
+            consistency_failures = [str(item) for item in (consistency_check.get("failures") or [])]
         if dimensions and expected_dimensions and dimensions != expected_dimensions:
             error = f"dimension mismatch: LanceDB table has {dimensions}, active/configured embedder expects {expected_dimensions}"
             recommendations.append("LanceDB companion dimensions do not match the active/configured embedder; run scripts/repair.vector_index.py to rebuild from SQLite truth.")
@@ -776,10 +973,9 @@ def lancedb_vector_report(
                     "expected_embedder": dict(expected_embedder or {}),
                 }
             )
-            return payload, {"ok": False, "failures": [error]}, recommendations
-        consistency = apply_vector_truth_consistency(payload, hermes_home=hermes_home, index_general=index_general, recommendations=recommendations)
+            return payload, {"ok": False, "failures": [*consistency_failures, error]}, recommendations
         if consistency is not None:
-            return consistency
+            return payload, {"ok": False, "failures": consistency_failures}, recommendations
         return payload, {"ok": True, "failures": []}, recommendations
     except Exception as exc:
         recommendations.append("LanceDB companion is unreadable; run scripts/repair.vector_index.py to rebuild it from SQLite truth.")
@@ -826,6 +1022,7 @@ def sqlite_vector_report(
                 payload = {"backend": "sqlite-bruteforce", "path": str(vector_path), "status": "needs_repair", "ready": False, "tables": tables}
                 return payload, {"ok": False, "failures": [f"sqlite-bruteforce tables missing: {missing}"]}, recommendations
             row_count = int(conn.execute("SELECT COUNT(*) FROM vector_records").fetchone()[0])
+            vector_ids = [str(row["id"] or "") for row in conn.execute("SELECT id FROM vector_records").fetchall() if str(row["id"] or "")]
             meta = {str(row["key"]): str(row["value"]) for row in conn.execute("SELECT key, value FROM vector_meta").fetchall()}
             dimensions = int(meta.get("dimensions") or 0)
             table_name = str(meta.get("table_name") or "")
@@ -841,10 +1038,16 @@ def sqlite_vector_report(
             "tables": tables,
             "table": table_name,
             "row_count": row_count,
+            "unique_id_count": len(set(vector_ids)),
             "dimensions": dimensions,
             "search_smoke": search_smoke,
         }
         expected_dimensions = int((expected_embedder or {}).get("dimensions") or 0)
+        consistency = apply_vector_truth_consistency(payload, hermes_home=hermes_home, index_general=index_general, recommendations=recommendations, vector_ids=vector_ids)
+        consistency_failures: list[str] = []
+        if consistency is not None:
+            payload, consistency_check, recommendations = consistency
+            consistency_failures = [str(item) for item in (consistency_check.get("failures") or [])]
         if dimensions and expected_dimensions and dimensions != expected_dimensions:
             error = f"dimension mismatch: sqlite-bruteforce companion has {dimensions}, active/configured embedder expects {expected_dimensions}"
             recommendations.append("sqlite-bruteforce companion dimensions do not match the active/configured embedder; run scripts/repair.vector_index.py to rebuild from SQLite truth.")
@@ -856,10 +1059,9 @@ def sqlite_vector_report(
                     "expected_embedder": dict(expected_embedder or {}),
                 }
             )
-            return payload, {"ok": False, "failures": [error]}, recommendations
-        consistency = apply_vector_truth_consistency(payload, hermes_home=hermes_home, index_general=index_general, recommendations=recommendations)
+            return payload, {"ok": False, "failures": [*consistency_failures, error]}, recommendations
         if consistency is not None:
-            return consistency
+            return payload, {"ok": False, "failures": consistency_failures}, recommendations
         return payload, {"ok": True, "failures": []}, recommendations
     except Exception as exc:
         recommendations.append("sqlite-bruteforce companion is unreadable; run scripts/repair.vector_index.py to rebuild it from SQLite truth.")
@@ -1133,6 +1335,7 @@ def main() -> int:
         runtime_config = load_runtime_config(source_root, hermes_home)
         expected_embedder = expected_embedder_from_config(runtime_config)
         sqlite_payload, sqlite_check, sqlite_recommendations = sqlite_report(hermes_home)
+        candidate_payload, candidate_check, candidate_recommendations = memory_candidate_debt_report(hermes_home)
         secret_payload, secret_check, secret_recommendations = memory_secret_report(hermes_home)
         raw_journal = runtime_config.get("journal")
         journal_config = raw_journal if isinstance(raw_journal, dict) else {}
@@ -1168,6 +1371,7 @@ def main() -> int:
             "expected_embedder": expected_embedder,
             "vector_backend": backend,
             "sqlite": sqlite_payload,
+            "memory_candidate_debt": candidate_payload,
             "memory_secret_scan": secret_payload,
             "journal": journal_payload,
             "experience": experience_payload,
@@ -1175,12 +1379,14 @@ def main() -> int:
             "vector": vector_payload,
         }
         checks["sqlite_truth"] = sqlite_check
+        checks["memory_candidate_debt"] = candidate_check
         checks["memory_secret_scan"] = secret_check
         checks["journal_provenance"] = journal_check
         checks["experience_kernel"] = experience_check
         checks["nightly_digest"] = nightly_check
         checks["vector_companion"] = vector_check
         recommendations.extend(sqlite_recommendations)
+        recommendations.extend(candidate_recommendations)
         recommendations.extend(secret_recommendations)
         recommendations.extend(journal_recommendations)
         recommendations.extend(experience_recommendations)
