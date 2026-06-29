@@ -5,6 +5,7 @@ import json
 import pytest
 
 from plugins.memory import load_memory_provider
+from scope_recall.tooling import ScopeRecallToolService
 
 
 @pytest.fixture
@@ -166,8 +167,39 @@ def test_compact_memory_and_entity_tools_dispatch_to_legacy_operations(provider)
     )
     assert updated["updated"] is True
 
-    deleted = json.loads(provider.handle_tool_call("scope_recall_memory", {"action": "forget", "id": created["id"]}))
-    assert deleted["deleted"] == 1
+    archived = json.loads(provider.handle_tool_call("scope_recall_memory", {"action": "forget", "id": created["id"], "reason": "test cleanup"}))
+    assert archived["archived"] == 1
+    assert archived["deleted"] == 0
+    assert archived["receipt"]["action"] == "soft_archive"
+    inspected_after = json.loads(provider.handle_tool_call("scope_recall_memory", {"action": "inspect", "id": created["id"]}))
+    assert inspected_after["found"] is True
+    assert inspected_after["memory"]["metadata"]["lifecycle"] == "archived"
+
+
+def test_scope_recall_forget_hard_delete_requires_maintenance_tools(provider):
+    created = _store(provider, "Hard delete should require maintenance mode.", "project")
+
+    payload = json.loads(provider.handle_tool_call("scope_recall_forget", {"id": created["id"], "hard_delete": True}))
+
+    assert payload["error"] == "scope_recall_forget hard_delete requires maintenance_tools_enabled=true"
+
+
+def test_tool_handler_fallback_errors_are_sanitized(monkeypatch):
+    service = ScopeRecallToolService(object())
+    secret = "sk-" + "TOOLHANDLERSECRET123456"
+
+    def boom(_args):
+        raise RuntimeError(f"provider failed api_key={secret} {'/tmp/' + 'hermes-secret-path'}")
+
+    monkeypatch.setattr(service, "_handle_stats", boom)
+
+    payload = service.handle("scope_recall_stats", {})
+
+    assert secret not in payload
+    assert "api_key=" not in payload
+    assert "/tmp/hermes" not in payload
+    assert "[REDACTED_SECRET]" in payload
+    assert "[REDACTED_PATH]" in payload
 
 
 def test_tool_store_uses_capture_filter_for_secret_like_content(provider):

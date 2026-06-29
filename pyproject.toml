@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-scope-recall"
-version = "1.5.4"
+version = "1.6.0"
 description = "Hermes scoped memory provider with journal-first capture, SQLite truth, vector companions, and hybrid RRF retrieval."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,7 +24,7 @@ classifiers = [
 dependencies = []
 
 [project.scripts]
-hermes-scope-recall = "scope_recall.installer:main"
+hermes-scope-recall = "scope_recall.cli:main"
 
 [project.optional-dependencies]
 lancedb = [
@@ -69,6 +69,7 @@ package-dir = {"scope_recall" = "."}
   "docs/*.md",
   "scripts/*.py",
   "benchmarks/*.json",
+  "examples/external_bridge/*.jsonl",
 ]
 
 [tool.pytest.ini_options]
@@ -77,7 +78,10 @@ pythonpath = ["."]
 [tool.pyright]
 include = [
   "candidate_promotion.py",
+  "cli.py",
   "config.py",
+  "config_schema.py",
+  "digest_quality.py",
   "digest_run_results.py",
   "doctor_common.py",
   "doctor_experience.py",
@@ -86,13 +90,26 @@ include = [
   "doctor_sqlite.py",
   "doctor_vector.py",
   "embedders.py",
+  "experience_bootstrap.py",
+  "experience_classification.py",
+  "experience_replay.py",
+  "freshness.py",
   "graph_hygiene.py",
   "maintenance_ops.py",
   "graph.py",
+  "journal_llm.py",
+  "journal_store.py",
+  "journal_candidates.py",
+  "journal_extractors.py",
   "memory_ops.py",
+  "memory_quality.py",
+  "migration_openclaw.py",
+  "nightly_llm.py",
   "provider_schemas.py",
   "recall.py",
   "recall_pipeline.py",
+  "relation_extraction.py",
+  "response_schemas.py",
   "schemas.py",
   "scoring.py",
   "sqlite_vector_store.py",

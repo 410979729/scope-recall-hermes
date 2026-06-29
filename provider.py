@@ -23,6 +23,7 @@ from .governance import extract_candidates
 from .memory_ops import (
     context_payload,
     profile_payload,
+    archive_memories,
     benchmark_queries,
     dedupe_memories,
     delete_memories,
@@ -57,6 +58,8 @@ from .experience_promotion import promote_experiences
 from .experience_store import backfill_skill_anchors
 
 logger = logging.getLogger(__name__)
+
+SQLITE_BUSY_TIMEOUT_SECONDS = 10.0
 
 DEFAULT_TOOL_TRACE_SKIP_NAMES = {"todo", "skill_view", "skills_list"}
 DEFAULT_TOOL_TRACE_SKIP_NAME_FRAGMENTS = {"session_messages"}
@@ -134,7 +137,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         storage_dir = Path(hermes_home).expanduser() / "scope-recall"
         storage_dir.mkdir(parents=True, exist_ok=True)
         db_path = storage_dir / "memory.sqlite3"
-        conn = sqlite3.connect(db_path, check_same_thread=False)
+        conn = sqlite3.connect(db_path, check_same_thread=False, timeout=SQLITE_BUSY_TIMEOUT_SECONDS)
         try:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
@@ -213,7 +216,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._current_turn = 0
         self._last_recall_turns = {}
 
-        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        self._conn = sqlite3.connect(self._db_path, check_same_thread=False, timeout=SQLITE_BUSY_TIMEOUT_SECONDS)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
@@ -266,6 +269,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                     query=query,
                     accessible_scope_ids=self._accessible_scope_ids,
                     config=self._config,
+                    record_run=True,
+                    scope_id=self._scope_id,
                 ).get("packet", "")
         except Exception:
             logger.exception("Scope Recall experience preflight failed")
@@ -841,6 +846,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
 
     def _govern_memories(self, *, dry_run: bool = True, scope_only: bool = True) -> dict[str, Any]:
         return govern_memories(self, dry_run=dry_run, scope_only=scope_only)
+
+    def _archive_memories(self, ids: list[str], *, reason: str = "scope_recall_forget", actor: str = "scope_recall_forget", batch_id: str = "") -> dict[str, Any]:
+        return archive_memories(self, ids, reason=reason, actor=actor, batch_id=batch_id)
 
     def _delete_memories(self, ids: list[str]) -> int:
         return delete_memories(self, ids)

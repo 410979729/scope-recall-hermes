@@ -305,13 +305,42 @@ def vector_report(
     *,
     expected_embedder: dict[str, Any] | None = None,
     backend: str = "lancedb",
+    fallback_backend: str = "",
     index_general: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     normalized = "sqlite-bruteforce" if str(backend or "lancedb").strip().lower() == "sqlite" else str(backend or "lancedb").strip().lower()
+    fallback = "sqlite-bruteforce" if str(fallback_backend or "").strip().lower() == "sqlite" else str(fallback_backend or "").strip().lower()
     if normalized == "sqlite-bruteforce":
         return sqlite_vector_report(hermes_home, expected_embedder=expected_embedder, index_general=index_general)
     if normalized == "lancedb":
-        return lancedb_vector_report(hermes_home, expected_embedder=expected_embedder, index_general=index_general)
+        primary_payload, primary_check, primary_recommendations = lancedb_vector_report(hermes_home, expected_embedder=expected_embedder, index_general=index_general)
+        if primary_check.get("ok") or fallback != "sqlite-bruteforce":
+            return primary_payload, primary_check, primary_recommendations
+        fallback_payload, fallback_check, fallback_recommendations = sqlite_vector_report(hermes_home, expected_embedder=expected_embedder, index_general=index_general)
+        combined_recommendations = [
+            "Primary LanceDB companion is unavailable; using configured sqlite-bruteforce fallback companion for doctor health.",
+            *primary_recommendations,
+            *fallback_recommendations,
+        ]
+        if fallback_check.get("ok"):
+            payload = {
+                "backend": "lancedb",
+                "status": "fallback_ready",
+                "ready": True,
+                "primary": primary_payload,
+                "fallback_backend": "sqlite-bruteforce",
+                "fallback": fallback_payload,
+            }
+            return payload, {"ok": True, "failures": []}, combined_recommendations
+        payload = {
+            "backend": "lancedb",
+            "status": "needs_repair",
+            "ready": False,
+            "primary": primary_payload,
+            "fallback_backend": "sqlite-bruteforce",
+            "fallback": fallback_payload,
+        }
+        return payload, {"ok": False, "failures": [*primary_check.get("failures", []), *fallback_check.get("failures", [])]}, combined_recommendations
     payload = {"backend": normalized, "status": "unsupported", "ready": False}
     return payload, {"ok": False, "failures": [f"unsupported vector backend: {normalized}"]}, ["Set vector.backend to 'lancedb' or 'sqlite-bruteforce'."]
 

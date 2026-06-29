@@ -1,19 +1,25 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 from .capture import store_now
 from .capture_filters import sanitize_report_text
+from .freshness import attach_freshness_metadata, memory_freshness_map
 from .gating import compact_text
-from .graph import clamp_float, compact_context_lines, lifecycle_visible_sql, load_metadata, normalize_entity
+from .graph import clamp_float, compact_context_lines, lifecycle_visible_sql, load_metadata, normalize_entity, sync_memory_entities
 from .governance import classify_memory, is_conflicting, merge_memory_text, semantic_similarity
 from .models import recall_scope_mode
-from .sql_store import curated_recall_item_id, delete_rows, exact_duplicate_groups, iter_curated_entries, update_row
+from .relation_extraction import sync_extracted_relations_for_memory
+from .sql_store import curated_recall_item_id, delete_rows, exact_duplicate_groups, iter_curated_entries, record_governance_audit_event, update_row
 from .storage_views import _curated_memory_allowed
-from .vector_runtime import mark_vector_needs_repair, refresh_vector_audit, setup_vector_layer, upsert_vector_record
+from .vector_runtime import _vector_mutation_lock, mark_vector_needs_repair, refresh_vector_audit, setup_vector_layer, upsert_vector_record
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -90,6 +96,17 @@ def store_memory_now(
     )
     if inserted:
         _mark_conflicts_for_memory(provider, memory_id=memory_id, content=content, target=target)
+        if bool(provider._config.get("relation_extraction_enabled", True)):
+            try:
+                sync_extracted_relations_for_memory(
+                    provider._require_conn(),
+                    memory_id=memory_id,
+                    scope_ids=[_expected_scope_id_for_mode(provider, resolved_scope_mode)],
+                    batch_id="store",
+                    max_pairs=int(provider._config.get("relation_extraction_max_pairs", 1000) or 1000),
+                )
+            except Exception:
+                logger.exception("Scope Recall relation extraction sync failed")
     outcome = "stored" if inserted else "duplicate" if memory_id else "skipped"
     return memory_id, inserted, outcome
 
@@ -288,6 +305,17 @@ def update_memory(provider: Any, memory_id: str, content: str, target: str | Non
                 target=str(row["target"]),
                 rebuild_existing=True,
             )
+            if bool(provider._config.get("relation_extraction_enabled", True)):
+                try:
+                    sync_extracted_relations_for_memory(
+                        provider._require_conn(),
+                        memory_id=memory_id,
+                        scope_ids=[str(row["scope_id"])],
+                        batch_id="update",
+                        max_pairs=int(provider._config.get("relation_extraction_max_pairs", 1000) or 1000),
+                    )
+                except Exception:
+                    logger.exception("Scope Recall relation extraction update sync failed")
             upsert_vector_record(
                 provider,
                 id=memory_id,
@@ -503,39 +531,188 @@ def delete_memories(provider: Any, ids: list[str]) -> int:
             )
             .fetchall()
         ]
-        deleted_changes = delete_rows(provider._require_conn(), scoped_ids, scope_ids=_writable_scope_params(provider))
-    if provider._vector_store and scoped_ids:
+        if not _delete_vectors_before_sql(provider, scoped_ids):
+            return 0
+        return delete_rows(provider._require_conn(), scoped_ids, scope_ids=_writable_scope_params(provider))
+
+
+def _forget_snapshot(row: Any) -> dict[str, Any]:
+    if row is None:
+        return {}
+    metadata = load_metadata(row["metadata"] if "metadata" in row.keys() else "{}")
+    return {
+        "id": str(row["id"]),
+        "scope_id": str(row["scope_id"] or ""),
+        "source": str(row["source"] or ""),
+        "target": str(row["target"] or ""),
+        "summary": str(row["summary"] or ""),
+        "updated_at": str(row["updated_at"] or ""),
+        "metadata": metadata,
+    }
+
+
+def archive_memories(
+    provider: Any,
+    ids: list[str],
+    *,
+    reason: str = "scope_recall_forget",
+    actor: str = "scope_recall_forget",
+    batch_id: str = "",
+) -> dict[str, Any]:
+    requested_ids = [str(memory_id) for memory_id in ids if str(memory_id).strip()]
+    batch = batch_id or f"scope_recall_forget_{uuid.uuid4().hex}"
+    payload: dict[str, Any] = {
+        "archived": 0,
+        "deleted": 0,
+        "ids": [],
+        "skipped": requested_ids,
+        "batch_id": batch,
+        "receipt": {
+            "action": "soft_archive",
+            "batch_id": batch,
+            "restore_path": f"python3 scripts/governance.cleanup.py --rollback-batch --batch-id {batch} --apply",
+        },
+    }
+    if not requested_ids:
+        return payload
+    placeholders = ",".join("?" for _ in requested_ids)
+    now = datetime.now(timezone.utc).isoformat()
+    with provider._lock:
+        rows = provider._require_conn().execute(
+            f"""
+            SELECT id, scope_id, source, target, content, summary, updated_at, metadata
+            FROM memories
+            WHERE id IN ({placeholders})
+              AND scope_id IN ({_scope_placeholders(provider, writable=True)})
+            """,
+            [*requested_ids, *_writable_scope_params(provider)],
+        ).fetchall()
+        scoped_ids = [str(row["id"]) for row in rows]
+        scoped_id_set = set(scoped_ids)
+        payload["skipped"] = [memory_id for memory_id in requested_ids if memory_id not in scoped_id_set]
+        if not scoped_ids:
+            return payload
+        vector_companion_deleted = getattr(provider, "_vector_store", None) is not None and bool(scoped_ids)
+        if not _delete_vectors_before_sql(provider, scoped_ids):
+            payload["skipped"] = scoped_ids
+            return payload
         try:
-            provider._vector_store.delete_by_ids(scoped_ids)
+            before_by_id = {str(row["id"]): _forget_snapshot(row) for row in rows}
+            row_by_id = {str(row["id"]): row for row in rows}
+            archived_ids: list[str] = []
+            for memory_id in scoped_ids:
+                row = row_by_id[memory_id]
+                metadata = load_metadata(row["metadata"])
+                if str(metadata.get("lifecycle") or "").strip().lower() == "archived":
+                    continue
+                metadata["previous_lifecycle"] = str(metadata.get("lifecycle") or "promoted")
+                metadata["lifecycle"] = "archived"
+                metadata["archived_at"] = now
+                metadata["archived_reason"] = sanitize_report_text(reason or "scope_recall_forget")
+                metadata["archived_by"] = sanitize_report_text(actor or "scope_recall_forget")
+                metadata["archived_batch_id"] = batch
+                provider._require_conn().execute(
+                    "UPDATE memories SET metadata = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(metadata, ensure_ascii=False, sort_keys=True), now, memory_id),
+                )
+                sync_memory_entities(
+                    provider._require_conn(),
+                    memory_id=memory_id,
+                    content=str(row["content"] or ""),
+                    target=str(row["target"] or ""),
+                    metadata=metadata,
+                )
+                after_row = provider._require_conn().execute(
+                    "SELECT id, scope_id, source, target, summary, updated_at, metadata FROM memories WHERE id = ?",
+                    (memory_id,),
+                ).fetchone()
+                record_governance_audit_event(
+                    provider._require_conn(),
+                    event_id=f"gov_{uuid.uuid4().hex}",
+                    event_type="scope_recall_forget",
+                    action="soft_archive",
+                    scope_id=str(row["scope_id"] or ""),
+                    target_id=memory_id,
+                    batch_id=batch,
+                    before=before_by_id[memory_id],
+                    after=_forget_snapshot(after_row) if after_row is not None else {"id": memory_id, "archived": True},
+                    reason=reason or "scope_recall_forget",
+                    actor=actor or "scope_recall_forget",
+                    dry_run=False,
+                    created_at=now,
+                )
+                archived_ids.append(memory_id)
+            provider._require_conn().commit()
         except Exception as exc:
-            mark_vector_needs_repair(provider, exc)
-    return deleted_changes
+            try:
+                provider._require_conn().rollback()
+            except Exception:
+                logger.exception("Scope Recall soft archive rollback failed after vector companion deletion")
+            safe_error = sanitize_report_text(str(exc))
+            if vector_companion_deleted:
+                mark_vector_needs_repair(provider, f"soft archive transaction failed after vector companion deletion: {safe_error}")
+            payload["archived"] = 0
+            payload["ids"] = []
+            payload["skipped"] = scoped_ids
+            payload["error"] = safe_error
+            payload["receipt"].update({"action": "soft_archive_failed", "ids": [], "reason": sanitize_report_text(reason or "scope_recall_forget")})
+            return payload
+        payload["archived"] = len(archived_ids)
+        payload["ids"] = archived_ids
+        archived_id_set = set(archived_ids)
+        payload["skipped"] = [memory_id for memory_id in requested_ids if memory_id not in archived_id_set]
+        payload["receipt"].update({"ids": archived_ids, "reason": sanitize_report_text(reason or "scope_recall_forget")})
+        return payload
+
+
+def _delete_vectors_before_sql(provider: Any, ids: list[str]) -> bool:
+    """Delete vector companion rows before deleting SQLite truth.
+
+    Hard-delete paths must fail closed: if an active companion cannot delete its
+    rebuildable rows, SQLite truth stays intact so the operation can be retried
+    or repaired without leaving stale vector-only records.
+    """
+
+    clean_ids = [str(memory_id) for memory_id in ids if str(memory_id).strip()]
+    if not clean_ids:
+        return True
+    vector_store = getattr(provider, "_vector_store", None)
+    if vector_store is None:
+        if bool(getattr(provider, "_vector_enabled", False)) and str(getattr(provider, "_vector_status", "") or "").lower() != "disabled":
+            mark_vector_needs_repair(provider, "vector store unavailable before hard delete")
+            return False
+        return True
+    try:
+        with _vector_mutation_lock(provider):
+            vector_store.delete_by_ids(clean_ids)
+        return True
+    except Exception as exc:
+        mark_vector_needs_repair(provider, exc)
+        return False
 
 
 def dedupe_memories(provider: Any, *, dry_run: bool = True, scope_only: bool = True) -> dict[str, Any]:
-    groups = exact_duplicate_groups(provider._require_conn(), scope_ids=_writable_scope_params(provider) if scope_only else None)
-    delete_ids = [memory_id for group in groups for memory_id in group["delete_ids"]]
-    payload: dict[str, Any] = {
-        "dry_run": dry_run,
-        "scope_only": scope_only,
-        "duplicate_groups": len(groups),
-        "duplicates": len(delete_ids),
-        "groups": groups[:20],
-    }
-    if dry_run:
-        payload["deleted"] = 0
-        return payload
-    if scope_only:
-        payload["deleted"] = delete_memories(provider, delete_ids)
-    else:
-        with provider._lock:
+    with provider._lock:
+        groups = exact_duplicate_groups(provider._require_conn(), scope_ids=_writable_scope_params(provider) if scope_only else None)
+        delete_ids = [memory_id for group in groups for memory_id in group["delete_ids"]]
+        payload: dict[str, Any] = {
+            "dry_run": dry_run,
+            "scope_only": scope_only,
+            "duplicate_groups": len(groups),
+            "duplicates": len(delete_ids),
+            "groups": groups[:20],
+        }
+        if dry_run:
+            payload["deleted"] = 0
+            return payload
+        if scope_only:
+            payload["deleted"] = delete_memories(provider, delete_ids)
+        else:
+            if not _delete_vectors_before_sql(provider, delete_ids):
+                payload["deleted"] = 0
+                return payload
             payload["deleted"] = delete_rows(provider._require_conn(), delete_ids)
-        if provider._vector_store and delete_ids:
-            try:
-                provider._vector_store.delete_by_ids(delete_ids)
-            except Exception as exc:
-                mark_vector_needs_repair(provider, exc)
-    return payload
+        return payload
 
 
 def repair_vector(provider: Any) -> dict[str, Any]:
@@ -656,12 +833,12 @@ def _profile_relevant_ids(provider: Any, *, query: str, entity: str, limit: int)
 
 
 def _profile_lifecycle_sql(alias: str = "m", *, include_candidates: bool = False) -> str:
-    if include_candidates:
-        return lifecycle_visible_sql(alias)
     lifecycle_expr = (
         f"LOWER(COALESCE(CASE WHEN json_valid({alias}.metadata) "
         f"THEN json_extract({alias}.metadata, '$.lifecycle') ELSE 'promoted' END, 'promoted'))"
     )
+    if include_candidates:
+        return f"{lifecycle_expr} NOT IN ('archived', 'superseded', 'obsolete', 'rejected')"
     return f"{lifecycle_expr} = 'promoted'"
 
 
@@ -674,6 +851,7 @@ def _profile_rows_for_target(
     filter_to_relevance: bool,
     include_candidates: bool,
 ) -> list[dict[str, Any]]:
+    fetch_limit = max(1, int(limit or 1)) * 3
     params: list[Any] = [target, *_accessible_scope_params(provider)]
     relevance_clause = ""
     if filter_to_relevance:
@@ -681,7 +859,7 @@ def _profile_rows_for_target(
             return []
         relevance_clause = f" AND m.id IN ({','.join('?' for _ in relevant_ids)})"
         params.extend(sorted(relevant_ids))
-    params.append(max(1, limit))
+    params.append(fetch_limit)
     with provider._lock:
         rows = provider._require_conn().execute(
             f"""
@@ -703,7 +881,13 @@ def _profile_rows_for_target(
             """,
             params,
         ).fetchall()
-    return [_profile_row_payload(row) for row in rows]
+        freshness_by_id = memory_freshness_map(provider._require_conn(), [str(row["id"]) for row in rows])
+    payloads = [_profile_row_payload(row) for row in rows]
+    retrieval_cfg = getattr(provider, "_retrieval_config", {}) or {}
+    for payload in payloads:
+        attach_freshness_metadata(payload, freshness_by_id.get(str(payload.get("id") or "")), config=retrieval_cfg)
+    payloads.sort(key=lambda item: 1 if item.get("needs_live_check") else 0)
+    return payloads[: max(1, int(limit or 1))]
 
 
 def profile_payload(
@@ -807,6 +991,9 @@ def context_payload(provider: Any, *, query: str, limit: int = 5, max_chars: int
                 "updated_at": item.updated_at,
                 "memory_type": str(metadata.get("memory_type") or ""),
                 "entities": entities,
+                "needs_live_check": bool(metadata.get("needs_live_check")),
+                "fact_freshness_status": str(metadata.get("fact_freshness_status") or "untracked"),
+                "fact_freshness_penalty": metadata.get("fact_freshness_penalty", 0.0),
             }
         )
     top_entities = [
@@ -1149,9 +1336,12 @@ def benchmark_queries(
         _merge_filter_counts(filter_counts, trace)
         ids = [str(item.id) for item in results]
         ranks = {memory_id: index for index, memory_id in enumerate(ids, start=1)}
+        results_by_id = {str(item.id): item for item in results}
         failures: list[str] = []
         expected_ids = _benchmark_id_list(case.get("expected_ids"))
         forbidden_ids = _benchmark_id_list(case.get("forbidden_ids"))
+        raw_expected_metadata = case.get("expected_metadata")
+        expected_metadata: dict[str, Any] = raw_expected_metadata if isinstance(raw_expected_metadata, dict) else {}
         min_rank_raw = case.get("min_rank")
         try:
             min_rank = int(min_rank_raw) if min_rank_raw is not None else 0
@@ -1183,6 +1373,19 @@ def benchmark_queries(
             if forbidden_id in ranks:
                 forbidden_violations += 1
                 failures.append(f"forbidden_id_present:{forbidden_id}:rank={ranks[forbidden_id]}")
+        for memory_id, expected_values in expected_metadata.items():
+            memory_id = str(memory_id)
+            if not isinstance(expected_values, dict):
+                continue
+            item = results_by_id.get(memory_id)
+            if item is None:
+                failures.append(f"expected_metadata_id_missing:{memory_id}")
+                continue
+            metadata = dict(item.metadata or {})
+            for key, expected_value in expected_values.items():
+                actual_value = metadata.get(str(key))
+                if actual_value != expected_value:
+                    failures.append(f"metadata_mismatch:{memory_id}:{key}:actual={actual_value!r}:expected={expected_value!r}")
         if min_top_score_raw is not None and top_score < min_top_score:
             failures.append(f"top_score_below_min:{top_score}:min_top_score={min_top_score}")
         row: dict[str, Any] = {

@@ -39,6 +39,7 @@ Contract:
 
 - Stable `scope_recall_*` tool names remain registered.
 - Tool schemas remain compatible unless a versioned breaking change is planned.
+- Public report JSON includes stable top-level `schema_version` identifiers documented in `docs/response-contracts.md`.
 - Disabled features fail closed with clear messages rather than disappearing.
 
 Primary files:

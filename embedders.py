@@ -262,7 +262,7 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
             for _ in range(max(1, len(self._api_keys))):
                 client = self._client_or_raise()
                 try:
-                    response = client.embeddings.create(model=self.model, input=batch)
+                    response = client.embeddings.create(model=self.model, input=batch, encoding_format="float")
                     break
                 except Exception as exc:
                     last_error = exc

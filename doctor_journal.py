@@ -6,8 +6,10 @@ from typing import Any
 
 try:
     from .doctor_common import coerce_int
+    from .journal_recovery import classify_rejection_reason
 except ImportError:  # pragma: no cover - direct source-script execution fallback
     from doctor_common import coerce_int
+    from journal_recovery import classify_rejection_reason
 
 def journal_enabled_from_config(config: dict[str, Any]) -> bool:
     raw_journal = config.get("journal")
@@ -32,6 +34,14 @@ def journal_backlog_age_hours(oldest_created_at: str) -> float:
         return max(0.0, (datetime.now(timezone.utc) - created.astimezone(timezone.utc)).total_seconds() / 3600.0)
     except Exception:
         return 0.0
+
+
+def classify_reason_counts(reason_counts: dict[str, int]) -> dict[str, int]:
+    category_counts: dict[str, int] = {}
+    for reason, count in reason_counts.items():
+        category = classify_rejection_reason(reason)
+        category_counts[category] = category_counts.get(category, 0) + int(count)
+    return dict(sorted(category_counts.items()))
 
 
 def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
@@ -145,7 +155,11 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
                 dict(row)
                 for row in conn.execute(
                     """
-                    SELECT id, started_at, status, extractor, processed_entries, inserted, updated, skipped
+                    SELECT id, started_at, status, extractor, processed_entries, inserted, updated, skipped,
+                           CASE
+                               WHEN json_valid(metadata) THEN COALESCE(json_extract(metadata, '$.operator_classification'), '')
+                               ELSE ''
+                           END AS operator_classification
                     FROM journal_digest_runs
                     ORDER BY started_at DESC
                     LIMIT 25
@@ -157,39 +171,100 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
             for row in recent_runs:
                 recent_status_counts[str(row.get("status") or "unknown")] = recent_status_counts.get(str(row.get("status") or "unknown"), 0) + 1
                 recent_extractor_counts[str(row.get("extractor") or "unknown")] = recent_extractor_counts.get(str(row.get("extractor") or "unknown"), 0) + 1
-            retry_exhausted_rejections = int(
-                conn.execute("SELECT COUNT(*) FROM journal_rejections WHERE reason LIKE 'retry-exhausted:%'").fetchone()[0]
-            )
-            dead_letter_rejections = int(
-                conn.execute("SELECT COUNT(*) FROM journal_rejections WHERE reason LIKE 'dead-letter:%'").fetchone()[0]
-            )
-            retry_replay_candidates = int(
-                conn.execute(
+            rejection_reason_counts = {
+                str(row["reason"] or ""): int(row["count"])
+                for row in conn.execute(
                     """
-                    SELECT COUNT(*)
+                    SELECT COALESCE(reason, '') AS reason, COUNT(*) AS count
+                    FROM journal_rejections
+                    GROUP BY COALESCE(reason, '')
+                    ORDER BY reason
+                    """
+                )
+            }
+            retry_exhausted_reason_counts = {
+                str(row["reason"] or ""): int(row["count"])
+                for row in conn.execute(
+                    """
+                    SELECT COALESCE(reason, '') AS reason, COUNT(*) AS count
+                    FROM journal_rejections
+                    WHERE reason LIKE 'retry-exhausted:%'
+                    GROUP BY COALESCE(reason, '')
+                    ORDER BY reason
+                    """
+                )
+            }
+            dead_letter_reason_counts = {
+                str(row["reason"] or ""): int(row["count"])
+                for row in conn.execute(
+                    """
+                    SELECT COALESCE(reason, '') AS reason, COUNT(*) AS count
+                    FROM journal_rejections
+                    WHERE reason LIKE 'dead-letter:%'
+                    GROUP BY COALESCE(reason, '')
+                    ORDER BY reason
+                    """
+                )
+            }
+            retry_replay_candidate_reason_counts = {
+                str(row["reason"] or ""): int(row["count"])
+                for row in conn.execute(
+                    """
+                    SELECT COALESCE(r.reason, '') AS reason, COUNT(*) AS count
                     FROM journal_rejections AS r
                     JOIN journal_entries AS e ON e.id = r.journal_entry_id
                     LEFT JOIN memory_journal_sources AS s ON s.journal_entry_id = e.id
                     WHERE r.reason LIKE 'retry-exhausted:%'
                       AND COALESCE(e.processed_run_id, '') != ''
+                      AND r.run_id = e.processed_run_id
                       AND s.memory_id IS NULL
+                    GROUP BY COALESCE(r.reason, '')
+                    ORDER BY reason
                     """
-                ).fetchone()[0]
-            )
-            dead_letter_replay_candidates = int(
-                conn.execute(
+                )
+            }
+            dead_letter_replay_candidate_reason_counts = {
+                str(row["reason"] or ""): int(row["count"])
+                for row in conn.execute(
                     """
-                    SELECT COUNT(*)
+                    SELECT COALESCE(r.reason, '') AS reason, COUNT(*) AS count
                     FROM journal_rejections AS r
                     JOIN journal_entries AS e ON e.id = r.journal_entry_id
                     LEFT JOIN memory_journal_sources AS s ON s.journal_entry_id = e.id
                     WHERE r.reason LIKE 'dead-letter:%'
                       AND COALESCE(e.processed_run_id, '') != ''
+                      AND r.run_id = e.processed_run_id
                       AND s.memory_id IS NULL
+                    GROUP BY COALESCE(r.reason, '')
+                    ORDER BY reason
+                    """
+                )
+            }
+            rejection_categories = classify_reason_counts(rejection_reason_counts)
+            retry_exhausted_categories = classify_reason_counts(retry_exhausted_reason_counts)
+            dead_letter_categories = classify_reason_counts(dead_letter_reason_counts)
+            retry_replay_candidate_categories = classify_reason_counts(retry_replay_candidate_reason_counts)
+            dead_letter_replay_candidate_categories = classify_reason_counts(dead_letter_replay_candidate_reason_counts)
+            historical_retry_exhausted_rejections = sum(retry_exhausted_reason_counts.values())
+            historical_dead_letter_rejections = sum(dead_letter_reason_counts.values())
+            retry_replay_candidates = sum(retry_replay_candidate_reason_counts.values())
+            dead_letter_replay_candidates = sum(dead_letter_replay_candidate_reason_counts.values())
+            retry_exhausted_rejections = retry_replay_candidates
+            dead_letter_rejections = dead_letter_replay_candidates
+            quarantine_runs = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM journal_digest_runs
+                    WHERE extractor = 'llm-quarantine'
+                      AND NOT (
+                          json_valid(metadata)
+                          AND COALESCE(json_extract(metadata, '$.operator_classification'), '') IN ('no_replay', 'handled', 'classified_no_replay')
+                      )
                     """
                 ).fetchone()[0]
             )
-            quarantine_runs = int(
+            historical_quarantine_runs = int(
                 conn.execute("SELECT COUNT(*) FROM journal_digest_runs WHERE extractor = 'llm-quarantine'").fetchone()[0]
             )
             fallback_runs = int(
@@ -242,7 +317,12 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
     digest_health_reasons: list[str] = []
     recent_bad_runs = sum(recent_status_counts.get(status, 0) for status in ("error", "retry_scheduled", "dead_letter"))
     recent_fallback_runs = recent_status_counts.get("ok_with_fallback", 0) + recent_extractor_counts.get("heuristic-fallback", 0)
-    recent_quarantine_runs = recent_extractor_counts.get("llm-quarantine", 0)
+    recent_quarantine_runs = sum(
+        1
+        for row in recent_runs
+        if str(row.get("extractor") or "") == "llm-quarantine"
+        and str(row.get("operator_classification") or "") not in {"no_replay", "handled", "classified_no_replay"}
+    )
     if recent_bad_runs or recent_quarantine_runs:
         digest_health_status = "degraded"
         digest_health_reasons.append("recent_digest_failures_or_quarantine")
@@ -265,6 +345,28 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
     if dead_letter_replay_candidates:
         digest_health_reasons.append("dead_letter_replay_queue_nonempty")
         recommendations.append(f"Journal recovery queue has {dead_letter_replay_candidates} dead-letter entrie(s); only replay after fixing auth/quota/config root cause.")
+    auth_or_quota = (
+        retry_replay_candidate_categories.get("auth", 0)
+        + retry_replay_candidate_categories.get("quota", 0)
+        + dead_letter_replay_candidate_categories.get("auth", 0)
+        + dead_letter_replay_candidate_categories.get("quota", 0)
+    )
+    parse_or_timeout = (
+        retry_replay_candidate_categories.get("parse", 0)
+        + retry_replay_candidate_categories.get("timeout", 0)
+        + dead_letter_replay_candidate_categories.get("parse", 0)
+        + dead_letter_replay_candidate_categories.get("timeout", 0)
+    )
+    low_value = retry_replay_candidate_categories.get("low_value", 0) + dead_letter_replay_candidate_categories.get("low_value", 0)
+    unknown = retry_replay_candidate_categories.get("unknown", 0) + dead_letter_replay_candidate_categories.get("unknown", 0)
+    if auth_or_quota:
+        recommendations.append("Journal rejection categories include auth/quota failures; fix provider credentials, permissions, or rate limits before replaying dead letters.")
+    if parse_or_timeout:
+        recommendations.append("Journal rejection categories include timeout/parse failures; dry-run replay is reasonable after extractor/network/schema root cause is fixed.")
+    if low_value:
+        recommendations.append("Journal rejection categories include low-value/noise entries; keep them rejected as evidence instead of replaying by default.")
+    if unknown:
+        recommendations.append("Journal rejection categories include unknown reasons; inspect samples before replay or cleanup.")
 
     payload = {
         "enabled": True,
@@ -300,11 +402,21 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
             "recent_extractor_counts": recent_extractor_counts,
             "fallback_runs": fallback_runs,
             "llm_quarantine_runs": quarantine_runs,
+            "historical_llm_quarantine_runs": historical_quarantine_runs,
             "retry_exhausted_rejections": retry_exhausted_rejections,
             "dead_letter_rejections": dead_letter_rejections,
+            "historical_retry_exhausted_rejections": historical_retry_exhausted_rejections,
+            "historical_dead_letter_rejections": historical_dead_letter_rejections,
+            "rejection_categories": rejection_categories,
+            "retry_exhausted_categories": retry_replay_candidate_categories,
+            "dead_letter_categories": dead_letter_replay_candidate_categories,
+            "historical_retry_exhausted_categories": retry_exhausted_categories,
+            "historical_dead_letter_categories": dead_letter_categories,
             "recovery_queue": {
                 "retry_exhausted_candidates": retry_replay_candidates,
                 "dead_letter_candidates": dead_letter_replay_candidates,
+                "retry_exhausted_categories": retry_replay_candidate_categories,
+                "dead_letter_categories": dead_letter_replay_candidate_categories,
             },
             "recent_runs": recent_runs[:10],
         },

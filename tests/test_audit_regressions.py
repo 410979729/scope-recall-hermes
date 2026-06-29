@@ -52,7 +52,7 @@ def test_string_false_config_values_remain_disabled(tmp_path):
         provider.shutdown()
 
 
-def test_forget_requires_explicit_accessible_ids_before_deleting(tmp_path):
+def test_forget_requires_explicit_accessible_ids_before_archiving(tmp_path):
     provider = _provider(tmp_path, {"vector": {"enabled": False}})
     try:
         stored = json.loads(
@@ -69,12 +69,14 @@ def test_forget_requires_explicit_accessible_ids_before_deleting(tmp_path):
             still_there = provider._require_conn().execute("SELECT COUNT(*) FROM memories WHERE id = ?", (stored["id"],)).fetchone()[0]
         assert still_there == 1
 
-        deleted = json.loads(provider.handle_tool_call("scope_recall_forget", {"ids": [stored["id"]]}))
-        assert deleted["deleted"] == 1
-        assert deleted["ids"] == [stored["id"]]
+        archived = json.loads(provider.handle_tool_call("scope_recall_forget", {"ids": [stored["id"]]}))
+        assert archived["archived"] == 1
+        assert archived["deleted"] == 0
+        assert archived["ids"] == [stored["id"]]
         with provider._lock:
-            gone = provider._require_conn().execute("SELECT COUNT(*) FROM memories WHERE id = ?", (stored["id"],)).fetchone()[0]
-        assert gone == 0
+            row = provider._require_conn().execute("SELECT metadata FROM memories WHERE id = ?", (stored["id"],)).fetchone()
+        assert row is not None
+        assert json.loads(row["metadata"])["lifecycle"] == "archived"
     finally:
         provider.shutdown()
 

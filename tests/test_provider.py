@@ -1,5 +1,6 @@
 import importlib
 import json
+from pathlib import Path
 import sqlite3
 import threading
 import time
@@ -57,6 +58,34 @@ def test_save_config_bootstraps_empty_sqlite_schema(tmp_path):
     finally:
         conn.close()
     assert {"memories", "journal_entries", "journal_digest_runs", "memory_journal_sources"} <= tables
+
+
+def test_save_config_bootstrap_uses_sqlite_busy_timeout(tmp_path, monkeypatch):
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    import scope_recall.provider as provider_module
+
+    real_connect = provider_module.sqlite3.connect
+    connect_calls: list[dict[str, object]] = []
+
+    def capturing_connect(database, *args, **kwargs):
+        connect_calls.append({"database": Path(database).name, "timeout": kwargs.get("timeout")})
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(provider_module.sqlite3, "connect", capturing_connect)
+
+    plugin.save_config({"vector": {"enabled": False}}, str(tmp_path))
+
+    memory_connects = [call for call in connect_calls if call["database"] == "memory.sqlite3"]
+    assert memory_connects
+    assert all(call["timeout"] == 10.0 for call in memory_connects)
+
+
+def test_initialize_sets_sqlite_busy_timeout(provider):
+    with provider._lock:
+        timeout_ms = provider._require_conn().execute("PRAGMA busy_timeout").fetchone()[0]
+
+    assert timeout_ms >= 10_000
 
 
 def test_save_config_bootstraps_sqlite_vector_meta_for_install_verification(tmp_path, monkeypatch):
@@ -2460,7 +2489,7 @@ def test_auto_capture_filters_system_maintenance_prompts(provider):
     assert stats["total_memories"] == 0
 
 
-def test_forget_tool_removes_matching_sqlite_and_vector_rows(provider):
+def test_forget_tool_archives_matching_sqlite_row_and_removes_vector_visibility(provider):
     payload = json.loads(
         provider.handle_tool_call("scope_recall_store", {"content": "Temporary deploy note should be removed.", "target": "memory"})
     )
@@ -2468,7 +2497,8 @@ def test_forget_tool_removes_matching_sqlite_and_vector_rows(provider):
     provider.flush(timeout=5.0)
 
     result = json.loads(provider.handle_tool_call("scope_recall_forget", {"ids": [payload["id"]]}))
-    assert result["deleted"] == 1
+    assert result["archived"] == 1
+    assert result["deleted"] == 0
     assert payload["id"] in result["ids"]
 
     provider.on_turn_start(1, "Temporary deploy note")

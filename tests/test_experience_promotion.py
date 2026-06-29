@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
+from scope_recall.experience_classification import classify_experience_task
 from scope_recall.experience_promotion import promote_experiences
 from scope_recall.experience_preflight import experience_preflight
 from scope_recall.journal import append_journal_entry, ensure_journal_schema
@@ -43,6 +44,150 @@ def _append(conn: sqlite3.Connection, *, scope: RuntimeScope, session_id: str, t
         role=role,
         content=content,
     )
+
+
+def test_experience_classification_uses_stable_titles_not_user_wording():
+    classification = classify_experience_task(
+        goal="你继续昨天的 做一个docs pr吧",
+        text="scope-recall release gate, PyPI version, docs, pytest, ruff, release gate ok",
+    )
+
+    assert classification.task_class == "scope_recall_docs_quality"
+    assert classification.title == "scope-recall：文档质量检查"
+    assert "你继续" not in classification.title
+    assert "docs pr" not in classification.title.lower()
+
+    progress = classify_experience_task(goal="进度如何啦", text="scope-recall 发布收口：pytest passed; ruff ok; release gate ok")
+    assert progress.task_class == "scope_recall_release_closeout"
+    assert progress.title == "scope-recall：发布收口"
+    assert "进度" not in progress.title
+
+
+def test_promoted_playbook_title_is_stable_and_trigger_keeps_user_wording():
+    conn = _conn()
+    scope = _scope()
+    scope_id = build_scope_id(scope)
+    shared_scope_id = build_shared_scope_id(scope)
+
+    _append(conn, scope=scope, session_id="stable-title", turn=1, role="user", content="你继续昨天的 做一个docs pr吧")
+    _append(
+        conn,
+        scope=scope,
+        session_id="stable-title",
+        turn=2,
+        role="tool",
+        content="python3 -m pytest tests/test_release.py -q -> 12 passed; ruff ok; docs smoke ok; scope-recall release gate ok.",
+    )
+    _append(conn, scope=scope, session_id="stable-title", turn=3, role="assistant", content="完成：scope-recall 文档发布检查通过，测试通过，验证完成。")
+
+    result = promote_experiences(
+        conn,
+        accessible_scope_ids=accessible_scope_ids(scope),
+        scope_id=scope_id,
+        shared_scope_id=shared_scope_id,
+        config={"experience": {"auto_promote_low_risk": True}},
+        dry_run=False,
+    )
+
+    assert result["handbooks_created"] == 1
+    row = conn.execute("SELECT * FROM procedural_playbooks").fetchone()
+    assert row is not None
+    assert row["task_class"] == "scope_recall_docs_quality"
+    assert row["title"] == "scope-recall：文档质量检查"
+    assert "你继续" not in row["title"]
+    assert "docs pr" not in row["title"].lower()
+    assert "你继续昨天的 做一个docs pr吧" in row["trigger"]
+    metadata = json.loads(row["metadata"])
+    assert metadata["classification"]["matched_rule"] == "scope_recall_docs"
+
+
+def test_promote_experiences_dry_run_is_query_only(tmp_path):
+    db_path = tmp_path / "memory.sqlite3"
+    writer = sqlite3.connect(db_path)
+    writer.row_factory = sqlite3.Row
+    try:
+        ensure_schema(writer)
+        ensure_journal_schema(writer)
+        scope = _scope()
+        _append(writer, scope=scope, session_id="readonly-dry-run", turn=1, role="user", content="检查 scope-recall release gate。")
+        _append(writer, scope=scope, session_id="readonly-dry-run", turn=2, role="tool", content="pytest 47 passed; ruff ok; release gate ok。")
+        _append(writer, scope=scope, session_id="readonly-dry-run", turn=3, role="assistant", content="完成：release gate 修复并验证通过。")
+        writer.commit()
+    finally:
+        writer.close()
+
+    readonly = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    readonly.row_factory = sqlite3.Row
+    readonly.execute("PRAGMA query_only=ON")
+    try:
+        scope = _scope()
+        result = promote_experiences(
+            readonly,
+            accessible_scope_ids=accessible_scope_ids(scope),
+            scope_id=build_scope_id(scope),
+            shared_scope_id=build_shared_scope_id(scope),
+            config={"experience": {"auto_promote_low_risk": True}},
+            dry_run=True,
+        )
+    finally:
+        readonly.close()
+
+    assert result["dry_run"] is True
+    assert result["schema_missing"] == []
+    assert result["handbooks_created"] == 1
+    assert result["items"][0]["action"] == "would_create"
+
+    verifier = sqlite3.connect(db_path)
+    try:
+        assert verifier.execute("SELECT COUNT(*) FROM task_episodes").fetchone()[0] == 0
+        assert verifier.execute("SELECT COUNT(*) FROM procedural_playbooks").fetchone()[0] == 0
+    finally:
+        verifier.close()
+
+
+def test_promote_experiences_dry_run_reports_missing_experience_schema_without_writing(tmp_path):
+    db_path = tmp_path / "memory.sqlite3"
+    writer = sqlite3.connect(db_path)
+    writer.row_factory = sqlite3.Row
+    try:
+        ensure_journal_schema(writer)
+        scope = _scope()
+        _append(writer, scope=scope, session_id="legacy-dry-run", turn=1, role="user", content="检查 scope-recall release gate。")
+        _append(writer, scope=scope, session_id="legacy-dry-run", turn=2, role="tool", content="pytest 47 passed; ruff ok; release gate ok。")
+        _append(writer, scope=scope, session_id="legacy-dry-run", turn=3, role="assistant", content="完成：release gate 修复并验证通过。")
+        writer.commit()
+    finally:
+        writer.close()
+
+    readonly = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    readonly.row_factory = sqlite3.Row
+    readonly.execute("PRAGMA query_only=ON")
+    try:
+        scope = _scope()
+        result = promote_experiences(
+            readonly,
+            accessible_scope_ids=accessible_scope_ids(scope),
+            scope_id=build_scope_id(scope),
+            shared_scope_id=build_shared_scope_id(scope),
+            config={"experience": {"auto_promote_low_risk": True}},
+            dry_run=True,
+        )
+    finally:
+        readonly.close()
+
+    assert result["dry_run"] is True
+    assert result["schema_missing"] == ["task_episodes", "procedural_playbooks"]
+    assert result["handbooks_created"] == 1
+    assert result["items"][0]["action"] == "would_create"
+
+    verifier = sqlite3.connect(db_path)
+    try:
+        tables = {row[0] for row in verifier.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "journal_entries" in tables
+        assert "task_episodes" not in tables
+        assert "procedural_playbooks" not in tables
+    finally:
+        verifier.close()
 
 
 def test_low_risk_verified_task_auto_creates_and_promotes_experience_handbook():

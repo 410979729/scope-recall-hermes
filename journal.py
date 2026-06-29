@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -9,508 +8,141 @@ import sqlite3
 import time
 import uuid
 from collections import Counter
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from .capture_filters import sanitize_report_text, should_capture_text
-from .config import load_runtime_config
 from .digest_run_results import journal_digest_metadata, journal_digest_success_result, no_unprocessed_journal_result
 from .gating import clean_text, compact_text, dedup_key
-from .governance import is_conflicting, merge_memory_text, normalize_memory_type, semantic_similarity
-from .graph import normalize_entity
+from .governance import is_conflicting, merge_memory_text, semantic_similarity
 from .models import RuntimeScope
-from .nightly_digest import (
-    DigestOptions,
-    MessageRecord,
-    ScopeProfile,
-    SessionBundle,
-    build_prompt,
-    call_llm,
-    existing_memory_context,
-    parse_llm_candidates,
-    resolve_llm_config,
-    session_chunks,
+from .nightly_digest import call_llm
+from .journal_candidates import (
+    JournalDigestCandidate,
+    _classify_target_and_type,
+    _digest_role_summary,
+    _DOMAIN_TOPIC_HINTS,
+    _entry_entities,
+    _GENERIC_TOPIC_ENTITIES,
+    _heuristic_candidate_content,
+    _looks_like_historical_template_noise,
+    _segment_session_entries,
+    _topic_entities,
+    _topic_label,
+    _topic_signature,
+    _topic_tags,
+    _unique,
+    candidate_metadata,
+    heuristic_journal_candidates,
+)
+from .journal_llm import (
+    JournalDigestLLMError,
+    _call_llm_with_retries,
+    _classify_llm_digest_error,
+    _quarantine_classification,
+)
+from .journal_extractors import (
+    _coerce_nonnegative_float,
+    _coerce_positive_int,
+    _config_bool,
+    _journal_from_digest_candidate,
+    _journal_runtime_config,
+    _journal_session_bundles,
+    _parse_entry_timestamp,
+    _runtime_config,
+    llm_journal_candidates,
+)
+from .journal_store import (
+    BASE64ISH_RE,
+    DATA_URL_PREFIX_RE,
+    JournalEntry,
+    _chunk_journal_text,
+    _insert_journal_entry,
+    _journal_capture_allowed,
+    _journal_entry_for_digest,
+    _journal_unprocessed_count,
+    _looks_like_base64_blob,
+    _metadata_json,
+    _prune_processed_journal,
+    _row_to_entry,
+    _strip_inline_data_urls,
+    append_journal_entry,
+    ensure_journal_schema,
+    load_unprocessed_journal_entries,
+    mark_entries_processed,
 )
 from .scope import accessible_scope_ids, build_scope_id, build_shared_scope_id, canonical_user_id, normalize_scope_identity, writable_scope_ids
 from .sql_store import ensure_schema, now_iso, store_row, update_row
 from .vector_runtime import upsert_vector_record
 
+# Compatibility surface: tests and operator probes historically monkeypatch
+# ``scope_recall.journal.call_llm`` before calling the journal retry helper.
+# ``journal_llm._active_call_llm`` checks this module attribute dynamically.
+_JOURNAL_CALL_LLM_COMPAT = call_llm
+# Compatibility re-exports: old imports such as ``scope_recall.journal.JournalDigestLLMError``
+# and ``scope_recall.journal._classify_llm_digest_error`` must remain module attributes.
+_JOURNAL_LLM_REEXPORT_COMPAT = (
+    JournalDigestLLMError,
+    _call_llm_with_retries,
+    _classify_llm_digest_error,
+    _quarantine_classification,
+)
+# Compatibility re-exports for H4 journal storage/capture split. These symbols
+# historically lived in ``scope_recall.journal`` and external tests/operators
+# still import or monkeypatch them from that module.
+_JOURNAL_STORE_REEXPORT_COMPAT = (
+    BASE64ISH_RE,
+    DATA_URL_PREFIX_RE,
+    JournalEntry,
+    _chunk_journal_text,
+    _insert_journal_entry,
+    _journal_capture_allowed,
+    _journal_entry_for_digest,
+    _journal_unprocessed_count,
+    _looks_like_base64_blob,
+    _metadata_json,
+    _prune_processed_journal,
+    _row_to_entry,
+    _strip_inline_data_urls,
+    append_journal_entry,
+    ensure_journal_schema,
+    load_unprocessed_journal_entries,
+    mark_entries_processed,
+)
+# Compatibility re-exports for H5 journal candidate/heuristic split.
+_JOURNAL_CANDIDATES_REEXPORT_COMPAT = (
+    JournalDigestCandidate,
+    _classify_target_and_type,
+    _digest_role_summary,
+    _DOMAIN_TOPIC_HINTS,
+    _entry_entities,
+    _GENERIC_TOPIC_ENTITIES,
+    _heuristic_candidate_content,
+    _looks_like_historical_template_noise,
+    _segment_session_entries,
+    _topic_entities,
+    _topic_label,
+    _topic_signature,
+    _topic_tags,
+    _unique,
+    candidate_metadata,
+    heuristic_journal_candidates,
+)
+# Compatibility re-exports for H6 journal LLM extractor/session-bundle split.
+_JOURNAL_EXTRACTORS_REEXPORT_COMPAT = (
+    _coerce_nonnegative_float,
+    _coerce_positive_int,
+    _config_bool,
+    _journal_from_digest_candidate,
+    _journal_runtime_config,
+    _journal_session_bundles,
+    _parse_entry_timestamp,
+    _runtime_config,
+    llm_journal_candidates,
+)
+
 JOURNAL_TARGETS = {"user", "memory", "project", "ops"}
-DATA_URL_PREFIX_RE = re.compile(r"data:[a-z0-9.+-]+/[a-z0-9.+-]+;base64,", re.IGNORECASE)
-BASE64ISH_RE = re.compile(r"^[A-Za-z0-9+/=\s]+$")
 
-
-def _strip_inline_data_urls(text: str) -> str:
-    match = DATA_URL_PREFIX_RE.search(text)
-    if not match:
-        return text
-    media_type = text[match.start() : match.end()].split(";", 1)[0].removeprefix("data:") or "attachment"
-    return clean_text(f"{text[:match.start()]}[inline {media_type} data omitted]")
-
-
-def _looks_like_base64_blob(text: str) -> bool:
-    raw = str(text or "").strip()
-    compact = re.sub(r"\s+", "", raw)
-    if len(compact) < 500:
-        return False
-    if not BASE64ISH_RE.fullmatch(compact):
-        return False
-    # Avoid treating ordinary long English/ASCII prose as binary just because
-    # it happens to use only base64 alphabet characters plus spaces. Real base64
-    # payload chunks are usually one long run or line-wrapped into long rows;
-    # prose is word-wrapped into many short tokens.
-    tokens = re.split(r"\s+", raw)
-    if len(tokens) > 1 and max((len(token) for token in tokens), default=0) < 64:
-        return False
-    return True
-
-
-def _journal_entry_for_digest(entry: JournalEntry) -> JournalEntry | None:
-    stripped = _strip_inline_data_urls(entry.content)
-    if stripped != entry.content:
-        metadata = dict(entry.metadata)
-        metadata["inline_data_redacted"] = True
-        return JournalEntry(
-            id=entry.id,
-            scope_id=entry.scope_id,
-            shared_scope_id=entry.shared_scope_id,
-            session_id=entry.session_id,
-            turn_number=entry.turn_number,
-            role=entry.role,
-            content=stripped,
-            created_at=entry.created_at,
-            processed_run_id=entry.processed_run_id,
-            metadata=metadata,
-        )
-    if _looks_like_base64_blob(entry.content):
-        return None
-    return entry
-
-
-@dataclass
-class JournalEntry:
-    id: int
-    scope_id: str
-    shared_scope_id: str
-    session_id: str
-    turn_number: int
-    role: str
-    content: str
-    created_at: str
-    processed_run_id: str = ""
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class JournalDigestCandidate:
-    content: str
-    target: str = "memory"
-    memory_type: str = "summary"
-    importance: float = 0.65
-    confidence: float = 0.70
-    entities: list[str] = field(default_factory=list)
-    tags: list[str] = field(default_factory=list)
-    reason: str = ""
-    entry_ids: list[int] = field(default_factory=list)
-    session_ids: list[str] = field(default_factory=list)
-
-
-def ensure_journal_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS journal_entries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            scope_id TEXT NOT NULL,
-            shared_scope_id TEXT NOT NULL,
-            platform TEXT,
-            user_id TEXT,
-            chat_id TEXT,
-            thread_id TEXT,
-            gateway_session_key TEXT,
-            agent_identity TEXT,
-            agent_workspace TEXT,
-            session_id TEXT NOT NULL,
-            turn_number INTEGER NOT NULL DEFAULT 0,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            content_hash TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            processed_run_id TEXT NOT NULL DEFAULT '',
-            processed_at TEXT,
-            metadata TEXT NOT NULL DEFAULT '{}',
-            UNIQUE(scope_id, session_id, turn_number, role, content_hash)
-        );
-        CREATE INDEX IF NOT EXISTS idx_scope_recall_journal_unprocessed
-            ON journal_entries(scope_id, processed_run_id, created_at, id);
-        CREATE INDEX IF NOT EXISTS idx_scope_recall_journal_session
-            ON journal_entries(session_id, turn_number, id);
-
-        CREATE TABLE IF NOT EXISTS journal_digest_runs (
-            id TEXT PRIMARY KEY,
-            started_at TEXT NOT NULL,
-            finished_at TEXT,
-            status TEXT NOT NULL,
-            extractor TEXT NOT NULL,
-            interval_label TEXT NOT NULL DEFAULT '',
-            processed_entries INTEGER NOT NULL DEFAULT 0,
-            inserted INTEGER NOT NULL DEFAULT 0,
-            updated INTEGER NOT NULL DEFAULT 0,
-            skipped INTEGER NOT NULL DEFAULT 0,
-            error TEXT,
-            metadata TEXT NOT NULL DEFAULT '{}'
-        );
-        CREATE INDEX IF NOT EXISTS idx_scope_recall_journal_digest_started
-            ON journal_digest_runs(started_at DESC);
-
-        CREATE TABLE IF NOT EXISTS memory_journal_sources (
-            memory_id TEXT NOT NULL,
-            journal_entry_id INTEGER NOT NULL,
-            run_id TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            PRIMARY KEY(memory_id, journal_entry_id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_scope_recall_memory_journal_memory
-            ON memory_journal_sources(memory_id, created_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_scope_recall_memory_journal_entry
-            ON memory_journal_sources(journal_entry_id);
-
-        CREATE TABLE IF NOT EXISTS journal_rejections (
-            journal_entry_id INTEGER NOT NULL,
-            run_id TEXT NOT NULL,
-            reason TEXT NOT NULL,
-            candidate TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL,
-            PRIMARY KEY(journal_entry_id, run_id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_scope_recall_journal_rejection_entry
-            ON journal_rejections(journal_entry_id, created_at DESC);
-        """
-    )
-    conn.commit()
-
-
-def _metadata_json(metadata: dict[str, Any] | None) -> str:
-    return json.dumps(metadata or {}, ensure_ascii=False, sort_keys=True)
-
-
-def _journal_capture_allowed(text: str) -> bool:
-    # Journal storage must not drop valuable long task instructions.  Re-run the
-    # normal safety filter with the length gate disabled, then chunk below.
-    return should_capture_text(text, {"capture_hard_max_chars": -1}).allowed
-
-
-def _chunk_journal_text(text: str, *, chunk_chars: int = 2000) -> list[str]:
-    if len(text) <= chunk_chars:
-        return [text]
-    chunks: list[str] = []
-    start = 0
-    while start < len(text):
-        end = min(len(text), start + chunk_chars)
-        if end < len(text):
-            # Prefer a nearby natural boundary, but never make tiny chunks.
-            boundary = max(text.rfind("\n", start + chunk_chars // 2, end), text.rfind("。", start + chunk_chars // 2, end))
-            if boundary > start:
-                end = boundary + 1
-        chunks.append(text[start:end])
-        start = end
-    return [chunk for chunk in chunks if chunk]
-
-
-def _insert_journal_entry(
-    conn: sqlite3.Connection,
-    *,
-    scope: RuntimeScope,
-    scope_id: str,
-    shared_scope_id: str,
-    session_id: str,
-    turn_number: int,
-    role: str,
-    text: str,
-    metadata: dict[str, Any] | None = None,
-) -> int:
-    content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    created_at = now_iso()
-    cur = conn.execute(
-        """
-        INSERT OR IGNORE INTO journal_entries(
-            scope_id, shared_scope_id, platform, user_id, chat_id, thread_id, gateway_session_key,
-            agent_identity, agent_workspace, session_id, turn_number, role, content, content_hash,
-            created_at, processed_run_id, metadata
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?)
-        """,
-        (
-            scope_id,
-            shared_scope_id,
-            scope.platform,
-            scope.user_id,
-            scope.chat_id,
-            scope.thread_id,
-            scope.gateway_session_key,
-            scope.agent_identity,
-            scope.agent_workspace,
-            session_id,
-            int(turn_number or 0),
-            role,
-            text,
-            content_hash,
-            created_at,
-            _metadata_json(metadata),
-        ),
-    )
-    if cur.rowcount == 0:
-        row = conn.execute(
-            """
-            SELECT id FROM journal_entries
-            WHERE scope_id = ? AND session_id = ? AND turn_number = ? AND role = ? AND content_hash = ?
-            """,
-            (scope_id, session_id, int(turn_number or 0), role, content_hash),
-        ).fetchone()
-        return int(row["id"] if row else 0)
-    conn.commit()
-    return int(cur.lastrowid or 0)
-
-
-def append_journal_entry(
-    conn: sqlite3.Connection,
-    *,
-    scope: RuntimeScope,
-    scope_id: str,
-    shared_scope_id: str,
-    session_id: str,
-    turn_number: int,
-    role: str,
-    content: Any,
-    metadata: dict[str, Any] | None = None,
-) -> int:
-    ensure_journal_schema(conn)
-    role = str(role or "").strip().lower()
-    if role not in {"user", "assistant", "tool"}:
-        return 0
-    text = _strip_inline_data_urls(clean_text(content))
-    if _looks_like_base64_blob(text):
-        return 0
-    if not text or not _journal_capture_allowed(text):
-        return 0
-    chunks = _chunk_journal_text(text)
-    original_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    first_id = 0
-    for index, chunk in enumerate(chunks, start=1):
-        chunk_metadata = dict(metadata or {})
-        if len(chunks) > 1:
-            chunk_metadata.update(
-                {
-                    "chunk_index": index,
-                    "chunk_count": len(chunks),
-                    "original_content_hash": original_hash,
-                    "original_length": len(text),
-                    "chunking": "bounded-journal-content",
-                }
-            )
-        inserted_id = _insert_journal_entry(
-            conn,
-            scope=scope,
-            scope_id=scope_id,
-            shared_scope_id=shared_scope_id,
-            session_id=session_id,
-            turn_number=turn_number,
-            role=role,
-            text=chunk,
-            metadata=chunk_metadata,
-        )
-        if not first_id:
-            first_id = inserted_id
-    return first_id
-
-
-def _row_to_entry(row: sqlite3.Row) -> JournalEntry:
-    try:
-        metadata = json.loads(str(row["metadata"] or "{}"))
-    except Exception:
-        metadata = {}
-    return JournalEntry(
-        id=int(row["id"]),
-        scope_id=str(row["scope_id"]),
-        shared_scope_id=str(row["shared_scope_id"]),
-        session_id=str(row["session_id"]),
-        turn_number=int(row["turn_number"] or 0),
-        role=str(row["role"]),
-        content=str(row["content"]),
-        created_at=str(row["created_at"]),
-        processed_run_id=str(row["processed_run_id"] or ""),
-        metadata=metadata if isinstance(metadata, dict) else {},
-    )
-
-
-def load_unprocessed_journal_entries(conn: sqlite3.Connection, *, scope_ids: list[str], limit: int = 500) -> list[JournalEntry]:
-    ensure_journal_schema(conn)
-    clean_scope_ids = [str(scope_id) for scope_id in scope_ids if str(scope_id)]
-    if not clean_scope_ids:
-        return []
-    placeholders = ",".join("?" for _ in clean_scope_ids)
-    rows = conn.execute(
-        f"""
-        SELECT * FROM journal_entries
-        WHERE scope_id IN ({placeholders}) AND (processed_run_id IS NULL OR processed_run_id = '')
-        ORDER BY created_at ASC, id ASC
-        LIMIT ?
-        """,
-        [*clean_scope_ids, max(1, int(limit or 500))],
-    ).fetchall()
-    return [_row_to_entry(row) for row in rows]
-
-
-def _unique(values: list[str], *, limit: int = 16) -> list[str]:
-    seen: set[str] = set()
-    output: list[str] = []
-    for value in values:
-        clean = str(value or "").strip()
-        if not clean or clean in seen:
-            continue
-        seen.add(clean)
-        output.append(clean)
-        if len(output) >= limit:
-            break
-    return output
-
-
-def _entry_entities(entries: list[JournalEntry]) -> list[str]:
-    from .graph import extract_entities
-
-    values: list[str] = []
-    for entry in entries:
-        values.extend(extract_entities(entry.content))
-    return _unique([entity for entity in (normalize_entity(value) for value in values) if entity], limit=12)
-
-
-_GENERIC_TOPIC_ENTITIES = {
-    "scope-recall",
-    "scope",
-    "recall",
-    "memory",
-    "memories",
-    "journal",
-    "digest",
-    "plugin",
-    "assistant",
-    "user",
-    "记忆",
-    "插件",
-    "已验证",
-    "验证",
-    "已确定",
-    "确定",
-    "任务",
-    "主题",
-    "同一个",
-}
-
-
-def _topic_entities(entries: list[JournalEntry]) -> list[str]:
-    entities = _entry_entities(entries)
-    specific = [entity for entity in entities if entity not in _GENERIC_TOPIC_ENTITIES and not entity.startswith("session")]
-    return _unique(specific or entities, limit=8)
-
-
-def _topic_tags(entries: list[JournalEntry]) -> list[str]:
-    tags = [f"topic:{entity}" for entity in _topic_entities(entries)[:6]]
-    session_tags = [f"session:{session_id}" for session_id in _unique([entry.session_id for entry in entries], limit=4)]
-    return _unique([*tags, *session_tags], limit=12)
-
-
-def _topic_label(entries: list[JournalEntry], fallback: str) -> str:
-    topics = _topic_entities(entries)
-    if topics:
-        return ", ".join(topics[:4])
-    return fallback
-
-
-_DOMAIN_TOPIC_HINTS = {
-    "release",
-    "gate",
-    "ci",
-    "wheel",
-    "manifest",
-    "version",
-    "check.release",
-    "pytest",
-    "rrf",
-    "bm25",
-    "retrieval",
-    "vector",
-    "lancedb",
-    "tailscale",
-    "remote",
-    "network",
-    "firewall",
-    "credential",
-    "secret",
-    "journal",
-    "digest",
-    "merge",
-    "upsert",
-    "scope-recall",
-    "发布",
-    "版本",
-    "召回",
-    "向量",
-    "远程",
-    "客户",
-    "授权",
-    "网络",
-    "防火墙",
-    "记忆",
-    "日记",
-    "合并",
-}
-
-
-def _topic_signature(entries: list[JournalEntry]) -> set[str]:
-    text = "\n".join(entry.content for entry in entries).lower()
-    signature = {hint for hint in _DOMAIN_TOPIC_HINTS if hint.lower() in text}
-    signature.update(_topic_entities(entries)[:8])
-    return {item for item in signature if item}
-
-
-def _segment_session_entries(entries: list[JournalEntry]) -> list[list[JournalEntry]]:
-    segments: list[list[JournalEntry]] = []
-    current: list[JournalEntry] = []
-    current_signature: set[str] = set()
-    for entry in entries:
-        probe = [entry]
-        probe_signature = _topic_signature(probe)
-        if entry.role == "user" and current:
-            overlap = current_signature & probe_signature
-            if current_signature and probe_signature and not overlap:
-                segments.append(current)
-                current = []
-                current_signature = set()
-        current.append(entry)
-        current_signature |= probe_signature
-    if current:
-        segments.append(current)
-    return segments
-
-
-def _classify_target_and_type(text: str) -> tuple[str, str, list[str]]:
-    lowered = text.lower()
-    if any(token in lowered for token in ["prefers", "preference", "joy prefers", "用户偏好", "希望", "偏好"]):
-        return "user", "preference", ["preference"]
-    if any(token in lowered for token in ["deploy", "restart", "systemctl", "端口", "服务", "重启", "部署", "排障"]):
-        return "ops", "workflow", ["ops", "workflow"]
-    if any(token in lowered for token in ["scope-recall", "plugin", "插件", "memory", "记忆", "journal", "digest", "merge", "upsert"]):
-        return "memory", "decision", ["memory-governance", "journal-digest"]
-    return "memory", "summary", ["journal-digest"]
-
-
-def _looks_like_historical_template_noise(text: str) -> bool:
-    lowered = str(text or "").strip().lower()
-    if lowered.startswith("operations workflow summary from journal digest:") or lowered.startswith("operations workflow summary"):
-        return True
-    if lowered.startswith("journal digest memory"):
-        return True
-    return False
 
 
 LOW_VALUE_NOTIFICATION_RE = re.compile(
@@ -528,6 +160,12 @@ LOW_VALUE_LOG_RE = re.compile(
 LOW_VALUE_PROGRESS_RE = re.compile(
     r"\b(?:backup\s+path|temporary\s+file|run\s+result|task\s+progress|no\s+action\s+required|"
     r"one[-\s]?off|status\s+update)\b|(?:临时文件|备份路径|任务进度|一次性|无需处理|状态更新)",
+    re.IGNORECASE,
+)
+TRANSIENT_PHASE_GATE_RE = re.compile(
+    r"(?:当前阶段|这个阶段|现阶段|下一步|继续下一步|不要急着|先(?:进行)?阶段性?验证|先验证|再进(?:入)?\s*[A-Z]\d|进入\s*[A-Z]\d|"
+    r"阶段性验收|全量\s*pytest|live\s+doctor|rollout\s+profiles\s+dry-run|可选复审|"
+    r"current\s+phase|next\s+step|phase[-\s]?gate|before\s+entering\s+[A-Z]\d|run\s+full\s+pytest|live\s+doctor)",
     re.IGNORECASE,
 )
 HIGH_VALUE_DURABLE_SIGNAL_RE = re.compile(
@@ -557,6 +195,13 @@ def _low_value_promotion_reason(candidate: JournalDigestCandidate) -> str:
     has_value_signal = _has_high_value_durable_signal(text)
     if candidate.memory_type == "tool_trace" and not has_value_signal:
         return "low-value-tool-trace"
+    tag_set = {str(tag).strip().lower() for tag in candidate.tags or []}
+    if TRANSIENT_PHASE_GATE_RE.search(text) and (
+        candidate.memory_type in {"decision", "summary", "workflow"}
+        or candidate.target == "project"
+        or tag_set & {"phase-gate", "project-management", "status", "progress"}
+    ):
+        return "low-value-transient-phase-gate"
     if LOW_VALUE_NOTIFICATION_RE.search(text) and not has_value_signal:
         return "low-value-notification"
     if LOW_VALUE_LOG_RE.search(text) and not has_value_signal:
@@ -565,94 +210,6 @@ def _low_value_promotion_reason(candidate: JournalDigestCandidate) -> str:
         return "low-value-progress"
     return ""
 
-
-def _digest_role_summary(entries: list[JournalEntry], role: str, *, limit: int) -> str:
-    chunks = [
-        entry.content.strip()
-        for entry in entries
-        if entry.role == role and entry.content.strip() and not _looks_like_historical_template_noise(entry.content)
-    ]
-    if not chunks:
-        return ""
-    return compact_text("；".join(chunks), limit)
-
-
-def _heuristic_candidate_content(target: str, topic_label: str, entries: list[JournalEntry]) -> str:
-    user_summary = _digest_role_summary(entries, "user", limit=300)
-    assistant_summary = _digest_role_summary(entries, "assistant", limit=520)
-    parts: list[str] = []
-    if target == "ops":
-        parts.append("可复用运维流程")
-    elif target == "memory":
-        parts.append("可复用记忆治理决策")
-    else:
-        parts.append("可复用对话事实摘要")
-    if topic_label:
-        parts.append(f"主题：{topic_label}")
-    if user_summary:
-        parts.append(f"用户意图/约束：{user_summary}")
-    if assistant_summary:
-        parts.append(f"处理/结论：{assistant_summary}")
-    return "。".join(parts) + "。"
-
-
-def heuristic_journal_candidates(entries: list[JournalEntry]) -> list[JournalDigestCandidate]:
-    if not entries:
-        return []
-    # Production-safe fallback: keep related consecutive turns together, but do
-    # not let a long Telegram/Hermes session become one global memory bucket.
-    groups: dict[str, list[JournalEntry]] = {}
-    for entry in entries:
-        key = f"session:{entry.session_id or 'unknown'}"
-        groups.setdefault(key, []).append(entry)
-
-    candidates: list[JournalDigestCandidate] = []
-    for key, session_entries in groups.items():
-        for segment_index, group_entries in enumerate(_segment_session_entries(session_entries), start=1):
-            digest_entries = [
-                entry
-                for entry in group_entries
-                if entry.role != "tool" and not _looks_like_historical_template_noise(entry.content)
-            ]
-            if not digest_entries or not any(entry.role == "user" for entry in digest_entries):
-                continue
-            combined = "\n".join(f"{entry.role}: {entry.content}" for entry in digest_entries)
-            target, memory_type, tags = _classify_target_and_type(combined)
-            session_ids = _unique([entry.session_id for entry in digest_entries], limit=12)
-            entry_ids = [entry.id for entry in digest_entries]
-            entities = _entry_entities(digest_entries)
-            segment_key = f"{key}:segment:{segment_index}"
-            topic_label = _topic_label(digest_entries, segment_key.replace("session:", "session "))
-            content = _heuristic_candidate_content(target, topic_label, digest_entries)
-            candidates.append(
-                JournalDigestCandidate(
-                    content=content,
-                    target=target,
-                    memory_type=memory_type,
-                    importance=0.78 if target in {"memory", "ops"} else 0.62,
-                    confidence=0.78,
-                    entities=entities,
-                    tags=_unique([*tags, *_topic_tags(digest_entries), key, segment_key], limit=16),
-                    reason="journal digest grouped related consecutive conversation turns",
-                    entry_ids=entry_ids,
-                    session_ids=session_ids,
-                )
-            )
-    return candidates
-
-
-def candidate_metadata(candidate: JournalDigestCandidate, run_id: str) -> dict[str, Any]:
-    return {
-        "memory_type": normalize_memory_type(candidate.memory_type, "summary"),
-        "importance": max(0.0, min(1.0, float(candidate.importance))),
-        "confidence": max(0.0, min(1.0, float(candidate.confidence))),
-        "entities": candidate.entities,
-        "tags": _unique([*candidate.tags, "journal-digest"], limit=20),
-        "journal_run_id": run_id,
-        "journal_entry_ids": candidate.entry_ids[:200],
-        "journal_session_ids": candidate.session_ids[:40],
-        "journal_reason": candidate.reason,
-    }
 
 
 _WORKFLOW_CONTINUATION_TOKENS = {
@@ -964,166 +521,6 @@ def apply_journal_candidates(
     return {"counts": dict(counts), "actions": actions, "processed_entry_ids": sorted(processed_entry_ids)}
 
 
-def mark_entries_processed(conn: sqlite3.Connection, *, entry_ids: list[int], run_id: str) -> None:
-    if not entry_ids:
-        return
-    placeholders = ",".join("?" for _ in entry_ids)
-    conn.execute(
-        f"UPDATE journal_entries SET processed_run_id = ?, processed_at = ? WHERE id IN ({placeholders})",
-        [run_id, now_iso(), *[int(entry_id) for entry_id in entry_ids]],
-    )
-    conn.commit()
-
-
-def _parse_entry_timestamp(value: str) -> float:
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
-    except Exception:
-        return 0.0
-
-
-def _journal_session_bundles(entries: list[JournalEntry]) -> list[SessionBundle]:
-    grouped: dict[str, list[JournalEntry]] = {}
-    for entry in entries:
-        grouped.setdefault(entry.session_id or "unknown", []).append(entry)
-    bundles: list[SessionBundle] = []
-    for session_id, session_entries in grouped.items():
-        session_entries.sort(key=lambda item: (item.turn_number, item.id))
-        digest_entries = [entry for entry in (_journal_entry_for_digest(item) for item in session_entries) if entry is not None]
-        if not digest_entries:
-            continue
-        original_roles = {entry.role for entry in digest_entries}
-        messages: list[MessageRecord] = []
-        tool_names: list[str] = []
-        for entry in digest_entries:
-            if entry.role == "tool":
-                tool_name = str(entry.metadata.get("tool_name") or "").strip()
-                if tool_name:
-                    tool_names.append(tool_name)
-                continue
-            role = entry.role if entry.role in {"user", "assistant"} else "assistant"
-            content = entry.content
-            messages.append(
-                MessageRecord(
-                    id=entry.id,
-                    session_id=entry.session_id,
-                    role=role,
-                    content=content,
-                    timestamp=_parse_entry_timestamp(entry.created_at),
-                    tool_name=str(entry.metadata.get("tool_name") or ""),
-                )
-            )
-        if not messages or not any(message.role == "user" for message in messages):
-            if original_roles == {"tool"}:
-                bundles.append(
-                    SessionBundle(
-                        id=session_id,
-                        source="journal-tool-only",
-                        title=session_id,
-                        messages=[],
-                        tool_names=_unique(tool_names, limit=24),
-                        is_task=bool(tool_names),
-                        completed=False,
-                    )
-                )
-            continue
-        title = compact_text(next((message.content for message in messages if message.role == "user"), session_id), 100)
-        text = "\n".join(message.content for message in messages).lower()
-        is_task = bool(tool_names) or any(token in text for token in ["fix", "debug", "deploy", "release", "verify", "修", "排障", "部署", "验证", "实现"])
-        original_roles = {entry.role for entry in digest_entries}
-        bundles.append(
-            SessionBundle(
-                id=session_id,
-                source="journal-tool-only" if original_roles == {"tool"} else "journal",
-                title=title,
-                messages=messages,
-                tool_names=_unique(tool_names, limit=24),
-                is_task=is_task,
-                completed=any(token in text for token in ["passed", "通过", "完成", "验证"]),
-            )
-        )
-    return bundles
-
-
-def _journal_from_digest_candidate(candidate: Any) -> JournalDigestCandidate:
-    return JournalDigestCandidate(
-        content=str(candidate.content),
-        target=str(candidate.target or "memory"),
-        memory_type=str(candidate.memory_type or "summary"),
-        importance=float(candidate.importance or 0.55),
-        confidence=float(candidate.confidence or 0.65),
-        entities=list(candidate.entities or []),
-        tags=_unique([*list(candidate.tags or []), "journal-digest", "llm-digest"], limit=20),
-        reason=str(candidate.reason or "llm journal digest extraction"),
-        entry_ids=[int(item) for item in list(candidate.message_ids or [])],
-        session_ids=[str(candidate.session_id)] if getattr(candidate, "session_id", "") else [],
-    )
-
-
-def llm_journal_candidates(
-    conn: sqlite3.Connection,
-    *,
-    entries: list[JournalEntry],
-    hermes_home: Path,
-    scope: RuntimeScope,
-    journal_config: dict[str, Any],
-) -> list[JournalDigestCandidate]:
-    runtime_config = _runtime_config(hermes_home)
-    options = DigestOptions(
-        hermes_home=hermes_home,
-        digest_date=datetime.now(timezone.utc).date(),
-        extractor="llm",
-        chunk_chars=_coerce_positive_int(journal_config.get("llm_chunk_chars"), 7000),
-        max_session_chars=_coerce_positive_int(journal_config.get("llm_max_session_chars"), 16000),
-        model=str(journal_config.get("model") or ""),
-        base_url=str(journal_config.get("base_url") or ""),
-        endpoint=str(journal_config.get("endpoint") or journal_config.get("chat_endpoint") or ""),
-        append_v1=_config_bool(journal_config, "append_v1", True) if "append_v1" in journal_config else None,
-        api_key=str(journal_config.get("api_key") or ""),
-        timeout=float(journal_config.get("timeout") or journal_config.get("llm_timeout") or 60.0),
-    )
-    llm_config = resolve_llm_config(hermes_home, options)
-    active_scope = normalize_scope_identity(scope, runtime_config)
-    profile = ScopeProfile(
-        scope=active_scope,
-        scope_id=build_scope_id(active_scope, runtime_config),
-        shared_scope_id=build_shared_scope_id(active_scope, runtime_config),
-        accessible_scope_ids=accessible_scope_ids(active_scope, runtime_config),
-    )
-    existing = existing_memory_context(conn, profile)
-    output: list[JournalDigestCandidate] = []
-    max_attempts = _coerce_positive_int(journal_config.get("llm_max_attempts") or journal_config.get("llm_retry_attempts"), 3)
-    retry_delay = _coerce_nonnegative_float(journal_config.get("llm_retry_delay"), 1.0)
-    for bundle in _journal_session_bundles(entries):
-        if bundle.source == "journal-tool-only":
-            continue
-        bundle_candidates: list[Any] = []
-        for chunk in session_chunks(bundle, chunk_chars=options.chunk_chars, max_session_chars=options.max_session_chars):
-            prompt = build_prompt(bundle, chunk, existing)
-            raw = _call_llm_with_retries(
-                prompt,
-                model=llm_config["model"],
-                base_url=llm_config["base_url"],
-                api_key=llm_config["api_key"],
-                timeout=options.timeout,
-                api_mode=llm_config.get("api_mode", "chat_completions"),
-                endpoint=str(llm_config.get("endpoint") or ""),
-                append_v1=bool(llm_config.get("append_v1", True)),
-                max_attempts=max_attempts,
-                retry_delay=retry_delay,
-            )
-            bundle_candidates.extend(parse_llm_candidates(raw, bundle=bundle))
-        output.extend(_journal_from_digest_candidate(candidate) for candidate in bundle_candidates)
-    return [candidate for candidate in output if candidate.entry_ids]
-
-
-def _config_bool(config: dict[str, Any], key: str, default: bool = False) -> bool:
-    value = config.get(key, default)
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
 
 
 def _collect_journal_candidates(
@@ -1144,7 +541,9 @@ def _collect_journal_candidates(
             if fallback_allowed:
                 return heuristic_journal_candidates(entries), "heuristic-fallback", "llm produced no candidates"
             return [], "llm", "llm produced no candidates"
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, JournalDigestLLMError) and exc.error_kind in {"parse", "filtered"}:
+                raise
             if fallback_allowed:
                 try:
                     return heuristic_journal_candidates(entries), "heuristic-fallback", "llm failed; heuristic fallback enabled"
@@ -1217,31 +616,6 @@ def _open_digest_connection(db_path: Path, *, dry_run: bool) -> sqlite3.Connecti
     return sqlite3.connect(db_path, timeout=30)
 
 
-def _runtime_config(hermes_home: Path) -> dict[str, Any]:
-    plugin_dir = Path(__file__).resolve().parent
-    storage_dir = hermes_home / "scope-recall"
-    return load_runtime_config(plugin_dir, storage_dir)
-
-
-def _journal_runtime_config(hermes_home: Path) -> dict[str, Any]:
-    config = _runtime_config(hermes_home)
-    raw_journal = config.get("journal")
-    return raw_journal if isinstance(raw_journal, dict) else {}
-
-
-def _coerce_positive_int(value: Any, default: int) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        parsed = default
-    return max(1, parsed)
-
-
-def _journal_unprocessed_count(conn: sqlite3.Connection) -> int:
-    return int(
-        conn.execute("SELECT COUNT(*) FROM journal_entries WHERE processed_run_id IS NULL OR processed_run_id = ''").fetchone()[0]
-    )
-
 
 def _dynamic_journal_digest_limit(conn: sqlite3.Connection, *, configured_limit: int, journal_config: dict[str, Any]) -> int:
     if not _config_bool(journal_config, "dynamic_max_entries_enabled", True):
@@ -1255,135 +629,6 @@ def _dynamic_journal_digest_limit(conn: sqlite3.Connection, *, configured_limit:
     return min(backlog, max(configured_limit, ceiling))
 
 
-def _quarantine_classification(error: Exception) -> tuple[str, dict[str, Any]]:
-    if isinstance(error, JournalDigestLLMError):
-        classification = "retry_exhausted" if error.retryable else "dead_letter"
-        reason_prefix = "retry-exhausted" if error.retryable else "dead-letter"
-        sanitized = sanitize_report_text(str(error)[:400])
-        return f"{reason_prefix}:{error.error_kind}", {
-            "classification": classification,
-            "kind": error.error_kind,
-            "retryable": bool(error.retryable),
-            "attempts": int(error.attempts),
-            "message": sanitized,
-        }
-    kind, retryable = _classify_llm_digest_error(error)
-    classification = "retry_exhausted" if retryable else "dead_letter"
-    reason_prefix = "retry-exhausted" if retryable else "dead-letter"
-    return f"{reason_prefix}:{kind}", {
-        "classification": classification,
-        "kind": kind,
-        "retryable": retryable,
-        "attempts": 1,
-        "message": sanitize_report_text(f"{type(error).__name__}: {str(error)[:400]}"),
-    }
-
-
-def _coerce_nonnegative_float(value: Any, default: float) -> float:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        parsed = default
-    return max(0.0, parsed)
-
-
-class JournalDigestLLMError(RuntimeError):
-    def __init__(self, message: str, *, attempts: int, error_kind: str, retryable: bool) -> None:
-        super().__init__(message)
-        self.attempts = attempts
-        self.error_kind = error_kind
-        self.retryable = retryable
-
-
-def _classify_llm_digest_error(exc: Exception) -> tuple[str, bool]:
-    message = str(exc or "").lower()
-    if isinstance(exc, TimeoutError) or "timeout" in message or "timed out" in message:
-        return "timeout", True
-    if "429" in message or "rate limit" in message or "too many requests" in message:
-        return "rate_limit", True
-    if any(token in message for token in ("500", "502", "503", "504", "server error", "bad gateway", "service unavailable", "gateway timeout")):
-        return "server", True
-    if any(token in message for token in ("connection", "network", "temporarily", "reset by peer", "remote end closed")):
-        return "network", True
-    if any(token in message for token in ("401", "403", "unauthorized", "forbidden", "invalid api key", "permission")):
-        return "auth", False
-    if any(token in message for token in ("402", "quota", "billing", "insufficient_quota")):
-        return "quota", False
-    if any(token in message for token in ("json", "parse", "decode")):
-        return "parse", False
-    return "unknown", True
-
-
-def _call_llm_with_retries(
-    prompt: str,
-    *,
-    model: str,
-    base_url: str,
-    api_key: str,
-    timeout: float,
-    api_mode: str,
-    max_attempts: int,
-    retry_delay: float,
-    endpoint: str = "",
-    append_v1: bool = True,
-) -> str:
-    last_error: Exception | None = None
-    last_kind = "unknown"
-    last_retryable = True
-    for attempt in range(1, max(1, max_attempts) + 1):
-        try:
-            return call_llm(
-                prompt,
-                model=model,
-                base_url=base_url,
-                api_key=api_key,
-                timeout=timeout,
-                api_mode=api_mode,
-                endpoint=endpoint,
-                append_v1=append_v1,
-            )
-        except Exception as exc:
-            last_error = exc
-            last_kind, last_retryable = _classify_llm_digest_error(exc)
-            if (not last_retryable) or attempt >= max_attempts:
-                raise JournalDigestLLMError(
-                    f"{last_kind} after {attempt} attempt(s): {type(exc).__name__}: {sanitize_report_text(str(exc)[:400])}",
-                    attempts=attempt,
-                    error_kind=last_kind,
-                    retryable=last_retryable,
-                ) from exc
-            if retry_delay > 0:
-                time.sleep(retry_delay)
-    assert last_error is not None
-    raise JournalDigestLLMError(
-        f"{last_kind} after {max_attempts} attempt(s): {type(last_error).__name__}: {sanitize_report_text(str(last_error)[:400])}",
-        attempts=max_attempts,
-        error_kind=last_kind,
-        retryable=last_retryable,
-    ) from last_error
-
-
-def _prune_processed_journal(conn: sqlite3.Connection, *, retention_days: int) -> int:
-    if retention_days <= 0:
-        return 0
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
-    rows = conn.execute(
-        """
-        SELECT id FROM journal_entries
-        WHERE processed_run_id != '' AND created_at < ?
-        """,
-        (cutoff,),
-    ).fetchall()
-    entry_ids = [int(row["id"]) for row in rows]
-    if not entry_ids:
-        return 0
-    placeholders = ",".join("?" for _ in entry_ids)
-    conn.execute(f"DELETE FROM memory_journal_sources WHERE journal_entry_id IN ({placeholders})", entry_ids)
-    conn.execute(f"DELETE FROM journal_rejections WHERE journal_entry_id IN ({placeholders})", entry_ids)
-    conn.execute(f"DELETE FROM journal_entries WHERE id IN ({placeholders})", entry_ids)
-    conn.commit()
-    return len(entry_ids)
-
 
 def run_journal_digest(
     *,
@@ -1393,6 +638,14 @@ def run_journal_digest(
     interval_label: str = "manual",
     limit_entries: int | None = None,
     dry_run: bool = False,
+    llm_provider: str = "",
+    llm_model: str = "",
+    llm_api_mode: str = "",
+    llm_base_url: str = "",
+    llm_endpoint: str = "",
+    llm_key_env: str = "",
+    llm_api_key: str = "",
+    llm_append_v1: bool | None = None,
 ) -> dict[str, Any]:
     hermes_home = hermes_home.expanduser().resolve()
     storage_dir = hermes_home / "scope-recall"
@@ -1406,7 +659,21 @@ def run_journal_digest(
     vector_runtime = None
     runtime_config = _runtime_config(hermes_home)
     raw_journal = runtime_config.get("journal")
-    journal_config = raw_journal if isinstance(raw_journal, dict) else {}
+    journal_config = dict(raw_journal) if isinstance(raw_journal, dict) else {}
+    llm_overrides = {
+        "provider": llm_provider,
+        "model": llm_model,
+        "api_mode": llm_api_mode,
+        "base_url": llm_base_url,
+        "endpoint": llm_endpoint,
+        "key_env": llm_key_env,
+        "api_key": llm_api_key,
+    }
+    for key, value in llm_overrides.items():
+        if str(value or "").strip():
+            journal_config[key] = str(value).strip()
+    if llm_append_v1 is not None:
+        journal_config["append_v1"] = bool(llm_append_v1)
     configured_limit = _coerce_positive_int(journal_config.get("max_entries_per_digest"), 500)
     effective_limit = _coerce_positive_int(limit_entries, configured_limit) if limit_entries is not None else configured_limit
     retention_days = int(journal_config.get("retention_days") or 0)
@@ -1632,6 +899,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--extractor", choices=["llm", "heuristic"], default="llm", help="Extraction backend; default is LLM-first. Use heuristic only as an explicit operator fallback.")
     parser.add_argument("--interval-label", default="manual", help="Human-readable schedule label, e.g. 2h")
     parser.add_argument("--limit-entries", type=int, default=None, help="Maximum unprocessed journal entries per run; defaults to journal.max_entries_per_digest")
+    parser.add_argument("--provider", default="", help="LLM provider name from Hermes config, e.g. deepseek; overrides main model provider for this digest run")
+    parser.add_argument("--model", default="", help="LLM model for this digest run")
+    parser.add_argument("--api-mode", default="", choices=["", "chat_completions", "codex_responses"], help="LLM API mode for this digest run")
+    parser.add_argument("--base-url", default="", help="LLM base URL for this digest run")
+    parser.add_argument("--endpoint", default="", help="Full chat-completions endpoint override for this digest run")
+    parser.add_argument("--key-env", default="", help="Environment variable name containing the LLM API key")
+    parser.add_argument("--api-key", default="", help=argparse.SUPPRESS)
+    append_group = parser.add_mutually_exclusive_group()
+    append_group.add_argument("--append-v1", dest="append_v1", action="store_true", default=None, help="Append /v1 before /chat/completions when using base-url")
+    append_group.add_argument("--no-append-v1", dest="append_v1", action="store_false", help="Do not append /v1 before /chat/completions when using base-url")
     parser.add_argument("--dry-run", action="store_true", help="Plan without writing memories or advancing watermarks")
     parser.add_argument("--verbose", action="store_true", help="Print full JSON result")
     return parser
@@ -1648,6 +925,14 @@ def main(argv: list[str] | None = None) -> int:
             interval_label=str(args.interval_label),
             limit_entries=max(1, int(args.limit_entries)) if args.limit_entries is not None else None,
             dry_run=bool(args.dry_run),
+            llm_provider=str(args.provider or ""),
+            llm_model=str(args.model or ""),
+            llm_api_mode=str(args.api_mode or ""),
+            llm_base_url=str(args.base_url or ""),
+            llm_endpoint=str(args.endpoint or ""),
+            llm_key_env=str(args.key_env or ""),
+            llm_api_key=str(args.api_key or ""),
+            llm_append_v1=args.append_v1,
         )
         result["elapsed_seconds"] = round(time.time() - started, 3)
         if args.verbose or args.dry_run:

@@ -133,6 +133,47 @@ def test_relation_evidence_ignores_lifecycle_hidden_peers():
         provider.close()
 
 
+def test_relation_evidence_ignores_candidate_and_in_progress_peers_for_ordinary_recall():
+    active = _item("active-deploy-command", 0.82)
+    provider = DummyProvider(
+        {
+            "mode": "lexical",
+            "min_score": 0.01,
+            "relation_rerank_enabled": True,
+            "relation_supports_boost": 0.08,
+        },
+        [active],
+    )
+    try:
+        for peer_id, lifecycle in (("candidate-peer", "candidate"), ("progress-peer", "in_progress")):
+            provider._require_conn().execute(
+                "INSERT OR REPLACE INTO memories(id, scope_id, metadata) VALUES (?, 'shared-scope', ?)",
+                (peer_id, json.dumps({"lifecycle": lifecycle, "scope_id": "shared-scope"}, ensure_ascii=False, sort_keys=True)),
+            )
+        provider._require_conn().execute(
+            """
+            INSERT INTO memory_relations(source_memory_id, target_memory_id, relation_type, confidence, note, created_at)
+            VALUES ('candidate-peer', 'active-deploy-command', 'supports', 1.0, 'candidate peer test', '2026-06-01T00:00:00+00:00')
+            """
+        )
+        provider._require_conn().execute(
+            """
+            INSERT INTO memory_relations(source_memory_id, target_memory_id, relation_type, confidence, note, created_at)
+            VALUES ('active-deploy-command', 'progress-peer', 'depends_on', 1.0, 'progress peer test', '2026-06-01T00:00:00+00:00')
+            """
+        )
+        provider._require_conn().commit()
+
+        results = RecallService(provider).search_memories("Project Atlas deploy command", limit=1)
+
+        assert [item.id for item in results] == ["active-deploy-command"]
+        assert results[0].metadata["relation_evidence_count"] == 0
+        assert results[0].metadata["relation_evidence_ids"] == []
+        assert results[0].metadata["relation_rerank_bonus"] == 0.0
+    finally:
+        provider.close()
+
+
 def test_relation_rerank_boosts_superseding_candidate_when_enabled():
     older = _item("older-deploy-command", 0.82)
     newer = _item("newer-deploy-command", 0.78)
@@ -160,5 +201,76 @@ def test_relation_rerank_boosts_superseding_candidate_when_enabled():
         assert [item.id for item in results] == ["newer-deploy-command", "older-deploy-command"]
         assert results[0].metadata["relation_rerank_bonus"] > 0.0
         assert "supersedes" in results[0].metadata["relation_evidence_types"]
+    finally:
+        provider.close()
+
+
+def test_relation_rerank_gives_small_auxiliary_boost_for_typed_graph_edges():
+    dependent = _item("atlas-depends-on-redis", 0.78)
+    unrelated = _item("atlas-unrelated", 0.775)
+    provider = DummyProvider(
+        {
+            "mode": "lexical",
+            "min_score": 0.01,
+            "relation_rerank_enabled": True,
+            "relation_supports_boost": 0.04,
+            "relation_same_topic_boost": 0.01,
+        },
+        [unrelated, dependent],
+    )
+    try:
+        provider._require_conn().execute(
+            "INSERT OR REPLACE INTO memories(id, scope_id, metadata) VALUES ('redis-runbook', 'shared-scope', ?)",
+            (json.dumps({"scope_id": "shared-scope"}, ensure_ascii=False, sort_keys=True),),
+        )
+        provider._require_conn().execute(
+            """
+            INSERT INTO memory_relations(source_memory_id, target_memory_id, relation_type, confidence, note, created_at)
+            VALUES (?, ?, 'depends_on', 1.0, 'typed relation test', '2026-06-01T00:00:00+00:00')
+            """,
+            ("atlas-depends-on-redis", "redis-runbook"),
+        )
+        provider._require_conn().commit()
+
+        results = RecallService(provider).search_memories("Project Atlas deploy command", limit=2)
+
+        assert [item.id for item in results] == ["atlas-depends-on-redis", "atlas-unrelated"]
+        assert 0.0 < results[0].metadata["relation_rerank_bonus"] <= 0.04
+        assert "depends_on" in results[0].metadata["relation_evidence_types"]
+    finally:
+        provider.close()
+
+
+def test_relation_rerank_high_config_cannot_override_large_lexical_gap():
+    dependent = _item("atlas-depends-on-redis", 0.50)
+    stronger = _item("atlas-strong-lexical", 0.65)
+    provider = DummyProvider(
+        {
+            "mode": "lexical",
+            "min_score": 0.01,
+            "relation_rerank_enabled": True,
+            "relation_supports_boost": 0.5,
+        },
+        [stronger, dependent],
+    )
+    try:
+        provider._require_conn().execute(
+            "INSERT OR REPLACE INTO memories(id, scope_id, metadata) VALUES ('redis-runbook', 'shared-scope', ?)",
+            (json.dumps({"scope_id": "shared-scope"}, ensure_ascii=False, sort_keys=True),),
+        )
+        provider._require_conn().execute(
+            """
+            INSERT INTO memory_relations(source_memory_id, target_memory_id, relation_type, confidence, note, created_at)
+            VALUES (?, ?, 'depends_on', 1.0, 'typed relation high config test', '2026-06-01T00:00:00+00:00')
+            """,
+            ("atlas-depends-on-redis", "redis-runbook"),
+        )
+        provider._require_conn().commit()
+
+        results = RecallService(provider).search_memories("Project Atlas deploy command", limit=2)
+        by_id = {item.id: item for item in results}
+
+        assert [item.id for item in results] == ["atlas-strong-lexical", "atlas-depends-on-redis"]
+        assert by_id["atlas-depends-on-redis"].metadata["relation_rerank_bonus"] <= 0.08
     finally:
         provider.close()

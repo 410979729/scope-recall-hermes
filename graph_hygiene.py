@@ -81,6 +81,36 @@ def graph_hygiene_counts(conn: sqlite3.Connection) -> dict[str, int]:
     return counts
 
 
+def count_deletable_graph_hygiene_rows(conn: sqlite3.Connection) -> dict[str, int]:
+    tables = table_names(conn)
+    counts = {"memory_entities": 0, "memory_relations": 0}
+    if {"memories", "memory_entities"} <= tables:
+        counts["memory_entities"] = int(
+            conn.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM memory_entities
+                WHERE memory_id NOT IN (SELECT id FROM memories)
+                   OR memory_id IN (SELECT m.id FROM memories m WHERE NOT ({lifecycle_visible_sql('m')}))
+                """
+            ).fetchone()[0]
+        )
+    if {"memories", "memory_relations"} <= tables:
+        counts["memory_relations"] = int(
+            conn.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM memory_relations
+                WHERE source_memory_id NOT IN (SELECT id FROM memories)
+                   OR target_memory_id NOT IN (SELECT id FROM memories)
+                   OR source_memory_id IN (SELECT s.id FROM memories s WHERE NOT ({lifecycle_visible_sql('s')}))
+                   OR target_memory_id IN (SELECT t.id FROM memories t WHERE NOT ({lifecycle_visible_sql('t')}))
+                """
+            ).fetchone()[0]
+        )
+    return counts
+
+
 def delete_graph_hygiene_rows(conn: sqlite3.Connection) -> dict[str, int]:
     tables = table_names(conn)
     deleted = {"memory_entities": 0, "memory_relations": 0}
@@ -126,7 +156,7 @@ def repair_graph_hygiene(hermes_home: Path, *, apply: bool = False) -> dict[str,
     conn = sqlite3.connect(f"file:{db_path}?mode={mode}", uri=True)
     try:
         before = graph_hygiene_counts(conn)
-        deleted = {"memory_entities": 0, "memory_relations": 0}
+        deleted = count_deletable_graph_hygiene_rows(conn)
         if apply:
             deleted = delete_graph_hygiene_rows(conn)
             conn.commit()

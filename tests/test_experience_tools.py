@@ -5,6 +5,7 @@ import json
 import pytest
 
 from plugins.memory import load_memory_provider
+from scope_recall.experience_store import create_playbook, review_playbook
 
 
 def _write_scope_recall_config(hermes_home, values):
@@ -115,6 +116,8 @@ def test_playbook_tool_flow_create_search_inspect_preflight_feedback(provider):
                 "outcome": "success",
                 "decision": "direct_reuse",
                 "evidence": ["terminal raw: wrote /home/a/private/output.log and 355 passed"],
+                "preconditions_checked": [{"id": "p1", "status": "passed", "evidence": "/home/a/private/nodes.txt"}],
+                "steps_completed": [{"number": 1, "status": "done", "evidence": "/home/a/private/policy.hujson"}],
                 "outcome_reason": "verified from /home/a/private/output.log",
                 "model_name": "model at /home/a/private/model.bin",
             },
@@ -131,6 +134,69 @@ def test_playbook_tool_flow_create_search_inspect_preflight_feedback(provider):
     stats = json.loads(provider.handle_tool_call("scope_recall_experience_stats", {}))
     assert stats["playbooks"]["total"] == 1
     assert stats["runs"]["total"] == 1
+
+
+def test_playbook_feedback_updates_writable_owner_scope_for_auto_promoted_playbook(provider):
+    with provider._lock:
+        conn = provider._require_conn()
+        create_playbook(
+            conn,
+            playbook_id="pb_auto_owned",
+            scope_id=provider._scope_id,
+            shared_scope_id=provider._shared_scope_id,
+            payload=_payload(),
+            status="candidate",
+            confidence=0.9,
+        )
+        review_playbook(conn, playbook_id="pb_auto_owned", accessible_scope_ids=provider._accessible_scope_ids, action="promote", reason="fixture auto promotion")
+
+    feedback = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_playbook_feedback",
+            {
+                "id": "pb_auto_owned",
+                "outcome": "failed",
+                "decision": "guided_reuse",
+                "evidence": ["live verification contradicted the playbook"],
+            },
+        )
+    )
+
+    assert feedback["recorded"] is True
+    assert feedback["global_updated"] is True
+    assert feedback["status"] == "needs_review"
+    assert feedback["failure_count"] == 1
+    with provider._lock:
+        row = provider._require_conn().execute("SELECT status, failure_count FROM procedural_playbooks WHERE id = ?", ("pb_auto_owned",)).fetchone()
+    assert row["status"] == "needs_review"
+    assert row["failure_count"] == 1
+
+
+def test_playbook_review_tool_can_dedupe_and_merge(provider):
+    payload_a = _payload()
+    payload_b = _payload()
+    provider.handle_tool_call("scope_recall_playbook_create", {"id": "pb_tool_a", "payload": payload_a, "status": "candidate", "confidence": 0.7})
+    provider.handle_tool_call("scope_recall_playbook_create", {"id": "pb_tool_b", "payload": payload_b, "status": "candidate", "confidence": 0.9})
+
+    dedupe = json.loads(provider.handle_tool_call("scope_recall_playbook_review", {"action": "dedupe"}))
+    assert dedupe["count"] == 1
+    assert dedupe["groups"][0]["canonical_id"] == "pb_tool_b"
+
+    dry = json.loads(provider.handle_tool_call("scope_recall_playbook_review", {"action": "merge", "id": "pb_tool_b", "source_ids": ["pb_tool_a"], "reason": "tool dedupe"}))
+    assert dry["dry_run"] is True
+    assert dry["merged"] is False
+
+    applied = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_playbook_review",
+            {"action": "merge", "id": "pb_tool_b", "source_ids": ["pb_tool_a"], "reason": "tool dedupe", "dry_run": False},
+        )
+    )
+    assert applied["merged"] is True
+    with provider._lock:
+        row = provider._require_conn().execute("SELECT status, superseded_by FROM procedural_playbooks WHERE id = ?", ("pb_tool_a",)).fetchone()
+    assert row["status"] == "superseded"
+    assert row["superseded_by"] == "pb_tool_b"
 
 
 def test_promoting_playbook_writes_skill_anchors(provider):
@@ -288,6 +354,29 @@ def test_experience_prefetch_can_be_disabled_by_config(provider):
 
     assert "Experience Kernel" not in block
     assert "pb_tool" not in block
+
+
+def test_experience_prefetch_records_unknown_run_for_feedback_loop(provider):
+    provider.handle_tool_call(
+        "scope_recall_playbook_create",
+        {"id": "pb_prefetch_run", "payload": _payload(), "status": "candidate", "confidence": 0.95},
+    )
+    provider.handle_tool_call("scope_recall_playbook_review", {"id": "pb_prefetch_run", "action": "promote", "reason": "fixture"})
+    provider._config["experience"]["prefetch_enabled"] = True
+
+    block = provider.prefetch("Need one-way headscale ACL with live node verification")
+
+    assert "Experience Kernel" in block
+    assert "pb_prefetch_run" in block
+    with provider._lock:
+        row = provider._require_conn().execute(
+            "SELECT playbook_id, outcome, metadata, evidence FROM experience_runs WHERE playbook_id = ?",
+            ("pb_prefetch_run",),
+        ).fetchone()
+    assert row is not None
+    assert row["outcome"] == "unknown"
+    assert "requires_feedback" in row["metadata"]
+    assert "experience_preflight" in row["evidence"]
 
 
 def test_playbook_create_tool_rejects_direct_promoted_status(provider):

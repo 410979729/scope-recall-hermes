@@ -124,6 +124,53 @@ A bridge-friendly export/import row should include:
 }
 ```
 
+## Example JSONL bridge fixtures
+
+Safe, synthetic bridge fixtures live under:
+
+- `examples/external_bridge/import.jsonl`
+- `examples/external_bridge/export.jsonl`
+- `examples/external_bridge/conflict_resolution.jsonl`
+
+They are documentation fixtures, not live synchronization scripts. They use demo tenant, user, agent, and workspace identifiers only.
+
+### JSONL schema
+
+Each line is one JSON object. Bridge code may extend the object, but the example contract keeps these fields stable:
+
+- `schema_version`: currently `scope-recall.external-memory.v1`
+- `bridge_action`: `import`, `export`, or `conflict_resolution`
+- `record_id`: local bridge fixture id, not a live user identifier
+- `target` / `memory_type`: one of durable `user`, `memory`, `project`, or `ops`; never `general`
+- `content` and `summary`: sanitized text safe for local recall
+- `tenant_id`: external tenant boundary used before any import/export
+- `external_user_ref`: pseudonymous external user reference; do not use raw email, phone, chat handle, or profile path
+- `agent_identity` and `workspace_id`: synthetic or deployment-scoped routing values
+- `entities`, `tags`, `source`, `updated_at`: recall and provenance helpers
+- `metadata.source_system`, `metadata.source_trust`, and an external/local record id for provenance
+- `metadata.identity_safety`: documents tenant/user/workspace boundary checks
+- `metadata.redaction_policy`: records whether text is sanitized/redacted and whether secret-like values were removed
+
+### Import example
+
+`examples/external_bridge/import.jsonl` shows a read-only central import. The bridge imports one sanitized project fact for one `tenant_id` and `external_user_ref`, preserving `source_system`, `source_trust`, and `external_record_id` metadata.
+
+### Export example
+
+`examples/external_bridge/export.jsonl` shows a writeback proposal. The bridge exports only durable `memory` content after operator review, skips `general` scratch and raw tool output, and records `export_mode` plus destination metadata for the central backend to review.
+
+### Conflict resolution example
+
+`examples/external_bridge/conflict_resolution.jsonl` shows a conflict marker rather than an auto-delete. It documents a `central-backend-wins` policy, the winning and losing record ids, and the action a bridge should take (`mark_local_superseded_then_reimport_winner`). Other deployments can choose different policies, but the policy must be explicit and auditable.
+
+### Tenant/user identity safety
+
+External bridges must resolve `tenant_id`, `external_user_ref`, and `workspace_id` before importing or exporting. Treat mismatches as hard failures. Keep raw account identifiers outside `scope-recall`; use a pseudonymous external user reference and retain the reversible mapping only in the external authority that already owns tenancy and permissions.
+
+### Redaction policy
+
+Run redaction before writing JSONL or calling `scope_recall_store`. The bridge should drop raw tool output, raw system output, local filesystem paths, credentials, and secret-like substrings. If evidence must be preserved, store only a sanitized summary in `content` and keep raw evidence in the external system under its access controls. Mark the result in `metadata.redaction_policy` with `state`, `contains_secret_like_values`, and the applied rule.
+
 ## Cluster deployment pattern
 
 For clusters, keep the shared center outside `scope-recall` and use `scope-recall` as the local recall/cache/tooling layer with explicit boundaries.

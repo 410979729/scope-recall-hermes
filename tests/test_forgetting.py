@@ -64,6 +64,7 @@ def test_forgetting_report_is_read_only_and_finds_soft_archive_candidates():
     after = conn.total_changes
 
     assert after == before
+    assert report["schema_version"] == "forgetting_report.v1"
     assert report["total_rows"] == 5
     assert report["soft_archive_candidates"]["count"] >= 3
     assert any(item["id"] == "assistant-1" for item in report["soft_archive_candidates"]["items"])
@@ -106,6 +107,65 @@ def test_forgetting_report_flags_journal_template_transcript_noise_for_soft_arch
     assert not any(item["id"] == "keep-1" for item in report["soft_archive_candidates"]["items"])
 
 
+def test_forgetting_report_keeps_candidate_review_debt_out_of_soft_archive():
+    conn = _conn()
+    _insert(conn, memory_id="candidate-review", target="ops", content="Candidate operational note needs human review.")
+    _insert(conn, memory_id="candidate-rejected", target="ops", content="Low-value candidate rejected by review lane.")
+    _insert(conn, memory_id="promoted-stale", target="ops", content="Promoted operational fact needs freshness validation.")
+    candidate_meta = _metadata(conn, "candidate-review")
+    candidate_meta["lifecycle"] = "candidate"
+    candidate_meta["candidate_lane"] = "needs_review_high_risk"
+    rejected_meta = _metadata(conn, "candidate-rejected")
+    rejected_meta["lifecycle"] = "candidate"
+    rejected_meta["candidate_status"] = "rejected_low_value"
+    promoted_meta = _metadata(conn, "promoted-stale")
+    promoted_meta["lifecycle"] = "promoted"
+    promoted_meta["expires_at"] = "stale-review"
+    conn.execute("UPDATE memories SET metadata = ? WHERE id = 'candidate-review'", (json.dumps(candidate_meta, ensure_ascii=False, sort_keys=True),))
+    conn.execute("UPDATE memories SET metadata = ? WHERE id = 'candidate-rejected'", (json.dumps(rejected_meta, ensure_ascii=False, sort_keys=True),))
+    conn.execute("UPDATE memories SET metadata = ? WHERE id = 'promoted-stale'", (json.dumps(promoted_meta, ensure_ascii=False, sort_keys=True),))
+    conn.commit()
+
+    report = build_forgetting_report(conn, accessible_scope_ids=["shared-scope"], limit=20)
+    soft_ids = {item["id"] for item in report["soft_archive_candidates"]["items"]}
+    review_ids = {item["id"] for item in report["review_debt"]["items"]}
+
+    assert "candidate-review" not in soft_ids
+    assert "promoted-stale" not in soft_ids
+    assert "candidate-rejected" in soft_ids
+    assert {"candidate-review", "promoted-stale"} <= review_ids
+
+
+def test_forgetting_run_dry_run_is_query_only(tmp_path):
+    db_path = tmp_path / "memory.sqlite3"
+    writer = sqlite3.connect(db_path)
+    writer.row_factory = sqlite3.Row
+    try:
+        ensure_schema(writer)
+        _insert(writer, memory_id="assistant-query-only", target="general", source="turn-assistant", content="Assistant scratch prose.")
+    finally:
+        writer.close()
+
+    readonly = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    readonly.row_factory = sqlite3.Row
+    readonly.execute("PRAGMA query_only=ON")
+    try:
+        result = run_forgetting(readonly, accessible_scope_ids=["local-scope"], dry_run=True)
+    finally:
+        readonly.close()
+
+    assert result["schema_version"] == "forgetting_run.v1"
+    assert result["dry_run"] is True
+    assert result["archived"] == 1
+
+    verifier = sqlite3.connect(db_path)
+    verifier.row_factory = sqlite3.Row
+    try:
+        assert _metadata(verifier, "assistant-query-only").get("lifecycle") != "archived"
+    finally:
+        verifier.close()
+
+
 def test_forgetting_run_soft_archives_without_physical_delete_by_default():
     conn = _conn()
     _insert(conn, memory_id="assistant-1", target="general", source="turn-assistant", content="Assistant scratch prose.")
@@ -125,6 +185,7 @@ def test_forgetting_run_soft_archives_without_physical_delete_by_default():
     assert _metadata(conn, "assistant-1").get("lifecycle") != "archived"
 
     applied = run_forgetting(conn, accessible_scope_ids=["shared-scope", "local-scope"], dry_run=False, batch_id="forget-batch")
+    assert applied["schema_version"] == "forgetting_run.v1"
     assert applied["batch_id"] == "forget-batch"
     assert applied["archived"] >= 2
     assert applied["deleted"] == 0

@@ -139,6 +139,21 @@ python scripts/experience-replay.py \
 
 The script opens SQLite read-only (`mode=ro`), does not record `experience_runs`, and returns an `experience_replay_report.v1` JSON payload with baseline coverage, with-experience coverage, coverage gain, matched playbook id, decision, and missing terms. Positive cases must provide non-empty `required_terms`, render a non-empty Experience packet, and show positive coverage gain; empty/malformed case files fail instead of passing vacuously. Use `case_type: "negative_no_reuse"` or `expect_no_reuse: true` only for explicit negative controls.
 
+## Duplicate playbook review CLI
+
+The operator CLI exposes a read-first duplicate review path. Use it after taking a SQLite backup and before claiming Experience auto-promotion is clean:
+
+```bash
+python scripts/playbooks.py dedupe --hermes-home "$HERMES_HOME" --json
+python scripts/playbooks.py supersede \
+  --hermes-home "$HERMES_HOME" \
+  --id pb_auto_duplicate_candidate \
+  --superseded-by pb_promoted_canonical \
+  --reason "duplicate group closeout"
+```
+
+`supersede` routes through the same `review_playbook()` governance path as maintenance-tool review: it scope-checks the canonical playbook, writes a `playbook_versions` row, and removes the duplicate from doctor/dashboard duplicate-group counts without deleting the historical row.
+
 ## Doctor output
 
 `python scripts/doctor.py --hermes-home $HERMES_HOME` now includes:

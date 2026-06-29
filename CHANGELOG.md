@@ -4,15 +4,40 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
-## [1.5.4] - 2026-06-26
+## [1.6.0] - 2026-06-29
+
+### Added
+- Added production packaging and rollout surfaces: dry-run-by-default installer rollback/apply flows, operator runbooks, cross-profile rollout planning, response-contract documentation, and release-gate wheel/install/doctor smoke checks.
+- Added governance cleanup, forgetting, and rollback tooling for soft-archive batches, including governance audit coverage reporting, default rollback support for `scope_recall_forget`, and transaction-bound audit inserts.
+- Added journal recovery tooling for retry-exhausted/dead-letter entries, including replay scheduling, operator no-replay classification, dead-letter category reporting, and dashboard visibility.
+- Added Experience Kernel productization: playbook bootstrap/search/inspect/feedback/review/promote tools, conservative auto-promotion quality gates, duplicate playbook reporting, supersede CLI review routing, and experience replay benchmarks.
+- Added fact freshness scaffolding for durable factual memories, with dashboard coverage/staleness reporting and freshness-aware recall policy hooks.
+- Added relation extraction and graph hygiene support for owned-by/affects/depends-on/supersedes/same-topic style edges, contradiction-safe edge generation, and repair/counting scripts.
+- Added golden benchmark fixtures and release-gate execution for commercial recall quality, including low-value scratch exclusion, archived-old-fact exclusion, and entity/project isolation cases.
 
 ### Changed
+- Changed `scope_recall_forget` to soft archive by default with governance audit receipts and explicit rollback commands; hard delete is limited to maintenance flows.
+- Changed delete/dedupe/nightly cleanup semantics to vector-first fail-closed behavior so SQLite truth is preserved when rebuildable vector companion cleanup fails.
+- Changed vector repair to dry-run by default; writes now require explicit `--apply` or the `vector repair apply` CLI route.
+- Changed recall/profile filtering so archived, superseded, rejected, candidate, and in-progress rows do not consume ordinary recall budget unless explicitly requested.
+- Changed nightly digest and journal extraction paths to report fallback/dead-letter/quarantine status through doctor/dashboard instead of hiding opaque failures.
+- Changed memory quality archive/reporting paths to distinguish active secret/pollution findings from archived historical rows.
 - Split the scope-recall doctor into focused `doctor_*` modules while keeping `scripts/doctor.py` as the compatible CLI wrapper and preserving direct import re-exports used by tests/operators.
 - Centralized graph hygiene repair/counting, maintenance dry-run helpers, digest result payload builders, recall pipeline merge/rank helpers, and provider schema construction into dedicated modules so future governance work has smaller review surfaces.
-- Added release-gate coverage for the new refactor modules so wheel/source checks fail if they are accidentally omitted from packaged artifacts.
 
 ### Fixed
+- Fixed governance audit transaction atomicity: `record_governance_audit_event()` is now a DDL-free INSERT helper, preventing sqlite `executescript()` from implicitly committing business updates before rollback/commit failure.
+- Fixed soft-archive consistency when vector deletion succeeds but SQLite/entity/audit/commit later fails: SQLite is rolled back, the operation returns a failed receipt, and vector status is marked `needs_repair`.
+- Fixed rollback reachability for `scope_recall_forget` archive batches by including that audit event type in default rollback candidates.
+- Fixed top-level tool exception sanitization so fallback errors redact secret-like strings and local paths before returning to users.
+- Fixed OpenAI-compatible hosted embeddings for OpenRouter-style backends by explicitly requesting `encoding_format="float"` from the OpenAI SDK (#24).
+- Fixed SQLite provider initialization/bootstrap concurrency by opening the truth DB with a 10-second busy timeout instead of the Python sqlite default (#23).
 - Hardened doctor runtime checks by opening the SQLite truth DB with URI `mode=ro` and by narrowing the doctor wrapper import fallback to `ImportError` so real import-time bugs are not hidden.
+- Hardened release cleanup so the gate no longer removes repository-local `.venv` directories.
+
+### Release notes
+- Formal release still requires a clean git tree and a strict `scripts/check.release.py` run without `--allow-dirty` after all intended files are committed.
+- Live dashboard can remain `severity=DEGRADED` due to runtime journal/auth tail only if the release readiness waiver for this version documents the exact values, owner, and clearance plan.
 
 ## [1.5.3] - 2026-06-26
 

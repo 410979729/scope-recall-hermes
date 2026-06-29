@@ -13,6 +13,22 @@ def _now_iso() -> str:
     return now_utc_iso()
 
 
+def classify_rejection_reason(reason: str) -> str:
+    lowered = str(reason or "").strip().lower()
+    detail = lowered.split(":", 1)[1] if ":" in lowered else lowered
+    if any(token in detail for token in ("auth", "unauthorized", "forbidden", "permission", "credential", "token", "api_key", "api key")):
+        return "auth"
+    if any(token in detail for token in ("quota", "rate", "429", "limit", "too many requests")):
+        return "quota"
+    if any(token in detail for token in ("timeout", "timed out", "deadline", "connection reset", "temporarily unavailable")):
+        return "timeout"
+    if any(token in detail for token in ("parse", "json", "schema", "decode", "invalid response")):
+        return "parse"
+    if any(token in detail for token in ("low-value", "low_value", "no-value", "no value", "skip", "noise", "empty")):
+        return "low_value"
+    return "unknown"
+
+
 def _prefix_clause(reason_prefixes: Sequence[str]) -> tuple[str, list[str]]:
     prefixes = [str(item).strip() for item in reason_prefixes if str(item).strip()]
     if not prefixes:
@@ -105,14 +121,19 @@ def recovery_report(
 ) -> dict[str, Any]:
     candidates = find_replay_candidates(conn, reason_prefixes=reason_prefixes, limit=limit)
     by_reason: dict[str, int] = {}
+    by_category: dict[str, int] = {}
     by_scope: dict[str, int] = {}
     for item in candidates:
-        by_reason[item["reason"]] = by_reason.get(item["reason"], 0) + 1
+        reason = str(item["reason"])
+        by_reason[reason] = by_reason.get(reason, 0) + 1
+        category = classify_rejection_reason(reason)
+        by_category[category] = by_category.get(category, 0) + 1
         by_scope[item["scope_id"]] = by_scope.get(item["scope_id"], 0) + 1
     return {
         "candidate_count": len(candidates),
         "reason_prefixes": list(reason_prefixes),
         "by_reason": dict(sorted(by_reason.items())),
+        "by_category": dict(sorted(by_category.items())),
         "by_scope": dict(sorted(by_scope.items())),
         "items": candidates,
     }
@@ -139,11 +160,17 @@ def schedule_replay(
         "scheduled": 0,
         "entry_ids": [item["journal_entry_id"] for item in candidates],
         "by_reason": {},
+        "by_category": {},
     }
     by_reason: dict[str, int] = {}
+    by_category: dict[str, int] = {}
     for item in candidates:
-        by_reason[item["reason"]] = by_reason.get(item["reason"], 0) + 1
+        reason = str(item["reason"])
+        by_reason[reason] = by_reason.get(reason, 0) + 1
+        category = classify_rejection_reason(reason)
+        by_category[category] = by_category.get(category, 0) + 1
     result["by_reason"] = dict(sorted(by_reason.items()))
+    result["by_category"] = dict(sorted(by_category.items()))
     if dry_run or not candidates:
         return result
 
@@ -191,4 +218,114 @@ def schedule_replay(
         scheduled += 1
     conn.commit()
     result["scheduled"] = scheduled
+    return result
+
+
+def classify_recovery_candidates(
+    conn: sqlite3.Connection,
+    *,
+    reason_prefixes: Sequence[str] = ("retry-exhausted:",),
+    limit: int = 500,
+    dry_run: bool = True,
+    batch_id: str | None = None,
+    classification: str = "no_replay",
+    reason: str = "operator classified as no replay needed",
+    actor: str = "journal.recovery.py",
+) -> dict[str, Any]:
+    """Classify retry/dead-letter recovery candidates as handled without replay.
+
+    This is for operator-reviewed historical failures where replay would only
+    recreate known auth/parse/noise failures or promote stale task-progress text.
+    It preserves the original journal entry and rejection row but rewrites the
+    current rejection reason away from retry/dead-letter prefixes so the recovery
+    queue reaches a durable, auditable terminal state.
+    """
+
+    normalized_classification = str(classification or "no_replay").strip().lower().replace(" ", "_")
+    safe_reason = str(reason or "").strip()
+    if not normalized_classification:
+        normalized_classification = "no_replay"
+    if not safe_reason:
+        safe_reason = "operator classified as no replay needed"
+    batch = batch_id or make_batch_id("journal-recovery-classify")
+    candidates = find_replay_candidates(conn, reason_prefixes=reason_prefixes, limit=limit)
+    result = {
+        "dry_run": bool(dry_run),
+        "batch_id": batch,
+        "candidate_count": len(candidates),
+        "classified": 0,
+        "entry_ids": [item["journal_entry_id"] for item in candidates],
+        "classification": normalized_classification,
+        "reason": safe_reason,
+        "by_reason": {},
+        "by_category": {},
+    }
+    by_reason: dict[str, int] = {}
+    by_category: dict[str, int] = {}
+    for item in candidates:
+        item_reason = str(item["reason"])
+        by_reason[item_reason] = by_reason.get(item_reason, 0) + 1
+        category = classify_rejection_reason(item_reason)
+        by_category[category] = by_category.get(category, 0) + 1
+    result["by_reason"] = dict(sorted(by_reason.items()))
+    result["by_category"] = dict(sorted(by_category.items()))
+    if dry_run or not candidates:
+        return result
+
+    ensure_schema(conn)
+    ensure_journal_schema(conn)
+    now = _now_iso()
+    classified = 0
+    for item in candidates:
+        entry_id = int(item["journal_entry_id"])
+        run_id = str(item["run_id"] or "")
+        old_reason = str(item["reason"] or "")
+        before_entry = conn.execute(
+            "SELECT id, scope_id, session_id, turn_number, role, processed_run_id, processed_at, created_at FROM journal_entries WHERE id = ?",
+            (entry_id,),
+        ).fetchone()
+        if before_entry is None:
+            continue
+        if str(before_entry["processed_run_id"] or "") != run_id:
+            continue
+        new_reason = f"operator-classified:{normalized_classification}:{old_reason}"
+        before = dict(item)
+        before["entry"] = dict(before_entry)
+        cursor = conn.execute(
+            "UPDATE journal_rejections SET reason = ?, candidate = ? WHERE journal_entry_id = ? AND run_id = ? AND reason = ?",
+            (new_reason, safe_reason, entry_id, run_id, old_reason),
+        )
+        if cursor.rowcount != 1:
+            continue
+        after = {
+            "journal_entry_id": entry_id,
+            "scope_id": item["scope_id"],
+            "session_id": item["session_id"],
+            "turn_number": item["turn_number"],
+            "role": item["role"],
+            "processed_run_id": run_id,
+            "processed_at": item["processed_at"],
+            "old_reason": old_reason,
+            "new_reason": new_reason,
+            "classification": normalized_classification,
+            "classified_at": now,
+        }
+        record_governance_audit_event(
+            conn,
+            event_id=f"gov_{uuid.uuid4().hex}",
+            event_type="journal_recovery",
+            action="classify_no_replay",
+            scope_id=item["scope_id"],
+            target_id=str(entry_id),
+            batch_id=batch,
+            before=before,
+            after=after,
+            reason=safe_reason,
+            actor=actor,
+            dry_run=False,
+            created_at=now,
+        )
+        classified += 1
+    conn.commit()
+    result["classified"] = classified
     return result

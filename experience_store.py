@@ -497,6 +497,148 @@ def search_playbooks(
     ]
 
 
+def _dedupe_group_key(row: sqlite3.Row) -> tuple[str, str]:
+    task_class = re.sub(r"\s+", " ", str(row["task_class"] or "").strip().lower())
+    title = re.sub(r"\s+", " ", str(row["title"] or "").strip().lower())
+    return task_class, title
+
+
+def _canonical_sort_key(row: sqlite3.Row) -> tuple[int, float, str, str]:
+    status_rank = {"promoted": 3, "reviewed": 2, "needs_review": 1, "candidate": 0}.get(str(row["status"]), -1)
+    return (status_rank, float(row["confidence"]), str(row["updated_at"]), str(row["id"]))
+
+
+def find_duplicate_playbooks(
+    conn: sqlite3.Connection,
+    *,
+    accessible_scope_ids: Sequence[str],
+    status: str = "",
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    scope_sql, scope_params = _scope_predicate(accessible_scope_ids)
+    where = [scope_sql]
+    params: list[Any] = list(scope_params)
+    if status:
+        where.append("status = ?")
+        params.append(status)
+    else:
+        where.append("status IN ('candidate', 'needs_review', 'reviewed', 'promoted')")
+    rows = conn.execute(
+        f"SELECT * FROM procedural_playbooks WHERE {' AND '.join(where)} ORDER BY updated_at DESC, confidence DESC",
+        params,
+    ).fetchall()
+    grouped: dict[tuple[str, str], list[sqlite3.Row]] = {}
+    for row in rows:
+        key = _dedupe_group_key(row)
+        if not key[0] or not key[1]:
+            continue
+        grouped.setdefault(key, []).append(row)
+    groups: list[dict[str, Any]] = []
+    for (_task_class, _title), items in grouped.items():
+        if len(items) < 2:
+            continue
+        sorted_items = sorted(items, key=_canonical_sort_key, reverse=True)
+        canonical = sorted_items[0]
+        groups.append(
+            {
+                "task_class": str(canonical["task_class"]),
+                "title": str(canonical["title"]),
+                "count": len(sorted_items),
+                "canonical_id": str(canonical["id"]),
+                "items": [_serialize_row(row) for row in sorted_items],
+            }
+        )
+    groups.sort(key=lambda item: (int(item["count"]), str(item["title"])), reverse=True)
+    return groups[: max(1, min(100, int(limit or 50)))]
+
+
+def _fetch_accessible_playbook(conn: sqlite3.Connection, playbook_id: str, accessible_scope_ids: Sequence[str]) -> sqlite3.Row | None:
+    scope_sql, scope_params = _scope_predicate(accessible_scope_ids)
+    return conn.execute(f"SELECT * FROM procedural_playbooks WHERE id = ? AND {scope_sql}", [playbook_id, *scope_params]).fetchone()
+
+
+def _insert_playbook_version(conn: sqlite3.Connection, *, row: sqlite3.Row, change_type: str, reason: str, created_at: str) -> int:
+    version = _next_version(conn, str(row["id"]))
+    conn.execute(
+        """
+        INSERT INTO playbook_versions(id, playbook_id, version, change_type, change_reason, snapshot, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (f"pbv_{uuid.uuid4().hex}", str(row["id"]), version, change_type, reason, _json_dumps(_serialize_row(row)), created_at),
+    )
+    return version
+
+
+def merge_playbooks(
+    conn: sqlite3.Connection,
+    *,
+    target_id: str,
+    source_ids: Sequence[str],
+    accessible_scope_ids: Sequence[str],
+    reason: str = "",
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    _reject_secret_like_value(target_id, path="merge.target_id")
+    _reject_secret_like_value(list(source_ids), path="merge.source_ids")
+    _reject_secret_like_value(reason, path="merge.reason")
+    safe_target_id = sanitize_report_text(str(target_id or "").strip())
+    safe_reason = sanitize_report_text(reason or "")
+    normalized_sources = list(dict.fromkeys(sanitize_report_text(str(item or "").strip()) for item in source_ids if str(item or "").strip()))
+    if not safe_target_id:
+        return {"merged": False, "dry_run": bool(dry_run), "target_id": "", "error": "target_required"}
+    if not normalized_sources:
+        return {"merged": False, "dry_run": bool(dry_run), "target_id": safe_target_id, "error": "source_required"}
+    if safe_target_id in normalized_sources:
+        return {"merged": False, "dry_run": bool(dry_run), "target_id": safe_target_id, "error": "self_merge"}
+    target = _fetch_accessible_playbook(conn, safe_target_id, accessible_scope_ids)
+    if target is None:
+        return {"merged": False, "dry_run": bool(dry_run), "target_id": safe_target_id, "error": "target_not_found"}
+    source_rows: list[sqlite3.Row] = []
+    missing: list[str] = []
+    for source_id in normalized_sources:
+        row = _fetch_accessible_playbook(conn, source_id, accessible_scope_ids)
+        if row is None:
+            missing.append(source_id)
+        else:
+            source_rows.append(row)
+    if missing:
+        return {"merged": False, "dry_run": bool(dry_run), "target_id": safe_target_id, "error": "source_not_found", "missing_source_ids": missing}
+    owner_mismatches = [str(row["id"]) for row in source_rows if str(row["scope_id"]) != str(target["scope_id"])]
+    if owner_mismatches:
+        return {
+            "merged": False,
+            "dry_run": bool(dry_run),
+            "target_id": safe_target_id,
+            "error": "scope_owner_mismatch",
+            "source_ids": owner_mismatches,
+        }
+    payload = {
+        "merged": False,
+        "dry_run": bool(dry_run),
+        "target_id": safe_target_id,
+        "source_ids": [str(row["id"]) for row in source_rows],
+        "reason": safe_reason,
+        "target": _serialize_row(target),
+        "sources": [_serialize_row(row) for row in source_rows],
+    }
+    if dry_run:
+        return payload
+    now = _now_iso()
+    versions: list[dict[str, Any]] = []
+    conn.execute("UPDATE procedural_playbooks SET updated_at = ? WHERE id = ?", (now, safe_target_id))
+    updated_target = conn.execute("SELECT * FROM procedural_playbooks WHERE id = ?", (safe_target_id,)).fetchone()
+    versions.append({"playbook_id": safe_target_id, "version": _insert_playbook_version(conn, row=updated_target, change_type="merge", reason=safe_reason, created_at=now)})
+    for row in source_rows:
+        source_id = str(row["id"])
+        conn.execute("UPDATE procedural_playbooks SET status = 'superseded', superseded_by = ?, updated_at = ? WHERE id = ?", (safe_target_id, now, source_id))
+        updated_source = conn.execute("SELECT * FROM procedural_playbooks WHERE id = ?", (source_id,)).fetchone()
+        versions.append({"playbook_id": source_id, "version": _insert_playbook_version(conn, row=updated_source, change_type="superseded", reason=safe_reason, created_at=now)})
+    conn.commit()
+    payload["merged"] = True
+    payload["versions"] = versions
+    return payload
+
+
 def inspect_playbook(conn: sqlite3.Connection, *, playbook_id: str, accessible_scope_ids: Sequence[str]) -> dict[str, Any]:
     scope_sql, scope_params = _scope_predicate(accessible_scope_ids)
     row = conn.execute(f"SELECT * FROM procedural_playbooks WHERE id = ? AND {scope_sql}", [playbook_id, *scope_params]).fetchone()
@@ -561,6 +703,17 @@ def review_playbook(
     inspected = inspect_playbook(conn, playbook_id=playbook_id, accessible_scope_ids=accessible_scope_ids)
     if not inspected.get("found"):
         return {"reviewed": False, "id": playbook_id, "error": "not_found"}
+    if status == "superseded":
+        if not safe_superseded_by:
+            return {"reviewed": False, "id": playbook_id, "error": "superseded_by_required"}
+        if safe_superseded_by == playbook_id:
+            return {"reviewed": False, "id": playbook_id, "error": "self_supersede"}
+        source_row = _fetch_accessible_playbook(conn, playbook_id, accessible_scope_ids)
+        canonical_row = _fetch_accessible_playbook(conn, safe_superseded_by, accessible_scope_ids)
+        if canonical_row is None:
+            return {"reviewed": False, "id": playbook_id, "error": "superseded_by_not_found", "superseded_by": safe_superseded_by}
+        if source_row is None or str(canonical_row["scope_id"]) != str(source_row["scope_id"]):
+            return {"reviewed": False, "id": playbook_id, "error": "superseded_by_scope_mismatch", "superseded_by": safe_superseded_by}
     now = _now_iso()
     version = _next_version(conn, playbook_id)
     conn.execute(
@@ -578,7 +731,10 @@ def review_playbook(
         (f"pbv_{uuid.uuid4().hex}", playbook_id, version, status, safe_reason, _json_dumps(_serialize_row(updated)), now),
     )
     conn.commit()
-    return {"reviewed": True, "id": playbook_id, "status": status, "version": version}
+    result = {"reviewed": True, "id": playbook_id, "status": status, "version": version}
+    if status == "superseded":
+        result["superseded_by"] = safe_superseded_by
+    return result
 
 
 def _recompute_confidence(row: sqlite3.Row) -> float:
@@ -640,6 +796,145 @@ def _record_skill_conflicts_from_feedback(
     return inserted
 
 
+def record_experience_preflight_run(
+    conn: sqlite3.Connection,
+    *,
+    playbook: Mapping[str, Any],
+    scope_id: str,
+    decision: str,
+    query: str,
+    reasons: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    playbook_id = sanitize_report_text(str(playbook.get("id") or "").strip())
+    safe_scope_id = sanitize_report_text(str(scope_id or "").strip())
+    safe_decision = sanitize_report_text(str(decision or "guided_reuse").strip().lower())
+    if not playbook_id or not safe_scope_id:
+        return {"recorded": False, "error": "missing_playbook_or_scope"}
+    if safe_decision not in {"direct_reuse", "guided_reuse"}:
+        return {"recorded": False, "id": playbook_id, "error": "decision_not_reused", "decision": safe_decision}
+    _reject_secret_like_value(playbook_id, path="preflight.playbook_id")
+    _reject_secret_like_value(safe_scope_id, path="preflight.scope_id")
+    _reject_secret_like_value(safe_decision, path="preflight.decision")
+    safe_query = sanitize_report_text(query)
+    _reject_secret_like_value(safe_query, path="preflight.query")
+    safe_reasons = [sanitize_report_text(str(reason)) for reason in list(reasons or [])]
+    _reject_secret_like_value(safe_reasons, path="preflight.reasons")
+    preconditions_checked = []
+    for item in playbook.get("preconditions") or []:
+        if isinstance(item, Mapping):
+            preconditions_checked.append(
+                {
+                    "id": sanitize_report_text(str(item.get("id") or "")),
+                    "check": sanitize_report_text(str(item.get("check") or "")),
+                    "status": "pending_live_check",
+                }
+            )
+    steps_completed = []
+    for item in playbook.get("steps") or []:
+        if isinstance(item, Mapping):
+            steps_completed.append(
+                {
+                    "number": item.get("number"),
+                    "action": sanitize_report_text(str(item.get("action") or "")),
+                    "status": "not_started",
+                }
+            )
+    now = _now_iso()
+    run_id = f"xrun_{uuid.uuid4().hex}"
+    conn.execute(
+        """
+        INSERT INTO experience_runs(
+            id, playbook_id, scope_id, decision, confidence_at_use,
+            preconditions_checked, steps_completed, evidence, outcome, outcome_reason,
+            started_at, finished_at, metadata
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unknown', ?, ?, ?, ?)
+        """,
+        (
+            run_id,
+            playbook_id,
+            safe_scope_id,
+            safe_decision,
+            float(playbook.get("confidence") or 0.0),
+            _json_dumps(preconditions_checked),
+            _json_dumps(steps_completed),
+            _json_dumps([{"kind": "experience_preflight", "query": safe_query, "reasons": safe_reasons}]),
+            "preflight injected; awaiting outcome feedback",
+            now,
+            now,
+            _json_dumps({"source": "experience_preflight", "requires_feedback": True}),
+        ),
+    )
+    conn.commit()
+    return {"recorded": True, "run_id": run_id, "id": playbook_id, "decision": safe_decision}
+
+
+def _record_feedback_reflection_event(
+    conn: sqlite3.Connection,
+    *,
+    row: sqlite3.Row,
+    scope_id: str,
+    outcome: str,
+    evidence: Any,
+    preconditions_checked: Any,
+    steps_completed: Any,
+    outcome_reason: str,
+    created_at: str,
+) -> bool:
+    if outcome not in {"failed", "misleading", "stale"}:
+        return False
+    mistakes = [
+        {
+            "signal": "experience_reuse_feedback",
+            "outcome": outcome,
+            "reason": outcome_reason,
+        }
+    ]
+    root_causes = [
+        {
+            "type": "needs_live_review",
+            "detail": "Playbook reuse produced negative or stale feedback; require operator review before direct reuse.",
+        }
+    ]
+    corrections = [outcome_reason or "Review playbook steps, preconditions, and reuse policy before re-enabling direct reuse."]
+    proposed_updates = [
+        {
+            "playbook_id": str(row["id"]),
+            "recommended_status": "needs_review",
+            "preconditions_checked": preconditions_checked,
+            "steps_completed": steps_completed,
+        }
+    ]
+    conn.execute(
+        """
+        INSERT INTO reflection_events(
+            id, episode_id, playbook_id, scope_id, event_type, outcome, evidence,
+            mistakes, root_causes, corrections, proposed_updates, applied_updates, created_at, metadata
+        ) VALUES (?, '', ?, ?, 'reuse_feedback', ?, ?, ?, ?, ?, ?, '[]', ?, ?)
+        """,
+        (
+            f"refl_{uuid.uuid4().hex}",
+            str(row["id"]),
+            scope_id,
+            outcome,
+            _json_dumps(evidence),
+            _json_dumps(mistakes),
+            _json_dumps(root_causes),
+            _json_dumps(corrections),
+            _json_dumps(proposed_updates),
+            created_at,
+            _json_dumps(
+                {
+                    "source": "record_playbook_feedback",
+                    "task_class": str(row["task_class"]),
+                    "title": str(row["title"]),
+                    "requires_operator_review": True,
+                }
+            ),
+        ),
+    )
+    return True
+
+
 def record_playbook_feedback(
     conn: sqlite3.Connection,
     *,
@@ -649,6 +944,8 @@ def record_playbook_feedback(
     accessible_scope_ids: Sequence[str] | None = None,
     decision: str = "guided_reuse",
     evidence: Sequence[Any] | None = None,
+    preconditions_checked: Sequence[Any] | None = None,
+    steps_completed: Sequence[Any] | None = None,
     outcome_reason: str = "",
     model_name: str = "",
     tool_call_count: int = 0,
@@ -667,9 +964,13 @@ def record_playbook_feedback(
         raise ExperienceValidationError("unsupported feedback decision")
     _reject_secret_like_value(normalized_decision, path="feedback.decision")
     _reject_secret_like_value(list(evidence or []), path="feedback.evidence")
+    _reject_secret_like_value(list(preconditions_checked or []), path="feedback.preconditions_checked")
+    _reject_secret_like_value(list(steps_completed or []), path="feedback.steps_completed")
     _reject_secret_like_value(outcome_reason, path="feedback.outcome_reason")
     _reject_secret_like_value(model_name, path="feedback.model_name")
     safe_evidence = _sanitize_report_value(list(evidence or []))
+    safe_preconditions_checked = _sanitize_report_value(list(preconditions_checked or []))
+    safe_steps_completed = _sanitize_report_value(list(steps_completed or []))
     safe_outcome_reason = sanitize_report_text(outcome_reason)
     safe_model_name = sanitize_report_text(model_name)
     now = _now_iso()
@@ -680,9 +981,10 @@ def record_playbook_feedback(
     conn.execute(
         """
         INSERT INTO experience_runs(
-            id, playbook_id, scope_id, decision, confidence_at_use, evidence, outcome,
+            id, playbook_id, scope_id, decision, confidence_at_use,
+            preconditions_checked, steps_completed, evidence, outcome,
             outcome_reason, model_name, tool_call_count, token_estimate, started_at, finished_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             f"xrun_{uuid.uuid4().hex}",
@@ -690,6 +992,8 @@ def record_playbook_feedback(
             scope_id,
             normalized_decision,
             float(row["confidence"]),
+            _json_dumps(safe_preconditions_checked),
+            _json_dumps(safe_steps_completed),
             _json_dumps(safe_evidence),
             normalized_outcome,
             safe_outcome_reason,
@@ -700,7 +1004,18 @@ def record_playbook_feedback(
             now,
         ),
     )
-    if not global_update_allowed:
+    reflection_recorded = _record_feedback_reflection_event(
+        conn,
+        row=row,
+        scope_id=scope_id,
+        outcome=normalized_outcome,
+        evidence=safe_evidence,
+        preconditions_checked=safe_preconditions_checked,
+        steps_completed=safe_steps_completed,
+        outcome_reason=safe_outcome_reason,
+        created_at=now,
+    )
+    if not global_update_allowed or normalized_outcome == "unknown":
         conn.commit()
         return {
             "recorded": True,
@@ -712,6 +1027,7 @@ def record_playbook_feedback(
             "success_count": int(row["success_count"]),
             "failure_count": int(row["failure_count"]),
             "stale_count": int(row["stale_count"]),
+            "reflection_recorded": reflection_recorded,
         }
     success_delta = 1 if normalized_outcome == "success" else 0
     failure_delta = 1 if normalized_outcome in {"failed", "misleading"} else 0
@@ -719,14 +1035,15 @@ def record_playbook_feedback(
     new_status = str(row["status"])
     if normalized_outcome in {"failed", "misleading", "stale"}:
         new_status = "needs_review"
+    last_verified_at = now if normalized_outcome == "success" else row["last_verified_at"]
     conn.execute(
         """
         UPDATE procedural_playbooks
         SET success_count = success_count + ?, failure_count = failure_count + ?, stale_count = stale_count + ?,
-            status = ?, last_used_at = ?, updated_at = ?
+            status = ?, last_used_at = ?, last_verified_at = ?, updated_at = ?
         WHERE id = ?
         """,
-        (success_delta, failure_delta, stale_delta, new_status, now, now, playbook_id),
+        (success_delta, failure_delta, stale_delta, new_status, now, last_verified_at, now, playbook_id),
     )
     updated = conn.execute("SELECT * FROM procedural_playbooks WHERE id = ?", (playbook_id,)).fetchone()
     opened_conflicts = _record_skill_conflicts_from_feedback(
@@ -751,6 +1068,7 @@ def record_playbook_feedback(
         "failure_count": int(final["failure_count"]),
         "stale_count": int(final["stale_count"]),
         "skill_conflicts_opened": opened_conflicts,
+        "reflection_recorded": reflection_recorded,
     }
 
 
