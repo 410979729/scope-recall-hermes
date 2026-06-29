@@ -453,7 +453,8 @@ def compact_context_lines(items: list[dict[str, Any]], *, max_chars: int) -> str
     for item in items:
         target = str(item.get("target") or "memory")
         summary = compact_text(str(item.get("summary") or item.get("content") or ""), 180)
-        line = f"- [{target}] {summary}"
+        marker = " [needs-live-check]" if bool(item.get("needs_live_check")) else ""
+        line = f"- [{target}]{marker} {summary}"
         if used + len(line) > max_chars:
             break
         lines.append(line)

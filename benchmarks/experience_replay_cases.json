@@ -1,0 +1,45 @@
+[
+  {
+    "id": "core-release-closeout",
+    "query": "scope-recall release closeout PyPI 发布前验证",
+    "baseline_text": "我会看测试是否通过。",
+    "required_terms": ["release gate", "ruff", "pyright", "未获授权不得 push"],
+    "expected_decision": "guided_reuse",
+    "expected_playbook_id": "pb_core_scope_recall_release_closeout",
+    "min_coverage_gain": 0.25
+  },
+  {
+    "id": "core-journal-backlog",
+    "query": "scope recall journal backlog retry dead-letter watermark 修复",
+    "baseline_text": "先看 journal 队列。",
+    "required_terms": ["retry", "dead-letter", "watermark", "SQLite"],
+    "expected_decision": "guided_reuse",
+    "expected_playbook_id": "pb_core_journal_backlog_drain",
+    "min_coverage_gain": 0.25
+  },
+  {
+    "id": "core-candidate-review",
+    "query": "scope recall candidate memory promotion review archive low value candidates",
+    "baseline_text": "我会检查候选记忆。",
+    "required_terms": ["candidate", "dry-run", "audit", "archived rows"],
+    "expected_decision": "guided_reuse",
+    "expected_playbook_id": "pb_core_candidate_memory_promotion_review",
+    "min_coverage_gain": 0.25
+  },
+  {
+    "id": "core-vector-rebuild",
+    "query": "scope recall vector stale ids safe rebuild from SQLite truth",
+    "baseline_text": "重建向量索引。",
+    "required_terms": ["SQLite", "stale ids", "备份", "archived rows"],
+    "expected_decision": "guided_reuse",
+    "expected_playbook_id": "pb_core_vector_repair_safe_rebuild",
+    "min_coverage_gain": 0.25
+  },
+  {
+    "id": "negative-unrelated-short",
+    "query": "hi",
+    "baseline_text": "",
+    "required_terms": ["release gate"],
+    "expect_no_reuse": true
+  }
+]

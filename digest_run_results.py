@@ -113,6 +113,7 @@ def nightly_digest_result(
     model: str,
     error: str | None,
     actions: list[dict[str, Any]],
+    quality_counts: Counter[str] | None = None,
 ) -> dict[str, Any]:
     return {
         "ok": ok,
@@ -123,6 +124,7 @@ def nightly_digest_result(
         "sessions": sessions,
         "task_sessions": task_sessions,
         "candidates": candidate_count,
+        "quality_counts": dict(quality_counts or Counter()),
         "inserted": counts.get("inserted", 0),
         "updated": counts.get("updated", 0),
         "skipped": counts.get("skipped", 0),
@@ -136,10 +138,11 @@ def nightly_digest_result(
     }
 
 
-def nightly_digest_metadata(*, sessions: int, task_sessions: int, extractor_used: str, fallback_events: list[dict[str, Any]]) -> dict[str, Any]:
+def nightly_digest_metadata(*, sessions: int, task_sessions: int, extractor_used: str, fallback_events: list[dict[str, Any]], quality_counts: Counter[str] | None = None) -> dict[str, Any]:
     return {
         "sessions": sessions,
         "task_sessions": task_sessions,
         "extractor_used": extractor_used,
         "extractor_fallbacks": fallback_events[:20],
+        "quality_counts": dict(quality_counts or Counter()),
     }

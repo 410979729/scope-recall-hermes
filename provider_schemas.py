@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .config_schema import build_config_registry
 from .gating import config_bool
 from .schemas import (
     SCOPE_RECALL_BENCHMARK_SCHEMA,
@@ -40,72 +41,7 @@ from .schemas import (
 
 
 def build_config_schema() -> list[dict[str, Any]]:
-    return [
-        {
-            "key": "auto_recall",
-            "description": "Enable current-turn memory recall",
-            "default": "true",
-            "choices": ["true", "false"],
-        },
-        {
-            "key": "auto_capture",
-            "description": "Capture turns into local memory",
-            "default": "true",
-            "choices": ["true", "false"],
-        },
-        {
-            "key": "capture_llm.enabled",
-            "description": "Use LLM to extract user+assistant turns into structured memory (requires API key)",
-            "default": "false",
-            "choices": ["true", "false"],
-        },
-        {
-            "key": "capture_raw_user",
-            "description": "Legacy fallback: store whole user turns as local scratch memory when no structured extraction candidate is found",
-            "default": "false",
-            "choices": ["true", "false"],
-        },
-        {
-            "key": "capture_llm.model",
-            "description": "LLM model for capture extraction (OpenAI-compatible)",
-            "default": "gpt-4o-mini",
-        },
-        {
-            "key": "vector.enabled",
-            "description": "Enable the rebuildable vector companion layer",
-            "default": "true",
-            "choices": ["true", "false"],
-        },
-        {
-            "key": "vector.backend",
-            "description": "Vector companion backend: LanceDB for ANN search, or sqlite-bruteforce for non-AVX/native-free hosts",
-            "default": "lancedb",
-            "choices": ["lancedb", "sqlite-bruteforce"],
-        },
-        {
-            "key": "vector.fallback_backend",
-            "description": "Safe backend used automatically when LanceDB/PyArrow cannot be imported safely",
-            "default": "sqlite-bruteforce",
-            "choices": ["sqlite-bruteforce", "disabled"],
-        },
-        {
-            "key": "vector.embedder.provider",
-            "description": "Embedding backend for the vector layer (API or local model)",
-            "default": "openai-compatible",
-            "choices": ["openai-compatible", "openai", "sentence-transformers", "local-hash"],
-        },
-        {
-            "key": "vector.embedder.model",
-            "description": "Embedding model name for the selected vector backend",
-            "default": "gemini-embedding-001",
-        },
-        {
-            "key": "maintenance_tools_enabled",
-            "description": "Enable operator-only maintenance tools such as dedupe, governance, and vector repair",
-            "default": "false",
-            "choices": ["true", "false"],
-        },
-    ]
+    return build_config_registry()
 
 
 def _schema_profile(config: dict[str, Any]) -> str:

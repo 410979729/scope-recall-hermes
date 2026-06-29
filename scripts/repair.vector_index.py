@@ -49,7 +49,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Rebuild scope-recall vector companion from SQLite truth")
     parser.add_argument("--hermes-home", default=os.environ.get("HERMES_HOME", "~/.hermes"), help="Hermes home/profile path")
     parser.add_argument("--backend", default="", choices=["", "lancedb", "sqlite-bruteforce", "sqlite"], help="Override vector.backend from config")
-    parser.add_argument("--dry-run", action="store_true", help="Inspect planned rebuild without writing vector companion data")
+    parser.add_argument("--dry-run", action="store_true", help="Inspect planned rebuild without writing vector companion data (default)")
+    parser.add_argument("--apply", action="store_true", help="Actually rebuild vector companion data; without this flag the script is read-only")
     parser.add_argument("--no-backup", action="store_true", help="Do not copy the old vector companion before rebuild")
     parser.add_argument(
         "--allow-fallback-embedder",
@@ -296,9 +297,10 @@ def main() -> int:
     planned_dimensions = int(getattr(embedder, "dimensions", 0) or 0)
     dimension_mismatch_with_existing = bool(existing_dimensions and planned_dimensions and existing_dimensions != planned_dimensions)
 
+    dry_run = bool(args.dry_run or not args.apply)
     plan = {
         "ok": True,
-        "dry_run": bool(args.dry_run),
+        "dry_run": dry_run,
         "hermes_home": str(hermes_home),
         "sqlite_db": str(db_path),
         "vector_backend": backend,
@@ -320,7 +322,7 @@ def main() -> int:
         plan.update({"ok": False, "status": "blocked", "error": str(selection["error"])})
         print(json.dumps(plan, ensure_ascii=False, indent=2))
         return 2
-    if args.dry_run:
+    if dry_run:
         print(json.dumps(plan, ensure_ascii=False, indent=2))
         return 0
 

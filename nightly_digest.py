@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import hashlib
 import json
 import os
@@ -9,8 +8,6 @@ import re
 import sqlite3
 import threading
 import time
-import urllib.error
-import urllib.request
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
@@ -22,15 +19,56 @@ from zoneinfo import ZoneInfo
 from .artifacts import artifact_anchor_block, extract_artifacts
 from .capture_filters import should_capture_text
 from .config import load_runtime_config
+from .digest_quality import score_digest_candidate
 from .digest_run_results import nightly_digest_metadata, nightly_digest_result, nightly_status_payload
 from .gating import clean_text, compact_text, dedup_key
 from .governance import is_conflicting, merge_memory_text, normalize_memory_type, semantic_similarity
 from .graph import clamp_float, load_metadata, normalize_entity, sync_memory_entities
-from .http_utils import chat_completions_endpoint as _shared_chat_completions_endpoint, redact_sensitive as _shared_redact_sensitive
+from .http_utils import redact_sensitive as _shared_redact_sensitive
 from .models import RuntimeScope
+from .nightly_llm import (
+    call_codex_responses_llm as _call_codex_responses_llm,
+    call_llm,
+    call_llm_with_retries as _call_llm_with_retries,
+    classify_llm_error as _classify_llm_error,
+    config_bool_value as _config_bool_value,
+    decode_responses_body as _decode_responses_body,
+    load_dotenv,
+    normalize_digest_api_mode as _normalize_digest_api_mode,
+    resolve_api_key,
+    resolve_llm_config,
+    responses_endpoint as _responses_endpoint,
+    urllib,
+)
 from .scope import accessible_scope_ids, build_scope_id, build_shared_scope_id, canonical_user_id, normalize_scope_identity, writable_scope_ids
 from .sql_store import delete_rows, ensure_schema, exact_duplicate_groups, store_row, update_row
-from .vector_runtime import setup_vector_layer, upsert_vector_record
+from .vector_runtime import mark_vector_needs_repair, setup_vector_layer, upsert_vector_record
+
+__all__ = [
+    "DigestCandidate",
+    "DigestOptions",
+    "MessageRecord",
+    "ScopeProfile",
+    "SessionBundle",
+    "_call_llm_with_retries",
+    "_call_codex_responses_llm",
+    "_classify_llm_error",
+    "_config_bool_value",
+    "_decode_responses_body",
+    "_normalize_digest_api_mode",
+    "_responses_endpoint",
+    "apply_candidates",
+    "call_llm",
+    "candidate_is_allowed",
+    "candidate_metadata",
+    "load_dotenv",
+    "load_session_bundles",
+    "redact_sensitive",
+    "resolve_api_key",
+    "resolve_llm_config",
+    "run_digest",
+    "urllib",
+]
 
 ROLE_INCLUDE = {"user", "assistant", "tool"}
 TARGETS = {"user", "memory", "project", "ops"}
@@ -116,11 +154,14 @@ class DigestOptions:
     limit_sessions: int = 0
     max_session_chars: int = 16000
     chunk_chars: int = 7000
+    provider: str = ""
     model: str = ""
     base_url: str = ""
     endpoint: str = ""
     append_v1: bool | None = None
     api_key: str = ""
+    api_key_env: str = ""
+    api_mode: str = ""
     timeout: float = 60.0
     max_attempts: int = 2
     retry_delay: float = 1.0
@@ -522,6 +563,8 @@ def build_prompt(bundle: SessionBundle, chunk: str, existing_context: list[str])
 
 def _parse_llm_candidates_with_status(raw: str, *, bundle: SessionBundle) -> tuple[list[DigestCandidate], str]:
     text = raw.strip()
+    if not text:
+        return [], "empty"
     fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if fenced:
         text = fenced.group(1).strip()
@@ -588,428 +631,14 @@ def candidate_is_allowed(candidate: DigestCandidate) -> bool:
         return False
     if not should_capture_text(candidate.content).allowed:
         return False
+    quality = score_digest_candidate(candidate)
+    if quality.recommended_action == "reject":
+        return False
     return True
 
 
-def _config_bool_value(value: Any, default: bool = False) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
-
-
-def _normalize_digest_api_mode(value: Any, *, provider: str = "", base_url: str = "") -> str:
-    raw = str(value or "").strip().lower().replace("-", "_")
-    aliases = {
-        "": "",
-        "openai": "chat_completions",
-        "openai_compatible": "chat_completions",
-        "chat": "chat_completions",
-        "chat_completion": "chat_completions",
-        "chat_completions": "chat_completions",
-        "codex": "codex_responses",
-        "codex_responses": "codex_responses",
-        "responses": "codex_responses",
-        "openai_responses": "codex_responses",
-    }
-    normalized = aliases.get(raw, raw)
-    if normalized:
-        return normalized
-    provider_l = str(provider or "").strip().lower()
-    base_l = str(base_url or "").strip().lower()
-    if provider_l == "openai-codex" or ("chatgpt.com" in base_l and "/backend-api/codex" in base_l):
-        return "codex_responses"
-    return "chat_completions"
-
-
-def resolve_llm_config(hermes_home: Path, options: DigestOptions) -> dict[str, Any]:
-    config_path = hermes_home / "config.yaml"
-    env = load_dotenv(hermes_home / ".env")
-    env.update(os.environ)
-    cfg: dict[str, Any] = {}
-    if config_path.exists():
-        try:
-            import yaml  # type: ignore
-
-            loaded = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-            cfg = loaded if isinstance(loaded, dict) else {}
-        except Exception:
-            cfg = {}
-    model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
-    providers_cfg = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
-    nightly_cfg = cfg.get("scope_recall_nightly_digest") if isinstance(cfg.get("scope_recall_nightly_digest"), dict) else {}
-
-    provider = str(nightly_cfg.get("provider") or model_cfg.get("provider") or "").strip()
-    provider_cfg = providers_cfg.get(provider) if isinstance(providers_cfg.get(provider), dict) else {}
-    model = options.model or str(
-        nightly_cfg.get("model")
-        or nightly_cfg.get("default_model")
-        or provider_cfg.get("default_model")
-        or model_cfg.get("model")
-        or model_cfg.get("default")
-        or model_cfg.get("default_model")
-        or "gpt-4o-mini"
-    )
-    base_url = options.base_url or str(
-        nightly_cfg.get("base_url")
-        or provider_cfg.get("base_url")
-        or model_cfg.get("base_url")
-        or "https://api.openai.com"
-    )
-    endpoint = options.endpoint or str(
-        nightly_cfg.get("endpoint")
-        or nightly_cfg.get("chat_endpoint")
-        or provider_cfg.get("endpoint")
-        or provider_cfg.get("chat_endpoint")
-        or model_cfg.get("endpoint")
-        or ""
-    )
-    append_v1_raw = options.append_v1
-    if append_v1_raw is None:
-        append_v1_raw = nightly_cfg.get("append_v1", provider_cfg.get("append_v1", model_cfg.get("append_v1", True)))
-    append_v1 = _config_bool_value(append_v1_raw, True)
-    api_key = options.api_key or resolve_api_key(
-        nightly_cfg.get("api_key")
-        or nightly_cfg.get("api_key_env")
-        or nightly_cfg.get("key_env")
-        or provider_cfg.get("api_key")
-        or provider_cfg.get("api_key_env")
-        or provider_cfg.get("key_env")
-        or model_cfg.get("api_key"),
-        provider,
-        env,
-    )
-    api_mode = _normalize_digest_api_mode(
-        nightly_cfg.get("api_mode") or provider_cfg.get("api_mode") or model_cfg.get("api_mode"),
-        provider=provider,
-        base_url=str(base_url or ""),
-    )
-    return {
-        "provider": provider,
-        "model": str(model or "gpt-4o-mini"),
-        "base_url": str(base_url or "https://api.openai.com").rstrip("/"),
-        "endpoint": str(endpoint or "").rstrip("/"),
-        "append_v1": append_v1,
-        "api_key": api_key,
-        "api_mode": api_mode,
-    }
-
-
-def load_dotenv(path: Path) -> dict[str, str]:
-    output: dict[str, str] = {}
-    if not path.exists():
-        return output
-    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, value = stripped.split("=", 1)
-        value = value.strip().strip("'\"")
-        output[key.strip()] = value
-    return output
-
-
-def resolve_api_key(raw_value: Any, provider: str, env: dict[str, str]) -> str:
-    candidates = ["SCOPE_RECALL_DIGEST_API_KEY"]
-    raw = str(raw_value or "").strip()
-    env_match = re.fullmatch(r"\$\{([^}]+)\}", raw)
-    if env_match:
-        candidates.append(env_match.group(1))
-    elif raw and re.fullmatch(r"[A-Z][A-Z0-9_]*", raw):
-        candidates.append(raw)
-    elif raw:
-        return raw
-    if provider:
-        candidates.append(f"{provider.upper().replace('-', '_')}_API_KEY")
-    candidates.extend(["DEEPSEEK_API_KEY", "OPENAI_API_KEY"])
-    for key in candidates:
-        value = env.get(key)
-        if value:
-            return value
-    return ""
-
-
-def _codex_cloudflare_headers(access_token: str) -> dict[str, str]:
-    headers = {
-        "User-Agent": "codex_cli_rs/0.0.0 (Scope Recall)",
-        "originator": "codex_cli_rs",
-    }
-    if not isinstance(access_token, str) or not access_token.strip():
-        return headers
-    try:
-        parts = access_token.split(".")
-        if len(parts) < 2:
-            return headers
-        payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
-        claims = json.loads(base64.urlsafe_b64decode(payload_b64))
-        acct_id = claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
-        if isinstance(acct_id, str) and acct_id:
-            headers["ChatGPT-Account-ID"] = acct_id
-    except Exception:
-        pass
-    return headers
-
-
-def _responses_endpoint(base_url: str) -> str:
-    endpoint = str(base_url or "").strip().rstrip("/")
-    if not endpoint:
-        endpoint = "https://api.openai.com/v1"
-    if endpoint.endswith("/responses"):
-        return endpoint
-    return endpoint + "/responses"
-
-
-def _response_item_get(item: Any, key: str, default: Any = None) -> Any:
-    if isinstance(item, dict):
-        return item.get(key, default)
-    value = getattr(item, key, default)
-    return value if value is not None else default
-
-
-def _extract_responses_text(data: dict[str, Any]) -> str:
-    output_text = data.get("output_text")
-    if isinstance(output_text, str) and output_text:
-        return output_text
-    parts: list[str] = []
-    for item in data.get("output") or []:
-        if _response_item_get(item, "type") != "message":
-            continue
-        for content_part in _response_item_get(item, "content", []) or []:
-            part_type = _response_item_get(content_part, "type")
-            if part_type in {"output_text", "text"}:
-                text = _response_item_get(content_part, "text", "")
-                if text:
-                    parts.append(str(text))
-    if parts:
-        return "".join(parts)
-    choice = (data.get("choices") or [{}])[0]
-    message = choice.get("message") or {}
-    return str(message.get("content") or "")
-
-
-def _extract_responses_sse_text(body: str) -> str:
-    delta_parts: list[str] = []
-    item_parts: list[str] = []
-    completed_payload: dict[str, Any] | None = None
-    for line in body.splitlines():
-        line = line.strip()
-        if not line.startswith("data:"):
-            continue
-        raw = line[5:].strip()
-        if not raw or raw == "[DONE]":
-            continue
-        try:
-            event = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        event_type = str(event.get("type") or "")
-        if event_type == "error":
-            message = event.get("message") or event.get("error") or raw
-            raise RuntimeError(f"LLM stream error: {redact_sensitive(str(message))}")
-        if "output_text.delta" in event_type:
-            delta = event.get("delta")
-            if isinstance(delta, str):
-                delta_parts.append(delta)
-            continue
-        if event_type == "response.output_item.done":
-            item = event.get("item")
-            if isinstance(item, dict):
-                text = _extract_responses_text({"output": [item]})
-                if text:
-                    item_parts.append(text)
-            continue
-        if event_type in {"response.completed", "response.incomplete", "response.failed"}:
-            response = event.get("response")
-            if isinstance(response, dict):
-                completed_payload = response
-            if event_type == "response.failed":
-                failure_payload = event.get("response") or raw
-                raise RuntimeError(f"LLM stream failed: {redact_sensitive(str(failure_payload))}")
-    if delta_parts:
-        return "".join(delta_parts)
-    if item_parts:
-        return "".join(item_parts)
-    if completed_payload:
-        return _extract_responses_text(completed_payload)
-    return ""
-
-
-def _decode_responses_body(body: str) -> str:
-    try:
-        data = json.loads(body)
-    except json.JSONDecodeError:
-        return _extract_responses_sse_text(body)
-    if not isinstance(data, dict):
-        return ""
-    return _extract_responses_text(data)
-
-
-def _chat_completions_endpoint(base_url: str, *, endpoint: str = "", append_v1: bool = True) -> str:
-    return _shared_chat_completions_endpoint(base_url, endpoint=endpoint, append_v1=append_v1)
-
-
-def _call_chat_completions_llm(
-    prompt: str,
-    *,
-    model: str,
-    base_url: str,
-    api_key: str,
-    timeout: float,
-    endpoint: str = "",
-    append_v1: bool = True,
-) -> str:
-    endpoint_url = _chat_completions_endpoint(base_url, endpoint=endpoint, append_v1=append_v1)
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "You extract durable memory as strict JSON."},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0,
-        "max_tokens": 1800,
-    }
-    request = urllib.request.Request(
-        endpoint_url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        body = redact_sensitive(exc.read().decode("utf-8", errors="replace")[:500])
-        raise RuntimeError(f"LLM HTTP {exc.code} at {endpoint_url}: {body}") from exc
-    choice = (data.get("choices") or [{}])[0]
-    message = choice.get("message") or {}
-    return str(message.get("content") or "")
-
-
-def _call_codex_responses_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float) -> str:
-    payload = {
-        "model": model,
-        "instructions": "You extract durable memory as strict JSON.",
-        "input": [
-            {
-                "role": "user",
-                "content": [{"type": "input_text", "text": prompt}],
-            }
-        ],
-        "store": False,
-        "stream": True,
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-        **_codex_cloudflare_headers(api_key),
-    }
-    endpoint_url = _responses_endpoint(base_url)
-    request = urllib.request.Request(
-        endpoint_url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers=headers,
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = response.read().decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as exc:
-        body = redact_sensitive(exc.read().decode("utf-8", errors="replace")[:500])
-        raise RuntimeError(f"LLM HTTP {exc.code} at {endpoint_url}: {body}") from exc
-    return _decode_responses_body(body)
-
-
-def call_llm(
-    prompt: str,
-    *,
-    model: str,
-    base_url: str,
-    api_key: str,
-    timeout: float,
-    api_mode: str = "chat_completions",
-    endpoint: str = "",
-    append_v1: bool = True,
-) -> str:
-    if not api_key:
-        raise RuntimeError("API key not found for nightly digest")
-    mode = _normalize_digest_api_mode(api_mode, provider="", base_url=base_url)
-    if mode == "codex_responses":
-        return _call_codex_responses_llm(prompt, model=model, base_url=base_url, api_key=api_key, timeout=timeout)
-    if mode != "chat_completions":
-        raise RuntimeError(f"Unsupported digest api_mode: {api_mode}")
-    return _call_chat_completions_llm(
-        prompt,
-        model=model,
-        base_url=base_url,
-        api_key=api_key,
-        timeout=timeout,
-        endpoint=endpoint,
-        append_v1=append_v1,
-    )
-
-
-def _classify_llm_error(exc: Exception) -> tuple[str, bool]:
-    message = str(exc or "").lower()
-    if isinstance(exc, TimeoutError) or "timeout" in message or "timed out" in message:
-        return "timeout", True
-    if "429" in message or "rate limit" in message or "too many requests" in message:
-        return "rate_limit", True
-    if any(token in message for token in ("500", "502", "503", "504", "server error", "bad gateway", "service unavailable", "gateway timeout")):
-        return "server", True
-    if any(token in message for token in ("connection", "network", "temporarily", "reset by peer", "remote end closed")):
-        return "network", True
-    if any(token in message for token in ("401", "403", "unauthorized", "forbidden", "invalid api key", "permission")):
-        return "auth", False
-    if any(token in message for token in ("402", "quota", "billing", "insufficient_quota")):
-        return "quota", False
-    if any(token in message for token in ("json", "parse", "decode")):
-        return "parse", False
-    return "unknown", True
-
-
-def _call_llm_with_retries(
-    prompt: str,
-    *,
-    model: str,
-    base_url: str,
-    api_key: str,
-    timeout: float,
-    api_mode: str,
-    endpoint: str = "",
-    append_v1: bool = True,
-    max_attempts: int = 1,
-    retry_delay: float = 0.0,
-) -> str:
-    last_error: Exception | None = None
-    last_kind = "unknown"
-    last_retryable = True
-    attempts = max(1, int(max_attempts or 1))
-    for attempt in range(1, attempts + 1):
-        try:
-            return call_llm(
-                prompt,
-                model=model,
-                base_url=base_url,
-                api_key=api_key,
-                timeout=timeout,
-                api_mode=api_mode,
-                endpoint=endpoint,
-                append_v1=append_v1,
-            )
-        except Exception as exc:
-            last_error = exc
-            last_kind, last_retryable = _classify_llm_error(exc)
-            if (not last_retryable) or attempt >= attempts:
-                break
-            if retry_delay > 0:
-                time.sleep(max(0.0, float(retry_delay)))
-    assert last_error is not None
-    raise RuntimeError(
-        f"{last_kind} after {attempts} attempt(s): {type(last_error).__name__}: {redact_sensitive(str(last_error)[:400])}"
-    ) from last_error
+# LLM config, HTTP calls, and retry classification live in nightly_llm.py.
+# Names are imported above and re-exported here for backward compatibility.
 
 
 def _fallback_event(*, bundle: SessionBundle, exc: Exception, attempts: int) -> dict[str, Any]:
@@ -1124,6 +753,7 @@ def existing_memory_context(conn: sqlite3.Connection, scope: ScopeProfile, *, li
 
 
 def candidate_metadata(candidate: DigestCandidate, run_id: str) -> dict[str, Any]:
+    quality = score_digest_candidate(candidate)
     metadata: dict[str, Any] = {
         "memory_type": candidate.memory_type,
         "importance": candidate.importance,
@@ -1133,6 +763,7 @@ def candidate_metadata(candidate: DigestCandidate, run_id: str) -> dict[str, Any
         "digest_run_id": run_id,
         "digest_session_id": candidate.session_id,
         "digest_reason": candidate.reason,
+        "digest_quality": quality.as_dict(),
     }
     if candidate.tools_used:
         metadata["tools_used"] = candidate.tools_used
@@ -1140,6 +771,10 @@ def candidate_metadata(candidate: DigestCandidate, run_id: str) -> dict[str, Any
         metadata["commands"] = candidate.commands
     if candidate.verification:
         metadata["verification"] = candidate.verification
+    if quality.recommended_action == "candidate":
+        metadata.setdefault("lifecycle", "candidate")
+        metadata.setdefault("candidate_status", "needs_review")
+        metadata.setdefault("candidate_reason", "digest_quality_candidate")
     return metadata
 
 
@@ -1233,10 +868,22 @@ def apply_candidates(
     seen_candidate_keys: set[str] = set()
     actions: list[dict[str, Any]] = []
     counts = Counter()
+    quality_counts = Counter()
+    if not dry_run:
+        ensure_digest_schema(conn)
     for candidate in candidates:
+        quality = score_digest_candidate(candidate)
+        quality_counts[quality.recommended_action] += 1
         if not candidate_is_allowed(candidate):
             counts["skipped"] += 1
-            actions.append({"action": "skip", "reason": "candidate filtered", "content": candidate.content[:160]})
+            actions.append(
+                {
+                    "action": "skip",
+                    "reason": "quality rejected" if quality.recommended_action == "reject" else "candidate filtered",
+                    "quality": quality.as_dict(),
+                    "content": candidate.content[:160],
+                }
+            )
             continue
         key = f"{candidate.target}:{dedup_key(candidate.content)}"
         if key in seen_candidate_keys:
@@ -1326,7 +973,7 @@ def apply_candidates(
                 counts["skipped"] += 1
     deleted = 0 if dry_run else cleanup_exact_duplicates(conn, scope, vector_runtime)
     counts["deleted"] += deleted
-    return {"counts": dict(counts), "actions": actions}
+    return {"counts": dict(counts), "quality_counts": dict(quality_counts), "actions": actions}
 
 
 def cleanup_exact_duplicates(conn: sqlite3.Connection, scope: ScopeProfile, vector_runtime: DigestVectorRuntime | None) -> int:
@@ -1335,13 +982,18 @@ def cleanup_exact_duplicates(conn: sqlite3.Connection, scope: ScopeProfile, vect
     delete_ids = [memory_id for group in groups for memory_id in group["delete_ids"]]
     if not delete_ids:
         return 0
-    deleted = delete_rows(conn, delete_ids, scope_ids=writable_scopes)
-    if vector_runtime is not None and vector_runtime._vector_store is not None:
-        try:
-            vector_runtime._vector_store.delete_by_ids(delete_ids)
-        except Exception:
-            pass
-    return deleted
+    if vector_runtime is not None:
+        vector_store = getattr(vector_runtime, "_vector_store", None)
+        if vector_store is not None:
+            try:
+                vector_store.delete_by_ids(delete_ids)
+            except Exception as exc:
+                mark_vector_needs_repair(vector_runtime, exc)
+                return 0
+        elif bool(getattr(vector_runtime, "_vector_enabled", False)):
+            mark_vector_needs_repair(vector_runtime, "vector store unavailable before duplicate cleanup")
+            return 0
+    return delete_rows(conn, delete_ids, scope_ids=writable_scopes)
 
 
 def collect_candidates(
@@ -1466,6 +1118,7 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
         candidates = collect_candidates(bundles, options=options, llm_config=llm_config, existing_context=existing, fallback_events=fallback_events)
         applied = apply_candidates(conn, vector_runtime, scope, run_id=run_id, candidates=candidates, dry_run=options.dry_run, runtime_config=runtime_config)
         counts = Counter(applied["counts"])
+        quality_counts = Counter(applied.get("quality_counts", {}))
         extractor_used = "heuristic" if options.extractor == "heuristic" else ("heuristic-fallback" if fallback_events else "llm")
         ok, status, error = nightly_status_payload(dry_run=options.dry_run, fallback_events=fallback_events, candidate_count=len(candidates))
         result = nightly_digest_result(
@@ -1477,6 +1130,7 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
             sessions=len(bundles),
             task_sessions=sum(1 for bundle in bundles if bundle.is_task),
             candidate_count=len(candidates),
+            quality_counts=quality_counts,
             counts=counts,
             requested_extractor=options.extractor,
             extractor_used=extractor_used,
@@ -1513,6 +1167,7 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
                             task_sessions=result["task_sessions"],
                             extractor_used=extractor_used,
                             fallback_events=fallback_events,
+                            quality_counts=quality_counts,
                         ),
                         ensure_ascii=False,
                     ),

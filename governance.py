@@ -313,7 +313,13 @@ def merge_metadata(metadata_payload: dict[str, Any], raw_metadata: Any) -> dict[
             incoming = str(value or "").strip().lower()
             if incoming == "shared_pool":
                 metadata_payload["scope_mode"] = incoming
-        elif meta_key in {"kind", "lifecycle", "authority", "confidence", "expires_at", "category", "tier"}:
+        elif meta_key == "lifecycle":
+            incoming = str(value or "").strip().lower()
+            raw_digest_quality = user_metadata.get("digest_quality")
+            digest_quality = raw_digest_quality if isinstance(raw_digest_quality, dict) else {}
+            if incoming == "candidate" and str(digest_quality.get("recommended_action") or "").strip().lower() == "candidate":
+                metadata_payload["lifecycle"] = "candidate"
+        elif meta_key in {"kind", "authority", "confidence", "expires_at", "category", "tier"}:
             continue
         else:
             metadata_payload[meta_key] = value

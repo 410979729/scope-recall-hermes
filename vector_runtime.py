@@ -4,6 +4,7 @@ from contextlib import AbstractContextManager, nullcontext
 import logging
 from typing import Any, cast
 
+from .capture_filters import sanitize_report_text
 from .embedders import build_embedder
 from .gating import config_bool
 from .graph import lifecycle_is_hidden, lifecycle_visible_sql, load_metadata
@@ -28,7 +29,7 @@ def _vector_mutation_lock(provider: Any) -> AbstractContextManager[Any]:
 def mark_vector_needs_repair(provider: Any, exc: Exception | str) -> None:
     provider._vector_ready = False
     provider._vector_status = "needs_repair"
-    provider._vector_message = str(exc)
+    provider._vector_message = sanitize_report_text(str(exc))
 
 
 def _normalize_vector_backend(value: Any) -> str:

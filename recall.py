@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .gating import query_tokens
-from .graph import apply_quality_weight, entity_distance_scores, entity_overlap_bonus, lifecycle_visible_sql, metadata_entities, normalize_entity, query_entities as graph_query_entities
+from .freshness import attach_freshness_metadata, memory_freshness_map
+from .graph import apply_quality_weight, entity_distance_scores, entity_overlap_bonus, metadata_entities, normalize_entity, query_entities as graph_query_entities
 from .models import RecallItem
 from .recall_pipeline import build_search_plan, final_trace_payload, initial_trace, merge_recall_candidates, rank_recall_items
 from .scoring import combine_scores, reciprocal_rank_fusion
@@ -48,6 +49,14 @@ _TEMPORAL_DURABLE_TYPES = {
 }
 _TEMPORAL_EPISODIC_TYPES = {"episodic", "summary"}
 _TEMPORAL_TEMPORARY_TYPES = {"scratch", "temporary", "temporary_state", "tool_trace"}
+_RECALL_HIDDEN_LIFECYCLE_VALUES = ("superseded", "obsolete", "rejected", "archived", "candidate", "in_progress")
+_RECALL_HIDDEN_LIFECYCLE_TYPES = set(_RECALL_HIDDEN_LIFECYCLE_VALUES)
+
+
+def _recall_lifecycle_visible_sql(alias: str) -> str:
+    lifecycle_expr = f"LOWER(COALESCE(CASE WHEN json_valid({alias}.metadata) THEN json_extract({alias}.metadata, '$.lifecycle') ELSE '' END, ''))"
+    hidden_values = ",".join(f"'{value}'" for value in _RECALL_HIDDEN_LIFECYCLE_VALUES)
+    return f"{lifecycle_expr} NOT IN ({hidden_values})"
 
 _ENTITY_SCOPE_STOPWORDS = {
     "api",
@@ -158,9 +167,14 @@ class RecallService:
         trace["stages"]["candidate_after_policy"] = self._trace_stage(results)
         entity_graph_scores = self._entity_graph_scores(query, results)
         relation_evidence = self._persisted_relation_evidence([item.id for item in results])
+        freshness_evidence = self._fact_freshness_evidence([item.id for item in results])
         trace["stages"]["graph"] = {
             "entity_scored_count": len(entity_graph_scores),
             "relation_evidence_count": sum(int((payload or {}).get("count") or 0) for payload in relation_evidence.values()),
+        }
+        trace["stages"]["fact_freshness"] = {
+            "tracked_count": len(freshness_evidence),
+            "needs_live_check_count": sum(1 for payload in freshness_evidence.values() if bool(payload.get("needs_live_check"))),
         }
         min_score = float(retrieval_cfg.get("min_score") or self.provider._config_value("min_score", 0.18))
         # Vector-only matches have no lexical evidence, so they must clear a
@@ -188,6 +202,10 @@ class RecallService:
             relation_payload = relation_evidence.get(item.id, {})
             relation_rerank_bonus = self._relation_rerank_bonus(relation_payload)
             base_score = max(0.0, min(1.0, quality_adjusted_score + entity_overlap + entity_distance_bonus + relation_rerank_bonus))
+            freshness_payload = freshness_evidence.get(item.id)
+            fact_freshness_penalty = attach_freshness_metadata(meta, freshness_payload, config=retrieval_cfg)
+            if fact_freshness_penalty > 0.0:
+                base_score *= max(0.0, 1.0 - fact_freshness_penalty)
             decay_multiplier = self._temporal_decay_multiplier(meta, item.updated_at)
             policy_class, policy_weight = self._temporal_policy(meta, item.target)
             decay_weight = 0.0
@@ -214,6 +232,7 @@ class RecallService:
                     "relation_evidence_ids": relation_payload.get("ids") or [],
                     "relation_rerank_bonus": relation_rerank_bonus,
                     "relation_rerank_enabled": self._config_bool(retrieval_cfg.get("relation_rerank_enabled"), False),
+                    "fact_freshness_penalty": fact_freshness_penalty,
                     "pre_decay_score": pre_decay_score,
                     "temporal_decay_multiplier": decay_multiplier,
                     "temporal_decay_weight": decay_weight,
@@ -414,8 +433,8 @@ class RecallService:
                     JOIN memories s ON s.id = r.source_memory_id
                     JOIN memories t ON t.id = r.target_memory_id
                     WHERE (r.source_memory_id IN ({placeholders}) OR r.target_memory_id IN ({placeholders}))
-                      AND {lifecycle_visible_sql('s')}
-                      AND {lifecycle_visible_sql('t')}{scope_clause}
+                      AND {_recall_lifecycle_visible_sql('s')}
+                      AND {_recall_lifecycle_visible_sql('t')}{scope_clause}
                     """
         relation_params = [*ids, *ids, *scope_params]
         try:
@@ -454,6 +473,21 @@ class RecallService:
             }
         return normalized
 
+    def _fact_freshness_evidence(self, memory_ids: list[str]) -> dict[str, dict[str, Any]]:
+        retrieval_cfg = self.provider._retrieval_config or {}
+        if not self._config_bool(retrieval_cfg.get("fact_freshness_enabled"), True):
+            return {}
+        if not memory_ids or not hasattr(self.provider, "_require_conn"):
+            return {}
+        try:
+            lock = getattr(self.provider, "_lock", None)
+            if lock is None:
+                return memory_freshness_map(self.provider._require_conn(), memory_ids)
+            with lock:
+                return memory_freshness_map(self.provider._require_conn(), memory_ids)
+        except Exception:
+            return {}
+
     def _relation_rerank_bonus(self, evidence: dict[str, Any]) -> float:
         retrieval_cfg = self.provider._retrieval_config or {}
         if not evidence or not self._config_bool(retrieval_cfg.get("relation_rerank_enabled"), False):
@@ -476,18 +510,26 @@ class RecallService:
                     continue
             return total
 
-        supersedes_boost = max(0.0, min(0.5, float(retrieval_cfg.get("relation_supersedes_boost") or retrieval_cfg.get("relation_rerank_weight") or 0.04)))
-        supports_boost = max(0.0, min(0.5, float(retrieval_cfg.get("relation_supports_boost") or retrieval_cfg.get("relation_rerank_weight") or 0.04)))
-        superseded_penalty = max(0.0, min(0.5, float(retrieval_cfg.get("relation_superseded_penalty") or 0.0)))
-        contradicts_penalty = max(0.0, min(0.5, float(retrieval_cfg.get("relation_contradicts_penalty") or 0.0)))
+        supersedes_boost = max(0.0, min(0.12, float(retrieval_cfg.get("relation_supersedes_boost") or retrieval_cfg.get("relation_rerank_weight") or 0.04)))
+        supports_boost = max(0.0, min(0.08, float(retrieval_cfg.get("relation_supports_boost") or retrieval_cfg.get("relation_rerank_weight") or 0.04)))
+        same_topic_boost = max(0.0, min(0.03, float(retrieval_cfg.get("relation_same_topic_boost") or 0.01)))
+        superseded_penalty = max(0.0, min(0.12, float(retrieval_cfg.get("relation_superseded_penalty") or 0.0)))
+        contradicts_penalty = max(0.0, min(0.12, float(retrieval_cfg.get("relation_contradicts_penalty") or 0.0)))
+        max_bonus = max(0.0, min(0.12, float(retrieval_cfg.get("relation_rerank_max_bonus") or 0.08)))
+        max_penalty = max(0.0, min(0.12, float(retrieval_cfg.get("relation_rerank_max_penalty") or 0.08)))
 
         bonus = 0.0
         bonus += supersedes_boost * _confidence_sum(outgoing.get("supersedes"))
         bonus += supports_boost * _confidence_sum(outgoing.get("supports"))
         bonus += supports_boost * _confidence_sum(incoming.get("supports"))
+        for typed_relation in ("depends_on", "affects", "owned_by"):
+            bonus += supports_boost * _confidence_sum(outgoing.get(typed_relation))
+        bonus += same_topic_boost * (
+            _confidence_sum(outgoing.get("same_topic")) + _confidence_sum(incoming.get("same_topic"))
+        )
         bonus -= superseded_penalty * _confidence_sum(incoming.get("supersedes"))
         bonus -= contradicts_penalty * (_confidence_sum(outgoing.get("contradicts")) + _confidence_sum(incoming.get("contradicts")))
-        return max(-0.5, min(0.5, bonus))
+        return max(-max_penalty, min(max_bonus, bonus))
 
     def _entity_graph_scores(self, query: str, items: list[RecallItem]) -> dict[str, float]:
         query_entity_values = graph_query_entities(query)
@@ -556,7 +598,7 @@ class RecallService:
         output: list[RecallItem] = []
         for item in items:
             lifecycle = str((item.metadata or {}).get("lifecycle") or "").strip().lower()
-            if lifecycle in {"superseded", "obsolete", "rejected", "archived"}:
+            if lifecycle in _RECALL_HIDDEN_LIFECYCLE_TYPES:
                 continue
             output.append(item)
         return output

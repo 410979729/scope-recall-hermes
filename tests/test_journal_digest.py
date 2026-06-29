@@ -9,6 +9,7 @@ import pytest
 
 from scope_recall.models import RuntimeScope
 import scope_recall.journal as journal_module
+import scope_recall.nightly_llm as nightly_llm
 from scope_recall.forgetting import build_forgetting_report
 from scope_recall.hygiene import build_hygiene_report
 from scope_recall.memory_ops import feedback_memory
@@ -175,6 +176,41 @@ def test_skipped_journal_candidates_still_advance_watermark(tmp_path):
     assert rejection_ids == {existing_entry_id, filtered_entry_id}
 
 
+def test_journal_digest_rejects_transient_phase_gate_progress_decision(tmp_path):
+    conn = _open_memory_db(tmp_path / "memory.sqlite3")
+    scope = _scope()
+    entry_id = append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=build_scope_id(scope),
+        shared_scope_id=build_shared_scope_id(scope),
+        session_id="phase-gate-progress",
+        turn_number=1,
+        role="assistant",
+        content="建议当前阶段先验证 G1/G2，不要急着进入 G3。",
+    )
+    candidate = JournalDigestCandidate(
+        content=(
+            "助手建议当前阶段（完成G1/G2后）先进行阶段性验证，不要直接进入G3。"
+            "验证重点包括 rollout profiles dry-run、live doctor、全量 pytest 和可选复审。"
+        ),
+        target="project",
+        memory_type="decision",
+        importance=1.0,
+        confidence=0.98,
+        tags=["scope-recall", "phase-gate", "project-management"],
+        entry_ids=[entry_id],
+    )
+
+    result = apply_journal_candidates(conn, None, scope, run_id="phase-gate-filter", candidates=[candidate])
+
+    assert result["counts"]["skipped"] == 1
+    assert result["processed_entry_ids"] == [entry_id]
+    rejection = conn.execute("SELECT reason FROM journal_rejections WHERE journal_entry_id = ?", (entry_id,)).fetchone()
+    assert rejection["reason"] == "low-value-transient-phase-gate"
+    assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+
+
 def test_journal_digest_rejects_low_value_notification_log_and_tool_summary_candidates(tmp_path):
     conn = _open_memory_db(tmp_path / "memory.sqlite3")
     scope = _scope()
@@ -319,6 +355,10 @@ def test_feedback_and_governance_previews_redact_secret_like_text(tmp_path):
     assert "/home/a/private" not in hygiene_text
 
 
+def test_journal_llm_classifier_uses_nightly_llm_single_source():
+    assert journal_module._classify_llm_digest_error is nightly_llm.classify_llm_error
+
+
 def test_journal_llm_retry_error_redacts_secret_like_exception(monkeypatch):
     secret = "sk-" + "D" * 24
 
@@ -344,6 +384,40 @@ def test_journal_llm_retry_error_redacts_secret_like_exception(monkeypatch):
     message = str(excinfo.value)
     assert "[REDACTED_SECRET]" in message
     assert "sk-" not in message
+
+
+def test_journal_llm_retry_preserves_structured_error_and_report_sanitization(monkeypatch):
+    attempts = {"count": 0}
+
+    def fake_call_llm(*args, **kwargs):  # noqa: ARG001
+        attempts["count"] += 1
+        raise TimeoutError("provider timeout with trace at /tmp/hermes-secret-output.log")
+
+    monkeypatch.setattr(journal_module, "call_llm", fake_call_llm)
+
+    with pytest.raises(journal_module.JournalDigestLLMError) as excinfo:
+        _call_llm_with_retries(
+            "prompt",
+            model="test-model",
+            base_url="https://example.invalid",
+            api_key="",
+            timeout=1,
+            api_mode="chat_completions",
+            endpoint="/v1/chat/completions",
+            append_v1=False,
+            max_attempts=2,
+            retry_delay=0,
+        )
+
+    assert attempts["count"] == 2
+    error = excinfo.value
+    assert error.attempts == 2
+    assert error.error_kind == "timeout"
+    assert error.retryable is True
+    message = str(error)
+    assert "timeout after 2 attempt" in message
+    assert "[REDACTED_PATH]" in message
+    assert "/tmp/hermes-secret-output.log" not in message
 
 
 def test_heuristic_digest_ignores_template_noise_for_classification():
@@ -1119,6 +1193,74 @@ def test_llm_digest_failure_retries_then_quarantines_without_fallback_memory(tmp
     assert metadata["extractor_errors"][0]["retryable"] is True
 
 
+def test_llm_digest_malformed_json_quarantines_as_parse_dead_letter(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    storage = hermes_home / "scope-recall"
+    storage.mkdir(parents=True)
+    (storage / "config.json").write_text(
+        json.dumps(
+            {
+                "vector": {"enabled": False},
+                "journal": {
+                    "extractor": "llm",
+                    "allow_heuristic_fallback": True,
+                    "llm_max_attempts": 1,
+                    "llm_retry_delay": 0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (hermes_home / ".env").write_text("SCOPE_RECALL_DIGEST_API_KEY=test-key\n", encoding="utf-8")
+    conn = _open_memory_db(storage / "memory.sqlite3")
+    scope = _scope()
+    entry_id = append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=build_scope_id(scope),
+        shared_scope_id=build_shared_scope_id(scope),
+        session_id="llm-parse-failure-session",
+        turn_number=1,
+        role="user",
+        content="LLM digest 返回坏 JSON 时不能当作无候选并永久静默消费。",
+    )
+
+    import scope_recall.journal as journal_module
+
+    attempts = {"count": 0}
+
+    def malformed_json_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float, api_mode: str = "chat_completions", endpoint: str = "", append_v1: bool = True) -> str:
+        attempts["count"] += 1
+        return "this is not json"
+
+    monkeypatch.setattr(journal_module, "call_llm", malformed_json_call_llm)
+
+    result = run_journal_digest(hermes_home=hermes_home, scope=scope, interval_label="test", limit_entries=50)
+
+    assert attempts["count"] == 1
+    assert result["ok"] is True
+    assert result["processed_entries"] == 1
+    assert result["inserted"] == 0
+    assert result["updated"] == 0
+    assert result["skipped"] == 1
+    assert result["extractor_used"] == "llm-quarantine"
+    row = conn.execute("SELECT processed_run_id FROM journal_entries WHERE id = ?", (entry_id,)).fetchone()
+    assert row["processed_run_id"] == result["run_id"]
+    assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+    rejection = conn.execute("SELECT reason, candidate FROM journal_rejections WHERE journal_entry_id = ?", (entry_id,)).fetchone()
+    assert rejection["reason"] == "dead-letter:parse"
+    assert rejection["reason"] != "no durable memory candidate"
+    assert "parse after 1 attempt" in rejection["candidate"]
+    run = conn.execute("SELECT status, extractor, error, metadata FROM journal_digest_runs WHERE id = ?", (result["run_id"],)).fetchone()
+    assert run["status"] == "ok"
+    assert run["extractor"] == "llm-quarantine"
+    assert run["error"] is None
+    metadata = json.loads(run["metadata"])
+    assert metadata["quarantine_counts"] == {"dead_letter": 1}
+    assert metadata["extractor_errors"][0]["kind"] == "parse"
+    assert metadata["extractor_errors"][0]["retryable"] is False
+
+
 def test_llm_digest_auth_failure_quarantines_without_retrying(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     storage = hermes_home / "scope-recall"
@@ -1235,3 +1377,44 @@ def test_journal_capture_keeps_long_english_text_that_only_looks_base64ish(tmp_p
     assert entry_id > 0
     row_count = conn.execute("SELECT COUNT(*) FROM journal_entries").fetchone()[0]
     assert row_count >= 1
+
+
+def test_journal_digest_cli_forwards_llm_provider_overrides(monkeypatch, tmp_path, capsys):
+    captured = {}
+
+    def fake_run_journal_digest(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "status": "ok", "processed_entries": 0}
+
+    monkeypatch.setattr(journal_module, "run_journal_digest", fake_run_journal_digest)
+
+    exit_code = journal_module.main(
+        [
+            "--hermes-home",
+            str(tmp_path),
+            "--extractor",
+            "llm",
+            "--provider",
+            "deepseek",
+            "--model",
+            "deepseek-v4-pro",
+            "--api-mode",
+            "chat_completions",
+            "--base-url",
+            "https://api.deepseek.com",
+            "--key-env",
+            "DEEPSEEK_API_KEY",
+            "--no-append-v1",
+            "--dry-run",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["llm_provider"] == "deepseek"
+    assert captured["llm_model"] == "deepseek-v4-pro"
+    assert captured["llm_api_mode"] == "chat_completions"
+    assert captured["llm_base_url"] == "https://api.deepseek.com"
+    assert captured["llm_key_env"] == "DEEPSEEK_API_KEY"
+    assert captured["llm_append_v1"] is False
+    assert captured["dry_run"] is True
+    assert json.loads(capsys.readouterr().out)["ok"] is True

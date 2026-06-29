@@ -7,6 +7,78 @@ import textwrap
 from pathlib import Path
 
 
+def test_doctor_vector_report_accepts_configured_sqlite_fallback_when_lancedb_unavailable(monkeypatch, tmp_path):
+    from scope_recall.doctor_vector import vector_report
+    from scope_recall.sql_store import ensure_schema, store_row
+    from scope_recall.sqlite_vector_store import SQLiteBruteForceVectorStore
+
+    hermes_home = tmp_path
+    storage = hermes_home / "scope-recall"
+    storage.mkdir(parents=True)
+    conn = __import__("sqlite3").connect(storage / "memory.sqlite3")
+    conn.row_factory = __import__("sqlite3").Row
+    try:
+        ensure_schema(conn)
+        store_row(
+            conn,
+            memory_id="mem-1",
+            scope_id="scope-a",
+            platform="telegram",
+            user_id="joy",
+            chat_id="dm",
+            thread_id="",
+            gateway_session_key="",
+            agent_identity="yuheng",
+            agent_workspace="hermes",
+            session_id="session",
+            source="fixture",
+            target="memory",
+            content="fallback vector fixture",
+            metadata={},
+            allow_duplicate=True,
+        )
+    finally:
+        conn.close()
+    store = SQLiteBruteForceVectorStore(storage / "vector.sqlite3", dimensions=2)
+    store.open()
+    try:
+        store.upsert_records(
+            [
+                {
+                    "id": "mem-1",
+                    "scope_id": "scope-a",
+                    "source": "fixture",
+                    "target": "memory",
+                    "content": "fallback vector fixture",
+                    "summary": "",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                    "vector": [1.0, 0.0],
+                }
+            ]
+        )
+    finally:
+        store.close()
+
+    def fail_lancedb(*_args, **_kwargs):
+        return {"backend": "lancedb", "status": "needs_repair", "ready": False, "error": "No module named 'lancedb'"}, {"ok": False, "failures": ["LanceDB error: No module named 'lancedb'"]}, ["repair lancedb"]
+
+    monkeypatch.setattr("scope_recall.doctor_vector.lancedb_vector_report", fail_lancedb)
+
+    payload, check, recommendations = vector_report(
+        hermes_home,
+        expected_embedder={"dimensions": 2},
+        backend="lancedb",
+        fallback_backend="sqlite-bruteforce",
+    )
+
+    assert check == {"ok": True, "failures": []}
+    assert payload["status"] == "fallback_ready"
+    assert payload["primary"]["ready"] is False
+    assert payload["fallback"]["backend"] == "sqlite-bruteforce"
+    assert payload["fallback"]["ready"] is True
+    assert any("sqlite-bruteforce fallback" in item for item in recommendations)
+
+
 def test_vector_runtime_imports_when_lancedb_and_pyarrow_are_unavailable():
     root = Path(__file__).resolve().parents[1]
     script = textwrap.dedent(

@@ -7,8 +7,26 @@ from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from scope_recall.nightly_digest import DigestOptions, call_llm, load_session_bundles, redact_sensitive, resolve_llm_config, run_digest
-from scope_recall.sql_store import delete_rows
+from scope_recall.digest_quality import score_digest_candidate
+from scope_recall.nightly_digest import (
+    DigestCandidate,
+    DigestOptions,
+    MessageRecord,
+    ScopeProfile,
+    SessionBundle,
+    _parse_llm_candidates_with_status,
+    apply_candidates,
+    call_llm,
+    candidate_is_allowed,
+    candidate_metadata,
+    cleanup_exact_duplicates,
+    load_session_bundles,
+    redact_sensitive,
+    resolve_llm_config,
+    run_digest,
+)
+from scope_recall.models import RuntimeScope
+from scope_recall.sql_store import delete_rows, ensure_schema, store_row
 
 
 def _ts(day: date, hour: int = 12) -> float:
@@ -19,6 +37,37 @@ def _write_config(hermes_home: Path) -> None:
     storage_dir = hermes_home / "scope-recall"
     storage_dir.mkdir(parents=True, exist_ok=True)
     (storage_dir / "config.json").write_text(json.dumps({"vector": {"enabled": False}}), encoding="utf-8")
+
+
+def _parse_test_bundle() -> SessionBundle:
+    return SessionBundle(
+        id="parse-test",
+        source="test",
+        title="parse test",
+        messages=[MessageRecord(id=1, session_id="parse-test", role="user", content="remember stable fact", timestamp=0.0)],
+        is_task=True,
+        completed=True,
+    )
+
+
+def test_llm_candidate_parser_treats_empty_response_as_empty_not_parse_error():
+    candidates, status = _parse_llm_candidates_with_status("", bundle=_parse_test_bundle())
+
+    assert candidates == []
+    assert status == "empty"
+
+
+def test_llm_candidate_parser_extracts_json_array_from_fenced_text_with_preamble():
+    raw = """Here is the JSON:\n```json\n[{\"action\": \"create\", \"content\": \"Stable reusable workflow: when release rollback fails, validate backup before deleting current plugin and verify rollback receipt paths.\", \"target\": \"ops\", \"memory_type\": \"workflow\", \"importance\": \"high\", \"confidence\": \"high\", \"entities\": [\"rollback\"], \"tags\": [\"workflow\"], \"reason\": \"Reusable rollback safety workflow\"}]\n```\n"""
+
+    candidates, status = _parse_llm_candidates_with_status(raw, bundle=_parse_test_bundle())
+
+    assert status == "parsed"
+    assert len(candidates) == 1
+    assert candidates[0].target == "ops"
+    assert candidates[0].memory_type == "workflow"
+    assert candidates[0].importance >= 0.55
+    assert candidates[0].confidence >= 0.65
 
 
 def _create_state_db(path: Path, day: date, *, content_suffix: str = "") -> None:
@@ -71,6 +120,138 @@ def _create_state_db(path: Path, day: date, *, content_suffix: str = "") -> None
                 ("session-task", role, content, calls, tool_name, _ts(day, 10)),
             )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def _create_progress_only_state_db(path: Path, day: date) -> None:
+    conn = sqlite3.connect(path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                title TEXT,
+                started_at REAL NOT NULL
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO sessions(id, source, user_id, model, title, started_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("session-progress", "telegram", "8176453077", "gpt-5.5", "停服维护进度更新 #10", _ts(day, 9)),
+        )
+        messages = [
+            ("user", "进度如何了", "", ""),
+            ("assistant", "当前进度：用了 terminal/read_file；还没验证，继续处理中。", "", ""),
+            ("tool", '{"output":"still running"}', "", "terminal"),
+        ]
+        for role, content, calls, tool_name in messages:
+            conn.execute(
+                "INSERT INTO messages(session_id, role, content, tool_calls, tool_name, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                ("session-progress", role, content, calls, tool_name, _ts(day, 10)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_digest_quality_rejects_transient_tool_progress_candidate():
+    candidate = DigestCandidate(
+        content="停服维护进度更新 #10 的可复用任务流程：使用工具链 terminal/read_file。结果摘要：当前进度只是用了哪些工具，还没验证完成。",
+        target="ops",
+        memory_type="workflow",
+        confidence=0.8,
+        reason="progress update",
+    )
+
+    quality = score_digest_candidate(candidate)
+
+    assert quality.transient_progress is True
+    assert quality.recommended_action == "reject"
+    assert candidate_is_allowed(candidate) is False
+
+
+def test_digest_quality_allows_verified_reusable_workflow_and_records_metadata():
+    candidate = DigestCandidate(
+        content="Scope Recall 发布收口流程：触发条件是准备发布插件；步骤是先跑 pytest，再跑 release gate，最后回读 release/PyPI；验证：512 passed，release gate ok。",
+        target="ops",
+        memory_type="workflow",
+        confidence=0.82,
+        commands=["python3 -m pytest -q", "python3 scripts/check.release.py"],
+        verification=["512 passed", "release gate ok"],
+        reason="reusable release workflow",
+    )
+
+    quality = score_digest_candidate(candidate)
+    metadata = candidate_metadata(candidate, "run-quality")
+
+    assert quality.reusable is True
+    assert quality.recommended_action == "promote"
+    assert candidate_is_allowed(candidate) is True
+    assert metadata["digest_quality"]["recommended_action"] == "promote"
+    assert metadata["digest_quality"]["has_verification"] is True
+
+
+def test_digest_candidate_quality_action_is_stored_as_review_candidate_lifecycle():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    scope = ScopeProfile(
+        scope=RuntimeScope(platform="telegram", user_id="joy", chat_id="dm", agent_identity="yuheng", agent_workspace="hermes"),
+        scope_id="scope-local",
+        shared_scope_id="scope-shared",
+        accessible_scope_ids=["scope-local", "scope-shared"],
+        writable_scope_ids=["scope-local", "scope-shared"],
+    )
+    candidate = DigestCandidate(
+        content="Scope Recall 状态摘要：这条记忆需要人工复审后再晋升，包含上下文但缺少完整验证闭环。",
+        target="ops",
+        memory_type="summary",
+        confidence=0.5,
+        reason="low confidence summary candidate",
+    )
+
+    result = apply_candidates(conn, None, scope, run_id="run-candidate", candidates=[candidate], dry_run=False, runtime_config={})
+    row = conn.execute("SELECT metadata FROM memories").fetchone()
+    metadata = json.loads(row["metadata"])
+
+    assert result["quality_counts"] == {"candidate": 1}
+    assert result["counts"]["inserted"] == 1
+    assert metadata["digest_quality"]["recommended_action"] == "candidate"
+    assert metadata["lifecycle"] == "candidate"
+    assert metadata["candidate_status"] == "needs_review"
+
+
+def test_heuristic_digest_rejects_progress_toolchain_only_summary(tmp_path):
+    day = date(2026, 6, 1)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    _write_config(hermes_home)
+    _create_progress_only_state_db(hermes_home / "state.db", day)
+
+    result = run_digest(DigestOptions(hermes_home=hermes_home, digest_date=day, extractor="heuristic"))
+
+    assert result["ok"] is True
+    assert result["inserted"] == 0
+    assert result["skipped"] == 1
+    assert result["quality_counts"] == {"reject": 1}
+    assert result["actions"][0]["reason"] == "quality rejected"
+    assert result["actions"][0]["quality"]["recommended_action"] == "reject"
+    conn = sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3")
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
     finally:
         conn.close()
 
@@ -399,6 +580,7 @@ def test_heuristic_digest_writes_workflow_memory_and_ledger_then_skips_duplicate
 
     assert first["ok"] is True
     assert first["inserted"] == 1
+    assert first["quality_counts"] == {"promote": 1}
     conn = sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3")
     conn.row_factory = sqlite3.Row
     try:
@@ -409,8 +591,12 @@ def test_heuristic_digest_writes_workflow_memory_and_ledger_then_skips_duplicate
         assert "secret1234567890" not in rows[0]["content"]
         metadata = json.loads(rows[0]["metadata"])
         assert metadata["memory_type"] == "workflow"
+        assert metadata["digest_quality"]["recommended_action"] == "promote"
+        assert metadata["digest_quality"]["has_verification"] is True
         assert "terminal" in metadata["tools_used"]
         assert conn.execute("SELECT COUNT(*) FROM nightly_digest_runs").fetchone()[0] == 1
+        run_metadata = json.loads(conn.execute("SELECT metadata FROM nightly_digest_runs").fetchone()[0])
+        assert run_metadata["quality_counts"] == {"promote": 1}
         assert conn.execute("SELECT COUNT(*) FROM memory_digest_sources").fetchone()[0] == 1
     finally:
         conn.close()
@@ -754,3 +940,70 @@ def test_llm_empty_and_empty_heuristic_records_error(tmp_path, monkeypatch):
         assert metadata["extractor_fallbacks"][0]["kind"] == "llm_empty_no_candidates"
     finally:
         conn.close()
+
+
+class _FailingDigestVectorStore:
+    def __init__(self) -> None:
+        self.deleted_ids: list[list[str]] = []
+
+    def delete_by_ids(self, ids: list[str]) -> None:
+        self.deleted_ids.append(list(ids))
+        raise RuntimeError("nightly vector delete failed token=secret123456789 /tmp/hermes-nightly")
+
+
+class _FakeDigestVectorRuntime:
+    def __init__(self) -> None:
+        self._vector_store = _FailingDigestVectorStore()
+        self._vector_ready = True
+        self._vector_status = "ready"
+        self._vector_message = ""
+
+
+def _duplicate_cleanup_scope() -> ScopeProfile:
+    scope = RuntimeScope(platform="cli", user_id="local", agent_identity="default", agent_workspace="hermes")
+    return ScopeProfile(
+        scope=scope,
+        scope_id="local-scope",
+        shared_scope_id="shared-scope",
+        accessible_scope_ids=["local-scope", "shared-scope"],
+        writable_scope_ids=["shared-scope"],
+    )
+
+
+def _store_duplicate_cleanup_row(conn: sqlite3.Connection, *, memory_id: str) -> None:
+    store_row(
+        conn,
+        memory_id=memory_id,
+        scope_id="shared-scope",
+        platform="cli",
+        user_id="local",
+        chat_id="",
+        thread_id="",
+        gateway_session_key="",
+        agent_identity="default",
+        agent_workspace="hermes",
+        session_id="nightly-duplicate-cleanup",
+        source="nightly-digest",
+        target="memory",
+        content="Nightly exact duplicate cleanup must fail closed when vector delete fails.",
+        allow_duplicate=True,
+    )
+
+
+def test_nightly_duplicate_cleanup_keeps_sql_truth_when_vector_delete_fails():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    _store_duplicate_cleanup_row(conn, memory_id="dupe-new")
+    _store_duplicate_cleanup_row(conn, memory_id="dupe-old")
+    vector_runtime = _FakeDigestVectorRuntime()
+
+    deleted = cleanup_exact_duplicates(conn, _duplicate_cleanup_scope(), vector_runtime)
+
+    assert deleted == 0
+    assert conn.execute("SELECT COUNT(*) FROM memories WHERE id IN ('dupe-new', 'dupe-old')").fetchone()[0] == 2
+    assert vector_runtime._vector_status == "needs_repair"
+    assert "[REDACTED_SECRET]" in vector_runtime._vector_message
+    assert "[REDACTED_PATH]" in vector_runtime._vector_message
+    assert "secret123456789" not in vector_runtime._vector_message
+    assert "/tmp/hermes" not in vector_runtime._vector_message

@@ -104,6 +104,8 @@ def test_nightly_status_payload_and_result_contract():
     metadata = nightly_digest_metadata(sessions=2, task_sessions=1, extractor_used="heuristic-fallback", fallback_events=[{"kind": str(i)} for i in range(25)])
 
     assert result["candidates"] == 3
+    assert result["quality_counts"] == {}
     assert result["extractor_fallbacks"] == [{"kind": str(i)} for i in range(20)]
     assert result["actions"] == [{"i": i} for i in range(50)]
+    assert metadata["quality_counts"] == {}
     assert metadata["extractor_fallbacks"] == [{"kind": str(i)} for i in range(20)]

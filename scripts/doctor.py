@@ -25,19 +25,22 @@ try:  # installed package / pytest package-alias path
         redact_secret_like_text,
         vector_backend_from_config,
         vector_enabled_from_config,
+        vector_fallback_backend_from_config,
     )
     from scope_recall.doctor_experience import experience_config_summary, experience_report, nightly_digest_report
     from scope_recall.doctor_journal import journal_enabled_from_config, journal_report
     from scope_recall.doctor_source import source_report
-    from scope_recall.doctor_sqlite import memory_candidate_debt_report, memory_secret_report, sqlite_report
+    from scope_recall.doctor_sqlite import memory_candidate_debt_report, memory_quality_lint_report, memory_secret_report, sqlite_report
     from scope_recall.doctor_vector import disabled_vector_report, sqlite_vector_report, vector_report
+    from scope_recall.response_schemas import DOCTOR_RESPONSE_SCHEMA_VERSION
 except ImportError:  # pragma: no cover - direct source checkout execution fallback
-    from doctor_common import expected_embedder_from_config, load_runtime_config, redact_secret_like_text, vector_backend_from_config, vector_enabled_from_config
+    from doctor_common import expected_embedder_from_config, load_runtime_config, redact_secret_like_text, vector_backend_from_config, vector_enabled_from_config, vector_fallback_backend_from_config
     from doctor_experience import experience_config_summary, experience_report, nightly_digest_report
     from doctor_journal import journal_enabled_from_config, journal_report
     from doctor_source import source_report
-    from doctor_sqlite import memory_candidate_debt_report, memory_secret_report, sqlite_report
+    from doctor_sqlite import memory_candidate_debt_report, memory_quality_lint_report, memory_secret_report, sqlite_report
     from doctor_vector import disabled_vector_report, sqlite_vector_report, vector_report
+    from response_schemas import DOCTOR_RESPONSE_SCHEMA_VERSION
 
 __all__ = [
     "disabled_vector_report",
@@ -49,6 +52,7 @@ __all__ = [
     "load_runtime_config",
     "main",
     "memory_candidate_debt_report",
+    "memory_quality_lint_report",
     "memory_secret_report",
     "nightly_digest_report",
     "parse_args",
@@ -58,6 +62,7 @@ __all__ = [
     "sqlite_vector_report",
     "vector_backend_from_config",
     "vector_enabled_from_config",
+    "vector_fallback_backend_from_config",
     "vector_report",
 ]
 
@@ -84,7 +89,13 @@ def main() -> int:
     source_root = Path(args.source_root).expanduser().resolve()
     source, source_check, recommendations = source_report(source_root)
     checks: dict[str, Any] = {"source_metadata": source_check}
-    payload: dict[str, Any] = {"source": source, "checks": checks, "recommendations": recommendations, "runtime": {}}
+    payload: dict[str, Any] = {
+        "schema_version": DOCTOR_RESPONSE_SCHEMA_VERSION,
+        "source": source,
+        "checks": checks,
+        "recommendations": recommendations,
+        "runtime": {},
+    }
 
     if args.hermes_home:
         hermes_home = Path(args.hermes_home).expanduser().resolve()
@@ -92,6 +103,7 @@ def main() -> int:
         expected_embedder = expected_embedder_from_config(runtime_config)
         sqlite_payload, sqlite_check, sqlite_recommendations = sqlite_report(hermes_home)
         candidate_payload, candidate_check, candidate_recommendations = memory_candidate_debt_report(hermes_home)
+        quality_payload, quality_check, quality_recommendations = memory_quality_lint_report(hermes_home)
         secret_payload, secret_check, secret_recommendations = memory_secret_report(hermes_home)
         raw_journal = runtime_config.get("journal")
         journal_config = raw_journal if isinstance(raw_journal, dict) else {}
@@ -105,10 +117,12 @@ def main() -> int:
         nightly_payload, nightly_check, nightly_recommendations = nightly_digest_report(hermes_home)
         if vector_enabled_from_config(runtime_config):
             backend = vector_backend_from_config(runtime_config)
+            fallback_backend = vector_fallback_backend_from_config(runtime_config)
             vector_payload, vector_check, vector_recommendations = vector_report(
                 hermes_home,
                 expected_embedder=expected_embedder,
                 backend=backend,
+                fallback_backend=fallback_backend,
                 index_general=_index_general_enabled(runtime_config),
             )
         else:
@@ -121,6 +135,7 @@ def main() -> int:
             "vector_backend": backend,
             "sqlite": sqlite_payload,
             "memory_candidate_debt": candidate_payload,
+            "memory_quality_lint": quality_payload,
             "memory_secret_scan": secret_payload,
             "journal": journal_payload,
             "experience": experience_payload,
@@ -129,6 +144,7 @@ def main() -> int:
         }
         checks["sqlite_truth"] = sqlite_check
         checks["memory_candidate_debt"] = candidate_check
+        checks["memory_quality_lint"] = quality_check
         checks["memory_secret_scan"] = secret_check
         checks["journal_provenance"] = journal_check
         checks["experience_kernel"] = experience_check
@@ -136,6 +152,7 @@ def main() -> int:
         checks["vector_companion"] = vector_check
         recommendations.extend(sqlite_recommendations)
         recommendations.extend(candidate_recommendations)
+        recommendations.extend(quality_recommendations)
         recommendations.extend(secret_recommendations)
         recommendations.extend(journal_recommendations)
         recommendations.extend(experience_recommendations)

@@ -5,7 +5,7 @@ from typing import Any, Mapping, Sequence
 
 from .capture_filters import sanitize_report_text
 from .experience_models import RISKY_CAPABILITY_CLASSES
-from .experience_store import search_playbooks
+from .experience_store import record_experience_preflight_run, search_playbooks
 from .gating import compact_text
 
 
@@ -166,6 +166,8 @@ def experience_preflight(
     accessible_scope_ids: Sequence[str],
     config: Mapping[str, Any] | None = None,
     limit: int = 5,
+    record_run: bool = False,
+    scope_id: str = "",
 ) -> dict[str, Any]:
     cfg = _experience_config(config or {})
     if not _bool_config(cfg, "enabled", True):
@@ -180,68 +182,92 @@ def experience_preflight(
         reason = "no_promoted_playbook" if other_results else "no_matching_playbook"
         return {"decision": "no_reuse", "reasons": [reason], "packet": "", "results": []}
 
-    selected = results[0]
-    corrupt_fields = selected.get("payload_corrupt_fields") or []
-    if corrupt_fields:
-        return _no_reuse_result(reasons=["corrupt_playbook_payload"], selected=selected, results=results)
-
-    reasons: list[str] = []
-    no_reuse_reasons: list[str] = []
-    decision = "guided_reuse"
     direct_threshold = _float_config(cfg, "direct_reuse_min_confidence", 0.82)
     allow_risky_direct = _bool_config(cfg, "allow_risky_direct_reuse", False)
-    risky = _risky_capabilities(selected)
-    raw_policy = selected.get("reuse_policy")
-    raw_governance = selected.get("skill_governance")
-    governance: Mapping[str, Any] = raw_governance if isinstance(raw_governance, Mapping) else {}
-    if governance.get("open_conflicts"):
-        no_reuse_reasons.append("open_skill_conflict")
-    if governance.get("missing_anchors"):
-        reasons.append("missing_skill_anchor")
-    policy: Mapping[str, Any] = raw_policy if isinstance(raw_policy, Mapping) else {}
-    default_decision = str(policy.get("default_decision") or "").strip().lower()
-    if default_decision and default_decision not in {"direct_reuse", "guided_reuse", "no_reuse"}:
-        no_reuse_reasons.append("invalid_reuse_policy")
-    elif default_decision == "no_reuse":
-        no_reuse_reasons.append("policy_default_no_reuse")
-    elif default_decision == "guided_reuse":
-        reasons.append("policy_default_guided_reuse")
-    if _policy_bool(policy, "allow_direct_reuse") is False:
-        reasons.append("policy_disallows_direct_reuse")
-    if _policy_bool(policy, "requires_operator_review") is True:
-        reasons.append("policy_requires_operator_review")
-    allowed_capabilities = set(_policy_sequence(policy.get("allowed_capability_classes")))
-    if allowed_capabilities:
-        disallowed = [capability for capability in _all_capabilities(selected) if capability not in allowed_capabilities]
-        if disallowed:
-            no_reuse_reasons.append("policy_disallows_capability_class")
-    try:
-        raw_max_staleness = policy.get("max_staleness") if "max_staleness" in policy else None
-        max_staleness = int(raw_max_staleness) if raw_max_staleness is not None else None
-    except (TypeError, ValueError):
-        no_reuse_reasons.append("invalid_reuse_policy")
-        max_staleness = None
-    if max_staleness is not None and int(selected.get("stale_count") or 0) > max_staleness:
-        no_reuse_reasons.append("policy_max_staleness_exceeded")
-    if selected.get("environment_constraints"):
-        reasons.append("environment_constraints_require_live_check")
-    if float(selected.get("confidence") or 0.0) < direct_threshold:
-        reasons.append("low_confidence")
-    if int(selected.get("stale_count") or 0) > 0:
-        reasons.append("stale_history")
-    if risky and not allow_risky_direct:
-        reasons.append("capability_requires_review")
-    if no_reuse_reasons:
-        return _no_reuse_result(reasons=no_reuse_reasons + reasons, selected=selected, results=results)
-    if not reasons:
-        decision = "direct_reuse"
-        reasons.append("promoted_confident_match")
-    packet = render_experience_packet(selected, decision=decision, reasons=reasons, max_chars=_int_config(cfg, "packet_max_chars", 1400))
-    return {
-        "decision": decision,
-        "reasons": reasons,
-        "requires_live_check": True,
-        "playbook": selected,
-        "packet": packet,
-        "results": results,
-    }
+    skipped_candidates: list[dict[str, Any]] = []
+    for selected in results:
+        corrupt_fields = selected.get("payload_corrupt_fields") or []
+        if corrupt_fields:
+            skipped_candidates.append({"id": str(selected.get("id") or ""), "reasons": ["corrupt_playbook_payload"]})
+            continue
+
+        reasons: list[str] = []
+        no_reuse_reasons: list[str] = []
+        decision = "guided_reuse"
+        risky = _risky_capabilities(selected)
+        raw_policy = selected.get("reuse_policy")
+        raw_governance = selected.get("skill_governance")
+        governance: Mapping[str, Any] = raw_governance if isinstance(raw_governance, Mapping) else {}
+        if governance.get("open_conflicts"):
+            no_reuse_reasons.append("open_skill_conflict")
+        if governance.get("missing_anchors"):
+            reasons.append("missing_skill_anchor")
+        policy: Mapping[str, Any] = raw_policy if isinstance(raw_policy, Mapping) else {}
+        default_decision = str(policy.get("default_decision") or "").strip().lower()
+        if default_decision and default_decision not in {"direct_reuse", "guided_reuse", "no_reuse"}:
+            no_reuse_reasons.append("invalid_reuse_policy")
+        elif default_decision == "no_reuse":
+            no_reuse_reasons.append("policy_default_no_reuse")
+        elif default_decision == "guided_reuse":
+            reasons.append("policy_default_guided_reuse")
+        if _policy_bool(policy, "allow_direct_reuse") is False:
+            reasons.append("policy_disallows_direct_reuse")
+        if _policy_bool(policy, "requires_operator_review") is True:
+            reasons.append("policy_requires_operator_review")
+        allowed_capabilities = set(_policy_sequence(policy.get("allowed_capability_classes")))
+        if allowed_capabilities:
+            disallowed = [capability for capability in _all_capabilities(selected) if capability not in allowed_capabilities]
+            if disallowed:
+                no_reuse_reasons.append("policy_disallows_capability_class")
+        try:
+            raw_max_staleness = policy.get("max_staleness") if "max_staleness" in policy else None
+            max_staleness = int(raw_max_staleness) if raw_max_staleness is not None else None
+        except (TypeError, ValueError):
+            no_reuse_reasons.append("invalid_reuse_policy")
+            max_staleness = None
+        if max_staleness is not None and int(selected.get("stale_count") or 0) > max_staleness:
+            no_reuse_reasons.append("policy_max_staleness_exceeded")
+        if selected.get("environment_constraints"):
+            reasons.append("environment_constraints_require_live_check")
+        if float(selected.get("confidence") or 0.0) < direct_threshold:
+            reasons.append("low_confidence")
+        if int(selected.get("stale_count") or 0) > 0:
+            reasons.append("stale_history")
+        if risky and not allow_risky_direct:
+            reasons.append("capability_requires_review")
+        if no_reuse_reasons:
+            skipped_candidates.append({"id": str(selected.get("id") or ""), "reasons": no_reuse_reasons + reasons})
+            continue
+        if not reasons:
+            decision = "direct_reuse"
+            reasons.append("promoted_confident_match")
+        packet = render_experience_packet(selected, decision=decision, reasons=reasons, max_chars=_int_config(cfg, "packet_max_chars", 1400))
+        run_receipt: dict[str, Any] = {"recorded": False}
+        if record_run and scope_id and packet:
+            run_receipt = record_experience_preflight_run(
+                conn,
+                playbook=selected,
+                scope_id=scope_id,
+                decision=decision,
+                query=query,
+                reasons=reasons,
+            )
+        return {
+            "decision": decision,
+            "reasons": reasons,
+            "requires_live_check": True,
+            "playbook": selected,
+            "packet": packet,
+            "results": results,
+            "skipped_candidates": skipped_candidates,
+            "run": run_receipt,
+        }
+    fallback = results[0]
+    fallback_reasons: list[str] = []
+    for skipped in skipped_candidates:
+        for reason in skipped.get("reasons") or []:
+            if str(reason) not in fallback_reasons:
+                fallback_reasons.append(str(reason))
+    no_reuse = _no_reuse_result(reasons=fallback_reasons or ["no_reusable_playbook"], selected=fallback, results=results)
+    no_reuse["skipped_candidates"] = skipped_candidates
+    return no_reuse

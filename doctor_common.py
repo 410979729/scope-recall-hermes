@@ -190,6 +190,13 @@ def vector_backend_from_config(config: dict[str, Any]) -> str:
     return "sqlite-bruteforce" if backend == "sqlite" else backend
 
 
+def vector_fallback_backend_from_config(config: dict[str, Any]) -> str:
+    raw_vector = config.get("vector")
+    vector_config: dict[str, Any] = raw_vector if isinstance(raw_vector, dict) else {}
+    backend = str(vector_config.get("fallback_backend") or "").strip().lower()
+    return "sqlite-bruteforce" if backend == "sqlite" else backend
+
+
 def _lifecycle_visible_clause(alias: str = "m") -> str:
     lifecycle_expr = f"LOWER(COALESCE(CASE WHEN json_valid({alias}.metadata) THEN json_extract({alias}.metadata, '$.lifecycle') ELSE '' END, ''))"
     return f"{lifecycle_expr} NOT IN ('archived','superseded','obsolete','rejected')"

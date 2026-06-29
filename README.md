@@ -20,7 +20,7 @@ Current-turn recall · Journal-first capture · Durable shared memory · Backgro
 
 This repository, `scope-recall-hermes`, is the Hermes implementation. The Python distribution package is `hermes-scope-recall`, the Python import/package spelling is `scope_recall`, and the Hermes plugin ID/provider name remains `scope-recall` for runtime compatibility. The OpenClaw sibling implementation lives at [`scope-recall-openclaw`](https://github.com/410979729/scope-recall-openclaw).
 
-Version `1.5.4` packages a compatibility-preserving refactor of the doctor, graph-hygiene, maintenance, digest-result, recall-pipeline, and provider-schema internals while keeping the stable V1 commercial-governance line introduced in 1.5.0. The 1.5 line includes promoted-only profile lifecycle safety, candidate-memory promotion planning, graph-hygiene repair, fail-closed vector-repair fallback handling, governance cleanup, journal recovery, an operator dashboard, repository-owned golden benchmarks, stricter release gates, fail-closed hard-delete safety, packaged benchmark fixtures, Recall Funnel observability, synthetic retrieval-regression benchmarking, and default-safe vector fallback behavior. Runtime Experience packet injection is enabled by default through `experience.prefetch_enabled=true` and can be disabled with `experience.prefetch_enabled=false`; background automatic promotion remains an explicit operator opt-in through `experience.auto_promotion_enabled=true`, and low-risk auto-promotion remains a second explicit opt-in through `experience.auto_promote_low_risk=true`. By default, successful low-risk scans create candidate playbooks, high-risk playbooks stay review-gated, and final-failure or low-signal traces are not promoted. It keeps the `scope_recall_profile` surface added in v1.3.0, compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, inline attachment-marker sanitization, the supported standalone install shape added in v1.1.0, and native-safe LanceDB probing with automatic SQLite vector fallback for non-AVX hosts.
+Version `1.6.0` packages a compatibility-preserving refactor of the doctor, graph-hygiene, maintenance, digest-result, recall-pipeline, and provider-schema internals while keeping the stable V1 commercial-governance line introduced in 1.5.0. The 1.5 line includes promoted-only profile lifecycle safety, candidate-memory promotion planning, graph-hygiene repair, fail-closed vector-repair fallback handling, governance cleanup, journal recovery, an operator dashboard, repository-owned golden benchmarks, stricter release gates, fail-closed hard-delete safety, packaged benchmark fixtures, Recall Funnel observability, synthetic retrieval-regression benchmarking, and default-safe vector fallback behavior. Runtime Experience packet injection is enabled by default through `experience.prefetch_enabled=true` and can be disabled with `experience.prefetch_enabled=false`; background automatic promotion remains an explicit operator opt-in through `experience.auto_promotion_enabled=true`, and low-risk auto-promotion remains a second explicit opt-in through `experience.auto_promote_low_risk=true`. By default, successful low-risk scans create candidate playbooks, high-risk playbooks stay review-gated, and final-failure or low-signal traces are not promoted. It keeps the `scope_recall_profile` surface added in v1.3.0, compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, inline attachment-marker sanitization, the supported standalone install shape added in v1.1.0, and native-safe LanceDB probing with automatic SQLite vector fallback for non-AVX hosts.
 
 It uses a **three-layer design**:
 
@@ -52,7 +52,7 @@ The V1 shape is intentionally simple:
 - Hermes native skills remain the place for procedural knowledge packaging.
 - Operational visibility is exposed through doctor, repair, inspect, explain, and benchmark utilities; deployment-specific dashboards can consume those outputs when needed.
 
-For external shared-memory bridge guidance, see [`docs/external-shared-memory.md`](docs/external-shared-memory.md). For reviewed procedural playbooks and preflight packets, see [`docs/experience.kernel.md`](docs/experience.kernel.md).
+For external shared-memory bridge guidance, see [`docs/external-shared-memory.md`](docs/external-shared-memory.md). For public JSON report contracts used by doctor, dashboard, golden benchmark, replay, and forgetting outputs, see [`docs/response-contracts.md`](docs/response-contracts.md). For reviewed procedural playbooks and preflight packets, see [`docs/experience.kernel.md`](docs/experience.kernel.md).
 
 ### Optional cross-platform identity mapping
 
@@ -171,9 +171,17 @@ Install the provider package in the same Python environment that runs Hermes:
 
 ```bash
 python -m pip install "hermes-scope-recall[lancedb]"
-hermes-scope-recall install --hermes-home "${HERMES_HOME:-$HOME/.hermes}"
+hermes-scope-recall install --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --dry-run
+hermes-scope-recall install --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --json
 hermes config set memory.provider scope-recall
 hermes memory setup
+```
+
+When replacing an existing plugin copy, use the explicit upgrade verb so the JSON output records `previous_version`, `new_version`, `backup_path`, and a `rollback_command`:
+
+```bash
+hermes-scope-recall upgrade --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --dry-run
+hermes-scope-recall upgrade --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --json
 ```
 
 `hermes memory setup` now writes the provider config and bootstraps an empty `$HERMES_HOME/scope-recall/memory.sqlite3` truth/journal schema plus sqlite-bruteforce `$HERMES_HOME/scope-recall/vector.sqlite3` metadata when the SQLite companion is configured directly or as the native-safe fallback. `hermes-scope-recall verify` and operator checks therefore do not have to wait for the first live message to trigger lazy provider initialization.
@@ -181,8 +189,15 @@ hermes memory setup
 For a local smoke check after installation:
 
 ```bash
-hermes-scope-recall verify --hermes-home "${HERMES_HOME:-$HOME/.hermes}"
+hermes-scope-recall verify --runtime --hermes-home "${HERMES_HOME:-$HOME/.hermes}"
 hermes memory status
+```
+
+`verify --runtime` is read-only against `$HERMES_HOME/scope-recall/memory.sqlite3`: it loads the installed provider, checks the compact tool schemas, and verifies the SQLite schema-migration ledger. If the DB is missing, run `hermes memory setup` first. If an upgrade needs to be reverted, run the emitted rollback command after a dry-run check:
+
+```bash
+hermes-scope-recall rollback --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --backup-dir /path/to/backup/scope-recall --dry-run --json
+hermes-scope-recall rollback --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --backup-dir /path/to/backup/scope-recall --json
 ```
 
 If LanceDB/PyArrow native wheels are unsafe on the target CPU, install without extras and select the native-free backend instead:
@@ -241,7 +256,7 @@ Important boundary:
 
 ## Configuration
 
-The shipped `config.json` defaults to hybrid retrieval with a hosted OpenAI-compatible Gemini embedding path and a deterministic offline fallback.
+The shipped `config.json` defaults to hybrid retrieval with a hosted OpenAI-compatible Gemini embedding path and a deterministic offline fallback. For the full machine-readable and operator-readable configuration reference, see [`docs/configuration.md`](docs/configuration.md).
 
 Minimal default shape:
 
@@ -723,7 +738,7 @@ Schema-surface targets after the compact-profile change:
 - standard profile: 20 tools, about 10.6 KB
 - maintenance/secret schema surfaces still require their explicit safety flags
 
-Release `1.5.4` packages the compatibility-preserving refactor and audit hardening:
+Release `1.6.0` packages the compatibility-preserving refactor and audit hardening:
 
 - `scripts/doctor.py` remains the operator CLI while implementation moves into focused `doctor_*` modules.
 - `graph_hygiene.py`, `maintenance_ops.py`, `digest_run_results.py`, `recall_pipeline.py`, and `provider_schemas.py` centralize shared helpers without changing public tool APIs or SQLite truth semantics.
@@ -991,6 +1006,8 @@ See [`docs/stability.md`](docs/stability.md) for the exact V1 compatibility scop
 | --- | --- |
 | [`DESIGN.md`](DESIGN.md) | Architecture, layer split, retrieval model, migration plan, and release expectations |
 | [`docs/stability.md`](docs/stability.md) | Stable V1 compatibility contract and scope |
+| [`docs/operator-runbook.md`](docs/operator-runbook.md) | Operator runbook: install/upgrade/rollback, health checks, journal drains, candidate review, vector repair, cleanup, backup/restore, release, and cross-profile rollout |
+| [`docs/configuration.md`](docs/configuration.md) | Complete configuration key registry with defaults, choices, risk, and restart guidance |
 | [`docs/naming.md`](docs/naming.md) | Public `scope-recall` vs Python/tool `scope_recall` naming contract |
 | [`docs/hermes-upstream-recommendation-plan.md`](docs/hermes-upstream-recommendation-plan.md) | Roadmap for official Hermes standalone-provider recommendation |
 | [`docs/migration.md`](docs/migration.md) | Local `lancepro` migration and explicit OpenClaw import guidance |

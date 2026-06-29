@@ -137,12 +137,14 @@ SCOPE_RECALL_ENTITY_SCHEMA = {
 
 SCOPE_RECALL_FORGET_SCHEMA = {
     "name": "scope_recall_forget",
-    "description": "Delete Scope Recall memories by exact id within the current accessible scope set. Search/inspect first; query-only deletion is intentionally disabled.",
+    "description": "Forget Scope Recall memories by exact id within the current accessible scope set. Defaults to audited soft archive with a receipt; hard_delete is maintenance-only.",
     "parameters": {
         "type": "object",
         "properties": {
-            "id": {"type": "string", "description": "Single memory id to delete."},
-            "ids": {"type": "array", "items": {"type": "string"}, "description": "Exact memory ids to delete."},
+            "id": {"type": "string", "description": "Single memory id to forget/archive."},
+            "ids": {"type": "array", "items": {"type": "string"}, "description": "Exact memory ids to forget/archive."},
+            "reason": {"type": "string", "description": "Operator-readable reason for the audited forget/archive action."},
+            "hard_delete": {"type": "boolean", "description": "Maintenance-only: hard delete instead of soft archive."},
         },
     },
 }
@@ -378,6 +380,8 @@ SCOPE_RECALL_PLAYBOOK_FEEDBACK_SCHEMA = {
             "outcome": {"type": "string", "enum": ["success", "partial", "failed", "stale", "misleading", "unknown"]},
             "decision": {"type": "string", "enum": ["direct_reuse", "guided_reuse", "no_reuse"]},
             "evidence": {"type": "array", "items": {}},
+            "preconditions_checked": {"type": "array", "items": {}, "description": "Optional live-check results captured while reusing the playbook."},
+            "steps_completed": {"type": "array", "items": {}, "description": "Optional executed-step results captured while reusing the playbook."},
             "outcome_reason": {"type": "string"},
             "model_name": {"type": "string"},
             "tool_call_count": {"type": "integer"},
@@ -389,16 +393,38 @@ SCOPE_RECALL_PLAYBOOK_FEEDBACK_SCHEMA = {
 
 SCOPE_RECALL_PLAYBOOK_REVIEW_SCHEMA = {
     "name": "scope_recall_playbook_review",
-    "description": "Review/promote/quarantine/supersede a playbook. Maintenance-only.",
+    "description": "Review/promote/quarantine/supersede playbooks, list duplicate groups, or merge duplicate playbooks. Maintenance-only.",
     "parameters": {
         "type": "object",
         "properties": {
-            "id": {"type": "string", "description": "Playbook id."},
-            "action": {"type": "string", "enum": ["review", "reviewed", "promote", "promoted", "needs_review", "quarantine", "quarantined", "supersede", "superseded"]},
+            "id": {"type": "string", "description": "Playbook id. For action=merge this is the canonical target id."},
+            "target_id": {"type": "string", "description": "Optional canonical target id for action=merge; alias for id."},
+            "source_ids": {"type": "array", "items": {"type": "string"}, "description": "Source playbook ids to supersede into target when action=merge."},
+            "action": {
+                "type": "string",
+                "enum": [
+                    "review",
+                    "reviewed",
+                    "promote",
+                    "promoted",
+                    "needs_review",
+                    "quarantine",
+                    "quarantined",
+                    "supersede",
+                    "superseded",
+                    "dedupe",
+                    "duplicates",
+                    "list_duplicates",
+                    "merge",
+                ],
+            },
             "reason": {"type": "string"},
             "superseded_by": {"type": "string"},
+            "status": {"type": "string", "description": "Optional duplicate-list status filter."},
+            "limit": {"type": "integer", "description": "Maximum duplicate groups to return."},
+            "dry_run": {"type": "boolean", "description": "For action=merge, inspect only by default; set false to supersede source_ids."},
         },
-        "required": ["id", "action"],
+        "required": ["action"],
     },
 }
 

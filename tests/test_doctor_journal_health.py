@@ -79,7 +79,13 @@ def test_journal_report_surfaces_digest_health_and_batch_policy(tmp_path):
     conn.execute(
         """
         INSERT INTO journal_entries(scope_id, shared_scope_id, session_id, turn_number, role, content, content_hash, created_at, processed_run_id)
-        VALUES ('scope', 'shared', 's', 1, 'user', 'hello', 'h1', '2026-01-01T00:00:00+00:00', 'run-ok')
+        VALUES ('scope', 'shared', 's', 1, 'user', 'hello', 'h1', '2026-01-01T00:00:00+00:00', 'run-quarantine')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO journal_entries(scope_id, shared_scope_id, session_id, turn_number, role, content, content_hash, created_at, processed_run_id)
+        VALUES ('scope', 'shared', 's', 2, 'assistant', 'blocked by auth', 'h2', '2026-01-02T00:00:00+00:00', 'run-dead-letter')
         """
     )
     conn.executemany(
@@ -91,10 +97,14 @@ def test_journal_report_surfaces_digest_health_and_batch_policy(tmp_path):
             ("run-ok", "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:01+00:00", "ok", "llm", 1, 1, 0, 0, None),
             ("run-quarantine", "2026-01-02T00:00:00+00:00", "2026-01-02T00:00:01+00:00", "ok", "llm-quarantine", 80, 0, 0, 80, None),
             ("run-fallback", "2026-01-03T00:00:00+00:00", "2026-01-03T00:00:01+00:00", "ok_with_fallback", "heuristic-fallback", 10, 1, 0, 0, None),
+            ("run-dead-letter", "2026-01-04T00:00:00+00:00", "2026-01-04T00:00:01+00:00", "dead_letter", "llm", 1, 0, 0, 1, "auth failure"),
         ],
     )
     conn.execute(
         "INSERT INTO journal_rejections(journal_entry_id, run_id, reason, candidate, created_at) VALUES (1, 'run-quarantine', 'retry-exhausted:timeout', '', '2026-01-02T00:00:01+00:00')"
+    )
+    conn.execute(
+        "INSERT INTO journal_rejections(journal_entry_id, run_id, reason, candidate, created_at) VALUES (2, 'run-dead-letter', 'dead-letter:auth token expired', '', '2026-01-04T00:00:01+00:00')"
     )
     conn.commit()
     conn.close()
@@ -112,9 +122,55 @@ def test_journal_report_surfaces_digest_health_and_batch_policy(tmp_path):
     assert health["status_counts"]["ok_with_fallback"] == 1
     assert health["extractor_counts"]["llm-quarantine"]["runs"] == 1
     assert health["retry_exhausted_rejections"] == 1
+    assert health["dead_letter_rejections"] == 1
+    assert health["rejection_categories"] == {"auth": 1, "timeout": 1}
+    assert health["retry_exhausted_categories"] == {"timeout": 1}
+    assert health["dead_letter_categories"] == {"auth": 1}
     assert health["recovery_queue"]["retry_exhausted_candidates"] == 1
+    assert health["recovery_queue"]["dead_letter_candidates"] == 1
+    assert health["recovery_queue"]["retry_exhausted_categories"] == {"timeout": 1}
+    assert health["recovery_queue"]["dead_letter_categories"] == {"auth": 1}
     assert payload["backlog"]["batch_policy"]["max_entries_per_digest"] == 80
     assert any("llm-quarantine" in item or "retry/dead-letter" in item for item in recommendations)
+
+
+def test_journal_report_does_not_degrade_for_operator_classified_quarantine_and_sourced_retry(tmp_path):
+    conn = _conn(tmp_path)
+    _store_memory(conn, memory_id="memory-from-retry", content="Retry-exhausted entry already produced durable memory.")
+    conn.execute(
+        """
+        INSERT INTO journal_entries(id, scope_id, shared_scope_id, session_id, turn_number, role, content, content_hash, created_at, processed_run_id, processed_at)
+        VALUES (10, 'scope', 'shared', 's', 1, 'user', 'already handled', 'h10', '2026-01-01T00:00:00+00:00', 'run-timeout', '2026-01-01T00:00:01+00:00')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO journal_digest_runs(id, started_at, finished_at, status, extractor, processed_entries, inserted, updated, skipped, error, metadata)
+        VALUES ('run-timeout', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:01+00:00', 'ok', 'llm-quarantine', 1, 0, 0, 1, NULL, ?)
+        """,
+        (json.dumps({"operator_classification": "no_replay", "classification_reason": "handled via source link"}, sort_keys=True),),
+    )
+    conn.execute(
+        "INSERT INTO journal_rejections(journal_entry_id, run_id, reason, candidate, created_at) VALUES (10, 'run-timeout', 'retry-exhausted:timeout', '', '2026-01-01T00:00:01+00:00')"
+    )
+    conn.execute(
+        "INSERT INTO memory_journal_sources(memory_id, journal_entry_id, run_id, created_at) VALUES ('memory-from-retry', 10, 'run-timeout', '2026-01-01T00:00:02+00:00')"
+    )
+    conn.commit()
+    conn.close()
+    doctor = _doctor_module()
+
+    payload, check, recommendations = doctor.journal_report(tmp_path, journal_config={"max_entries_per_digest": 80})
+
+    assert check["ok"] is True
+    health = payload["digest_health"]
+    assert health["status"] == "ready"
+    assert health["llm_quarantine_runs"] == 0
+    assert health["historical_llm_quarantine_runs"] == 1
+    assert health["retry_exhausted_rejections"] == 0
+    assert health["historical_retry_exhausted_rejections"] == 1
+    assert health["recovery_queue"]["retry_exhausted_candidates"] == 0
+    assert not any("llm-quarantine" in item or "retry/dead-letter" in item for item in recommendations)
 
 
 def test_doctor_vector_report_marks_empty_index_needs_repair_when_sqlite_has_indexable_memories(tmp_path):
@@ -251,6 +307,25 @@ def test_doctor_sqlite_report_surfaces_orphan_graph_rows(tmp_path):
     assert any("graph hygiene" in item.lower() or "orphan" in item.lower() for item in recommendations)
 
 
+def test_doctor_sqlite_report_surfaces_governance_audit_coverage(tmp_path):
+    conn = _conn(tmp_path)
+    _store_memory(conn, memory_id="legacy-archived", content="Legacy archived memory should be visible in coverage report.", lifecycle="archived")
+    conn.execute("DELETE FROM memory_entities WHERE memory_id = 'legacy-archived'")
+    conn.execute("DELETE FROM memory_relations WHERE source_memory_id = 'legacy-archived' OR target_memory_id = 'legacy-archived'")
+    conn.commit()
+    conn.close()
+    doctor = _doctor_module()
+
+    payload, check, recommendations = doctor.sqlite_report(tmp_path)
+
+    coverage = payload["governance_audit_coverage"]
+    assert coverage["status"] == "needs_review"
+    assert coverage["legacy_coverage"]["missing_audit"] == 1
+    assert coverage["legacy_coverage"]["backfill_candidates"] == 1
+    assert check["ok"] is True
+    assert any("Legacy archived memories without governance audit coverage" in item for item in recommendations)
+
+
 def test_doctor_sqlite_report_surfaces_lifecycle_hidden_graph_rows(tmp_path):
     conn = _conn(tmp_path)
     ensure_graph_schema(conn)
@@ -296,7 +371,7 @@ def test_repair_graph_hygiene_dry_run_and_apply_remove_orphans(tmp_path):
     assert dry_run["dry_run"] is True
     assert dry_run["before"]["orphan_entities"] == 1
     assert dry_run["after"]["orphan_entities"] == 1
-    assert dry_run["deleted"] == {"memory_entities": 0, "memory_relations": 0}
+    assert dry_run["deleted"] == {"memory_entities": 1, "memory_relations": 1}
 
     applied = repair.repair_graph_hygiene(tmp_path, apply=True)
     assert applied["dry_run"] is False

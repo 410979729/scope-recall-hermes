@@ -11,6 +11,7 @@ from .capture_filters import contains_secret_like_text, sanitize_report_text, sh
 from .gating import compact_text
 from .graph import sync_memory_entities
 from .maintenance_ops import json_dumps_stable, make_batch_id, now_utc_iso
+from .response_schemas import FORGETTING_REPORT_SCHEMA_VERSION, FORGETTING_RUN_SCHEMA_VERSION
 from .sql_store import delete_rows, ensure_schema, record_governance_audit_event
 
 
@@ -108,6 +109,7 @@ def build_forgetting_report(conn: sqlite3.Connection, *, accessible_scope_ids: S
     rows = _scoped_rows(conn, accessible_scope_ids)
     soft_by_id: dict[str, dict[str, Any]] = {}
     hard_by_id: dict[str, dict[str, Any]] = {}
+    review_debt_by_id: dict[str, dict[str, Any]] = {}
     duplicate_map: dict[tuple[str, str, str], list[sqlite3.Row]] = defaultdict(list)
 
     for row in rows:
@@ -133,8 +135,16 @@ def build_forgetting_report(conn: sqlite3.Connection, *, accessible_scope_ids: S
         if len(content.strip()) <= VERY_SHORT_CHARS:
             soft_by_id.setdefault(str(row["id"]), _preview(row, reason="very-short-low-value"))
         metadata = _json_loads(row["metadata"])
-        if str(metadata.get("expires_at") or "") == "stale-review" or str(metadata.get("lifecycle") or "") == "candidate":
-            soft_by_id.setdefault(str(row["id"]), _preview(row, reason="stale-review-candidate"))
+        row_lifecycle = str(metadata.get("lifecycle") or "").strip().lower()
+        expires_at = str(metadata.get("expires_at") or "").strip().lower()
+        candidate_status = str(metadata.get("candidate_status") or "").strip().lower()
+        if row_lifecycle == "candidate":
+            if candidate_status in {"rejected_low_value", "candidate_expired"}:
+                soft_by_id.setdefault(str(row["id"]), _preview(row, reason=f"candidate-{candidate_status.replace('_', '-')}"))
+            else:
+                review_debt_by_id.setdefault(str(row["id"]), _preview(row, reason="candidate-review-debt"))
+        elif expires_at == "stale-review":
+            review_debt_by_id.setdefault(str(row["id"]), _preview(row, reason="stale-review-needs-freshness-validation"))
 
     duplicate_groups: list[dict[str, Any]] = []
     for (scope_id, target, key), group in duplicate_map.items():
@@ -160,10 +170,13 @@ def build_forgetting_report(conn: sqlite3.Connection, *, accessible_scope_ids: S
 
     soft = list(soft_by_id.values())
     hard = list(hard_by_id.values())
+    review_debt = list(review_debt_by_id.values())
     return {
+        "schema_version": FORGETTING_REPORT_SCHEMA_VERSION,
         "total_rows": len(rows),
         "soft_archive_candidates": _limited(soft, limit),
         "hard_delete_candidates": _limited(hard, limit),
+        "review_debt": _limited(review_debt, limit),
         "duplicate_groups": _limited(duplicate_groups, limit),
     }
 
@@ -227,11 +240,14 @@ def run_forgetting(
     batch = batch_id or make_batch_id("forgetting")
     soft_items = report["soft_archive_candidates"]["items"]
     hard_items = report["hard_delete_candidates"]["items"] if hard_delete else []
+    review_debt_items = report.get("review_debt", {}).get("items", [])
     result = {
+        "schema_version": FORGETTING_RUN_SCHEMA_VERSION,
         "dry_run": bool(dry_run),
         "batch_id": batch,
         "archived": len(soft_items),
         "deleted": len(hard_items),
+        "review_debt": len(review_debt_items),
         "archive_ids": [item["id"] for item in soft_items],
         "delete_ids": [item["id"] for item in hard_items],
     }

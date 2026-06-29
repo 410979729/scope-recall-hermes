@@ -76,6 +76,61 @@ def _scope() -> RuntimeScope:
     return RuntimeScope(platform="telegram", user_id="joy", chat_id="dm", agent_identity="yuheng", agent_workspace="hermes")
 
 
+def test_nightly_digest_report_ignores_operator_classified_recent_fallbacks(tmp_path):
+    doctor = _load_doctor_module()
+    storage = tmp_path / "scope-recall"
+    storage.mkdir(parents=True)
+    conn = sqlite3.connect(storage / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        conn.execute(
+            """
+            CREATE TABLE nightly_digest_runs(
+                id TEXT PRIMARY KEY,
+                digest_date TEXT NOT NULL,
+                source_db TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                extractor TEXT NOT NULL,
+                model TEXT,
+                dry_run INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                inserted INTEGER NOT NULL DEFAULT 0,
+                updated INTEGER NOT NULL DEFAULT 0,
+                skipped INTEGER NOT NULL DEFAULT 0,
+                deleted INTEGER NOT NULL DEFAULT 0,
+                error TEXT,
+                metadata TEXT NOT NULL DEFAULT '{}'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO nightly_digest_runs(
+                id, digest_date, source_db, started_at, finished_at, extractor, model, dry_run,
+                status, inserted, updated, skipped, deleted, error, metadata
+            ) VALUES (
+                'nightly-fallback', '2026-01-02', 'memory.sqlite3', '2026-01-02T00:00:00+00:00', '2026-01-02T00:00:01+00:00',
+                'llm', 'fixture', 0, 'ok_with_fallback', 1, 0, 0, 0, NULL, ?
+            )
+            """,
+            (json.dumps({"operator_classification": "accepted_fallback", "classification_reason": "fixture reviewed"}, sort_keys=True),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    payload, check, recommendations = doctor.nightly_digest_report(tmp_path)
+
+    assert check == {"ok": True, "failures": []}
+    assert payload["status"] == "ready"
+    assert payload["recent_open_fallbacks"] == 0
+    assert payload["recent_historical_fallbacks"] == 1
+    assert payload["latest_run"]["operator_classification"] == "accepted_fallback"
+    assert not recommendations
+
+
 def test_doctor_reports_experience_schema_and_counts(tmp_path):
     doctor = _load_doctor_module()
     storage = tmp_path / "scope-recall"
@@ -97,9 +152,9 @@ def test_doctor_reports_experience_schema_and_counts(tmp_path):
     assert payload["playbooks"]["total"] == 1
     assert payload["playbooks"]["by_status"] == {"promoted": 1}
     assert payload["promotion_funnel"]["promoted"] == 1
-    assert payload["promotion_funnel"]["promoted_missing_last_verified_at"] == 1
+    assert payload["promotion_funnel"]["promoted_missing_last_verified_at"] == 0
     assert payload["runs"]["total"] == 1
-    assert any("lack last_verified_at" in item for item in recommendations)
+    assert not any("lack last_verified_at" in item for item in recommendations)
 
 
 def test_doctor_experience_funnel_reports_duplicates_and_review_heavy_state(tmp_path):

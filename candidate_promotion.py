@@ -58,6 +58,25 @@ class CandidateDecision:
     importance: float
     memory_type: str
     risk: str = "low"
+    lane: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.lane:
+            object.__setattr__(self, "lane", default_lane_for_decision(self.action, self.reason, self.risk))
+
+
+def default_lane_for_decision(action: str, reason: str, risk: str = "low") -> str:
+    if action == "promote":
+        return "promote_safe"
+    if action == "archive":
+        return "archive_low_value"
+    if action == "skip":
+        return "skip"
+    if risk == "high":
+        return "needs_review_high_risk"
+    if reason == "below_auto_promotion_threshold":
+        return "defer_recent"
+    return "needs_review"
 
 
 def now_iso() -> str:
@@ -153,6 +172,7 @@ def candidate_rows(conn: sqlite3.Connection, *, limit: int = 1000) -> list[sqlit
 def candidate_debt_report(conn: sqlite3.Connection, *, limit: int = 1000, sample_limit: int = 8) -> dict[str, Any]:
     rows = candidate_rows(conn, limit=limit)
     by_action = {"promote": 0, "archive": 0, "keep_candidate": 0, "skip": 0}
+    by_lane: dict[str, int] = {}
     by_target: dict[str, int] = {}
     by_source: dict[str, int] = {}
     samples: list[dict[str, Any]] = []
@@ -161,6 +181,7 @@ def candidate_debt_report(conn: sqlite3.Connection, *, limit: int = 1000, sample
     for row in rows:
         decision = classify_candidate_row(row)
         by_action[decision.action] = by_action.get(decision.action, 0) + 1
+        by_lane[decision.lane] = by_lane.get(decision.lane, 0) + 1
         target = str(row["target"] or "")
         source = str(row["source"] or "")
         by_target[target] = by_target.get(target, 0) + 1
@@ -178,6 +199,7 @@ def candidate_debt_report(conn: sqlite3.Connection, *, limit: int = 1000, sample
                     "source": source,
                     "updated_at": updated_at,
                     "action": decision.action,
+                    "lane": decision.lane,
                     "reason": decision.reason,
                     "memory_type": decision.memory_type,
                     "confidence": decision.confidence,
@@ -203,6 +225,7 @@ def candidate_debt_report(conn: sqlite3.Connection, *, limit: int = 1000, sample
         "newest_updated_at": newest_updated_at,
         "oldest_age_hours": oldest_age_hours,
         "by_action": by_action,
+        "by_lane": dict(sorted(by_lane.items())),
         "by_target": dict(sorted(by_target.items())),
         "by_source": dict(sorted(by_source.items())),
         "samples": samples,

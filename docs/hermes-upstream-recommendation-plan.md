@@ -36,12 +36,12 @@ Primary differentiators:
 
 ## Upstream readiness status
 
-Status after the `v1.4.0` Experience Kernel MVP work. Completed items must still be re-verified immediately before tag/release/upstream PR, but this is the target evidence shape for proposed standalone-provider visibility.
+Status after the Experience Kernel MVP (`v1.4.0`) and the `v1.5.x` commercial-governance/product-hardening line. Completed items must still be re-verified immediately before tag/release/upstream PR, but this is the target evidence shape for proposed standalone-provider visibility.
 
 ### Repository hygiene
 
 - [ ] Current follow-up branch working tree is clean before merge/release.
-- [ ] Latest git tag agrees with `pyproject.toml`, `plugin.yaml`, README version text, and `CHANGELOG.md` after the `v1.4.0` release tag is created.
+- [ ] Latest git tag agrees with `pyproject.toml`, `plugin.yaml`, README version text, and `CHANGELOG.md` before opening any upstream docs PR.
 - [x] `python -m pytest -q` passes locally.
 - [x] `python scripts/check.release.py` passes locally.
 - [x] CI passes on Python 3.11 and 3.12.

@@ -6,8 +6,10 @@ from typing import Any
 
 try:
     from .doctor_common import redact_secret_like_text
+    from .freshness import fact_freshness_report
 except ImportError:  # pragma: no cover - direct source-script execution fallback
     from doctor_common import redact_secret_like_text
+    from freshness import fact_freshness_report
 
 def experience_config_summary(config: dict[str, Any]) -> dict[str, Any]:
     raw_experience = config.get("experience")
@@ -68,6 +70,7 @@ def experience_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any]
                 for row in conn.execute("SELECT outcome, COUNT(*) AS count FROM experience_runs GROUP BY outcome")
             }
             stale_facts = int(conn.execute("SELECT COUNT(*) FROM fact_freshness WHERE status IN ('stale', 'needs_live_check')").fetchone()[0])
+            freshness_report = fact_freshness_report(conn)
             promoted_missing_verified_at = int(
                 conn.execute("SELECT COUNT(*) FROM procedural_playbooks WHERE status = 'promoted' AND COALESCE(last_verified_at, '') = ''").fetchone()[0]
             )
@@ -129,6 +132,11 @@ def experience_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any]
             f"(stale={unresolved_stale_runs}/{stale_runs}, misleading={unresolved_misleading_runs}/{misleading_runs}); "
             "quarantine or review affected playbooks."
         )
+    if int(freshness_report.get("needs_live_check") or 0):
+        recommendations.append(
+            f"Fact freshness has {freshness_report.get('needs_live_check')} stale/needs-live-check fact(s); "
+            "run live validation before treating those operational facts as current."
+        )
 
     payload = {
         "enabled": True,
@@ -152,6 +160,7 @@ def experience_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any]
         },
         "runs": {"total": run_total, "by_outcome": dict(sorted(run_by_outcome.items()))},
         "stale_facts": stale_facts,
+        "fact_freshness": freshness_report,
     }
     return payload, {"ok": True, "failures": []}, recommendations
 
@@ -183,7 +192,11 @@ def nightly_digest_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, 
                 for row in conn.execute(
                     """
                     SELECT id, digest_date, started_at, finished_at, extractor, model, dry_run,
-                           status, inserted, updated, skipped, deleted, error
+                           status, inserted, updated, skipped, deleted, error,
+                           CASE
+                               WHEN json_valid(metadata) THEN COALESCE(json_extract(metadata, '$.operator_classification'), '')
+                               ELSE ''
+                           END AS operator_classification
                     FROM nightly_digest_runs
                     ORDER BY started_at DESC
                     LIMIT 10
@@ -212,7 +225,13 @@ def nightly_digest_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, 
         consecutive_errors += 1
 
     recent_errors = [row for row in rows if str(row.get("status") or "") == "error"]
-    recent_fallbacks = [row for row in rows if "fallback" in str(row.get("status") or "")]
+    recent_fallbacks = [
+        row
+        for row in rows
+        if "fallback" in str(row.get("status") or "")
+        and str(row.get("operator_classification") or "") not in {"accepted_fallback", "handled", "no_replay"}
+    ]
+    historical_recent_fallbacks = [row for row in rows if "fallback" in str(row.get("status") or "")]
     failures: list[str] = []
     if latest_status == "error":
         failures.append(f"latest nightly digest run failed: {latest.get('error') or latest.get('started_at')}")
@@ -237,6 +256,8 @@ def nightly_digest_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, 
         "runs": {"total": total_runs, "by_status": dict(sorted(by_status.items()))},
         "latest_run": latest,
         "recent_runs": rows,
+        "recent_open_fallbacks": len(recent_fallbacks),
+        "recent_historical_fallbacks": len(historical_recent_fallbacks),
         "consecutive_errors": consecutive_errors,
     }
     return payload, {"ok": not failures, "failures": failures}, recommendations
