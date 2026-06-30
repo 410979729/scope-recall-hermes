@@ -1,3 +1,7 @@
+"""Tests for bootstrapping Experience playbooks from vetted durable evidence.
+
+They guard against creating low-value or unreviewable procedural memories."""
+
 from __future__ import annotations
 
 import json

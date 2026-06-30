@@ -1,3 +1,7 @@
+"""Extractor selection and shared runtime helpers for heuristic and LLM journal digest paths.
+
+This module bridges raw journal bundles to candidate objects without committing durable memory writes."""
+
 from __future__ import annotations
 
 import sqlite3
@@ -45,6 +49,9 @@ def _parse_entry_timestamp(value: str) -> float:
 
 
 def _journal_session_bundles(entries: list[JournalEntry]) -> list[SessionBundle]:
+    """Build session bundles from raw journal rows for candidate extraction.
+
+    Bundling preserves session boundaries so summaries do not merge unrelated conversations into one durable memory."""
     grouped: dict[str, list[JournalEntry]] = {}
     for entry in entries:
         grouped.setdefault(entry.session_id or "unknown", []).append(entry)
@@ -182,6 +189,9 @@ def llm_journal_candidates(
     scope: RuntimeScope,
     journal_config: dict[str, Any],
 ) -> list[JournalDigestCandidate]:
+    """Extract journal candidates with an LLM and return status-rich results.
+
+    The function preserves quarantine/fallback information so failed model calls remain visible operational debt."""
     runtime_config = _runtime_config(hermes_home)
     options = DigestOptions(
         hermes_home=hermes_home,

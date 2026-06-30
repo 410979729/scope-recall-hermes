@@ -1,3 +1,7 @@
+"""Vector companion doctor checks for LanceDB/SQLite vector readiness and consistency with SQLite truth rows.
+
+Vector state is rebuildable companion data; failures should mark repair needs without deleting truth rows."""
+
 from __future__ import annotations
 
 import json
@@ -155,6 +159,9 @@ def lancedb_vector_report(
     expected_embedder: dict[str, Any] | None = None,
     index_general: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    """Inspect LanceDB vector companion status and compare it with SQLite truth expectations.
+
+    The report highlights missing, duplicate, or dimension-mismatched vector rows as repair debt."""
     recommendations: list[str] = []
     vector_dir = hermes_home / "scope-recall" / "lancedb"
     if not vector_dir.exists():
@@ -234,6 +241,9 @@ def sqlite_vector_report(
     expected_embedder: dict[str, Any] | None = None,
     index_general: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    """Inspect the SQLite brute-force vector companion for consistency with truth rows.
+
+    A bad companion should report repair-needed status, not delete or rewrite durable memories."""
     recommendations: list[str] = []
     vector_path = hermes_home / "scope-recall" / "vector.sqlite3"
     if not vector_path.exists():

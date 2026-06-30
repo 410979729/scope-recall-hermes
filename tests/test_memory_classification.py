@@ -1,3 +1,7 @@
+"""Tests for memory governance classification heuristics.
+
+They keep cleanup and promotion evidence stable as low-signal patterns evolve."""
+
 from __future__ import annotations
 
 import json

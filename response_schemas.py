@@ -1,3 +1,7 @@
+"""Public response-schema version constants for operator-facing JSON reports.
+
+Update these identifiers only when top-level response meaning or required fields change."""
+
 from __future__ import annotations
 
 """Stable public JSON response schema-version identifiers.

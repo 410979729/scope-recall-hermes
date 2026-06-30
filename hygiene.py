@@ -1,3 +1,7 @@
+"""Legacy and runtime hygiene reporting for noisy memories, secret-like text, and low-value captures.
+
+Hygiene reports identify review targets; mutation decisions belong to governance/forgetting workflows."""
+
 from __future__ import annotations
 
 from collections import Counter, defaultdict

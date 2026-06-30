@@ -1,3 +1,7 @@
+"""Tests for vector repair CLI dry-run/apply behavior, backups, and dimension checks.
+
+They ensure vector repair rebuilds companion state from SQLite truth safely."""
+
 from __future__ import annotations
 
 import json

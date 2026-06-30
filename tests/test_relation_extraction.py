@@ -1,3 +1,7 @@
+"""Tests for deterministic relation extraction and graph synchronization.
+
+They protect contradiction, dependency, supersession, and same-topic edge semantics."""
+
 from __future__ import annotations
 
 import json

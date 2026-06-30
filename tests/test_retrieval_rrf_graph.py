@@ -1,3 +1,7 @@
+"""Tests for reciprocal-rank-fusion and graph-aware retrieval behavior.
+
+They ensure relation boosts help ranking without overwhelming base relevance."""
+
 from __future__ import annotations
 
 import importlib.abc

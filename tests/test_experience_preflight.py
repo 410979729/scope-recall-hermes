@@ -1,3 +1,7 @@
+"""Tests for Experience preflight scoring, durable evidence, and promotion gates.
+
+They prevent automation from promoting playbooks without auditable quality checks."""
+
 from __future__ import annotations
 
 import sqlite3

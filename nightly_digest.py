@@ -1,3 +1,7 @@
+"""Nightly session digest pipeline for turning session history into candidate durable memories.
+
+The pipeline separates collection, classification, LLM fallback, and apply steps so failures become visible operational status."""
+
 from __future__ import annotations
 
 import argparse
@@ -292,6 +296,9 @@ def load_session_bundles(
     session_id: str = "",
     limit_sessions: int = 0,
 ) -> list[SessionBundle]:
+    """Load bounded session-message bundles for nightly digest extraction.
+
+    The loader applies platform/session filters and text limits before any LLM work so digest cost and privacy exposure stay controlled."""
     if not db_path.exists():
         return []
     start_ts, end_ts = local_day_bounds(digest_date, timezone_name)
@@ -479,6 +486,9 @@ def bundle_artifact_anchor_block(bundle: SessionBundle) -> str:
 
 
 def heuristic_candidates(bundle: SessionBundle) -> list[DigestCandidate]:
+    """Generate digest candidates using deterministic heuristics.
+
+    This fallback keeps nightly digest useful when LLM extraction is disabled, unavailable, or quarantined."""
     candidates: list[DigestCandidate] = []
     artifact_block = bundle_artifact_anchor_block(bundle)
     user_texts = [message.content for message in bundle.messages if message.role == "user" and message.content]
@@ -562,6 +572,9 @@ def build_prompt(bundle: SessionBundle, chunk: str, existing_context: list[str])
 
 
 def _parse_llm_candidates_with_status(raw: str, *, bundle: SessionBundle) -> tuple[list[DigestCandidate], str]:
+    """Parse LLM digest output into candidates plus explicit status metadata.
+
+    Malformed or low-quality model output should become a classified failure, not silent durable memory."""
     text = raw.strip()
     if not text:
         return [], "empty"
@@ -865,6 +878,9 @@ def apply_candidates(
     dry_run: bool,
     runtime_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Apply vetted digest candidates to memory storage and record per-candidate outcomes.
+
+    Candidate writes go through normal memory operations so duplicate detection, scope policy, vector sync, and audit metadata stay consistent with tool writes."""
     seen_candidate_keys: set[str] = set()
     actions: list[dict[str, Any]] = []
     counts = Counter()
@@ -1004,6 +1020,9 @@ def collect_candidates(
     existing_context: list[str],
     fallback_events: list[dict[str, Any]] | None = None,
 ) -> list[DigestCandidate]:
+    """Collect digest candidates from session bundles using configured extractor strategy.
+
+    The result includes fallback/status metadata so later apply steps can explain why candidates were or were not produced."""
     candidates: list[DigestCandidate] = []
     fallback_events = fallback_events if fallback_events is not None else []
     for bundle in bundles:
@@ -1069,6 +1088,9 @@ def collect_candidates(
 
 
 def run_digest(options: DigestOptions) -> dict[str, Any]:
+    """Run the nightly session digest pipeline and persist status evidence.
+
+    The pipeline collects sessions, extracts candidates, applies quality gates, and writes a durable run result so cron output can distinguish success, fallback, quarantine, and no-op states."""
     hermes_home = options.hermes_home.expanduser().resolve()
     db_path = resolve_session_db(hermes_home, options.state_db)
     if db_path is None or not db_path.exists():

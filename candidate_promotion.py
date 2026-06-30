@@ -1,3 +1,7 @@
+"""Candidate-memory promotion planner and debt reporter.
+
+This module classifies unpromoted rows conservatively so operators can dry-run promotion/archive choices before durable memory surfaces change."""
+
 from __future__ import annotations
 
 import json
@@ -170,6 +174,9 @@ def candidate_rows(conn: sqlite3.Connection, *, limit: int = 1000) -> list[sqlit
 
 
 def candidate_debt_report(conn: sqlite3.Connection, *, limit: int = 1000, sample_limit: int = 8) -> dict[str, Any]:
+    """Summarize ordinary candidate-memory debt and a dry-run promotion plan.
+
+    The report lets operators see promotable rows, archive-noise choices, and stale candidates before changing profile behavior."""
     rows = candidate_rows(conn, limit=limit)
     by_action = {"promote": 0, "archive": 0, "keep_candidate": 0, "skip": 0}
     by_lane: dict[str, int] = {}

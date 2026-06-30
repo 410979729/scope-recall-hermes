@@ -1,3 +1,7 @@
+"""Asynchronous capture writer for current-turn memory rows.
+
+The provider queues capture work here so tool latency stays low, while the synchronous helpers remain available for tests and explicit writes."""
+
 from __future__ import annotations
 
 import json
@@ -104,6 +108,9 @@ def store_now(
     allow_duplicate: bool = False,
     scope_mode: str | None = None,
 ) -> tuple[str, bool]:
+    """Synchronously store one capture row through the provider database.
+
+    This is the direct write path used by tests and queue workers, so it must preserve duplicate checks and metadata hygiene."""
     if not should_capture_text(content, provider._config).allowed:
         return "", False
     conn = provider._require_conn()

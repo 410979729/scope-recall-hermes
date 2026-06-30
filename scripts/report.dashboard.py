@@ -75,6 +75,9 @@ def _trend(summary: dict[str, Any], previous_summary: dict[str, Any]) -> dict[st
 
 
 def build_dashboard(source_root: Path, hermes_home: Path, *, previous_path: Path | None = None) -> dict[str, Any]:
+    """Assemble the compact operator dashboard from read-only source and runtime checks.
+
+    Dashboard severity summarizes existing debt; this function must not repair or mutate state while gathering evidence for release/readiness reports."""
     doctor = _load_doctor()
     runtime_config = doctor.load_runtime_config(source_root, hermes_home)
     source, source_check, source_recommendations = doctor.source_report(source_root)

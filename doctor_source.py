@@ -1,3 +1,7 @@
+"""Source-tree doctor checks for release-critical files, packaged assets, and repository contract surfaces.
+
+These checks protect the installable artifact rather than the live runtime database."""
+
 from __future__ import annotations
 
 import re

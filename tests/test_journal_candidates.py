@@ -1,3 +1,7 @@
+"""Tests for heuristic journal candidate extraction and noise rejection.
+
+They prevent transcript-shaped or generic session text from becoming durable memories."""
+
 from __future__ import annotations
 
 from pathlib import Path

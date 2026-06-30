@@ -1,3 +1,7 @@
+"""Embedding provider adapters for local, OpenAI-compatible, and hosted vector backends.
+
+Keep provider quirks isolated here so vector stores and repair scripts only see float vectors with stable dimensions."""
+
 from __future__ import annotations
 
 import hashlib
@@ -208,6 +212,9 @@ class LocalDebugEmbedder(LocalHashEmbedder):
 
 
 class OpenAICompatibleEmbedder(BaseEmbedder):
+    """OpenAI-compatible hosted embedding adapter.
+
+    Provider-specific request quirks, including float vector response formats, are contained here rather than spread across vector code."""
     def __init__(
         self,
         *,
@@ -283,6 +290,9 @@ class OpenAIEmbedder(OpenAICompatibleEmbedder):
 
 
 class SentenceTransformersEmbedder(BaseEmbedder):
+    """Local sentence-transformers embedder adapter.
+
+    It keeps optional heavy dependencies isolated so deployments without local embedding packages can still use SQLite-only mode."""
     def __init__(
         self,
         *,

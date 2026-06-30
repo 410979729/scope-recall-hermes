@@ -1,3 +1,7 @@
+"""Memory quality lint rules for active secrets, pollution, and low-signal durable rows.
+
+Quality findings are review evidence and should distinguish active problems from archived historical data."""
+
 from __future__ import annotations
 
 import json
@@ -107,6 +111,9 @@ def lint_memory_row(row: sqlite3.Row) -> list[str]:
 
 
 def memory_quality_report(conn: sqlite3.Connection, *, sample_limit: int = 8) -> dict[str, Any]:
+    """Build the active memory quality report for secrets, pollution, and low-value rows.
+
+    The report distinguishes active issues from archived history so dashboards do not overstate current risk."""
     tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     if "memories" not in tables:
         return {

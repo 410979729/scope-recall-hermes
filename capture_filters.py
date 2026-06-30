@@ -1,3 +1,7 @@
+"""Capture hygiene filters for rejecting low-value, secret-like, or path-heavy text before it reaches durable storage.
+
+These filters are intentionally conservative because they sit before SQLite truth and journal evidence."""
+
 from __future__ import annotations
 
 import re

@@ -85,6 +85,9 @@ def _index_general_enabled(runtime_config: dict[str, Any]) -> bool:
 
 
 def main() -> int:
+    """Parse doctor CLI flags, combine source/runtime checks, and emit a stable report.
+
+    The wrapper should stay thin so focused doctor modules can evolve without breaking operator commands."""
     args = parse_args()
     source_root = Path(args.source_root).expanduser().resolve()
     source, source_check, recommendations = source_report(source_root)

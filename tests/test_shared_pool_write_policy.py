@@ -1,3 +1,7 @@
+"""Tests for shared-pool read/write policy and explicit enablement.
+
+They protect the boundary between local, shared, and pool-scoped memories."""
+
 from __future__ import annotations
 
 import json

@@ -1,3 +1,7 @@
+"""Tests for skill-governance interactions and exported procedural evidence.
+
+They keep reusable workflows distinct from raw memory capture."""
+
 from __future__ import annotations
 
 import sqlite3

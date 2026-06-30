@@ -1,3 +1,7 @@
+"""Preflight checks that score Experience playbook candidates before promotion.
+
+The preflight stage records evidence and failure reasons so automation can be audited instead of blindly trusting model output."""
+
 from __future__ import annotations
 
 import re
@@ -169,6 +173,9 @@ def experience_preflight(
     record_run: bool = False,
     scope_id: str = "",
 ) -> dict[str, Any]:
+    """Evaluate playbook candidates before promotion or automation.
+
+    Preflight records durable evidence for why a playbook is safe, risky, duplicate, superseded, or still needs review."""
     cfg = _experience_config(config or {})
     if not _bool_config(cfg, "enabled", True):
         return {"decision": "no_reuse", "reasons": ["experience_disabled"], "packet": "", "results": []}

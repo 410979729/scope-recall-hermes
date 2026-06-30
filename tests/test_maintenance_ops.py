@@ -1,3 +1,7 @@
+"""Tests for maintenance-operation response helpers.
+
+They keep dry-run/apply output consistent across scripts and provider tools."""
+
 from __future__ import annotations
 
 import sqlite3

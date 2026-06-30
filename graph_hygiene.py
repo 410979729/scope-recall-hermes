@@ -1,3 +1,7 @@
+"""Graph companion hygiene checks and repair helpers.
+
+Repairs remove orphan companion rows only after comparing against SQLite truth, never the other way around."""
+
 from __future__ import annotations
 
 import sqlite3

@@ -1,3 +1,7 @@
+"""SQLite truth-store schema, migration, and row-level helper functions.
+
+This is the authoritative durable store; companion vector/graph state must be rebuildable from rows managed here."""
+
 from __future__ import annotations
 
 import hashlib
@@ -89,6 +93,9 @@ def _row_to_dict(cursor: sqlite3.Cursor, row: sqlite3.Row | tuple[Any, ...]) -> 
 
 
 def schema_migration_status(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Return live schema and migration ledger status for release/readiness checks.
+
+    The function is read-only evidence: callers decide separately whether to run migrations."""
     user_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
     try:
         table = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'").fetchone()
@@ -304,6 +311,9 @@ def record_governance_audit_event(
 
 
 def ensure_experience_schema(conn: sqlite3.Connection) -> None:
+    """Create or migrate Experience Kernel tables in the SQLite truth store.
+
+    The schema helper is idempotent because it may run during startup, tests, or release smoke checks before any Experience tools are used."""
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS task_episodes (
@@ -599,6 +609,9 @@ def store_row(
     metadata: str = "{}",
     allow_duplicate: bool = False,
 ) -> tuple[str, str, str, bool]:
+    """Insert one durable memory row into the SQLite truth store.
+
+    The helper centralizes IDs, timestamps, scope, metadata serialization, and duplicate-sensitive fields used by downstream companions."""
     content = enrich_content_with_artifact_anchors(content)
     now = now_iso()
     summary = compact_text(content, 220)
@@ -671,6 +684,9 @@ def update_row(
     scope_id: str | None = None,
     scope_ids: list[str] | tuple[str, ...] | None = None,
 ) -> tuple[bool, str, str]:
+    """Update one SQLite truth row while preserving metadata and lifecycle invariants.
+
+    Callers use this helper so conflict review, freshness, and governance state do not get accidentally discarded by ad-hoc SQL."""
     content = enrich_content_with_artifact_anchors(content)
     if scope_ids is not None:
         clean_scope_ids = [str(item) for item in scope_ids if str(item)]
@@ -795,6 +811,9 @@ def delete_rows(
     scope_id: str | None = None,
     scope_ids: list[str] | tuple[str, ...] | None = None,
 ) -> int:
+    """Delete truth rows only for explicit hard-delete maintenance flows.
+
+    Most forgetting paths should soft-archive instead; callers reaching this helper must already have rollback/audit justification."""
     ids = [str(memory_id) for memory_id in ids if str(memory_id).strip()]
     if not ids:
         return 0

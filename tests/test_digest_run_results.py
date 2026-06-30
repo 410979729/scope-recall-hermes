@@ -1,3 +1,7 @@
+"""Tests for normalized journal digest result payloads and metadata fields.
+
+These contracts keep doctor/dashboard status readable when digest paths no-op, succeed, or degrade."""
+
 from __future__ import annotations
 
 from collections import Counter

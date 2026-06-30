@@ -1,3 +1,7 @@
+"""Tests for curated, SQLite, and vector storage read views.
+
+They ensure lifecycle and scope filters are applied before recall merges candidates."""
+
 from __future__ import annotations
 
 import sqlite3

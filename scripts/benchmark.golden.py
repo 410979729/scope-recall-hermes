@@ -359,6 +359,9 @@ def run_golden(
     auto_explain_on_fail: bool,
     overwrite_config: bool = False,
 ) -> dict[str, Any]:
+    """Run golden recall cases against an isolated or explicitly supplied Hermes home.
+
+    The benchmark verifies expected and forbidden memory IDs so release gates catch semantic retrieval regressions."""
     fixture = json.loads(cases_path.read_text(encoding="utf-8"))
     fixture_config = fixture.get("config") if isinstance(fixture.get("config"), dict) else {}
     plugin = _load_provider_for_home(hermes_home)

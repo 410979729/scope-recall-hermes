@@ -1,3 +1,7 @@
+"""Tests that doctor wrapper exports and modular doctor files stay compatible.
+
+They allow doctor internals to be split without breaking existing operator imports."""
+
 from __future__ import annotations
 
 import ast

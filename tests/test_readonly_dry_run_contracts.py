@@ -1,3 +1,7 @@
+"""Tests that read-only and dry-run commands do not mutate runtime state.
+
+These contracts are central to safe operator workflows and release checks."""
+
 from __future__ import annotations
 
 import json

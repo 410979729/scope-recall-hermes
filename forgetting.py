@@ -1,3 +1,7 @@
+"""Forgetting and governance reporting for duplicate, stale, or low-value memories.
+
+Default actions are soft-archive and dry-run oriented so operators can review rollback material before destructive cleanup."""
+
 from __future__ import annotations
 
 import json
@@ -234,6 +238,9 @@ def run_forgetting(
     batch_id: str | None = None,
     actor: str = "scope-recall-forgetting",
 ) -> dict[str, Any]:
+    """Execute a forgetting plan in dry-run or apply mode.
+
+    Default behavior is soft archive with rollback evidence; hard delete paths are intentionally explicit because durable memory cleanup must be auditable and reversible where possible."""
     if not dry_run:
         ensure_schema(conn)
     report = build_forgetting_report(conn, accessible_scope_ids=accessible_scope_ids, limit=limit)
@@ -297,6 +304,9 @@ def run_forgetting(
     vector_error = ""
     if archived_ids and vector_store is not None:
         try:
+            # Soft-archived rows stay in SQLite for rollback/audit, but they
+            # should leave vector recall immediately. If companion deletion
+            # fails, the archive state is rolled back below to avoid split state.
             vector_store.delete_by_ids(archived_ids)
             archived_vector_deleted = len(archived_ids)
         except Exception as exc:

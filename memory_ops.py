@@ -1,3 +1,7 @@
+"""High-level memory operations behind Scope Recall tools: store, search, update, merge, forget, govern, and explain.
+
+This layer coordinates SQLite truth, vector companion state, graph evidence, and audit receipts; mutations must preserve rollback semantics."""
+
 from __future__ import annotations
 
 import json
@@ -271,6 +275,9 @@ def _target_scope_mode_for_existing(provider: Any, row: Any, target: str) -> str
 
 
 def update_memory(provider: Any, memory_id: str, content: str, target: str | None = None) -> tuple[bool, str, str]:
+    """Update memory content and target while preserving governance evidence.
+
+    After edits, conflict and relation metadata must be refreshed so recall does not rely on stale companion state."""
     with provider._lock:
         placeholders = _scope_placeholders(provider, writable=True)
         scope_params = _writable_scope_params(provider)
@@ -330,6 +337,9 @@ def update_memory(provider: Any, memory_id: str, content: str, target: str | Non
 
 
 def merge_memories(provider: Any, target_id: str, source_ids: list[str], content: str | None = None, target: str | None = None) -> dict[str, Any]:
+    """Merge source memories into a target memory with audit-friendly metadata updates.
+
+    The operation should preserve accumulated evidence and avoid hiding conflicts by simply deleting source rows."""
     source_ids = [str(memory_id) for memory_id in source_ids if str(memory_id).strip()]
     conn = provider._require_conn()
     with provider._lock:
@@ -423,6 +433,9 @@ def export_memories(provider: Any, *, fmt: str = "jsonl", scope_only: bool = Tru
 
 
 def govern_memories(provider: Any, *, dry_run: bool = True, scope_only: bool = True) -> dict[str, Any]:
+    """Build governance action plans for active memories.
+
+    The function keeps classification, review surfaces, and optional apply behavior together so operator tools can expose the exact proposed mutation set."""
     conn = provider._require_conn()
     if scope_only:
         where = f"WHERE scope_id IN ({_scope_placeholders(provider, writable=True)})"
@@ -559,6 +572,9 @@ def archive_memories(
     actor: str = "scope_recall_forget",
     batch_id: str = "",
 ) -> dict[str, Any]:
+    """Soft-archive selected memories with governance audit evidence.
+
+    Archiving preserves SQLite truth and rollback metadata while removing rows from ordinary recall surfaces."""
     requested_ids = [str(memory_id) for memory_id in ids if str(memory_id).strip()]
     batch = batch_id or f"scope_recall_forget_{uuid.uuid4().hex}"
     payload: dict[str, Any] = {
@@ -593,6 +609,10 @@ def archive_memories(
         if not scoped_ids:
             return payload
         vector_companion_deleted = getattr(provider, "_vector_store", None) is not None and bool(scoped_ids)
+        # Vector cleanup happens before the SQLite archive so a stale vector hit
+        # cannot survive a successful forget operation. If the later SQL
+        # transaction fails, mark the companion repair-needed instead of
+        # pretending vector state is trustworthy.
         if not _delete_vectors_before_sql(provider, scoped_ids):
             payload["skipped"] = scoped_ids
             return payload
@@ -902,6 +922,9 @@ def profile_payload(
     limit: int = 5,
     max_chars: int = 1200,
 ) -> dict[str, Any]:
+    """Build the compact profile/context payload for user, memory, project, ops, and optional general rows.
+
+    The payload should preserve target boundaries and lifecycle filtering while fitting into prompt budget."""
     limit = max(1, min(20, int(limit or 5)))
     max_chars = max(120, min(4000, int(max_chars or 1200)))
     selected_targets = _profile_targets(targets, include_general=include_general)
@@ -1174,6 +1197,9 @@ def inspect_memory(provider: Any, *, memory_id: str) -> dict[str, Any]:
 
 
 def explain_query(provider: Any, *, query: str, limit: int = 5) -> dict[str, Any]:
+    """Return retrieval explanations for a query without changing recall state.
+
+    Explanations expose filters, scores, relation evidence, and ranking reasons so benchmark failures are debuggable."""
     results = provider._recall_service.search_memories(query, limit=max(1, min(20, limit)))
     payload_results: list[dict[str, Any]] = []
 
@@ -1313,6 +1339,9 @@ def benchmark_queries(
     include_trace: bool = False,
     prompt_budget_chars: int = 0,
 ) -> dict[str, Any]:
+    """Run recall benchmark queries against the current provider state.
+
+    The benchmark path returns structured pass/fail evidence and optional explanations so release gates can catch retrieval regressions without mutating memory."""
     normalized_cases = _benchmark_cases(queries, cases)
     rows: list[dict[str, Any]] = []
     aggregate_failures: list[str] = []
@@ -1436,6 +1465,9 @@ def benchmark_queries(
 
 
 def stats_payload(provider: Any) -> dict[str, Any]:
+    """Build the provider stats payload consumed by tools, dashboards, and tests.
+
+    Stats should expose runtime debt clearly while keeping examples sanitized and avoiding hidden mutations."""
     conn = provider._require_conn()
     with provider._lock:
         total = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]

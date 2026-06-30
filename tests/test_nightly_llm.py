@@ -1,3 +1,7 @@
+"""Tests for nightly LLM provider resolution, request payloads, and failure handling.
+
+They isolate provider configuration bugs before they affect scheduled digest runs."""
+
 from __future__ import annotations
 
 import json

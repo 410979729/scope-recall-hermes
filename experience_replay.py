@@ -1,3 +1,7 @@
+"""Replay benchmark runner for Experience playbooks and procedural recall behavior.
+
+Replay cases are release evidence: they verify that promoted procedures still answer expected tasks after refactors."""
+
 from __future__ import annotations
 
 import json
@@ -108,6 +112,9 @@ def evaluate_replay_case(
     config: Mapping[str, Any] | None = None,
     index: int = 0,
 ) -> dict[str, Any]:
+    """Evaluate one Experience replay case against promoted playbooks.
+
+    Replay cases check both expected hits and forbidden matches so procedural recall quality is measured, not assumed."""
     query = str(case.get("query") or case.get("task") or "")
     baseline_text = str(case.get("baseline_text") or case.get("baseline") or "")
     required_terms = _required_terms_from_case(case)

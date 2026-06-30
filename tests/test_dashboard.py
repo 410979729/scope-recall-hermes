@@ -1,3 +1,7 @@
+"""Tests for dashboard response shape, output-file behavior, and vector-fallback health classification.
+
+Dashboard contracts feed release readiness and operator health checks."""
+
 from __future__ import annotations
 
 import importlib.util

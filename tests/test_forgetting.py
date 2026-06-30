@@ -1,3 +1,7 @@
+"""Tests for forgetting reports, soft archive, hard delete safeguards, and rollback evidence.
+
+They protect the principle that ordinary forgetting should be auditable and reversible."""
+
 from __future__ import annotations
 
 import json

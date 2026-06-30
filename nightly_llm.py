@@ -1,3 +1,7 @@
+"""Provider resolution and LLM prompt helpers for nightly digest runs.
+
+This module handles provider-specific request details while returning sanitized, bounded digest candidates."""
+
 from __future__ import annotations
 
 import base64
@@ -87,6 +91,9 @@ def _dict_child(mapping: dict[str, Any], key: str) -> dict[str, Any]:
 
 
 def resolve_llm_config(hermes_home: Path, options: Any) -> dict[str, Any]:
+    """Resolve provider, model, endpoint, and timeout settings for nightly LLM extraction.
+
+    Configuration errors are reported as structured failures so cron does not silently produce empty digest output."""
     config_path = hermes_home / "config.yaml"
     env = load_dotenv(hermes_home / ".env")
     env.update(os.environ)

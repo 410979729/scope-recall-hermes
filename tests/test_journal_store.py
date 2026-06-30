@@ -1,3 +1,7 @@
+"""Tests for journal schema, capture filtering, chunking, and processed flags.
+
+They protect journal rows as operational evidence for later digest/recovery."""
+
 from __future__ import annotations
 
 from pathlib import Path

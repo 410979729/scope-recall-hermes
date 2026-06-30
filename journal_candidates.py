@@ -1,3 +1,7 @@
+"""Heuristic candidate extraction for journal digest batches.
+
+The extractor turns session entries into reviewable memory candidates while rejecting generic transcript/template noise."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

@@ -1,3 +1,7 @@
+"""Tool and configuration schema builders exposed to Hermes.
+
+Schema generation controls the prompt/tool surface, so compact and standard profiles must stay aligned with dispatcher support."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -62,6 +66,9 @@ def _extra_tool_names(raw_extra_tools: Any) -> list[str]:
 
 
 def build_tool_schemas(config: dict[str, Any], *, agent_context: str = "primary") -> list[dict[str, Any]]:
+    """Build the public tool schema list for compact, standard, and optional maintenance surfaces.
+
+    Schema exposure controls prompt size and operator power, so feature flags and dispatcher names must remain synchronized."""
     if not config_bool(config, "enable_tools", True):
         return []
     if agent_context != "primary":

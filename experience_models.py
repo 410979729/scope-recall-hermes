@@ -1,3 +1,7 @@
+"""Dataclass models for Experience playbooks, feedback, promotion plans, and replay cases.
+
+These models define the stable data vocabulary shared by storage, tooling, benchmarks, and operator reports."""
+
 from __future__ import annotations
 
 import math

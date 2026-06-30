@@ -1,3 +1,7 @@
+"""Freshness metadata helpers for durable factual memories.
+
+Freshness is advisory evidence for ranking and dashboards; it should not overwrite the original memory truth."""
+
 from __future__ import annotations
 
 import sqlite3
@@ -139,6 +143,9 @@ def attach_freshness_metadata(metadata: dict[str, Any], freshness: dict[str, Any
 
 
 def fact_freshness_report(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Summarize freshness coverage and stale durable facts.
+
+    Freshness reports guide review and ranking policy without rewriting the underlying factual memory."""
     if not _table_exists(conn, "fact_freshness"):
         return {
             "status": "schema_missing",

@@ -1,3 +1,7 @@
+"""Shared helpers for doctor checks and operator-facing health reports.
+
+Doctor modules must sanitize public output and avoid mutating runtime state while inspecting live stores."""
+
 from __future__ import annotations
 
 import json

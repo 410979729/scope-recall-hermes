@@ -1,3 +1,7 @@
+"""Tests for vector indexing policy around general rows and hidden lifecycles.
+
+They ensure vector companion cleanup follows SQLite visibility rules."""
+
 from __future__ import annotations
 
 import json

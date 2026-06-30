@@ -1,3 +1,7 @@
+"""Tests for journal extractor routing, session bundling, and LLM/heuristic selection.
+
+They keep digest input boundaries clear before candidates are stored."""
+
 from __future__ import annotations
 
 import sqlite3

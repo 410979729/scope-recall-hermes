@@ -1,3 +1,7 @@
+"""Broad provider integration tests for lifecycle, scope, tools, recall, vector, journal, and memory operations.
+
+This file protects the Hermes MemoryProvider contract from end-to-end regressions."""
+
 import importlib
 import json
 from pathlib import Path

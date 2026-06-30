@@ -1,3 +1,7 @@
+"""Tests for governance cleanup, rollback batches, and legacy audit backfill.
+
+Cleanup must remain auditable and fail closed when evidence is missing."""
+
 from __future__ import annotations
 
 import json

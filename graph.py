@@ -1,3 +1,7 @@
+"""Entity and relation companion helpers for normalizing graph evidence derived from memories.
+
+The graph is a query accelerator and explanation aid; SQLite memory rows remain the authority."""
+
 from __future__ import annotations
 
 import json

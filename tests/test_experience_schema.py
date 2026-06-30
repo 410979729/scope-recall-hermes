@@ -1,3 +1,7 @@
+"""Tests for Experience schema migrations and table contracts.
+
+They ensure playbook storage can initialize safely in fresh and upgraded SQLite stores."""
+
 from __future__ import annotations
 
 import sqlite3

@@ -1,3 +1,7 @@
+"""Tests for recall pipeline filtering, merging, ranking, and prompt-budget trimming.
+
+They keep retrieval stages inspectable as ranking policy evolves."""
+
 from __future__ import annotations
 
 from scope_recall.models import RecallItem

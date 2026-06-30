@@ -1,3 +1,7 @@
+"""Tests for embedding adapters, hosted-provider request shapes, and fallback behavior.
+
+They isolate provider quirks such as OpenAI-compatible float vector responses."""
+
 from __future__ import annotations
 
 import json

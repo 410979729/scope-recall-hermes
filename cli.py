@@ -1,3 +1,7 @@
+"""Installed command-line entry point for operating Scope Recall outside the Hermes plugin loader.
+
+The CLI keeps operator actions explicit: install, upgrade, verify, rollback, and maintenance commands prefer dry-run/read-only paths before mutation."""
+
 from __future__ import annotations
 
 import subprocess

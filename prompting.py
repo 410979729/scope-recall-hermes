@@ -1,3 +1,7 @@
+"""Prompt rendering helpers for injecting current-turn recall/profile context.
+
+Rendering must be compact and deterministic because it directly affects the agent prompt budget."""
+
 from __future__ import annotations
 
 from typing import Any

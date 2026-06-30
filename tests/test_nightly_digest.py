@@ -1,3 +1,7 @@
+"""Tests for nightly digest collection, candidate application, fallback, and run status.
+
+They make scheduled summarization observable rather than an opaque cron side effect."""
+
 from __future__ import annotations
 
 import json

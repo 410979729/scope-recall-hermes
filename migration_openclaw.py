@@ -1,3 +1,7 @@
+"""OpenClaw memory import planner and sanitizer.
+
+Imports must redact risky metadata, reject transcript-shaped noise, and write through an import ledger for idempotence."""
+
 from __future__ import annotations
 
 import hashlib
@@ -159,6 +163,9 @@ def build_import_plan(
     scope_prefix: str = "imported.openclaw",
     allowed_targets: set[str] | list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
+    """Build a sanitized, idempotent OpenClaw import plan.
+
+    The plan separates accepted rows, rejected rows, and already-imported fingerprints before any write happens."""
     allowed = _clean_targets(allowed_targets)
     mapped: list[ImportedMemoryRow] = []
     rejections: list[dict[str, Any]] = []
@@ -300,6 +307,9 @@ def _row_receipt(row: ImportedMemoryRow) -> dict[str, str]:
 
 
 def import_mapped_rows(conn: sqlite3.Connection, rows: list[ImportedMemoryRow], source_path: Path) -> dict[str, Any]:
+    """Import sanitized OpenClaw rows into Scope Recall SQLite truth.
+
+    The importer records ledger entries and skips already-seen fingerprints so repeated runs are idempotent."""
     inserted_rows: list[dict[str, str]] = []
     skipped_rows: list[dict[str, str]] = []
     graph_failures: list[dict[str, str]] = []
@@ -409,6 +419,9 @@ def run_openclaw_import_rows(
     receipt_path: Path | None = None,
     vector_repair: str = "recommend",
 ) -> dict[str, Any]:
+    """Run the OpenClaw import workflow against already-mapped rows.
+
+    The function applies lint, ledger checks, and optional writes so dry-run output matches the eventual import plan."""
     source_path = Path(source_path).expanduser()
     target_db = Path(target_db).expanduser()
     plan = build_import_plan(rows, source_path=source_path, target_db=target_db, scope_prefix=scope_prefix, allowed_targets=allowed_targets)

@@ -1,3 +1,7 @@
+"""Tests for capture hygiene filters that reject wrappers, secrets, paths, and low-value tool text.
+
+These cases protect the boundary before noisy text enters journal or durable memory."""
+
 from __future__ import annotations
 
 import pytest

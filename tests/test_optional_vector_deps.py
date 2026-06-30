@@ -1,3 +1,7 @@
+"""Tests for behavior when optional vector dependencies are missing or disabled.
+
+They ensure SQLite-only deployments remain functional."""
+
 from __future__ import annotations
 
 import importlib.abc

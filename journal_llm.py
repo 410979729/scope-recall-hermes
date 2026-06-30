@@ -1,3 +1,7 @@
+"""LLM call/retry/quarantine helpers for journal digest extraction.
+
+Failures are classified for dead-letter or retry handling instead of being hidden behind empty digest output."""
+
 from __future__ import annotations
 
 import sys

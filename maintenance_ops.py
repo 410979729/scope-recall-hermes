@@ -1,3 +1,7 @@
+"""Shared maintenance-operation result helpers.
+
+Maintenance tools use these shapes to report dry-run/apply effects consistently across CLI and provider tools."""
+
 from __future__ import annotations
 
 import json

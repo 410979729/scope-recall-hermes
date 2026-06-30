@@ -1,3 +1,7 @@
+"""SQLite-backed brute-force vector companion used for lightweight or dependency-free deployments.
+
+It trades speed for portability and must follow the same rebuildable-companion contract as LanceDB."""
+
 from __future__ import annotations
 
 import json

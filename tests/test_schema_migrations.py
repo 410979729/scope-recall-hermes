@@ -1,3 +1,7 @@
+"""Tests for schema migration order, ledger state, and backwards compatibility.
+
+They protect live upgrades from partial or out-of-order migration drift."""
+
 from __future__ import annotations
 
 import json

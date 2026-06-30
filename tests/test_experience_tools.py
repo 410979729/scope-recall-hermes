@@ -1,3 +1,7 @@
+"""Tests for public Experience tool handlers exposed through Scope Recall.
+
+They verify tool JSON contracts, policy checks, and lifecycle transitions rather than only storage internals."""
+
 from __future__ import annotations
 
 import json

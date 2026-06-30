@@ -1,3 +1,7 @@
+"""Historical v1.0.15 audit regression tests.
+
+These preserve fixes for provider endpoints, secret redaction, journal promotion hygiene, and earlier operational bugs."""
+
 from __future__ import annotations
 
 import importlib.util

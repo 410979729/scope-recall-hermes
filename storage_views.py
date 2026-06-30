@@ -1,3 +1,7 @@
+"""Read views over curated files, SQLite truth rows, and vector companion hits.
+
+These views apply lifecycle and visibility filters before recall merges candidates."""
+
 from __future__ import annotations
 
 import sqlite3
@@ -92,6 +96,9 @@ def _row_metadata(
 
 
 def search_db_memories(provider: Any, query: str, *, limit: int) -> list[RecallItem]:
+    """Search SQLite truth rows for accessible recall candidates.
+
+    Lifecycle and scope filters are applied here before ranking so downstream retrieval cannot accidentally surface archived or inaccessible state."""
     conn = provider._require_conn()
     tokens = query_tokens(query)
     fts_query = build_fts_query(tokens)
@@ -208,6 +215,9 @@ def search_db_memories(provider: Any, query: str, *, limit: int) -> list[RecallI
 
 
 def search_vector_memories(provider: Any, query: str, *, limit: int) -> list[RecallItem]:
+    """Search vector companion state and return recall candidates that still pass SQLite visibility checks.
+
+    Vector hits are suggestions only; final access and lifecycle validation remains anchored to truth rows."""
     if not provider._vector_ready or not provider._vector_store or not provider._embedder:
         return []
     try:

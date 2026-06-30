@@ -1,3 +1,7 @@
+"""Tests that SQLite doctor checks open live stores read-only.
+
+Doctor must inspect runtime state without accidentally migrating or mutating it."""
+
 from __future__ import annotations
 
 import sqlite3

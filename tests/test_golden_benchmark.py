@@ -1,3 +1,7 @@
+"""Tests for golden benchmark isolation, expected/forbidden IDs, and packaged benchmark assets.
+
+They make commercial recall quality part of the release contract."""
+
 from __future__ import annotations
 
 import builtins

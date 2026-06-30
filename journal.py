@@ -1,3 +1,7 @@
+"""Compatibility facade and orchestration layer for journal capture, digest, and recovery helpers.
+
+Many public imports historically pointed here, so split-out modules are re-exported while preserving old monkeypatch surfaces."""
+
 from __future__ import annotations
 
 import argparse
@@ -413,6 +417,9 @@ def apply_journal_candidates(
     dry_run: bool = False,
     runtime_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Store journal digest candidates and mark processed entries only after successful handling.
+
+    This ordering prevents a failed write from silently advancing the journal watermark and losing evidence."""
     scope = normalize_scope_identity(scope, runtime_config)
     scope_ids = accessible_scope_ids(scope, runtime_config)
     write_scope_ids = writable_scope_ids(scope, runtime_config)
@@ -423,6 +430,9 @@ def apply_journal_candidates(
     for candidate in candidates:
         rejection_reason = _candidate_rejection_reason(candidate)
         if rejection_reason:
+            # Rejected candidates still advance their source entries: the
+            # durable outcome is the rejection receipt, not another retry of
+            # the same low-quality text.
             counts["skipped"] += 1
             actions.append({"action": "skip", "reason": rejection_reason, "entry_ids": candidate.entry_ids})
             processed_entry_ids.update(int(entry_id) for entry_id in candidate.entry_ids)
@@ -434,6 +444,8 @@ def apply_journal_candidates(
         match_scope_id = _memory_scope_id(conn, match_id) if match_id else ""
         match_is_writable = bool(match_scope_id and match_scope_id in set(write_scope_ids))
         if match_id and score >= 0.88:
+            # High-confidence coverage is recorded as a rejection so operators
+            # can audit why these journal rows were considered processed.
             counts["skipped"] += 1
             actions.append({"action": "skip", "reason": "existing memory covers candidate", "id": match_id, "score": round(score, 4), "entry_ids": candidate.entry_ids})
             processed_entry_ids.update(int(entry_id) for entry_id in candidate.entry_ids)
@@ -456,6 +468,8 @@ def apply_journal_candidates(
                     scope_ids=write_scope_ids,
                 )
                 if updated:
+                    # Mark entries processed only after the SQLite truth row
+                    # is updated and journal-source provenance is attached.
                     _merge_metadata(conn, memory_id=match_id, candidate=candidate, run_id=run_id)
                     _record_journal_sources(conn, memory_id=match_id, run_id=run_id, entry_ids=candidate.entry_ids)
                     conn.commit()
@@ -496,6 +510,8 @@ def apply_journal_candidates(
                 metadata=json.dumps({**_cross_platform_metadata(scope, runtime_config), **candidate_metadata(candidate, run_id)}, ensure_ascii=False, sort_keys=True),
             )
             if inserted:
+                # Store first, then attach journal provenance, then refresh the
+                # vector companion. Vector repair can be retried from SQLite.
                 _record_journal_sources(conn, memory_id=stored_id, run_id=run_id, entry_ids=candidate.entry_ids)
                 conn.commit()
                 processed_entry_ids.update(int(entry_id) for entry_id in candidate.entry_ids)
@@ -647,6 +663,9 @@ def run_journal_digest(
     llm_api_key: str = "",
     llm_append_v1: bool | None = None,
 ) -> dict[str, Any]:
+    """Run one bounded journal digest pass and record visible status metadata.
+
+    Digest extraction may use heuristic or LLM paths, but every failure mode should become a structured status, dead-letter, or quarantine signal instead of disappearing as empty output."""
     hermes_home = hermes_home.expanduser().resolve()
     storage_dir = hermes_home / "scope-recall"
     if not dry_run:

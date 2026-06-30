@@ -1,3 +1,7 @@
+"""Tests that configuration registry, provider schema, and docs describe the same settings.
+
+They prevent operator-facing config drift as defaults and nested keys evolve."""
+
 from __future__ import annotations
 
 import json

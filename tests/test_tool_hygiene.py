@@ -1,3 +1,7 @@
+"""Tests for public tool schema compactness, diagnostics exposure, and sanitized tool errors.
+
+They protect prompt budget and prevent dangerous tools from appearing by default."""
+
 from __future__ import annotations
 
 import json

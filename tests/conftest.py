@@ -1,3 +1,7 @@
+"""Shared pytest configuration for Scope Recall tests.
+
+The fixtures keep source-tree imports and Hermes-runtime compatibility predictable across local, CI, and release-gate runs."""
+
 from __future__ import annotations
 
 import os

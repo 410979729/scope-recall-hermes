@@ -1,3 +1,7 @@
+"""Deterministic relation extraction and synchronization for memory graph edges.
+
+Relation writes are companion evidence; contradiction checks and supersession links must not change the source memory text."""
+
 from __future__ import annotations
 
 import json
@@ -231,6 +235,9 @@ def _relation_candidate_scan(
     focus_memory_ids: Iterable[str] | None = None,
     max_pairs: int = 5000,
 ) -> tuple[list[dict[str, Any]], set[tuple[str, str]], bool]:
+    """Scan memory text for deterministic relation candidates.
+
+    The scanner favors conservative, explainable edges because graph evidence influences recall ranking and conflict review."""
     rows = [_row_payload(row) for row in _memory_rows(conn, scope_ids=scope_ids, memory_ids=memory_ids)]
     output: dict[tuple[str, str, str], dict[str, Any]] = {}
     existing_relations = _existing_relation_types(conn, [str(row["id"]) for row in rows])
@@ -304,6 +311,9 @@ def rebuild_extracted_relations(
     max_pairs: int = 5000,
     focus_memory_ids: Iterable[str] | None = None,
 ) -> dict[str, Any]:
+    """Rebuild extracted relation companion rows from current SQLite memories.
+
+    The rebuild path is deterministic so graph hygiene can recover from stale companion state without changing truth rows."""
     candidates, compared_pairs, budget_exceeded = _relation_candidate_scan(
         conn,
         scope_ids=scope_ids,

@@ -1,3 +1,7 @@
+"""Bootstrap logic for creating Experience playbooks from vetted memories and journal evidence.
+
+Bootstrap is conservative: it should create reviewable procedural candidates, not silently promote every repeated interaction."""
+
 from __future__ import annotations
 
 import sqlite3

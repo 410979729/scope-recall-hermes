@@ -1,3 +1,7 @@
+"""Tests for Experience promotion planning and conservative quality decisions.
+
+They protect review, duplicate, feedback, and replay gates before playbooks become active."""
+
 from __future__ import annotations
 
 import json

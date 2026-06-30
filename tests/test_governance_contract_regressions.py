@@ -1,3 +1,7 @@
+"""Regression tests for governance contracts that previously caused unsafe archive/delete or audit behavior.
+
+They ensure maintenance refactors keep rollback and transaction boundaries intact."""
+
 from __future__ import annotations
 
 import importlib.util
