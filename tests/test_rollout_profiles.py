@@ -108,7 +108,7 @@ def test_rollout_profiles_apply_canary_backs_up_only_selected_profile(tmp_path: 
     assert by_profile["beta"]["applied"] is False
     assert by_profile["beta"]["reason"] == "not_canary"
     assert "version: 0.1.0" in (Path(by_profile["alpha"]["backup_path"]) / "plugin.yaml").read_text(encoding="utf-8")
-    assert "version: 1.6.0" in (alpha / "plugins" / "scope-recall" / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.6.1" in (alpha / "plugins" / "scope-recall" / "plugin.yaml").read_text(encoding="utf-8")
     assert "version: 0.2.0" in (beta / "plugins" / "scope-recall" / "plugin.yaml").read_text(encoding="utf-8")
 
 
@@ -260,7 +260,7 @@ def test_rollout_profiles_rollback_restores_plugin_from_receipt(tmp_path: Path):
     receipt = tmp_path / "rollout-receipt.json"
 
     _run_rollout("--profiles-root", str(profiles_root), "--canary", "alpha", "--apply", "--receipt", str(receipt))
-    assert "version: 1.6.0" in (alpha / "plugins" / "scope-recall" / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.6.1" in (alpha / "plugins" / "scope-recall" / "plugin.yaml").read_text(encoding="utf-8")
 
     rollback = _run_rollout("--profiles-root", str(profiles_root), "--rollback", "--apply", "--receipt", str(receipt))
 

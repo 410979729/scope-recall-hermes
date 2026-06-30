@@ -180,14 +180,14 @@ def test_distribution_hygiene_blocks_plan_artifacts():
 def test_changelog_completeness_gate_requires_current_release_terms():
     release_check = _load_release_check_module("scope_recall_check_release_changelog")
 
-    empty_current = "# Changelog\n\n## [1.6.0] - 2026-06-29\n\n## [1.5.3] - 2026-06-26\n"
+    empty_current = "# Changelog\n\n## [1.6.1] - 2026-06-30\n\n## [1.5.3] - 2026-06-26\n"
     failed = release_check.changelog_completeness_check(empty_current)
     assert failed["ok"] is False
     assert failed["section_found"] is True
     assert "governance" in failed["missing_terms"]
     assert "journal recovery" in failed["missing_terms"]
 
-    complete = "# Changelog\n\n## [1.6.0] - 2026-06-29\n" + "\n".join(release_check.REQUIRED_CHANGELOG_TERMS)
+    complete = "# Changelog\n\n## [1.6.1] - 2026-06-30\n" + "\n".join(release_check.REQUIRED_CHANGELOG_TERMS)
     assert release_check.changelog_completeness_check(complete)["ok"] is True
 
 
