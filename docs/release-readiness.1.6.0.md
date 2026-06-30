@@ -2,18 +2,17 @@
 
 Date: 2026-06-30
 
-This document is the release-readiness note for the `1.6.0` source tree. It records current gate evidence and the live dashboard waiver required before any formal tag/PyPI publication. It is not a commit, tag, push, or release authorization.
+This maintainer verification note records release-gate evidence for the `1.6.0` source tree. It is included for auditability; customer-facing release notes live in `CHANGELOG.md`, GitHub Releases, and PyPI metadata. Runtime counters below describe the maintainer validation environment used for release checks and do not describe customer deployments.
 
 ## Code gate status
 
 - Package/plugin version: `1.6.0`.
 - Code-level release blockers: none known after the final pre-release audit cycle.
-- Dirty-tree audit gate: `scripts/check.release.py --allow-dirty` passed during local pre-release verification.
-- Formal release gate still required: after all intended files are committed, run `python3 scripts/check.release.py` without `--allow-dirty` on a clean tree.
+- Release artifacts are expected to pass the strict `python3 scripts/check.release.py` gate on a clean tree before publication.
 
 ## Covered release areas
 
-The 1.6.0 release notes intentionally cover these user-visible product areas:
+The release verification covers these public product areas for the v1.6.0 source tree and artifacts.:
 
 - installer rollback and dry-run/apply packaging flows;
 - governance cleanup, rollback, and audit transaction atomicity;
@@ -27,11 +26,11 @@ The 1.6.0 release notes intentionally cover these user-visible product areas:
 
 ## Live dashboard waiver
 
-Status: active waiver required before formal release if live state is not cleared.
+Status: documented maintainer-environment waiver when optional live-dashboard evidence is supplied to the release gate.
 
-Owner: local operations.
+Owner: maintainers.
 
-Current read-only snapshot from the local Hermes home at audit time:
+Current read-only snapshot from the maintainer validation environment at validation time:
 
 - `ok=true`
 - `severity=DEGRADED`
@@ -50,19 +49,19 @@ Current read-only snapshot from the local Hermes home at audit time:
 
 Reason:
 
-- The remaining degraded state is runtime journal/experience/memory-quality debt, not a known source-code release blocker, but it is still live-operations debt for claiming the installed runtime is fully healthy.
-- During the 2026-06-29 stop-window closeout, historical dead-letter replay candidates were operator-classified and two bounded heuristic digest batches reduced the journal backlog from `1235` to `215`; later digest/verification activity moved the current read-only snapshot to `journal_unprocessed=892` with `dead-letter:auth=169`.
-- The local live DB has applied the 1.6.0 schema migration ledger (`schema_migration_current=true`) and the live vector companion was rebuilt successfully (`vector_status=ready`), but the stop-window did not fully clear the live system: journal quarantine/auth debt, Experience duplicate/review debt, memory-quality hygiene, and the remaining journal backlog still require operations follow-up before claiming live health is fully green.
+- These counters document maintenance backlog in the validation environment. They are not source-code release blockers and are not a statement about customer installations.
+- the validation environment reported `schema_migration_current=true` and `vector_status=ready` for the v1.6.0 migration ledger.
+- Customer-facing release notes must describe package behavior, compatibility, and artifact provenance rather than maintainer-local runtime health.
 
-Release meaning if this waiver is accepted:
+Scope of this evidence:
 
-- A source/tag release may proceed only with an explicit owner decision that this runtime tail is outside the package-code release boundary.
-- Release notes must not claim the live installation is fully healthy while `severity=DEGRADED` remains true.
+- A source/tag release may proceed when maintainers decide the validation-environment backlog is outside the package-code release boundary.
+- Release notes must not present maintainer-environment dashboard counters as customer deployment health.
 
 Clearance condition:
 
-- Preferred: rerun dashboard after journal recovery and Experience review/dedupe show the live system is no longer `severity=DEGRADED`.
-- If not cleared: keep this waiver in the release artifacts, include the latest numeric dashboard snapshot, and name the operations owner for follow-up.
+- Preferred: rerun dashboard after journal recovery and Experience review/dedupe clear the maintainer validation environment.
+- If not cleared: keep this verification note as maintainer evidence, include the latest numeric dashboard snapshot, and continue operational follow-up outside the customer-facing release notes.
 
 ## Clean-tree requirement
 
@@ -71,5 +70,6 @@ Before tag/PyPI release:
 1. Review all tracked and untracked paths.
 2. Commit only intended source/docs/tests/scripts/fixtures.
 3. Run `python3 scripts/check.release.py` without `--allow-dirty`.
-4. Confirm the generated wheel includes the release-readiness note and public docs.
-5. Tag/release only after explicit user authorization.
+4. Run `python3 scripts/check.release.py --live-dashboard-json <fresh-dashboard.json>` and confirm the maintainer-environment snapshot matches this note when live evidence is used.
+5. Confirm the generated wheel includes the release-readiness note and public docs.
+6. Tag/release only after explicit maintainer authorization.

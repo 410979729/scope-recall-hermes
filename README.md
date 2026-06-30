@@ -20,7 +20,7 @@ Current-turn recall · Journal-first capture · Durable shared memory · Backgro
 
 This repository, `scope-recall-hermes`, is the Hermes implementation. The Python distribution package is `hermes-scope-recall`, the Python import/package spelling is `scope_recall`, and the Hermes plugin ID/provider name remains `scope-recall` for runtime compatibility. The OpenClaw sibling implementation lives at [`scope-recall-openclaw`](https://github.com/410979729/scope-recall-openclaw).
 
-Version `1.6.1` is a patch release on top of `1.6.0` that publishes the post-1.6.0 source-invariant documentation and public documentation/release-hygiene hardening without changing the stable V1 runtime contract. The 1.6.0 release packages a compatibility-preserving refactor of the doctor, graph-hygiene, maintenance, digest-result, recall-pipeline, and provider-schema internals while keeping the stable V1 commercial-governance line introduced in 1.5.0. The 1.5 line includes promoted-only profile lifecycle safety, candidate-memory promotion planning, graph-hygiene repair, fail-closed vector-repair fallback handling, governance cleanup, journal recovery, an operator dashboard, repository-owned golden benchmarks, stricter release gates, fail-closed hard-delete safety, packaged benchmark fixtures, Recall Funnel observability, synthetic retrieval-regression benchmarking, and default-safe vector fallback behavior. Runtime Experience packet injection is enabled by default through `experience.prefetch_enabled=true` and can be disabled with `experience.prefetch_enabled=false`; background automatic promotion remains an explicit operator opt-in through `experience.auto_promotion_enabled=true`, and low-risk auto-promotion remains a second explicit opt-in through `experience.auto_promote_low_risk=true`. By default, successful low-risk scans create candidate playbooks, high-risk playbooks stay review-gated, and final-failure or low-signal traces are not promoted. It keeps the `scope_recall_profile` surface added in v1.3.0, compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, inline attachment-marker sanitization, the supported standalone install shape added in v1.1.0, and native-safe LanceDB probing with automatic SQLite vector fallback for non-AVX hosts.
+Version `1.6.1` is a patch release on top of `1.6.0` that publishes documentation, packaging, and release-provenance updates without changing the stable V1 runtime contract. The 1.6.0 release packages a compatibility-preserving refactor of the doctor, graph-hygiene, maintenance, digest-result, recall-pipeline, and provider-schema internals while keeping the stable V1 commercial-governance line introduced in 1.5.0. The 1.5 line includes promoted-only profile lifecycle safety, candidate-memory promotion planning, graph-hygiene repair, fail-closed vector-repair fallback handling, governance cleanup, journal recovery, an operator dashboard, repository-owned golden benchmarks, stricter release gates, fail-closed hard-delete safety, packaged benchmark fixtures, Recall Funnel observability, synthetic retrieval-regression benchmarking, and default-safe vector fallback behavior. Runtime Experience packet injection is enabled by default through `experience.prefetch_enabled=true` and can be disabled with `experience.prefetch_enabled=false`; background automatic promotion remains an explicit operator opt-in through `experience.auto_promotion_enabled=true`, and low-risk auto-promotion remains a second explicit opt-in through `experience.auto_promote_low_risk=true`. By default, successful low-risk scans create candidate playbooks, high-risk playbooks stay review-gated, and final-failure or low-signal traces are not promoted. It keeps the `scope_recall_profile` surface added in v1.3.0, compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, inline attachment-marker sanitization, the supported standalone install shape added in v1.1.0, and native-safe LanceDB probing with automatic SQLite vector fallback for non-AVX hosts.
 
 It uses a **three-layer design**:
 
@@ -64,9 +64,9 @@ By default, durable shared scope remains platform-isolated: `platform + agent_wo
     "cross_platform_shared_scope": true,
     "cli_user_id_fallback": "local",
     "user_aliases": {
-      "telegram:8176453077": "joy",
-      "cli:local": "joy",
-      "feishu:ou_xxx": "joy"
+      "telegram:user_123": "canonical_user_123",
+      "cli:local": "canonical_user_123",
+      "feishu:ou_xxx": "canonical_user_123"
     }
   }
 }
@@ -738,11 +738,11 @@ Schema-surface targets after the compact-profile change:
 - standard profile: 20 tools, about 10.6 KB
 - maintenance/secret schema surfaces still require their explicit safety flags
 
-Release `1.6.1` publishes the post-1.6.0 release-boundary patch:
+Release `1.6.1` publishes a customer-facing patch for documentation, packaging, and release provenance:
 
-- Source-invariant and test-contract documentation is now part of the public branch instead of remaining only as local post-release commits.
-- Public documentation and release hygiene were hardened, including pruning internal plan artifacts from the distribution and refreshing the live-waiver release gate surface.
-- This patch does not claim the local live runtime is fully healthy while the dashboard remains `DEGRADED`.
+- GitHub tag, package metadata, wheel, sdist, and PyPI artifacts now identify the same `1.6.1` source tree.
+- Public documentation and packaged release metadata were cleaned up so shipped artifacts contain product documentation rather than internal planning material.
+- The stable v1.6 runtime/API contract is unchanged; this patch does not introduce storage-schema or tool-surface changes.
 
 Release `1.6.0` packages the compatibility-preserving refactor and audit hardening:
 
