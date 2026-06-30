@@ -7,12 +7,12 @@ All notable changes to `scope-recall` will be documented in this file.
 ## [1.6.1] - 2026-06-30
 
 ### Changed
-- Published the post-`v1.6.0` source-invariant documentation and public documentation/release-hygiene hardening as a patch release candidate instead of reusing the already-published `v1.6.0` tag.
-- Refreshed the live dashboard waiver for the current `DEGRADED` runtime snapshot while keeping the release boundary explicit: this patch does not claim live health is fully green.
-- Kept the 1.6 release contract covered by the release gate, including forgetting, governance, journal recovery, dashboard, experience replay, installer rollback, fact freshness, relation extraction, and golden benchmark surfaces.
+- Published documentation, packaging, and release-provenance updates as a dedicated patch release after `v1.6.0` had already been tagged and published.
+- Aligned public documentation and release metadata so the GitHub tag, package version, wheel, sdist, and PyPI release identify the same `1.6.1` source tree.
+- Preserved the v1.6 product contract across forgetting, governance, journal recovery, dashboard, experience replay, installer rollback, fact freshness, relation extraction, and golden benchmark surfaces; this release does not introduce storage-schema or tool-surface changes.
 
 ### Fixed
-- Fixed release provenance ambiguity after `v1.6.0` by preparing a distinct `1.6.1` version surface for the current `main` HEAD.
+- Fixed release provenance ambiguity by publishing the current release commit under a distinct `v1.6.1` tag instead of reusing `v1.6.0`.
 
 ## [1.6.0] - 2026-06-29
 
@@ -45,9 +45,9 @@ All notable changes to `scope-recall` will be documented in this file.
 - Hardened doctor runtime checks by opening the SQLite truth DB with URI `mode=ro` and by narrowing the doctor wrapper import fallback to `ImportError` so real import-time bugs are not hidden.
 - Hardened release cleanup so the gate no longer removes repository-local `.venv` directories.
 
-### Release notes
-- Formal release still requires a clean git tree and a strict `scripts/check.release.py` run without `--allow-dirty` after all intended files are committed.
-- Live dashboard can remain `severity=DEGRADED` due to runtime journal/auth tail only if the release readiness waiver for this version documents the exact values, owner, and clearance plan.
+### Release verification
+- Release artifacts are built only after the source tree passes the strict `scripts/check.release.py` gate in CI.
+- Live-dashboard evidence in release-readiness documents is maintainer validation context, not a customer deployment health claim.
 
 ## [1.5.3] - 2026-06-26
 

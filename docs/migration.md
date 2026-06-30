@@ -91,8 +91,8 @@ This is **opt-in** and does not require rewriting existing rows. Configure expli
     "cross_platform_shared_scope": true,
     "cli_user_id_fallback": "local",
     "user_aliases": {
-      "telegram:8176453077": "joy",
-      "cli:local": "joy"
+      "telegram:user_123": "canonical_user_123",
+      "cli:local": "canonical_user_123"
     }
   }
 }
