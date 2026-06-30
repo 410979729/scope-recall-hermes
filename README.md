@@ -1009,7 +1009,7 @@ See [`docs/stability.md`](docs/stability.md) for the exact V1 compatibility scop
 | [`docs/operator-runbook.md`](docs/operator-runbook.md) | Operator runbook: install/upgrade/rollback, health checks, journal drains, candidate review, vector repair, cleanup, backup/restore, release, and cross-profile rollout |
 | [`docs/configuration.md`](docs/configuration.md) | Complete configuration key registry with defaults, choices, risk, and restart guidance |
 | [`docs/naming.md`](docs/naming.md) | Public `scope-recall` vs Python/tool `scope_recall` naming contract |
-| [`docs/hermes-upstream-recommendation-plan.md`](docs/hermes-upstream-recommendation-plan.md) | Roadmap for official Hermes standalone-provider recommendation |
+| [`docs/upstream-recommendation.md`](docs/upstream-recommendation.md) | Public upstream recommendation positioning for standalone-provider visibility |
 | [`docs/migration.md`](docs/migration.md) | Local `lancepro` migration and explicit OpenClaw import guidance |
 | [`docs/differences-from-memory-lancedb-pro.md`](docs/differences-from-memory-lancedb-pro.md) | Honest comparison with OpenClaw `memory-lancedb-pro` |
 | [`CHANGELOG.md`](CHANGELOG.md) | Release history |

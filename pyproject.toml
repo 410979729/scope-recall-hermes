@@ -36,6 +36,7 @@ all = [
   "pyarrow>=24,<25",
 ]
 dev = [
+  "build",
   "pytest",
   "ruff",
   "wheel",

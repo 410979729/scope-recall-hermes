@@ -14,7 +14,7 @@ The MVP supports this loop:
 6. `scope_recall_forgetting_report` and `scope_recall_forgetting_run` keep ordinary memories from growing without bound by soft-archiving duplicates, scratch rows, tiny low-value rows, and wrapper noise.
 7. Doctor reports Experience Kernel table health and playbook/run counts.
 
-The automatic promotion path is conservative. It does **not** trust raw transcripts directly: it requires final successful closure plus verification signals, writes a task episode first, and defaults to creating candidate playbooks instead of silently promoting them. Low-risk verified handbooks are auto-promoted only when `experience.auto_promote_low_risk=true` is explicitly enabled; high-risk handbooks remain gated by `needs_review` for later agent review. Joy does not need to manually inspect raw memory rows.
+The automatic promotion path is conservative. It does **not** trust raw transcripts directly: it requires final successful closure plus verification signals, writes a task episode first, and defaults to creating candidate playbooks instead of silently promoting them. Low-risk verified handbooks are auto-promoted only when `experience.auto_promote_low_risk=true` is explicitly enabled; high-risk handbooks remain gated by `needs_review` for later agent/operator review. End users do not need to manually inspect raw memory rows.
 
 ## Safety defaults
 
