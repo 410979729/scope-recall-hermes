@@ -1,3 +1,7 @@
+"""SQLite journal storage primitives for capture, chunking, processed flags, and backlog loading.
+
+Journal rows are operational evidence; schema helpers must be idempotent and safe to call from runtime startup."""
+
 from __future__ import annotations
 
 import hashlib
@@ -99,6 +103,9 @@ def _journal_entry_for_digest(entry: JournalEntry) -> JournalEntry | None:
 
 
 def ensure_journal_schema(conn: sqlite3.Connection) -> None:
+    """Create or migrate journal capture tables.
+
+    This helper is safe to call from startup and tests; it should only establish schema, not process backlog."""
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS journal_entries (

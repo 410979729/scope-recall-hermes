@@ -1,3 +1,7 @@
+"""Configuration schema metadata used by tools, docs, and release checks.
+
+The schema is descriptive rather than a runtime authority; keep defaults synchronized with config loading and plugin metadata."""
+
 from __future__ import annotations
 
 import json

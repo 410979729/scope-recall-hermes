@@ -1,3 +1,7 @@
+"""Tests for journal digest execution, watermark handling, fallback, and storage outcomes.
+
+They make sure processed entries advance only when durable outcomes are recorded."""
+
 from __future__ import annotations
 
 import hashlib

@@ -1,3 +1,7 @@
+"""Tests for OpenClaw memory import mapping, sanitization, and idempotent ledger behavior.
+
+They keep external memory data from entering Scope Recall truth without review."""
+
 from __future__ import annotations
 
 import json

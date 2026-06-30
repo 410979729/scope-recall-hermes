@@ -1,3 +1,7 @@
+"""Tests for Experience-related default configuration.
+
+They keep bootstrap, promotion, and review behavior stable when config files are regenerated."""
+
 from __future__ import annotations
 
 from pathlib import Path

@@ -1,3 +1,7 @@
+"""SQLite storage layer for Experience playbooks, feedback, reviews, and promotion ledgers.
+
+This module owns durable playbook state; callers should prefer its transaction-aware helpers over ad-hoc SQL."""
+
 from __future__ import annotations
 
 import json
@@ -312,6 +316,9 @@ def create_playbook(
     environment_constraints: Mapping[str, Any] | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Create a reviewable Experience playbook row and associated metadata.
+
+    Creation does not imply promotion: lifecycle, quality, and review fields remain explicit so automation cannot skip governance."""
     normalized_payload = dict(payload)
     requested_status = str(status or normalized_payload.get("status") or "candidate").strip().lower()
     if requested_status != "candidate":
@@ -578,6 +585,9 @@ def merge_playbooks(
     reason: str = "",
     dry_run: bool = True,
 ) -> dict[str, Any]:
+    """Merge duplicate or superseded Experience playbooks while preserving audit metadata.
+
+    Merging should make the surviving playbook clear and leave enough history to understand why others were superseded."""
     _reject_secret_like_value(target_id, path="merge.target_id")
     _reject_secret_like_value(list(source_ids), path="merge.source_ids")
     _reject_secret_like_value(reason, path="merge.reason")
@@ -681,6 +691,9 @@ def review_playbook(
     reason: str = "",
     superseded_by: str = "",
 ) -> dict[str, Any]:
+    """Apply an operator review decision to an Experience playbook.
+
+    Review updates lifecycle and rationale fields so promotion automation can distinguish approved, rejected, and needs-work states."""
     _reject_secret_like_value(playbook_id, path="review.playbook_id")
     action_to_status = {
         "review": "reviewed",
@@ -805,6 +818,9 @@ def record_experience_preflight_run(
     query: str,
     reasons: Sequence[str] | None = None,
 ) -> dict[str, Any]:
+    """Persist the result of one Experience preflight evaluation.
+
+    Recording the evidence lets later promotion decisions cite the exact gate outcomes that were active at review time."""
     playbook_id = sanitize_report_text(str(playbook.get("id") or "").strip())
     safe_scope_id = sanitize_report_text(str(scope_id or "").strip())
     safe_decision = sanitize_report_text(str(decision or "guided_reuse").strip().lower())
@@ -880,6 +896,9 @@ def _record_feedback_reflection_event(
     outcome_reason: str,
     created_at: str,
 ) -> bool:
+    """Record the durable event generated from playbook feedback reflection.
+
+    This keeps feedback-derived learning auditable instead of silently altering playbook quality scores."""
     if outcome not in {"failed", "misleading", "stale"}:
         return False
     mistakes = [
@@ -951,6 +970,9 @@ def record_playbook_feedback(
     tool_call_count: int = 0,
     token_estimate: int = 0,
 ) -> dict[str, Any]:
+    """Record user/operator feedback for an Experience playbook.
+
+    Feedback updates both aggregate trust signals and event history so promotion decisions can be explained later instead of depending only on the latest rating."""
     _reject_secret_like_value(playbook_id, path="feedback.playbook_id")
     scope_sql, scope_params = _scope_predicate(accessible_scope_ids if accessible_scope_ids is not None else [scope_id])
     row = conn.execute(f"SELECT * FROM procedural_playbooks WHERE id = ? AND {scope_sql}", [playbook_id, *scope_params]).fetchone()

@@ -1,3 +1,7 @@
+"""Tests for hygiene report script output and sanitization.
+
+They keep operator reports useful without leaking private memory text."""
+
 from __future__ import annotations
 
 import json

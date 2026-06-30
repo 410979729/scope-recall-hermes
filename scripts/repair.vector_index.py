@@ -271,6 +271,9 @@ def open_store(target: Path, *, backend: str, table_name: str, dimensions: int, 
 
 
 def main() -> int:
+    """CLI entry point for auditing or rebuilding vector companion state.
+
+    The command defaults to dry-run, verifies embedder dimensions, backs up companion storage before apply, and never rewrites SQLite truth."""
     args = parse_args()
     hermes_home = Path(args.hermes_home).expanduser().resolve()
     storage_dir = hermes_home / "scope-recall"

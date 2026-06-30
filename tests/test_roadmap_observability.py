@@ -1,3 +1,7 @@
+"""Roadmap regression tests for observability, stats, and dashboard health signals.
+
+They ensure operational debt remains visible as features mature."""
+
 from __future__ import annotations
 
 import json

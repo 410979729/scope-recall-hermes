@@ -1,3 +1,7 @@
+"""Alias normalization helpers for compatibility with older Scope Recall tool and provider names.
+
+Keep this layer small: callers should canonicalize once at the boundary, then use stable tool/provider identifiers internally."""
+
 from __future__ import annotations
 
 _ALIAS_MAP = {

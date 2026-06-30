@@ -1,3 +1,7 @@
+"""Tests for legacy hygiene migration helpers.
+
+They ensure old metadata is normalized without rewriting unrelated memory truth."""
+
 from __future__ import annotations
 
 import json

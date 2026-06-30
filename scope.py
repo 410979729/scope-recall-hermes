@@ -1,3 +1,7 @@
+"""Scope identity and access helpers for local, shared, and shared-pool memory visibility.
+
+Scope resolution is a safety boundary: write paths must use writable scopes and read paths must use accessible scopes."""
+
 from __future__ import annotations
 
 from typing import Any

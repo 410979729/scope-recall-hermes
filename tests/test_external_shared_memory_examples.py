@@ -1,3 +1,7 @@
+"""Tests for external shared-memory import/export example payloads.
+
+They keep documented bridge examples machine-valid as response schemas evolve."""
+
 import importlib.util
 import json
 from pathlib import Path

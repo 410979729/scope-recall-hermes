@@ -1,3 +1,7 @@
+"""Tests for Experience Kernel doctor checks: duplicate playbooks, review debt, and nightly status.
+
+They make sure Experience operational debt is visible but not auto-mutated."""
+
 from __future__ import annotations
 
 import builtins

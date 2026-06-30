@@ -1,3 +1,7 @@
+"""Promotion planner for moving reviewed Experience playbooks into active procedural memory.
+
+Promotion must respect quality gates, duplicate/supersession state, and operator review outcomes."""
+
 from __future__ import annotations
 
 import hashlib
@@ -255,6 +259,9 @@ def _promotion_quality(
     verification: list[str],
     risk_level: str,
 ) -> dict[str, Any]:
+    """Calculate promotion quality evidence for a playbook.
+
+    The score bundles review status, feedback, replay evidence, and duplicate/supersession signals for conservative automation."""
     text = _entry_text(entries)
     reasons: list[str] = []
     score = 0.0
@@ -357,6 +364,9 @@ def _title(task_class: str, text: str, goal: str = "") -> str:
 
 
 def _payload(*, task_class: str, title: str, goal: str, text: str, risk_level: str, tool_names: list[str], verification: list[str]) -> dict[str, Any]:
+    """Build the structured promotion payload for one playbook candidate.
+
+    The payload keeps quality evidence, lifecycle state, and proposed action together for review and tests."""
     high_risk = risk_level == "high"
     capability = "local_write" if high_risk else "read_only"
     pitfalls = [

@@ -1,3 +1,7 @@
+"""Tests for release scanner behavior and sensitive-string classification.
+
+They prevent accidental credential leaks from being normalized as harmless release output."""
+
 from __future__ import annotations
 
 import importlib.util

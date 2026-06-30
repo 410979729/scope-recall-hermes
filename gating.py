@@ -1,3 +1,7 @@
+"""General gating, normalization, and compact-text helpers used across capture, recall, and reporting.
+
+Keep these helpers deterministic and side-effect free because many safety checks depend on their exact behavior."""
+
 from __future__ import annotations
 
 import re

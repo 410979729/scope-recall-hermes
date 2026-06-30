@@ -1,3 +1,7 @@
+"""Hermes MemoryProvider implementation for Scope Recall.
+
+The provider owns runtime lifecycle, scope resolution, vector setup, journal capture, and tool registration while delegating domain logic to smaller modules."""
+
 from __future__ import annotations
 
 import logging
@@ -66,6 +70,9 @@ DEFAULT_TOOL_TRACE_SKIP_NAME_FRAGMENTS = {"session_messages"}
 
 
 class ScopeRecallMemoryProvider(MemoryProvider):
+    """Hermes memory-provider runtime for Scope Recall.
+
+    This class is the lifecycle boundary: it opens SQLite truth, configures scope visibility, starts background capture/digest work, and exposes tool schemas. Domain decisions live in helper modules so startup and shutdown remain auditable."""
     def __init__(self) -> None:
         self._config: dict[str, Any] = {}
         self._retrieval_config: dict[str, Any] = {}
@@ -280,6 +287,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         return f"{recall_block}\n\n{packet}" if recall_block else str(packet)
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "", messages: list[dict[str, Any]] | None = None) -> None:
+        """Synchronize one Hermes turn into capture, journal, recall, and prompt context state.
+
+        This method is on the hot path, so it avoids heavyweight repair work and records failures as sanitized diagnostics instead of blocking the main agent loop."""
         del session_id
         if messages:
             self._append_session_tool_journal(messages)
@@ -424,6 +434,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             )
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+        """Provide recall context before Hermes compresses the conversation.
+
+        The hook should be compact and safe because it is injected into compression prompts, not treated as new user truth."""
         if not messages or not config_bool(self._config, "auto_capture", True):
             return ""
         if self._scope.agent_context != "primary":
@@ -544,6 +557,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 )
 
     def _tool_journal_content(self, message: Dict[str, Any]) -> str:
+        """Decide how much tool result content should be captured into the journal.
+
+        The helper strips low-value or risky tool traces so compression/journal evidence does not amplify logs, secrets, or large blobs."""
         tool_name = str(message.get("name") or message.get("tool_name") or message.get("recipient") or "").strip()
         journal_config = self._journal_config()
         skip_names = set(DEFAULT_TOOL_TRACE_SKIP_NAMES)

@@ -1,3 +1,7 @@
+"""Tests for entity graph lifecycle filtering and orphan companion cleanup.
+
+They ensure graph reads follow memory lifecycle visibility and remain rebuildable companion state."""
+
 from __future__ import annotations
 
 import json

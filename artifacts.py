@@ -1,3 +1,7 @@
+"""Artifact extraction helpers for turning issue, PR, release, commit, and URL mentions into stable recall anchors.
+
+The goal is to enrich memory text with machine-comparable artifact metadata without treating URLs themselves as durable truth."""
+
 from __future__ import annotations
 
 import re

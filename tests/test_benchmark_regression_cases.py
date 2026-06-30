@@ -1,3 +1,7 @@
+"""Regression tests for golden benchmark assertions, explain snapshots, funnel traces, and retrieval limits.
+
+They ensure benchmark failures remain actionable instead of just reporting a vague recall miss."""
+
 from __future__ import annotations
 
 import json

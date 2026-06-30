@@ -1,3 +1,7 @@
+"""Governance cleanup planners and apply helpers for legacy archive/audit hygiene.
+
+Cleanup paths must stay auditable and fail closed when evidence or transaction safety is missing."""
+
 from __future__ import annotations
 
 import json
@@ -190,6 +194,9 @@ def apply_cleanup(
     actor: str = "governance.cleanup.py",
     batch_id: str | None = None,
 ) -> dict[str, Any]:
+    """Apply a reviewed governance cleanup plan.
+
+    The apply path must keep archive/delete counts, audit receipts, and rollback batch IDs aligned with the dry-run plan."""
     if not dry_run:
         ensure_schema(conn)
     batch = batch_id or make_batch_id("cleanup")
@@ -281,6 +288,9 @@ def governance_audit_coverage_report(
     scope_ids: Sequence[str] | None = None,
     sample_limit: int = 8,
 ) -> dict[str, Any]:
+    """Report which archived/cleaned rows have sufficient governance audit evidence.
+
+    Coverage gaps are operational debt because rollback and accountability depend on those receipts."""
     required_columns = {"id", "scope_id", "source", "target", "content", "summary", "updated_at", "metadata"}
     memory_columns = _table_columns(conn, "memories")
     missing_columns = sorted(required_columns - memory_columns)
@@ -357,6 +367,9 @@ def backfill_legacy_archive_audit(
     batch_id: str | None = None,
     actor: str = "governance.audit_coverage.py",
 ) -> dict[str, Any]:
+    """Backfill governance audit evidence for legacy archived rows.
+
+    Backfill creates rollback context for old mutations without pretending it knows the original operator intent."""
     if not dry_run:
         ensure_schema(conn)
     batch = batch_id or make_batch_id("governance-audit-backfill")
@@ -430,6 +443,9 @@ def rollback_cleanup_batch(
     actor: str = "governance.cleanup.py",
     event_types: Sequence[str] | None = None,
 ) -> dict[str, Any]:
+    """Rollback a previously applied governance cleanup batch where audit evidence is sufficient.
+
+    Rollback stays evidence-driven: rows without matching governance receipts should not be guessed back into active state."""
     types = [str(item) for item in (event_types or ("memory_cleanup", "forgetting", "scope_recall_forget")) if str(item)]
     if not types:
         types = ["memory_cleanup", "forgetting", "scope_recall_forget"]

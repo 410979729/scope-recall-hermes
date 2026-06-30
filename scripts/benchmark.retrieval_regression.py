@@ -255,6 +255,9 @@ def _apply_thresholds(payload: dict[str, Any], args: argparse.Namespace) -> None
 
 
 def run_synthetic(args: argparse.Namespace, hermes_home: Path) -> dict[str, Any]:
+    """Run synthetic retrieval regression cases with controlled distractors.
+
+    These cases catch ranking/filter changes without requiring live memories, hosted embeddings, or network access."""
     _write_config(hermes_home, _fixture_config(candidate_pool=args.candidate_pool, top_k=args.top_k))
     plugin = _load_provider_for_home(hermes_home)
     label_to_id: dict[str, str] = {}

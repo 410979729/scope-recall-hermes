@@ -1,3 +1,7 @@
+"""Tests for cross-profile rollout planning and safety checks.
+
+They guard against accidental writes to other Hermes profiles without explicit operator intent."""
+
 from __future__ import annotations
 
 import importlib.util

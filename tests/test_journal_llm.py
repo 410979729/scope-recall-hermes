@@ -1,3 +1,7 @@
+"""Tests for journal LLM retry, parse, quarantine, and classified failure behavior.
+
+They prevent model failures from becoming silent empty digest runs."""
+
 from __future__ import annotations
 
 from pathlib import Path

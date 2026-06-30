@@ -1,3 +1,7 @@
+"""Secret-indexing helper for explicitly enabled maintenance scans.
+
+Secret tools are disabled by default and must not expose raw credentials in public reports."""
+
 from __future__ import annotations
 
 import hashlib

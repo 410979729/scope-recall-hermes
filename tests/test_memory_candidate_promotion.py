@@ -1,3 +1,7 @@
+"""Tests for candidate promotion planning, archive-noise choices, and apply behavior.
+
+They protect promoted-only profile behavior from stale or unsafe candidate debt."""
+
 from __future__ import annotations
 
 import importlib.util

@@ -1,3 +1,7 @@
+"""Tests for Experience replay benchmark cases.
+
+Replay checks verify expected and forbidden procedural matches after retrieval or playbook changes."""
+
 from __future__ import annotations
 
 import json

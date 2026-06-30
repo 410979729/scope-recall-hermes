@@ -1,3 +1,7 @@
+"""Heuristics for classifying whether text is a reusable Experience playbook candidate.
+
+The classifier favors precision over recall so generic chat commands and transient status updates do not pollute procedural memory."""
+
 from __future__ import annotations
 
 import re

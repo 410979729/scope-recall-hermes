@@ -1,3 +1,7 @@
+"""Recall service that combines curated files, SQLite rows, vector hits, graph evidence, and ranking policy.
+
+Recall is read-oriented: it should explain/filter candidates without mutating memory state."""
+
 from __future__ import annotations
 
 import math
@@ -97,12 +101,18 @@ _ENTITY_SCOPE_STOPWORDS = {
 
 
 class RecallService:
+    """Read-side retrieval service for current-turn recall.
+
+    The service merges curated file memories, SQLite truth rows, vector hits, relation evidence, and ranking policy. It must stay mutation-free so recall cannot accidentally change durable state."""
     def __init__(self, provider: Any) -> None:
         self.provider = provider
         self.last_rejected_candidates: list[RecallItem] = []
         self.last_funnel_trace: dict[str, Any] = {}
 
     def search_memories(self, query: str, *, limit: int) -> list[RecallItem]:
+        """Search accessible memory sources and return ranked recall payloads.
+
+        The method keeps lifecycle/scope filtering ahead of ranking so archived, candidate, rejected, or inaccessible rows do not spend prompt budget unless the caller explicitly asks for them."""
         started_at = time.perf_counter()
         retrieval_cfg = self.provider._retrieval_config or {}
         plan = build_search_plan(
@@ -391,6 +401,9 @@ class RecallService:
         return bool(value)
 
     def _persisted_relation_evidence(self, memory_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Collect relation evidence for candidate memories from persisted graph companion rows.
+
+        The evidence enriches ranking and explanations, but absence of graph rows must not hide the underlying SQLite memory."""
         ids = sorted({str(memory_id) for memory_id in memory_ids if str(memory_id)})
         if not ids or not hasattr(self.provider, "_require_conn"):
             return {}

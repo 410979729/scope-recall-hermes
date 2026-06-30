@@ -1,3 +1,7 @@
+"""Tests for scoring helpers, temporal policy, and metadata/entity boosts.
+
+They keep ranking explainable and bounded."""
+
 from __future__ import annotations
 
 import json

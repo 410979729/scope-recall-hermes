@@ -1,3 +1,7 @@
+"""Memory governance heuristics for classification, conflict detection, and merge decisions.
+
+This module proposes governance outcomes; write paths must still record audit evidence and preserve rollback options."""
+
 from __future__ import annotations
 
 import re
@@ -162,6 +166,9 @@ def normalize_memory_type(value: Any, fallback: str = "factual") -> str:
 
 
 def classify_memory(text: str, target: str = "memory", source: str = "") -> dict[str, Any]:
+    """Classify a memory row for governance, cleanup, and promotion decisions.
+
+    The classifier is heuristic evidence, not a write decision; callers must still record audit events when acting on it."""
     lowered = (text or "").lower()
     normalized_target = str(target or "memory").strip().lower()
     category = "general"

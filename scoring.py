@@ -1,3 +1,7 @@
+"""Recall scoring helpers for lexical, vector, temporal, metadata, and relation-aware ranking.
+
+Scoring must stay explainable so benchmarks and operator traces can justify why a memory was returned."""
+
 from __future__ import annotations
 
 from typing import Any

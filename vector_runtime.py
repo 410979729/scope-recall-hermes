@@ -1,3 +1,7 @@
+"""Runtime setup and mutation helpers for vector companions.
+
+Vector failures should mark repair-needed state and never silently delete or rewrite SQLite truth."""
+
 from __future__ import annotations
 
 from contextlib import AbstractContextManager, nullcontext
@@ -114,6 +118,9 @@ def _open_vector_store(provider: Any, *, dimensions: int) -> None:
 
 
 def setup_vector_layer(provider: Any) -> None:
+    """Initialize the configured vector companion for a provider instance.
+
+    Setup records readiness and repair status without blocking SQLite-only operation when vector support is intentionally disabled."""
     old_store = getattr(provider, "_vector_store", None)
     if old_store is not None:
         try:
@@ -163,6 +170,9 @@ def setup_vector_layer(provider: Any) -> None:
 
     try:
         _open_vector_store(provider, dimensions=provider._embedder.dimensions)
+        # Startup sync is a companion rebuild, not a truth migration. If this
+        # block fails, the except path degrades vector status and leaves SQLite
+        # memory rows untouched for a later explicit repair.
         provider._vector_row_count = sync_vector_index(provider)
         refresh_vector_audit(provider)
     except Exception as exc:
@@ -196,6 +206,9 @@ def _should_index_target(provider: Any, target: str) -> bool:
 
 
 def sync_vector_index(provider: Any) -> int:
+    """Synchronize vector companion rows for a bounded set of SQLite memories.
+
+    Sync is rebuildable work: it should report failures clearly and never mutate the underlying memory text."""
     if not provider._vector_store or not provider._embedder:
         return 0
     conn = provider._require_conn()
@@ -205,6 +218,8 @@ def sync_vector_index(provider: Any) -> int:
         ).fetchall()
     with _vector_mutation_lock(provider):
         if not rows:
+            # No visible SQLite rows means any remaining vector records are
+            # stale companion data under the same lifecycle filter.
             existing = provider._vector_store.list_ids()
             if existing:
                 provider._vector_store.delete_by_ids(existing)
@@ -269,6 +284,9 @@ def upsert_vector_record(
     scope_id: str | None = None,
     metadata: dict[str, Any] | str | None = None,
 ) -> None:
+    """Upsert one vector companion record for a SQLite memory row.
+
+    Failures mark vector repair-needed status so callers do not mistake a companion write failure for durable storage success."""
     with _vector_mutation_lock(provider):
         if not provider._vector_ready or not provider._vector_store or not provider._embedder:
             return

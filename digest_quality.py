@@ -1,3 +1,7 @@
+"""Quality gates for deciding whether journal or session digest output is durable enough to promote.
+
+The rules reject transcript-shaped, generic, or low-signal summaries before they can become long-lived memory."""
+
 from __future__ import annotations
 
 import re

@@ -1,3 +1,7 @@
+"""Runtime configuration loading and persistence for Scope Recall.
+
+Configuration is merged from defaults and Hermes-home state; callers should use typed helpers before making safety-critical decisions."""
+
 from __future__ import annotations
 
 from pathlib import Path

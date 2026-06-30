@@ -1,3 +1,7 @@
+"""Doctor checks for journal backlog, retry/dead-letter queues, quarantine history, and digest failure patterns.
+
+The report is diagnostic only: it classifies recovery work so operators can decide when replay is safe."""
+
 from __future__ import annotations
 
 import sqlite3
@@ -45,6 +49,9 @@ def classify_reason_counts(reason_counts: dict[str, int]) -> dict[str, int]:
 
 
 def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    """Build a read-only health report for journal digest and recovery debt.
+
+    The function intentionally reports categories, samples, and thresholds rather than repairing anything: operators need to know whether backlog is ordinary work, auth/quota dead letter, quarantine, or replayable debt."""
     journal_config = journal_config or {}
     recommendations: list[str] = []
     storage_dir = hermes_home / "scope-recall"

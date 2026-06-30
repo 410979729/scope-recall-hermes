@@ -1,3 +1,7 @@
+"""Tests for contradiction governance and forget/delete documentation semantics.
+
+The goal is to avoid hiding memories or declaring conflicts from weak same-topic evidence."""
+
 from __future__ import annotations
 
 import json

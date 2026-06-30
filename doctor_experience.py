@@ -1,3 +1,7 @@
+"""Doctor checks for Experience Kernel playbooks, promotion debt, duplicate groups, and nightly digest health.
+
+These checks surface operational debt without auto-promoting or rewriting playbook state."""
+
 from __future__ import annotations
 
 import sqlite3
@@ -28,6 +32,9 @@ def experience_config_summary(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def experience_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    """Report Experience playbook health, duplicate groups, review debt, and promotion readiness.
+
+    This is deliberately advisory: it tells the operator where Experience automation needs attention without changing playbook lifecycle state."""
     recommendations: list[str] = []
     db_path = hermes_home / "scope-recall" / "memory.sqlite3"
     required_tables = {
@@ -166,6 +173,9 @@ def experience_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any]
 
 
 def nightly_digest_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    """Report recent nightly digest status, fallback usage, and failure/quarantine debt.
+
+    The report helps operators decide whether automated digest output is trustworthy before relying on generated memories."""
     recommendations: list[str] = []
     db_path = hermes_home / "scope-recall" / "memory.sqlite3"
     required_tables = {"nightly_digest_runs"}

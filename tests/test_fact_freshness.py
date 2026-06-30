@@ -1,3 +1,7 @@
+"""Tests for factual-memory freshness metadata, reports, and recall behavior.
+
+Freshness is advisory evidence, so these cases prevent it from overwriting the underlying fact."""
+
 from __future__ import annotations
 
 import json

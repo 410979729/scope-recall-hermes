@@ -1,3 +1,7 @@
+"""Legacy Scope Recall storage migration helper.
+
+Migration copies old storage into the current layout without treating legacy files as authoritative after the move."""
+
 from __future__ import annotations
 
 import shutil

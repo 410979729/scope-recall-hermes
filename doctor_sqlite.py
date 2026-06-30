@@ -1,3 +1,7 @@
+"""SQLite runtime doctor checks for schema version, migration ledger, row quality, and truth-store accessibility.
+
+Open live databases read-only here; doctor must never become a hidden migration or repair path."""
+
 from __future__ import annotations
 
 import json
@@ -20,6 +24,9 @@ except ImportError:  # pragma: no cover - direct source-script execution fallbac
     from sql_store import schema_migration_status
 
 def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    """Inspect SQLite truth-store health, schema, and migration status in read-only mode.
+
+    The check must distinguish source-code schema readiness from the live database migration state."""
     recommendations: list[str] = []
     storage_dir = hermes_home / "scope-recall"
     db_path = storage_dir / "memory.sqlite3"
@@ -93,6 +100,9 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
 
 
 def memory_candidate_debt_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    """Report candidate-memory debt from SQLite without changing lifecycle state.
+
+    Operators use this to decide promotion/archive work before enabling promoted-only behavior in profiles."""
     recommendations: list[str] = []
     db_path = hermes_home / "scope-recall" / "memory.sqlite3"
     if not db_path.exists():

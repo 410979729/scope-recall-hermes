@@ -1,3 +1,7 @@
+"""Tests for journal health doctor reporting, dead-letter categories, and backlog thresholds.
+
+These cases protect recovery visibility for auth/quota and retry-exhausted journal debt."""
+
 from __future__ import annotations
 
 import importlib.util

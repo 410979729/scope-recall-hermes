@@ -1,3 +1,7 @@
+"""Tests for retry/dead-letter journal recovery planning and replay scheduling.
+
+They keep auth/quota failures from being replayed blindly before root causes are fixed."""
+
 from __future__ import annotations
 
 import sqlite3

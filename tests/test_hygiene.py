@@ -1,3 +1,7 @@
+"""Tests for memory hygiene reports and legacy pollution detection.
+
+They protect review visibility without turning reports into hidden mutation paths."""
+
 from __future__ import annotations
 
 import sqlite3

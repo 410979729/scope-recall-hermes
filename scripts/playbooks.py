@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+"""Operator CLI for listing, inspecting, reviewing, and promoting Experience playbooks.
+
+This script is a human review surface; it should not hide duplicate/superseded status behind terse output."""
+
 from __future__ import annotations
 
 import argparse

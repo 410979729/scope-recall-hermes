@@ -1,3 +1,7 @@
+"""Tests for graph companion hygiene repair and orphan detection.
+
+Graph rows are rebuildable evidence, so repairs must compare against SQLite truth."""
+
 from __future__ import annotations
 
 import json

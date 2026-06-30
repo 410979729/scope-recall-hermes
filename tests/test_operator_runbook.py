@@ -1,3 +1,7 @@
+"""Tests that operator runbook commands and safety wording stay synchronized with code.
+
+They treat human documentation as part of the release surface."""
+
 from __future__ import annotations
 
 from pathlib import Path

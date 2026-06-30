@@ -1,3 +1,7 @@
+"""Tests for Experience storage operations, feedback, review, merge, and lifecycle metadata.
+
+These cases protect durable playbook auditability and review semantics."""
+
 from __future__ import annotations
 
 import importlib.util

@@ -1,3 +1,7 @@
+"""Dispatcher for Hermes tool calls exposed by Scope Recall.
+
+Handlers translate public tool arguments into provider operations, sanitize errors, and return stable JSON receipts."""
+
 from __future__ import annotations
 
 import json
@@ -40,6 +44,9 @@ TOOL_ALIASES = {
 
 
 class ScopeRecallToolService:
+    """Translate public Hermes tool calls into provider operations.
+
+    Handlers validate user-facing arguments, enforce scope/tool feature flags, sanitize errors, and return stable JSON receipts. They should not bypass provider invariants or write directly to SQLite."""
     def __init__(self, provider: Any) -> None:
         self.provider = provider
 
@@ -104,6 +111,9 @@ class ScopeRecallToolService:
         return data
 
     def _handle_store(self, args: dict[str, Any]) -> str:
+        """Handle public store calls while enforcing scope and shared-pool write policy.
+
+        This method returns explicit receipts for rejected writes so callers can tell policy denial from storage failure or duplicate detection."""
         content = self.provider._clean_text(str(args.get("content") or ""))
         if not content:
             return tool_error("content is required")

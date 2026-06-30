@@ -135,6 +135,9 @@ def promote_memory_candidates(
     review_decision: str = "",
     review_reason: str = "",
 ) -> dict[str, Any]:
+    """Plan and optionally apply candidate-memory promotion from the operator CLI.
+
+    The function separates classification, review output, archive-noise decisions, and writes so a dry run gives the same plan an apply run would execute."""
     db_path = _db_path(hermes_home)
     if not db_path.exists():
         return {"ok": False, "status": "missing", "path": str(db_path), "error": "SQLite truth DB not found"}

@@ -1,3 +1,7 @@
+"""Tests for relation-aware recall ranking and evidence.
+
+They ensure graph edges improve retrieval without bypassing lifecycle or scope filters."""
+
 from __future__ import annotations
 
 import json

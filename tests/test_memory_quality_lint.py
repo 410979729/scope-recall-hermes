@@ -1,3 +1,7 @@
+"""Tests for memory quality lint rules and active/archived reporting.
+
+They prevent secret-like or polluted active rows from hiding in dashboards."""
+
 from __future__ import annotations
 
 import json

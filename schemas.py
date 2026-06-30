@@ -1,3 +1,7 @@
+"""SQLite schema definitions and migration SQL for Scope Recall truth and companion tables.
+
+Schema changes must stay synchronized with migration ledger constants and release tests."""
+
 SCOPE_RECALL_STORE_SCHEMA = {
     "name": "scope_recall_store",
     "description": "Store a Scope Recall memory; durable targets are user/memory/project/ops, general is local scratch.",

@@ -1,3 +1,7 @@
+"""Small constructors for journal digest result payloads.
+
+Centralizing these shapes keeps doctor/dashboard/release tests aligned when digest status fields evolve."""
+
 from __future__ import annotations
 
 from collections import Counter

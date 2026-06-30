@@ -1,3 +1,7 @@
+"""Regression tests for audit, config coercion, scoped forgetting, and sensitive-error logging.
+
+These cases protect bugs that can silently mutate policy or leak private capture data."""
+
 from __future__ import annotations
 
 import json

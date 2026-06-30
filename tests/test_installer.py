@@ -1,3 +1,7 @@
+"""Tests for install, upgrade, verify, rollback, and packaged CLI behavior.
+
+They ensure operator copy operations remain dry-run friendly and rollback-aware."""
+
 from __future__ import annotations
 
 import sqlite3

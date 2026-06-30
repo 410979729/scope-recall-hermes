@@ -1,3 +1,7 @@
+"""HTTP utility helpers for hosted providers and operator scripts.
+
+Network errors should be returned with sanitized diagnostics so credentials and private paths do not leak into tool output."""
+
 from __future__ import annotations
 
 import re

@@ -1,3 +1,7 @@
+"""Composable ranking and filtering stages for Scope Recall retrieval.
+
+The pipeline keeps candidate merging, lifecycle filters, scoring, and prompt-budget trimming inspectable for benchmarks."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

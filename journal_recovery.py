@@ -1,3 +1,7 @@
+"""Dead-letter and retry-exhausted journal recovery planning.
+
+Recovery is explicit and auditable: operators schedule replay or no-replay classifications after fixing root causes."""
+
 from __future__ import annotations
 
 import sqlite3
@@ -148,6 +152,9 @@ def schedule_replay(
     batch_id: str | None = None,
     actor: str = "journal.recovery.py",
 ) -> dict[str, Any]:
+    """Schedule dead-letter journal entries for replay after root-cause repair.
+
+    Replay scheduling is separate from execution so auth/quota failures are not blindly retried before an operator has fixed them."""
     if not dry_run:
         ensure_schema(conn)
         ensure_journal_schema(conn)

@@ -1,3 +1,7 @@
+"""Install, upgrade, verify, and rollback helpers for copying Scope Recall into a Hermes home.
+
+Installer operations are designed around dry-run evidence, backups, and explicit rollback commands."""
+
 from __future__ import annotations
 
 import argparse
@@ -125,6 +129,9 @@ def _load_installed_package(plugin_dir: Path, *, package_name: str = "_scope_rec
 
 
 def _runtime_verify(home: Path, plugin_dir: Path) -> dict[str, Any]:
+    """Verify an installed Scope Recall copy against a Hermes home.
+
+    Runtime verification checks importability and basic commands without performing upgrade or repair mutations."""
     payload: dict[str, Any] = {
         "requested": True,
         "provider_loaded": False,
@@ -349,6 +356,9 @@ def install(
     dry_run: bool = False,
     force: bool = False,
 ) -> dict[str, Any]:
+    """Install or upgrade the plugin copy in a Hermes home with backup and rollback metadata.
+
+    Writes are explicit, source paths are validated, and operator output includes enough evidence to reverse a bad copy."""
     home = resolve_hermes_home(hermes_home)
     source = source_root()
     target = plugin_dir_for(home)

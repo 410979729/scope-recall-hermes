@@ -1,3 +1,7 @@
+"""Tests for temporal decay policy and durable-fact handling.
+
+They keep episodic memories from aging the same way as stable facts/preferences."""
+
 from __future__ import annotations
 
 from scope_recall.models import RecallItem

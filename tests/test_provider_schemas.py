@@ -1,3 +1,7 @@
+"""Tests for tool schema profiles, config schema, and dispatcher alignment.
+
+They keep public tool surfaces compact, explicit, and callable."""
+
 from __future__ import annotations
 
 import importlib.util

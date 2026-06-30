@@ -189,6 +189,9 @@ def rollout_profiles(
     apply: bool = False,
     receipt_path: Path | None = None,
 ) -> dict[str, Any]:
+    """Plan or apply cross-profile plugin rollout actions.
+
+    The function reports every target and backup path explicitly because cross-profile writes can affect other Hermes sessions."""
     profiles_root = profiles_root.expanduser()
     selected_set = {item for item in selected_profiles or [] if item}
     all_homes = profile_homes(profiles_root)
