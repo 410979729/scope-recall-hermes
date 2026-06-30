@@ -4,6 +4,16 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-06-30
+
+### Changed
+- Published the post-`v1.6.0` source-invariant documentation and public documentation/release-hygiene hardening as a patch release candidate instead of reusing the already-published `v1.6.0` tag.
+- Refreshed the live dashboard waiver for the current `DEGRADED` runtime snapshot while keeping the release boundary explicit: this patch does not claim live health is fully green.
+- Kept the 1.6 release contract covered by the release gate, including forgetting, governance, journal recovery, dashboard, experience replay, installer rollback, fact freshness, relation extraction, and golden benchmark surfaces.
+
+### Fixed
+- Fixed release provenance ambiguity after `v1.6.0` by preparing a distinct `1.6.1` version surface for the current `main` HEAD.
+
 ## [1.6.0] - 2026-06-29
 
 ### Added
