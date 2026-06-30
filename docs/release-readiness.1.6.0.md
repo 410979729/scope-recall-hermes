@@ -29,29 +29,29 @@ The 1.6.0 release notes intentionally cover these user-visible product areas:
 
 Status: active waiver required before formal release if live state is not cleared.
 
-Owner: Joy / 玉衡 operations.
+Owner: local operations.
 
 Current read-only snapshot from the local Hermes home at audit time:
 
 - `ok=true`
 - `severity=DEGRADED`
-- `journal_unprocessed=335`
-- `journal_dead_letter_replay_candidates=80`
-- `dead-letter:auth=80`
-- `journal_llm_quarantine_runs=6`
+- `journal_unprocessed=892`
+- `journal_dead_letter_replay_candidates=169`
+- `dead-letter:auth=169`
+- `journal_llm_quarantine_runs=9`
 - `journal_digest_status=degraded`
 - `experience_duplicate_groups=2`
-- `experience_needs_review=6`
-- `memory_quality_active_hits=7`
+- `experience_needs_review=7`
+- `memory_quality_active_hits=8`
 - `memory_secret_active=0`
 - `vector_status=ready`
 - `schema_migration_current=true`
-- doctor: `ok=true`, failed checks empty, recommendation count `12`
+- doctor: `ok=true`, failed checks empty, recommendation count `13`
 
 Reason:
 
 - The remaining degraded state is runtime journal/experience/memory-quality debt, not a known source-code release blocker, but it is still live-operations debt for claiming the installed runtime is fully healthy.
-- During the 2026-06-29 stop-window closeout, historical dead-letter replay candidates were operator-classified and two bounded heuristic digest batches reduced the journal backlog from `1235` to `215`; later digest/verification activity moved the current read-only snapshot to `journal_unprocessed=335` with `dead-letter:auth=80`.
+- During the 2026-06-29 stop-window closeout, historical dead-letter replay candidates were operator-classified and two bounded heuristic digest batches reduced the journal backlog from `1235` to `215`; later digest/verification activity moved the current read-only snapshot to `journal_unprocessed=892` with `dead-letter:auth=169`.
 - The local live DB has applied the 1.6.0 schema migration ledger (`schema_migration_current=true`) and the live vector companion was rebuilt successfully (`vector_status=ready`), but the stop-window did not fully clear the live system: journal quarantine/auth debt, Experience duplicate/review debt, memory-quality hygiene, and the remaining journal backlog still require operations follow-up before claiming live health is fully green.
 
 Release meaning if this waiver is accepted:

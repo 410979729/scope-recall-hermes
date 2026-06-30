@@ -1,3 +1,7 @@
+"""Comprehensive release-gate tests for packaging, metadata, workflows, docs, and public contracts.
+
+This file encodes what must stay true before a tag can be published."""
+
 import importlib
 import importlib.util
 import json
@@ -128,6 +132,51 @@ def test_release_readiness_note_is_release_packaged():
     assert expected_wheel in release_check.REQUIRED_WHEEL
 
 
+def test_internal_plan_docs_are_not_release_contracts():
+    release_check = _load_release_check_module("scope_recall_check_release_public_docs")
+
+    assert "docs/upstream-recommendation.md" in release_check.REQUIRED_SOURCE_FILES
+    assert "scope_recall/docs/upstream-recommendation.md" in release_check.REQUIRED_WHEEL
+    assert "docs/hermes-upstream-recommendation-plan.md" not in release_check.REQUIRED_SOURCE_FILES
+    assert "scope_recall/docs/hermes-upstream-recommendation-plan.md" not in release_check.REQUIRED_WHEEL
+    assert (PLUGIN_ROOT / "docs" / "plans").exists() is False
+    assert release_check.public_doc_hygiene_check()["ok"] is True
+
+
+def test_public_doc_hygiene_blocks_private_plan_markers(tmp_path, monkeypatch):
+    release_check = _load_release_check_module("scope_recall_check_release_private_doc_markers")
+    docs_plans = tmp_path / "docs" / "plans"
+    docs_plans.mkdir(parents=True)
+    (tmp_path / "README.md").write_text("The product promise Joy cares about\n", encoding="utf-8")
+    (docs_plans / "internal.md").write_text("由插件/玉衡自动提取，不需要 Joy 人工复审。\n", encoding="utf-8")
+    monkeypatch.setattr(release_check, "ROOT", tmp_path)
+
+    result = release_check.public_doc_hygiene_check()
+
+    assert result["ok"] is False
+    assert result["forbidden_paths"] == ["docs/plans/internal.md"]
+    markers = {(finding["path"], finding["marker"]) for finding in result["findings"]}
+    assert ("README.md", "personal_name_joy") in markers
+    assert ("README.md", "private_product_promise") in markers
+    assert ("docs/plans/internal.md", "agent_persona_yuheng") in markers
+    assert ("docs/plans/internal.md", "manual_review_private_context") in markers
+
+
+def test_distribution_hygiene_blocks_plan_artifacts():
+    release_check = _load_release_check_module("scope_recall_check_release_distribution_hygiene")
+
+    names = {
+        "scope_recall/docs/upstream-recommendation.md",
+        "scope_recall/docs/plans/internal.md",
+        "scope_recall/docs/hermes-upstream-recommendation-plan.md",
+    }
+
+    assert release_check.forbidden_distribution_entries(names) == [
+        "scope_recall/docs/hermes-upstream-recommendation-plan.md",
+        "scope_recall/docs/plans/internal.md",
+    ]
+
+
 def test_changelog_completeness_gate_requires_current_release_terms():
     release_check = _load_release_check_module("scope_recall_check_release_changelog")
 
@@ -219,12 +268,13 @@ def test_response_contract_doc_lists_public_schema_versions():
 
 def test_historical_release_readiness_is_marked_not_current():
     historical = (PLUGIN_ROOT / "docs" / "release-readiness.1.4.0.md").read_text(encoding="utf-8")
-    upstream = (PLUGIN_ROOT / "docs" / "hermes-upstream-recommendation-plan.md").read_text(encoding="utf-8")
+    upstream = (PLUGIN_ROOT / "docs" / "upstream-recommendation.md").read_text(encoding="utf-8")
 
     assert "Historical note" in historical
     assert "not the current release checklist" in historical
-    assert "v1.5.x" in upstream
+    assert "standalone-provider visibility" in upstream
     assert "after the `v1.4.0` release tag is created" not in upstream
+    assert "Joy" not in upstream
 
 
 def test_readme_public_version_matches_package_metadata():

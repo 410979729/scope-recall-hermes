@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import zipfile
 
@@ -34,7 +35,7 @@ RELEASE_READINESS_DOC = f"docs/release-readiness.{PACKAGE_VERSION}.md"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
 LOCAL_ONLY_DIRS = {".hermes"}
 EXTERNAL_TEST_DIRS = {".hermes-agent-src"}
-RELEASE_REQUIRED_MODULES = ("pytest", "ruff", "wheel", "pyright", "lancedb", "pyarrow")
+RELEASE_REQUIRED_MODULES = ("build", "pytest", "ruff", "wheel", "pyright", "lancedb", "pyarrow")
 SECRET_PATTERNS = {
     "api_key_assignment": re.compile(
         r"[\"']?\b(?:api[_ -]?key|secret|password|passwd|token)\b[\"']?\s*(?:=|:)\s*[\"']?[A-Za-z0-9._\-+/=]{12,}[\"']?",
@@ -44,6 +45,14 @@ SECRET_PATTERNS = {
     "github_pat": re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}"),
     "openai_style": re.compile(r"sk-[A-Za-z0-9]{20,}"),
 }
+FORBIDDEN_PUBLIC_DOC_MARKERS = {
+    "personal_name_joy": re.compile(r"\bJoy\b"),
+    "agent_persona_yuheng": re.compile(r"玉衡"),
+    "manual_review_private_context": re.compile(r"人工复审"),
+    "private_product_promise": re.compile(r"product promise Joy cares about", re.I),
+}
+FORBIDDEN_DISTRIBUTION_PATH_FRAGMENTS = ("/docs/plans/",)
+FORBIDDEN_DISTRIBUTION_BASENAMES = {"hermes-upstream-recommendation-plan.md"}
 REQUIRED_SOURCE_FILES = {
     "README.md",
     "DESIGN.md",
@@ -87,7 +96,7 @@ REQUIRED_SOURCE_FILES = {
     "docs/naming.md",
     "docs/experience.kernel.md",
     "docs/contract.matrix.md",
-    "docs/hermes-upstream-recommendation-plan.md",
+    "docs/upstream-recommendation.md",
     "docs/benchmark.golden.md",
     "docs/governance.cleanup.md",
     "docs/configuration.md",
@@ -202,7 +211,7 @@ REQUIRED_WHEEL = {
     "scope_recall/docs/naming.md",
     "scope_recall/docs/experience.kernel.md",
     "scope_recall/docs/contract.matrix.md",
-    "scope_recall/docs/hermes-upstream-recommendation-plan.md",
+    "scope_recall/docs/upstream-recommendation.md",
     "scope_recall/docs/benchmark.golden.md",
     "scope_recall/docs/governance.cleanup.md",
     "scope_recall/docs/configuration.md",
@@ -701,6 +710,9 @@ def pypi_workflow_gate_check() -> dict[str, object]:
 
 
 def product_contract_check() -> dict[str, object]:
+    """Check stable product contracts that should not drift during refactors.
+
+    These assertions protect public tool names, lifecycle hooks, release workflows, and response surfaces from accidental breakage."""
     failures: list[str] = []
     provider_methods = set(provider_class_method_names())
     provider_hooks = set(provider_lifecycle_hook_methods())
@@ -900,6 +912,9 @@ def release_environment_check() -> dict[str, object]:
 
 
 def metadata_check() -> dict[str, object]:
+    """Validate package and plugin metadata for a release candidate.
+
+    Version, entry point, manifest, and package names must agree before publishing wheels or tags."""
     pyproject = read_text("pyproject.toml")
     plugin = read_text("plugin.yaml")
     readme = read_text("README.md")
@@ -911,6 +926,7 @@ def metadata_check() -> dict[str, object]:
     missing_source = sorted(rel for rel in REQUIRED_SOURCE_FILES if not (ROOT / rel).is_file())
     failures: list[str] = []
     product_contract = product_contract_check()
+    public_docs_hygiene = public_doc_hygiene_check()
     required_snippets = {
         "pyproject version": f'version = "{PACKAGE_VERSION}"',
         "plugin version": f"version: {PACKAGE_VERSION}",
@@ -955,15 +971,70 @@ def metadata_check() -> dict[str, object]:
     product_failures = product_contract.get("failures", [])
     if not product_contract["ok"] and isinstance(product_failures, list):
         failures.extend(f"product contract: {failure}" for failure in product_failures)
+    if not public_docs_hygiene["ok"]:
+        failures.append(f"public docs hygiene: {json.dumps(public_docs_hygiene, ensure_ascii=False, sort_keys=True)}")
     return {
         "ok": not missing_source and not failures,
         "missing_source": missing_source,
         "failures": failures,
         "product_contract": product_contract,
+        "public_docs_hygiene": public_docs_hygiene,
     }
 
 
+def public_doc_hygiene_check() -> dict[str, object]:
+    """Reject private planning notes and personal collaboration markers from public docs.
+
+    Implementation plans may exist in private operator notes, but release-tagged
+    repository docs and package artifacts should read as public product material.
+    """
+    doc_paths: set[pathlib.Path] = set()
+    for rel in ("README.md", "DESIGN.md", "CHANGELOG.md", "SECURITY.md", "CONTRIBUTING.md"):
+        path = ROOT / rel
+        if path.is_file():
+            doc_paths.add(path)
+    docs_dir = ROOT / "docs"
+    if docs_dir.is_dir():
+        doc_paths.update(path for path in docs_dir.rglob("*.md") if path.is_file())
+
+    forbidden_paths = sorted(
+        str(path.relative_to(ROOT)).replace(os.sep, "/")
+        for path in doc_paths
+        if "plans" in path.relative_to(ROOT).parts
+    )
+    findings: list[dict[str, object]] = []
+    for path in sorted(doc_paths):
+        rel = str(path.relative_to(ROOT)).replace(os.sep, "/")
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except UnicodeDecodeError:
+            findings.append({"path": rel, "marker": "decode_error", "line": 0})
+            continue
+        for line_no, line in enumerate(lines, 1):
+            for label, pattern in FORBIDDEN_PUBLIC_DOC_MARKERS.items():
+                if pattern.search(line):
+                    findings.append({"path": rel, "marker": label, "line": line_no})
+    return {"ok": not forbidden_paths and not findings, "forbidden_paths": forbidden_paths, "findings": findings}
+
+
+def forbidden_distribution_entries(names: set[str]) -> list[str]:
+    """Return packaged paths that should never ship in public artifacts."""
+    forbidden: list[str] = []
+    for name in sorted(names):
+        normalized = name.replace("\\", "/")
+        wrapped = f"/{normalized}/"
+        if any(fragment in wrapped for fragment in FORBIDDEN_DISTRIBUTION_PATH_FRAGMENTS):
+            forbidden.append(name)
+            continue
+        if pathlib.PurePosixPath(normalized).name in FORBIDDEN_DISTRIBUTION_BASENAMES:
+            forbidden.append(name)
+    return forbidden
+
+
 def wheel_check() -> dict[str, object]:
+    """Build and inspect the wheel artifact for release-critical package contents.
+
+    The check catches missing modules, docs, entry points, and metadata before a tag can publish a broken package."""
     with tempfile.TemporaryDirectory(prefix="scope.recall.dist.") as tmp:
         dist = pathlib.Path(tmp)
         result = run([sys.executable, "-m", "pip", "wheel", ".", "--no-deps", "-w", str(dist)])
@@ -978,8 +1049,21 @@ def wheel_check() -> dict[str, object]:
             names = set(zf.namelist())
         missing = sorted(item for item in REQUIRED_WHEEL if item not in names)
         pycache = sorted(name for name in names if "__pycache__" in name or name.endswith(".pyc"))
-        if missing or pycache:
-            raise SystemExit(json.dumps({"missing": missing, "pycache": pycache}, ensure_ascii=False, indent=2))
+        wheel_forbidden = forbidden_distribution_entries(names)
+        if missing or pycache or wheel_forbidden:
+            raise SystemExit(json.dumps({"missing": missing, "pycache": pycache, "forbidden": wheel_forbidden}, ensure_ascii=False, indent=2))
+
+        sdist_result = run([sys.executable, "-m", "build", "--sdist", "--outdir", str(dist)])
+        fail_if_bad(sdist_result)
+        sdists = list(dist.glob("hermes_scope_recall-*.tar.gz"))
+        expected_sdist = f"hermes_scope_recall-{PACKAGE_VERSION}.tar.gz"
+        if len(sdists) != 1 or sdists[0].name != expected_sdist:
+            raise SystemExit(f"expected sdist {expected_sdist}, found {sdists}")
+        with tarfile.open(sdists[0], "r:gz") as tf:
+            sdist_names = set(tf.getnames())
+        sdist_forbidden = forbidden_distribution_entries(sdist_names)
+        if sdist_forbidden:
+            raise SystemExit(json.dumps({"sdist_forbidden": sdist_forbidden}, ensure_ascii=False, indent=2))
 
         install_dir = dist / "install"
         install_dir.mkdir()
@@ -1031,6 +1115,7 @@ print(json.dumps({'plugin_dir': str(plugin_dir), 'version': verified['manifest_v
             raise SystemExit(json.dumps({"doctor": doctor_payload}, ensure_ascii=False, indent=2))
         return {
             "wheel": wheels[0].name,
+            "sdist": sdists[0].name,
             "file_count": len(names),
             "import_stdout": str(result["stdout"]).strip(),
             "install_smoke": str(install_smoke["stdout"]).strip(),
@@ -1060,6 +1145,9 @@ def cleanup_generated() -> None:
 
 
 def main() -> int:
+    """Run the full release gate and exit nonzero when any contract fails.
+
+    The command is intentionally strict because it is used by CI, tag release workflows, and local pre-publish checks."""
     args = parse_args()
     cleanup_generated()
     environment = release_environment_check()
