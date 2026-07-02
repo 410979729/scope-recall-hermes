@@ -96,6 +96,7 @@ include = [
   "experience_replay.py",
   "freshness.py",
   "graph_hygiene.py",
+  "graph_relations.py",
   "maintenance_ops.py",
   "graph.py",
   "journal_llm.py",

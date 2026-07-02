@@ -278,3 +278,183 @@ def test_relation_rerank_high_config_cannot_override_large_lexical_gap():
         assert by_id["atlas-depends-on-redis"].metadata["relation_rerank_bonus"] <= 0.08
     finally:
         provider.close()
+
+def test_relation_rerank_default_off_ignores_supersedes_edges():
+    older = _item("older-deploy-command", 0.82)
+    newer = _item("newer-deploy-command", 0.78)
+    provider = DummyProvider(
+        {
+            "mode": "lexical",
+            "min_score": 0.01,
+        },
+        [older, newer],
+    )
+    try:
+        provider._require_conn().execute(
+            """
+            INSERT INTO memory_relations(source_memory_id, target_memory_id, relation_type, confidence, note, created_at)
+            VALUES (?, ?, 'supersedes', 1.0, 'test supersedes relation', '2026-06-01T00:00:00+00:00')
+            """,
+            ("newer-deploy-command", "older-deploy-command"),
+        )
+        provider._require_conn().commit()
+
+        results = RecallService(provider).search_memories("Project Atlas deploy command", limit=2)
+        by_id = {item.id: item for item in results}
+
+        assert [item.id for item in results] == ["older-deploy-command", "newer-deploy-command"]
+        assert by_id["older-deploy-command"].metadata["relation_rerank_bonus"] == 0.0
+        assert by_id["newer-deploy-command"].metadata["relation_rerank_bonus"] == 0.0
+    finally:
+        provider.close()
+
+
+def test_relation_rerank_penalizes_superseded_candidate_when_enabled():
+    older = _item("older-deploy-command", 0.82)
+    newer = _item("newer-deploy-command", 0.78)
+    provider = DummyProvider(
+        {
+            "mode": "lexical",
+            "min_score": 0.01,
+            "relation_rerank_enabled": True,
+            "relation_supersedes_boost": 0.08,
+            "relation_superseded_penalty": 0.04,
+        },
+        [older, newer],
+    )
+    try:
+        provider._require_conn().execute(
+            """
+            INSERT INTO memory_relations(source_memory_id, target_memory_id, relation_type, confidence, note, created_at)
+            VALUES (?, ?, 'supersedes', 1.0, 'new command supersedes old command', '2026-06-01T00:00:00+00:00')
+            """,
+            ("newer-deploy-command", "older-deploy-command"),
+        )
+        provider._require_conn().commit()
+
+        results = RecallService(provider).search_memories("Project Atlas deploy command", limit=2)
+        by_id = {item.id: item for item in results}
+
+        assert [item.id for item in results] == ["newer-deploy-command", "older-deploy-command"]
+        assert by_id["newer-deploy-command"].metadata["relation_rerank_bonus"] > 0.0
+        assert by_id["older-deploy-command"].metadata["relation_rerank_bonus"] < 0.0
+        assert "supersedes" in by_id["older-deploy-command"].metadata["relation_evidence_types"]
+    finally:
+        provider.close()
+
+
+def test_relation_rerank_respects_explicit_zero_superseded_penalty():
+    older = _item("older-deploy-command", 0.82)
+    newer = _item("newer-deploy-command", 0.78)
+    provider = DummyProvider(
+        {
+            "mode": "lexical",
+            "min_score": 0.01,
+            "relation_rerank_enabled": True,
+            "relation_supersedes_boost": 0.08,
+            "relation_superseded_penalty": 0.0,
+        },
+        [older, newer],
+    )
+    try:
+        provider._require_conn().execute(
+            """
+            INSERT INTO memory_relations(source_memory_id, target_memory_id, relation_type, confidence, note, created_at)
+            VALUES (?, ?, 'supersedes', 1.0, 'new command supersedes old command', '2026-06-01T00:00:00+00:00')
+            """,
+            ("newer-deploy-command", "older-deploy-command"),
+        )
+        provider._require_conn().commit()
+
+        results = RecallService(provider).search_memories("Project Atlas deploy command", limit=2)
+        by_id = {item.id: item for item in results}
+
+        assert by_id["newer-deploy-command"].metadata["relation_rerank_bonus"] > 0.0
+        assert by_id["older-deploy-command"].metadata["relation_rerank_bonus"] == 0.0
+    finally:
+        provider.close()
+
+
+def test_relation_inspect_and_explain_hide_inaccessible_relation_peers(tmp_path):
+    _write_config(
+        tmp_path,
+        {
+            "vector": {"enabled": False},
+            "retrieval": {
+                "mode": "lexical",
+                "min_score": 0.01,
+                "relation_rerank_enabled": True,
+                "relation_supports_boost": 0.2,
+            },
+        },
+    )
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    plugin.initialize(
+        "session-relation-scope",
+        hermes_home=str(tmp_path),
+        platform="cli",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+        user_id="joy",
+    )
+    try:
+        visible = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_store",
+                {"content": "Project Atlas deploy command is make deploy-atlas.", "target": "project"},
+            )
+        )
+        visible_id = visible["id"]
+        conn = plugin._require_conn()
+        with plugin._lock:
+            visible_scope_id = str(conn.execute("SELECT scope_id FROM memories WHERE id = ?", (visible_id,)).fetchone()["scope_id"])
+            conn.execute(
+                """
+                INSERT INTO memories(id, scope_id, platform, user_id, chat_id, thread_id, gateway_session_key, agent_identity, agent_workspace, session_id, source, target, content, summary, metadata, created_at, updated_at)
+                VALUES ('hidden-peer', 'other-scope', 'cli', 'someone-else', '', '', '', 'yuheng', 'hermes', 'foreign-session', 'tool-store', 'project', 'Hidden Project Atlas deploy secret.', 'Hidden Project Atlas deploy secret.', '{}', '2026-06-01T00:00:00+00:00', '2026-06-01T00:00:00+00:00')
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO memories(id, scope_id, platform, user_id, chat_id, thread_id, gateway_session_key, agent_identity, agent_workspace, session_id, source, target, content, summary, metadata, created_at, updated_at)
+                VALUES ('archived-peer', ?, 'cli', 'joy', '', '', '', 'yuheng', 'hermes', 'archived-session', 'tool-store', 'project', 'Archived Project Atlas deploy command.', 'Archived Project Atlas deploy command.', '{"lifecycle":"archived"}', '2026-06-01T00:00:00+00:00', '2026-06-01T00:00:00+00:00')
+                """,
+                (visible_scope_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO memory_relations(source_memory_id, target_memory_id, relation_type, confidence, note, created_at)
+                VALUES (?, 'hidden-peer', 'supports', 1.0, 'cross-scope relation should not leak', '2026-06-01T00:00:00+00:00')
+                """,
+                (visible_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO memory_relations(source_memory_id, target_memory_id, relation_type, confidence, note, created_at)
+                VALUES (?, 'deleted-peer', 'supports', 1.0, 'deleted relation peer should not leak', '2026-06-01T00:00:01+00:00')
+                """,
+                (visible_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO memory_relations(source_memory_id, target_memory_id, relation_type, confidence, note, created_at)
+                VALUES (?, 'archived-peer', 'supports', 1.0, 'archived relation peer should not leak', '2026-06-01T00:00:02+00:00')
+                """,
+                (visible_id,),
+            )
+            conn.commit()
+
+        inspected = json.loads(plugin.handle_tool_call("scope_recall_inspect", {"id": visible_id}))
+        explained = json.loads(plugin.handle_tool_call("scope_recall_explain", {"query": "Project Atlas deploy command", "limit": 5}))
+        by_id = {row["id"]: row for row in explained["results"]}
+
+        assert inspected["relations"]["count"] == 0
+        assert inspected["relations"]["items"] == []
+        assert visible_id in by_id
+        assert by_id[visible_id]["components"]["relation_evidence_count"] == 0
+        assert by_id[visible_id]["components"]["relation_evidence_ids"] == []
+        assert by_id[visible_id]["components"]["relation_rerank_bonus"] == 0.0
+    finally:
+        plugin.shutdown()
