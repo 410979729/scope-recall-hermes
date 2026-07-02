@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
@@ -21,6 +20,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scope_recall.governance_cleanup import active_dirty_counts, apply_cleanup, rollback_cleanup_batch  # noqa: E402
+from scope_recall.maintenance_ops import connect_memory_db, effective_apply, memory_db_path  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -41,10 +41,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def db_path(args: argparse.Namespace) -> Path:
-    if args.db:
-        return Path(args.db).expanduser()
-    home = Path(args.hermes_home or "~/.hermes").expanduser()
-    return home / "scope-recall" / "memory.sqlite3"
+    return memory_db_path(Path(args.hermes_home or "~/.hermes"), db_path=args.db or None)
 
 
 def emit(payload: dict[str, Any], *, fmt: str) -> None:
@@ -86,8 +83,8 @@ def main() -> int:
         payload["error"] = "database not found"
         emit(payload, fmt=args.format)
         return 2
-    conn = sqlite3.connect(path, timeout=30)
-    conn.row_factory = sqlite3.Row
+    should_apply = effective_apply(apply=args.apply, dry_run=args.dry_run)
+    conn = connect_memory_db(path, apply=should_apply, timeout=30)
     try:
         payload["before_counts"] = active_dirty_counts(conn, scope_ids=args.scope_id)
         if args.rollback_batch:
@@ -95,12 +92,12 @@ def main() -> int:
                 payload["error"] = "--batch-id is required with --rollback-batch"
                 emit(payload, fmt=args.format)
                 return 2
-            result = rollback_cleanup_batch(conn, batch_id=args.batch_id, dry_run=not args.apply, actor=args.actor)
+            result = rollback_cleanup_batch(conn, batch_id=args.batch_id, dry_run=not should_apply, actor=args.actor)
         else:
             result = apply_cleanup(
                 conn,
                 scope_ids=args.scope_id,
-                dry_run=not args.apply,
+                dry_run=not should_apply,
                 limit=args.limit,
                 reason=args.reason,
                 actor=args.actor,

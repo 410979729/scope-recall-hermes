@@ -1,12 +1,18 @@
+"""Replay benchmark runner for Experience playbooks and procedural recall behavior.
+
+Replay cases are release evidence: they verify that promoted procedures still answer expected tasks after refactors."""
+
 from __future__ import annotations
 
 import json
 import math
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .experience_preflight import experience_preflight
+from .response_schemas import EXPERIENCE_REPLAY_RESPONSE_SCHEMA_VERSION
 
 
 class ReplayCaseValidationError(ValueError):
@@ -20,7 +26,12 @@ def _clean_term(term: Any) -> str:
 def _contains_term(text: str, term: str) -> bool:
     if not term:
         return False
-    return term in " ".join(str(text or "").lower().split())
+    normalized_text = " ".join(str(text or "").lower().split())
+    if any(ord(char) > 127 for char in term):
+        return term in normalized_text
+    if re.fullmatch(r"[a-z0-9][a-z0-9_. -]*", term):
+        return re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", normalized_text) is not None
+    return term in normalized_text
 
 
 def coverage_hits(text: str, required_terms: Sequence[Any]) -> list[str]:
@@ -101,6 +112,9 @@ def evaluate_replay_case(
     config: Mapping[str, Any] | None = None,
     index: int = 0,
 ) -> dict[str, Any]:
+    """Evaluate one Experience replay case against promoted playbooks.
+
+    Replay cases check both expected hits and forbidden matches so procedural recall quality is measured, not assumed."""
     query = str(case.get("query") or case.get("task") or "")
     baseline_text = str(case.get("baseline_text") or case.get("baseline") or "")
     required_terms = _required_terms_from_case(case)
@@ -125,14 +139,14 @@ def evaluate_replay_case(
         failures.append("decision_mismatch")
     if expected_playbook_id and playbook_id != expected_playbook_id:
         failures.append("playbook_mismatch")
-    if missing_after:
-        failures.append("missing_required_terms")
     if negative_control:
         if decision != "no_reuse":
             failures.append("negative_control_reused_playbook")
         if packet:
             failures.append("negative_control_packet_rendered")
     else:
+        if missing_after:
+            failures.append("missing_required_terms")
         if not [_clean_term(term) for term in required_terms if _clean_term(term)]:
             failures.append("empty_required_terms")
         if not packet:
@@ -174,7 +188,7 @@ def build_replay_report(
     baseline_avg = _average(float(case["baseline_coverage"]) for case in evaluated)
     experience_avg = _average(float(case["with_experience_coverage"]) for case in evaluated)
     return {
-        "schema_version": "experience_replay_report.v1",
+        "schema_version": EXPERIENCE_REPLAY_RESPONSE_SCHEMA_VERSION,
         "case_count": len(evaluated),
         "pass_count": sum(1 for case in evaluated if case.get("passed")),
         "average_baseline_coverage": baseline_avg,

@@ -1,3 +1,7 @@
+"""Tests for retrieval policy, lexical/vector behavior, lifecycle filters, and default limits.
+
+They protect recall quality and prompt-budget behavior across ranking changes."""
+
 from __future__ import annotations
 
 import sqlite3

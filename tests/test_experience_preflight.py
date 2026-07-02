@@ -1,3 +1,7 @@
+"""Tests for Experience preflight scoring, durable evidence, and promotion gates.
+
+They prevent automation from promoting playbooks without auditable quality checks."""
+
 from __future__ import annotations
 
 import sqlite3
@@ -71,6 +75,33 @@ def test_preflight_returns_direct_reuse_packet_for_safe_promoted_playbook():
     assert "[local_write]" in result["packet"]
     assert "Required live checks" in result["packet"]
     assert result["requires_live_check"] is True
+    assert result["run"] == {"recorded": False}
+    assert conn.execute("SELECT COUNT(*) FROM experience_runs").fetchone()[0] == 0
+
+
+def test_preflight_can_record_reuse_run_with_pending_live_check_evidence():
+    conn = _conn()
+    _create_promoted(conn, playbook_id="pb_record", confidence=0.91)
+
+    result = experience_preflight(
+        conn,
+        query="Need one-way Headscale ACL so management can access target but target cannot reach others",
+        accessible_scope_ids=["scope-a"],
+        config={"experience": {"direct_reuse_min_confidence": 0.82}},
+        record_run=True,
+        scope_id="scope-a",
+    )
+
+    assert result["run"]["recorded"] is True
+    row = conn.execute("SELECT * FROM experience_runs WHERE id = ?", (result["run"]["run_id"],)).fetchone()
+    assert row is not None
+    assert row["playbook_id"] == "pb_record"
+    assert row["decision"] == "direct_reuse"
+    assert row["outcome"] == "unknown"
+    assert "awaiting outcome feedback" in row["outcome_reason"]
+    assert "pending_live_check" in row["preconditions_checked"]
+    assert "not_started" in row["steps_completed"]
+    assert "experience_preflight" in row["evidence"]
 
 
 def test_preflight_respects_experience_enabled_master_switch():
@@ -193,6 +224,25 @@ def test_preflight_honors_no_reuse_policy_without_rendering_packet():
     assert result["decision"] == "no_reuse"
     assert result["packet"] == ""
     assert "policy_default_no_reuse" in result["reasons"]
+
+
+def test_preflight_skips_blocked_top_candidate_and_uses_next_safe_match():
+    conn = _conn()
+    blocked_policy = {"default_decision": "no_reuse", "allow_direct_reuse": False}
+    _create_promoted(conn, playbook_id="pb_blocked", payload=_payload(reuse_policy=blocked_policy), confidence=0.95)
+    _create_promoted(conn, playbook_id="pb_safe_next", payload=_payload(), confidence=0.9)
+
+    result = experience_preflight(
+        conn,
+        query="Need one-way Headscale ACL so management can access target but target cannot reach others",
+        accessible_scope_ids=["scope-a"],
+        config={"experience": {"direct_reuse_min_confidence": 0.82}},
+    )
+
+    assert result["decision"] == "direct_reuse"
+    assert result["playbook"]["id"] == "pb_safe_next"
+    assert result["packet"]
+    assert any(skipped["id"] == "pb_blocked" and "policy_default_no_reuse" in skipped["reasons"] for skipped in result["skipped_candidates"])
 
 
 def test_preflight_does_not_render_packet_for_needs_review_or_quarantined_playbooks():

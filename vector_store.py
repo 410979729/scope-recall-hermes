@@ -1,3 +1,7 @@
+"""LanceDB vector companion implementation.
+
+The store owns vector-table mechanics only; record identity, dimensions, and repair policy are enforced by runtime helpers."""
+
 from __future__ import annotations
 
 import importlib
@@ -92,6 +96,9 @@ def _sql_quote(value: str) -> str:
 
 
 class LanceVectorStore:
+    """LanceDB-backed vector companion store.
+
+    This class owns table-level mechanics only. SQLite rows remain the source of truth, so missing/deleted vector rows should be repaired by rebuild rather than treated as memory deletion."""
     def __init__(self, db_path: Path, *, table_name: str, dimensions: int, metric: str = "cosine") -> None:
         self._db_path = db_path
         self._table_name = table_name

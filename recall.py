@@ -1,3 +1,7 @@
+"""Recall service that combines curated files, SQLite rows, vector hits, graph evidence, and ranking policy.
+
+Recall is read-oriented: it should explain/filter candidates without mutating memory state."""
+
 from __future__ import annotations
 
 import math
@@ -7,8 +11,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .gating import query_tokens
-from .graph import apply_quality_weight, entity_distance_scores, entity_overlap_bonus, load_metadata, metadata_entities, normalize_entity, query_entities as graph_query_entities
+from .freshness import attach_freshness_metadata, memory_freshness_map
+from .graph import apply_quality_weight, entity_distance_scores, entity_overlap_bonus, metadata_entities, normalize_entity, query_entities as graph_query_entities
 from .models import RecallItem
+from .recall_pipeline import build_search_plan, final_trace_payload, initial_trace, merge_recall_candidates, rank_recall_items
 from .scoring import combine_scores, reciprocal_rank_fusion
 
 _FRESHNESS_HINTS = {
@@ -27,7 +33,6 @@ _FRESHNESS_HINTS = {
 _FRESHNESS_BASE_WEIGHT = 0.22
 _FRESHNESS_STEP_WEIGHT = 0.1
 _FRESHNESS_MAX_WEIGHT = 0.42
-_HIDDEN_RELATION_PEER_LIFECYCLES = {"superseded", "obsolete", "rejected", "archived"}
 
 _TEMPORAL_DURABLE_TYPES = {
     "constraint",
@@ -48,6 +53,14 @@ _TEMPORAL_DURABLE_TYPES = {
 }
 _TEMPORAL_EPISODIC_TYPES = {"episodic", "summary"}
 _TEMPORAL_TEMPORARY_TYPES = {"scratch", "temporary", "temporary_state", "tool_trace"}
+_RECALL_HIDDEN_LIFECYCLE_VALUES = ("superseded", "obsolete", "rejected", "archived", "candidate", "in_progress")
+_RECALL_HIDDEN_LIFECYCLE_TYPES = set(_RECALL_HIDDEN_LIFECYCLE_VALUES)
+
+
+def _recall_lifecycle_visible_sql(alias: str) -> str:
+    lifecycle_expr = f"LOWER(COALESCE(CASE WHEN json_valid({alias}.metadata) THEN json_extract({alias}.metadata, '$.lifecycle') ELSE '' END, ''))"
+    hidden_values = ",".join(f"'{value}'" for value in _RECALL_HIDDEN_LIFECYCLE_VALUES)
+    return f"{lifecycle_expr} NOT IN ({hidden_values})"
 
 _ENTITY_SCOPE_STOPWORDS = {
     "api",
@@ -88,37 +101,32 @@ _ENTITY_SCOPE_STOPWORDS = {
 
 
 class RecallService:
+    """Read-side retrieval service for current-turn recall.
+
+    The service merges curated file memories, SQLite truth rows, vector hits, relation evidence, and ranking policy. It must stay mutation-free so recall cannot accidentally change durable state."""
     def __init__(self, provider: Any) -> None:
         self.provider = provider
         self.last_rejected_candidates: list[RecallItem] = []
         self.last_funnel_trace: dict[str, Any] = {}
 
     def search_memories(self, query: str, *, limit: int) -> list[RecallItem]:
+        """Search accessible memory sources and return ranked recall payloads.
+
+        The method keeps lifecycle/scope filtering ahead of ranking so archived, candidate, rejected, or inaccessible rows do not spend prompt budget unless the caller explicitly asks for them."""
         started_at = time.perf_counter()
         retrieval_cfg = self.provider._retrieval_config or {}
-        bounded_limit = max(1, int(limit or 1))
-        configured_candidate_pool = self._positive_int(retrieval_cfg.get("candidate_pool"), bounded_limit)
-        candidate_pool = max(bounded_limit, configured_candidate_pool)
-        configured_top_k = self._positive_int(retrieval_cfg.get("top_k"), bounded_limit)
-        vector_top_k = max(candidate_pool, self._positive_int((getattr(self.provider, "_vector_config", {}) or {}).get("top_k"), candidate_pool))
-        trace: dict[str, Any] = {
-            "query": query,
-            "limit": bounded_limit,
-            "configured_top_k": configured_top_k,
-            "candidate_pool": candidate_pool,
-            "configured_candidate_pool": configured_candidate_pool,
-            "vector_top_k": vector_top_k,
-            "accessible_scope_count": len(getattr(self.provider, "_accessible_scope_ids", []) or []),
-            "stages": {},
-            "filters": {
-                "lifecycle_removed": 0,
-                "general_policy_removed": 0,
-                "entity_scope_mismatch": 0,
-                "vector_only_below_min_score": 0,
-                "below_min_score": 0,
-            },
-            "timings_ms": {},
-        }
+        plan = build_search_plan(
+            limit=limit,
+            retrieval_config=retrieval_cfg,
+            vector_config=getattr(self.provider, "_vector_config", {}) or {},
+        )
+        bounded_limit = plan.bounded_limit
+        candidate_pool = plan.candidate_pool
+        trace: dict[str, Any] = initial_trace(
+            query=query,
+            plan=plan,
+            accessible_scope_count=len(getattr(self.provider, "_accessible_scope_ids", []) or []),
+        )
 
         stage_start = time.perf_counter()
         raw_lexical_candidates = self.provider._search_db_memories(query, limit=candidate_pool)
@@ -146,38 +154,18 @@ class RecallService:
                 item.metadata = dict(item.metadata or {})
                 item.metadata["rrf_score"] = rrf_by_id[item.id]
 
-        merged: dict[str, RecallItem] = {}
-        for item in lexical_candidates + vector_candidates + curated_candidates:
-            if item.id.startswith("curated:"):
-                item_key = item.id
-            else:
-                dedup_class = "scratch" if item.target == "general" else "durable"
-                item_key = f"{dedup_class}:{self.provider._dedup_key(item.content)}"
-            current = merged.get(item_key)
-            if current is None:
-                merged[item_key] = item
-                continue
-            incoming = dict(item.metadata or {})
-            preferred = self._preferred_duplicate(current, item)
-            other = item if preferred is current else current
-            meta = dict(preferred.metadata or {})
-            for meta_key, value in dict(other.metadata or {}).items():
-                meta.setdefault(meta_key, value)
-            current_meta = dict(current.metadata or {})
-            for meta_key in ("lexical_score", "vector_score", "base_score", "recency_bonus", "rrf_score"):
-                meta[meta_key] = max(
-                    float(meta.get(meta_key) or 0.0),
-                    float(incoming.get(meta_key) or 0.0),
-                    float(current_meta.get(meta_key) or 0.0),
-                )
-            preferred.metadata = meta
-            preferred.score = self.final_score(meta)
-            merged[item_key] = preferred
+        all_candidates = lexical_candidates + vector_candidates + curated_candidates
+        merged = merge_recall_candidates(
+            all_candidates,
+            content_dedup_key=self.provider._dedup_key,
+            preferred_duplicate=self._preferred_duplicate,
+            final_score=self.final_score,
+        )
 
         trace["stages"]["merge"] = {
-            "input_count": len(lexical_candidates) + len(vector_candidates) + len(curated_candidates),
+            "input_count": len(all_candidates),
             "output_count": len(merged),
-            "deduped_count": max(0, len(lexical_candidates) + len(vector_candidates) + len(curated_candidates) - len(merged)),
+            "deduped_count": max(0, len(all_candidates) - len(merged)),
         }
         results = list(merged.values())
         before_lifecycle = len(results)
@@ -189,9 +177,14 @@ class RecallService:
         trace["stages"]["candidate_after_policy"] = self._trace_stage(results)
         entity_graph_scores = self._entity_graph_scores(query, results)
         relation_evidence = self._persisted_relation_evidence([item.id for item in results])
+        freshness_evidence = self._fact_freshness_evidence([item.id for item in results])
         trace["stages"]["graph"] = {
             "entity_scored_count": len(entity_graph_scores),
             "relation_evidence_count": sum(int((payload or {}).get("count") or 0) for payload in relation_evidence.values()),
+        }
+        trace["stages"]["fact_freshness"] = {
+            "tracked_count": len(freshness_evidence),
+            "needs_live_check_count": sum(1 for payload in freshness_evidence.values() if bool(payload.get("needs_live_check"))),
         }
         min_score = float(retrieval_cfg.get("min_score") or self.provider._config_value("min_score", 0.18))
         # Vector-only matches have no lexical evidence, so they must clear a
@@ -219,6 +212,10 @@ class RecallService:
             relation_payload = relation_evidence.get(item.id, {})
             relation_rerank_bonus = self._relation_rerank_bonus(relation_payload)
             base_score = max(0.0, min(1.0, quality_adjusted_score + entity_overlap + entity_distance_bonus + relation_rerank_bonus))
+            freshness_payload = freshness_evidence.get(item.id)
+            fact_freshness_penalty = attach_freshness_metadata(meta, freshness_payload, config=retrieval_cfg)
+            if fact_freshness_penalty > 0.0:
+                base_score *= max(0.0, 1.0 - fact_freshness_penalty)
             decay_multiplier = self._temporal_decay_multiplier(meta, item.updated_at)
             policy_class, policy_weight = self._temporal_policy(meta, item.target)
             decay_weight = 0.0
@@ -245,6 +242,7 @@ class RecallService:
                     "relation_evidence_ids": relation_payload.get("ids") or [],
                     "relation_rerank_bonus": relation_rerank_bonus,
                     "relation_rerank_enabled": self._config_bool(retrieval_cfg.get("relation_rerank_enabled"), False),
+                    "fact_freshness_penalty": fact_freshness_penalty,
                     "pre_decay_score": pre_decay_score,
                     "temporal_decay_multiplier": decay_multiplier,
                     "temporal_decay_weight": decay_weight,
@@ -302,36 +300,13 @@ class RecallService:
                 item.score += bonus
                 item.metadata["final_score"] = item.score
 
-        ranked_rejected = sorted(
-            rejected,
-            key=lambda item: (
-                item.score,
-                float((item.metadata or {}).get("base_score") or 0.0),
-                item.updated_at,
-                item.id,
-            ),
-            reverse=True,
-        )
+        ranked_rejected = rank_recall_items(rejected)
         self.last_rejected_candidates = ranked_rejected
 
-        ranked = sorted(
-            filtered,
-            key=lambda item: (
-                item.score,
-                float((item.metadata or {}).get("base_score") or 0.0),
-                item.updated_at,
-                item.id,
-            ),
-            reverse=True,
-        )
+        ranked = rank_recall_items(filtered)
         returned = ranked[:bounded_limit]
         trace["stages"]["ranked"] = self._trace_stage(ranked)
-        trace["final"] = {
-            "returned_count": len(returned),
-            "returned_ids": [item.id for item in returned],
-            "returned_chars": sum(len(str(item.content or "")) for item in returned),
-            "rejected_count": len(ranked_rejected),
-        }
+        trace["final"] = final_trace_payload(returned=returned, ranked_rejected=ranked_rejected)
         trace["timings_ms"]["total"] = self._elapsed_ms(started_at)
         self.last_funnel_trace = trace
         return returned
@@ -426,6 +401,9 @@ class RecallService:
         return bool(value)
 
     def _persisted_relation_evidence(self, memory_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Collect relation evidence for candidate memories from persisted graph companion rows.
+
+        The evidence enriches ranking and explanations, but absence of graph rows must not hide the underlying SQLite memory."""
         ids = sorted({str(memory_id) for memory_id in memory_ids if str(memory_id)})
         if not ids or not hasattr(self.provider, "_require_conn"):
             return {}
@@ -454,68 +432,33 @@ class RecallService:
             relation_rows = direction_bucket.setdefault(relation_type, [])
             relation_rows.append({"id": related_id, "confidence": confidence})
 
+        id_set = set(ids)
+        scopes = [str(scope_id) for scope_id in (getattr(self.provider, "_accessible_scope_ids", []) or []) if str(scope_id)]
+        scope_clause = ""
+        scope_params: list[str] = []
+        if scopes:
+            scope_placeholders = ",".join("?" for _ in scopes)
+            scope_clause = f" AND s.scope_id IN ({scope_placeholders}) AND t.scope_id IN ({scope_placeholders})"
+            scope_params = [*scopes, *scopes]
+        relation_sql = f"""
+                    SELECT r.source_memory_id, r.target_memory_id, r.relation_type, r.confidence
+                    FROM memory_relations r
+                    JOIN memories s ON s.id = r.source_memory_id
+                    JOIN memories t ON t.id = r.target_memory_id
+                    WHERE (r.source_memory_id IN ({placeholders}) OR r.target_memory_id IN ({placeholders}))
+                      AND {_recall_lifecycle_visible_sql('s')}
+                      AND {_recall_lifecycle_visible_sql('t')}{scope_clause}
+                    """
+        relation_params = [*ids, *ids, *scope_params]
         try:
             lock = getattr(self.provider, "_lock", None)
             if lock is None:
-                rows = self.provider._require_conn().execute(
-                    f"""
-                    SELECT source_memory_id, target_memory_id, relation_type, confidence
-                    FROM memory_relations
-                    WHERE source_memory_id IN ({placeholders}) OR target_memory_id IN ({placeholders})
-                    """,
-                    [*ids, *ids],
-                ).fetchall()
+                rows = self.provider._require_conn().execute(relation_sql, relation_params).fetchall()
             else:
                 with lock:
-                    rows = self.provider._require_conn().execute(
-                        f"""
-                        SELECT source_memory_id, target_memory_id, relation_type, confidence
-                        FROM memory_relations
-                        WHERE source_memory_id IN ({placeholders}) OR target_memory_id IN ({placeholders})
-                        """,
-                        [*ids, *ids],
-                    ).fetchall()
+                    rows = self.provider._require_conn().execute(relation_sql, relation_params).fetchall()
         except Exception:
             return {}
-
-        id_set = set(ids)
-        peer_ids: set[str] = set()
-        for row in rows:
-            source_id = str(row["source_memory_id"])
-            target_id = str(row["target_memory_id"])
-            if source_id in id_set and target_id:
-                peer_ids.add(target_id)
-            if target_id in id_set and source_id:
-                peer_ids.add(source_id)
-        accessible_peer_ids: set[str] = set(peer_ids & id_set)
-        scope_ids = [str(scope_id) for scope_id in getattr(self.provider, "_accessible_scope_ids", []) or [] if str(scope_id)]
-        if peer_ids and scope_ids:
-            try:
-                peer_placeholders = ",".join("?" for _ in peer_ids)
-                scope_placeholders = ",".join("?" for _ in scope_ids)
-                lock = getattr(self.provider, "_lock", None)
-                if lock is None:
-                    peer_rows = self.provider._require_conn().execute(
-                        f"SELECT id, metadata FROM memories WHERE id IN ({peer_placeholders}) AND scope_id IN ({scope_placeholders})",
-                        [*sorted(peer_ids), *scope_ids],
-                    ).fetchall()
-                else:
-                    with lock:
-                        peer_rows = self.provider._require_conn().execute(
-                            f"SELECT id, metadata FROM memories WHERE id IN ({peer_placeholders}) AND scope_id IN ({scope_placeholders})",
-                            [*sorted(peer_ids), *scope_ids],
-                        ).fetchall()
-                for row in peer_rows:
-                    metadata = load_metadata(row["metadata"])
-                    lifecycle = str(metadata.get("lifecycle") or "").strip().lower()
-                    if lifecycle in _HIDDEN_RELATION_PEER_LIFECYCLES:
-                        continue
-                    accessible_peer_ids.add(str(row["id"]))
-            except Exception:
-                # Keep relations between already-returned candidates, but do not
-                # expose any extra peer ids when the scope lookup is unavailable
-                # (for example in lightweight tests without a memories table).
-                pass
 
         for row in rows:
             source_id = str(row["source_memory_id"])
@@ -527,9 +470,9 @@ class RecallService:
                 confidence = max(0.0, min(1.0, float(row["confidence"] or 0.0)))
             except (TypeError, ValueError):
                 confidence = 0.0
-            if source_id in id_set and target_id in accessible_peer_ids:
+            if source_id in id_set:
                 _append(source_id, direction="outgoing", relation_type=relation_type, related_id=target_id, confidence=confidence)
-            if target_id in id_set and source_id in accessible_peer_ids:
+            if target_id in id_set:
                 _append(target_id, direction="incoming", relation_type=relation_type, related_id=source_id, confidence=confidence)
 
         normalized: dict[str, dict[str, Any]] = {}
@@ -542,6 +485,21 @@ class RecallService:
                 "incoming": payload.get("incoming") or {},
             }
         return normalized
+
+    def _fact_freshness_evidence(self, memory_ids: list[str]) -> dict[str, dict[str, Any]]:
+        retrieval_cfg = self.provider._retrieval_config or {}
+        if not self._config_bool(retrieval_cfg.get("fact_freshness_enabled"), True):
+            return {}
+        if not memory_ids or not hasattr(self.provider, "_require_conn"):
+            return {}
+        try:
+            lock = getattr(self.provider, "_lock", None)
+            if lock is None:
+                return memory_freshness_map(self.provider._require_conn(), memory_ids)
+            with lock:
+                return memory_freshness_map(self.provider._require_conn(), memory_ids)
+        except Exception:
+            return {}
 
     def _relation_rerank_bonus(self, evidence: dict[str, Any]) -> float:
         retrieval_cfg = self.provider._retrieval_config or {}
@@ -565,29 +523,43 @@ class RecallService:
                     continue
             return total
 
-        def _relation_weight(primary_key: str, *, fallback_key: str | None = "relation_rerank_weight", default: float = 0.04) -> float:
+        def _relation_weight(
+            primary_key: str,
+            *,
+            fallback_key: str | None = "relation_rerank_weight",
+            default: float = 0.04,
+            maximum: float = 0.12,
+        ) -> float:
             raw = retrieval_cfg.get(primary_key)
             if raw is None or raw == "":
                 raw = retrieval_cfg.get(fallback_key) if fallback_key else None
             if raw is None or raw == "":
                 raw = default
             try:
-                return max(0.0, min(0.5, float(raw)))
+                return max(0.0, min(maximum, float(raw)))
             except (TypeError, ValueError):
-                return max(0.0, min(0.5, default))
+                return max(0.0, min(maximum, default))
 
         supersedes_boost = _relation_weight("relation_supersedes_boost")
-        supports_boost = _relation_weight("relation_supports_boost")
+        supports_boost = _relation_weight("relation_supports_boost", maximum=0.08)
+        same_topic_boost = _relation_weight("relation_same_topic_boost", fallback_key=None, default=0.01, maximum=0.03)
         superseded_penalty = _relation_weight("relation_superseded_penalty")
         contradicts_penalty = _relation_weight("relation_contradicts_penalty", fallback_key=None, default=0.0)
+        max_bonus = _relation_weight("relation_rerank_max_bonus", fallback_key=None, default=0.08)
+        max_penalty = _relation_weight("relation_rerank_max_penalty", fallback_key=None, default=0.08)
 
         bonus = 0.0
         bonus += supersedes_boost * _confidence_sum(outgoing.get("supersedes"))
         bonus += supports_boost * _confidence_sum(outgoing.get("supports"))
         bonus += supports_boost * _confidence_sum(incoming.get("supports"))
+        for typed_relation in ("depends_on", "affects", "owned_by"):
+            bonus += supports_boost * _confidence_sum(outgoing.get(typed_relation))
+        bonus += same_topic_boost * (
+            _confidence_sum(outgoing.get("same_topic")) + _confidence_sum(incoming.get("same_topic"))
+        )
         bonus -= superseded_penalty * _confidence_sum(incoming.get("supersedes"))
         bonus -= contradicts_penalty * (_confidence_sum(outgoing.get("contradicts")) + _confidence_sum(incoming.get("contradicts")))
-        return max(-0.5, min(0.5, bonus))
+        return max(-max_penalty, min(max_bonus, bonus))
 
     def _entity_graph_scores(self, query: str, items: list[RecallItem]) -> dict[str, float]:
         query_entity_values = graph_query_entities(query)
@@ -656,7 +628,7 @@ class RecallService:
         output: list[RecallItem] = []
         for item in items:
             lifecycle = str((item.metadata or {}).get("lifecycle") or "").strip().lower()
-            if lifecycle in {"superseded", "obsolete", "rejected", "archived"}:
+            if lifecycle in _RECALL_HIDDEN_LIFECYCLE_TYPES:
                 continue
             output.append(item)
         return output

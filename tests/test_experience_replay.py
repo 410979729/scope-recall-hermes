@@ -1,3 +1,7 @@
+"""Tests for Experience replay benchmark cases.
+
+Replay checks verify expected and forbidden procedural matches after retrieval or playbook changes."""
+
 from __future__ import annotations
 
 import json
@@ -8,11 +12,13 @@ from pathlib import Path
 
 import pytest
 
-from scope_recall.experience_replay import ReplayCaseValidationError, build_replay_report, load_replay_cases
+from scope_recall.experience_bootstrap import bootstrap_core_playbooks
+from scope_recall.experience_replay import ReplayCaseValidationError, build_replay_report, coverage_hits, load_replay_cases
 from scope_recall.experience_store import create_playbook, review_playbook
 from scope_recall.sql_store import ensure_schema
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+EXPERIENCE_REPLAY_CASES = PLUGIN_ROOT / "benchmarks" / "experience_replay_cases.json"
 
 
 def _payload() -> dict:
@@ -91,6 +97,72 @@ def test_build_replay_report_compares_baseline_to_experience_packet_without_muta
     assert "rollback" in case["with_experience_hits"]
     assert "negative reachability" in case["with_experience_hits"]
     assert "live nodes" in case["with_experience_hits"]
+
+
+def test_core_bootstrap_replay_benchmark_covers_positive_and_negative_controls_without_mutating_runs():
+    conn = _conn()
+    bootstrap = bootstrap_core_playbooks(conn, scope_id="scope-a", shared_scope_id="", accessible_scope_ids=["scope-a"], dry_run=False)
+    assert bootstrap["promoted"] >= 5
+    before_runs = conn.execute("SELECT COUNT(*) FROM experience_runs").fetchone()[0]
+    cases = [
+        {
+            "id": "core-release-closeout",
+            "query": "scope-recall release closeout PyPI 发布前验证",
+            "baseline_text": "我会看测试是否通过。",
+            "required_terms": ["release gate", "ruff", "pyright", "未获授权不得 push"],
+            "expected_decision": "guided_reuse",
+            "expected_playbook_id": "pb_core_scope_recall_release_closeout",
+            "min_coverage_gain": 0.25,
+        },
+        {
+            "id": "core-journal-backlog",
+            "query": "scope recall journal backlog retry dead-letter watermark 修复",
+            "baseline_text": "先看 journal 队列。",
+            "required_terms": ["retry", "dead-letter", "watermark", "SQLite"],
+            "expected_decision": "guided_reuse",
+            "expected_playbook_id": "pb_core_journal_backlog_drain",
+            "min_coverage_gain": 0.25,
+        },
+        {
+            "id": "negative-unrelated-short",
+            "query": "hi",
+            "baseline_text": "",
+            "required_terms": ["release gate"],
+            "expect_no_reuse": True,
+        },
+    ]
+
+    report = build_replay_report(conn, cases=cases, accessible_scope_ids=["scope-a"])
+
+    assert conn.execute("SELECT COUNT(*) FROM experience_runs").fetchone()[0] == before_runs
+    assert report["case_count"] == 3
+    assert report["pass_count"] == 3
+    by_id = {case["id"]: case for case in report["cases"]}
+    assert by_id["core-release-closeout"]["playbook_id"] == "pb_core_scope_recall_release_closeout"
+    assert by_id["core-journal-backlog"]["playbook_id"] == "pb_core_journal_backlog_drain"
+    assert by_id["negative-unrelated-short"]["packet_chars"] == 0
+    assert by_id["negative-unrelated-short"]["decision"] == "no_reuse"
+
+
+def test_packaged_core_replay_fixture_passes_against_bootstrapped_playbooks_without_mutating_runs():
+    conn = _conn()
+    bootstrap = bootstrap_core_playbooks(conn, scope_id="scope-a", shared_scope_id="", accessible_scope_ids=["scope-a"], dry_run=False)
+    assert bootstrap["promoted"] >= 5
+    before_runs = conn.execute("SELECT COUNT(*) FROM experience_runs").fetchone()[0]
+    cases = load_replay_cases(EXPERIENCE_REPLAY_CASES)
+
+    report = build_replay_report(conn, cases=cases, accessible_scope_ids=["scope-a"])
+
+    assert conn.execute("SELECT COUNT(*) FROM experience_runs").fetchone()[0] == before_runs
+    assert report["case_count"] == len(cases) >= 5
+    assert report["pass_count"] == report["case_count"]
+    assert {case["id"] for case in report["cases"]} >= {
+        "core-release-closeout",
+        "core-journal-backlog",
+        "core-candidate-review",
+        "core-vector-rebuild",
+        "negative-unrelated-short",
+    }
 
 
 def test_experience_replay_script_is_read_only_and_emits_json_report(tmp_path):
@@ -222,3 +294,10 @@ def test_replay_rejects_invalid_required_terms_and_min_coverage_gain():
                 ],
                 accessible_scope_ids=["scope-a"],
             )
+
+
+def test_replay_term_matching_does_not_count_latin_substrings_as_hits():
+    assert coverage_hits("staging deployment only", ["tag"]) == []
+    assert coverage_hits("decision only", ["ci"]) == []
+    assert coverage_hits("release tag was created and CI passed", ["tag", "ci"]) == ["tag", "ci"]
+    assert coverage_hits("发布前必须回读版本号", ["回读版本号"]) == ["回读版本号"]

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Import historical OpenClaw `memory-lancedb-pro` records into scope-recall.
 
-This importer is conservative and idempotent:
-- it never runs automatically
-- it never overwrites scope-recall truth rows blindly
-- repeated runs of the same source rows should not create duplicates
+The script is a thin LanceDB reader around ``migration_openclaw``.  It defaults
+safe: inspect/dry-run unless ``--apply`` is passed.  The core importer remains
+idempotent, refuses unsafe rows before writing, creates an online SQLite backup
+before applying to an existing target DB, and can emit a JSON receipt.
 """
 
 from __future__ import annotations
@@ -12,13 +12,13 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import sqlite3
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
-PACKAGE_NAME = "scope_recall_script_runtime"
+PACKAGE_NAME = "scope_recall_openclaw_import_runtime"
 if PACKAGE_NAME not in sys.modules:
     spec = importlib.util.spec_from_file_location(
         PACKAGE_NAME,
@@ -31,211 +31,62 @@ if PACKAGE_NAME not in sys.modules:
     sys.modules[PACKAGE_NAME] = package
     spec.loader.exec_module(package)
 
-from scope_recall_script_runtime.models import (  # noqa: E402
-    ImportedMemoryRow,
-    build_import_fingerprint,
-    json_dumps_stable,
-    normalize_import_fingerprint_timestamp,
-    normalize_import_timestamp,
+from scope_recall_openclaw_import_runtime.migration_openclaw import (  # noqa: E402
+    DEFAULT_ALLOWED_TARGETS,
+    map_openclaw_row,
+    run_openclaw_import_rows,
 )
 
 
+def map_row(row: dict[str, Any], scope_prefix: str):
+    """Backward-compatible wrapper for tests/operators that imported the script."""
+
+    mapped = map_openclaw_row(row, scope_prefix)
+    if mapped is None:
+        raise ValueError("OpenClaw row has empty text and is not importable")
+    return mapped
+
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser()
-    p.add_argument("--source", required=True, help="Path to OpenClaw memory/lancedb-pro directory")
-    p.add_argument("--hermes-home", required=True, help="Target Hermes home containing scope-recall/")
-    p.add_argument("--scope-prefix", default="imported.openclaw", help="Prefix for generated scope ids")
-    p.add_argument("--dry-run", action="store_true", help="Inspect only; do not write target SQLite")
-    return p.parse_args()
+    parser = argparse.ArgumentParser(description="Safely import OpenClaw memory-lancedb-pro history into scope-recall SQLite truth")
+    parser.add_argument("--source", required=True, help="Path to OpenClaw memory/lancedb-pro directory")
+    parser.add_argument("--hermes-home", default=os.environ.get("HERMES_HOME", "~/.hermes"), help="Target Hermes home containing scope-recall/")
+    parser.add_argument("--scope-prefix", default="imported.openclaw", help="Prefix for generated scope ids")
+    parser.add_argument(
+        "--allow-target",
+        action="append",
+        default=[],
+        help=f"Allowed target/category to import. Repeatable. Defaults to {', '.join(sorted(DEFAULT_ALLOWED_TARGETS))}",
+    )
+    parser.add_argument("--apply", action="store_true", help="Apply the import. Default is dry-run/inspect only")
+    parser.add_argument("--dry-run", action="store_true", help="Inspect only; kept for compatibility and overrides --apply")
+    parser.add_argument("--receipt", default="", help="Optional JSON receipt path written after successful --apply")
+    parser.add_argument(
+        "--vector-repair",
+        default="recommend",
+        choices=["recommend", "dry-run", "apply", "none"],
+        help="Record the desired post-import vector repair mode in the receipt. This importer does not run vector repair inline.",
+    )
+    return parser.parse_args()
 
 
 def connect_lancedb(source: Path):
     try:
         import lancedb  # type: ignore[import-not-found]
     except ImportError as exc:
-        raise RuntimeError("lancedb is required only for importing OpenClaw memory-lancedb-pro sources; install scope-recall[lancedb] or lancedb to run this importer.") from exc
+        raise RuntimeError(
+            "lancedb is required only for importing OpenClaw memory-lancedb-pro sources; "
+            "install scope-recall[lancedb] or lancedb to run this importer."
+        ) from exc
     return lancedb.connect(str(source))
 
 
-def map_row(row: dict[str, Any], scope_prefix: str) -> ImportedMemoryRow:
-    raw_scope = str(row.get("scope") or "unknown")
-    category = str(row.get("category") or "memory")
-    content = str(row.get("text") or "").strip()
-    raw_timestamp = row.get("timestamp")
-    updated_at = normalize_import_timestamp(raw_timestamp)
-    fingerprint_timestamp = normalize_import_fingerprint_timestamp(raw_timestamp)
-    metadata = row.get("metadata")
-    metadata_text = metadata if isinstance(metadata, str) else json_dumps_stable(metadata or {})
-    fingerprint = build_import_fingerprint(
-        source_id=str(row.get("id") or ""),
-        raw_scope=raw_scope,
-        category=category,
-        text=content,
-        timestamp=fingerprint_timestamp,
-        metadata_text=metadata_text,
-    )
-    return ImportedMemoryRow(
-        id=f"openclaw:{fingerprint}",
-        scope_id=f"{scope_prefix}|{raw_scope}",
-        platform="imported-openclaw",
-        user_id="",
-        chat_id="",
-        thread_id="",
-        gateway_session_key="",
-        agent_identity="openclaw-import",
-        agent_workspace="scope-recall",
-        session_id="openclaw-import",
-        source="openclaw-import",
-        target=category,
-        content=content,
-        summary=content[:220],
-        created_at=updated_at,
-        updated_at=updated_at,
-        import_metadata=metadata_text,
-        import_fingerprint=fingerprint,
-    )
-
-
-
-def ensure_target_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS memories (
-            id TEXT PRIMARY KEY,
-            scope_id TEXT NOT NULL,
-            platform TEXT,
-            user_id TEXT,
-            chat_id TEXT,
-            thread_id TEXT,
-            gateway_session_key TEXT,
-            agent_identity TEXT,
-            agent_workspace TEXT,
-            session_id TEXT,
-            source TEXT NOT NULL,
-            target TEXT NOT NULL,
-            content TEXT NOT NULL,
-            summary TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            last_recalled_turn INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
-            memory_id UNINDEXED,
-            content,
-            summary
-        );
-        CREATE TABLE IF NOT EXISTS import_ledger (
-            import_fingerprint TEXT PRIMARY KEY,
-            source_kind TEXT NOT NULL,
-            source_scope TEXT NOT NULL,
-            source_path TEXT NOT NULL,
-            memory_id TEXT NOT NULL,
-            imported_at TEXT NOT NULL
-        );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_import_ledger_memory_id
-            ON import_ledger(memory_id);
-        """
-    )
-    conn.commit()
-
-
-
-def import_rows(conn: sqlite3.Connection, rows: list[ImportedMemoryRow], source_path: Path) -> tuple[int, int]:
-    inserted = 0
-    skipped = 0
-    for row in rows:
-        ledger_hit = conn.execute(
-            "SELECT 1 FROM import_ledger WHERE import_fingerprint = ?",
-            (row.import_fingerprint,),
-        ).fetchone()
-        if ledger_hit:
-            skipped += 1
-            continue
-        before_changes = conn.total_changes
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO memories (
-                id, scope_id, platform, user_id, chat_id, thread_id, gateway_session_key,
-                agent_identity, agent_workspace, session_id, source, target, content, summary,
-                created_at, updated_at, last_recalled_turn
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-            """,
-            (
-                row.id,
-                row.scope_id,
-                row.platform,
-                row.user_id,
-                row.chat_id,
-                row.thread_id,
-                row.gateway_session_key,
-                row.agent_identity,
-                row.agent_workspace,
-                row.session_id,
-                row.source,
-                row.target,
-                row.content,
-                row.summary,
-                row.created_at,
-                row.updated_at,
-            ),
-        )
-        inserted_memory = conn.total_changes > before_changes
-        before_fts = conn.total_changes
-        conn.execute(
-            "INSERT OR IGNORE INTO memories_fts(memory_id, content, summary) VALUES (?, ?, ?)",
-            (row.id, row.content, row.summary),
-        )
-        inserted_fts = conn.total_changes > before_fts
-        before_ledger = conn.total_changes
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO import_ledger (
-                import_fingerprint, source_kind, source_scope, source_path, memory_id, imported_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                row.import_fingerprint,
-                "openclaw-memory-lancedb-pro",
-                row.scope_id,
-                str(source_path),
-                row.id,
-                row.updated_at,
-            ),
-        )
-        inserted_ledger = conn.total_changes > before_ledger
-        if inserted_memory or inserted_fts or inserted_ledger:
-            inserted += 1
-        else:
-            skipped += 1
-    conn.commit()
-    return inserted, skipped
-
-
-
-def main() -> int:
-    args = parse_args()
-    source = Path(args.source).expanduser()
-    hermes_home = Path(args.hermes_home).expanduser()
-    target_dir = hermes_home / "scope-recall"
-    target_dir.mkdir(parents=True, exist_ok=True)
-    target_db = target_dir / "memory.sqlite3"
-
-    if not source.exists():
-        print(json.dumps({"ok": False, "error": f"source not found: {source}"}, ensure_ascii=False))
-        return 1
-
-    try:
-        db = connect_lancedb(source)
-    except RuntimeError as exc:
-        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
-        return 1
+def load_openclaw_rows(source: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    db = connect_lancedb(source)
     listed = db.list_tables()
-    tables = list(getattr(listed, "tables", listed))
+    tables = [str(item) for item in list(getattr(listed, "tables", listed))]
     if "memories" not in tables:
-        print(json.dumps({"ok": False, "error": f"memories table missing in {source}", "tables": tables}, ensure_ascii=False))
-        return 1
-
+        raise RuntimeError(json.dumps({"error": f"memories table missing in {source}", "tables": tables}, ensure_ascii=False))
     table = db.open_table("memories")
     if hasattr(table, "to_list"):
         rows = table.to_list()
@@ -243,39 +94,45 @@ def main() -> int:
         rows = table.to_arrow().to_pylist()
     else:
         rows = table.to_pandas().to_dict(orient="records")
-    mapped = [map_row(row, args.scope_prefix) for row in rows if str(row.get("text") or "").strip()]
+    return [dict(row) for row in rows], tables
 
-    if args.dry_run:
-        print(json.dumps({
-            "ok": True,
-            "dry_run": True,
-            "source": str(source),
-            "target_db": str(target_db),
-            "rows_found": len(rows),
-            "rows_mappable": len(mapped),
-            "sample": [row.__dict__ for row in mapped[:2]],
-        }, ensure_ascii=False))
-        return 0
 
-    conn = sqlite3.connect(target_db)
+def main() -> int:
+    args = parse_args()
+    source = Path(args.source).expanduser()
+    hermes_home = Path(args.hermes_home).expanduser()
+    target_db = hermes_home / "scope-recall" / "memory.sqlite3"
+    receipt_path = Path(args.receipt).expanduser() if args.receipt else None
+    allowed_targets = set(args.allow_target) if args.allow_target else None
+    apply = bool(args.apply and not args.dry_run)
+
+    if not source.exists():
+        print(json.dumps({"ok": False, "error": f"source not found: {source}"}, ensure_ascii=False))
+        return 1
     try:
-        ensure_target_schema(conn)
-        inserted, skipped = import_rows(conn, mapped, source)
-    finally:
-        conn.close()
+        rows, tables = load_openclaw_rows(source)
+        report = run_openclaw_import_rows(
+            rows,
+            source_path=source,
+            target_db=target_db,
+            scope_prefix=args.scope_prefix,
+            allowed_targets=allowed_targets,
+            apply=apply,
+            receipt_path=receipt_path,
+            vector_repair=args.vector_repair,
+        )
+        report["tables"] = tables
+    except RuntimeError as exc:
+        try:
+            payload = json.loads(str(exc))
+        except Exception:
+            payload = {"error": str(exc)}
+        print(json.dumps({"ok": False, **payload}, ensure_ascii=False))
+        return 1
 
-    print(json.dumps({
-        "ok": True,
-        "source": str(source),
-        "target_db": str(target_db),
-        "rows_seen": len(mapped),
-        "rows_inserted": inserted,
-        "rows_skipped": skipped,
-        "idempotent": True,
-        "note": "Reinitialize scope-recall after import so its LanceDB companion can sync from SQLite truth.",
-    }, ensure_ascii=False))
-    return 0
+    print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0 if report.get("ok") else 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

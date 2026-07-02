@@ -21,7 +21,7 @@ import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME = "scope_recall_repair_runtime"
@@ -40,6 +40,7 @@ if PACKAGE_NAME not in sys.modules:
 from scope_recall_repair_runtime.config import load_runtime_config  # noqa: E402
 from scope_recall_repair_runtime.embedders import build_embedder  # noqa: E402
 from scope_recall_repair_runtime.gating import config_bool  # noqa: E402
+from scope_recall_repair_runtime.graph import lifecycle_visible_sql  # noqa: E402
 from scope_recall_repair_runtime.sqlite_vector_store import SQLiteBruteForceVectorStore  # type: ignore[import-not-found]  # noqa: E402
 from scope_recall_repair_runtime.vector_store import LanceVectorStore  # noqa: E402
 
@@ -48,8 +49,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Rebuild scope-recall vector companion from SQLite truth")
     parser.add_argument("--hermes-home", default=os.environ.get("HERMES_HOME", "~/.hermes"), help="Hermes home/profile path")
     parser.add_argument("--backend", default="", choices=["", "lancedb", "sqlite-bruteforce", "sqlite"], help="Override vector.backend from config")
-    parser.add_argument("--dry-run", action="store_true", help="Inspect planned rebuild without writing vector companion data")
+    parser.add_argument("--dry-run", action="store_true", help="Inspect planned rebuild without writing vector companion data (default)")
+    parser.add_argument("--apply", action="store_true", help="Actually rebuild vector companion data; without this flag the script is read-only")
     parser.add_argument("--no-backup", action="store_true", help="Do not copy the old vector companion before rebuild")
+    parser.add_argument(
+        "--allow-fallback-embedder",
+        action="store_true",
+        help="Allow rebuilding with vector.fallback_embedder when the primary embedder is unavailable. By default this is blocked to avoid silently downgrading production vector dimensions/quality.",
+    )
     return parser.parse_args()
 
 
@@ -58,7 +65,7 @@ def load_rows(db_path: Path) -> list[sqlite3.Row]:
     conn.row_factory = sqlite3.Row
     try:
         return conn.execute(
-            "SELECT id, scope_id, source, target, content, summary, updated_at FROM memories ORDER BY updated_at ASC"
+            f"SELECT id, scope_id, source, target, content, summary, updated_at FROM memories m WHERE {lifecycle_visible_sql('m')} ORDER BY updated_at ASC"
         ).fetchall()
     finally:
         conn.close()
@@ -68,18 +75,125 @@ def vector_text(row: sqlite3.Row) -> str:
     return f"{row['summary']}\n{row['content']}".strip()
 
 
-def choose_embedder(config: dict[str, Any]):
+def coerce_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def unavailable_primary_message(primary_config: dict[str, Any], *, fallback_available: bool) -> str:
+    env_names = coerce_list(primary_config.get("api_key_env"))
+    env_hint = ""
+    if env_names:
+        env_hint = " Export one of these environment variables first: " + ", ".join(env_names) + "."
+    fallback_hint = " Pass --allow-fallback-embedder only if you intentionally want to rebuild with vector.fallback_embedder."
+    if not fallback_available:
+        fallback_hint = " No configured fallback embedder is available either."
+    return f"primary vector embedder is unavailable.{env_hint}{fallback_hint}"
+
+
+def select_embedder(config: dict[str, Any], *, allow_fallback_embedder: bool) -> dict[str, Any]:
     vector_config = dict(config.get("vector") or {})
-    embedder = build_embedder(dict(vector_config.get("embedder") or {}))
-    if not embedder.is_available() and vector_config.get("fallback_embedder"):
-        fallback = build_embedder(dict(vector_config.get("fallback_embedder") or {}))
-        if fallback.is_available():
-            embedder = fallback
-    if not embedder.is_available():
-        raise RuntimeError(f"embedder {embedder.provider} is not available")
-    if embedder.provider == "sentence-transformers" and hasattr(embedder, "_model_or_raise"):
-        embedder._model_or_raise()
-    return embedder
+    primary_config = dict(vector_config.get("embedder") or {})
+    fallback_config = dict(vector_config.get("fallback_embedder") or {})
+    primary = build_embedder(primary_config)
+    fallback = build_embedder(fallback_config) if fallback_config else None
+    primary_available = bool(primary.is_available())
+    fallback_available = bool(fallback is not None and fallback.is_available())
+    using_fallback = False
+    selected = primary
+    error = ""
+
+    if primary_available:
+        selected = primary
+    elif fallback_available and fallback is not None:
+        selected = fallback
+        using_fallback = True
+        if not allow_fallback_embedder:
+            error = unavailable_primary_message(primary_config, fallback_available=True)
+    else:
+        error = unavailable_primary_message(primary_config, fallback_available=False)
+
+    if not error and selected.provider == "sentence-transformers" and hasattr(selected, "_model_or_raise"):
+        selected._model_or_raise()
+    return {
+        "embedder": selected,
+        "primary": primary,
+        "fallback": fallback,
+        "primary_available": primary_available,
+        "fallback_available": fallback_available,
+        "using_fallback": using_fallback,
+        "fallback_allowed": bool(allow_fallback_embedder),
+        "error": error,
+    }
+
+
+def existing_sqlite_dimensions(target: Path) -> int:
+    if not target.exists():
+        return 0
+    try:
+        conn = sqlite3.connect(f"file:{target}?mode=ro", uri=True)
+        try:
+            row = conn.execute("SELECT value FROM vector_meta WHERE key = 'dimensions'").fetchone()
+            return int(row[0]) if row and str(row[0]).strip() else 0
+        finally:
+            conn.close()
+    except Exception:
+        return 0
+
+
+def lancedb_table_names(db: Any) -> set[str]:
+    try:
+        listed = db.list_tables()
+        return {str(item) for item in getattr(listed, "tables", listed)}
+    except Exception:
+        try:
+            return {str(item) for item in db.table_names()}
+        except Exception:
+            return set()
+
+
+def existing_lancedb_dimensions(target: Path, table_name: str) -> int:
+    if not target.exists():
+        return 0
+    try:
+        import lancedb  # type: ignore
+
+        db = lancedb.connect(str(target))
+        if table_name not in lancedb_table_names(db):
+            return 0
+        table = db.open_table(table_name)
+        to_arrow = getattr(table, "to_arrow", None)
+        to_list = getattr(table, "to_list", None)
+        rows: list[Any]
+        if callable(to_arrow):
+            arrow_table = cast(Any, to_arrow)().select(["vector"]).slice(0, 1)
+            rows = list(cast(Any, arrow_table).to_pylist())
+        elif callable(to_list):
+            try:
+                rows = list(cast(Any, to_list)(columns=["vector"]))
+            except TypeError:
+                rows = list(cast(Any, to_list)())
+        else:
+            rows = []
+        if not rows:
+            return 0
+        first = rows[0]
+        vector = first.get("vector") if isinstance(first, dict) else None
+        return len(vector or [])
+    except Exception:
+        return 0
+
+
+def existing_vector_dimensions(target: Path, *, backend: str, table_name: str) -> int:
+    if backend == "sqlite-bruteforce":
+        return existing_sqlite_dimensions(target)
+    if backend == "lancedb":
+        return existing_lancedb_dimensions(target, table_name)
+    return 0
 
 
 def normalize_backend(value: str) -> str:
@@ -157,6 +271,9 @@ def open_store(target: Path, *, backend: str, table_name: str, dimensions: int, 
 
 
 def main() -> int:
+    """CLI entry point for auditing or rebuilding vector companion state.
+
+    The command defaults to dry-run, verifies embedder dimensions, backs up companion storage before apply, and never rewrites SQLite truth."""
     args = parse_args()
     hermes_home = Path(args.hermes_home).expanduser().resolve()
     storage_dir = hermes_home / "scope-recall"
@@ -174,12 +291,19 @@ def main() -> int:
     rows = load_rows(db_path)
     if not config_bool(vector_config, "index_general", False):
         rows = [row for row in rows if str(row["target"]) != "general"]
-    embedder = choose_embedder(config)
     target = vector_target(storage_dir, backend)
+    selection = select_embedder(config, allow_fallback_embedder=bool(args.allow_fallback_embedder))
+    embedder = selection["embedder"]
+    primary = selection["primary"]
+    fallback = selection.get("fallback")
+    existing_dimensions = existing_vector_dimensions(target, backend=backend, table_name=table_name)
+    planned_dimensions = int(getattr(embedder, "dimensions", 0) or 0)
+    dimension_mismatch_with_existing = bool(existing_dimensions and planned_dimensions and existing_dimensions != planned_dimensions)
 
+    dry_run = bool(args.dry_run or not args.apply)
     plan = {
         "ok": True,
-        "dry_run": bool(args.dry_run),
+        "dry_run": dry_run,
         "hermes_home": str(hermes_home),
         "sqlite_db": str(db_path),
         "vector_backend": backend,
@@ -187,8 +311,21 @@ def main() -> int:
         "table": table_name,
         "rows": len(rows),
         "embedder": embedder.describe(),
+        "primary_embedder": primary.describe(),
+        "fallback_embedder": fallback.describe() if fallback is not None else None,
+        "primary_available": bool(selection["primary_available"]),
+        "fallback_available": bool(selection["fallback_available"]),
+        "using_fallback": bool(selection["using_fallback"]),
+        "fallback_allowed": bool(selection["fallback_allowed"]),
+        "existing_dimensions": existing_dimensions,
+        "planned_dimensions": planned_dimensions,
+        "dimension_mismatch_with_existing": dimension_mismatch_with_existing,
     }
-    if args.dry_run:
+    if selection.get("error"):
+        plan.update({"ok": False, "status": "blocked", "error": str(selection["error"])})
+        print(json.dumps(plan, ensure_ascii=False, indent=2))
+        return 2
+    if dry_run:
         print(json.dumps(plan, ensure_ascii=False, indent=2))
         return 0
 

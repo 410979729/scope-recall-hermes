@@ -133,26 +133,18 @@ def test_graph_relation_stats_reports_density_orphans_and_lifecycle_hidden_peers
         conn.close()
 
 
-def test_archive_memory_creates_supersedes_edge_only_for_existing_same_scope_replacement(tmp_path):
+def test_archive_memory_records_superseded_by_without_creating_hidden_relation_debt(tmp_path):
     conn = _conn(tmp_path)
     try:
         _insert_memory(conn, "new")
         _insert_memory(conn, "old")
-        _insert_memory(conn, "other-new", scope_id="scope-b")
-        _insert_memory(conn, "cross-old")
-        _insert_memory(conn, "hidden-new", metadata={"lifecycle": "archived"})
-        _insert_memory(conn, "hidden-old")
-        _insert_memory(conn, "missing-old")
 
         assert _archive_memory(conn, memory_id="old", reason="test", superseded_by="new") is True
-        assert _archive_memory(conn, memory_id="cross-old", reason="test", superseded_by="other-new") is True
-        assert _archive_memory(conn, memory_id="hidden-old", reason="test", superseded_by="hidden-new") is True
-        assert _archive_memory(conn, memory_id="missing-old", reason="test", superseded_by="missing-new") is True
 
-        assert _relation_count(conn, "new", "old", "supersedes") == 1
-        assert _relation_count(conn, "other-new", "cross-old", "supersedes") == 0
-        assert _relation_count(conn, "hidden-new", "hidden-old", "supersedes") == 0
-        assert _relation_count(conn, "missing-new", "missing-old", "supersedes") == 0
+        metadata = json.loads(conn.execute("SELECT metadata FROM memories WHERE id = 'old'").fetchone()["metadata"])
+        assert metadata["lifecycle"] == "archived"
+        assert metadata["superseded_by"] == "new"
+        assert _relation_count(conn, "new", "old", "supersedes") == 0
     finally:
         conn.close()
 

@@ -1,3 +1,7 @@
+"""Comprehensive release-gate tests for packaging, metadata, workflows, docs, and public contracts.
+
+This file encodes what must stay true before a tag can be published."""
+
 import importlib
 import importlib.util
 import json
@@ -83,6 +87,194 @@ def _package_version() -> str:
 
     return tomllib.loads((PLUGIN_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
 
+
+def _load_release_check_module(module_name: str = "scope_recall_check_release_contract"):
+    spec = importlib.util.spec_from_file_location(module_name, CHECK_RELEASE_PATH)
+    assert spec is not None
+    assert spec.loader is not None
+    release_check = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(release_check)
+    return release_check
+
+
+
+def test_release_environment_check_reports_interpreter_and_required_modules(monkeypatch):
+    release_check = _load_release_check_module("scope_recall_check_release_environment")
+
+    monkeypatch.setattr(release_check.importlib.util, "find_spec", lambda name: object() if name != "lancedb" else None)
+
+    report = release_check.release_environment_check()
+
+    assert report["ok"] is False
+    assert report["python_executable"] == sys.executable
+    assert report["required_modules"]["pytest"] is True
+    assert report["required_modules"]["lancedb"] is False
+    assert report["missing_modules"] == ["lancedb"]
+    assert report["install_command"] == "python -m pip install -e '.[dev,all]'"
+
+
+def test_public_response_contract_files_are_release_packaged():
+    release_check = _load_release_check_module("scope_recall_check_release_response_contracts")
+
+    assert "response_schemas.py" in release_check.REQUIRED_SOURCE_FILES
+    assert "docs/response-contracts.md" in release_check.REQUIRED_SOURCE_FILES
+    assert "scope_recall/response_schemas.py" in release_check.REQUIRED_WHEEL
+    assert "scope_recall/docs/response-contracts.md" in release_check.REQUIRED_WHEEL
+
+
+def test_release_readiness_note_is_release_packaged():
+    release_check = _load_release_check_module("scope_recall_check_release_readiness_doc")
+
+    expected_source = f"docs/release-readiness.{release_check.PACKAGE_VERSION}.md"
+    expected_wheel = f"scope_recall/{expected_source}"
+    assert release_check.RELEASE_READINESS_DOC == expected_source
+    assert expected_source in release_check.REQUIRED_SOURCE_FILES
+    assert expected_wheel in release_check.REQUIRED_WHEEL
+
+
+def test_internal_plan_docs_are_not_release_contracts():
+    release_check = _load_release_check_module("scope_recall_check_release_public_docs")
+
+    assert "docs/upstream-recommendation.md" in release_check.REQUIRED_SOURCE_FILES
+    assert "scope_recall/docs/upstream-recommendation.md" in release_check.REQUIRED_WHEEL
+    assert "docs/hermes-upstream-recommendation-plan.md" not in release_check.REQUIRED_SOURCE_FILES
+    assert "scope_recall/docs/hermes-upstream-recommendation-plan.md" not in release_check.REQUIRED_WHEEL
+    assert (PLUGIN_ROOT / "docs" / "plans").exists() is False
+    assert release_check.public_doc_hygiene_check()["ok"] is True
+
+
+def test_public_doc_hygiene_blocks_private_plan_markers(tmp_path, monkeypatch):
+    release_check = _load_release_check_module("scope_recall_check_release_private_doc_markers")
+    docs_plans = tmp_path / "docs" / "plans"
+    docs_plans.mkdir(parents=True)
+    (tmp_path / "README.md").write_text("The product promise Joy cares about\n", encoding="utf-8")
+    (docs_plans / "internal.md").write_text("由插件/玉衡自动提取，不需要 Joy 人工复审。\n", encoding="utf-8")
+    monkeypatch.setattr(release_check, "ROOT", tmp_path)
+
+    result = release_check.public_doc_hygiene_check()
+
+    assert result["ok"] is False
+    assert result["forbidden_paths"] == ["docs/plans/internal.md"]
+    markers = {(finding["path"], finding["marker"]) for finding in result["findings"]}
+    assert ("README.md", "personal_name_joy") in markers
+    assert ("README.md", "private_product_promise") in markers
+    assert ("docs/plans/internal.md", "agent_persona_yuheng") in markers
+    assert ("docs/plans/internal.md", "manual_review_private_context") in markers
+
+
+def test_distribution_hygiene_blocks_plan_artifacts():
+    release_check = _load_release_check_module("scope_recall_check_release_distribution_hygiene")
+
+    names = {
+        "scope_recall/docs/upstream-recommendation.md",
+        "scope_recall/docs/plans/internal.md",
+        "scope_recall/docs/hermes-upstream-recommendation-plan.md",
+    }
+
+    assert release_check.forbidden_distribution_entries(names) == [
+        "scope_recall/docs/hermes-upstream-recommendation-plan.md",
+        "scope_recall/docs/plans/internal.md",
+    ]
+
+
+def test_changelog_completeness_gate_requires_current_release_terms():
+    release_check = _load_release_check_module("scope_recall_check_release_changelog")
+
+    empty_current = "# Changelog\n\n## [1.6.1] - 2026-06-30\n\n## [1.5.3] - 2026-06-26\n"
+    failed = release_check.changelog_completeness_check(empty_current)
+    assert failed["ok"] is False
+    assert failed["section_found"] is True
+    assert "governance" in failed["missing_terms"]
+    assert "journal recovery" in failed["missing_terms"]
+
+    complete = "# Changelog\n\n## [1.6.1] - 2026-06-30\n" + "\n".join(release_check.REQUIRED_CHANGELOG_TERMS)
+    assert release_check.changelog_completeness_check(complete)["ok"] is True
+
+
+def test_live_dashboard_waiver_check_detects_stale_snapshot():
+    release_check = _load_release_check_module("scope_recall_check_release_live_waiver")
+    dashboard = {
+        "ok": True,
+        "severity": "DEGRADED",
+        "summary": {
+            "journal_unprocessed": 724,
+            "journal_dead_letter_replay_candidates": 272,
+            "journal_llm_quarantine_runs": 4,
+            "journal_digest_status": "degraded",
+            "experience_duplicate_groups": 2,
+            "experience_needs_review": 5,
+            "memory_quality_active_hits": 0,
+            "memory_secret_active": 0,
+            "vector_status": "ready",
+            "schema_migration_current": True,
+        },
+    }
+    stale_readiness = """
+Date: 2026-06-29
+
+## Live dashboard waiver
+
+Current read-only snapshot from the local Hermes home at audit time:
+
+- `ok=true`
+- `severity=DEGRADED`
+- `journal_unprocessed=701`
+- `journal_dead_letter_replay_candidates=272`
+- `journal_llm_quarantine_runs=4`
+- `journal_digest_status=degraded`
+- `experience_duplicate_groups=2`
+- `experience_needs_review=5`
+- `memory_quality_active_hits=0`
+- `memory_secret_active=0`
+- `vector_status=ready`
+- `schema_migration_current=true`
+
+Reason:
+
+Clearance condition: show `severity=OK` after live recovery.
+"""
+
+    snapshot = release_check.release_readiness_snapshot_values(stale_readiness)
+    assert snapshot["severity"] == "DEGRADED"
+
+    result = release_check.live_dashboard_waiver_check(dashboard, stale_readiness)
+
+    assert result["ok"] is False
+    assert result["live_ok"] is False
+    assert result["waiver_used"] is True
+    assert result["mismatches"] == [{"field": "journal_unprocessed", "recorded": "701", "current": "724"}]
+
+    accepted = release_check.live_dashboard_waiver_check(dashboard, stale_readiness, accept_stale=True)
+    assert accepted["ok"] is True
+    assert accepted["accept_stale"] is True
+
+
+def test_live_dashboard_file_check_is_disabled_without_explicit_payload():
+    release_check = _load_release_check_module("scope_recall_check_release_live_disabled")
+
+    assert release_check.live_dashboard_file_check("") == {"ok": True, "enabled": False}
+
+
+def test_response_contract_doc_lists_public_schema_versions():
+    from scope_recall.response_schemas import PUBLIC_RESPONSE_SCHEMA_VERSIONS
+
+    doc = (PLUGIN_ROOT / "docs" / "response-contracts.md").read_text(encoding="utf-8")
+    readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "docs/response-contracts.md" in readme
+    assert "docs/response-contracts.md" in (PLUGIN_ROOT / "docs" / "contract.matrix.md").read_text(encoding="utf-8")
+    for schema_version in PUBLIC_RESPONSE_SCHEMA_VERSIONS.values():
+        assert schema_version in doc
+
+
+def test_historical_release_readiness_is_marked_not_current():
+    historical = (PLUGIN_ROOT / "docs" / "release-readiness.1.4.0.md").read_text(encoding="utf-8")
+    upstream = (PLUGIN_ROOT / "docs" / "upstream-recommendation.md").read_text(encoding="utf-8")
+
+    assert "Historical note" in historical
+    assert "not the current release checklist" in historical
+    assert "standalone-provider visibility" in upstream
+    assert "after the `v1.4.0` release tag is created" not in upstream
+    assert "Joy" not in upstream
 
 
 def test_readme_public_version_matches_package_metadata():
@@ -214,6 +406,7 @@ def test_doctor_script_reports_source_versions():
     payload = json.loads(result.stdout)
     version = _package_version()
     assert payload["ok"] is True
+    assert payload["schema_version"] == "doctor_report.v1"
     assert payload["source"]["pyproject_version"] == version
     assert payload["source"]["plugin_version"] == version
     assert payload["source"]["readme_public_versions"] == [version]
@@ -673,7 +866,7 @@ def test_repair_vector_index_rebuilds_sqlite_bruteforce_backend(tmp_path):
         conn.close()
 
     result = subprocess.run(
-        [sys.executable, str(REPAIR_PATH), "--hermes-home", str(tmp_path), "--no-backup"],
+        [sys.executable, str(REPAIR_PATH), "--hermes-home", str(tmp_path), "--apply", "--no-backup"],
         text=True,
         capture_output=True,
         check=False,
@@ -681,6 +874,7 @@ def test_repair_vector_index_rebuilds_sqlite_bruteforce_backend(tmp_path):
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
+    assert payload["dry_run"] is False
     assert payload["vector_backend"] == "sqlite-bruteforce"
     assert payload["vector_path"].endswith("scope-recall/vector.sqlite3")
     assert payload["rows"] == 1
@@ -757,6 +951,60 @@ def test_doctor_expected_embedder_uses_fallback_when_primary_unavailable(monkeyp
 
 
 
+def test_plugin_manifest_contract_matches_provider_lifecycle_hooks():
+    release_check = _load_release_check_module("scope_recall_check_release_manifest_contract")
+
+    manifest_hooks = set(release_check.parse_plugin_manifest_hooks((PLUGIN_ROOT / "plugin.yaml").read_text(encoding="utf-8")))
+    provider_hooks = set(release_check.provider_lifecycle_hook_methods())
+
+    assert manifest_hooks == provider_hooks
+    assert {"on_pre_compress", "on_session_switch"} <= manifest_hooks
+
+
+
+def test_release_gate_stable_tool_names_cover_schema_surfaces_and_dispatch():
+    release_check = _load_release_check_module("scope_recall_check_release_tool_contract")
+    surfaces = release_check.provider_tool_schema_names_by_surface()
+
+    for surface in ("compact", "standard", "experience", "maintenance", "all_referenced"):
+        assert set(surfaces[surface]) <= release_check.STABLE_TOOL_NAMES
+    assert {"scope_recall_memory", "scope_recall_entity"} <= set(surfaces["compact"])
+    assert release_check.STABLE_TOOL_NAMES <= set(release_check.tool_dispatcher_names())
+
+
+
+def test_release_gate_product_contract_is_clean():
+    release_check = _load_release_check_module("scope_recall_check_release_product_contract")
+
+    product_contract = release_check.product_contract_check()
+
+    assert product_contract["ok"] is True, product_contract["failures"]
+
+
+
+def test_pypi_workflow_runs_release_gate_before_publish():
+    pypi_workflow = (PLUGIN_ROOT / ".github" / "workflows" / "pypi.yml").read_text(encoding="utf-8")
+    release_workflow = (PLUGIN_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+    assert "scripts/check.release.py" in pypi_workflow
+    assert "python -m pip install --upgrade pip build \".[lancedb,dev]\"" in pypi_workflow
+    assert pypi_workflow.index("scripts/check.release.py") < pypi_workflow.index("pypa/gh-action-pypi-publish")
+    assert "  release:" not in pypi_workflow
+    assert "Manual fallback PyPI publish" in pypi_workflow
+    assert "Invalid release tag" in pypi_workflow
+    assert "Verify tag matches package version" in pypi_workflow
+    assert "echo \"ref=${{ inputs.tag }}\"" not in pypi_workflow
+
+    assert "scripts/check.release.py" in release_workflow
+    assert "pypa/gh-action-pypi-publish" in release_workflow
+    assert "Upload release distributions" in release_workflow
+    assert "Invalid release tag" in release_workflow
+    assert "Verify tag matches package version" in release_workflow
+    assert "echo \"tag=${{ github.event.inputs.tag }}\"" not in release_workflow
+    assert release_workflow.index("scripts/check.release.py") < release_workflow.index("pypa/gh-action-pypi-publish")
+
+
+
 def test_release_gate_requires_doctor_script():
     release_script = (PLUGIN_ROOT / "scripts" / "check.release.py").read_text(encoding="utf-8")
 
@@ -764,11 +1012,27 @@ def test_release_gate_requires_doctor_script():
 
 
 
-def test_release_gate_runs_ruff_check():
+def test_release_gate_runs_ruff_and_pyright_checks():
     release_script = (PLUGIN_ROOT / "scripts" / "check.release.py").read_text(encoding="utf-8")
 
     assert '[sys.executable, "-m", "ruff", "check", "."]' in release_script
+    assert '[sys.executable, "-m", "pyright"]' in release_script
 
+
+def test_release_cleanup_preserves_repo_local_venv(monkeypatch, tmp_path):
+    release_check = _load_release_check_module("scope_recall_check_release_cleanup")
+    monkeypatch.setattr(release_check, "ROOT", tmp_path)
+    sentinel = tmp_path / ".venv" / "sentinel.txt"
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_text("keep developer virtualenv\n", encoding="utf-8")
+    pycache = tmp_path / "pkg" / "__pycache__"
+    pycache.mkdir(parents=True)
+    (pycache / "mod.pyc").write_bytes(b"pyc")
+
+    release_check.cleanup_generated()
+
+    assert sentinel.is_file()
+    assert not pycache.exists()
 
 
 def test_ci_installs_release_gate_lint_dependency():
@@ -1243,8 +1507,15 @@ def test_openclaw_import_script_is_idempotent(tmp_path):
         "--hermes-home",
         str(hermes_home),
     ]
-    first = json.loads(subprocess.run(cmd, check=True, capture_output=True, text=True).stdout)
-    second = json.loads(subprocess.run(cmd, check=True, capture_output=True, text=True).stdout)
+    dry_run = json.loads(subprocess.run(cmd, check=True, capture_output=True, text=True).stdout)
+    assert dry_run["ok"] is True
+    assert dry_run["dry_run"] is True
+    assert dry_run["rows_inserted"] == 0
+    assert not (hermes_home / "scope-recall" / "memory.sqlite3").exists()
+
+    apply_cmd = [*cmd, "--apply"]
+    first = json.loads(subprocess.run(apply_cmd, check=True, capture_output=True, text=True).stdout)
+    second = json.loads(subprocess.run(apply_cmd, check=True, capture_output=True, text=True).stdout)
 
     assert first["ok"] is True
     assert first["rows_inserted"] == 1
@@ -1344,13 +1615,15 @@ def test_openai_compatible_embedder_rotates_to_next_key_after_failure(monkeypatc
     from scope_recall.embedders import OpenAICompatibleEmbedder
 
     attempts: list[str] = []
+    encoding_formats: list[str | None] = []
 
     class _FakeEmbeddings:
         def __init__(self, key: str) -> None:
             self.key = key
 
-        def create(self, *, model: str, input: list[str]):
+        def create(self, *, model: str, input: list[str], encoding_format: str | None = None):
             attempts.append(self.key)
+            encoding_formats.append(encoding_format)
             if self.key == "public-test-key-1":
                 raise RuntimeError("simulated exhausted key")
 
@@ -1378,3 +1651,4 @@ def test_openai_compatible_embedder_rotates_to_next_key_after_failure(monkeypatc
 
     assert vectors == [[0.1, 0.2, 0.3]]
     assert attempts == ["public-test-key-1", "public-test-key-2"]
+    assert encoding_formats == ["float", "float"]

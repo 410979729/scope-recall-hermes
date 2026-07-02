@@ -24,7 +24,8 @@ if PACKAGE_NAME not in sys.modules:
     sys.modules[PACKAGE_NAME] = package
     spec.loader.exec_module(package)
 
-from scope_recall_journal_recovery_runtime.journal_recovery import recovery_report, schedule_replay  # noqa: E402
+from scope_recall_journal_recovery_runtime.journal_recovery import classify_recovery_candidates, recovery_report, schedule_replay  # noqa: E402
+from scope_recall_journal_recovery_runtime.maintenance_ops import effective_apply, memory_db_path  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,6 +35,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=500, help="Maximum entries to schedule/report")
     parser.add_argument("--batch-id", default="", help="Operator batch id for audit/rollback trace")
     parser.add_argument("--include-dead-letter", action="store_true", help="Also replay dead-letter:* entries; default only retry-exhausted:*")
+    parser.add_argument("--classify-no-replay", action="store_true", help="operator-classify matching recovery candidates as handled without replay")
+    parser.add_argument("--classification-reason", default="", help="required reason when --classify-no-replay is used with --apply")
     parser.add_argument("--format", choices=["json", "summary"], default="json")
     return parser.parse_args()
 
@@ -41,14 +44,30 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     hermes_home = Path(args.hermes_home).expanduser().resolve()
-    db_path = hermes_home / "scope-recall" / "memory.sqlite3"
+    db_path = memory_db_path(hermes_home)
+    should_apply = effective_apply(apply=args.apply, dry_run=False)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     prefixes = ["retry-exhausted:"]
     if args.include_dead_letter:
         prefixes.append("dead-letter:")
     try:
-        if args.apply:
+        if args.classify_no_replay:
+            reason = str(args.classification_reason or "").strip()
+            if should_apply and not reason:
+                payload = {"ok": False, "error": "--classification-reason is required with --apply --classify-no-replay"}
+                print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+                return 1
+            payload = classify_recovery_candidates(
+                conn,
+                reason_prefixes=prefixes,
+                limit=max(0, int(args.limit)),
+                dry_run=not should_apply,
+                batch_id=args.batch_id or None,
+                classification="no_replay",
+                reason=reason or "operator dry-run classification",
+            )
+        elif should_apply:
             payload = schedule_replay(conn, reason_prefixes=prefixes, limit=max(0, int(args.limit)), dry_run=False, batch_id=args.batch_id or None)
         else:
             payload = recovery_report(conn, reason_prefixes=prefixes, limit=max(0, int(args.limit)))
@@ -59,7 +78,7 @@ def main() -> int:
             print(
                 json.dumps(
                     {
-                        "dry_run": payload.get("dry_run", not args.apply),
+                        "dry_run": payload.get("dry_run", not should_apply),
                         "candidate_count": payload.get("candidate_count"),
                         "scheduled": payload.get("scheduled", 0),
                         "batch_id": payload.get("batch_id", ""),

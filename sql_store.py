@@ -1,3 +1,7 @@
+"""SQLite truth-store schema, migration, and row-level helper functions.
+
+This is the authoritative durable store; companion vector/graph state must be rebuildable from rows managed here."""
+
 from __future__ import annotations
 
 import hashlib
@@ -14,6 +18,138 @@ from .governance import classify_memory, merge_metadata
 from .graph import backfill_memory_entities, ensure_graph_schema, sync_memory_entities
 
 ENTRY_DELIMITER = "\n§\n"
+SCHEMA_VERSION = 10600
+BASELINE_MIGRATION_ID = "0001_baseline_v1_6_0"
+BASELINE_MIGRATION_PLUGIN_VERSION = "1.6.0"
+BASELINE_MIGRATION_DESCRIPTION = "Baseline schema ledger for scope-recall v1.6.0"
+
+
+def _schema_migration_checksum(*, migration_id: str, plugin_version: str, description: str) -> str:
+    payload = json.dumps(
+        {
+            "id": migration_id,
+            "plugin_version": plugin_version,
+            "description": description,
+            "schema_version": SCHEMA_VERSION,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def ensure_schema_migrations(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            id TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL,
+            plugin_version TEXT NOT NULL,
+            description TEXT NOT NULL,
+            checksum TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'applied',
+            error TEXT NOT NULL DEFAULT ''
+        );
+        """
+    )
+    existing_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(schema_migrations)").fetchall()}
+    migrations = {
+        "applied_at": "ALTER TABLE schema_migrations ADD COLUMN applied_at TEXT NOT NULL DEFAULT ''",
+        "plugin_version": "ALTER TABLE schema_migrations ADD COLUMN plugin_version TEXT NOT NULL DEFAULT ''",
+        "description": "ALTER TABLE schema_migrations ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+        "checksum": "ALTER TABLE schema_migrations ADD COLUMN checksum TEXT NOT NULL DEFAULT ''",
+        "status": "ALTER TABLE schema_migrations ADD COLUMN status TEXT NOT NULL DEFAULT 'applied'",
+        "error": "ALTER TABLE schema_migrations ADD COLUMN error TEXT NOT NULL DEFAULT ''",
+    }
+    for column, statement in migrations.items():
+        if column not in existing_columns:
+            conn.execute(statement)
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO schema_migrations(
+            id, applied_at, plugin_version, description, checksum, status, error
+        ) VALUES (?, ?, ?, ?, ?, 'applied', '')
+        """,
+        (
+            BASELINE_MIGRATION_ID,
+            now_iso(),
+            BASELINE_MIGRATION_PLUGIN_VERSION,
+            BASELINE_MIGRATION_DESCRIPTION,
+            _schema_migration_checksum(
+                migration_id=BASELINE_MIGRATION_ID,
+                plugin_version=BASELINE_MIGRATION_PLUGIN_VERSION,
+                description=BASELINE_MIGRATION_DESCRIPTION,
+            ),
+        ),
+    )
+    existing_user_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if existing_user_version < SCHEMA_VERSION:
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
+def _row_to_dict(cursor: sqlite3.Cursor, row: sqlite3.Row | tuple[Any, ...]) -> dict[str, Any]:
+    columns = [str(item[0]) for item in cursor.description or []]
+    return {column: row[index] for index, column in enumerate(columns)}
+
+
+def schema_migration_status(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Return live schema and migration ledger status for release/readiness checks.
+
+    The function is read-only evidence: callers decide separately whether to run migrations."""
+    user_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    try:
+        table = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'").fetchone()
+        if table is None:
+            rows = []
+        else:
+            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(schema_migrations)").fetchall()}
+            select_columns = [
+                "id" if "id" in columns else "'' AS id",
+                "applied_at" if "applied_at" in columns else "'' AS applied_at",
+                "plugin_version" if "plugin_version" in columns else "'' AS plugin_version",
+                "description" if "description" in columns else "'' AS description",
+                "checksum" if "checksum" in columns else "'' AS checksum",
+                "status" if "status" in columns else "'applied' AS status",
+                "error" if "error" in columns else "'' AS error",
+            ]
+            order_by = "id" if "id" in columns else "rowid"
+            cursor = conn.execute(f"SELECT {', '.join(select_columns)} FROM schema_migrations ORDER BY {order_by}")
+            rows = [_row_to_dict(cursor, row) for row in cursor.fetchall()]
+    except sqlite3.OperationalError as exc:
+        if "schema_migrations" not in str(exc):
+            raise
+        rows = []
+    applied_ids = {str(row.get("id") or "") for row in rows if str(row.get("status") or "") == "applied"}
+    missing = [migration_id for migration_id in (BASELINE_MIGRATION_ID,) if migration_id not in applied_ids]
+    expected_baseline = {
+        "id": BASELINE_MIGRATION_ID,
+        "plugin_version": BASELINE_MIGRATION_PLUGIN_VERSION,
+        "description": BASELINE_MIGRATION_DESCRIPTION,
+        "checksum": _schema_migration_checksum(
+            migration_id=BASELINE_MIGRATION_ID,
+            plugin_version=BASELINE_MIGRATION_PLUGIN_VERSION,
+            description=BASELINE_MIGRATION_DESCRIPTION,
+        ),
+        "status": "applied",
+        "error": "",
+    }
+    invalid_migrations: list[dict[str, Any]] = []
+    for row in rows:
+        if str(row.get("id") or "") != BASELINE_MIGRATION_ID:
+            continue
+        mismatches = [key for key, expected in expected_baseline.items() if str(row.get(key) or "") != str(expected)]
+        if mismatches:
+            invalid_migrations.append({"id": BASELINE_MIGRATION_ID, "mismatches": mismatches})
+    newer_schema = user_version > SCHEMA_VERSION
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "user_version": user_version,
+        "current": user_version == SCHEMA_VERSION and not newer_schema and not missing and not invalid_migrations,
+        "newer_schema": newer_schema,
+        "missing_migrations": missing,
+        "invalid_migrations": invalid_migrations,
+        "applied_migrations": rows,
+    }
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
@@ -51,12 +187,20 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     ensure_graph_schema(conn)
     ensure_experience_schema(conn)
     ensure_governance_schema(conn)
+    ensure_schema_migrations(conn)
     rebuild_fts_if_empty(conn)
     backfill_memory_entities(conn)
     conn.commit()
 
 
 def ensure_governance_schema(conn: sqlite3.Connection) -> None:
+    """Create/migrate governance audit schema before mutation transactions.
+
+    Do not call this from `record_governance_audit_event()`: schema DDL must be
+    completed before business rows are mutated. Keeping the audit insert helper
+    DDL-free preserves the caller's transaction atomicity.
+    """
+
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS governance_audit_events (
@@ -92,16 +236,18 @@ def ensure_governance_schema(conn: sqlite3.Connection) -> None:
     for column, statement in migrations.items():
         if column not in existing:
             conn.execute(statement)
-    conn.executescript(
-        """
-        CREATE INDEX IF NOT EXISTS idx_governance_audit_batch
-            ON governance_audit_events(batch_id, created_at);
-        CREATE INDEX IF NOT EXISTS idx_governance_audit_target
-            ON governance_audit_events(target_id, created_at);
-        CREATE INDEX IF NOT EXISTS idx_governance_audit_type_action
-            ON governance_audit_events(event_type, action, created_at);
-        """
-    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_governance_audit_batch ON governance_audit_events(batch_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_governance_audit_target ON governance_audit_events(target_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_governance_audit_type_action ON governance_audit_events(event_type, action, created_at)",
+    ):
+        conn.execute(statement)
+
+
+def _require_governance_audit_schema(conn: sqlite3.Connection) -> None:
+    row = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'governance_audit_events'").fetchone()
+    if row is None:
+        raise RuntimeError("governance_audit_events schema is not initialized; call ensure_schema(conn) before recording audit events")
 
 
 def _redact_governance_payload(value: Any) -> Any:
@@ -139,7 +285,7 @@ def record_governance_audit_event(
     dry_run: bool = False,
     created_at: str | None = None,
 ) -> None:
-    ensure_governance_schema(conn)
+    _require_governance_audit_schema(conn)
     conn.execute(
         """
         INSERT INTO governance_audit_events (
@@ -165,6 +311,9 @@ def record_governance_audit_event(
 
 
 def ensure_experience_schema(conn: sqlite3.Connection) -> None:
+    """Create or migrate Experience Kernel tables in the SQLite truth store.
+
+    The schema helper is idempotent because it may run during startup, tests, or release smoke checks before any Experience tools are used."""
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS task_episodes (
@@ -460,6 +609,9 @@ def store_row(
     metadata: str = "{}",
     allow_duplicate: bool = False,
 ) -> tuple[str, str, str, bool]:
+    """Insert one durable memory row into the SQLite truth store.
+
+    The helper centralizes IDs, timestamps, scope, metadata serialization, and duplicate-sensitive fields used by downstream companions."""
     content = enrich_content_with_artifact_anchors(content)
     now = now_iso()
     summary = compact_text(content, 220)
@@ -532,6 +684,9 @@ def update_row(
     scope_id: str | None = None,
     scope_ids: list[str] | tuple[str, ...] | None = None,
 ) -> tuple[bool, str, str]:
+    """Update one SQLite truth row while preserving metadata and lifecycle invariants.
+
+    Callers use this helper so conflict review, freshness, and governance state do not get accidentally discarded by ad-hoc SQL."""
     content = enrich_content_with_artifact_anchors(content)
     if scope_ids is not None:
         clean_scope_ids = [str(item) for item in scope_ids if str(item)]
@@ -656,6 +811,9 @@ def delete_rows(
     scope_id: str | None = None,
     scope_ids: list[str] | tuple[str, ...] | None = None,
 ) -> int:
+    """Delete truth rows only for explicit hard-delete maintenance flows.
+
+    Most forgetting paths should soft-archive instead; callers reaching this helper must already have rollback/audit justification."""
     ids = [str(memory_id) for memory_id in ids if str(memory_id).strip()]
     if not ids:
         return 0

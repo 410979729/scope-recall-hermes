@@ -1,3 +1,7 @@
+"""Hermes MemoryProvider implementation for Scope Recall.
+
+The provider owns runtime lifecycle, scope resolution, vector setup, journal capture, and tool registration while delegating domain logic to smaller modules."""
+
 from __future__ import annotations
 
 import logging
@@ -23,6 +27,7 @@ from .governance import extract_candidates
 from .memory_ops import (
     context_payload,
     profile_payload,
+    archive_memories,
     benchmark_queries,
     dedupe_memories,
     delete_memories,
@@ -45,40 +50,7 @@ from .migration import migrate_legacy_scope_recall_storage
 from .models import RecallItem, RuntimeScope, recall_scope_mode
 from .recall import RecallService
 from .prompting import render_current_turn_recall
-from .schemas import (
-    SCOPE_RECALL_DEDUPE_SCHEMA,
-    SCOPE_RECALL_BENCHMARK_SCHEMA,
-    SCOPE_RECALL_CONTEXT_SCHEMA,
-    SCOPE_RECALL_ENTITY_SCHEMA,
-    SCOPE_RECALL_EXPERIENCE_PREFLIGHT_SCHEMA,
-    SCOPE_RECALL_EXPERIENCE_PROMOTE_SCHEMA,
-    SCOPE_RECALL_EXPERIENCE_STATS_SCHEMA,
-    SCOPE_RECALL_PROFILE_SCHEMA,
-    SCOPE_RECALL_EXPLAIN_SCHEMA,
-    SCOPE_RECALL_EXPORT_SCHEMA,
-    SCOPE_RECALL_FEEDBACK_SCHEMA,
-    SCOPE_RECALL_FORGETTING_REPORT_SCHEMA,
-    SCOPE_RECALL_FORGETTING_RUN_SCHEMA,
-    SCOPE_RECALL_FORGET_SCHEMA,
-    SCOPE_RECALL_GOVERN_SCHEMA,
-    SCOPE_RECALL_HYGIENE_SCHEMA,
-    SCOPE_RECALL_INSPECT_SCHEMA,
-    SCOPE_RECALL_MEMORY_SCHEMA,
-    SCOPE_RECALL_MERGE_SCHEMA,
-    SCOPE_RECALL_PLAYBOOK_CREATE_SCHEMA,
-    SCOPE_RECALL_PLAYBOOK_FEEDBACK_SCHEMA,
-    SCOPE_RECALL_PLAYBOOK_INSPECT_SCHEMA,
-    SCOPE_RECALL_PLAYBOOK_REVIEW_SCHEMA,
-    SCOPE_RECALL_PLAYBOOK_SEARCH_SCHEMA,
-    SCOPE_RECALL_PROBE_SCHEMA,
-    SCOPE_RECALL_REPAIR_SCHEMA,
-    SCOPE_RECALL_RELATED_SCHEMA,
-    SCOPE_RECALL_SEARCH_SCHEMA,
-    SCOPE_RECALL_STATS_SCHEMA,
-    SCOPE_RECALL_STORE_SCHEMA,
-    SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA,
-    SCOPE_RECALL_UPDATE_SCHEMA,
-)
+from .provider_schemas import build_config_schema, build_tool_schemas
 from .scope import accessible_scope_ids, build_scope_id, build_shared_pool_scope_id, build_shared_scope_id, normalize_scope_identity, writable_scope_ids
 from .sql_store import ensure_schema
 from .sqlite_vector_store import SQLiteBruteForceVectorStore
@@ -91,11 +63,16 @@ from .experience_store import backfill_skill_anchors
 
 logger = logging.getLogger(__name__)
 
+SQLITE_BUSY_TIMEOUT_SECONDS = 10.0
+
 DEFAULT_TOOL_TRACE_SKIP_NAMES = {"todo", "skill_view", "skills_list"}
 DEFAULT_TOOL_TRACE_SKIP_NAME_FRAGMENTS = {"session_messages"}
 
 
 class ScopeRecallMemoryProvider(MemoryProvider):
+    """Hermes memory-provider runtime for Scope Recall.
+
+    This class is the lifecycle boundary: it opens SQLite truth, configures scope visibility, starts background capture/digest work, and exposes tool schemas. Domain decisions live in helper modules so startup and shutdown remain auditable."""
     def __init__(self) -> None:
         self._config: dict[str, Any] = {}
         self._retrieval_config: dict[str, Any] = {}
@@ -151,72 +128,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         return True
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
-        return [
-            {
-                "key": "auto_recall",
-                "description": "Enable current-turn memory recall",
-                "default": "true",
-                "choices": ["true", "false"],
-            },
-            {
-                "key": "auto_capture",
-                "description": "Capture turns into local memory",
-                "default": "true",
-                "choices": ["true", "false"],
-            },
-            {
-                "key": "capture_llm.enabled",
-                "description": "Use LLM to extract user+assistant turns into structured memory (requires API key)",
-                "default": "false",
-                "choices": ["true", "false"],
-            },
-            {
-                "key": "capture_raw_user",
-                "description": "Legacy fallback: store whole user turns as local scratch memory when no structured extraction candidate is found",
-                "default": "false",
-                "choices": ["true", "false"],
-            },
-            {
-                "key": "capture_llm.model",
-                "description": "LLM model for capture extraction (OpenAI-compatible)",
-                "default": "gpt-4o-mini",
-            },
-            {
-                "key": "vector.enabled",
-                "description": "Enable the rebuildable vector companion layer",
-                "default": "true",
-                "choices": ["true", "false"],
-            },
-            {
-                "key": "vector.backend",
-                "description": "Vector companion backend: LanceDB for ANN search, or sqlite-bruteforce for non-AVX/native-free hosts",
-                "default": "lancedb",
-                "choices": ["lancedb", "sqlite-bruteforce"],
-            },
-            {
-                "key": "vector.fallback_backend",
-                "description": "Safe backend used automatically when LanceDB/PyArrow cannot be imported safely",
-                "default": "sqlite-bruteforce",
-                "choices": ["sqlite-bruteforce", "disabled"],
-            },
-            {
-                "key": "vector.embedder.provider",
-                "description": "Embedding backend for the vector layer (API or local model)",
-                "default": "openai-compatible",
-                "choices": ["openai-compatible", "openai", "sentence-transformers", "local-hash"],
-            },
-            {
-                "key": "vector.embedder.model",
-                "description": "Embedding model name for the selected vector backend",
-                "default": "gemini-embedding-001",
-            },
-            {
-                "key": "maintenance_tools_enabled",
-                "description": "Enable operator-only maintenance tools such as dedupe, governance, and vector repair",
-                "default": "false",
-                "choices": ["true", "false"],
-            },
-        ]
+        return build_config_schema()
 
     def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
         save_runtime_config(values or {}, hermes_home)
@@ -232,7 +144,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         storage_dir = Path(hermes_home).expanduser() / "scope-recall"
         storage_dir.mkdir(parents=True, exist_ok=True)
         db_path = storage_dir / "memory.sqlite3"
-        conn = sqlite3.connect(db_path, check_same_thread=False)
+        conn = sqlite3.connect(db_path, check_same_thread=False, timeout=SQLITE_BUSY_TIMEOUT_SECONDS)
         try:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
@@ -311,7 +223,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._current_turn = 0
         self._last_recall_turns = {}
 
-        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        self._conn = sqlite3.connect(self._db_path, check_same_thread=False, timeout=SQLITE_BUSY_TIMEOUT_SECONDS)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
@@ -364,6 +276,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                     query=query,
                     accessible_scope_ids=self._accessible_scope_ids,
                     config=self._config,
+                    record_run=True,
+                    scope_id=self._scope_id,
                 ).get("packet", "")
         except Exception:
             logger.exception("Scope Recall experience preflight failed")
@@ -373,6 +287,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         return f"{recall_block}\n\n{packet}" if recall_block else str(packet)
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "", messages: list[dict[str, Any]] | None = None) -> None:
+        """Synchronize one Hermes turn into capture, journal, recall, and prompt context state.
+
+        This method is on the hot path, so it avoids heavyweight repair work and records failures as sanitized diagnostics instead of blocking the main agent loop."""
         del session_id
         if messages:
             self._append_session_tool_journal(messages)
@@ -517,6 +434,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             )
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+        """Provide recall context before Hermes compresses the conversation.
+
+        The hook should be compact and safe because it is injected into compression prompts, not treated as new user truth."""
         if not messages or not config_bool(self._config, "auto_capture", True):
             return ""
         if self._scope.agent_context != "primary":
@@ -637,6 +557,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 )
 
     def _tool_journal_content(self, message: Dict[str, Any]) -> str:
+        """Decide how much tool result content should be captured into the journal.
+
+        The helper strips low-value or risky tool traces so compression/journal evidence does not amplify logs, secrets, or large blobs."""
         tool_name = str(message.get("name") or message.get("tool_name") or message.get("recipient") or "").strip()
         journal_config = self._journal_config()
         skip_names = set(DEFAULT_TOOL_TRACE_SKIP_NAMES)
@@ -869,97 +792,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         return config
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        config = self._schema_config()
-        if not config_bool(config, "enable_tools", True):
-            return []
-        if self._scope.agent_context != "primary":
-            return []
-
-        raw_experience_config = config.get("experience")
-        experience_config: dict[str, Any] = dict(raw_experience_config) if isinstance(raw_experience_config, dict) else {}
-        experience_enabled = config_bool(experience_config, "enabled", True)
-        maintenance_enabled = config_bool(config, "maintenance_tools_enabled", False)
-        secret_index_enabled = config_bool(config, "secret_index_tools_enabled", False)
-        profile = str(config.get("tool_schema_profile") or "compact").strip().lower().replace("-", "_")
-        if profile in {"legacy", "compat", "standard"}:
-            profile = "standard"
-        elif profile not in {"compact", "standard"}:
-            profile = "compact"
-
-        compact_schemas = [
-            SCOPE_RECALL_STORE_SCHEMA,
-            SCOPE_RECALL_SEARCH_SCHEMA,
-            SCOPE_RECALL_CONTEXT_SCHEMA,
-            SCOPE_RECALL_PROFILE_SCHEMA,
-            SCOPE_RECALL_MEMORY_SCHEMA,
-            SCOPE_RECALL_ENTITY_SCHEMA,
-        ]
-        standard_schemas = [
-            SCOPE_RECALL_STORE_SCHEMA,
-            SCOPE_RECALL_SEARCH_SCHEMA,
-            SCOPE_RECALL_CONTEXT_SCHEMA,
-            SCOPE_RECALL_PROFILE_SCHEMA,
-            SCOPE_RECALL_PROBE_SCHEMA,
-            SCOPE_RECALL_RELATED_SCHEMA,
-            SCOPE_RECALL_FEEDBACK_SCHEMA,
-            SCOPE_RECALL_FORGET_SCHEMA,
-            SCOPE_RECALL_UPDATE_SCHEMA,
-            SCOPE_RECALL_MERGE_SCHEMA,
-            SCOPE_RECALL_INSPECT_SCHEMA,
-            SCOPE_RECALL_EXPLAIN_SCHEMA,
-            SCOPE_RECALL_EXPORT_SCHEMA,
-            SCOPE_RECALL_STATS_SCHEMA,
-            SCOPE_RECALL_BENCHMARK_SCHEMA,
-        ]
-        schemas = list(standard_schemas if profile == "standard" else compact_schemas)
-
-        schema_by_name = {str(schema["name"]): schema for schema in [*compact_schemas, *standard_schemas]}
-        if secret_index_enabled:
-            schema_by_name[SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA["name"]] = SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA
-        experience_schemas = [
-            SCOPE_RECALL_PLAYBOOK_SEARCH_SCHEMA,
-            SCOPE_RECALL_PLAYBOOK_INSPECT_SCHEMA,
-            SCOPE_RECALL_EXPERIENCE_PREFLIGHT_SCHEMA,
-            SCOPE_RECALL_PLAYBOOK_FEEDBACK_SCHEMA,
-            SCOPE_RECALL_EXPERIENCE_STATS_SCHEMA,
-        ]
-        if experience_enabled:
-            schema_by_name.update({str(schema["name"]): schema for schema in experience_schemas})
-            if profile == "standard":
-                schemas.extend(experience_schemas)
-        maintenance_schemas = [
-            SCOPE_RECALL_DEDUPE_SCHEMA,
-            SCOPE_RECALL_GOVERN_SCHEMA,
-            SCOPE_RECALL_REPAIR_SCHEMA,
-            SCOPE_RECALL_HYGIENE_SCHEMA,
-            SCOPE_RECALL_PLAYBOOK_CREATE_SCHEMA,
-            SCOPE_RECALL_PLAYBOOK_REVIEW_SCHEMA,
-            SCOPE_RECALL_EXPERIENCE_PROMOTE_SCHEMA,
-            SCOPE_RECALL_FORGETTING_REPORT_SCHEMA,
-            SCOPE_RECALL_FORGETTING_RUN_SCHEMA,
-        ]
-        if experience_enabled and maintenance_enabled:
-            schema_by_name.update({str(schema["name"]): schema for schema in maintenance_schemas})
-            schemas.extend(maintenance_schemas)
-
-        if secret_index_enabled:
-            schemas.append(SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA)
-
-        extra_tools = config.get("tool_schema_extra_tools") or []
-        if isinstance(extra_tools, str):
-            extra_names = [item.strip() for item in extra_tools.split(",")]
-        elif isinstance(extra_tools, list):
-            extra_names = [str(item).strip() for item in extra_tools]
-        else:
-            extra_names = []
-        seen = {str(schema["name"]) for schema in schemas}
-        for name in extra_names:
-            schema = schema_by_name.get(name)
-            if schema is None or name in seen:
-                continue
-            schemas.append(schema)
-            seen.add(name)
-        return schemas
+        return build_tool_schemas(self._schema_config(), agent_context=self._scope.agent_context)
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         del kwargs
@@ -1030,6 +863,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
     def _govern_memories(self, *, dry_run: bool = True, scope_only: bool = True) -> dict[str, Any]:
         return govern_memories(self, dry_run=dry_run, scope_only=scope_only)
 
+    def _archive_memories(self, ids: list[str], *, reason: str = "scope_recall_forget", actor: str = "scope_recall_forget", batch_id: str = "") -> dict[str, Any]:
+        return archive_memories(self, ids, reason=reason, actor=actor, batch_id=batch_id)
+
     def _delete_memories(self, ids: list[str]) -> int:
         return delete_memories(self, ids)
 
@@ -1052,6 +888,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         entity: str = "",
         targets: list[str] | None = None,
         include_general: bool = False,
+        include_candidates: bool = False,
         include_curated: bool = True,
         limit: int = 5,
         max_chars: int = 1200,
@@ -1062,6 +899,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             entity=entity,
             targets=targets,
             include_general=include_general,
+            include_candidates=include_candidates,
             include_curated=include_curated,
             limit=limit,
             max_chars=max_chars,

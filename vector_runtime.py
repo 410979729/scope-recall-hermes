@@ -1,11 +1,17 @@
+"""Runtime setup and mutation helpers for vector companions.
+
+Vector failures should mark repair-needed state and never silently delete or rewrite SQLite truth."""
+
 from __future__ import annotations
 
 from contextlib import AbstractContextManager, nullcontext
 import logging
 from typing import Any, cast
 
+from .capture_filters import sanitize_report_text
 from .embedders import build_embedder
 from .gating import config_bool
+from .graph import lifecycle_is_hidden, lifecycle_visible_sql, load_metadata
 from .sqlite_vector_store import SQLiteBruteForceVectorStore
 from .vector_store import LanceVectorStore, native_vector_dependency_status
 
@@ -27,7 +33,7 @@ def _vector_mutation_lock(provider: Any) -> AbstractContextManager[Any]:
 def mark_vector_needs_repair(provider: Any, exc: Exception | str) -> None:
     provider._vector_ready = False
     provider._vector_status = "needs_repair"
-    provider._vector_message = str(exc)
+    provider._vector_message = sanitize_report_text(str(exc))
 
 
 def _normalize_vector_backend(value: Any) -> str:
@@ -112,6 +118,9 @@ def _open_vector_store(provider: Any, *, dimensions: int) -> None:
 
 
 def setup_vector_layer(provider: Any) -> None:
+    """Initialize the configured vector companion for a provider instance.
+
+    Setup records readiness and repair status without blocking SQLite-only operation when vector support is intentionally disabled."""
     old_store = getattr(provider, "_vector_store", None)
     if old_store is not None:
         try:
@@ -161,6 +170,9 @@ def setup_vector_layer(provider: Any) -> None:
 
     try:
         _open_vector_store(provider, dimensions=provider._embedder.dimensions)
+        # Startup sync is a companion rebuild, not a truth migration. If this
+        # block fails, the except path degrades vector status and leaves SQLite
+        # memory rows untouched for a later explicit repair.
         provider._vector_row_count = sync_vector_index(provider)
         refresh_vector_audit(provider)
     except Exception as exc:
@@ -194,15 +206,20 @@ def _should_index_target(provider: Any, target: str) -> bool:
 
 
 def sync_vector_index(provider: Any) -> int:
+    """Synchronize vector companion rows for a bounded set of SQLite memories.
+
+    Sync is rebuildable work: it should report failures clearly and never mutate the underlying memory text."""
     if not provider._vector_store or not provider._embedder:
         return 0
     conn = provider._require_conn()
     with provider._lock:
         rows = conn.execute(
-            "SELECT id, scope_id, source, target, content, summary, updated_at FROM memories ORDER BY updated_at ASC"
+            f"SELECT id, scope_id, source, target, content, summary, updated_at, metadata FROM memories m WHERE {lifecycle_visible_sql('m')} ORDER BY updated_at ASC"
         ).fetchall()
     with _vector_mutation_lock(provider):
         if not rows:
+            # No visible SQLite rows means any remaining vector records are
+            # stale companion data under the same lifecycle filter.
             existing = provider._vector_store.list_ids()
             if existing:
                 provider._vector_store.delete_by_ids(existing)
@@ -265,9 +282,29 @@ def upsert_vector_record(
     summary: str,
     updated_at: str,
     scope_id: str | None = None,
+    metadata: dict[str, Any] | str | None = None,
 ) -> None:
+    """Upsert one vector companion record for a SQLite memory row.
+
+    Failures mark vector repair-needed status so callers do not mistake a companion write failure for durable storage success."""
     with _vector_mutation_lock(provider):
         if not provider._vector_ready or not provider._vector_store or not provider._embedder:
+            return
+        resolved_metadata = metadata
+        if resolved_metadata is None:
+            try:
+                row = provider._require_conn().execute("SELECT metadata FROM memories WHERE id = ?", (id,)).fetchone()
+                if row is not None:
+                    resolved_metadata = row["metadata"]
+            except Exception:
+                resolved_metadata = None
+        if lifecycle_is_hidden(load_metadata(resolved_metadata or {})):
+            try:
+                provider._vector_store.delete_by_ids([id])
+                refresh_vector_audit(provider)
+            except Exception as exc:
+                mark_vector_needs_repair(provider, exc)
+                logger.warning("Scope Recall vector lifecycle cleanup failed; SQLite truth row preserved and vector repair is needed: %s", exc)
             return
         if not _should_index_target(provider, target):
             try:

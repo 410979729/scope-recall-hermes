@@ -1,3 +1,7 @@
+"""Tests for SQLite FTS indexing and query behavior.
+
+They ensure lexical recall remains available even without vector dependencies."""
+
 from __future__ import annotations
 
 import sqlite3

@@ -4,6 +4,18 @@ This document describes how to move into `scope-recall` from earlier local exper
 
 ## Supported migration paths
 
+### Schema migration status
+
+Before mutating older profile data, inspect the SQLite schema ledger without repairing it implicitly:
+
+```bash
+python scripts/migrate.status.py --hermes-home /path/to/hermes-profile
+# or, after installing the package:
+hermes-scope-recall migrate status --hermes-home /path/to/hermes-profile
+```
+
+The status command opens the SQLite truth DB read-only (`mode=ro` + `PRAGMA query_only=ON`) and reports `schema_migrations`, `user_version`, and missing baseline metadata. Use `scripts/doctor.py` or installer runtime verify for the broader health view.
+
 ### 0. Legacy raw/general/scratch hygiene inside an existing `scope-recall` SQLite store
 
 Use this when an older pre-journal or experimental `scope-recall` database already contains raw `general` scratch rows or durable rows with incomplete governance metadata.
@@ -79,8 +91,8 @@ This is **opt-in** and does not require rewriting existing rows. Configure expli
     "cross_platform_shared_scope": true,
     "cli_user_id_fallback": "local",
     "user_aliases": {
-      "telegram:8176453077": "joy",
-      "cli:local": "joy"
+      "telegram:user_123": "canonical_user_123",
+      "cli:local": "canonical_user_123"
     }
   }
 }
@@ -125,24 +137,61 @@ Look for:
 
 ## Importing OpenClaw history
 
-A one-shot importer is provided at:
+A safe import guide is provided at:
 
-- `scripts/import.openclaw.memory_lancedb_pro.py`
+- CLI: `hermes-scope-recall migrate openclaw-import`
+- Script: `scripts/import.openclaw.memory_lancedb_pro.py`
 
-It is intentionally conservative:
+The importer is intentionally conservative:
 
+- defaults to dry-run/inspection; pass `--apply` explicitly to write
 - reads from an explicit OpenClaw LanceDB directory
 - transforms rows into `scope-recall` SQLite truth rows
 - records import provenance in an `import_ledger`
 - uses stable source fingerprints so repeated runs are idempotent
-- leaves vector sync to `scope-recall` initialization after import
+- enforces a target/category allowlist (`memory`, `ops`, `project`, `user` by default)
+- rejects raw role-prefix transcripts even when they claim a durable target
+- blocks apply when secret-like, path-like, or template-like content/metadata is detected
+- stores source metadata only after recursive redaction
+- creates a unique online SQLite backup before applying to an existing target DB
+- can write an import receipt JSON via `--receipt <path>` containing inserted/skipped row ids, fingerprints, backup checksum, lint/rejection details, and graph/vector repair guidance
+- records the recommended post-import vector repair command in the receipt
+
+Dry-run first:
+
+```bash
+hermes-scope-recall migrate openclaw-import \
+  --source /path/to/openclaw/memory-lancedb-pro \
+  --hermes-home /path/to/hermes-profile
+```
+
+Apply only after reviewing rejections/lint findings and scope mapping:
+
+```bash
+hermes-scope-recall migrate openclaw-import \
+  --source /path/to/openclaw/memory-lancedb-pro \
+  --hermes-home /path/to/hermes-profile \
+  --scope-prefix imported.openclaw \
+  --allow-target memory \
+  --allow-target ops \
+  --apply \
+  --receipt /path/to/openclaw-import-receipt.json \
+  --vector-repair dry-run
+```
+
+After a successful apply, run the receipt's vector repair command (normally a dry-run first, then apply when reviewed):
+
+```bash
+hermes-scope-recall vector repair --hermes-home /path/to/hermes-profile --dry-run
+```
 
 Before using it for real data, decide:
 
 - which OpenClaw instance(s) are authoritative
-- how upstream `scope` values map to Hermes `scope_id`
-- whether to preserve all categories or filter to a subset
-- whether imported records should use their original timestamps or import-time timestamps
+- how upstream `scope` values map to Hermes `scope_id` via `--scope-prefix`
+- which categories are safe to import via repeated `--allow-target`
+- whether any secret/path/template lint findings require source cleanup or manual redaction
+- whether imported records should use their original timestamps or be treated as historical context
 
 ## Important warning
 

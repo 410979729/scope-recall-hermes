@@ -1,3 +1,7 @@
+"""Tests for secret/pollution doctor scans and active-vs-archived reporting.
+
+They keep sensitive data findings visible without overstating historical archived rows."""
+
 from __future__ import annotations
 
 import importlib.util

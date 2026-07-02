@@ -1,3 +1,7 @@
+"""Dispatcher for Hermes tool calls exposed by Scope Recall.
+
+Handlers translate public tool arguments into provider operations, sanitize errors, and return stable JSON receipts."""
+
 from __future__ import annotations
 
 import json
@@ -7,7 +11,7 @@ from typing import Any, Callable
 
 from tools.registry import tool_error
 
-from .capture_filters import CaptureFilterResult, should_capture_text
+from .capture_filters import CaptureFilterResult, sanitize_report_text, should_capture_text
 from .gating import config_bool
 from .graph import clamp_float
 from .experience_preflight import experience_preflight
@@ -15,7 +19,9 @@ from .experience_promotion import promote_experiences
 from .experience_store import (
     create_playbook,
     experience_stats,
+    find_duplicate_playbooks,
     inspect_playbook,
+    merge_playbooks,
     record_playbook_feedback,
     review_playbook,
     search_playbooks,
@@ -38,6 +44,9 @@ TOOL_ALIASES = {
 
 
 class ScopeRecallToolService:
+    """Translate public Hermes tool calls into provider operations.
+
+    Handlers validate user-facing arguments, enforce scope/tool feature flags, sanitize errors, and return stable JSON receipts. They should not bypass provider invariants or write directly to SQLite."""
     def __init__(self, provider: Any) -> None:
         self.provider = provider
 
@@ -86,8 +95,9 @@ class ScopeRecallToolService:
         try:
             return handler(args)
         except Exception as exc:
-            logger.warning("Scope Recall tool %s failed: %s", tool_name, exc)
-            return tool_error(str(exc))
+            safe_error = sanitize_report_text(str(exc))
+            logger.warning("Scope Recall tool %s failed: %s", tool_name, safe_error)
+            return tool_error(safe_error)
 
     def _receipt(self, action: str, *, target: str = "", id: str = "", scope_mode: str = "", **extra: Any) -> dict[str, Any]:
         data: dict[str, Any] = {"action": action, "provider": "scope-recall", "at": _now_iso()}
@@ -101,6 +111,9 @@ class ScopeRecallToolService:
         return data
 
     def _handle_store(self, args: dict[str, Any]) -> str:
+        """Handle public store calls while enforcing scope and shared-pool write policy.
+
+        This method returns explicit receipts for rejected writes so callers can tell policy denial from storage failure or duplicate detection."""
         content = self.provider._clean_text(str(args.get("content") or ""))
         if not content:
             return tool_error("content is required")
@@ -278,6 +291,7 @@ class ScopeRecallToolService:
                 entity=entity,
                 targets=self._targets_arg(args),
                 include_general=self._bool_arg(args, "include_general", False),
+                include_candidates=self._bool_arg(args, "include_candidates", False),
                 include_curated=self._bool_arg(args, "include_curated", True),
                 limit=self._limit(args),
                 max_chars=max(120, min(4000, int(args.get("max_chars") or 1200))),
@@ -344,8 +358,13 @@ class ScopeRecallToolService:
         ids = self._memory_ids_arg(args)
         if not ids:
             return tool_error("ids are required for scope_recall_forget; search or inspect first, then pass exact ids")
-        deleted = self.provider._delete_memories(ids)
-        return self._json({"deleted": deleted, "ids": ids})
+        reason = self.provider._clean_text(str(args.get("reason") or "scope_recall_forget"))
+        if self._bool_arg(args, "hard_delete", False):
+            if not self._operator_mode_enabled():
+                return tool_error("scope_recall_forget hard_delete requires maintenance_tools_enabled=true")
+            deleted = self.provider._delete_memories(ids)
+            return self._json({"archived": 0, "deleted": deleted, "ids": ids, "hard_delete": True, "receipt": self._receipt("hard_delete", reason=reason)})
+        return self._json(self.provider._archive_memories(ids, reason=reason, actor="scope_recall_forget"))
 
     def _handle_update(self, args: dict[str, Any]) -> str:
         memory_id = str(args.get("id") or "").strip()
@@ -649,15 +668,29 @@ class ScopeRecallToolService:
             return tool_error("outcome is required")
         raw_evidence = args.get("evidence") or []
         evidence = raw_evidence if isinstance(raw_evidence, list) else [str(raw_evidence)]
+        raw_preconditions = args.get("preconditions_checked") or []
+        preconditions_checked = raw_preconditions if isinstance(raw_preconditions, list) else [str(raw_preconditions)]
+        raw_steps = args.get("steps_completed") or []
+        steps_completed = raw_steps if isinstance(raw_steps, list) else [str(raw_steps)]
         with self.provider._lock:
+            conn = self.provider._require_conn()
+            feedback_scope_id = self._playbook_scope_id()
+            inspected = inspect_playbook(conn, playbook_id=playbook_id, accessible_scope_ids=self.provider._accessible_scope_ids)
+            if inspected.get("found"):
+                playbook = inspected.get("playbook") if isinstance(inspected.get("playbook"), dict) else {}
+                owner_scope_id = str(playbook.get("scope_id") or "") if isinstance(playbook, dict) else ""
+                if owner_scope_id and owner_scope_id in set(getattr(self.provider, "_writable_scope_ids", []) or []):
+                    feedback_scope_id = owner_scope_id
             payload = record_playbook_feedback(
-                self.provider._require_conn(),
+                conn,
                 playbook_id=playbook_id,
-                scope_id=self._playbook_scope_id(),
+                scope_id=feedback_scope_id,
                 outcome=outcome,
                 accessible_scope_ids=self.provider._accessible_scope_ids,
                 decision=str(args.get("decision") or "guided_reuse"),
                 evidence=evidence,
+                preconditions_checked=preconditions_checked,
+                steps_completed=steps_completed,
                 outcome_reason=self.provider._clean_text(str(args.get("outcome_reason") or "")),
                 model_name=str(args.get("model_name") or ""),
                 tool_call_count=int(args.get("tool_call_count") or 0),
@@ -670,15 +703,38 @@ class ScopeRecallToolService:
             return self._experience_disabled_error()
         if not self._operator_mode_enabled():
             return tool_error("scope_recall_playbook_review requires maintenance_tools_enabled=true")
-        playbook_id = str(args.get("id") or "").strip()
+        action = str(args.get("action") or "").strip().lower()
+        if action in {"dedupe", "duplicates", "list_duplicates"}:
+            with self.provider._lock:
+                groups = find_duplicate_playbooks(
+                    self.provider._require_conn(),
+                    accessible_scope_ids=self.provider._accessible_scope_ids,
+                    status=str(args.get("status") or ""),
+                    limit=self._limit(args),
+                )
+            return self._json({"action": "dedupe", "count": len(groups), "groups": groups})
+        playbook_id = str(args.get("id") or args.get("target_id") or "").strip()
         if not playbook_id:
             return tool_error("id is required")
+        if action == "merge":
+            raw_source_ids = args.get("source_ids") or []
+            source_ids = raw_source_ids if isinstance(raw_source_ids, list) else [str(raw_source_ids)]
+            with self.provider._lock:
+                payload = merge_playbooks(
+                    self.provider._require_conn(),
+                    target_id=playbook_id,
+                    source_ids=source_ids,
+                    accessible_scope_ids=self.provider._accessible_scope_ids,
+                    reason=self.provider._clean_text(str(args.get("reason") or "")),
+                    dry_run=self._bool_arg(args, "dry_run", True),
+                )
+            return self._json(payload)
         with self.provider._lock:
             payload = review_playbook(
                 self.provider._require_conn(),
                 playbook_id=playbook_id,
                 accessible_scope_ids=self.provider._accessible_scope_ids,
-                action=str(args.get("action") or ""),
+                action=action,
                 reason=self.provider._clean_text(str(args.get("reason") or "")),
                 superseded_by=str(args.get("superseded_by") or ""),
             )

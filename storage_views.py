@@ -1,3 +1,7 @@
+"""Read views over curated files, SQLite truth rows, and vector companion hits.
+
+These views apply lifecycle and visibility filters before recall merges candidates."""
+
 from __future__ import annotations
 
 import sqlite3
@@ -14,8 +18,18 @@ from .vector_runtime import mark_vector_needs_repair
 # Defensive retrieval boundary: lifecycle filtering must happen in the candidate
 # SQL/vector-adapter layer, not only after merge/dedupe. Fresh archived rows can
 # otherwise consume LIMIT budget or suppress active duplicates.
-_ACTIVE_MEMORY_SQL = "COALESCE(json_extract(metadata, '$.lifecycle'), '') NOT IN ('superseded', 'obsolete', 'rejected', 'archived')"
-_ACTIVE_MEMORY_SQL_M = "COALESCE(json_extract(m.metadata, '$.lifecycle'), '') NOT IN ('superseded', 'obsolete', 'rejected', 'archived')"
+_RECALL_HIDDEN_LIFECYCLE_VALUES = ("superseded", "obsolete", "rejected", "archived", "candidate", "in_progress")
+_RECALL_HIDDEN_LIFECYCLE_SET = set(_RECALL_HIDDEN_LIFECYCLE_VALUES)
+
+
+def _recall_lifecycle_visible_sql(alias: str) -> str:
+    lifecycle_expr = f"LOWER(COALESCE(CASE WHEN json_valid({alias}.metadata) THEN json_extract({alias}.metadata, '$.lifecycle') ELSE '' END, ''))"
+    hidden_values = ",".join(f"'{value}'" for value in _RECALL_HIDDEN_LIFECYCLE_VALUES)
+    return f"{lifecycle_expr} NOT IN ({hidden_values})"
+
+
+_ACTIVE_MEMORY_SQL = _recall_lifecycle_visible_sql("memories")
+_ACTIVE_MEMORY_SQL_M = _recall_lifecycle_visible_sql("m")
 
 
 def _scope_placeholders(provider: Any) -> str:
@@ -82,6 +96,9 @@ def _row_metadata(
 
 
 def search_db_memories(provider: Any, query: str, *, limit: int) -> list[RecallItem]:
+    """Search SQLite truth rows for accessible recall candidates.
+
+    Lifecycle and scope filters are applied here before ranking so downstream retrieval cannot accidentally surface archived or inaccessible state."""
     conn = provider._require_conn()
     tokens = query_tokens(query)
     fts_query = build_fts_query(tokens)
@@ -198,6 +215,9 @@ def search_db_memories(provider: Any, query: str, *, limit: int) -> list[RecallI
 
 
 def search_vector_memories(provider: Any, query: str, *, limit: int) -> list[RecallItem]:
+    """Search vector companion state and return recall candidates that still pass SQLite visibility checks.
+
+    Vector hits are suggestions only; final access and lifecycle validation remains anchored to truth rows."""
     if not provider._vector_ready or not provider._vector_store or not provider._embedder:
         return []
     try:
@@ -238,7 +258,7 @@ def search_vector_memories(provider: Any, query: str, *, limit: int) -> list[Rec
             continue
         metadata = dict(id_metadata.get(row_id) or {})
         lifecycle = str(metadata.get("lifecycle") or "").strip().lower()
-        if lifecycle in {"superseded", "obsolete", "rejected", "archived"}:
+        if lifecycle in _RECALL_HIDDEN_LIFECYCLE_SET:
             continue
         metadata.update({"lexical_score": 0.0, "vector_score": vector_score, "scope_id": row.get("scope_id")})
         results.append(

@@ -1,5 +1,10 @@
+"""Broad provider integration tests for lifecycle, scope, tools, recall, vector, journal, and memory operations.
+
+This file protects the Hermes MemoryProvider contract from end-to-end regressions."""
+
 import importlib
 import json
+from pathlib import Path
 import sqlite3
 import threading
 import time
@@ -57,6 +62,34 @@ def test_save_config_bootstraps_empty_sqlite_schema(tmp_path):
     finally:
         conn.close()
     assert {"memories", "journal_entries", "journal_digest_runs", "memory_journal_sources"} <= tables
+
+
+def test_save_config_bootstrap_uses_sqlite_busy_timeout(tmp_path, monkeypatch):
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    import scope_recall.provider as provider_module
+
+    real_connect = provider_module.sqlite3.connect
+    connect_calls: list[dict[str, object]] = []
+
+    def capturing_connect(database, *args, **kwargs):
+        connect_calls.append({"database": Path(database).name, "timeout": kwargs.get("timeout")})
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(provider_module.sqlite3, "connect", capturing_connect)
+
+    plugin.save_config({"vector": {"enabled": False}}, str(tmp_path))
+
+    memory_connects = [call for call in connect_calls if call["database"] == "memory.sqlite3"]
+    assert memory_connects
+    assert all(call["timeout"] == 10.0 for call in memory_connects)
+
+
+def test_initialize_sets_sqlite_busy_timeout(provider):
+    with provider._lock:
+        timeout_ms = provider._require_conn().execute("PRAGMA busy_timeout").fetchone()[0]
+
+    assert timeout_ms >= 10_000
 
 
 def test_save_config_bootstraps_sqlite_vector_meta_for_install_verification(tmp_path, monkeypatch):
@@ -507,6 +540,67 @@ def test_profile_surface_respects_gateway_user_isolation_and_multisession_durabl
     assert same_payload["sections"]["user"]["count"] == 1
     assert "release-governance questions" not in other_payload["context"]
     assert other_payload["sections"]["user"]["count"] == 0
+
+
+def test_profile_surface_defaults_to_promoted_only_and_can_include_candidates(tmp_path):
+    _write_scope_recall_config(tmp_path, {"vector": {"enabled": False}})
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    plugin.initialize(
+        "session-profile-lifecycle",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="joy",
+        chat_id="chat-lifecycle",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        promoted = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_store",
+                {
+                    "target": "ops",
+                    "content": "Profile promoted-only regression: stable deploy workflow uses release gate evidence before rollout.",
+                },
+            )
+        )
+        candidate = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_store",
+                {
+                    "target": "ops",
+                    "content": "Temporary profile candidate regression: this provisional rollout note should require include_candidates.",
+                },
+            )
+        )
+        assert promoted["stored"] is True
+        assert candidate["stored"] is True
+        # Older installs may have stable rows without an explicit lifecycle key;
+        # promoted-only profile should continue treating those as promoted.
+        with plugin._lock:
+            conn = plugin._require_conn()
+            row = conn.execute("SELECT id, metadata FROM memories WHERE content LIKE ?", ("%stable deploy workflow%",)).fetchone()
+            metadata = json.loads(str(row["metadata"] or "{}"))
+            metadata.pop("lifecycle", None)
+            conn.execute("UPDATE memories SET metadata = ? WHERE id = ?", (json.dumps(metadata, ensure_ascii=False, sort_keys=True), row["id"]))
+            conn.commit()
+        default_payload = json.loads(plugin.handle_tool_call("scope_recall_profile", {"targets": ["ops"], "max_chars": 2000}))
+        candidate_payload = json.loads(
+            plugin.handle_tool_call("scope_recall_profile", {"targets": ["ops"], "include_candidates": True, "max_chars": 2000})
+        )
+    finally:
+        plugin.shutdown()
+
+    assert default_payload["include_candidates"] is False
+    assert "stable deploy workflow" in default_payload["context"]
+    assert "provisional rollout note" not in default_payload["context"]
+    assert default_payload["sections"]["ops"]["count"] == 1
+    assert candidate_payload["include_candidates"] is True
+    assert "stable deploy workflow" in candidate_payload["context"]
+    assert "provisional rollout note" in candidate_payload["context"]
+    assert candidate_payload["sections"]["ops"]["count"] == 2
 
 
 def test_profile_surface_includes_local_general_only_when_requested(tmp_path):
@@ -2399,7 +2493,7 @@ def test_auto_capture_filters_system_maintenance_prompts(provider):
     assert stats["total_memories"] == 0
 
 
-def test_forget_tool_removes_matching_sqlite_and_vector_rows(provider):
+def test_forget_tool_archives_matching_sqlite_row_and_removes_vector_visibility(provider):
     payload = json.loads(
         provider.handle_tool_call("scope_recall_store", {"content": "Temporary deploy note should be removed.", "target": "memory"})
     )
@@ -2407,7 +2501,8 @@ def test_forget_tool_removes_matching_sqlite_and_vector_rows(provider):
     provider.flush(timeout=5.0)
 
     result = json.loads(provider.handle_tool_call("scope_recall_forget", {"ids": [payload["id"]]}))
-    assert result["deleted"] == 1
+    assert result["archived"] == 1
+    assert result["deleted"] == 0
     assert payload["id"] in result["ids"]
 
     provider.on_turn_start(1, "Temporary deploy note")

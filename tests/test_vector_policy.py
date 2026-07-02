@@ -1,5 +1,10 @@
+"""Tests for vector indexing policy around general rows and hidden lifecycles.
+
+They ensure vector companion cleanup follows SQLite visibility rules."""
+
 from __future__ import annotations
 
+import json
 import sqlite3
 
 from scope_recall.sql_store import ensure_schema, store_row
@@ -138,6 +143,14 @@ def _insert(conn, *, memory_id, target, scope_id="local-scope", content=None):
     )
 
 
+def _set_lifecycle(conn, memory_id: str, lifecycle: str) -> None:
+    row = conn.execute("SELECT metadata FROM memories WHERE id = ?", (memory_id,)).fetchone()
+    metadata = json.loads(str(row["metadata"] or "{}"))
+    metadata["lifecycle"] = lifecycle
+    conn.execute("UPDATE memories SET metadata = ? WHERE id = ?", (json.dumps(metadata, ensure_ascii=False, sort_keys=True), memory_id))
+    conn.commit()
+
+
 def test_sync_vector_index_excludes_general_and_deletes_stale_general_vectors():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -175,6 +188,49 @@ def test_upsert_vector_record_deletes_existing_general_when_policy_excludes_it()
 
     assert "general-1" not in provider._vector_store.records
     assert provider._vector_store.deleted == ["general-1"]
+    assert provider._embedder.embedded_texts == []
+
+
+def test_sync_vector_index_excludes_lifecycle_hidden_and_deletes_stale_vectors():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    _insert(conn, memory_id="active-1", target="memory", scope_id="shared-scope", content="active durable memory should be indexed")
+    _insert(conn, memory_id="archived-1", target="memory", scope_id="shared-scope", content="archived durable memory should not be indexed")
+    _set_lifecycle(conn, "archived-1", "archived")
+    provider = FakeProvider(conn, index_general=False)
+    provider._vector_store.records["archived-1"] = {"id": "archived-1", "target": "memory", "updated_at": "old"}
+
+    count = sync_vector_index(provider)
+
+    assert count == 1
+    assert set(provider._vector_store.records) == {"active-1"}
+    assert "archived-1" in provider._vector_store.deleted
+    assert all("archived durable" not in text for text in provider._embedder.embedded_texts)
+
+
+def test_upsert_vector_record_deletes_existing_lifecycle_hidden_vector():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    _insert(conn, memory_id="archived-1", target="memory", scope_id="shared-scope", content="archived durable memory should not be indexed")
+    _set_lifecycle(conn, "archived-1", "archived")
+    provider = FakeProvider(conn, index_general=False)
+    provider._vector_store.records["archived-1"] = {"id": "archived-1", "target": "memory", "updated_at": "old"}
+
+    upsert_vector_record(
+        provider,
+        id="archived-1",
+        source="tool-store",
+        target="memory",
+        content="archived durable memory should not be indexed",
+        summary="archived durable memory should not be indexed",
+        updated_at="2026-05-01T00:00:00+00:00",
+        scope_id="shared-scope",
+    )
+
+    assert "archived-1" not in provider._vector_store.records
+    assert provider._vector_store.deleted == ["archived-1"]
     assert provider._embedder.embedded_texts == []
 
 

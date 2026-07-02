@@ -1,3 +1,7 @@
+"""Regression tests for golden benchmark assertions, explain snapshots, funnel traces, and retrieval limits.
+
+They ensure benchmark failures remain actionable instead of just reporting a vague recall miss."""
+
 from __future__ import annotations
 
 import json
@@ -81,6 +85,61 @@ def test_benchmark_expected_and_forbidden_ids_guard_retrieval_regression(tmp_pat
         assert payload["results"][0]["passed"] is True
         assert payload["results"][0]["ids"][0] == durable["id"]
         assert scratch["id"] not in payload["results"][0]["ids"]
+    finally:
+        plugin.shutdown()
+
+
+def test_benchmark_expected_metadata_guards_recall_signals(tmp_path):
+    plugin = _provider(tmp_path)
+    try:
+        stored = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_store",
+                {
+                    "content": "Project Northstar API base URL is https://api.northstar.example/v2.",
+                    "target": "project",
+                    "memory_type": "factual",
+                    "entities": ["Northstar"],
+                },
+            )
+        )
+
+        passing = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_benchmark",
+                {
+                    "cases": [
+                        {
+                            "query": "Project Northstar API base URL",
+                            "expected_ids": [stored["id"]],
+                            "expected_metadata": {stored["id"]: {"memory_type": "factual"}},
+                            "min_rank": 1,
+                        }
+                    ],
+                    "limit": 3,
+                },
+            )
+        )
+        failing = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_benchmark",
+                {
+                    "cases": [
+                        {
+                            "query": "Project Northstar API base URL",
+                            "expected_ids": [stored["id"]],
+                            "expected_metadata": {stored["id"]: {"memory_type": "procedure"}},
+                            "min_rank": 1,
+                        }
+                    ],
+                    "limit": 3,
+                },
+            )
+        )
+
+        assert passing["passed"] is True
+        assert failing["passed"] is False
+        assert any("metadata_mismatch" in failure for failure in failing["failures"])
     finally:
         plugin.shutdown()
 

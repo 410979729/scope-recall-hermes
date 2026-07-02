@@ -1,3 +1,7 @@
+"""Roadmap regression tests for graph relation features.
+
+They keep planned relation behavior executable rather than only documented."""
+
 from __future__ import annotations
 
 import builtins

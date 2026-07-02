@@ -1,5 +1,7 @@
 # Scope Recall 1.4.0 release-readiness notes
 
+> Historical note: this file is an immutable release-readiness snapshot for the 2026-06-17 `v1.4.0` Experience Kernel MVP release. It is not the current release checklist; use `CHANGELOG.md`, `README.md`, and `scripts/check.release.py` for the active release line.
+
 Date: 2026-06-17
 
 ## Scope

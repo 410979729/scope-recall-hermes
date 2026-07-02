@@ -1,3 +1,7 @@
+"""Core dataclasses and normalization helpers shared by provider, recall, migration, and vector code.
+
+Keep these models small and serializable so they can cross tool, CLI, and test boundaries safely."""
+
 from __future__ import annotations
 
 import hashlib

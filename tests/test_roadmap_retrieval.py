@@ -1,3 +1,7 @@
+"""Roadmap regression tests for retrieval improvements and FTS behavior.
+
+They preserve expected search behavior while recall internals evolve."""
+
 from __future__ import annotations
 
 from scope_recall.models import RecallItem

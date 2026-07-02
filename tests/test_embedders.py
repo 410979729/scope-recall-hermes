@@ -1,3 +1,7 @@
+"""Tests for embedding adapters, hosted-provider request shapes, and fallback behavior.
+
+They isolate provider quirks such as OpenAI-compatible float vector responses."""
+
 from __future__ import annotations
 
 import json
@@ -16,9 +20,11 @@ from scope_recall.embedders import (
 class _FakeEmbeddingsAPI:
     def __init__(self) -> None:
         self.calls: list[int] = []
+        self.encoding_formats: list[str | None] = []
 
-    def create(self, *, model: str, input: list[str]):
+    def create(self, *, model: str, input: list[str], encoding_format: str | None = None):
         self.calls.append(len(input))
+        self.encoding_formats.append(encoding_format)
         if len(input) > 100:
             raise AssertionError(f"batch too large: {len(input)}")
 
@@ -59,6 +65,7 @@ def test_openai_compatible_embedder_chunks_large_batches(monkeypatch):
 
     assert len(vectors) == 205
     assert fake_client.embeddings.calls == [100, 100, 5]
+    assert fake_client.embeddings.encoding_formats == ["float", "float", "float"]
     assert embedder.dimensions == 3
 
 

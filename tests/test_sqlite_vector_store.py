@@ -1,3 +1,7 @@
+"""Tests for the SQLite brute-force vector companion implementation.
+
+They keep dependency-free vector behavior aligned with the LanceDB companion contract."""
+
 from __future__ import annotations
 
 import sqlite3

@@ -1,3 +1,7 @@
+"""Promotion planner for moving reviewed Experience playbooks into active procedural memory.
+
+Promotion must respect quality gates, duplicate/supersession state, and operator review outcomes."""
+
 from __future__ import annotations
 
 import hashlib
@@ -9,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any, Sequence
 
 from .capture_filters import contains_secret_like_text, sanitize_report_text
+from .experience_classification import classify_experience_task
 from .experience_store import create_playbook, review_playbook
 from .gating import compact_text
 from .sql_store import ensure_schema
@@ -254,6 +259,9 @@ def _promotion_quality(
     verification: list[str],
     risk_level: str,
 ) -> dict[str, Any]:
+    """Calculate promotion quality evidence for a playbook.
+
+    The score bundles review status, feedback, replay evidence, and duplicate/supersession signals for conservative automation."""
     text = _entry_text(entries)
     reasons: list[str] = []
     score = 0.0
@@ -334,31 +342,31 @@ def _title_suffix(goal: str) -> str:
     return compact_text(suffix or "自动提取任务", 48)
 
 
-def _task_class(text: str) -> str:
-    lowered = text.lower()
-    if "scope-recall" in lowered and any(token in lowered for token in ("release", "push", "version", "发布", "推送", "版本")):
-        return "scope_recall_release_closeout"
-    if "scope-recall" in lowered:
-        return "scope_recall_quality_check"
-    if "hermes" in lowered:
-        return "hermes_operations"
-    return "agent_verified_task"
+def _task_class(text: str, goal: str = "") -> str:
+    return classify_experience_task(text=text, goal=goal).task_class
 
 
 def _title(task_class: str, text: str, goal: str = "") -> str:
-    suffix = _title_suffix(goal or text)
-    if task_class == "scope_recall_release_closeout":
-        return compact_text(f"scope-recall 发布收口：{suffix}", 80)
-    if task_class == "scope_recall_quality_check":
-        return compact_text(f"scope-recall 质量检查：{suffix}", 80)
-    if task_class == "hermes_operations":
-        return compact_text(f"Hermes 操作：{suffix}", 80)
-    words = re.findall(r"[\w\u4e00-\u9fff-]+", text)[:8]
-    fallback = " ".join(words) if words else suffix
-    return compact_text(f"{fallback} 经验手册", 80)
+    classification = classify_experience_task(text=text, goal=goal)
+    if classification.task_class == task_class:
+        return classification.title
+    fallback_titles = {
+        "scope_recall_release_closeout": "scope-recall：发布收口",
+        "scope_recall_docs_quality": "scope-recall：文档质量检查",
+        "scope_recall_quality_check": "scope-recall：质量检查",
+        "scope_recall_memory_quality_governance": "scope-recall：记忆质量治理",
+        "journal_backlog_drain": "scope-recall：journal backlog 清理",
+        "github_release_publish": "GitHub：release 发布核验",
+        "hermes_operations": "Hermes：运行维护",
+        "agent_verified_task": "Agent：已验证任务流程",
+    }
+    return fallback_titles.get(task_class, "Agent：已验证任务流程")
 
 
 def _payload(*, task_class: str, title: str, goal: str, text: str, risk_level: str, tool_names: list[str], verification: list[str]) -> dict[str, Any]:
+    """Build the structured promotion payload for one playbook candidate.
+
+    The payload keeps quality evidence, lifecycle state, and proposed action together for review and tests."""
     high_risk = risk_level == "high"
     capability = "local_write" if high_risk else "read_only"
     pitfalls = [
@@ -423,6 +431,15 @@ def _payload(*, task_class: str, title: str, goal: str, text: str, risk_level: s
         "status": "candidate",
         "confidence": 0.78 if high_risk else 0.86,
     }
+
+
+def _table_names(conn: sqlite3.Connection) -> set[str]:
+    return {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+
+
+def _missing_tables(conn: sqlite3.Connection, required: Sequence[str]) -> list[str]:
+    existing = _table_names(conn)
+    return [name for name in required if name not in existing]
 
 
 def _load_candidate_sessions(conn: sqlite3.Connection, *, accessible_scope_ids: Sequence[str], limit_sessions: int) -> list[list[sqlite3.Row]]:
@@ -583,7 +600,8 @@ def promote_experiences(
     这个函数只使用 SQLite 中已经存在的任务轨迹，不调用外部模型；第一版强调可审计、可回放和低风险。
     """
 
-    ensure_schema(conn)
+    if not dry_run:
+        ensure_schema(conn)
     experience_config = _experience_config(config)
     min_entries = int(experience_config.get("promotion_min_entries") or 3)
     min_tool_entries = int(experience_config.get("promotion_min_tool_entries") or 1)
@@ -598,8 +616,18 @@ def promote_experiences(
         "duplicates_skipped": 0,
         "quality_rejected": 0,
         "skipped": 0,
+        "schema_missing": [],
         "items": [],
     }
+    required_input_tables = ["journal_entries"]
+    missing_input_tables = _missing_tables(conn, required_input_tables)
+    if missing_input_tables:
+        result["schema_missing"] = missing_input_tables
+        result["skipped"] += 1
+        result["items"].append({"action": "skip", "reason": "schema_missing", "missing_tables": missing_input_tables})
+        return result
+    missing_experience_tables = _missing_tables(conn, ["task_episodes", "procedural_playbooks"])
+    result["schema_missing"] = missing_experience_tables
 
     for entries in _load_candidate_sessions(conn, accessible_scope_ids=accessible_scope_ids, limit_sessions=limit_sessions):
         if len(entries) < min_entries:
@@ -629,7 +657,8 @@ def promote_experiences(
             result["skipped"] += 1
             result["items"].append({"action": "skip", "reason": "low_signal_goal", "goal": sanitize_report_text(goal)})
             continue
-        task_class = _task_class(text)
+        classification = classify_experience_task(text=text, goal=goal)
+        task_class = classification.task_class
         risk_level = _risk_level(text)
         quality = _promotion_quality(entries, goal=goal, tool_names=tool_names, verification=verification, risk_level=risk_level)
         if quality["decision"] == "reject":
@@ -638,18 +667,20 @@ def promote_experiences(
             result["items"].append({"action": "skip", "reason": "quality_gate", "quality": quality, "goal": sanitize_report_text(goal)})
             continue
         episode_id = _hash_id("episode_auto", scope_id, entries[0]["session_id"], [int(entry["id"]) for entry in entries])
-        if _episode_exists(conn, episode_id) or _playbook_exists_for_episode(conn, episode_id):
+        if not missing_experience_tables and (_episode_exists(conn, episode_id) or _playbook_exists_for_episode(conn, episode_id)):
             result["duplicates_skipped"] += 1
             continue
-        title = _title(task_class, text, goal)
+        title = classification.title
         entry_ids = [int(entry["id"]) for entry in entries]
-        similar = _similar_playbook_exists(
-            conn,
-            accessible_scope_ids=accessible_scope_ids,
-            task_class=task_class,
-            title=title,
-            entry_ids=entry_ids,
-        )
+        similar = None
+        if not missing_experience_tables:
+            similar = _similar_playbook_exists(
+                conn,
+                accessible_scope_ids=accessible_scope_ids,
+                task_class=task_class,
+                title=title,
+                entry_ids=entry_ids,
+            )
         if similar is not None:
             result["duplicates_skipped"] += 1
             result["items"].append({"action": "skip", "reason": "similar_playbook_exists", "similar_playbook": similar})
@@ -700,6 +731,13 @@ def promote_experiences(
                 "journal_entry_ids": [int(entry["id"]) for entry in entries],
                 "safe_summary": sanitize_report_text(compact_text(text, 500)),
                 "quality_gate": quality,
+                "classification": {
+                    "task_class": classification.task_class,
+                    "title": classification.title,
+                    "domain": classification.domain,
+                    "reusable_action": classification.reusable_action,
+                    "matched_rule": classification.matched_rule,
+                },
             },
         )
         result["handbooks_created"] += 1

@@ -1,9 +1,13 @@
+"""Tests for retry/dead-letter journal recovery planning and replay scheduling.
+
+They keep auth/quota failures from being replayed blindly before root causes are fixed."""
+
 from __future__ import annotations
 
 import sqlite3
 
 from scope_recall.journal import ensure_journal_schema
-from scope_recall.journal_recovery import recovery_report, schedule_replay
+from scope_recall.journal_recovery import classify_recovery_candidates, classify_rejection_reason, recovery_report, schedule_replay
 from scope_recall.sql_store import ensure_schema
 
 
@@ -35,6 +39,15 @@ def _rejection(conn: sqlite3.Connection, entry_id: int, *, reason: str = "retry-
     )
 
 
+def test_classify_rejection_reason_categories():
+    assert classify_rejection_reason("retry-exhausted:timeout while calling model") == "timeout"
+    assert classify_rejection_reason("dead-letter:auth token expired") == "auth"
+    assert classify_rejection_reason("retry-exhausted:429 quota exceeded") == "quota"
+    assert classify_rejection_reason("retry-exhausted:invalid json schema") == "parse"
+    assert classify_rejection_reason("manual-reviewed:low-value empty noise") == "low_value"
+    assert classify_rejection_reason("dead-letter:needs operator review") == "unknown"
+
+
 def test_journal_recovery_reports_and_schedules_retry_exhausted_entries():
     conn = _conn()
     _entry(conn, 1)
@@ -52,14 +65,17 @@ def test_journal_recovery_reports_and_schedules_retry_exhausted_entries():
     assert report["candidate_count"] == 1
     assert report["items"][0]["journal_entry_id"] == 1
     assert report["by_reason"] == {"retry-exhausted:timeout": 1}
+    assert report["by_category"] == {"timeout": 1}
 
     dry = schedule_replay(conn, reason_prefixes=["retry-exhausted:"], limit=10, dry_run=True, batch_id="replay-batch")
     assert dry["candidate_count"] == 1
     assert dry["scheduled"] == 0
+    assert dry["by_category"] == {"timeout": 1}
     assert conn.execute("SELECT processed_run_id FROM journal_entries WHERE id = 1").fetchone()[0] == "run-failed"
 
     applied = schedule_replay(conn, reason_prefixes=["retry-exhausted:"], limit=10, dry_run=False, batch_id="replay-batch")
     assert applied["scheduled"] == 1
+    assert applied["by_category"] == {"timeout": 1}
     row = conn.execute("SELECT processed_run_id, processed_at FROM journal_entries WHERE id = 1").fetchone()
     assert row["processed_run_id"] == ""
     assert row["processed_at"] is None
@@ -84,6 +100,48 @@ def test_journal_recovery_can_include_dead_letters_explicitly():
     with_dead_letters = recovery_report(conn, reason_prefixes=["retry-exhausted:", "dead-letter:"], limit=10)
     assert with_dead_letters["candidate_count"] == 1
     assert with_dead_letters["items"][0]["reason"] == "dead-letter:auth"
+    assert with_dead_letters["by_category"] == {"auth": 1}
+
+
+def test_journal_recovery_can_operator_classify_dead_letters_as_no_replay():
+    conn = _conn()
+    _entry(conn, 41)
+    _entry(conn, 42)
+    _rejection(conn, 41, reason="dead-letter:auth")
+    _rejection(conn, 42, reason="retry-exhausted:timeout")
+    conn.commit()
+
+    dry = classify_recovery_candidates(
+        conn,
+        reason_prefixes=["retry-exhausted:", "dead-letter:"],
+        limit=10,
+        dry_run=True,
+        batch_id="classify-batch",
+        reason="root cause fixed elsewhere; historical entries are not useful to replay",
+    )
+    assert dry["candidate_count"] == 2
+    assert dry["classified"] == 0
+    assert recovery_report(conn, reason_prefixes=["retry-exhausted:", "dead-letter:"], limit=10)["candidate_count"] == 2
+
+    applied = classify_recovery_candidates(
+        conn,
+        reason_prefixes=["retry-exhausted:", "dead-letter:"],
+        limit=10,
+        dry_run=False,
+        batch_id="classify-batch",
+        reason="root cause fixed elsewhere; historical entries are not useful to replay",
+    )
+    assert applied["classified"] == 2
+    assert recovery_report(conn, reason_prefixes=["retry-exhausted:", "dead-letter:"], limit=10)["candidate_count"] == 0
+    reasons = [row[0] for row in conn.execute("SELECT reason FROM journal_rejections ORDER BY journal_entry_id")]
+    assert reasons == [
+        "operator-classified:no_replay:dead-letter:auth",
+        "operator-classified:no_replay:retry-exhausted:timeout",
+    ]
+    audit = conn.execute(
+        "SELECT COUNT(*) FROM governance_audit_events WHERE batch_id = 'classify-batch' AND event_type = 'journal_recovery' AND action = 'classify_no_replay'"
+    ).fetchone()[0]
+    assert audit == 2
 
 
 def test_journal_recovery_report_and_dry_run_do_not_rebuild_stale_fts_index():
@@ -101,6 +159,38 @@ def test_journal_recovery_report_and_dry_run_do_not_rebuild_stale_fts_index():
     assert report["candidate_count"] == 1
     assert dry["candidate_count"] == 1
     assert conn.execute("SELECT COUNT(*) FROM memories_fts").fetchone()[0] == 0
+
+
+def test_journal_recovery_dry_run_is_query_only(tmp_path):
+    db_path = tmp_path / "memory.sqlite3"
+    writer = sqlite3.connect(db_path)
+    writer.row_factory = sqlite3.Row
+    try:
+        ensure_schema(writer)
+        ensure_journal_schema(writer)
+        _entry(writer, 13)
+        _rejection(writer, 13)
+        writer.commit()
+    finally:
+        writer.close()
+
+    readonly = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    readonly.row_factory = sqlite3.Row
+    readonly.execute("PRAGMA query_only=ON")
+    try:
+        dry = schedule_replay(readonly, reason_prefixes=["retry-exhausted:"], limit=10, dry_run=True)
+    finally:
+        readonly.close()
+
+    assert dry["dry_run"] is True
+    assert dry["candidate_count"] == 1
+    assert dry["scheduled"] == 0
+
+    verifier = sqlite3.connect(db_path)
+    try:
+        assert verifier.execute("SELECT processed_run_id FROM journal_entries WHERE id = 13").fetchone()[0] == "run-failed"
+    finally:
+        verifier.close()
 
 
 def test_journal_recovery_ignores_stale_rejection_from_previous_run():

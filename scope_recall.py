@@ -1,3 +1,7 @@
+"""Backward-compatible import shim for environments that import the package as scope_recall.py.
+
+New code should prefer package imports, but this module keeps old scripts/tests working."""
+
 from __future__ import annotations
 
 import importlib.util
