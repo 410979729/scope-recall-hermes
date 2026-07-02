@@ -132,7 +132,7 @@ V1 supports these retrieval modes:
 - `vector`
 - `hybrid`
 
-The default config uses hybrid retrieval with SQLite lexical/BM25 recall, weighted reciprocal-rank fusion metadata, and a LanceDB vector companion. Operators can set `vector.backend=sqlite-bruteforce` for a native-free/non-AVX companion. V1 probes LanceDB/PyArrow native imports in a child process before importing them in the Hermes process; when `vector.fallback_backend=sqlite-bruteforce`, an absent or SIGILL-prone LanceDB stack automatically falls back to the pure SQLite companion instead of crashing the agent.
+The default config uses hybrid retrieval with SQLite lexical/BM25 recall, weighted reciprocal-rank fusion metadata, conservative entity-distance graph hints, and a LanceDB vector companion. Persisted relation evidence is scope-filtered before inspect/explain/rerank surfaces expose related ids. Relation-aware reranking remains opt-in through `retrieval.relation_rerank_enabled`; when enabled, `supersedes` edges boost the superseding row and penalize the superseded peer by the configured relation weights. Deterministic relation backfill is available through `scripts/backfill.graph_relations.py`; it is dry-run by default and only creates same-scope `supersedes` edges from trusted `metadata.superseded_by` provenance unless an operator explicitly relaxes the scope boundary. Operators can set `vector.backend=sqlite-bruteforce` for a native-free/non-AVX companion. V1 probes LanceDB/PyArrow native imports in a child process before importing them in the Hermes process; when `vector.fallback_backend=sqlite-bruteforce`, an absent or SIGILL-prone LanceDB stack automatically falls back to the pure SQLite companion instead of crashing the agent.
 
 Embedder policy:
 
@@ -163,11 +163,13 @@ A V1 source tree should pass:
 ```bash
 python -m pytest -q
 python scripts/check.release.py
+python scripts/benchmark.graph_relations.py
+python scripts/backfill.graph_relations.py --hermes-home <profile> --dry-run
 python scripts/journal-digest.py --hermes-home <profile> --dry-run
 python scripts/repair.vector_index.py --hermes-home <profile> --dry-run
 ```
 
-The release check enforces V1 metadata, required public docs, wheel contents, test pass status, bytecode compilation, source-tree hygiene, and absence of obvious literal secrets/private paths.
+The release check enforces V1 metadata, required public docs, wheel contents, test pass status, bytecode compilation, source-tree hygiene, absence of obvious literal secrets/private paths, and deterministic golden plus graph-relation benchmark success.
 
 ## Live-runtime freshness boundary
 

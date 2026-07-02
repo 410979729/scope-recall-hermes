@@ -75,6 +75,7 @@ REQUIRED_SOURCE_FILES = {
     "doctor_sqlite.py",
     "doctor_vector.py",
     "freshness.py",
+    "graph_relations.py",
     "graph_hygiene.py",
     "maintenance_ops.py",
     "memory_quality.py",
@@ -119,7 +120,9 @@ REQUIRED_SOURCE_FILES = {
     "scripts/doctor.py",
     "scripts/experience-replay.py",
     "scripts/benchmark.golden.py",
+    "scripts/benchmark.graph_relations.py",
     "scripts/benchmark.retrieval_regression.py",
+    "scripts/backfill.graph_relations.py",
     "scripts/governance.cleanup.py",
     "scripts/governance.audit_coverage.py",
     "scripts/journal.recovery.py",
@@ -188,6 +191,7 @@ REQUIRED_WHEEL = {
     "scope_recall/doctor_sqlite.py",
     "scope_recall/doctor_vector.py",
     "scope_recall/freshness.py",
+    "scope_recall/graph_relations.py",
     "scope_recall/graph_hygiene.py",
     "scope_recall/maintenance_ops.py",
     "scope_recall/memory_quality.py",
@@ -234,7 +238,9 @@ REQUIRED_WHEEL = {
     "scope_recall/scripts/doctor.py",
     "scope_recall/scripts/experience-replay.py",
     "scope_recall/scripts/benchmark.golden.py",
+    "scope_recall/scripts/benchmark.graph_relations.py",
     "scope_recall/scripts/benchmark.retrieval_regression.py",
+    "scope_recall/scripts/backfill.graph_relations.py",
     "scope_recall/scripts/governance.cleanup.py",
     "scope_recall/scripts/governance.audit_coverage.py",
     "scope_recall/scripts/journal.recovery.py",
@@ -370,19 +376,32 @@ def git_tree_check(*, allow_dirty: bool) -> dict[str, object]:
 
 
 def benchmark_check() -> dict[str, object]:
-    result = run([sys.executable, "scripts/benchmark.golden.py"])
-    if result["returncode"] != 0:
-        return {"ok": False, "result": result}
+    golden_result = run([sys.executable, "scripts/benchmark.golden.py"])
+    if golden_result["returncode"] != 0:
+        return {"ok": False, "golden_result": golden_result}
     try:
-        payload = json.loads(str(result["stdout"] or "{}"))
+        golden_payload = json.loads(str(golden_result["stdout"] or "{}"))
     except json.JSONDecodeError as exc:
-        return {"ok": False, "error": f"invalid benchmark json: {exc}", "result": result}
+        return {"ok": False, "error": f"invalid golden benchmark json: {exc}", "golden_result": golden_result}
+
+    graph_result = run([sys.executable, "scripts/benchmark.graph_relations.py"])
+    if graph_result["returncode"] != 0:
+        return {"ok": False, "graph_result": graph_result}
+    try:
+        graph_payload = json.loads(str(graph_result["stdout"] or "{}"))
+    except json.JSONDecodeError as exc:
+        return {"ok": False, "error": f"invalid graph benchmark json: {exc}", "graph_result": graph_result}
+
     return {
-        "ok": bool(payload.get("passed")) and payload.get("schema_version") == "golden_benchmark_report.v1",
-        "schema_version": payload.get("schema_version"),
-        "golden_name": payload.get("golden_name"),
-        "query_count": payload.get("query_count"),
-        "failures": payload.get("failures"),
+        "ok": bool(golden_payload.get("passed"))
+        and golden_payload.get("schema_version") == "golden_benchmark_report.v1"
+        and bool(graph_payload.get("passed")),
+        "schema_version": golden_payload.get("schema_version"),
+        "golden_name": golden_payload.get("golden_name"),
+        "query_count": golden_payload.get("query_count"),
+        "failures": golden_payload.get("failures"),
+        "graph_name": graph_payload.get("benchmark_name"),
+        "graph_metrics": graph_payload.get("metrics"),
     }
 
 

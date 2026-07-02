@@ -523,13 +523,30 @@ class RecallService:
                     continue
             return total
 
-        supersedes_boost = max(0.0, min(0.12, float(retrieval_cfg.get("relation_supersedes_boost") or retrieval_cfg.get("relation_rerank_weight") or 0.04)))
-        supports_boost = max(0.0, min(0.08, float(retrieval_cfg.get("relation_supports_boost") or retrieval_cfg.get("relation_rerank_weight") or 0.04)))
-        same_topic_boost = max(0.0, min(0.03, float(retrieval_cfg.get("relation_same_topic_boost") or 0.01)))
-        superseded_penalty = max(0.0, min(0.12, float(retrieval_cfg.get("relation_superseded_penalty") or 0.0)))
-        contradicts_penalty = max(0.0, min(0.12, float(retrieval_cfg.get("relation_contradicts_penalty") or 0.0)))
-        max_bonus = max(0.0, min(0.12, float(retrieval_cfg.get("relation_rerank_max_bonus") or 0.08)))
-        max_penalty = max(0.0, min(0.12, float(retrieval_cfg.get("relation_rerank_max_penalty") or 0.08)))
+        def _relation_weight(
+            primary_key: str,
+            *,
+            fallback_key: str | None = "relation_rerank_weight",
+            default: float = 0.04,
+            maximum: float = 0.12,
+        ) -> float:
+            raw = retrieval_cfg.get(primary_key)
+            if raw is None or raw == "":
+                raw = retrieval_cfg.get(fallback_key) if fallback_key else None
+            if raw is None or raw == "":
+                raw = default
+            try:
+                return max(0.0, min(maximum, float(raw)))
+            except (TypeError, ValueError):
+                return max(0.0, min(maximum, default))
+
+        supersedes_boost = _relation_weight("relation_supersedes_boost")
+        supports_boost = _relation_weight("relation_supports_boost", maximum=0.08)
+        same_topic_boost = _relation_weight("relation_same_topic_boost", fallback_key=None, default=0.01, maximum=0.03)
+        superseded_penalty = _relation_weight("relation_superseded_penalty")
+        contradicts_penalty = _relation_weight("relation_contradicts_penalty", fallback_key=None, default=0.0)
+        max_bonus = _relation_weight("relation_rerank_max_bonus", fallback_key=None, default=0.08)
+        max_penalty = _relation_weight("relation_rerank_max_penalty", fallback_key=None, default=0.08)
 
         bonus = 0.0
         bonus += supersedes_boost * _confidence_sum(outgoing.get("supersedes"))

@@ -4,6 +4,15 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Added `scripts/backfill.graph_relations.py`, a dry-run-by-default deterministic graph backfill that creates same-scope `supersedes` edges from trusted `metadata.superseded_by` provenance.
+- Added `scripts/benchmark.graph_relations.py`, a deterministic API-free graph benchmark covering opt-in `supersedes` rerank improvement, hidden-peer leak prevention, and explicit zero relation weights; release readiness now runs it alongside the golden benchmark.
+- Exposed graph density and hygiene counters in `scope_recall_stats`, including relation type distribution, orphan relation count, and lifecycle-hidden peer relation count.
+
+### Fixed
+- Scope-filtered relation evidence in `scope_recall_inspect` and `scope_recall_explain` so graph relations never expose inaccessible, deleted, or lifecycle-hidden peer memory ids.
+- Made explicit relation reranking symmetric for `supersedes` edges: enabling `retrieval.relation_rerank_enabled` boosts superseding memories and applies the configured `relation_superseded_penalty` to superseded peers while respecting explicit zero weights.
+
 ## [1.6.1] - 2026-06-30
 
 ### Changed
