@@ -79,6 +79,65 @@ def test_preflight_returns_direct_reuse_packet_for_safe_promoted_playbook():
     assert conn.execute("SELECT COUNT(*) FROM experience_runs").fetchone()[0] == 0
 
 
+def test_preflight_packet_and_summary_expose_stop_rules_and_evidence_anchors():
+    conn = _conn()
+    payload = _payload(
+        reuse_policy={
+            "default_decision": "guided_reuse",
+            "allow_direct_reuse": False,
+            "risk_level": "high",
+            "must_stop_and_ask_joy": ["涉及发布或重启时必须停下问 Joy。"],
+            "prohibited_auto_actions": ["不得自动 push、tag、release 或 restart。"],
+            "source_evidence_anchor_count": 3,
+            "source_evidence_anchor_kinds": ["user_statement", "test_command", "assistant_closure"],
+        }
+    )
+    _create_promoted(conn, playbook_id="pb_policy_summary", payload=payload, confidence=0.91)
+
+    result = experience_preflight(
+        conn,
+        query="Need one-way Headscale ACL so management can access target but target cannot reach others",
+        accessible_scope_ids=["scope-a"],
+        config={"experience": {"packet_max_chars": 2400}},
+    )
+
+    assert result["decision"] == "guided_reuse"
+    assert "Must stop and ask Joy" in result["packet"]
+    assert "不得自动 push" in result["packet"]
+    assert "Evidence anchors" in result["packet"]
+    assert result["summary"] == {
+        "playbook_id": "pb_policy_summary",
+        "title": "Headscale/Tailscale one-way management ACL",
+        "decision": "guided_reuse",
+        "confidence": 0.91,
+        "risk_level": "high",
+        "preconditions": ["Identify target node and management nodes from live output.", "Confirm rollback before applying ACL."],
+        "verification": ["management reaches target", "target cannot reach unrelated nodes"],
+        "must_stop_and_ask_joy": ["涉及发布或重启时必须停下问 Joy。"],
+        "prohibited_auto_actions": ["不得自动 push、tag、release 或 restart。"],
+        "source_evidence_anchor_count": 3,
+        "source_evidence_anchor_kinds": ["user_statement", "test_command", "assistant_closure"],
+        "reasons": ["policy_default_guided_reuse", "policy_disallows_direct_reuse"],
+    }
+
+
+def test_preflight_summary_handles_invalid_source_evidence_anchor_count():
+    conn = _conn()
+    payload = _payload(reuse_policy={"source_evidence_anchor_count": "not-a-number", "source_evidence_anchor_kinds": ["test_command"]})
+    _create_promoted(conn, playbook_id="pb_bad_anchor_count", payload=payload, confidence=0.91)
+
+    result = experience_preflight(
+        conn,
+        query="Need one-way Headscale ACL so management can access target but target cannot reach others",
+        accessible_scope_ids=["scope-a"],
+        config={"experience": {"packet_max_chars": 2400}},
+    )
+
+    assert result["decision"] in {"direct_reuse", "guided_reuse"}
+    assert result["summary"]["source_evidence_anchor_count"] == 0
+    assert result["summary"]["source_evidence_anchor_kinds"] == ["test_command"]
+
+
 def test_preflight_can_record_reuse_run_with_pending_live_check_evidence():
     conn = _conn()
     _create_promoted(conn, playbook_id="pb_record", confidence=0.91)

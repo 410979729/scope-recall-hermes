@@ -122,6 +122,23 @@ def test_public_response_contract_files_are_release_packaged():
     assert "scope_recall/docs/response-contracts.md" in release_check.REQUIRED_WHEEL
 
 
+def test_required_source_modules_are_pyright_covered():
+    release_check = _load_release_check_module("scope_recall_check_release_pyright_coverage")
+
+    result = release_check.pyright_include_check()
+
+    assert result["ok"] is True
+    for required in [
+        "experience_evidence.py",
+        "experience_quality.py",
+        "experience_synthesis.py",
+        "governance_scheduler.py",
+        "task_boundary.py",
+    ]:
+        assert required in result["required_source_py"]
+        assert required not in result["missing_pyright_include"]
+
+
 def test_release_readiness_note_is_release_packaged():
     release_check = _load_release_check_module("scope_recall_check_release_readiness_doc")
 

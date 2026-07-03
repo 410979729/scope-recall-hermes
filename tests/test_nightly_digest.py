@@ -24,10 +24,12 @@ from scope_recall.nightly_digest import (
     candidate_is_allowed,
     candidate_metadata,
     cleanup_exact_duplicates,
+    heuristic_candidates,
     load_session_bundles,
     redact_sensitive,
     resolve_llm_config,
     run_digest,
+    safe_command_hints,
 )
 from scope_recall.models import RuntimeScope
 from scope_recall.sql_store import delete_rows, ensure_schema, store_row
@@ -59,6 +61,20 @@ def test_llm_candidate_parser_treats_empty_response_as_empty_not_parse_error():
 
     assert candidates == []
     assert status == "empty"
+
+
+def test_safe_command_hints_keeps_generic_safe_tool_categories_without_raw_commands():
+    hints = safe_command_hints(
+        [
+            "python3 -m pytest tests/test_release.py -q",
+            "uv run custom-health-check --json",
+            "./scripts/custom-check.sh --path /home/a/private/file",
+            "npm run test",
+        ]
+    )
+
+    assert hints == ["pytest", "uv", "custom-script", "npm"]
+    assert all("/home/a" not in hint and "custom-check" not in hint for hint in hints)
 
 
 def test_llm_candidate_parser_extracts_json_array_from_fenced_text_with_preamble():
@@ -183,6 +199,60 @@ def test_digest_quality_rejects_transient_tool_progress_candidate():
     quality = score_digest_candidate(candidate)
 
     assert quality.transient_progress is True
+    assert quality.recommended_action == "reject"
+    assert candidate_is_allowed(candidate) is False
+
+
+def test_heuristic_digest_sanitizes_private_command_hints_before_metadata():
+    private_posix = "/".join(["", "home", "a", ".hermes-yuheng", "plugins", "scope-recall"])
+    private_windows = "C:" + "/".join(["", "Users", "Administrator", "AppData", "Local", "Temp", "codex-abc", "result.json"])
+    bundle = SessionBundle(
+        id="private-command-hints",
+        source="test",
+        title="Scope Recall release check",
+        messages=[
+            MessageRecord(id=1, session_id="private-command-hints", role="user", content="请检查 scope-recall 发布。", timestamp=0.0),
+            MessageRecord(id=2, session_id="private-command-hints", role="assistant", content="完成：验证通过。", timestamp=0.0),
+        ],
+        tool_names=["terminal"],
+        command_hints=[
+            f"git -C {private_posix} status --short",
+            f"Get-Content {private_windows}",
+        ],
+        is_task=True,
+        completed=True,
+    )
+
+    candidates = heuristic_candidates(bundle)
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    metadata = candidate_metadata(candidate, "run-private-command-hints")
+    persisted = json.dumps(metadata, ensure_ascii=False) + "\n" + candidate.content
+    assert candidate_is_allowed(candidate) is True
+    assert "/home/" not in persisted
+    assert "C:/Users" not in persisted
+    assert "AppData" not in persisted
+    assert "git -C" not in persisted
+    assert "Get-Content" not in persisted
+    assert "Command hints" not in persisted
+
+
+def test_digest_candidate_rejects_raw_private_command_paths():
+    private_posix = "/".join(["", "home", "a", ".hermes-yuheng", "plugins", "scope-recall"])
+    candidate = DigestCandidate(
+        content=f"Scope Recall 发布流程：步骤是运行 git -C {private_posix} status 后再验证 release gate。",
+        target="ops",
+        memory_type="workflow",
+        confidence=0.82,
+        commands=[f"git -C {private_posix} status --short"],
+        verification=["release gate ok"],
+        reason="raw private command path regression",
+    )
+
+    quality = score_digest_candidate(candidate)
+
+    assert quality.contains_raw_tool_trace is True
     assert quality.recommended_action == "reject"
     assert candidate_is_allowed(candidate) is False
 

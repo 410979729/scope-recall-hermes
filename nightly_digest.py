@@ -21,7 +21,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .artifacts import artifact_anchor_block, extract_artifacts
-from .capture_filters import should_capture_text
+from .capture_filters import sanitize_report_text, should_capture_text
 from .config import load_runtime_config
 from .digest_quality import score_digest_candidate
 from .digest_run_results import nightly_digest_metadata, nightly_digest_result, nightly_status_payload
@@ -413,7 +413,7 @@ def parse_tool_calls(raw: str) -> tuple[list[str], list[str]]:
 
 
 def summarize_command(command: str) -> str:
-    command = redact_sensitive(command)
+    command = sanitize_report_text(redact_sensitive(command))
     command = re.sub(r"\s+", " ", command).strip()
     if not command:
         return ""
@@ -430,6 +430,45 @@ def summarize_command(command: str) -> str:
         if match:
             return compact_text(match.group(0), 160)
     return compact_text(command.split()[0], 80)
+
+
+def safe_command_hints(commands: list[str], *, limit: int = 8) -> list[str]:
+    """Return durable-safe command categories, never raw command lines.
+
+    Command hints are useful evidence for heuristics, but raw command lines often
+    include local paths, temp files, branch names, or credentials. Durable memory
+    should keep only broad tool/check categories.
+    """
+    categories: list[str] = []
+    for command in commands:
+        sanitized = sanitize_report_text(redact_sensitive(str(command or "")))
+        lowered = sanitized.lower()
+        category = ""
+        if "check.release" in lowered or "release gate" in lowered:
+            category = "release gate"
+        elif "pyright" in lowered:
+            category = "pyright"
+        elif "ruff" in lowered:
+            category = "ruff"
+        elif "pytest" in lowered:
+            category = "pytest"
+        elif re.search(r"\buv\s+run\b", lowered):
+            category = "uv"
+        elif re.search(r"\b(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:test|check|lint|build)\b", lowered):
+            category = lowered.split()[0]
+        elif re.search(r"(?:^|\s)(?:\./)?scripts/[^\s]+", lowered):
+            category = "custom-script"
+        elif "systemctl" in lowered:
+            category = "systemctl"
+        elif re.search(r"\bgit\b", lowered):
+            category = "git"
+        elif "sqlite" in lowered:
+            category = "sqlite"
+        elif "hermes" in lowered:
+            category = "hermes"
+        if category:
+            categories.append(category)
+    return unique_strings(categories, limit=limit)
 
 
 def unique_strings(values: list[str], *, limit: int) -> list[str]:
@@ -453,8 +492,9 @@ def session_chunks(bundle: SessionBundle, *, chunk_chars: int, max_session_chars
     lines = [f"Session: {bundle.id}", f"Title: {bundle.title or '(untitled)'}", f"Type: {'task' if bundle.is_task else 'normal'}"]
     if bundle.tool_names:
         lines.append("Tools used: " + ", ".join(bundle.tool_names[:16]))
-    if bundle.command_hints:
-        lines.append("Command hints: " + "; ".join(bundle.command_hints[:8]))
+    safe_commands = safe_command_hints(bundle.command_hints, limit=8)
+    if safe_commands:
+        lines.append("Command categories: " + "; ".join(safe_commands[:8]))
     header = "\n".join(lines) + "\n"
     body_lines: list[str] = []
     for message in bundle.messages:
@@ -490,17 +530,17 @@ def heuristic_candidates(bundle: SessionBundle) -> list[DigestCandidate]:
 
     This fallback keeps nightly digest useful when LLM extraction is disabled, unavailable, or quarantined."""
     candidates: list[DigestCandidate] = []
-    artifact_block = bundle_artifact_anchor_block(bundle)
-    user_texts = [message.content for message in bundle.messages if message.role == "user" and message.content]
-    assistant_tail = [message.content for message in bundle.messages if message.role == "assistant" and message.content][-3:]
+    artifact_block = sanitize_report_text(bundle_artifact_anchor_block(bundle))
+    user_texts = [sanitize_report_text(message.content) for message in bundle.messages if message.role == "user" and message.content]
+    assistant_tail = [sanitize_report_text(message.content) for message in bundle.messages if message.role == "assistant" and message.content][-3:]
     if bundle.is_task and bundle.tool_names:
-        title = bundle.title or compact_text(user_texts[0] if user_texts else bundle.id, 80)
+        title = sanitize_report_text(bundle.title or compact_text(user_texts[0] if user_texts else bundle.id, 80))
         result = compact_text(" ".join(assistant_tail), 260)
-        tools = ", ".join(bundle.tool_names[:10])
-        commands = "; ".join(bundle.command_hints[:6])
+        tools = ", ".join(unique_strings([sanitize_report_text(tool) for tool in bundle.tool_names[:10]], limit=10))
+        safe_commands = safe_command_hints(bundle.command_hints, limit=6)
         parts = [f"{title} 的可复用任务流程：使用工具链 {tools}。"]
-        if commands:
-            parts.append(f"关键命令/检查包括 {commands}。")
+        if safe_commands:
+            parts.append(f"关键检查类别包括 {', '.join(safe_commands)}。")
         if result:
             parts.append(f"结果摘要：{result}")
         if artifact_block:
@@ -518,7 +558,7 @@ def heuristic_candidates(bundle: SessionBundle) -> list[DigestCandidate]:
                 session_id=bundle.id,
                 message_ids=bundle.message_ids[:80],
                 tools_used=bundle.tool_names[:16],
-                commands=bundle.command_hints[:10],
+                commands=safe_commands,
                 verification=extract_verification_hints(assistant_tail),
             )
         )
@@ -558,10 +598,11 @@ def build_prompt(bundle: SessionBundle, chunk: str, existing_context: list[str])
     existing = "\n".join(f"- {item}" for item in existing_context[:40]) or "- (none)"
     mode = "任务型对话" if bundle.is_task else "普通对话"
     return (
-        "你是 scope-recall 的夜间记忆整理器。阅读当天对话片段，提取值得长期保存的记忆。\n"
+        "你是 scope-recall 的夜间记忆整理器。阅读当天对话片段，只提取稳定、可复用、下周仍有价值的记忆。\n"
         "硬规则：不要保存 system/tool 原文、不要保存 token/API key/password/cookie/private key、不要保存流水账。\n"
-        "关键外部工件必须保留可检索锚点：repo/name、issue/PR/release/commit 编号、标题、URL、记录时状态/日期/作者/下一步（能从片段得出才写；当前状态需 live check）。\n"
-        "任务型对话要额外提取可复用 workflow/tool-chain：用过哪些工具类别、关键检查、验证方式、踩坑。只写脱敏摘要。\n"
+        "不要把一次性任务状态保存成长期记忆：包括 session id、commit SHA、branch/tag/HEAD 状态、issue/PR/release 编号、测试通过数量、发布候选/当前进度、临时路径和下一步清单。\n"
+        "只有在它表达稳定偏好、长期约束、环境事实、根因、可复用坑或通用工作流时才输出候选；否则输出 action=skip。\n"
+        "任务型对话可提取通用 workflow/tool-chain，但必须去掉具体会话、版本、issue、commit、路径、日期和一次性验收数字，只写脱敏的可复用步骤/踩坑。\n"
         "如果已有记忆已经完整覆盖，请输出 action=skip；如果已有记忆不够详细，请输出 action=update 并给 existing_hint。\n"
         "输出只能是 JSON 数组，每项字段：action, content, target, memory_type, importance, confidence, entities, tags, reason, existing_hint。\n"
         "target 只能是 user/memory/project/ops；memory_type 可为 preference/factual/project/procedure/workflow/summary/pitfall/decision/resource/constraint。\n"
@@ -600,7 +641,7 @@ def _parse_llm_candidates_with_status(raw: str, *, bundle: SessionBundle) -> tup
         if str(item.get("action") or "").strip().lower() == "skip":
             skipped += 1
             continue
-        content = redact_sensitive(clean_text(str(item.get("content") or "")))
+        content = sanitize_report_text(redact_sensitive(clean_text(str(item.get("content") or ""))))
         target = str(item.get("target") or "memory").strip().lower()
         if target not in TARGETS:
             target = "memory"
@@ -618,7 +659,7 @@ def _parse_llm_candidates_with_status(raw: str, *, bundle: SessionBundle) -> tup
             session_id=bundle.id,
             message_ids=bundle.message_ids[:80],
             tools_used=bundle.tool_names[:16],
-            commands=bundle.command_hints[:10],
+            commands=safe_command_hints(bundle.command_hints, limit=10),
             verification=extract_verification_hints([content]),
         )
         if candidate_is_allowed(candidate):
@@ -779,9 +820,10 @@ def candidate_metadata(candidate: DigestCandidate, run_id: str) -> dict[str, Any
         "digest_quality": quality.as_dict(),
     }
     if candidate.tools_used:
-        metadata["tools_used"] = candidate.tools_used
-    if candidate.commands:
-        metadata["commands"] = candidate.commands
+        metadata["tools_used"] = unique_strings([sanitize_report_text(tool) for tool in candidate.tools_used], limit=16)
+    safe_commands = safe_command_hints(candidate.commands, limit=10)
+    if safe_commands:
+        metadata["commands"] = safe_commands
     if candidate.verification:
         metadata["verification"] = candidate.verification
     if quality.recommended_action == "candidate":

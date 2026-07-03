@@ -84,6 +84,8 @@ def test_relation_extraction_builds_typed_relation_edges():
     _store(conn, memory_id="redis-owner", content="Redis service is owned by Platform Team.")
     _store(conn, memory_id="zephyr-runbook", content="Project Zephyr worker queue drain metrics must be green.")
     _store(conn, memory_id="atlas-affects-zephyr", content="Project Atlas deploy affects Project Zephyr worker queue drain metrics.")
+    _store(conn, memory_id="old-port-fact", content="Project Atlas old port fact says Atlas API listens on port 8443.")
+    _store(conn, memory_id="new-port-fact", content="Project Atlas new port fact invalidates old port fact; Atlas API now listens on port 9443.")
 
     candidates = extract_relation_candidates(conn, scope_ids=["shared-scope"])
     pair_types = {(item["source_memory_id"], item["target_memory_id"], item["relation_type"]) for item in candidates}
@@ -92,6 +94,7 @@ def test_relation_extraction_builds_typed_relation_edges():
     assert ("atlas-redis", "redis-runbook", "depends_on") in pair_types
     assert ("redis-owner", "platform-team", "owned_by") in pair_types
     assert ("atlas-affects-zephyr", "zephyr-runbook", "affects") in pair_types
+    assert ("new-port-fact", "old-port-fact", "invalidates") in pair_types
     assert any(item[2] == "same_topic" for item in pair_types)
 
     result = rebuild_extracted_relations(conn, scope_ids=["shared-scope"], dry_run=False, batch_id="test-relations")
@@ -101,8 +104,23 @@ def test_relation_extraction_builds_typed_relation_edges():
         "SELECT source_memory_id, target_memory_id, relation_type, note FROM memory_relations ORDER BY relation_type, source_memory_id"
     ).fetchall()
     relation_types = {row["relation_type"] for row in rows}
-    assert {"same_topic", "supersedes", "depends_on", "owned_by", "affects"} <= relation_types
+    assert {"same_topic", "supersedes", "depends_on", "owned_by", "affects", "invalidates"} <= relation_types
     assert all(str(row["note"]).startswith("relation-extraction:test-relations") for row in rows)
+
+
+def test_relation_extraction_matches_chinese_invalidates_when_entity_precedes_trigger():
+    conn = _conn()
+    _store(conn, memory_id="atlas-old-yaml", content="Project Atlas 旧YAML模式仍记录在旧版部署说明中。")
+    _store(conn, memory_id="atlas-new-config", content="新配置格式使 Project Atlas 旧YAML模式失效，部署应改用 TOML。")
+
+    candidates = extract_relation_candidates(conn, scope_ids=["shared-scope"])
+    invalidates = {
+        (item["source_memory_id"], item["target_memory_id"], item["relation_type"], item["confidence"])
+        for item in candidates
+        if item["relation_type"] == "invalidates"
+    }
+
+    assert ("atlas-new-config", "atlas-old-yaml", "invalidates", 0.72) in invalidates
 
 
 def test_relation_extraction_preserves_manual_same_key_relation_when_refreshing_generated_edges():

@@ -7,9 +7,10 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from scope_recall.memory_quality import memory_quality_report
+from scope_recall.memory_quality import _metadata_refs, memory_quality_report, quality_decision_for_memory, quality_decision_summary
 from scope_recall.sql_store import ensure_schema, now_iso
 from scope_recall.doctor_sqlite import memory_quality_lint_report
+from scope_recall.candidate_promotion import classify_candidate_row
 
 
 def _conn() -> sqlite3.Connection:
@@ -103,6 +104,99 @@ def test_memory_quality_report_flags_active_lint_rules_and_ignores_archived_rows
     assert {"template", "attachment", "stale", "missing-type"} <= sample_ids
 
 
+def test_memory_quality_ignores_hidden_lifecycle_rows_in_active_report():
+    conn = _conn()
+    hidden_lifecycles = ["archived", "candidate", "scratch", "superseded", "obsolete", "rejected"]
+    for lifecycle in hidden_lifecycles:
+        _insert_memory(
+            conn,
+            memory_id=f"hidden-{lifecycle}",
+            content="Operations workflow summary from journal digest: user: 继续 assistant: 完成。",
+            metadata={"memory_type": "summary", "lifecycle": lifecycle},
+        )
+    _insert_memory(
+        conn,
+        memory_id="promoted-template",
+        content="Operations workflow summary from journal digest: user: 继续 assistant: 完成。",
+        metadata={"memory_type": "summary", "lifecycle": "promoted"},
+    )
+
+    report = memory_quality_report(conn, sample_limit=20)
+
+    assert report["active_rows"] == 1
+    assert report["active_lint_hits"] == 1
+    assert report["by_rule"] == {"template_prefix": 1}
+    assert [sample["id"] for sample in report["samples"]] == ["promoted-template"]
+
+
+def test_metadata_refs_extracts_structured_evidence_anchor_ids_without_repr_noise():
+    refs = _metadata_refs(
+        {
+            "evidence_anchors": [
+                {"kind": "journal", "id": "journal-1"},
+                {"kind": "journal_entries", "ids": ["entry-1", "entry-2"]},
+                {"primary": {"kind": "tool", "id": "tool-1"}},
+            ],
+            "source_ids": {"manual": "source-1"},
+        },
+        "evidence_anchors",
+        "source_ids",
+    )
+
+    assert refs == ("journal:journal-1", "journal_entries:entry-1", "journal_entries:entry-2", "tool:tool-1", "source-1")
+    assert all("{" not in ref and "[" not in ref for ref in refs)
+
+
+def test_quality_decision_contract_is_shared_with_candidate_promotion():
+    conn = _conn()
+    _insert_memory(
+        conn,
+        memory_id="safe-candidate",
+        content="Reusable workflow: run pytest and doctor before rollout.",
+        metadata={"lifecycle": "candidate", "memory_type": "workflow", "confidence": 0.9, "importance": 0.7, "evidence_refs": ["journal:1"]},
+    )
+    _insert_memory(
+        conn,
+        memory_id="high-risk",
+        content="Candidate says to push release tag with token=[REDACTED] after approval.",
+        metadata={"lifecycle": "candidate", "memory_type": "workflow", "confidence": 0.95, "importance": 0.9},
+    )
+    _insert_memory(
+        conn,
+        memory_id="active-noise",
+        content="Journal digest memory: active template noise should be reviewed.",
+        metadata={"memory_type": "workflow"},
+    )
+
+    safe = conn.execute("SELECT * FROM memories WHERE id='safe-candidate'").fetchone()
+    risky = conn.execute("SELECT * FROM memories WHERE id='high-risk'").fetchone()
+    active_noise = conn.execute("SELECT * FROM memories WHERE id='active-noise'").fetchone()
+
+    safe_quality = quality_decision_for_memory(safe)
+    assert safe_quality.action == "promote"
+    assert safe_quality.reason == "high_confidence_stable_candidate"
+    assert safe_quality.evidence_refs == ("journal:1",)
+    assert classify_candidate_row(safe).action == safe_quality.action
+
+    risky_quality = quality_decision_for_memory(risky)
+    assert risky_quality.action == "keep_candidate"
+    assert risky_quality.risk == "high"
+    assert risky_quality.redaction_status == "secret_like"
+    assert classify_candidate_row(risky).lane == "needs_review_high_risk"
+
+    active_quality = quality_decision_for_memory(active_noise)
+    assert active_quality.action == "needs_review"
+    assert active_quality.risk == "medium"
+    assert "template_prefix" in active_quality.reason
+
+    summary = quality_decision_summary(conn, limit=10)
+    assert summary["by_action"]["promote"] == 1
+    assert summary["by_action"]["keep_candidate"] == 1
+    assert summary["by_action"]["needs_review"] == 1
+    assert summary["by_risk"]["high"] == 1
+    assert summary["status"] == "needs_review"
+
+
 def test_memory_quality_report_is_query_only(tmp_path):
     db_path = tmp_path / "memory.sqlite3"
     writer = sqlite3.connect(db_path)
@@ -181,6 +275,40 @@ def test_memory_quality_flags_raw_tmp_paths_but_not_long_structured_notes():
     assert report["by_rule"] == {"cache_or_tmp_path": 1}
     sample_ids = {sample["id"] for sample in report["samples"]}
     assert sample_ids == {"raw-tmp"}
+
+
+def test_memory_quality_flags_windows_temp_paths_without_flagging_cache_cleanup_workflows():
+    conn = _conn()
+    _insert_memory(
+        conn,
+        memory_id="win-backslash-temp",
+        content=r"Captured artifact C:\Users\Administrator\AppData\Local\Temp\codex-abc\result.json should not remain durable.",
+        metadata={"memory_type": "resource"},
+    )
+    _insert_memory(
+        conn,
+        memory_id="win-slash-temp",
+        content="Captured artifact C:/Users/Administrator/AppData/Local/Temp/codex-abc/result.json should not remain durable.",
+        metadata={"memory_type": "resource"},
+    )
+    _insert_memory(
+        conn,
+        memory_id="win-env-temp",
+        content=r"Captured artifact %TEMP%\codex-abc\result.json should not remain durable.",
+        metadata={"memory_type": "resource"},
+    )
+    _insert_memory(
+        conn,
+        memory_id="cache-cleanup-workflow",
+        content="Release cleanup workflow: remove __pycache__ and .pytest_cache after tests pass.",
+        metadata={"memory_type": "workflow"},
+    )
+
+    report = memory_quality_report(conn, sample_limit=10)
+
+    assert report["by_rule"] == {"cache_or_tmp_path": 3}
+    sample_ids = {sample["id"] for sample in report["samples"]}
+    assert sample_ids == {"win-backslash-temp", "win-slash-temp", "win-env-temp"}
 
 
 def test_memory_quality_report_handles_missing_schema():

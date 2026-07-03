@@ -132,6 +132,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-top-k-accuracy", type=float, default=1.0)
     parser.add_argument("--max-p95-ms", type=float, default=0.0, help="Optional latency gate; <=0 disables")
     parser.add_argument("--auto-explain-on-fail", action="store_true")
+    parser.add_argument("--hermes-home", default="", help="Accepted for release-gate compatibility; synthetic benchmark still uses an isolated temp home")
+    parser.add_argument("--json", action="store_true", help="Accepted for release-gate compatibility; output is always JSON")
     parser.add_argument("--include-trace", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--keep-home", action="store_true", help="Do not delete the temporary Hermes home")
     return parser.parse_args()

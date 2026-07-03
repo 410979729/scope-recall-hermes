@@ -8,51 +8,10 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
-from .capture_filters import contains_secret_like_text, sanitize_report_text
-
-PROFILE_TARGETS = {"user", "memory", "project", "ops"}
-STABLE_MEMORY_TYPES = {"factual", "preference", "procedure", "workflow", "pitfall", "decision", "constraint", "project", "resource"}
-NOISE_MEMORY_TYPES = {"summary", "episodic", "tool_trace"}
-REVIEW_TERMS = (
-    "password",
-    "token",
-    "secret",
-    "api key",
-    "api_id",
-    "api_hash",
-    "credential",
-    "private key",
-    "密钥",
-    "密码",
-    "凭据",
-    "删除",
-    "重启",
-    "发布",
-    "推送",
-    "提交",
-    "commit",
-    "push",
-    "tag",
-    "release",
-    "sudo",
-    "systemctl",
-)
-STALE_PROGRESS_TERMS = (
-    "commit `",
-    "commit ",
-    "pull request",
-    "pr #",
-    "issue #",
-    "run `",
-    "pid ",
-    "已推送",
-    "已发布",
-    "工作树",
-    "当前仍为",
-)
-
+from .capture_filters import sanitize_report_text
+from .memory_quality import HIDDEN_PROFILE_LIFECYCLES, quality_decision_for_memory
 
 @dataclass(frozen=True)
 class CandidateDecision:
@@ -63,6 +22,8 @@ class CandidateDecision:
     memory_type: str
     risk: str = "low"
     lane: str = ""
+    evidence_refs: tuple[str, ...] = ()
+    conflict_with: str = ""
 
     def __post_init__(self) -> None:
         if not self.lane:
@@ -122,62 +83,129 @@ def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term.lower() in lowered for term in terms)
 
 
-def classify_candidate_row(row: sqlite3.Row | Mapping[str, Any]) -> CandidateDecision:
-    metadata = load_metadata(_row_value(row, "metadata", "{}"))
-    conf = _float_meta(metadata, "confidence", 0.0)
-    importance = _float_meta(metadata, "importance", 0.0)
-    memory_type = str(metadata.get("memory_type") or metadata.get("category") or "").strip().lower()
-    target = str(_row_value(row, "target", "") or "").strip().lower()
-    source = str(_row_value(row, "source", "") or "").strip().lower()
-    text = f"{_row_value(row, 'summary', '')}\n{_row_value(row, 'content', '')}"
-
-    if lifecycle(metadata) != "candidate":
-        return CandidateDecision("skip", "not_candidate", conf, importance, memory_type)
-    if target not in PROFILE_TARGETS:
-        return CandidateDecision("keep_candidate", "target_not_profile_surface", conf, importance, memory_type)
-    if contains_secret_like_text(text):
-        return CandidateDecision("keep_candidate", "secret_like_content_requires_human_review", conf, importance, memory_type, risk="high")
-    if _contains_any(text, REVIEW_TERMS):
-        return CandidateDecision("keep_candidate", "high_risk_terms_require_human_review", conf, importance, memory_type, risk="high")
-    if memory_type in NOISE_MEMORY_TYPES:
-        return CandidateDecision("archive", f"low_value_memory_type:{memory_type or 'unknown'}", conf, importance, memory_type)
-    if _contains_any(text, STALE_PROGRESS_TERMS) and memory_type in {"summary", "decision", "project"}:
-        return CandidateDecision("archive", "stale_progress_or_release_status", conf, importance, memory_type)
-    if memory_type not in STABLE_MEMORY_TYPES:
-        return CandidateDecision("keep_candidate", f"unsupported_memory_type:{memory_type or 'unknown'}", conf, importance, memory_type)
-
-    if target == "user" and conf >= 0.78:
-        return CandidateDecision("promote", "user_profile_candidate_confident", conf, importance, memory_type)
-    if source == "tool-store" and conf >= 0.86 and importance >= 0.55:
-        return CandidateDecision("promote", "tool_store_candidate_confident", conf, importance, memory_type)
-    if conf >= 0.78 and importance >= 0.55:
-        return CandidateDecision("promote", "high_confidence_stable_candidate", conf, importance, memory_type)
-    if importance >= 0.82 and conf >= 0.62:
-        return CandidateDecision("promote", "high_importance_stable_candidate", conf, importance, memory_type)
-    return CandidateDecision("keep_candidate", "below_auto_promotion_threshold", conf, importance, memory_type)
+def _normalized_conflict_text(value: str) -> str:
+    return " ".join(str(value or "").strip().lower().split())
 
 
-def candidate_rows(conn: sqlite3.Connection, *, limit: int = 1000) -> list[sqlite3.Row]:
+def _active_memory_conflict(conn: sqlite3.Connection, row: sqlite3.Row | Mapping[str, Any]) -> str:
+    """Return active memory id with same target/content, if any.
+
+    Candidate auto-promotion must not silently duplicate or overwrite an already
+    active durable row. This intentionally checks exact normalized text only;
+    fuzzy/supersession relation building belongs to later governance phases.
+    """
+    target = str(_row_value(row, "target", "") or "")
+    scope_id = str(_row_value(row, "scope_id", "") or "")
+    candidate_id = str(_row_value(row, "id", "") or "")
+    candidate_texts = {
+        _normalized_conflict_text(str(_row_value(row, "summary", "") or "")),
+        _normalized_conflict_text(str(_row_value(row, "content", "") or "")),
+    }
+    candidate_texts.discard("")
+    if not target or not scope_id or not candidate_texts:
+        return ""
+    hidden_lifecycle_values = tuple(sorted(HIDDEN_PROFILE_LIFECYCLES))
+    hidden_placeholders = ", ".join("?" for _ in hidden_lifecycle_values)
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT id, summary, content, metadata
+            FROM memories
+            WHERE id != ?
+              AND scope_id = ?
+              AND target = ?
+              AND LOWER(COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.lifecycle') ELSE '' END, '')) NOT IN ({hidden_placeholders})
+            ORDER BY updated_at DESC, id ASC
+            LIMIT 200
+            """,
+            (candidate_id, scope_id, target, *hidden_lifecycle_values),
+        ).fetchall()
+    except sqlite3.Error:
+        return ""
+    for active in rows:
+        active_texts = {
+            _normalized_conflict_text(str(active["summary"] or "")),
+            _normalized_conflict_text(str(active["content"] or "")),
+        }
+        active_texts.discard("")
+        if candidate_texts & active_texts:
+            return str(active["id"])
+    return ""
+
+
+def classify_candidate_row(row: sqlite3.Row | Mapping[str, Any], conn: sqlite3.Connection | None = None) -> CandidateDecision:
+    quality = quality_decision_for_memory(row)
+    if quality.action == "promote" and conn is not None:
+        conflict_with = _active_memory_conflict(conn, row)
+        if conflict_with:
+            return CandidateDecision(
+                "keep_candidate",
+                "active_memory_conflict",
+                quality.confidence,
+                quality.importance,
+                quality.memory_type,
+                risk="medium",
+                evidence_refs=quality.evidence_refs,
+                conflict_with=conflict_with,
+            )
+    return CandidateDecision(
+        quality.action,
+        quality.reason,
+        quality.confidence,
+        quality.importance,
+        quality.memory_type,
+        risk=quality.risk,
+        evidence_refs=quality.evidence_refs,
+    )
+
+
+def _scope_filter_sql(scope_ids: Sequence[str] | None) -> tuple[str, list[str]] | None:
+    """Return SQL and params for an explicit scope allowlist.
+
+    ``scope_ids=None`` means the caller intentionally wants a global operator
+    report. An explicit empty list is different: fail closed and return no rows.
+    """
+    if scope_ids is None:
+        return "", []
+    scopes = [str(scope_id) for scope_id in scope_ids if str(scope_id)]
+    if not scopes:
+        return None
+    placeholders = ",".join("?" for _ in scopes)
+    return f" AND scope_id IN ({placeholders})", scopes
+
+
+def candidate_rows(conn: sqlite3.Connection, *, scope_ids: Sequence[str] | None = None, limit: int = 1000) -> list[sqlite3.Row]:
     conn.row_factory = sqlite3.Row
+    scope_filter = _scope_filter_sql(scope_ids)
+    if scope_filter is None:
+        return []
+    scope_sql, scope_params = scope_filter
     return list(
         conn.execute(
-            """
+            f"""
             SELECT id, scope_id, source, target, content, summary, updated_at, metadata
             FROM memories
             WHERE LOWER(COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.lifecycle') ELSE '' END, '')) = 'candidate'
+              {scope_sql}
             ORDER BY updated_at ASC, id ASC
             LIMIT ?
             """,
-            (max(1, int(limit or 1000)),),
+            (*scope_params, max(1, int(limit or 1000))),
         ).fetchall()
     )
 
 
-def candidate_debt_report(conn: sqlite3.Connection, *, limit: int = 1000, sample_limit: int = 8) -> dict[str, Any]:
+def candidate_debt_report(
+    conn: sqlite3.Connection,
+    *,
+    scope_ids: Sequence[str] | None = None,
+    limit: int = 1000,
+    sample_limit: int = 8,
+) -> dict[str, Any]:
     """Summarize ordinary candidate-memory debt and a dry-run promotion plan.
 
     The report lets operators see promotable rows, archive-noise choices, and stale candidates before changing profile behavior."""
-    rows = candidate_rows(conn, limit=limit)
+    rows = candidate_rows(conn, scope_ids=scope_ids, limit=limit)
     by_action = {"promote": 0, "archive": 0, "keep_candidate": 0, "skip": 0}
     by_lane: dict[str, int] = {}
     by_target: dict[str, int] = {}
@@ -186,7 +214,7 @@ def candidate_debt_report(conn: sqlite3.Connection, *, limit: int = 1000, sample
     oldest_updated_at = ""
     newest_updated_at = ""
     for row in rows:
-        decision = classify_candidate_row(row)
+        decision = classify_candidate_row(row, conn)
         by_action[decision.action] = by_action.get(decision.action, 0) + 1
         by_lane[decision.lane] = by_lane.get(decision.lane, 0) + 1
         target = str(row["target"] or "")
@@ -202,6 +230,7 @@ def candidate_debt_report(conn: sqlite3.Connection, *, limit: int = 1000, sample
             samples.append(
                 {
                     "id": str(row["id"]),
+                    "scope_id": str(row["scope_id"] or ""),
                     "target": target,
                     "source": source,
                     "updated_at": updated_at,
@@ -211,6 +240,8 @@ def candidate_debt_report(conn: sqlite3.Connection, *, limit: int = 1000, sample
                     "memory_type": decision.memory_type,
                     "confidence": decision.confidence,
                     "importance": decision.importance,
+                    "evidence_refs": list(decision.evidence_refs),
+                    "conflict_with": decision.conflict_with,
                     "summary": sanitize_report_text(str(row["summary"] or ""))[:220],
                 }
             )

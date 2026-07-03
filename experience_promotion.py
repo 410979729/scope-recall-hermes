@@ -14,78 +14,13 @@ from typing import Any, Sequence
 
 from .capture_filters import contains_secret_like_text, sanitize_report_text
 from .experience_classification import classify_experience_task
+from .experience_evidence import extract_evidence_anchors
+from .experience_quality import assess_experience_quality
 from .experience_store import create_playbook, review_playbook
+from .experience_synthesis import build_experience_playbook_payload
 from .gating import compact_text
 from .sql_store import ensure_schema
-
-LOW_SIGNAL_GOALS = {
-    "继续",
-    "继续。",
-    "进度如何",
-    "进度如何了",
-    "进度怎么样",
-    "在吗",
-    "新会话测试ok",
-    "新会话测试OK",
-}
-
-
-SUCCESS_TOKENS = (
-    "passed",
-    "pass",
-    "ok",
-    "green",
-    "完成",
-    "通过",
-    "已验证",
-    "验证完成",
-    "成功",
-)
-
-FAILURE_PATTERNS = (
-    r"\bblocked\b",
-    r"\bblocker\b",
-    r"\bfailed\b",
-    r"\bfailure\b",
-    r"\bfailing\b",
-    r"\bfails\b",
-    r"\btraceback\b",
-    r"\bexception\b",
-    r"\berrors?\b(?!\s*(?:0|zero|none|found|detected|remaining))",
-    r"\bnot\s+completed?\b",
-    r"\bincomplete\b",
-    r"\bstill\s+(?:failing|fails|blocked)\b",
-    r"\btests?\s+failed\b",
-    r"失败",
-    r"未完成",
-    r"没完成",
-    r"没有完成",
-    r"阻塞",
-    r"报错",
-    r"仍有问题",
-    r"还有问题",
-    r"仍然失败",
-    r"还有失败",
-    r"不能沉淀",
-    r"不能发布",
-    r"不可发布",
-)
-
-_FAILURE_RE = re.compile("|".join(f"(?:{pattern})" for pattern in FAILURE_PATTERNS), re.IGNORECASE)
-
-COMPLETION_TOKENS = (
-    "完成",
-    "通过",
-    "已验证",
-    "验证完成",
-    "验证通过",
-    "成功",
-    "done",
-    "fixed",
-    "success",
-    "passed",
-    "green",
-)
+from .task_boundary import SUCCESS_TOKENS, classify_task_closure, goal_signal_key, has_failure_signal, is_low_signal_goal
 
 VERIFICATION_TOKENS = (
     "pytest",
@@ -165,7 +100,7 @@ def _contains_any(text: str, tokens: Sequence[str]) -> bool:
 
 
 def _has_failure_signal(text: str) -> bool:
-    return bool(_FAILURE_RE.search(text or ""))
+    return has_failure_signal(text)
 
 
 def _entry_text(entries: Sequence[sqlite3.Row]) -> str:
@@ -187,25 +122,9 @@ def _tail_text(entries: Sequence[sqlite3.Row], *, roles: set[str] | None = None,
 
 
 def _completion_state(entries: Sequence[sqlite3.Row]) -> tuple[str, str]:
-    """Classify whether the final task state is safe to promote.
-
-    Historical logs can contain earlier success tokens followed by later failure
-    or blocker signals. Automatic promotion trusts the final closure, not any
-    isolated ``passed``/``ok`` token anywhere in the transcript.
-    """
-
-    text = _entry_text(entries)
-    tail = _tail_text(entries)
-    assistant_tail = _tail_text(entries, roles={"assistant"}, limit=3)
-    if _has_failure_signal(tail) or _has_failure_signal(assistant_tail):
-        return "failed", "final_failure_signal"
-    if _contains_any(assistant_tail, COMPLETION_TOKENS) or _contains_any(tail, COMPLETION_TOKENS):
-        return "success", "final_success_signal"
-    if _has_failure_signal(text):
-        return "uncertain", "historical_failure_signal"
-    if _contains_any(text, SUCCESS_TOKENS):
-        return "uncertain", "success_not_final"
-    return "unknown", "no_completion_signal"
+    """Classify whether the final task state is safe to promote."""
+    closure = classify_task_closure(entries)
+    return closure.state, closure.reason
 
 
 def _tool_names(entries: Sequence[sqlite3.Row]) -> list[str]:
@@ -240,17 +159,6 @@ def _risk_level(text: str) -> str:
     return "high" if _contains_any(text, HIGH_RISK_TOKENS) else "low"
 
 
-SPECIFICITY_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"\bpython(?:3)?\s+-m\s+pytest\b", re.IGNORECASE),
-    re.compile(r"\bpytest\b", re.IGNORECASE),
-    re.compile(r"\b(?:ruff|pyright|doctor|release gate|systemctl|git|gh)\b", re.IGNORECASE),
-    re.compile(r"(?:^|\s)(?:scripts|tests|docs|\.github)/[^\s`'\"]+", re.IGNORECASE),
-    re.compile(r"(?:^|\s)/(?:home|data|etc|var|tmp)/[^\s`'\"]+"),
-    re.compile(r"\b\d+\s+passed\b", re.IGNORECASE),
-    re.compile(r"\bok=true\b", re.IGNORECASE),
-)
-
-
 def _promotion_quality(
     entries: Sequence[sqlite3.Row],
     *,
@@ -259,58 +167,8 @@ def _promotion_quality(
     verification: list[str],
     risk_level: str,
 ) -> dict[str, Any]:
-    """Calculate promotion quality evidence for a playbook.
-
-    The score bundles review status, feedback, replay evidence, and duplicate/supersession signals for conservative automation."""
-    text = _entry_text(entries)
-    reasons: list[str] = []
-    score = 0.0
-    normalized_goal = _goal_signal_key(goal or "")
-    if goal and not _low_signal_goal(goal) and len(normalized_goal) >= 4:
-        score += 0.18
-    else:
-        reasons.append("weak_goal")
-    tool_entry_count = sum(1 for entry in entries if str(entry["role"] or "") == "tool")
-    concrete_tools = [name for name in tool_names if name != "tool"]
-    if tool_entry_count:
-        score += 0.12
-    else:
-        reasons.append("no_tool_evidence")
-    if concrete_tools:
-        score += 0.12
-    else:
-        reasons.append("no_concrete_tool_names")
-    if verification:
-        score += min(0.24, 0.12 + 0.04 * len(verification))
-    else:
-        reasons.append("no_verification_evidence")
-    specificity_hits = sum(1 for pattern in SPECIFICITY_PATTERNS if pattern.search(text))
-    if specificity_hits:
-        score += min(0.18, 0.08 + 0.04 * specificity_hits)
-    else:
-        reasons.append("no_specific_commands_or_paths")
-    if len(entries) <= 40:
-        score += 0.08
-    else:
-        reasons.append("oversized_episode_window")
-    if risk_level == "high":
-        if _contains_any(text, ("授权", "authorization", "confirm", "确认", "不能自动", "等待")):
-            score += 0.08
-        else:
-            reasons.append("high_risk_without_authorization_boundary")
-    elif risk_level == "low":
-        score += 0.08
-    if _has_failure_signal(_tail_text(entries)):
-        score = min(score, 0.35)
-        reasons.append("final_failure_signal")
-    score = round(min(score, 1.0), 3)
-    if score < 0.70:
-        decision = "reject"
-    elif score < 0.85 or risk_level == "high":
-        decision = "needs_review"
-    else:
-        decision = "auto_promote_eligible"
-    return {"score": score, "decision": decision, "reasons": reasons, "specificity_hits": specificity_hits, "tool_entry_count": tool_entry_count}
+    """Calculate promotion quality evidence for a playbook."""
+    return assess_experience_quality(entries, goal=goal, tool_names=tool_names, verification=verification, risk_level=risk_level)
 
 
 def _first_user_goal(entries: Sequence[sqlite3.Row]) -> str:
@@ -321,19 +179,11 @@ def _first_user_goal(entries: Sequence[sqlite3.Row]) -> str:
 
 
 def _goal_signal_key(goal: str) -> str:
-    return re.sub(r"[\s\W_]+", "", goal, flags=re.UNICODE).lower()
+    return goal_signal_key(goal)
 
 
 def _low_signal_goal(goal: str) -> bool:
-    stripped = goal.strip()
-    key = _goal_signal_key(stripped)
-    low_signal_keys = {_goal_signal_key(item) for item in LOW_SIGNAL_GOALS}
-    if key in low_signal_keys:
-        return True
-    lowered = stripped.lower()
-    if lowered.startswith("只回答") or lowered.startswith("只回复"):
-        return True
-    return False
+    return is_low_signal_goal(goal)
 
 
 def _title_suffix(goal: str) -> str:
@@ -363,74 +213,27 @@ def _title(task_class: str, text: str, goal: str = "") -> str:
     return fallback_titles.get(task_class, "Agent：已验证任务流程")
 
 
-def _payload(*, task_class: str, title: str, goal: str, text: str, risk_level: str, tool_names: list[str], verification: list[str]) -> dict[str, Any]:
-    """Build the structured promotion payload for one playbook candidate.
-
-    The payload keeps quality evidence, lifecycle state, and proposed action together for review and tests."""
-    high_risk = risk_level == "high"
-    capability = "local_write" if high_risk else "read_only"
-    pitfalls = [
-        {
-            "signal": "任务记录来自自动提取",
-            "mistake": "把一次性结果当成永久事实",
-            "correction": "复用前必须重新读取现场证据。",
-        }
-    ]
-    if high_risk:
-        pitfalls.append(
-            {
-                "signal": "涉及推送、发布、重启、删除或凭据相邻操作",
-                "mistake": "自动执行高风险动作",
-                "correction": "只复用检查流程；执行前必须现场核验并遵守 Joy 授权边界。",
-            }
-        )
-    return {
-        "schema_version": "procedural_playbook.v1",
-        "task_class": task_class,
-        "title": title,
-        "trigger": f"遇到类似任务：{goal}",
-        "goal": compact_text(f"复用已验证流程处理：{goal}", 220),
-        "preconditions": [
-            {"id": "p1", "check": "确认当前任务与经验手册目标一致。", "evidence_required": "用户请求或任务描述"},
-            {"id": "p2", "check": "复用前重新读取现场状态。", "evidence_required": "本轮工具输出或文件/服务状态"},
-        ],
-        "steps": [
-            {
-                "number": 1,
-                "capability_class": "read_only",
-                "action": "先读取当前现场状态，不使用旧记忆替代现场证据。",
-                "evidence_required": "本轮读取到的文件、仓库、服务或配置状态",
-                "why": "自动经验只能给流程，不能替代实时事实。",
-                "previous_mistakes": ["把旧发布状态或旧路径当成当前事实。"],
-            },
-            {
-                "number": 2,
-                "capability_class": capability,
-                "action": "按已验证顺序执行最小必要检查。",
-                "evidence_required": ", ".join(tool_names) if tool_names else "相关工具检查输出",
-                "why": "任务轨迹显示这些检查曾经证明结果可靠。",
-                "previous_mistakes": [],
-            },
-            {
-                "number": 3,
-                "capability_class": "read_only",
-                "action": "收尾时明确列出通过项、剩余风险和是否需要 Joy 授权。",
-                "evidence_required": "测试/检查结果和授权边界说明",
-                "why": "避免把候选状态误报成已发布或已执行。",
-                "previous_mistakes": ["把本地候选版本说成远端正式版本。"],
-            },
-        ],
-        "pitfalls": pitfalls,
-        "verification": verification or ["任务记录包含成功和验证信号。"],
-        "cleanup": ["清理临时产物或说明未清理原因。", "记录哪些事实需要下次 live check。"],
-        "reuse_policy": {
-            "default_decision": "guided_reuse" if high_risk else "direct_reuse",
-            "allow_direct_reuse": not high_risk,
-            "risk_level": risk_level,
-        },
-        "status": "candidate",
-        "confidence": 0.78 if high_risk else 0.86,
-    }
+def _payload(
+    *,
+    task_class: str,
+    title: str,
+    goal: str,
+    text: str,
+    risk_level: str,
+    tool_names: list[str],
+    verification: list[str],
+    evidence_anchors: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Build the structured promotion payload for one playbook candidate."""
+    return build_experience_playbook_payload(
+        task_class=task_class,
+        title=title,
+        goal=goal,
+        risk_level=risk_level,
+        tool_names=tool_names,
+        verification=verification,
+        evidence_anchors=evidence_anchors,
+    )
 
 
 def _table_names(conn: sqlite3.Connection) -> set[str]:
@@ -554,9 +357,11 @@ def _insert_episode(
     tool_names: list[str],
     verification: list[str],
     risk_level: str,
+    evidence_anchors: list[dict[str, Any]] | None = None,
 ) -> None:
     now = _now_iso()
     ids = [int(entry["id"]) for entry in entries]
+    anchors = evidence_anchors if evidence_anchors is not None else extract_evidence_anchors(entries)
     conn.execute(
         """
         INSERT INTO task_episodes(
@@ -578,9 +383,9 @@ def _insert_episode(
             str(entries[-1]["created_at"]),
             _json_dumps(ids),
             _json_dumps(tool_names),
-            _json_dumps([sanitize_report_text(compact_text(str(entry["content"] or ""), 260)) for entry in entries if str(entry["role"] or "") in {"tool", "assistant"}][:8]),
+            _json_dumps(anchors),
             _json_dumps(verification),
-            _json_dumps({"auto_extracted": True, "risk_level": risk_level, "created_at": now}),
+            _json_dumps({"auto_extracted": True, "risk_level": risk_level, "created_at": now, "evidence_anchor_count": len(anchors)}),
         ),
     )
 
@@ -600,6 +405,11 @@ def promote_experiences(
     这个函数只使用 SQLite 中已经存在的任务轨迹，不调用外部模型；第一版强调可审计、可回放和低风险。
     """
 
+    accessible = [str(item) for item in accessible_scope_ids if str(item)]
+    if str(scope_id or "") not in accessible:
+        raise ValueError("scope_id must be in accessible_scope_ids")
+    if shared_scope_id and str(shared_scope_id) not in accessible:
+        raise ValueError("shared_scope_id must be in accessible_scope_ids")
     if not dry_run:
         ensure_schema(conn)
     experience_config = _experience_config(config)
@@ -657,6 +467,7 @@ def promote_experiences(
             result["skipped"] += 1
             result["items"].append({"action": "skip", "reason": "low_signal_goal", "goal": sanitize_report_text(goal)})
             continue
+        storage_goal = sanitize_report_text(goal)
         classification = classify_experience_task(text=text, goal=goal)
         task_class = classification.task_class
         risk_level = _risk_level(text)
@@ -672,6 +483,7 @@ def promote_experiences(
             continue
         title = classification.title
         entry_ids = [int(entry["id"]) for entry in entries]
+        evidence_anchors = extract_evidence_anchors(entries)
         similar = None
         if not missing_experience_tables:
             similar = _similar_playbook_exists(
@@ -703,14 +515,24 @@ def promote_experiences(
             shared_scope_id=shared_scope_id,
             entries=entries,
             task_class=task_class,
-            goal=goal,
+            goal=storage_goal,
             outcome="success",
             tool_names=tool_names,
             verification=verification,
             risk_level=risk_level,
+            evidence_anchors=evidence_anchors,
         )
         result["episodes_created"] += 1
-        payload = _payload(task_class=task_class, title=title, goal=goal, text=text, risk_level=risk_level, tool_names=tool_names, verification=verification)
+        payload = _payload(
+            task_class=task_class,
+            title=title,
+            goal=storage_goal,
+            text=text,
+            risk_level=risk_level,
+            tool_names=tool_names,
+            verification=verification,
+            evidence_anchors=evidence_anchors,
+        )
         payload["confidence"] = max(float(payload["confidence"]), float(quality["score"]))
         created = create_playbook(
             conn,
@@ -721,14 +543,15 @@ def promote_experiences(
             status="candidate",
             confidence=float(payload["confidence"]),
             created_from_episode_id=episode_id,
-            evidence_anchors=[{"kind": "journal_entries", "ids": [int(entry["id"]) for entry in entries]}],
+            evidence_anchors=[{"kind": "journal_entries", "ids": entry_ids}, *evidence_anchors],
             related_skills=[],
             environment_constraints={"risk_level": risk_level, "requires_live_check": True},
             metadata={
                 "auto_extracted": True,
                 "risk_level": risk_level,
                 "source": "experience_promotion",
-                "journal_entry_ids": [int(entry["id"]) for entry in entries],
+                "journal_entry_ids": entry_ids,
+                "evidence_anchor_count": len(evidence_anchors),
                 "safe_summary": sanitize_report_text(compact_text(text, 500)),
                 "quality_gate": quality,
                 "classification": {

@@ -35,8 +35,12 @@ def _float_config(config: Mapping[str, Any], key: str, default: float) -> float:
 
 
 def _int_config(config: Mapping[str, Any], key: str, default: int) -> int:
+    return _safe_int(config.get(key, default), default=default)
+
+
+def _safe_int(value: Any, *, default: int = 0) -> int:
     try:
-        return int(config.get(key, default))
+        return int(value)
     except (TypeError, ValueError):
         return default
 
@@ -159,8 +163,57 @@ def render_experience_packet(playbook: Mapping[str, Any], *, decision: str, reas
     if verification:
         lines.extend(["", "Verification:"])
         lines.extend(f"- {item}" for item in verification[:8])
+    raw_policy = playbook.get("reuse_policy")
+    policy: Mapping[str, Any] = raw_policy if isinstance(raw_policy, Mapping) else {}
+    must_stop = [_safe_text(item) for item in _policy_sequence(policy.get("must_stop_and_ask_joy")) if _safe_text(item)]
+    if must_stop:
+        lines.extend(["", "Must stop and ask Joy:"])
+        lines.extend(f"- {item}" for item in must_stop[:8])
+    prohibited = [_safe_text(item) for item in _policy_sequence(policy.get("prohibited_auto_actions")) if _safe_text(item)]
+    if prohibited:
+        lines.extend(["", "Prohibited auto actions:"])
+        lines.extend(f"- {item}" for item in prohibited[:8])
+    anchor_kinds = [_safe_text(item) for item in _policy_sequence(policy.get("source_evidence_anchor_kinds")) if _safe_text(item)]
+    anchor_count = policy.get("source_evidence_anchor_count")
+    if anchor_kinds or anchor_count:
+        lines.extend(["", "Evidence anchors:"])
+        if anchor_count:
+            lines.append(f"- count: {anchor_count}")
+        if anchor_kinds:
+            lines.append("- kinds: " + ", ".join(anchor_kinds))
     lines.extend(["", "Rule: use this as a scaffold only; live evidence and current user instruction override old experience."])
     return compact_text("\n".join(lines), max_chars)
+
+
+def _preflight_summary(playbook: Mapping[str, Any], *, decision: str, reasons: Sequence[str]) -> dict[str, Any]:
+    raw_policy = playbook.get("reuse_policy")
+    policy: Mapping[str, Any] = raw_policy if isinstance(raw_policy, Mapping) else {}
+    raw_environment = playbook.get("environment_constraints")
+    environment: Mapping[str, Any] = raw_environment if isinstance(raw_environment, Mapping) else {}
+    risk_level = str(policy.get("risk_level") or environment.get("risk_level") or "").strip()
+    preconditions: list[str] = []
+    for item in playbook.get("preconditions") or []:
+        if isinstance(item, Mapping):
+            text = _safe_text(item.get("check") or item.get("id") or "")
+        else:
+            text = _safe_text(item)
+        if text:
+            preconditions.append(text)
+    verification = [_safe_text(item) for item in (playbook.get("verification") or []) if _safe_text(item)]
+    return {
+        "playbook_id": _safe_text(playbook.get("id") or ""),
+        "title": _safe_text(playbook.get("title") or ""),
+        "decision": decision,
+        "confidence": round(float(playbook.get("confidence") or 0.0), 4),
+        "risk_level": risk_level,
+        "preconditions": preconditions,
+        "verification": verification,
+        "must_stop_and_ask_joy": [_safe_text(item) for item in _policy_sequence(policy.get("must_stop_and_ask_joy")) if _safe_text(item)],
+        "prohibited_auto_actions": [_safe_text(item) for item in _policy_sequence(policy.get("prohibited_auto_actions")) if _safe_text(item)],
+        "source_evidence_anchor_count": _safe_int(policy.get("source_evidence_anchor_count"), default=0),
+        "source_evidence_anchor_kinds": [_safe_text(item) for item in _policy_sequence(policy.get("source_evidence_anchor_kinds")) if _safe_text(item)],
+        "reasons": list(reasons),
+    }
 
 
 def experience_preflight(
@@ -264,6 +317,7 @@ def experience_preflight(
             "reasons": reasons,
             "requires_live_check": True,
             "playbook": selected,
+            "summary": _preflight_summary(selected, decision=decision, reasons=reasons),
             "packet": packet,
             "results": results,
             "skipped_candidates": skipped_candidates,

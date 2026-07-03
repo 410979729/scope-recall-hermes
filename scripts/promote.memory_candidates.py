@@ -2,7 +2,8 @@
 """Review and optionally promote ordinary Scope Recall candidate memories.
 
 This script closes the lifecycle gap between journal/digest extraction and the
-profile surface. Default mode is read-only dry-run. Pass --apply to promote safe
+profile surface. Default mode is read-only dry-run. Pass --apply with one or
+more --scope-id values (or the explicit --all-scopes override) to promote safe
 candidate rows. Low-value archival decisions are never applied unless
 --archive-noise is also provided.
 """
@@ -49,6 +50,8 @@ def parse_args() -> argparse.Namespace:
         help="review/apply only one candidate lane or legacy action",
     )
     parser.add_argument("--limit", type=int, default=1000, help="maximum candidate rows to review")
+    parser.add_argument("--scope-id", dest="scope_ids", action="append", default=[], help="limit review/apply to one accessible scope id; repeatable")
+    parser.add_argument("--all-scopes", action="store_true", help="explicitly review/apply candidate rows across all scopes")
     parser.add_argument("--batch-id", default="", help="optional governance batch id")
     parser.add_argument("--review-ids-file", default="", help="JSON/JSONL/text file containing explicit candidate ids reviewed by an operator")
     parser.add_argument("--review-decision", choices=["", "promote", "archive"], default="", help="operator decision for ids from --review-ids-file")
@@ -129,6 +132,8 @@ def promote_memory_candidates(
     apply: bool = False,
     archive_noise: bool = False,
     action: str = "all",
+    scope_ids: list[str] | None = None,
+    all_scopes: bool = False,
     limit: int = 1000,
     batch_id: str = "",
     review_ids: list[str] | None = None,
@@ -151,14 +156,26 @@ def promote_memory_candidates(
             return {"ok": False, "status": "invalid", "error": "--review-decision must be promote or archive when --review-ids-file is provided"}
         if not explicit_review_reason:
             return {"ok": False, "status": "invalid", "error": "--review-reason is required when --review-ids-file is provided"}
+    clean_scope_ids = list(dict.fromkeys(str(item).strip() for item in (scope_ids or []) if str(item).strip()))
+    if clean_scope_ids and all_scopes:
+        return {"ok": False, "status": "invalid", "error": "scope_id_conflicts_with_all_scopes"}
+    if apply and not all_scopes and not clean_scope_ids:
+        return {
+            "ok": False,
+            "status": "invalid",
+            "error": "apply_requires_scope_or_all_scopes",
+            "scope_filter": {"mode": "missing", "scope_ids": []},
+        }
+    candidate_scope_ids = None if all_scopes or not clean_scope_ids else clean_scope_ids
+    scope_filter = {"mode": "all" if candidate_scope_ids is None else "scoped", "scope_ids": list(candidate_scope_ids or [])}
     conn = connect_memory_db(db_path, apply=apply, timeout=30.0)
     conn.execute("PRAGMA busy_timeout = 30000")
     conn.row_factory = sqlite3.Row
     try:
         if apply:
             ensure_governance_schema(conn)
-        before = candidate_debt_report(conn, limit=limit)
-        rows = candidate_rows(conn, limit=limit)
+        before = candidate_debt_report(conn, scope_ids=candidate_scope_ids, limit=limit)
+        rows = candidate_rows(conn, scope_ids=candidate_scope_ids, limit=limit)
         reviewed: list[dict[str, Any]] = []
         mutations = {"promoted": 0, "archived": 0, "kept": 0, "skipped": 0}
         at = now_iso()
@@ -169,7 +186,7 @@ def promote_memory_candidates(
             return {"ok": False, "status": "invalid", "error": "review ids are not current candidates", "missing_review_ids": missing_review_ids}
         review_id_set = set(explicit_review_ids)
         for row in rows:
-            decision = classify_candidate_row(row)
+            decision = classify_candidate_row(row, conn)
             row_id = str(row["id"])
             if explicit_review_ids:
                 if row_id not in review_id_set:
@@ -197,6 +214,8 @@ def promote_memory_candidates(
                 "confidence": decision.confidence,
                 "importance": decision.importance,
                 "memory_type": decision.memory_type,
+                "evidence_refs": list(decision.evidence_refs),
+                "conflict_with": decision.conflict_with,
                 "updated_at": str(row["updated_at"] or ""),
                 "summary": sanitize_report_text(str(row["summary"] or ""))[:220],
             }
@@ -255,7 +274,7 @@ def promote_memory_candidates(
             )
         if apply:
             conn.commit()
-        after = candidate_debt_report(conn, limit=limit)
+        after = candidate_debt_report(conn, scope_ids=candidate_scope_ids, limit=limit)
     finally:
         conn.close()
 
@@ -265,6 +284,7 @@ def promote_memory_candidates(
         "dry_run": not apply,
         "path": str(db_path),
         "batch_id": batch,
+        "scope_filter": scope_filter,
         "archive_noise": bool(archive_noise),
         "action_filter": str(action or "all").strip().lower(),
         "operator_review": {
@@ -291,6 +311,8 @@ def main() -> int:
         apply=effective_apply(apply=args.apply, dry_run=args.dry_run),
         archive_noise=bool(args.archive_noise),
         action=str(args.action or "all"),
+        scope_ids=list(args.scope_ids or []),
+        all_scopes=bool(args.all_scopes),
         limit=max(1, int(args.limit or 1000)),
         batch_id=str(args.batch_id or ""),
         review_ids=review_ids,

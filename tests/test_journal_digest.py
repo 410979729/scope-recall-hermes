@@ -180,6 +180,164 @@ def test_skipped_journal_candidates_still_advance_watermark(tmp_path):
     assert rejection_ids == {existing_entry_id, filtered_entry_id}
 
 
+def test_journal_digest_does_not_update_archived_memory_matches(tmp_path):
+    conn = _open_memory_db(tmp_path / "memory.sqlite3")
+    scope = _scope()
+    scope_id = build_scope_id(scope)
+    shared_scope_id = build_shared_scope_id(scope)
+    entry_id = append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=scope_id,
+        shared_scope_id=shared_scope_id,
+        session_id="archived-match",
+        turn_number=1,
+        role="user",
+        content="Archived memories should not be reactivated by journal digest matching.",
+    )
+    archived_content = (
+        "Scope Recall operators must verify live SQLite truth before trusting vector companion state after memory cleanup; "
+        "this stable workflow prevents stale vector ids from being treated as active memory."
+    )
+    store_row(
+        conn,
+        memory_id="archived-memory",
+        scope_id=shared_scope_id,
+        platform=scope.platform,
+        user_id=scope.user_id,
+        chat_id=scope.chat_id,
+        thread_id=scope.thread_id,
+        gateway_session_key=scope.gateway_session_key,
+        agent_identity=scope.agent_identity,
+        agent_workspace=scope.agent_workspace,
+        session_id="archived-match",
+        source="journal-digest",
+        target="memory",
+        content=archived_content,
+        metadata=json.dumps({"memory_type": "workflow"}),
+    )
+    conn.execute(
+        "UPDATE memories SET metadata = json_set(metadata, '$.lifecycle', 'archived') WHERE id = 'archived-memory'"
+    )
+
+    result = apply_journal_candidates(
+        conn,
+        None,
+        scope,
+        run_id="archived-match-test",
+        candidates=[JournalDigestCandidate(content=archived_content, target="memory", entry_ids=[entry_id])],
+    )
+
+    assert result["counts"]["inserted"] == 1
+    assert "updated" not in result["counts"]
+    archived = conn.execute("SELECT metadata FROM memories WHERE id = 'archived-memory'").fetchone()
+    assert json.loads(archived["metadata"])["lifecycle"] == "archived"
+    active_count = conn.execute(
+        "SELECT COUNT(*) FROM memories WHERE id != 'archived-memory' AND target = 'memory'"
+    ).fetchone()[0]
+    assert active_count == 1
+
+
+def test_journal_digest_rejects_ephemeral_release_issue_state_candidates(tmp_path):
+    conn = _open_memory_db(tmp_path / "memory.sqlite3")
+    scope = _scope()
+    scope_id = build_scope_id(scope)
+    shared_scope_id = build_shared_scope_id(scope)
+    entry_id = append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=scope_id,
+        shared_scope_id=shared_scope_id,
+        session_id="release-state",
+        turn_number=1,
+        role="assistant",
+        content="Release status was checked during this one-off task.",
+    )
+    candidate = JournalDigestCandidate(
+        content=(
+            "Scope Recall public repo handoff from session `20260630_093142_52cb840f`: "
+            "HEAD=6a1fbf0, origin/main=6a1fbf0, pushed commits were verified, "
+            "closed issues #24 and #23, and 678 passed."
+        ),
+        target="project",
+        memory_type="project",
+        entry_ids=[entry_id],
+    )
+
+    result = apply_journal_candidates(conn, None, scope, run_id="release-state-filter", candidates=[candidate])
+
+    assert result["counts"]["skipped"] == 1
+    assert result["processed_entry_ids"] == [entry_id]
+    rejection = conn.execute("SELECT reason FROM journal_rejections WHERE journal_entry_id = ?", (entry_id,)).fetchone()
+    assert rejection["reason"] == "low-value-ephemeral-release-or-issue-state"
+    assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+
+
+def test_journal_digest_allows_stable_release_procedure_with_status_like_gate(tmp_path):
+    conn = _open_memory_db(tmp_path / "memory.sqlite3")
+    scope = _scope()
+    entry_id = append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=build_scope_id(scope),
+        shared_scope_id=build_shared_scope_id(scope),
+        session_id="stable-release-procedure",
+        turn_number=1,
+        role="assistant",
+        content="Stable release gate workflow was established.",
+    )
+    candidate = JournalDigestCandidate(
+        content=(
+            "Release workflow: require 512 passed before tagging. "
+            "This is a stable procedural constraint for Scope Recall release operators."
+        ),
+        target="ops",
+        memory_type="procedure",
+        confidence=0.9,
+        importance=0.8,
+        tags=["workflow", "release-gate"],
+        entry_ids=[entry_id],
+    )
+
+    result = apply_journal_candidates(conn, None, scope, run_id="stable-release-procedure-allow", candidates=[candidate])
+
+    assert result["counts"]["inserted"] == 1
+    assert conn.execute("SELECT COUNT(*) FROM journal_rejections").fetchone()[0] == 0
+    row = conn.execute("SELECT target, content FROM memories").fetchone()
+    assert row["target"] == "ops"
+    assert "512 passed" in row["content"]
+
+def test_journal_digest_allows_stable_release_pitfall_without_ephemeral_anchors(tmp_path):
+    conn = _open_memory_db(tmp_path / "memory.sqlite3")
+    scope = _scope()
+    entry_id = append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=build_scope_id(scope),
+        shared_scope_id=build_shared_scope_id(scope),
+        session_id="release-pitfall",
+        turn_number=1,
+        role="assistant",
+        content="Patch release pitfall discussed.",
+    )
+    candidate = JournalDigestCandidate(
+        content=(
+            "Scope Recall patch-release pitfall: do not blindly bump every historical version string. "
+            "Schema baseline constants should remain tied to their migration ledger version when the patch release does not change schema."
+        ),
+        target="ops",
+        memory_type="pitfall",
+        entry_ids=[entry_id],
+    )
+
+    result = apply_journal_candidates(conn, None, scope, run_id="release-pitfall-allow", candidates=[candidate])
+
+    assert result["counts"]["inserted"] == 1
+    row = conn.execute("SELECT target, content FROM memories").fetchone()
+    assert row["target"] == "ops"
+    assert "Schema baseline constants" in row["content"]
+
+
 def test_journal_digest_rejects_transient_phase_gate_progress_decision(tmp_path):
     conn = _open_memory_db(tmp_path / "memory.sqlite3")
     scope = _scope()

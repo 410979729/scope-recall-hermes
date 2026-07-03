@@ -75,16 +75,17 @@ def main() -> int:
     should_apply = effective_apply(apply=args.apply, dry_run=args.dry_run)
     conn = connect_memory_db(path, apply=should_apply, timeout=30)
     try:
-        payload["before"] = governance_audit_coverage_report(conn, scope_ids=args.scope_id, sample_limit=args.sample_limit)
+        scoped = list(args.scope_id or []) or None
+        payload["before"] = governance_audit_coverage_report(conn, scope_ids=scoped, sample_limit=args.sample_limit)
         payload["result"] = backfill_legacy_archive_audit(
             conn,
-            scope_ids=args.scope_id,
+            scope_ids=scoped,
             dry_run=not should_apply,
             limit=args.limit,
             batch_id=args.batch_id or None,
             actor=args.actor,
         )
-        payload["after"] = governance_audit_coverage_report(conn, scope_ids=args.scope_id, sample_limit=args.sample_limit)
+        payload["after"] = governance_audit_coverage_report(conn, scope_ids=scoped, sample_limit=args.sample_limit)
         payload["ok"] = True
         emit(payload, fmt=args.format)
         return 0

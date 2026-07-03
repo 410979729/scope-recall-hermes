@@ -545,6 +545,11 @@ class RecallService:
         same_topic_boost = _relation_weight("relation_same_topic_boost", fallback_key=None, default=0.01, maximum=0.03)
         superseded_penalty = _relation_weight("relation_superseded_penalty")
         contradicts_penalty = _relation_weight("relation_contradicts_penalty", fallback_key=None, default=0.0)
+        invalidated_penalty = _relation_weight(
+            "relation_invalidated_penalty",
+            fallback_key="relation_invalidates_penalty",
+            default=0.04,
+        )
         max_bonus = _relation_weight("relation_rerank_max_bonus", fallback_key=None, default=0.08)
         max_penalty = _relation_weight("relation_rerank_max_penalty", fallback_key=None, default=0.08)
 
@@ -558,6 +563,7 @@ class RecallService:
             _confidence_sum(outgoing.get("same_topic")) + _confidence_sum(incoming.get("same_topic"))
         )
         bonus -= superseded_penalty * _confidence_sum(incoming.get("supersedes"))
+        bonus -= invalidated_penalty * _confidence_sum(incoming.get("invalidates"))
         bonus -= contradicts_penalty * (_confidence_sum(outgoing.get("contradicts")) + _confidence_sum(incoming.get("contradicts")))
         return max(-max_penalty, min(max_bonus, bonus))
 

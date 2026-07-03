@@ -166,6 +166,14 @@ LOW_VALUE_PROGRESS_RE = re.compile(
     r"one[-\s]?off|status\s+update)\b|(?:临时文件|备份路径|任务进度|一次性|无需处理|状态更新)",
     re.IGNORECASE,
 )
+EPHEMERAL_RELEASE_STATE_RE = re.compile(
+    r"(?:session\s+[`'\"]?\d{8}_[0-9a-f_]+|\bHEAD\s*=|\borigin/main\b|\bgit\s+status\b|"
+    r"\b(?:pushed|local|closed|open)\s+(?:commits?|issues?)\b|\bissue\s*#?\d+\b|#\d+\s+`|"
+    r"\b(?:commit|tag|branch)\s+[`'\"]?[0-9a-f]{7,40}\b|\b[0-9a-f]{7,40}\b.*\b(?:commit|HEAD|origin/main)\b|"
+    r"\b\d+\s+passed\b|\bpyright\b.*\b(?:warning|error)s?\b|\bruff\s+(?:pass|passed|全通过)\b|"
+    r"(?:未\s*commit|未\s*push|未\s*tag|不\s*tag|不\s*release|已关闭\s*issue|记录时状态|发布候选|当前进度))",
+    re.IGNORECASE,
+)
 TRANSIENT_PHASE_GATE_RE = re.compile(
     r"(?:当前阶段|这个阶段|现阶段|下一步|继续下一步|不要急着|先(?:进行)?阶段性?验证|先验证|再进(?:入)?\s*[A-Z]\d|进入\s*[A-Z]\d|"
     r"阶段性验收|全量\s*pytest|live\s+doctor|rollout\s+profiles\s+dry-run|可选复审|"
@@ -206,6 +214,9 @@ def _low_value_promotion_reason(candidate: JournalDigestCandidate) -> str:
         or tag_set & {"phase-gate", "project-management", "status", "progress"}
     ):
         return "low-value-transient-phase-gate"
+    stable_release_knowledge = has_value_signal and candidate.memory_type in {"constraint", "pitfall", "procedure", "workflow"} and candidate.target != "project"
+    if EPHEMERAL_RELEASE_STATE_RE.search(text) and not stable_release_knowledge:
+        return "low-value-ephemeral-release-or-issue-state"
     if LOW_VALUE_NOTIFICATION_RE.search(text) and not has_value_signal:
         return "low-value-notification"
     if LOW_VALUE_LOG_RE.search(text) and not has_value_signal:
@@ -274,15 +285,19 @@ def _find_match(conn: sqlite3.Connection, scope_ids: list[str], candidate: Journ
     candidate_tags = set(candidate.tags)
     candidate_topic_tags = {tag for tag in candidate_tags if tag.startswith("topic:")}
     candidate_session_tags = {tag for tag in candidate_tags if tag.startswith("session:")}
+    hidden_lifecycles = {"archived", "candidate", "scratch", "superseded", "obsolete", "rejected"}
     for row in rows:
-        content = str(row["content"])
-        if dedup_key(content) == candidate_key:
-            return str(row["id"]), content, 1.0
-        score = semantic_similarity(content, candidate.content)
         try:
             metadata = json.loads(str(row["metadata"] or "{}"))
         except Exception:
             metadata = {}
+        lifecycle = str(metadata.get("lifecycle") or "promoted").strip().lower() if isinstance(metadata, dict) else "promoted"
+        if lifecycle in hidden_lifecycles:
+            continue
+        content = str(row["content"])
+        if dedup_key(content) == candidate_key:
+            return str(row["id"]), content, 1.0
+        score = semantic_similarity(content, candidate.content)
         existing_tags = set(str(tag) for tag in metadata.get("tags", []) if str(tag).strip()) if isinstance(metadata, dict) else set()
         existing_entities = _metadata_entities(metadata)
         existing_topic_tags = {tag for tag in existing_tags if tag.startswith("topic:")}

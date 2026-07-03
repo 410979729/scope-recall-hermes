@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import tomllib
 import zipfile
 
 sys.dont_write_bytecode = True
@@ -75,10 +76,15 @@ REQUIRED_SOURCE_FILES = {
     "doctor_sqlite.py",
     "doctor_vector.py",
     "freshness.py",
+    "governance_scheduler.py",
     "graph_relations.py",
     "graph_hygiene.py",
     "maintenance_ops.py",
     "memory_quality.py",
+    "task_boundary.py",
+    "experience_evidence.py",
+    "experience_quality.py",
+    "experience_synthesis.py",
     "migration_openclaw.py",
     "nightly_llm.py",
     "journal_llm.py",
@@ -100,6 +106,7 @@ REQUIRED_SOURCE_FILES = {
     "docs/upstream-recommendation.md",
     "docs/benchmark.golden.md",
     "docs/governance.cleanup.md",
+    "docs/memory-quality-kernel.md",
     "docs/configuration.md",
     "docs/operator-runbook.md",
     "docs/cross-profile-rollout.md",
@@ -125,6 +132,7 @@ REQUIRED_SOURCE_FILES = {
     "scripts/backfill.graph_relations.py",
     "scripts/governance.cleanup.py",
     "scripts/governance.audit_coverage.py",
+    "scripts/governance.scheduler.py",
     "scripts/journal.recovery.py",
     "scripts/playbook.bootstrap.py",
     "scripts/playbooks.py",
@@ -191,10 +199,15 @@ REQUIRED_WHEEL = {
     "scope_recall/doctor_sqlite.py",
     "scope_recall/doctor_vector.py",
     "scope_recall/freshness.py",
+    "scope_recall/governance_scheduler.py",
     "scope_recall/graph_relations.py",
     "scope_recall/graph_hygiene.py",
     "scope_recall/maintenance_ops.py",
     "scope_recall/memory_quality.py",
+    "scope_recall/task_boundary.py",
+    "scope_recall/experience_evidence.py",
+    "scope_recall/experience_quality.py",
+    "scope_recall/experience_synthesis.py",
     "scope_recall/migration_openclaw.py",
     "scope_recall/provider_schemas.py",
     "scope_recall/recall_pipeline.py",
@@ -218,6 +231,7 @@ REQUIRED_WHEEL = {
     "scope_recall/docs/upstream-recommendation.md",
     "scope_recall/docs/benchmark.golden.md",
     "scope_recall/docs/governance.cleanup.md",
+    "scope_recall/docs/memory-quality-kernel.md",
     "scope_recall/docs/configuration.md",
     "scope_recall/docs/operator-runbook.md",
     "scope_recall/docs/cross-profile-rollout.md",
@@ -243,6 +257,7 @@ REQUIRED_WHEEL = {
     "scope_recall/scripts/backfill.graph_relations.py",
     "scope_recall/scripts/governance.cleanup.py",
     "scope_recall/scripts/governance.audit_coverage.py",
+    "scope_recall/scripts/governance.scheduler.py",
     "scope_recall/scripts/journal.recovery.py",
     "scope_recall/scripts/playbook.bootstrap.py",
     "scope_recall/scripts/playbooks.py",
@@ -407,6 +422,26 @@ def benchmark_check() -> dict[str, object]:
 
 def read_text(rel: str) -> str:
     return (ROOT / rel).read_text(encoding="utf-8")
+
+
+def pyright_include_check() -> dict[str, object]:
+    """Ensure release-critical top-level source modules are covered by Pyright.
+
+    Required-file and wheel checks prove packaging coverage, but not type-check
+    coverage. This gate prevents newly added modules from silently bypassing the
+    explicit Pyright include list used for release verification.
+    """
+    try:
+        pyproject = tomllib.loads(read_text("pyproject.toml"))
+    except Exception as exc:
+        return {"ok": False, "error": f"invalid pyproject.toml: {exc}", "required_source_py": [], "missing_pyright_include": []}
+    tool_config = pyproject.get("tool", {}) if isinstance(pyproject, dict) else {}
+    pyright_config = tool_config.get("pyright", {}) if isinstance(tool_config, dict) else {}
+    raw_include = pyright_config.get("include", []) if isinstance(pyright_config, dict) else []
+    includes = {str(item).replace("\\", "/") for item in raw_include if str(item).strip()}
+    required_source_py = sorted(rel for rel in REQUIRED_SOURCE_FILES if rel.endswith(".py") and "/" not in rel)
+    missing = sorted(rel for rel in required_source_py if rel not in includes)
+    return {"ok": not missing, "required_source_py": required_source_py, "missing_pyright_include": missing}
 
 
 def changelog_section(changelog: str, version: str) -> str:
@@ -946,6 +981,7 @@ def metadata_check() -> dict[str, object]:
     failures: list[str] = []
     product_contract = product_contract_check()
     public_docs_hygiene = public_doc_hygiene_check()
+    pyright_coverage = pyright_include_check()
     required_snippets = {
         "pyproject version": f'version = "{PACKAGE_VERSION}"',
         "plugin version": f"version: {PACKAGE_VERSION}",
@@ -992,12 +1028,17 @@ def metadata_check() -> dict[str, object]:
         failures.extend(f"product contract: {failure}" for failure in product_failures)
     if not public_docs_hygiene["ok"]:
         failures.append(f"public docs hygiene: {json.dumps(public_docs_hygiene, ensure_ascii=False, sort_keys=True)}")
+    if not pyright_coverage["ok"]:
+        missing_pyright = pyright_coverage.get("missing_pyright_include", [])
+        missing_pyright_list = missing_pyright if isinstance(missing_pyright, list) else []
+        failures.append(f"pyright include missing required source files: {', '.join(str(item) for item in missing_pyright_list)}")
     return {
         "ok": not missing_source and not failures,
         "missing_source": missing_source,
         "failures": failures,
         "product_contract": product_contract,
         "public_docs_hygiene": public_docs_hygiene,
+        "pyright_coverage": pyright_coverage,
     }
 
 

@@ -5,11 +5,17 @@ Freshness is advisory evidence, so these cases prevent it from overwriting the u
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
+import time
+from datetime import datetime, timezone
+
+import pytest
 
 from plugins.memory import load_memory_provider
 
+from scope_recall.freshness import _parse_iso, fact_freshness_report, normalize_validator_kind
 from scope_recall.graph import ensure_graph_schema
 from scope_recall.models import RecallItem
 from scope_recall.recall import RecallService
@@ -106,6 +112,152 @@ def _mark_freshness(conn: sqlite3.Connection, memory_id: str, *, status: str, fa
         (f"fresh_{memory_id}", memory_id, fact_key, now, valid_until, status, now, now),
     )
     conn.commit()
+
+
+def test_freshness_validator_kind_normalization_contract():
+    assert normalize_validator_kind("manual-live-check") == "manual"
+    assert normalize_validator_kind("url") == "http"
+    assert normalize_validator_kind("shell") == "command"
+    assert normalize_validator_kind("path") == "file_exists"
+    assert normalize_validator_kind("static") == "none"
+    assert normalize_validator_kind("custom-validator") == "manual"
+
+
+def test_parse_iso_treats_naive_timestamps_as_utc(monkeypatch):
+    if not hasattr(time, "tzset"):
+        pytest.skip("requires POSIX tzset")
+    old_tz = os.environ.get("TZ")
+    monkeypatch.setenv("TZ", "Asia/Shanghai")
+    time.tzset()
+    try:
+        assert _parse_iso("2026-01-01T00:00:00") == datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+    finally:
+        if old_tz is None:
+            monkeypatch.delenv("TZ", raising=False)
+        else:
+            monkeypatch.setenv("TZ", old_tz)
+        time.tzset()
+
+
+def test_fact_freshness_report_tolerates_invalid_memory_metadata():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        now = now_iso()
+        conn.execute(
+            """
+            INSERT INTO memories(
+                id, scope_id, platform, user_id, chat_id, thread_id, gateway_session_key,
+                agent_identity, agent_workspace, session_id, source, target, content, summary,
+                created_at, updated_at, last_recalled_turn, dedup_key, metadata
+            ) VALUES (
+                'bad-metadata-fact', 'shared-scope', 'telegram', 'joy', 'dm', '', '', 'yuheng', 'hermes', 's',
+                'tool-store', 'ops', 'Bad metadata historical row.', 'Bad metadata historical row.',
+                ?, ?, 0, 'bad-metadata-fact', 'not-json'
+            )
+            """,
+            (now, now),
+        )
+        _mark_freshness(conn, "bad-metadata-fact", status="needs_live_check")
+
+        report = fact_freshness_report(conn, scope_ids=["shared-scope"])
+    finally:
+        conn.close()
+
+    assert report["tracked_facts"] == 1
+    assert report["needs_live_check"] == 1
+    assert report["coverage"]["factual_memories"] == 0
+
+
+def test_fact_freshness_global_report_matches_scoped_memory_join_semantics():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        now = now_iso()
+        conn.execute(
+            """
+            INSERT INTO memories(
+                id, scope_id, platform, user_id, chat_id, thread_id, gateway_session_key,
+                agent_identity, agent_workspace, session_id, source, target, content, summary,
+                created_at, updated_at, last_recalled_turn, dedup_key, metadata
+            ) VALUES (
+                'memory-fact', 'shared-scope', 'telegram', 'joy', 'dm', '', '', 'yuheng', 'hermes', 's',
+                'tool-store', 'ops', 'Tracked fact.', 'Tracked fact.', ?, ?, 0, 'memory-fact', ?
+            )
+            """,
+            (now, now, json.dumps({"memory_type": "factual"}, ensure_ascii=False)),
+        )
+        for row_id, subject_type, subject_id in (
+            ("fresh-memory", "memory", "memory-fact"),
+            ("fresh-service", "service", "svc-1"),
+            ("fresh-orphan", "memory", "missing-memory"),
+        ):
+            conn.execute(
+                """
+                INSERT INTO fact_freshness(
+                    id, subject_type, subject_id, fact_key, truth_type, validator_kind,
+                    ttl_days, last_checked_at, valid_until, status, stale_reason, created_at, updated_at
+                ) VALUES (?, ?, ?, 'endpoint', 'config', 'manual', 7, ?, ?, 'needs_live_check', 'fixture', ?, ?)
+                """,
+                (row_id, subject_type, subject_id, now, now, now, now),
+            )
+        conn.commit()
+
+        global_report = fact_freshness_report(conn)
+        scoped_report = fact_freshness_report(conn, scope_ids=["shared-scope"])
+    finally:
+        conn.close()
+
+    assert global_report["tracked_facts"] == 1
+    assert global_report["coverage"]["tracked_memory_facts"] == 1
+    assert global_report["coverage"]["coverage_percent"] == 100.0
+    assert scoped_report["tracked_facts"] == global_report["tracked_facts"]
+    assert scoped_report["coverage"] == global_report["coverage"]
+
+
+def test_fact_freshness_report_groups_normalized_validator_kinds():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        now = now_iso()
+        for index, validator in enumerate(["manual-live-check", "url", "shell", "path", "static"], start=1):
+            conn.execute(
+                """
+                INSERT INTO memories(
+                    id, scope_id, platform, user_id, chat_id, thread_id, gateway_session_key,
+                    agent_identity, agent_workspace, session_id, source, target, content, summary,
+                    created_at, updated_at, last_recalled_turn, dedup_key, metadata
+                ) VALUES (?, 'shared-scope', 'telegram', 'joy', 'dm', '', '', 'yuheng', 'hermes', 's',
+                    'tool-store', 'ops', 'Freshness fact.', 'Freshness fact.', ?, ?, 0, ?, ?)
+                """,
+                (
+                    f"memory-{index}",
+                    now,
+                    now,
+                    f"memory-{index}",
+                    json.dumps({"memory_type": "factual"}, ensure_ascii=False),
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO fact_freshness(
+                    id, subject_type, subject_id, fact_key, truth_type, validator_kind,
+                    ttl_days, last_checked_at, valid_until, status, stale_reason, created_at, updated_at
+                ) VALUES (?, 'memory', ?, 'endpoint', 'config', ?, 7, ?, ?, 'needs_live_check', 'fixture', ?, ?)
+                """,
+                (f"fresh-{index}", f"memory-{index}", validator, now, "2026-01-01T00:00:00+00:00", now, now),
+            )
+        conn.commit()
+
+        report = fact_freshness_report(conn)
+    finally:
+        conn.close()
+
+    assert report["by_validator_kind"] == {"command": 1, "file_exists": 1, "http": 1, "manual": 1, "none": 1}
+    assert report["needs_live_check"] == 5
 
 
 def test_fact_freshness_stale_memory_is_marked_and_downgraded_below_current_fact():

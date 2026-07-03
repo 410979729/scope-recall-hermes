@@ -16,6 +16,7 @@ from .capture_filters import sanitize_report_text
 from .gating import compact_text, dedup_key
 from .governance import classify_memory, merge_metadata
 from .graph import backfill_memory_entities, ensure_graph_schema, sync_memory_entities
+from .memory_quality import HIDDEN_PROFILE_LIFECYCLES
 
 ENTRY_DELIMITER = "\n§\n"
 SCHEMA_VERSION = 10600
@@ -617,15 +618,20 @@ def store_row(
     summary = compact_text(content, 220)
     key = dedup_key(content)
     if not allow_duplicate:
+        hidden_lifecycle_values = tuple(sorted(HIDDEN_PROFILE_LIFECYCLES))
+        hidden_placeholders = ", ".join("?" for _ in hidden_lifecycle_values)
         existing = conn.execute(
-            """
-            SELECT id, summary, updated_at
+            f"""
+            SELECT id, summary, updated_at, metadata
             FROM memories
-            WHERE scope_id = ? AND target = ? AND dedup_key = ?
+            WHERE scope_id = ?
+              AND target = ?
+              AND dedup_key = ?
+              AND LOWER(COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.lifecycle') ELSE '' END, '')) NOT IN ({hidden_placeholders})
             ORDER BY updated_at DESC
             LIMIT 1
             """,
-            (scope_id, target, key),
+            (scope_id, target, key, *hidden_lifecycle_values),
         ).fetchone()
         if existing is not None:
             conn.execute("UPDATE memories SET updated_at = ? WHERE id = ?", (now, existing["id"]))

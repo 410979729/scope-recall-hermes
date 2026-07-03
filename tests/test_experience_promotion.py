@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 import sqlite3
 
+import pytest
+
 from scope_recall.experience_classification import classify_experience_task
 from scope_recall.experience_promotion import promote_experiences
 from scope_recall.experience_preflight import experience_preflight
@@ -48,6 +50,41 @@ def _append(conn: sqlite3.Connection, *, scope: RuntimeScope, session_id: str, t
         role=role,
         content=content,
     )
+
+
+def test_promote_experiences_rejects_scope_id_outside_accessible_scope_ids():
+    conn = _conn()
+    scope = _scope()
+    try:
+        with pytest.raises(ValueError, match="scope_id must be in accessible_scope_ids"):
+            promote_experiences(
+                conn,
+                accessible_scope_ids=accessible_scope_ids(scope),
+                scope_id="scope-b",
+                shared_scope_id=build_shared_scope_id(scope),
+                config={"experience": {"auto_promote_low_risk": True}},
+                dry_run=True,
+            )
+    finally:
+        conn.close()
+
+
+def test_promote_experiences_rejects_shared_scope_id_outside_accessible_scope_ids():
+    conn = _conn()
+    scope = _scope()
+    scope_id = build_scope_id(scope)
+    try:
+        with pytest.raises(ValueError, match="shared_scope_id must be in accessible_scope_ids"):
+            promote_experiences(
+                conn,
+                accessible_scope_ids=[scope_id],
+                scope_id=scope_id,
+                shared_scope_id="shared-scope-outside-allowlist",
+                config={"experience": {"auto_promote_low_risk": True}},
+                dry_run=True,
+            )
+    finally:
+        conn.close()
 
 
 def test_experience_classification_uses_stable_titles_not_user_wording():
@@ -237,7 +274,9 @@ def test_low_risk_verified_task_auto_creates_and_promotes_experience_handbook():
     assert "pytest" in episode["tool_names"]
     evidence = json.loads(episode["evidence"])
     evidence_text = json.dumps(evidence, ensure_ascii=False)
-    assert "Tool execution summary (terminal): output omitted" in evidence_text
+    assert isinstance(evidence, list)
+    assert {item["kind"] for item in evidence} >= {"user_statement", "test_command", "health_report"}
+    assert any(item.get("journal_entry_id") for item in evidence)
     assert "Tool execution trace" not in evidence_text
     assert "/home/a/private" not in evidence_text
     assert "[REDACTED_PATH]" in evidence_text
@@ -247,6 +286,11 @@ def test_low_risk_verified_task_auto_creates_and_promotes_experience_handbook():
     assert row["status"] == "promoted"
     assert row["created_from_episode_id"] == episode["id"]
     assert "scope-recall" in row["title"].lower()
+    playbook_anchors = json.loads(row["evidence_anchors"])
+    assert playbook_anchors[0]["kind"] == "journal_entries"
+    assert {item["kind"] for item in playbook_anchors[1:]} >= {"user_statement", "test_command", "health_report"}
+    row_metadata = json.loads(row["metadata"])
+    assert row_metadata["evidence_anchor_count"] == len(playbook_anchors) - 1
 
     preflight = experience_preflight(conn, query="scope-recall 文档发布说明检查", accessible_scope_ids=accessible_scope_ids(scope), config={})
     assert preflight["decision"] in {"direct_reuse", "guided_reuse"}

@@ -75,13 +75,49 @@ def resolve_api_key(raw_value: Any, provider: str, env: dict[str, str]) -> str:
         candidates.append(raw)
     elif raw:
         return raw
+    provider_l = str(provider or "").strip().lower()
     if provider:
         candidates.append(f"{provider.upper().replace('-', '_')}_API_KEY")
-    candidates.extend(["DEEPSEEK_API_KEY", "OPENAI_API_KEY"])
+    # Generic fallback keys are only safe for matching OpenAI-compatible providers.
+    # Do not use DEEPSEEK_API_KEY as an implicit credential for openai-codex: it
+    # produces valid-looking configuration but sends the wrong bearer token to
+    # chatgpt.com/backend-api/codex and turns every journal batch into auth dead letters.
+    if provider_l in {"", "deepseek"}:
+        candidates.append("DEEPSEEK_API_KEY")
+    if provider_l in {"", "openai", "openai-compatible", "openai_compatible"}:
+        candidates.append("OPENAI_API_KEY")
     for key in candidates:
         value = env.get(key)
         if value:
             return value
+    return ""
+
+
+def resolve_hermes_credential_pool_token(hermes_home: Path, provider: str) -> str:
+    """Return the first OAuth access token for provider from Hermes auth.json.
+
+    This keeps standalone digest scripts aligned with Hermes provider auth instead of
+    guessing from unrelated API-key environment variables."""
+    provider = str(provider or "").strip()
+    if not provider:
+        return ""
+    auth_path = hermes_home / "auth.json"
+    if not auth_path.exists():
+        return ""
+    try:
+        payload = json.loads(auth_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    raw_pool = payload.get("credential_pool") if isinstance(payload, dict) else None
+    pool = raw_pool.get(provider) if isinstance(raw_pool, dict) else None
+    if not isinstance(pool, list):
+        return ""
+    for item in pool:
+        if not isinstance(item, dict):
+            continue
+        token = str(item.get("access_token") or "").strip()
+        if token:
+            return token
     return ""
 
 
@@ -139,7 +175,7 @@ def resolve_llm_config(hermes_home: Path, options: Any) -> dict[str, Any]:
     if append_v1_raw is None:
         append_v1_raw = nightly_cfg.get("append_v1", provider_cfg.get("append_v1", model_cfg.get("append_v1", True)))
     append_v1 = config_bool_value(append_v1_raw, True)
-    api_key = getattr(options, "api_key", "") or resolve_api_key(
+    raw_api_key_source = (
         getattr(options, "api_key_env", "")
         or nightly_cfg.get("api_key")
         or nightly_cfg.get("api_key_env")
@@ -147,10 +183,17 @@ def resolve_llm_config(hermes_home: Path, options: Any) -> dict[str, Any]:
         or provider_cfg.get("api_key")
         or provider_cfg.get("api_key_env")
         or provider_cfg.get("key_env")
-        or model_cfg.get("api_key"),
-        provider,
-        env,
+        or model_cfg.get("api_key")
     )
+    explicit_api_key = str(getattr(options, "api_key", "") or "").strip()
+    if explicit_api_key:
+        api_key = explicit_api_key
+    elif raw_api_key_source:
+        api_key = resolve_api_key(raw_api_key_source, provider, env)
+    elif str(provider).strip().lower() == "openai-codex":
+        api_key = resolve_hermes_credential_pool_token(hermes_home, provider)
+    else:
+        api_key = resolve_api_key("", provider, env)
     api_mode = normalize_digest_api_mode(
         getattr(options, "api_mode", "") or nightly_cfg.get("api_mode") or provider_cfg.get("api_mode") or model_cfg.get("api_mode"),
         provider=provider,
