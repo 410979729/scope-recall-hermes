@@ -13,7 +13,7 @@ TRANSIENT_PROGRESS_RE = re.compile(
     re.IGNORECASE,
 )
 RAW_TOOL_TRACE_RE = re.compile(
-    r"(\btool_calls\b|\btool_call_id\b|\"output\"\s*:|Traceback \(most recent call last\)|\[OUT-OF-BAND|call_[A-Za-z0-9]{8,}|/tmp/hermes|image_cache/img_|\.pytest_cache|__pycache__)",
+    r"(\btool_calls\b|\btool_call_id\b|\"output\"\s*:|Traceback \(most recent call last\)|\[OUT-OF-BAND|call_[A-Za-z0-9]{8,}|/tmp/hermes|image_cache/img_|\.pytest_cache|__pycache__|\bCommand hints\b|关键命令/检查|\bgit\s+-C\b|(?:/home|/Users|/root)/[^\s]+|(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s]+|\\\\[^\\/\s]+[\\/][^\s]+|%(?:TEMP|TMP|LOCALAPPDATA|APPDATA|USERPROFILE)%[\\/][^\s]+)",
     re.IGNORECASE,
 )
 TRIGGER_RE = re.compile(

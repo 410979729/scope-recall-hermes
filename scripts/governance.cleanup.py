@@ -86,7 +86,8 @@ def main() -> int:
     should_apply = effective_apply(apply=args.apply, dry_run=args.dry_run)
     conn = connect_memory_db(path, apply=should_apply, timeout=30)
     try:
-        payload["before_counts"] = active_dirty_counts(conn, scope_ids=args.scope_id)
+        scoped = list(args.scope_id or []) or None
+        payload["before_counts"] = active_dirty_counts(conn, scope_ids=scoped)
         if args.rollback_batch:
             if not args.batch_id:
                 payload["error"] = "--batch-id is required with --rollback-batch"
@@ -96,7 +97,7 @@ def main() -> int:
         else:
             result = apply_cleanup(
                 conn,
-                scope_ids=args.scope_id,
+                scope_ids=scoped,
                 dry_run=not should_apply,
                 limit=args.limit,
                 reason=args.reason,
@@ -104,7 +105,7 @@ def main() -> int:
                 batch_id=args.batch_id or None,
             )
         payload["result"] = result
-        payload["after_counts"] = active_dirty_counts(conn, scope_ids=args.scope_id)
+        payload["after_counts"] = active_dirty_counts(conn, scope_ids=scoped)
         payload["ok"] = True
         emit(payload, fmt=args.format)
         return 0

@@ -4,6 +4,7 @@ These checks surface operational debt without auto-promoting or rewriting playbo
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,80 @@ def experience_config_summary(config: dict[str, Any]) -> dict[str, Any]:
         "promotion_require_verification",
     )
     return {key: experience_config.get(key) for key in keys if key in experience_config}
+
+
+def _json_value(raw: Any) -> Any:
+    if raw in (None, ""):
+        return None
+    try:
+        return json.loads(str(raw))
+    except Exception:
+        return None
+
+
+def _list_count(raw: Any) -> int:
+    value = _json_value(raw)
+    if isinstance(value, list):
+        return sum(1 for item in value if item not in (None, "", [], {}))
+    return 0
+
+
+def _replay_case_count(raw_metadata: Any) -> int:
+    metadata = _json_value(raw_metadata)
+    if not isinstance(metadata, dict):
+        return 0
+    for key in ("replay_cases", "replay_case_ids", "required_replay_cases"):
+        value = metadata.get(key)
+        if isinstance(value, list):
+            return sum(1 for item in value if item not in (None, "", [], {}))
+        if isinstance(value, dict) and isinstance(value.get("cases"), list):
+            return sum(1 for item in value["cases"] if item not in (None, "", [], {}))
+    return 0
+
+
+def _experience_maturity_payload(
+    promoted_rows: list[sqlite3.Row],
+    *,
+    promoted_missing_verified_at: int,
+    misleading_runs: int,
+    unresolved_misleading_runs: int,
+    stale_runs: int,
+    unresolved_stale_runs: int,
+) -> dict[str, Any]:
+    promoted_total = len(promoted_rows)
+    with_evidence = sum(1 for row in promoted_rows if _list_count(row["evidence_anchors"]) > 0)
+    with_replay = sum(1 for row in promoted_rows if _replay_case_count(row["metadata"]) > 0)
+    with_verified = max(0, promoted_total - promoted_missing_verified_at)
+    missing_evidence = max(0, promoted_total - with_evidence)
+    missing_replay = max(0, promoted_total - with_replay)
+    if not promoted_total:
+        status = "no_promoted_playbooks"
+    elif missing_replay:
+        status = "needs_replay_coverage"
+    elif missing_evidence:
+        status = "needs_evidence_anchors"
+    elif promoted_missing_verified_at:
+        status = "needs_verification_feedback"
+    elif unresolved_misleading_runs or unresolved_stale_runs:
+        status = "needs_feedback_review"
+    else:
+        status = "ready"
+    return {
+        "status": status,
+        "promoted_total": promoted_total,
+        "promoted_with_evidence_anchors": with_evidence,
+        "promoted_missing_evidence_anchors": missing_evidence,
+        "promoted_with_replay_cases": with_replay,
+        "promoted_missing_replay_cases": missing_replay,
+        "promoted_with_last_verified_at": with_verified,
+        "promoted_missing_last_verified_at": promoted_missing_verified_at,
+        "feedback": {
+            "stale": stale_runs,
+            "misleading": misleading_runs,
+            "unresolved_stale": unresolved_stale_runs,
+            "unresolved_misleading": unresolved_misleading_runs,
+        },
+    }
 
 
 def experience_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
@@ -81,6 +156,14 @@ def experience_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any]
             promoted_missing_verified_at = int(
                 conn.execute("SELECT COUNT(*) FROM procedural_playbooks WHERE status = 'promoted' AND COALESCE(last_verified_at, '') = ''").fetchone()[0]
             )
+            promoted_rows = conn.execute(
+                """
+                SELECT id, evidence_anchors, metadata, last_verified_at
+                FROM procedural_playbooks
+                WHERE status = 'promoted'
+                ORDER BY updated_at DESC, id ASC
+                """
+            ).fetchall()
             duplicate_groups = [
                 {
                     "task_class": redact_secret_like_text(str(row["task_class"] or "")),
@@ -117,6 +200,14 @@ def experience_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any]
             }
             unresolved_misleading_runs = int(unresolved_feedback.get("misleading", 0))
             unresolved_stale_runs = int(unresolved_feedback.get("stale", 0))
+            maturity_payload = _experience_maturity_payload(
+                promoted_rows,
+                promoted_missing_verified_at=promoted_missing_verified_at,
+                misleading_runs=misleading_runs,
+                unresolved_misleading_runs=unresolved_misleading_runs,
+                stale_runs=stale_runs,
+                unresolved_stale_runs=unresolved_stale_runs,
+            )
         finally:
             conn.close()
     except Exception as exc:
@@ -133,6 +224,16 @@ def experience_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any]
         recommendations.append(f"Experience playbooks contain {len(duplicate_groups)} duplicate title/task-class group(s); run dedupe/merge review before auto-promotion.")
     if promoted_missing_verified_at:
         recommendations.append(f"{promoted_missing_verified_at} promoted playbook(s) lack last_verified_at; require verification feedback before direct reuse.")
+    if int(maturity_payload.get("promoted_missing_evidence_anchors") or 0):
+        recommendations.append(
+            f"{maturity_payload.get('promoted_missing_evidence_anchors')} promoted playbook(s) lack evidence anchors; "
+            "keep them guided/reviewed until source journal or verification anchors are attached."
+        )
+    if int(maturity_payload.get("promoted_missing_replay_cases") or 0):
+        recommendations.append(
+            f"{maturity_payload.get('promoted_missing_replay_cases')} promoted playbook(s) lack replay coverage; "
+            "add positive and negative replay cases before relying on reusable experience quality."
+        )
     if unresolved_misleading_runs or unresolved_stale_runs:
         recommendations.append(
             f"Experience feedback includes unresolved stale/misleading outcomes "
@@ -166,6 +267,7 @@ def experience_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any]
             },
         },
         "runs": {"total": run_total, "by_outcome": dict(sorted(run_by_outcome.items()))},
+        "maturity": maturity_payload,
         "stale_facts": stale_facts,
         "fact_freshness": freshness_report,
     }

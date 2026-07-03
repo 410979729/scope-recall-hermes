@@ -6,11 +6,34 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 CURRENT_STATUSES = {"current", "fresh", "valid", "verified", "ok"}
 NEEDS_CHECK_STATUSES = {"needs_live_check", "needs-live-check", "unknown", "unchecked", "expired"}
 STALE_STATUSES = {"stale", "invalid", "superseded", "outdated"}
+VALIDATOR_KINDS = {"file_exists", "command", "http", "manual", "none"}
+_VALIDATOR_KIND_ALIASES = {
+    "": "none",
+    "none": "none",
+    "no_validation": "none",
+    "static": "none",
+    "permanent": "none",
+    "file": "file_exists",
+    "path": "file_exists",
+    "exists": "file_exists",
+    "file_exists": "file_exists",
+    "shell": "command",
+    "cmd": "command",
+    "command": "command",
+    "http": "http",
+    "https": "http",
+    "url": "http",
+    "http_get": "http",
+    "http_head": "http",
+    "manual": "manual",
+    "manual_live_check": "manual",
+    "human": "manual",
+}
 
 _SEVERITY = {
     "current": 0,
@@ -30,14 +53,29 @@ _SEVERITY = {
 }
 
 
+def normalize_validator_kind(kind: Any) -> str:
+    """Normalize freshness validator kinds to the public contract.
+
+    Unknown non-empty validators fail closed to `manual` so stale operational
+    facts are not accidentally treated as timeless preferences.
+    """
+    normalized = str(kind or "").strip().lower().replace(" ", "_").replace("-", "_")
+    if normalized in VALIDATOR_KINDS:
+        return normalized
+    return _VALIDATOR_KIND_ALIASES.get(normalized, "manual" if normalized else "none")
+
+
 def _parse_iso(raw: Any) -> datetime | None:
     text = str(raw or "").strip()
     if not text:
         return None
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc)
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def normalize_freshness_status(status: Any, *, valid_until: Any = None, now: datetime | None = None) -> str:
@@ -62,7 +100,7 @@ def _row_payload(row: sqlite3.Row, *, now: datetime | None = None) -> dict[str, 
         "subject_id": str(row["subject_id"]),
         "fact_key": str(row["fact_key"]),
         "truth_type": str(row["truth_type"]),
-        "validator_kind": str(row["validator_kind"] or ""),
+        "validator_kind": normalize_validator_kind(row["validator_kind"]),
         "last_checked_at": str(row["last_checked_at"] or ""),
         "valid_until": str(row["valid_until"] or ""),
         "status": status,
@@ -142,10 +180,21 @@ def attach_freshness_metadata(metadata: dict[str, Any], freshness: dict[str, Any
     return penalty
 
 
-def fact_freshness_report(conn: sqlite3.Connection) -> dict[str, Any]:
+def _scope_filter_sql(scope_ids: Sequence[str] | None) -> tuple[str, list[str]] | None:
+    if scope_ids is None:
+        return "", []
+    scopes = [str(scope_id) for scope_id in scope_ids if str(scope_id)]
+    if not scopes:
+        return None
+    placeholders = ",".join("?" for _ in scopes)
+    return f" AND m.scope_id IN ({placeholders})", scopes
+
+
+def fact_freshness_report(conn: sqlite3.Connection, *, scope_ids: Sequence[str] | None = None) -> dict[str, Any]:
     """Summarize freshness coverage and stale durable facts.
 
-    Freshness reports guide review and ranking policy without rewriting the underlying factual memory."""
+    Freshness reports guide review and ranking policy without rewriting the underlying factual memory. When a scope allowlist is provided, only memory-scoped freshness rows for those scopes are counted.
+    """
     if not _table_exists(conn, "fact_freshness"):
         return {
             "status": "schema_missing",
@@ -153,22 +202,45 @@ def fact_freshness_report(conn: sqlite3.Connection) -> dict[str, Any]:
             "by_status": {},
             "needs_live_check": 0,
             "stale_facts": 0,
+            "by_validator_kind": {},
             "coverage": {"factual_memories": 0, "tracked_memory_facts": 0, "coverage_percent": 0.0},
         }
-    rows = conn.execute(
-        """
-        SELECT id, subject_type, subject_id, fact_key, truth_type, validator_kind,
-               last_checked_at, valid_until, status, stale_reason, superseded_by
-        FROM fact_freshness
-        """
-    ).fetchall()
+    scope_filter = _scope_filter_sql(scope_ids)
+    if scope_filter is None:
+        rows = []
+    elif scope_ids is None:
+        rows = conn.execute(
+            """
+            SELECT f.id, f.subject_type, f.subject_id, f.fact_key, f.truth_type, f.validator_kind,
+                   f.last_checked_at, f.valid_until, f.status, f.stale_reason, f.superseded_by
+            FROM fact_freshness AS f
+            JOIN memories AS m ON m.id = f.subject_id
+            WHERE f.subject_type = 'memory'
+            """
+        ).fetchall()
+    else:
+        scope_sql, scope_params = scope_filter
+        rows = conn.execute(
+            f"""
+            SELECT f.id, f.subject_type, f.subject_id, f.fact_key, f.truth_type, f.validator_kind,
+                   f.last_checked_at, f.valid_until, f.status, f.stale_reason, f.superseded_by
+            FROM fact_freshness AS f
+            JOIN memories AS m ON m.id = f.subject_id
+            WHERE f.subject_type = 'memory'
+              {scope_sql}
+            """,
+            scope_params,
+        ).fetchall()
     by_status: dict[str, int] = {}
+    by_validator_kind: dict[str, int] = {}
     needs_live_check = 0
     stale_facts = 0
     for row in rows:
         payload = _row_payload(row)
         status = str(payload["status"])
+        validator_kind = str(payload["validator_kind"] or "none")
         by_status[status] = by_status.get(status, 0) + 1
+        by_validator_kind[validator_kind] = by_validator_kind.get(validator_kind, 0) + 1
         if bool(payload.get("needs_live_check")):
             needs_live_check += 1
         if status in STALE_STATUSES:
@@ -176,22 +248,36 @@ def fact_freshness_report(conn: sqlite3.Connection) -> dict[str, Any]:
     factual_memories = 0
     tracked_memory_facts = len({str(row["subject_id"]) for row in rows if str(row["subject_type"]) == "memory"})
     if _table_exists(conn, "memories"):
-        factual_memories = int(
-            conn.execute(
-                """
-                SELECT COUNT(*)
-                FROM memories
-                WHERE COALESCE(json_extract(metadata, '$.lifecycle'), '') NOT IN ('archived', 'superseded', 'obsolete', 'rejected')
-                  AND LOWER(COALESCE(json_extract(metadata, '$.memory_type'), json_extract(metadata, '$.category'), '')) IN ('factual', 'fact', 'project_fact', 'environment_fact')
-                """
-            ).fetchone()[0]
-        )
+        if scope_filter is None:
+            factual_memories = 0
+        else:
+            scope_sql, scope_params = scope_filter
+            factual_memories = int(
+                conn.execute(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM memories AS m
+                    WHERE COALESCE(
+                            CASE WHEN json_valid(m.metadata) THEN json_extract(m.metadata, '$.lifecycle') ELSE '' END,
+                            ''
+                          ) NOT IN ('archived', 'superseded', 'obsolete', 'rejected')
+                      AND LOWER(COALESCE(
+                            CASE WHEN json_valid(m.metadata) THEN json_extract(m.metadata, '$.memory_type') ELSE '' END,
+                            CASE WHEN json_valid(m.metadata) THEN json_extract(m.metadata, '$.category') ELSE '' END,
+                            ''
+                          )) IN ('factual', 'fact', 'project_fact', 'environment_fact')
+                      {scope_sql}
+                    """,
+                    scope_params,
+                ).fetchone()[0]
+            )
     coverage_percent = round((tracked_memory_facts / factual_memories) * 100.0, 3) if factual_memories else 0.0
     status = "needs_review" if needs_live_check else "ready"
     return {
         "status": status,
         "tracked_facts": len(rows),
         "by_status": dict(sorted(by_status.items())),
+        "by_validator_kind": dict(sorted(by_validator_kind.items())),
         "needs_live_check": needs_live_check,
         "stale_facts": stale_facts,
         "coverage": {

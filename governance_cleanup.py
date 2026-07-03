@@ -104,9 +104,11 @@ def classify_cleanup_reason(row: sqlite3.Row) -> str:
 
 
 def _scope_clause(scope_ids: Sequence[str] | None) -> tuple[str, list[str]]:
-    scopes = [str(item) for item in (scope_ids or []) if str(item)]
-    if not scopes:
+    if scope_ids is None:
         return "", []
+    scopes = [str(item) for item in scope_ids if str(item)]
+    if not scopes:
+        return " AND 0", []
     placeholders = ",".join("?" for _ in scopes)
     return f" AND scope_id IN ({placeholders})", scopes
 

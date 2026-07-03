@@ -73,7 +73,15 @@ def _snapshot(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-def _scoped_rows(conn: sqlite3.Connection, accessible_scope_ids: Sequence[str]) -> list[sqlite3.Row]:
+def _scoped_rows(conn: sqlite3.Connection, accessible_scope_ids: Sequence[str] | None) -> list[sqlite3.Row]:
+    if accessible_scope_ids is None:
+        return conn.execute(
+            """
+            SELECT id, scope_id, source, target, content, summary, created_at, updated_at, dedup_key, metadata
+            FROM memories
+            ORDER BY updated_at DESC, id ASC
+            """
+        ).fetchall()
     scopes = [str(scope_id) for scope_id in accessible_scope_ids if str(scope_id)]
     if not scopes:
         return []
@@ -104,7 +112,7 @@ def _journal_template_transcript_noise(row: sqlite3.Row) -> bool:
     return template_prefix or role_transcript
 
 
-def build_forgetting_report(conn: sqlite3.Connection, *, accessible_scope_ids: Sequence[str], limit: int = 200) -> dict[str, Any]:
+def build_forgetting_report(conn: sqlite3.Connection, *, accessible_scope_ids: Sequence[str] | None, limit: int = 200) -> dict[str, Any]:
     """构建只读遗忘报告。
 
     默认只提出“软归档”候选；物理删除只用于明确敏感内容或运行噪声。

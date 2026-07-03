@@ -74,8 +74,14 @@ class FakeDoctor:
     def journal_report(hermes_home, *, enabled, journal_config):
         return (
             {
-                "entries": {"unprocessed": 0},
-                "digest_health": {"status": "degraded", "retry_exhausted_rejections": 1, "recovery_queue": {"retry_exhausted_candidates": 2, "dead_letter_candidates": 4}},
+                "entries": {"unprocessed": 0, "oldest_unprocessed": "2026-07-01T00:00:00+00:00"},
+                "backlog": {"oldest_unprocessed_age_hours": 7.5, "unprocessed_by_role": {"user": 1, "assistant": 2, "tool": 3}},
+                "digest_health": {
+                    "status": "degraded",
+                    "retry_exhausted_rejections": 1,
+                    "dead_letter_categories": {"auth": 6},
+                    "recovery_queue": {"retry_exhausted_candidates": 2, "dead_letter_candidates": 4},
+                },
             },
             {"ok": True},
             ["journal degraded"],
@@ -85,7 +91,18 @@ class FakeDoctor:
     def experience_report(hermes_home):
         return (
             {
-                "promotion_funnel": {"needs_review": 5, "promoted": 2, "duplicate_groups": [{"title": "dup"}]},
+                "promotion_funnel": {
+                    "needs_review": 5,
+                    "promoted": 2,
+                    "quarantined": 4,
+                    "duplicate_groups": [{"title": "dup"}],
+                    "feedback": {"stale": 1, "misleading": 2, "unresolved_stale": 0, "unresolved_misleading": 1},
+                },
+                "maturity": {
+                    "feedback": {"stale": 1, "misleading": 2, "unresolved_stale": 0, "unresolved_misleading": 1},
+                    "promoted_total": 2,
+                    "promoted_missing_replay_cases": 2,
+                },
                 "fact_freshness": {"needs_live_check": 3, "by_status": {"expired": 1, "current": 7}, "tracked_facts": 11},
             },
             {"ok": True},
@@ -159,7 +176,18 @@ def test_dashboard_payload_has_schema_severity_sections_and_trend(monkeypatch, t
     assert payload["severity"] == "FAIL"
     assert payload["ok"] is False
     assert payload["summary"]["candidate_debt_count"] == 3
+    assert payload["summary"]["journal_unprocessed_oldest_at"] == "2026-07-01T00:00:00+00:00"
+    assert payload["summary"]["journal_unprocessed_oldest_age_hours"] == 7.5
+    assert payload["summary"]["journal_dead_letter_auth"] == 6
+    assert payload["summary"]["journal_unprocessed_user"] == 1
+    assert payload["summary"]["journal_unprocessed_assistant"] == 2
+    assert payload["summary"]["journal_unprocessed_tool"] == 3
     assert payload["summary"]["memory_quality_active_hits"] == 2
+    assert payload["summary"]["memory_feedback_stale"] == 1
+    assert payload["summary"]["memory_feedback_misleading"] == 2
+    assert payload["summary"]["memory_feedback_unresolved_misleading"] == 1
+    assert payload["summary"]["experience_quarantined"] == 4
+    assert payload["summary"]["experience_promoted_missing_replay_cases"] == 2
     assert payload["summary"]["fact_freshness_needs_live_check"] == 3
     assert payload["summary"]["fact_freshness_expired"] == 1
     assert payload["summary"]["fact_freshness_total"] == 11

@@ -161,6 +161,51 @@ def test_doctor_reports_experience_schema_and_counts(tmp_path):
     assert not any("lack last_verified_at" in item for item in recommendations)
 
 
+def test_doctor_reports_experience_maturity_evidence_and_replay_coverage(tmp_path):
+    doctor = _load_doctor_module()
+    storage = tmp_path / "scope-recall"
+    storage.mkdir(parents=True)
+    conn = sqlite3.connect(storage / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        create_playbook(
+            conn,
+            playbook_id="pb_ready",
+            scope_id="scope-a",
+            payload=_payload(),
+            status="candidate",
+            confidence=0.9,
+            evidence_anchors=[{"journal_entry_id": 1, "kind": "verification"}],
+            metadata={"replay_cases": [{"id": "positive-ready"}, {"id": "negative-ready"}]},
+        )
+        review_playbook(conn, playbook_id="pb_ready", accessible_scope_ids=["scope-a"], action="promote", reason="fixture review")
+        create_playbook(
+            conn,
+            playbook_id="pb_missing",
+            scope_id="scope-a",
+            payload=_payload(),
+            status="candidate",
+            confidence=0.9,
+        )
+        review_playbook(conn, playbook_id="pb_missing", accessible_scope_ids=["scope-a"], action="promote", reason="fixture review")
+    finally:
+        conn.close()
+
+    payload, check, recommendations = doctor.experience_report(tmp_path)
+
+    assert check == {"ok": True, "failures": []}
+    maturity = payload["maturity"]
+    assert maturity["promoted_total"] == 2
+    assert maturity["promoted_with_evidence_anchors"] == 1
+    assert maturity["promoted_missing_evidence_anchors"] == 1
+    assert maturity["promoted_with_replay_cases"] == 1
+    assert maturity["promoted_missing_replay_cases"] == 1
+    assert maturity["status"] == "needs_replay_coverage"
+    assert any("replay" in item.lower() for item in recommendations)
+    assert any("evidence" in item.lower() for item in recommendations)
+
+
 def test_doctor_experience_funnel_reports_duplicates_and_review_heavy_state(tmp_path):
     doctor = _load_doctor_module()
     storage = tmp_path / "scope-recall"

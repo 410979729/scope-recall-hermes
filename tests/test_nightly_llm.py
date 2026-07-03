@@ -167,3 +167,48 @@ providers:
     assert config["base_url"] == "https://api.deepseek.com"
     assert config["api_key"] == "deepseek-test-key"
     assert config["api_mode"] == "chat_completions"
+
+
+def test_nightly_llm_corrupt_credential_pool_is_ignored(tmp_path):
+    from scope_recall.nightly_llm import resolve_hermes_credential_pool_token
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    for payload in (
+        {"credential_pool": "not-a-dict"},
+        {"credential_pool": [1, 2, 3]},
+        {"credential_pool": 42},
+    ):
+        (hermes_home / "auth.json").write_text(json.dumps(payload), encoding="utf-8")
+        assert resolve_hermes_credential_pool_token(hermes_home, "openai-codex") == ""
+
+
+def test_nightly_llm_default_codex_uses_hermes_credential_pool_not_deepseek_env(tmp_path):
+    from scope_recall.nightly_llm import resolve_llm_config
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    (hermes_home / ".env").write_text("DEEPSEEK_API_KEY=deepseek-should-not-be-used\n", encoding="utf-8")
+    (hermes_home / "auth.json").write_text(
+        json.dumps({"credential_pool": {"openai-codex": [{"access_token": "codex-oauth-token"}]}}),
+        encoding="utf-8",
+    )
+    (hermes_home / "config.yaml").write_text(
+        """
+model:
+  provider: openai-codex
+  default: gpt-5.5
+  base_url: https://chatgpt.com/backend-api/codex
+  api_mode: codex_responses
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = resolve_llm_config(hermes_home, DigestOptions(hermes_home=hermes_home, digest_date=date(2026, 6, 13)))
+
+    assert config["provider"] == "openai-codex"
+    assert config["model"] == "gpt-5.5"
+    assert config["api_mode"] == "codex_responses"
+    assert config["api_key"] == "codex-oauth-token"
+    assert config["api_key"] != "deepseek-should-not-be-used"

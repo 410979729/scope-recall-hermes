@@ -24,6 +24,7 @@ _TYPED_RELATION_TRIGGERS = {
     "depends_on": (r"depends\s+on", r"requires", r"needs", r"依赖", r"需要"),
     "owned_by": (r"owned\s+by", r"owner\s+is", r"maintained\s+by", r"belongs\s+to", r"归属", r"负责人"),
     "affects": (r"affects", r"impacts", r"changes", r"blocks", r"影响", r"阻塞"),
+    "invalidates": (r"invalidates?", r"makes\s+obsolete", r"no\s+longer\s+valid", r"失效", r"废弃"),
 }
 
 
@@ -176,7 +177,9 @@ def _trigger_mentions_entity(text: str, entity: str, triggers: tuple[str, ...]) 
         return False
     entity_re = _entity_pattern(entity)
     for trigger in triggers:
-        if re.search(rf"(?:{trigger}).{{0,120}}{entity_re}", text, flags=re.I | re.S):
+        trigger_then_entity = rf"(?:{trigger}).{{0,120}}{entity_re}"
+        entity_then_trigger = rf"{entity_re}.{{0,120}}(?:{trigger})"
+        if re.search(trigger_then_entity, text, flags=re.I | re.S) or re.search(entity_then_trigger, text, flags=re.I | re.S):
             return True
     return False
 
@@ -195,7 +198,7 @@ def _typed_relation(source: dict[str, Any], target: dict[str, Any], relation_typ
     ]
     if not matched_entities:
         return False, 0.0, ""
-    confidence = 0.78 if relation_type in {"depends_on", "owned_by"} else 0.72
+    confidence = 0.72 if relation_type == "invalidates" else 0.78 if relation_type in {"depends_on", "owned_by"} else 0.72
     return True, confidence, f"triggered_{relation_type}; matched_entities={','.join(matched_entities[:4])}"
 
 

@@ -209,6 +209,39 @@ def test_relation_rerank_boosts_superseding_candidate_when_enabled():
         provider.close()
 
 
+def test_relation_rerank_penalizes_invalidated_target_without_positive_boost():
+    old_fact = _item("old-port-fact", 0.82)
+    new_fact = _item("new-port-fact", 0.80)
+    provider = DummyProvider(
+        {
+            "mode": "lexical",
+            "min_score": 0.01,
+            "relation_rerank_enabled": True,
+            "relation_invalidated_penalty": 0.06,
+        },
+        [old_fact, new_fact],
+    )
+    try:
+        provider._require_conn().execute(
+            """
+            INSERT INTO memory_relations(source_memory_id, target_memory_id, relation_type, confidence, note, created_at)
+            VALUES (?, ?, 'invalidates', 1.0, 'test invalidates relation', '2026-06-01T00:00:00+00:00')
+            """,
+            ("new-port-fact", "old-port-fact"),
+        )
+        provider._require_conn().commit()
+
+        results = RecallService(provider).search_memories("Project Atlas deploy command", limit=2)
+        by_id = {item.id: item for item in results}
+
+        assert [item.id for item in results] == ["new-port-fact", "old-port-fact"]
+        assert by_id["new-port-fact"].metadata["relation_rerank_bonus"] == 0.0
+        assert by_id["old-port-fact"].metadata["relation_rerank_bonus"] < 0.0
+        assert "invalidates" in by_id["old-port-fact"].metadata["relation_evidence_types"]
+    finally:
+        provider.close()
+
+
 def test_relation_rerank_gives_small_auxiliary_boost_for_typed_graph_edges():
     dependent = _item("atlas-depends-on-redis", 0.78)
     unrelated = _item("atlas-unrelated", 0.775)

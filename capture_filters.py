@@ -49,15 +49,29 @@ SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
     # Provider-specific and transport token forms that often appear without labels,
     # including partially masked values returned by upstream auth errors.
-    re.compile(r"s" r"k-[A-Za-z0-9_*][A-Za-z0-9_*-]{8,}"),
+    re.compile(r"(?<![A-Za-z0-9_-])s" r"k-(?:(?:proj|ant-api\d{2})-)?[A-Za-z0-9_*]{16,}(?![A-Za-z0-9_-])"),
     re.compile(r"g" r"h[pousr]_[A-Za-z0-9_*_]{20,}"),
     re.compile(r"bea" r"rer\s+[A-Za-z0-9._\-~+/=*]{16,}", re.IGNORECASE),
+    re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9.*_-]{8,}\b"),
+    re.compile(r"\bxox[abprs]-[A-Za-z0-9.*_-]{8,}\b", re.IGNORECASE),
+    re.compile(r"\beyJ[A-Za-z0-9._-]{8,}\b"),
+    re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),
+    re.compile(r"\b(?:sk|rk)_live_[A-Za-z0-9_*.-]{16,}\b", re.IGNORECASE),
 )
 
 PRIVATE_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Windows drive paths first so `C:/Users/...` is fully redacted before the
+    # POSIX `/Users/...` fallback can leave a `C:` fragment behind.
+    re.compile(
+        r"(?<![A-Za-z0-9])[A-Za-z]:(?:[\\/]+|(?=[A-Za-z]))"
+        r"[^\\/\s\]})>'\"]+(?:\s+[^\\/\s\]})>'\"]+)*"
+        r"(?:[\\/]+[^\\/\s\]})>'\"]+(?:\s+[^\\/\s\]})>'\"]+)*)*",
+        re.IGNORECASE,
+    ),
+    re.compile(r"(?<![A-Za-z0-9])\\\\[^\\/\s\]})>'\"]+[\\/][^\s\]})>'\"]+", re.IGNORECASE),
+    re.compile(r"(?<![A-Za-z0-9])%(?:TEMP|TMP|LOCALAPPDATA|APPDATA|USERPROFILE)%[\\/][^\s\]})>'\"]+", re.IGNORECASE),
     re.compile(r"(?<![A-Za-z0-9])(?:/home|/Users|/root)/[^\s\]})>'\"]+"),
     re.compile(r"(?<![A-Za-z0-9])~/(?:[^\s\]})>'\"]+)", re.IGNORECASE),
-    re.compile(r"(?<![A-Za-z0-9])(?:[A-Za-z]:)?\\\\Users\\\\[^\s\]})>'\"]+", re.IGNORECASE),
     re.compile(r"(?<![A-Za-z0-9])/tmp/(?:hermes|scope|pytest|tmp)[^\s\]})>'\"]*", re.IGNORECASE),
 )
 

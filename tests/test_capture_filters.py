@@ -6,7 +6,15 @@ from __future__ import annotations
 
 import pytest
 
-from scope_recall.capture_filters import _compiled_configured_patterns, _configured_patterns, redact_secret_like_text, sanitize_capture_text, should_capture_text
+from scope_recall.capture_filters import (
+    _compiled_configured_patterns,
+    _configured_patterns,
+    redact_private_paths,
+    redact_secret_like_text,
+    sanitize_capture_text,
+    sanitize_report_text,
+    should_capture_text,
+)
 
 
 def test_recent_telegram_history_wrapper_is_rejected():
@@ -88,6 +96,35 @@ def test_partially_masked_provider_key_is_rejected():
     assert result.reason == "secret-like-content"
 
 
+def test_sk_prefixed_non_secret_labels_are_not_rejected():
+    text = "Use sk-transition-plan as a normal migration label, not a credential."
+
+    result = should_capture_text(text)
+    redacted = redact_secret_like_text(text)
+
+    assert result.allowed is True
+    assert result.reason == ""
+    assert redacted == text
+
+
+def test_common_unlabeled_secret_token_formats_are_rejected():
+    samples = [
+        "AWS key " + "AK" + "IA" + "AB" + "CD" + "EFGH" + "IJKL" + "MNOP" + " must not persist.",
+        "Slack bot token " + "xo" + "xb-" + "1" * 12 + "-" + "u" * 12 + " leaked.",
+        "JWT " + "ey" + "J" + "a" * 18 + "." + "b" * 12 + "." + "c" * 12 + " leaked.",
+        "Google key " + "AI" + "za" + "A" * 35 + " leaked.",
+        "Stripe live key " + "sk" + "_live_" + "A" * 24 + " leaked.",
+        "Stripe restricted key " + "rk" + "_live_" + "B" * 24 + " leaked.",
+    ]
+
+    for text in samples:
+        result = should_capture_text(text)
+        redacted = redact_secret_like_text(text)
+        assert result.allowed is False
+        assert result.reason == "secret-like-content"
+        assert "[REDACTED_SECRET]" in redacted
+
+
 def test_secret_index_like_multiline_metadata_is_not_cross_line_rejected():
     result = should_capture_text("Secret index: Scope Recall smoke dummy credential\nKind: api_key\nVault ref: vault://smoke/scope-recall/dummy")
 
@@ -161,6 +198,28 @@ def test_short_assistant_acknowledgements_are_rejected(text):
 
     assert result.allowed is False
     assert result.reason == "trivial"
+
+
+def test_private_path_redaction_covers_windows_drive_unc_and_posix_paths():
+    private_paths = [
+        r"C:\Users\Administrator\AppData\Local\Temp\codex-abc\file.txt",
+        r"C:Users\Administrator\AppData\Local\Temp\codex-abc\file.txt",
+        r"C:\Program Files\Common Files\logs\bar.txt",
+        "C:/Users/Administrator/AppData/Local/Temp/codex-abc/file.txt",
+        r"E:\设计部nas盘\项目\file.txt",
+        r"\\server\share\folder\file.txt",
+        "/home/a/private/file.txt",
+    ]
+
+    for private_path in private_paths:
+        redacted = redact_private_paths(private_path)
+        report_text = sanitize_report_text(private_path)
+        assert redacted == "[REDACTED_PATH]"
+        assert report_text == "[REDACTED_PATH]"
+        assert "Administrator" not in redacted
+        assert "设计部nas盘" not in redacted
+        assert "server" not in redacted
+        assert "C:" not in redacted
 
 
 def test_attachment_markers_are_removed_before_capture_filtering():

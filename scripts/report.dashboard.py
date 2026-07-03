@@ -137,8 +137,14 @@ def build_dashboard(source_root: Path, hermes_home: Path, *, previous_path: Path
         *vector_recommendations,
     ]
     journal_health = journal_payload.get("digest_health") or {}
+    journal_entries = journal_payload.get("entries") or {}
+    journal_backlog = journal_payload.get("backlog") or {}
+    unprocessed_by_role = journal_backlog.get("unprocessed_by_role") or {}
     recovery_queue = journal_health.get("recovery_queue") or {}
+    dead_letter_categories = journal_health.get("dead_letter_categories") or {}
     experience_funnel = experience_payload.get("promotion_funnel") or {}
+    experience_maturity = experience_payload.get("maturity") or {}
+    experience_feedback = experience_maturity.get("feedback") or experience_funnel.get("feedback") or {}
     candidate_debt = dict(candidate_debt_payload or {})
     if not candidate_debt and isinstance(sqlite_payload.get("candidate_debt"), dict):
         candidate_debt = dict(sqlite_payload.get("candidate_debt") or {})
@@ -150,11 +156,17 @@ def build_dashboard(source_root: Path, hermes_home: Path, *, previous_path: Path
     ok = all(bool(check.get("ok")) for check in checks.values())
     summary = {
         "sqlite_memories": sqlite_payload.get("memory_count", 0),
-        "journal_unprocessed": (journal_payload.get("entries") or {}).get("unprocessed", 0),
+        "journal_unprocessed": journal_entries.get("unprocessed", 0),
+        "journal_unprocessed_oldest_at": journal_entries.get("oldest_unprocessed", ""),
+        "journal_unprocessed_oldest_age_hours": journal_backlog.get("oldest_unprocessed_age_hours", 0),
+        "journal_unprocessed_user": unprocessed_by_role.get("user", 0),
+        "journal_unprocessed_assistant": unprocessed_by_role.get("assistant", 0),
+        "journal_unprocessed_tool": unprocessed_by_role.get("tool", 0),
         "journal_digest_status": journal_health.get("status", journal_payload.get("status")),
         "journal_retry_exhausted_rejections": journal_health.get("retry_exhausted_rejections", 0),
         "journal_retry_replay_candidates": recovery_queue.get("retry_exhausted_candidates", 0),
         "journal_dead_letter_replay_candidates": recovery_queue.get("dead_letter_candidates", 0),
+        "journal_dead_letter_auth": dead_letter_categories.get("auth", 0),
         "journal_llm_quarantine_runs": journal_health.get("llm_quarantine_runs", 0),
         "memory_secret_active": secret_payload.get("active_secret_like_count", 0),
         "candidate_debt_count": candidate_debt.get("candidate_count", candidate_debt.get("count", 0)),
@@ -168,8 +180,14 @@ def build_dashboard(source_root: Path, hermes_home: Path, *, previous_path: Path
         "vector_status": vector_payload.get("status"),
         "vector_backend": vector_payload.get("backend", backend),
         "experience_needs_review": experience_funnel.get("needs_review", 0),
+        "experience_quarantined": experience_funnel.get("quarantined", 0),
         "experience_promoted": experience_funnel.get("promoted", 0),
         "experience_duplicate_groups": len(experience_funnel.get("duplicate_groups") or []),
+        "experience_promoted_missing_replay_cases": experience_maturity.get("promoted_missing_replay_cases", 0),
+        "memory_feedback_stale": experience_feedback.get("stale", 0),
+        "memory_feedback_misleading": experience_feedback.get("misleading", 0),
+        "memory_feedback_unresolved_stale": experience_feedback.get("unresolved_stale", 0),
+        "memory_feedback_unresolved_misleading": experience_feedback.get("unresolved_misleading", 0),
         "nightly_status": nightly_payload.get("status"),
     }
     return {
@@ -208,10 +226,16 @@ def render_markdown(payload: dict[str, Any]) -> str:
     labels = [
         ("SQLite memories", "sqlite_memories"),
         ("Journal unprocessed", "journal_unprocessed"),
+        ("Journal oldest unprocessed", "journal_unprocessed_oldest_at"),
+        ("Journal oldest age hours", "journal_unprocessed_oldest_age_hours"),
+        ("Journal unprocessed user", "journal_unprocessed_user"),
+        ("Journal unprocessed assistant", "journal_unprocessed_assistant"),
+        ("Journal unprocessed tool", "journal_unprocessed_tool"),
         ("Journal digest status", "journal_digest_status"),
         ("Retry-exhausted rejections", "journal_retry_exhausted_rejections"),
         ("Retry replay candidates", "journal_retry_replay_candidates"),
         ("Dead-letter replay candidates", "journal_dead_letter_replay_candidates"),
+        ("Dead-letter auth", "journal_dead_letter_auth"),
         ("LLM quarantine runs", "journal_llm_quarantine_runs"),
         ("Active secret-like memories", "memory_secret_active"),
         ("Candidate debt", "candidate_debt_count"),
@@ -221,8 +245,14 @@ def render_markdown(payload: dict[str, Any]) -> str:
         ("Vector status", "vector_status"),
         ("Vector backend", "vector_backend"),
         ("Experience needs_review", "experience_needs_review"),
+        ("Experience quarantined", "experience_quarantined"),
         ("Experience promoted", "experience_promoted"),
         ("Experience duplicate groups", "experience_duplicate_groups"),
+        ("Experience missing replay cases", "experience_promoted_missing_replay_cases"),
+        ("Memory feedback stale", "memory_feedback_stale"),
+        ("Memory feedback misleading", "memory_feedback_misleading"),
+        ("Memory feedback unresolved stale", "memory_feedback_unresolved_stale"),
+        ("Memory feedback unresolved misleading", "memory_feedback_unresolved_misleading"),
         ("Nightly status", "nightly_status"),
     ]
     for label, key in labels:
