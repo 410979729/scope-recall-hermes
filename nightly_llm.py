@@ -40,6 +40,9 @@ def normalize_digest_api_mode(value: Any, *, provider: str = "", base_url: str =
         "codex_responses": "codex_responses",
         "responses": "codex_responses",
         "openai_responses": "codex_responses",
+        "anthropic": "anthropic_messages",
+        "anthropic_messages": "anthropic_messages",
+        "messages": "anthropic_messages",
     }
     normalized = aliases.get(raw, raw)
     if normalized:
@@ -240,6 +243,20 @@ def responses_endpoint(base_url: str) -> str:
     return endpoint + "/responses"
 
 
+def anthropic_messages_endpoint(base_url: str, *, endpoint: str = "") -> str:
+    explicit = str(endpoint or "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    base = str(base_url or "").strip().rstrip("/")
+    if not base:
+        base = "https://api.anthropic.com"
+    if base.endswith("/v1/messages"):
+        return base
+    if base.endswith("/v1"):
+        return base + "/messages"
+    return base + "/v1/messages"
+
+
 def response_item_get(item: Any, key: str, default: Any = None) -> Any:
     if isinstance(item, dict):
         return item.get(key, default)
@@ -343,7 +360,11 @@ def call_chat_completions_llm(
             {"role": "user", "content": prompt},
         ],
         "temperature": 0,
-        "max_tokens": 1800,
+        # Some reasoning-heavy providers can spend a large part of the
+        # completion budget on internal thinking tokens before emitting strict
+        # JSON. A 1.8k cap caused truncated arrays and parse dead-letters
+        # during digest repair.
+        "max_tokens": 4096,
     }
     request = urllib.request.Request(
         endpoint_url,
@@ -396,6 +417,56 @@ def call_codex_responses_llm(prompt: str, *, model: str, base_url: str, api_key:
     return decode_responses_body(body)
 
 
+def extract_anthropic_messages_text(data: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for item in data.get("content") or []:
+        if isinstance(item, dict):
+            text = item.get("text")
+            if text:
+                parts.append(str(text))
+        elif isinstance(item, str):
+            parts.append(item)
+    if parts:
+        return "".join(parts)
+    return str(data.get("text") or "")
+
+
+def call_anthropic_messages_llm(
+    prompt: str,
+    *,
+    model: str,
+    base_url: str,
+    api_key: str,
+    timeout: float,
+    endpoint: str = "",
+) -> str:
+    endpoint_url = anthropic_messages_endpoint(base_url, endpoint=endpoint)
+    payload = {
+        "model": model,
+        "system": "You extract durable memory as strict JSON.",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0,
+        "max_tokens": 4096,
+    }
+    request = urllib.request.Request(
+        endpoint_url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = redact_sensitive(exc.read().decode("utf-8", errors="replace")[:500])
+        raise RuntimeError(f"LLM HTTP {exc.code} at {endpoint_url}: {body}") from exc
+    return extract_anthropic_messages_text(data)
+
+
 def call_llm(
     prompt: str,
     *,
@@ -412,6 +483,15 @@ def call_llm(
     mode = normalize_digest_api_mode(api_mode, provider="", base_url=base_url)
     if mode == "codex_responses":
         return call_codex_responses_llm(prompt, model=model, base_url=base_url, api_key=api_key, timeout=timeout)
+    if mode == "anthropic_messages":
+        return call_anthropic_messages_llm(
+            prompt,
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            timeout=timeout,
+            endpoint=endpoint,
+        )
     if mode != "chat_completions":
         raise RuntimeError(f"Unsupported digest api_mode: {api_mode}")
     return call_chat_completions_llm(
@@ -488,6 +568,8 @@ def call_llm_with_retries(
 
 
 __all__ = [
+    "anthropic_messages_endpoint",
+    "call_anthropic_messages_llm",
     "call_chat_completions_llm",
     "call_codex_responses_llm",
     "call_llm",

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .capture_filters import sanitize_report_text, should_capture_text
-from .digest_run_results import journal_digest_metadata, journal_digest_success_result, no_unprocessed_journal_result
+from .digest_run_results import journal_digest_metadata, journal_digest_receipt_fields, journal_digest_success_result, no_unprocessed_journal_result
 from .gating import clean_text, compact_text, dedup_key
 from .governance import is_conflicting, merge_memory_text, semantic_similarity
 from .models import RuntimeScope
@@ -204,6 +204,10 @@ def _low_value_promotion_reason(candidate: JournalDigestCandidate) -> str:
     text = clean_text(candidate.content)
     if not text:
         return "low-value-empty"
+    if "[REDACTED_PATH]" in text or "Artifact anchors:" in text or "artifact anchors:" in text:
+        return "low-value-redacted-path-or-artifact-anchor"
+    if candidate.target == "project" and re.search(r"(?:当前系统现状|当前技术现状|当前系统状态|当前状态|技术债务|current status|current state|technical debt)", text, re.IGNORECASE):
+        return "low-value-stale-status-snapshot"
     has_value_signal = _has_high_value_durable_signal(text)
     if candidate.memory_type == "tool_trace" and not has_value_signal:
         return "low-value-tool-trace"
@@ -562,26 +566,27 @@ def _collect_journal_candidates(
     scope: RuntimeScope,
     journal_config: dict[str, Any],
     requested_extractor: str,
-) -> tuple[list[JournalDigestCandidate], str, str]:
+) -> tuple[list[JournalDigestCandidate], str, str, Counter[str]]:
     if requested_extractor == "llm":
         fallback_allowed = _config_bool(journal_config, "allow_heuristic_fallback", False)
         try:
             candidates = llm_journal_candidates(conn, entries=entries, hermes_home=hermes_home, scope=scope, journal_config=journal_config)
+            candidate_status_counts = Counter(getattr(candidates, "extractor_status_counts", {}) or {})
             if candidates:
-                return candidates, "llm", ""
+                return candidates, "llm", "", candidate_status_counts
             if fallback_allowed:
-                return heuristic_journal_candidates(entries), "heuristic-fallback", "llm produced no candidates"
-            return [], "llm", "llm produced no candidates"
+                return heuristic_journal_candidates(entries), "heuristic-fallback", "llm produced no candidates", candidate_status_counts
+            return [], "llm", "", candidate_status_counts
         except Exception as exc:
             if isinstance(exc, JournalDigestLLMError) and exc.error_kind in {"parse", "filtered"}:
                 raise
             if fallback_allowed:
                 try:
-                    return heuristic_journal_candidates(entries), "heuristic-fallback", "llm failed; heuristic fallback enabled"
+                    return heuristic_journal_candidates(entries), "heuristic-fallback", "llm failed; heuristic fallback enabled", Counter()
                 except Exception:
                     pass
             raise
-    return heuristic_journal_candidates(entries), "heuristic", ""
+    return heuristic_journal_candidates(entries), "heuristic", "", Counter()
 
 
 def _scope_from_row(row: sqlite3.Row | None) -> RuntimeScope:
@@ -729,6 +734,7 @@ def run_journal_digest(
         counts = Counter()
         extractor_counts = Counter()
         quarantine_counts = Counter()
+        candidate_status_counts = Counter()
         extractor_errors: list[Any] = []
         actions: list[dict[str, Any]] = []
         for active_scope in active_scopes:
@@ -742,7 +748,7 @@ def run_journal_digest(
                 continue
             total_loaded_entries += len(entries)
             try:
-                candidates, scope_extractor_used, extractor_error = _collect_journal_candidates(
+                collected: Any = _collect_journal_candidates(
                     conn,
                     entries=entries,
                     hermes_home=hermes_home,
@@ -750,12 +756,18 @@ def run_journal_digest(
                     journal_config=journal_config,
                     requested_extractor=requested_extractor,
                 )
+                if len(collected) == 3:
+                    candidates, scope_extractor_used, extractor_error = collected
+                    scope_candidate_status_counts = Counter()
+                else:
+                    candidates, scope_extractor_used, extractor_error, scope_candidate_status_counts = collected
             except Exception as exc:
                 if requested_extractor != "llm":
                     raise
                 scope_extractor_used = "llm-quarantine"
                 quarantine_reason, quarantine_meta = _quarantine_classification(exc)
                 extractor_error = quarantine_meta
+                scope_candidate_status_counts = Counter()
                 candidates = []
                 quarantine_entry_ids = [int(entry.id) for entry in entries]
                 counts["skipped"] += len(quarantine_entry_ids)
@@ -779,6 +791,7 @@ def run_journal_digest(
                     )
                 processed_entry_ids.extend(quarantine_entry_ids)
             extractor_counts[scope_extractor_used] += 1
+            candidate_status_counts.update(scope_candidate_status_counts)
             if extractor_error:
                 extractor_errors.append(extractor_error)
             if scope_extractor_used == "llm-quarantine":
@@ -851,9 +864,25 @@ def run_journal_digest(
         else:
             extractor_used = requested_extractor
         pruned_entries = 0
+        backlog_after = backlog_before
         if not dry_run:
             mark_entries_processed(conn, entry_ids=unique_processed_entry_ids, run_id=run_id)
             pruned_entries = _prune_processed_journal(conn, retention_days=retention_days)
+            backlog_after = _journal_unprocessed_count(conn)
+        recommended_next_limit = _dynamic_journal_digest_limit(conn, configured_limit=configured_limit, journal_config=journal_config)
+        receipt_fields = journal_digest_receipt_fields(
+            total_loaded_entries=total_loaded_entries,
+            total_candidates=total_candidates,
+            counts=counts,
+            quarantine_counts=quarantine_counts,
+            extractor_errors=extractor_errors,
+            backlog_before=backlog_before,
+            backlog_after=backlog_after,
+            effective_limit=effective_limit,
+            recommended_next_limit=recommended_next_limit,
+            candidate_status_counts=candidate_status_counts,
+        )
+        if not dry_run:
             conn.execute(
                 """
                 INSERT INTO journal_digest_runs(id, started_at, finished_at, status, extractor, interval_label,
@@ -885,6 +914,12 @@ def run_journal_digest(
                             effective_limit=effective_limit,
                             retention_days=retention_days,
                             pruned_entries=pruned_entries,
+                            backlog_after=receipt_fields["backlog_after"],
+                            productive_writes=receipt_fields["productive_writes"],
+                            no_insert_reason=receipt_fields["no_insert_reason"],
+                            health_flags=receipt_fields["health_flags"],
+                            recommended_next_limit=receipt_fields["recommended_next_limit"],
+                            candidate_status_counts=candidate_status_counts,
                         ),
                         ensure_ascii=False,
                     ),
@@ -905,6 +940,12 @@ def run_journal_digest(
             effective_limit=effective_limit,
             pruned_entries=pruned_entries,
             actions=actions,
+            backlog_after=receipt_fields["backlog_after"],
+            productive_writes=receipt_fields["productive_writes"],
+            no_insert_reason=receipt_fields["no_insert_reason"],
+            health_flags=receipt_fields["health_flags"],
+            recommended_next_limit=receipt_fields["recommended_next_limit"],
+            candidate_status_counts=candidate_status_counts,
         )
     except Exception as exc:
         if not dry_run:
@@ -935,7 +976,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit-entries", type=int, default=None, help="Maximum unprocessed journal entries per run; defaults to journal.max_entries_per_digest")
     parser.add_argument("--provider", default="", help="LLM provider name from Hermes config, e.g. deepseek; overrides main model provider for this digest run")
     parser.add_argument("--model", default="", help="LLM model for this digest run")
-    parser.add_argument("--api-mode", default="", choices=["", "chat_completions", "codex_responses"], help="LLM API mode for this digest run")
+    parser.add_argument("--api-mode", default="", choices=["", "chat_completions", "codex_responses", "anthropic_messages"], help="LLM API mode for this digest run")
     parser.add_argument("--base-url", default="", help="LLM base URL for this digest run")
     parser.add_argument("--endpoint", default="", help="Full chat-completions endpoint override for this digest run")
     parser.add_argument("--key-env", default="", help="Environment variable name containing the LLM API key")

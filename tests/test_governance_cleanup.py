@@ -363,7 +363,14 @@ def test_governance_audit_coverage_splits_legacy_and_new_archive_debt():
     assert report["samples"]["legacy_missing_audit"][0]["id"] == "legacy"
 
 
-def test_governance_audit_coverage_counts_memory_quality_lint_archive_events():
+@pytest.mark.parametrize(
+    ("event_type", "action"),
+    [
+        ("memory_quality_lint", "archive_lint_hit"),
+        ("memory_quality_cleanup", "archive_active_lint_hit"),
+    ],
+)
+def test_governance_audit_coverage_counts_memory_quality_archive_events(event_type: str, action: str):
     conn = _conn()
     _insert(conn, memory_id="quality-archived", content="Noisy nightly digest summary archived by quality lint.")
     _update_metadata(
@@ -376,8 +383,8 @@ def test_governance_audit_coverage_counts_memory_quality_lint_archive_events():
     record_governance_audit_event(
         conn,
         event_id="gov_quality_archived",
-        event_type="memory_quality_lint",
-        action="archive_lint_hit",
+        event_type=event_type,
+        action=action,
         scope_id="shared-scope",
         target_id="quality-archived",
         batch_id="quality-batch",

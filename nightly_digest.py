@@ -31,6 +31,7 @@ from .graph import clamp_float, load_metadata, normalize_entity, sync_memory_ent
 from .http_utils import redact_sensitive as _shared_redact_sensitive
 from .models import RuntimeScope
 from .nightly_llm import (
+    call_anthropic_messages_llm as _call_anthropic_messages_llm,
     call_codex_responses_llm as _call_codex_responses_llm,
     call_llm,
     call_llm_with_retries as _call_llm_with_retries,
@@ -55,6 +56,7 @@ __all__ = [
     "ScopeProfile",
     "SessionBundle",
     "_call_llm_with_retries",
+    "_call_anthropic_messages_llm",
     "_call_codex_responses_llm",
     "_classify_llm_error",
     "_config_bool_value",
@@ -603,13 +605,56 @@ def build_prompt(bundle: SessionBundle, chunk: str, existing_context: list[str])
         "不要把一次性任务状态保存成长期记忆：包括 session id、commit SHA、branch/tag/HEAD 状态、issue/PR/release 编号、测试通过数量、发布候选/当前进度、临时路径和下一步清单。\n"
         "只有在它表达稳定偏好、长期约束、环境事实、根因、可复用坑或通用工作流时才输出候选；否则输出 action=skip。\n"
         "任务型对话可提取通用 workflow/tool-chain，但必须去掉具体会话、版本、issue、commit、路径、日期和一次性验收数字，只写脱敏的可复用步骤/踩坑。\n"
-        "如果已有记忆已经完整覆盖，请输出 action=skip；如果已有记忆不够详细，请输出 action=update 并给 existing_hint。\n"
+        "如果已有记忆已经完整覆盖，请输出 action=skip；不要因为措辞更完整、表达更漂亮或用户重复提醒而 update；只有出现新约束、纠正旧事实或已有记忆缺少关键细节时才输出 action=update 并给 existing_hint。\n"
         "输出只能是 JSON 数组，每项字段：action, content, target, memory_type, importance, confidence, entities, tags, reason, existing_hint。\n"
+        "每条 content 必须是可独立理解的一到三句完整长期记忆，尽量不少于 40 个中文字符；同一用户的相关格式/语言偏好要合并成一条，不要拆成多个过短碎片。\n"
         "target 只能是 user/memory/project/ops；memory_type 可为 preference/factual/project/procedure/workflow/summary/pitfall/decision/resource/constraint。\n"
         f"\n会话类型：{mode}\n"
         f"已有相关记忆摘要：\n{existing}\n\n"
         f"对话片段：\n---\n{chunk}\n---\n"
     )
+
+
+def _extract_json_payload(text: str) -> str:
+    """Extract the first balanced JSON array/object from model output.
+
+    Some chat models ignore the "JSON only" instruction and wrap the payload in a
+    short preamble/epilogue without a fenced code block. Treat that as recoverable
+    parser noise while still failing malformed JSON closed.
+    """
+
+    stripped = text.strip()
+    if not stripped:
+        return ""
+    if stripped[0] in "[{":
+        return stripped
+    start = min((idx for idx in (stripped.find("["), stripped.find("{")) if idx >= 0), default=-1)
+    if start < 0:
+        return stripped
+    opener = stripped[start]
+    closer = "]" if opener == "[" else "}"
+    depth = 0
+    in_string = False
+    escaped = False
+    for offset, char in enumerate(stripped[start:], start=start):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char == opener:
+            depth += 1
+        elif char == closer:
+            depth -= 1
+            if depth == 0:
+                return stripped[start : offset + 1].strip()
+    return stripped
 
 
 def _parse_llm_candidates_with_status(raw: str, *, bundle: SessionBundle) -> tuple[list[DigestCandidate], str]:
@@ -622,6 +667,8 @@ def _parse_llm_candidates_with_status(raw: str, *, bundle: SessionBundle) -> tup
     fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if fenced:
         text = fenced.group(1).strip()
+    else:
+        text = _extract_json_payload(text)
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
@@ -1073,6 +1120,7 @@ def collect_candidates(
             continue
         bundle_candidates: list[DigestCandidate] = []
         llm_failed = False
+        llm_reviewed = False
         for chunk in session_chunks(bundle, chunk_chars=options.chunk_chars, max_session_chars=options.max_session_chars):
             prompt = build_prompt(bundle, chunk, existing_context)
             try:
@@ -1097,33 +1145,37 @@ def collect_candidates(
                 llm_failed = True
                 break
             parsed, parse_status = _parse_llm_candidates_with_status(raw, bundle=bundle)
+            llm_reviewed = True
             if parsed:
                 bundle_candidates.extend(parsed)
-            elif parse_status == "explicit_skip":
+            elif parse_status in {"explicit_skip", "filtered"}:
+                # A filtered result means the LLM returned candidates but the
+                # durable-memory quality gate rejected them (for example because
+                # they contained private paths, one-off progress, or other
+                # low-value details).  Do not replace that judgement with the
+                # coarse heuristic template; that is how low-quality
+                # "可复用任务流程" memories re-entered the store.
                 continue
-            elif parse_status in {"empty", "parse", "filtered"}:
+            elif parse_status in {"empty", "parse"}:
                 if not options.allow_heuristic_fallback:
                     raise RuntimeError(f"LLM extraction produced no usable candidates: {parse_status}")
-                heuristic = heuristic_candidates(bundle)
                 fallback_events.append(
                     {
                         "session_id": bundle.id,
-                        "kind": f"llm_{parse_status}" if heuristic else f"llm_{parse_status}_no_candidates",
+                        "kind": f"llm_{parse_status}_skipped",
                         "retryable": True,
                         "attempts": max(1, int(options.max_attempts or 1)),
                         "message": (
                             f"LLM output produced no usable candidates ({parse_status}); "
-                            + ("heuristic fallback used." if heuristic else "heuristic fallback also produced no candidates.")
+                            "heuristic fallback intentionally skipped to avoid low-quality template memories."
                         ),
                     }
                 )
-                bundle_candidates.extend(heuristic)
-                llm_failed = True
-                break
+                continue
         if llm_failed:
             candidates.extend(bundle_candidates)
             continue
-        if not bundle_candidates:
+        if not bundle_candidates and not llm_reviewed:
             bundle_candidates.extend(heuristic_candidates(bundle))
         candidates.extend(bundle_candidates)
     return candidates
@@ -1183,7 +1235,15 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
         applied = apply_candidates(conn, vector_runtime, scope, run_id=run_id, candidates=candidates, dry_run=options.dry_run, runtime_config=runtime_config)
         counts = Counter(applied["counts"])
         quality_counts = Counter(applied.get("quality_counts", {}))
-        extractor_used = "heuristic" if options.extractor == "heuristic" else ("heuristic-fallback" if fallback_events else "llm")
+        skipped_heuristic_events = [
+            event for event in fallback_events if str(event.get("kind") or "").endswith("_skipped")
+        ]
+        used_heuristic_fallback = bool(fallback_events) and len(skipped_heuristic_events) != len(fallback_events)
+        extractor_used = (
+            "heuristic"
+            if options.extractor == "heuristic"
+            else ("heuristic-fallback" if used_heuristic_fallback else ("llm-degraded" if fallback_events else "llm"))
+        )
         ok, status, error = nightly_status_payload(dry_run=options.dry_run, fallback_events=fallback_events, candidate_count=len(candidates))
         result = nightly_digest_result(
             ok=ok,

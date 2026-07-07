@@ -542,19 +542,33 @@ def find_duplicate_playbooks(
         grouped.setdefault(key, []).append(row)
     groups: list[dict[str, Any]] = []
     for (_task_class, _title), items in grouped.items():
-        if len(items) < 2:
-            continue
-        sorted_items = sorted(items, key=_canonical_sort_key, reverse=True)
-        canonical = sorted_items[0]
-        groups.append(
-            {
-                "task_class": str(canonical["task_class"]),
-                "title": str(canonical["title"]),
-                "count": len(sorted_items),
-                "canonical_id": str(canonical["id"]),
-                "items": [_serialize_row(row) for row in sorted_items],
-            }
-        )
+        remaining = list(items)
+        while remaining:
+            component = [remaining.pop(0)]
+            changed = True
+            while changed:
+                changed = False
+                rest: list[sqlite3.Row] = []
+                for row in remaining:
+                    if any(_same_owner_scope(row, existing) for existing in component):
+                        component.append(row)
+                        changed = True
+                    else:
+                        rest.append(row)
+                remaining = rest
+            if len(component) < 2:
+                continue
+            sorted_items = sorted(component, key=_canonical_sort_key, reverse=True)
+            canonical = sorted_items[0]
+            groups.append(
+                {
+                    "task_class": str(canonical["task_class"]),
+                    "title": str(canonical["title"]),
+                    "count": len(sorted_items),
+                    "canonical_id": str(canonical["id"]),
+                    "items": [_serialize_row(row) for row in sorted_items],
+                }
+            )
     groups.sort(key=lambda item: (int(item["count"]), str(item["title"])), reverse=True)
     return groups[: max(1, min(100, int(limit or 50)))]
 
@@ -562,6 +576,48 @@ def find_duplicate_playbooks(
 def _fetch_accessible_playbook(conn: sqlite3.Connection, playbook_id: str, accessible_scope_ids: Sequence[str]) -> sqlite3.Row | None:
     scope_sql, scope_params = _scope_predicate(accessible_scope_ids)
     return conn.execute(f"SELECT * FROM procedural_playbooks WHERE id = ? AND {scope_sql}", [playbook_id, *scope_params]).fetchone()
+
+
+def _owner_scope_values(row: sqlite3.Row) -> set[str]:
+    """Return the owner/private and shared scope ids that define a playbook lineage boundary."""
+
+    return {value for value in (str(row["scope_id"] or ""), str(row["shared_scope_id"] or "")) if value}
+
+
+def _same_owner_scope(left: sqlite3.Row, right: sqlite3.Row) -> bool:
+    """Whether two playbooks may be reviewed/merged as the same owner lineage.
+
+    Some bootstrap/core playbooks store the user-level scope in ``scope_id`` while
+    auto-generated session playbooks store that same value in ``shared_scope_id``.
+    Treating either field intersection as the owner boundary avoids false
+    cross-scope mismatches while still blocking unrelated/private scopes.
+    """
+
+    return bool(_owner_scope_values(left) & _owner_scope_values(right))
+
+
+def _normalize_semantic_key(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().casefold())
+
+
+def _same_playbook_semantics(left: sqlite3.Row, right: sqlite3.Row) -> bool:
+    """Whether two playbooks are safe to put in the same lifecycle lineage by default."""
+
+    return (
+        _normalize_semantic_key(left["task_class"]) == _normalize_semantic_key(right["task_class"])
+        and _normalize_semantic_key(left["title"]) == _normalize_semantic_key(right["title"])
+    )
+
+
+def _semantic_mismatch_payload(source: sqlite3.Row, target: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "source_id": str(source["id"]),
+        "source_task_class": sanitize_report_text(str(source["task_class"] or "")),
+        "source_title": sanitize_report_text(str(source["title"] or "")),
+        "target_id": str(target["id"]),
+        "target_task_class": sanitize_report_text(str(target["task_class"] or "")),
+        "target_title": sanitize_report_text(str(target["title"] or "")),
+    }
 
 
 def _insert_playbook_version(conn: sqlite3.Connection, *, row: sqlite3.Row, change_type: str, reason: str, created_at: str) -> int:
@@ -584,6 +640,7 @@ def merge_playbooks(
     accessible_scope_ids: Sequence[str],
     reason: str = "",
     dry_run: bool = True,
+    force_cross_class: bool = False,
 ) -> dict[str, Any]:
     """Merge duplicate or superseded Experience playbooks while preserving audit metadata.
 
@@ -613,7 +670,9 @@ def merge_playbooks(
             source_rows.append(row)
     if missing:
         return {"merged": False, "dry_run": bool(dry_run), "target_id": safe_target_id, "error": "source_not_found", "missing_source_ids": missing}
-    owner_mismatches = [str(row["id"]) for row in source_rows if str(row["scope_id"]) != str(target["scope_id"])]
+    already_superseded_rows = [row for row in source_rows if str(row["status"]) == "superseded" and str(row["superseded_by"] or "") == safe_target_id]
+    needs_change_rows = [row for row in source_rows if row not in already_superseded_rows]
+    owner_mismatches = [str(row["id"]) for row in needs_change_rows if not _same_owner_scope(row, target)]
     if owner_mismatches:
         return {
             "merged": False,
@@ -622,23 +681,50 @@ def merge_playbooks(
             "error": "scope_owner_mismatch",
             "source_ids": owner_mismatches,
         }
+    semantic_mismatches = [row for row in needs_change_rows if not _same_playbook_semantics(row, target)]
+    if semantic_mismatches and not force_cross_class:
+        return {
+            "merged": False,
+            "dry_run": bool(dry_run),
+            "target_id": safe_target_id,
+            "error": "semantic_mismatch",
+            "mismatches": [_semantic_mismatch_payload(row, target) for row in semantic_mismatches],
+        }
+    if semantic_mismatches and not safe_reason:
+        return {
+            "merged": False,
+            "dry_run": bool(dry_run),
+            "target_id": safe_target_id,
+            "error": "force_reason_required",
+            "mismatches": [_semantic_mismatch_payload(row, target) for row in semantic_mismatches],
+        }
     payload = {
         "merged": False,
         "dry_run": bool(dry_run),
         "target_id": safe_target_id,
         "source_ids": [str(row["id"]) for row in source_rows],
+        "changed_source_ids": [str(row["id"]) for row in needs_change_rows],
+        "idempotent_source_ids": [str(row["id"]) for row in already_superseded_rows],
+        "changed": bool(needs_change_rows),
+        "idempotent": not bool(needs_change_rows),
         "reason": safe_reason,
         "target": _serialize_row(target),
         "sources": [_serialize_row(row) for row in source_rows],
     }
     if dry_run:
         return payload
+    if not needs_change_rows:
+        payload["merged"] = True
+        payload["changed"] = False
+        payload["idempotent"] = True
+        payload["versions"] = []
+        return payload
     now = _now_iso()
     versions: list[dict[str, Any]] = []
     conn.execute("UPDATE procedural_playbooks SET updated_at = ? WHERE id = ?", (now, safe_target_id))
     updated_target = conn.execute("SELECT * FROM procedural_playbooks WHERE id = ?", (safe_target_id,)).fetchone()
     versions.append({"playbook_id": safe_target_id, "version": _insert_playbook_version(conn, row=updated_target, change_type="merge", reason=safe_reason, created_at=now)})
-    for row in source_rows:
+    for row in needs_change_rows:
         source_id = str(row["id"])
         conn.execute("UPDATE procedural_playbooks SET status = 'superseded', superseded_by = ?, updated_at = ? WHERE id = ?", (safe_target_id, now, source_id))
         updated_source = conn.execute("SELECT * FROM procedural_playbooks WHERE id = ?", (source_id,)).fetchone()
@@ -690,6 +776,8 @@ def review_playbook(
     action: str,
     reason: str = "",
     superseded_by: str = "",
+    dry_run: bool = False,
+    force_cross_class: bool = False,
 ) -> dict[str, Any]:
     """Apply an operator review decision to an Experience playbook.
 
@@ -713,25 +801,75 @@ def review_playbook(
     _reject_secret_like_value(superseded_by, path="review.superseded_by")
     safe_reason = sanitize_report_text(reason)
     safe_superseded_by = sanitize_report_text(superseded_by)
-    inspected = inspect_playbook(conn, playbook_id=playbook_id, accessible_scope_ids=accessible_scope_ids)
-    if not inspected.get("found"):
-        return {"reviewed": False, "id": playbook_id, "error": "not_found"}
+    source_row = _fetch_accessible_playbook(conn, playbook_id, accessible_scope_ids)
+    if source_row is None:
+        return {"reviewed": False, "dry_run": bool(dry_run), "changed": False, "id": playbook_id, "error": "not_found"}
+    canonical_row: sqlite3.Row | None = None
     if status == "superseded":
         if not safe_superseded_by:
-            return {"reviewed": False, "id": playbook_id, "error": "superseded_by_required"}
+            return {"reviewed": False, "dry_run": bool(dry_run), "changed": False, "id": playbook_id, "error": "superseded_by_required"}
         if safe_superseded_by == playbook_id:
-            return {"reviewed": False, "id": playbook_id, "error": "self_supersede"}
-        source_row = _fetch_accessible_playbook(conn, playbook_id, accessible_scope_ids)
+            return {"reviewed": False, "dry_run": bool(dry_run), "changed": False, "id": playbook_id, "error": "self_supersede"}
         canonical_row = _fetch_accessible_playbook(conn, safe_superseded_by, accessible_scope_ids)
         if canonical_row is None:
-            return {"reviewed": False, "id": playbook_id, "error": "superseded_by_not_found", "superseded_by": safe_superseded_by}
-        if source_row is None or str(canonical_row["scope_id"]) != str(source_row["scope_id"]):
-            return {"reviewed": False, "id": playbook_id, "error": "superseded_by_scope_mismatch", "superseded_by": safe_superseded_by}
+            return {"reviewed": False, "dry_run": bool(dry_run), "changed": False, "id": playbook_id, "error": "superseded_by_not_found", "superseded_by": safe_superseded_by}
+        if not _same_owner_scope(source_row, canonical_row):
+            return {"reviewed": False, "dry_run": bool(dry_run), "changed": False, "id": playbook_id, "error": "superseded_by_scope_mismatch", "superseded_by": safe_superseded_by}
+        if not _same_playbook_semantics(source_row, canonical_row):
+            mismatch = _semantic_mismatch_payload(source_row, canonical_row)
+            if not force_cross_class:
+                return {
+                    "reviewed": False,
+                    "dry_run": bool(dry_run),
+                    "changed": False,
+                    "id": playbook_id,
+                    "error": "semantic_mismatch",
+                    "superseded_by": safe_superseded_by,
+                    "mismatch": mismatch,
+                }
+            if not safe_reason:
+                return {
+                    "reviewed": False,
+                    "dry_run": bool(dry_run),
+                    "changed": False,
+                    "id": playbook_id,
+                    "error": "force_reason_required",
+                    "superseded_by": safe_superseded_by,
+                    "mismatch": mismatch,
+                }
+    target_superseded_by = safe_superseded_by if status == "superseded" else ""
+    if str(source_row["status"]) == status and str(source_row["superseded_by"] or "") == target_superseded_by:
+        current_version = _next_version(conn, playbook_id) - 1
+        result = {
+            "reviewed": True,
+            "dry_run": bool(dry_run),
+            "changed": False,
+            "idempotent": True,
+            "id": playbook_id,
+            "status": status,
+            "version": current_version,
+        }
+        if status == "superseded":
+            result["superseded_by"] = safe_superseded_by
+        return result
+    if dry_run:
+        result = {
+            "reviewed": False,
+            "dry_run": True,
+            "changed": True,
+            "id": playbook_id,
+            "current_status": str(source_row["status"]),
+            "status": status,
+        }
+        if status == "superseded":
+            result["current_superseded_by"] = str(source_row["superseded_by"] or "")
+            result["superseded_by"] = safe_superseded_by
+        return result
     now = _now_iso()
     version = _next_version(conn, playbook_id)
     conn.execute(
         "UPDATE procedural_playbooks SET status = ?, superseded_by = ?, updated_at = ? WHERE id = ?",
-        (status, safe_superseded_by if status == "superseded" else "", now, playbook_id),
+        (status, target_superseded_by, now, playbook_id),
     )
     updated = conn.execute("SELECT * FROM procedural_playbooks WHERE id = ?", (playbook_id,)).fetchone()
     if status == "promoted":
@@ -744,7 +882,7 @@ def review_playbook(
         (f"pbv_{uuid.uuid4().hex}", playbook_id, version, status, safe_reason, _json_dumps(_serialize_row(updated)), now),
     )
     conn.commit()
-    result = {"reviewed": True, "id": playbook_id, "status": status, "version": version}
+    result = {"reviewed": True, "dry_run": False, "changed": True, "id": playbook_id, "status": status, "version": version}
     if status == "superseded":
         result["superseded_by"] = safe_superseded_by
     return result

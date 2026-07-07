@@ -81,6 +81,7 @@ def _audited_archive_ids(conn: sqlite3.Connection) -> set[str]:
               action IN ('soft_archive', 'legacy_archive_backfill')
               OR (event_type = 'memory_candidate_promotion' AND action = 'archive')
               OR (event_type = 'memory_quality_lint' AND action = 'archive_lint_hit')
+              OR (event_type = 'memory_quality_cleanup' AND action = 'archive_active_lint_hit')
           )
         """
     ).fetchall()

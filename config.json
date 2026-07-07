@@ -39,6 +39,7 @@
     "backlog_warn_entries": 500,
     "backlog_fail_entries": 3000,
     "backlog_max_age_hours": 72,
+    "no_insert_fail_streak": 3,
     "tool_trace_skip_names": [
       "todo",
       "skill_view",

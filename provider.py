@@ -231,6 +231,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         try:
             backfill_skill_anchors(self._conn)
         except Exception:
+            self._rollback_conn_after_error("skill-anchor backfill")
             logger.exception("Scope Recall skill-anchor backfill failed")
         ensure_journal_schema(self._conn)
         setup_vector_layer(self)
@@ -280,6 +281,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                     scope_id=self._scope_id,
                 ).get("packet", "")
         except Exception:
+            self._rollback_conn_after_error("experience preflight")
             logger.exception("Scope Recall experience preflight failed")
             packet = ""
         if not packet:
@@ -676,10 +678,6 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 self._last_journal_digest_error = "missing hermes_home"
                 self._last_journal_digest_finished = time.time()
             return
-        try:
-            limit_entries = int(journal_config.get("max_entries_per_digest") or 500)
-        except (TypeError, ValueError):
-            limit_entries = 500
         extractor = str(journal_config.get("extractor") or "llm").strip().lower()
         try:
             result = run_journal_digest(
@@ -687,7 +685,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 extractor=extractor,
                 scope=self._background_digest_scope(),
                 interval_label=f"background-{journal_config.get('digest_interval_hours', 2)}h",
-                limit_entries=max(1, limit_entries),
+                limit_entries=None,
                 dry_run=False,
             )
             ok = bool(result.get("ok", result.get("status") == "ok"))
@@ -701,6 +699,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             if ok:
                 self._maybe_run_auto_experience_promotion(trigger="background-journal-digest")
         except Exception as exc:
+            self._rollback_conn_after_error("background journal digest")
             with self._journal_digest_lock:
                 self._last_journal_digest_finished = time.time()
                 self._last_journal_digest_status = "error"
@@ -736,6 +735,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             if result.get("ok", result.get("status") == "ok"):
                 self._maybe_run_auto_experience_promotion(trigger="session-end-journal-digest")
         except Exception:
+            self._rollback_conn_after_error("session-end journal digest")
             logger.exception("Scope Recall session-end journal digest failed")
 
     def _maybe_run_auto_experience_promotion(self, *, trigger: str) -> None:
@@ -764,6 +764,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 )
             logger.info("Scope Recall auto experience promotion after %s: %s", trigger, result)
         except Exception:
+            self._rollback_conn_after_error(f"auto experience promotion after {trigger}")
             logger.exception("Scope Recall auto experience promotion failed after %s", trigger)
 
     def on_session_switch(
@@ -836,17 +837,21 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         semantic_merge: bool = True,
         scope_mode: str | None = None,
     ) -> tuple[str, bool, str]:
-        return store_memory_now(
-            self,
-            content=content,
-            source=source,
-            target=target,
-            session_id=session_id,
-            metadata=metadata,
-            allow_duplicate=allow_duplicate,
-            semantic_merge=semantic_merge,
-            scope_mode=scope_mode,
-        )
+        try:
+            return store_memory_now(
+                self,
+                content=content,
+                source=source,
+                target=target,
+                session_id=session_id,
+                metadata=metadata,
+                allow_duplicate=allow_duplicate,
+                semantic_merge=semantic_merge,
+                scope_mode=scope_mode,
+            )
+        except Exception:
+            self._rollback_conn_after_error("store_now")
+            raise
 
     def _find_semantic_merge_candidate(self, content: str, target: str) -> tuple[str, str]:
         return find_semantic_merge_candidate(self, content, target)
@@ -957,6 +962,24 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         max_items = int(self._config_value("auto_recall_max_items", 3))
         max_per_turn = int(self._config_value("max_recall_per_turn", 10))
         return max(1, min(max_items * 3, max_per_turn * 2, 20))
+
+    def _rollback_conn_after_error(self, context: str) -> None:
+        """Clear a dirty shared SQLite transaction after an exception boundary.
+
+        Scope Recall keeps one provider-owned SQLite connection open for the
+        process lifetime. If any write path exits through an exception after
+        SQLite has implicitly opened a transaction, that connection can keep the
+        WAL write lock until process restart. Exception handlers that swallow or
+        translate errors should call this helper before continuing.
+        """
+        with self._lock:
+            conn = self._conn
+            if conn is None or not conn.in_transaction:
+                return
+            try:
+                conn.rollback()
+            except Exception:
+                logger.exception("Scope Recall SQLite rollback failed after %s", context)
 
     def _require_conn(self) -> sqlite3.Connection:
         if self._conn is None:

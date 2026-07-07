@@ -16,8 +16,10 @@ def test_nightly_llm_module_owns_llm_config_and_call_surfaces():
     assert nightly_digest.resolve_llm_config is nightly_llm.resolve_llm_config
     assert nightly_digest.call_llm is nightly_llm.call_llm
     assert nightly_digest._call_llm_with_retries is nightly_llm.call_llm_with_retries
-    assert nightly_digest._classify_llm_error is nightly_llm.classify_llm_error
+    assert nightly_digest._call_anthropic_messages_llm is nightly_llm.call_anthropic_messages_llm
     assert nightly_digest._call_codex_responses_llm is nightly_llm.call_codex_responses_llm
+    assert nightly_digest._classify_llm_error is nightly_llm.classify_llm_error
+
     assert nightly_digest._decode_responses_body is nightly_llm.decode_responses_body
     assert nightly_digest._responses_endpoint is nightly_llm.responses_endpoint
 
@@ -59,6 +61,48 @@ def test_nightly_llm_direct_call_chat_completions(monkeypatch):
     assert captured["url"] == "https://api.openai.com/v1/chat/completions"
     assert captured["headers"]["Authorization"] == "Bearer openai-key"
     assert captured["body"]["messages"][1]["content"] == "extract this"
+    assert captured["timeout"] == 12
+
+
+def test_nightly_llm_direct_call_anthropic_messages(monkeypatch):
+    from scope_recall import nightly_llm
+
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return json.dumps({"content": [{"type": "text", "text": "[]"}]}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["headers"] = dict(request.header_items())
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(nightly_llm.urllib.request, "urlopen", fake_urlopen)
+
+    raw = nightly_llm.call_llm(
+        "extract this",
+        model="MiniMax-M3",
+        base_url="https://api.minimaxi.com/anthropic",
+        api_key="minimax-key",
+        timeout=12,
+        api_mode="anthropic_messages",
+    )
+
+    assert raw == "[]"
+    assert captured["url"] == "https://api.minimaxi.com/anthropic/v1/messages"
+    assert captured["headers"]["X-api-key"] == "minimax-key"
+    assert captured["headers"]["Anthropic-version"] == "2023-06-01"
+    assert captured["body"]["model"] == "MiniMax-M3"
+    assert captured["body"]["messages"] == [{"role": "user", "content": "extract this"}]
     assert captured["timeout"] == 12
 
 

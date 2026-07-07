@@ -31,6 +31,10 @@ def test_core_playbook_catalog_has_at_least_five_promotable_playbooks():
         assert payload["task_class"]
         assert payload["verification"]
         assert payload["reuse_policy"]["requires_live_check"] is True
+        replay_cases = item["metadata"].get("replay_cases") or []
+        assert len(replay_cases) >= 2
+        assert any(str(case.get("case_type")) == "positive" for case in replay_cases)
+        assert any(case.get("expect_no_reuse") or "negative" in str(case.get("case_type")) for case in replay_cases)
 
 
 def test_bootstrap_core_playbooks_dry_run_does_not_mutate():
@@ -80,12 +84,17 @@ def test_bootstrap_core_playbooks_apply_creates_promoted_seed_set_idempotently()
     assert first["promoted"] == first["created"]
     assert second["created"] == 0
     assert second["skipped_existing"] == len(CORE_PLAYBOOKS)
-    rows = conn.execute("SELECT id, status, evidence_anchors, reuse_policy FROM procedural_playbooks").fetchall()
+    rows = conn.execute("SELECT id, status, evidence_anchors, reuse_policy, metadata FROM procedural_playbooks").fetchall()
     assert len(rows) == len(CORE_PLAYBOOKS)
     assert {row["status"] for row in rows} == {"promoted"}
     for row in rows:
         assert "curated_bootstrap" in row["evidence_anchors"]
         assert "requires_live_check" in row["reuse_policy"]
+        metadata = json.loads(row["metadata"])
+        replay_cases = metadata.get("replay_cases") or []
+        assert len(replay_cases) >= 2
+        assert any(case.get("expected_playbook_id") == row["id"] for case in replay_cases)
+        assert any(case.get("expect_no_reuse") for case in replay_cases)
     version_counts = conn.execute("SELECT playbook_id, COUNT(*) AS count FROM playbook_versions GROUP BY playbook_id").fetchall()
     assert {row["count"] for row in version_counts} == {2}
 

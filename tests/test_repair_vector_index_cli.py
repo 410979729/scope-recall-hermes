@@ -208,6 +208,18 @@ def test_repair_vector_index_apply_flag_rebuilds_vector_companion(tmp_path: Path
     assert vector_path.exists()
 
 
+def test_repair_vector_index_accepts_json_flag_for_operator_consistency(tmp_path: Path):
+    hermes_home = _make_local_hash_home(tmp_path)
+
+    result = _run_repair(hermes_home, "--dry-run", "--json")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["dry_run"] is True
+    assert payload["rows"] == 1
+
+
 def test_operator_cli_vector_repair_is_dry_run_first_and_apply_is_explicit():
     import scope_recall.cli as cli
 

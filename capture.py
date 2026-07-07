@@ -52,6 +52,9 @@ def writer_loop(provider: Any) -> None:
                     metadata=job.get("metadata") or {},
                 )
         except Exception:
+            rollback = getattr(provider, "_rollback_conn_after_error", None)
+            if callable(rollback):
+                rollback("background writer")
             logger.exception("Scope Recall background write failed")
         finally:
             provider._write_queue.task_done()

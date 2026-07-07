@@ -259,6 +259,25 @@ def test_merge_playbooks_supersedes_sources_and_writes_versions():
     version_payload = [(row["playbook_id"], row["change_type"], row["change_reason"]) for row in version_rows]
     assert ("pb_source", "superseded", "dedupe fixture") in version_payload
     assert ("pb_target", "merge", "dedupe fixture") in version_payload
+    version_count_after_first_apply = conn.execute("SELECT COUNT(*) FROM playbook_versions").fetchone()[0]
+    timestamps_after_first_apply = {
+        row["id"]: row["updated_at"]
+        for row in conn.execute("SELECT id, updated_at FROM procedural_playbooks WHERE id IN ('pb_source', 'pb_target')").fetchall()
+    }
+
+    repeated = merge_playbooks(conn, target_id="pb_target", source_ids=["pb_source"], accessible_scope_ids=["scope-a"], reason="dedupe fixture", dry_run=False)
+
+    assert repeated["merged"] is True
+    assert repeated["changed"] is False
+    assert repeated["idempotent"] is True
+    assert repeated["idempotent_source_ids"] == ["pb_source"]
+    assert repeated["changed_source_ids"] == []
+    assert conn.execute("SELECT COUNT(*) FROM playbook_versions").fetchone()[0] == version_count_after_first_apply
+    timestamps_after_second_apply = {
+        row["id"]: row["updated_at"]
+        for row in conn.execute("SELECT id, updated_at FROM procedural_playbooks WHERE id IN ('pb_source', 'pb_target')").fetchall()
+    }
+    assert timestamps_after_second_apply == timestamps_after_first_apply
 
 
 def test_merge_playbooks_rejects_cross_scope_and_self_merge():
@@ -274,6 +293,37 @@ def test_merge_playbooks_rejects_cross_scope_and_self_merge():
     assert conn.execute("SELECT status FROM procedural_playbooks WHERE id = 'pb_hidden'").fetchone()[0] == "candidate"
 
 
+def test_merge_playbooks_rejects_semantic_mismatch_without_force():
+    conn = _conn()
+    create_playbook(conn, playbook_id="pb_target", scope_id="scope-a", payload=_payload(task_class="journal_backlog_drain", title="scope-recall：journal backlog 清理"), confidence=0.9)
+    create_playbook(conn, playbook_id="pb_source", scope_id="scope-a", payload=_payload(task_class="github_release_publish", title="GitHub：release 发布核验"), confidence=0.7)
+    before_changes = conn.total_changes
+
+    blocked = merge_playbooks(conn, target_id="pb_target", source_ids=["pb_source"], accessible_scope_ids=["scope-a"], reason="wrong id", dry_run=False)
+
+    assert blocked["error"] == "semantic_mismatch"
+    assert blocked["mismatches"][0]["source_id"] == "pb_source"
+    assert conn.total_changes == before_changes
+
+    forced = merge_playbooks(conn, target_id="pb_target", source_ids=["pb_source"], accessible_scope_ids=["scope-a"], reason="operator force merge", dry_run=False, force_cross_class=True)
+
+    assert forced["merged"] is True
+    assert conn.execute("SELECT status, superseded_by FROM procedural_playbooks WHERE id = 'pb_source'").fetchone()["superseded_by"] == "pb_target"
+
+
+def test_find_duplicate_playbooks_splits_unrelated_scope_title_collisions():
+    conn = _conn()
+    create_playbook(conn, playbook_id="pb_owner", scope_id="scope-a", shared_scope_id="", payload=_payload(), confidence=0.9)
+    create_playbook(conn, playbook_id="pb_session", scope_id="scope-a-session", shared_scope_id="scope-a", payload=_payload(), confidence=0.7)
+    create_playbook(conn, playbook_id="pb_other", scope_id="scope-b", shared_scope_id="", payload=_payload(), confidence=0.8)
+
+    groups = find_duplicate_playbooks(conn, accessible_scope_ids=["scope-a", "scope-a-session", "scope-b"], limit=10)
+
+    assert len(groups) == 1
+    assert groups[0]["count"] == 2
+    assert {item["id"] for item in groups[0]["items"]} == {"pb_owner", "pb_session"}
+
+
 def test_review_supersede_requires_existing_same_owner_canonical():
     conn = _conn()
     create_playbook(conn, playbook_id="pb_source", scope_id="scope-a", shared_scope_id="", payload=_payload(), confidence=0.7)
@@ -287,15 +337,77 @@ def test_review_supersede_requires_existing_same_owner_canonical():
     self_supersede = review_playbook(conn, playbook_id="pb_source", accessible_scope_ids=["scope-a"], action="supersede", superseded_by="pb_source")
 
     row = conn.execute("SELECT status, superseded_by FROM procedural_playbooks WHERE id = 'pb_source'").fetchone()
-    assert empty == {"reviewed": False, "id": "pb_source", "error": "superseded_by_required"}
-    assert missing == {"reviewed": False, "id": "pb_source", "error": "superseded_by_not_found", "superseded_by": "pb_missing"}
-    assert cross_scope == {"reviewed": False, "id": "pb_source", "error": "superseded_by_scope_mismatch", "superseded_by": "pb_cross_scope"}
-    assert self_supersede == {"reviewed": False, "id": "pb_source", "error": "self_supersede"}
+    assert empty == {"reviewed": False, "dry_run": False, "changed": False, "id": "pb_source", "error": "superseded_by_required"}
+    assert missing == {"reviewed": False, "dry_run": False, "changed": False, "id": "pb_source", "error": "superseded_by_not_found", "superseded_by": "pb_missing"}
+    assert cross_scope == {"reviewed": False, "dry_run": False, "changed": False, "id": "pb_source", "error": "superseded_by_scope_mismatch", "superseded_by": "pb_cross_scope"}
+    assert self_supersede == {"reviewed": False, "dry_run": False, "changed": False, "id": "pb_source", "error": "self_supersede"}
     assert row["status"] == "candidate"
     assert row["superseded_by"] == ""
     assert conn.execute("SELECT COUNT(*) FROM playbook_versions WHERE playbook_id = 'pb_source'").fetchone()[0] == before_versions
 
     applied = review_playbook(conn, playbook_id="pb_source", accessible_scope_ids=["scope-a"], action="supersede", superseded_by="pb_target", reason="dedupe fixture")
+
+    assert applied["reviewed"] is True
+    assert applied["status"] == "superseded"
+    assert applied["superseded_by"] == "pb_target"
+    row = conn.execute("SELECT status, superseded_by FROM procedural_playbooks WHERE id = 'pb_source'").fetchone()
+    assert row["status"] == "superseded"
+    assert row["superseded_by"] == "pb_target"
+
+
+def test_review_playbook_is_idempotent_for_repeated_supersede():
+    conn = _conn()
+    create_playbook(conn, playbook_id="pb_source", scope_id="scope-a", payload=_payload(), confidence=0.7)
+    create_playbook(conn, playbook_id="pb_target", scope_id="scope-a", payload=_payload(), confidence=0.9)
+
+    first = review_playbook(conn, playbook_id="pb_source", accessible_scope_ids=["scope-a"], action="supersede", superseded_by="pb_target", reason="dedupe fixture")
+    before = conn.execute("SELECT status, superseded_by, updated_at FROM procedural_playbooks WHERE id = 'pb_source'").fetchone()
+    before_versions = conn.execute("SELECT COUNT(*) FROM playbook_versions WHERE playbook_id = 'pb_source'").fetchone()[0]
+    second = review_playbook(conn, playbook_id="pb_source", accessible_scope_ids=["scope-a"], action="supersede", superseded_by="pb_target", reason="dedupe fixture retry")
+    after = conn.execute("SELECT status, superseded_by, updated_at FROM procedural_playbooks WHERE id = 'pb_source'").fetchone()
+
+    assert first["changed"] is True
+    assert second["reviewed"] is True
+    assert second["changed"] is False
+    assert second["idempotent"] is True
+    assert second["superseded_by"] == "pb_target"
+    assert dict(after) == dict(before)
+    assert conn.execute("SELECT COUNT(*) FROM playbook_versions WHERE playbook_id = 'pb_source'").fetchone()[0] == before_versions
+
+
+def test_review_supersede_rejects_semantic_mismatch_unless_forced():
+    conn = _conn()
+    create_playbook(conn, playbook_id="pb_source", scope_id="scope-a", payload=_payload(task_class="github_release_publish", title="GitHub：release 发布核验"), confidence=0.7)
+    create_playbook(conn, playbook_id="pb_target", scope_id="scope-a", payload=_payload(task_class="journal_backlog_drain", title="scope-recall：journal backlog 清理"), confidence=0.9)
+    before_versions = conn.execute("SELECT COUNT(*) FROM playbook_versions WHERE playbook_id = 'pb_source'").fetchone()[0]
+
+    blocked = review_playbook(conn, playbook_id="pb_source", accessible_scope_ids=["scope-a"], action="supersede", superseded_by="pb_target", reason="wrong id")
+    forced_without_reason = review_playbook(conn, playbook_id="pb_source", accessible_scope_ids=["scope-a"], action="supersede", superseded_by="pb_target", force_cross_class=True)
+    forced = review_playbook(conn, playbook_id="pb_source", accessible_scope_ids=["scope-a"], action="supersede", superseded_by="pb_target", reason="operator intentionally merges renamed playbook", force_cross_class=True)
+
+    assert blocked["error"] == "semantic_mismatch"
+    assert blocked["changed"] is False
+    assert forced_without_reason["error"] == "force_reason_required"
+    assert forced_without_reason["changed"] is False
+    assert forced["reviewed"] is True
+    assert forced["changed"] is True
+    assert forced["superseded_by"] == "pb_target"
+    assert conn.execute("SELECT COUNT(*) FROM playbook_versions WHERE playbook_id = 'pb_source'").fetchone()[0] == before_versions + 1
+
+
+def test_review_supersede_allows_owner_scope_shared_scope_overlap():
+    conn = _conn()
+    create_playbook(conn, playbook_id="pb_source", scope_id="scope-a-session", shared_scope_id="scope-a", payload=_payload(), confidence=0.7)
+    create_playbook(conn, playbook_id="pb_target", scope_id="scope-a", shared_scope_id="scope-a-session", payload=_payload(), confidence=0.9)
+
+    applied = review_playbook(
+        conn,
+        playbook_id="pb_source",
+        accessible_scope_ids=["scope-a", "scope-a-session"],
+        action="supersede",
+        superseded_by="pb_target",
+        reason="dedupe fixture across owner/shared scope boundary",
+    )
 
     assert applied["reviewed"] is True
     assert applied["status"] == "superseded"
@@ -319,7 +431,7 @@ def test_playbooks_cli_supersede_routes_to_review_playbook(tmp_path):
     finally:
         conn.close()
 
-    args = cli.parse_args(
+    dry_args = cli.parse_args(
         [
             "supersede",
             "--db",
@@ -335,12 +447,46 @@ def test_playbooks_cli_supersede_routes_to_review_playbook(tmp_path):
         ]
     )
 
+    dry_payload = cli.build_payload(dry_args)
+
+    assert dry_payload["ok"] is True
+    assert dry_payload["dry_run"] is True
+    assert dry_payload["changed"] is True
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute("SELECT status, superseded_by FROM procedural_playbooks WHERE id = 'pb_source'").fetchone()
+        assert row["status"] == "needs_review"
+        assert row["superseded_by"] == ""
+    finally:
+        conn.close()
+
+    args = cli.parse_args(
+        [
+            "supersede",
+            "--db",
+            str(db_path),
+            "--scope-id",
+            "scope-a",
+            "--id",
+            "pb_source",
+            "--superseded-by",
+            "pb_target",
+            "--reason",
+            "duplicate group closeout",
+            "--apply",
+        ]
+    )
+
     payload = cli.build_payload(args)
 
     assert payload["ok"] is True
     assert payload["action"] == "supersede"
     assert payload["status"] == "superseded"
     assert payload["superseded_by"] == "pb_target"
+    assert payload["changed"] is True
+    assert Path(payload["backup_path"]).exists()
+    assert Path(payload["receipt_path"]).exists()
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
@@ -349,6 +495,32 @@ def test_playbooks_cli_supersede_routes_to_review_playbook(tmp_path):
         assert row["superseded_by"] == "pb_target"
     finally:
         conn.close()
+
+
+def test_playbooks_cli_list_and_dedupe_do_not_write_schema(tmp_path, monkeypatch):
+    cli = _load_playbooks_cli()
+    db_path = tmp_path / "memory.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        create_playbook(conn, playbook_id="pb_a", scope_id="scope-a", payload=_payload(), status="candidate", confidence=0.7)
+        create_playbook(conn, playbook_id="pb_b", scope_id="scope-a", payload=_payload(), status="candidate", confidence=0.8)
+    finally:
+        conn.close()
+
+    def fail_schema(_conn):
+        raise AssertionError("read-only playbook commands must not run ensure_schema")
+
+    monkeypatch.setattr(cli, "ensure_schema", fail_schema)
+
+    list_payload = cli.build_payload(cli.parse_args(["list", "--db", str(db_path), "--json"]))
+    dedupe_payload = cli.build_payload(cli.parse_args(["dedupe", "--db", str(db_path), "--json"]))
+
+    assert list_payload["ok"] is True
+    assert list_payload["count"] == 2
+    assert dedupe_payload["ok"] is True
+    assert dedupe_payload["count"] == 1
 
 
 def test_merge_playbooks_rejects_private_shared_owner_mismatch():

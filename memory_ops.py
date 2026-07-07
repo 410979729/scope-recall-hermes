@@ -69,6 +69,12 @@ def _payload_entities(metadata: dict[str, Any]) -> list[str]:
     return output
 
 
+def _rollback_provider_conn_after_error(provider: Any, context: str) -> None:
+    rollback = getattr(provider, "_rollback_conn_after_error", None)
+    if callable(rollback):
+        rollback(context)
+
+
 def store_memory_now(
     provider: Any,
     *,
@@ -111,6 +117,7 @@ def store_memory_now(
                     max_pairs=int(provider._config.get("relation_extraction_max_pairs", 1000) or 1000),
                 )
             except Exception:
+                _rollback_provider_conn_after_error(provider, "relation extraction sync")
                 logger.exception("Scope Recall relation extraction sync failed")
     outcome = "stored" if inserted else "duplicate" if memory_id else "skipped"
     return memory_id, inserted, outcome
@@ -323,6 +330,7 @@ def update_memory(provider: Any, memory_id: str, content: str, target: str | Non
                         max_pairs=int(provider._config.get("relation_extraction_max_pairs", 1000) or 1000),
                     )
                 except Exception:
+                    _rollback_provider_conn_after_error(provider, "relation extraction update sync")
                     logger.exception("Scope Recall relation extraction update sync failed")
             upsert_vector_record(
                 provider,

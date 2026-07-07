@@ -5,6 +5,7 @@ This module bridges raw journal bundles to candidate objects without committing 
 from __future__ import annotations
 
 import sqlite3
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,14 @@ __all__ = [
     "_runtime_config",
     "llm_journal_candidates",
 ]
+
+
+class JournalCandidateList(list[JournalDigestCandidate]):
+    """List result carrying non-fatal LLM extraction status counts for receipts."""
+
+    def __init__(self, values: list[JournalDigestCandidate], *, extractor_status_counts: Counter[str] | None = None) -> None:
+        super().__init__(values)
+        self.extractor_status_counts = Counter(extractor_status_counts or {})
 
 
 def _parse_entry_timestamp(value: str) -> float:
@@ -129,12 +138,12 @@ def _journal_from_digest_candidate(candidate: Any) -> JournalDigestCandidate:
     )
 
 
-def _parse_journal_llm_candidates(raw: str, *, bundle: SessionBundle) -> list[Any]:
+def _parse_journal_llm_candidates(raw: str, *, bundle: SessionBundle) -> tuple[list[Any], str]:
     candidates, status = _parse_llm_candidates_with_status(raw, bundle=bundle)
     if status == "parsed":
-        return candidates
-    if status in {"empty", "explicit_skip"}:
-        return []
+        return candidates, status
+    if status in {"empty", "explicit_skip", "filtered"}:
+        return [], status
     error_kind = "parse" if status == "parse" else "filtered"
     raise JournalDigestLLMError(
         f"{error_kind} after 1 attempt(s): LLM digest output status={status}",
@@ -221,11 +230,15 @@ def llm_journal_candidates(
     output: list[JournalDigestCandidate] = []
     max_attempts = _coerce_positive_int(journal_config.get("llm_max_attempts") or journal_config.get("llm_retry_attempts"), 3)
     retry_delay = _coerce_nonnegative_float(journal_config.get("llm_retry_delay"), 1.0)
+    parse_errors: list[JournalDigestLLMError] = []
+    extractor_status_counts: Counter[str] = Counter()
+    attempted_chunks = 0
     for bundle in _journal_session_bundles(entries):
         if bundle.source == "journal-tool-only":
             continue
         bundle_candidates: list[Any] = []
         for chunk in session_chunks(bundle, chunk_chars=options.chunk_chars, max_session_chars=options.max_session_chars):
+            attempted_chunks += 1
             prompt = build_prompt(bundle, chunk, existing)
             raw = _call_llm_with_retries(
                 prompt,
@@ -239,6 +252,16 @@ def llm_journal_candidates(
                 max_attempts=max_attempts,
                 retry_delay=retry_delay,
             )
-            bundle_candidates.extend(_parse_journal_llm_candidates(raw, bundle=bundle))
+            try:
+                parsed_candidates, parser_status = _parse_journal_llm_candidates(raw, bundle=bundle)
+                extractor_status_counts[parser_status] += 1
+                bundle_candidates.extend(parsed_candidates)
+            except JournalDigestLLMError as exc:
+                if exc.error_kind != "parse":
+                    raise
+                parse_errors.append(exc)
+                continue
         output.extend(_journal_from_digest_candidate(candidate) for candidate in bundle_candidates)
-    return [candidate for candidate in output if candidate.entry_ids]
+    if parse_errors and attempted_chunks == len(parse_errors) and not output:
+        raise parse_errors[0]
+    return JournalCandidateList([candidate for candidate in output if candidate.entry_ids], extractor_status_counts=extractor_status_counts)

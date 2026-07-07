@@ -146,7 +146,7 @@ def test_journal_collect_candidates_preserves_journal_llm_journal_candidates_mon
     monkeypatch.setattr(journal_module, "llm_journal_candidates", fake_llm_journal_candidates)
     conn = sqlite3.connect(":memory:")
     try:
-        candidates, extractor_used, error = journal_module._collect_journal_candidates(
+        candidates, extractor_used, error, status_counts = journal_module._collect_journal_candidates(
             conn,
             entries=[JournalEntry(1, "scope", "shared", "session-a", 1, "user", "please digest", "2026-06-01T00:00:00+00:00")],
             hermes_home=tmp_path,
@@ -161,3 +161,4 @@ def test_journal_collect_candidates_preserves_journal_llm_journal_candidates_mon
     assert candidates == [expected]
     assert extractor_used == "llm"
     assert error == ""
+    assert dict(status_counts) == {}

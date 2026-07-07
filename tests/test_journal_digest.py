@@ -931,6 +931,49 @@ def test_journal_digest_records_rejections_and_advances_watermark_for_filtered_c
     assert row["reason"] == "invalid-target"
 
 
+def test_journal_digest_rejects_redacted_path_artifact_and_status_snapshot_candidates(tmp_path):
+    conn = _open_memory_db(tmp_path / "memory.sqlite3")
+    scope = _scope()
+    candidates = [
+        JournalDigestCandidate(
+            content="Scope Recall 当前系统现状与技术债务：journal backlog 仍需后续复核。",
+            target="project",
+            memory_type="project",
+            entry_ids=[201],
+            session_ids=["status-snapshot"],
+        ),
+        JournalDigestCandidate(
+            content="Scope Recall release note copied a local configuration path [REDACTED_PATH] into a durable memory candidate.",
+            target="ops",
+            memory_type="procedure",
+            entry_ids=[202],
+            session_ids=["redacted-path"],
+        ),
+        JournalDigestCandidate(
+            content="OpenClaw auth procedure includes a stable device-code workflow. Artifact anchors: https://auth.openai.com/codex/device",
+            target="ops",
+            memory_type="procedure",
+            entry_ids=[203],
+            session_ids=["artifact-anchor"],
+        ),
+    ]
+
+    result = apply_journal_candidates(conn, None, scope, run_id="run-quality-reject", candidates=candidates, dry_run=False)
+
+    assert result["counts"]["skipped"] == 3
+    assert result["processed_entry_ids"] == [201, 202, 203]
+    assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+    reasons = {
+        row["journal_entry_id"]: row["reason"]
+        for row in conn.execute("SELECT journal_entry_id, reason FROM journal_rejections WHERE run_id = 'run-quality-reject'").fetchall()
+    }
+    assert reasons == {
+        201: "low-value-stale-status-snapshot",
+        202: "low-value-redacted-path-or-artifact-anchor",
+        203: "low-value-redacted-path-or-artifact-anchor",
+    }
+
+
 def test_journal_duplicate_store_row_links_evidence_without_rejection(tmp_path, monkeypatch):
     conn = _open_memory_db(tmp_path / "memory.sqlite3")
     scope = _scope()
@@ -1241,6 +1284,130 @@ def test_journal_digest_marks_reviewed_entries_without_candidates_processed(tmp_
     assert rejection["reason"] == "no durable memory candidate"
 
 
+def test_llm_digest_filtered_output_marks_reviewed_without_dead_letter(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    storage = hermes_home / "scope-recall"
+    storage.mkdir(parents=True)
+    (storage / "config.json").write_text(
+        json.dumps({"vector": {"enabled": False}, "journal": {"extractor": "llm", "llm_max_attempts": 1, "llm_retry_delay": 0}}),
+        encoding="utf-8",
+    )
+    (hermes_home / ".env").write_text("SCOPE_RECALL_DIGEST_API_KEY=test-key\n", encoding="utf-8")
+    conn = _open_memory_db(storage / "memory.sqlite3")
+    scope = _scope()
+    entry_id = append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=build_scope_id(scope),
+        shared_scope_id=build_shared_scope_id(scope),
+        session_id="llm-filtered-session",
+        turn_number=1,
+        role="user",
+        content="LLM digest 返回的候选如果只是不达长期记忆质量门槛，应标记已审阅无 durable candidate，不应整批 dead-letter。",
+    )
+
+    import scope_recall.journal as journal_module
+
+    def filtered_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float, api_mode: str = "chat_completions", endpoint: str = "", append_v1: bool = True) -> str:
+        return json.dumps([
+            {
+                "content": "too short",
+                "target": "memory",
+                "memory_type": "summary",
+                "importance": 0.5,
+                "confidence": 0.5,
+            }
+        ])
+
+    monkeypatch.setattr(journal_module, "call_llm", filtered_call_llm)
+
+    result = run_journal_digest(hermes_home=hermes_home, scope=scope, interval_label="test", limit_entries=50)
+
+    assert result["ok"] is True
+    assert result["extractor_used"] == "llm"
+    assert result["processed_entries"] == 1
+    assert result["candidates"] == 0
+    assert result["inserted"] == 0
+    assert result["skipped"] == 1
+    row = conn.execute("SELECT processed_run_id FROM journal_entries WHERE id = ?", (entry_id,)).fetchone()
+    assert row["processed_run_id"] == result["run_id"]
+    rejection = conn.execute("SELECT reason, candidate FROM journal_rejections WHERE journal_entry_id = ?", (entry_id,)).fetchone()
+    assert rejection["reason"] == "no durable memory candidate"
+    assert rejection["reason"] != "dead-letter:filtered"
+    run = conn.execute("SELECT extractor, metadata FROM journal_digest_runs WHERE id = ?", (result["run_id"],)).fetchone()
+    assert run["extractor"] == "llm"
+    metadata = json.loads(run["metadata"])
+    assert metadata["quarantine_counts"] == {}
+    assert metadata["extractor_errors"] == []
+    assert metadata["no_insert_reason"] == "filtered_or_rejected"
+    assert "no_productive_write" in metadata["health_flags"]
+    assert metadata["candidate_status_counts"] == {"filtered": 1}
+    assert result["no_insert_reason"] == "filtered_or_rejected"
+    assert "no_productive_write" in result["health_flags"]
+
+
+def test_llm_digest_skips_one_bad_json_chunk_without_quarantining_whole_batch(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    storage = hermes_home / "scope-recall"
+    storage.mkdir(parents=True)
+    (storage / "config.json").write_text(
+        json.dumps({"vector": {"enabled": False}, "journal": {"extractor": "llm", "llm_max_attempts": 1, "llm_retry_delay": 0}}),
+        encoding="utf-8",
+    )
+    (hermes_home / ".env").write_text("SCOPE_RECALL_DIGEST_API_KEY=test-key\n", encoding="utf-8")
+    conn = _open_memory_db(storage / "memory.sqlite3")
+    scope = _scope()
+    for idx in range(2):
+        append_journal_entry(
+            conn,
+            scope=scope,
+            scope_id=build_scope_id(scope),
+            shared_scope_id=build_shared_scope_id(scope),
+            session_id="llm-partial-parse-session",
+            turn_number=idx + 1,
+            role="user" if idx == 0 else "assistant",
+            content=f"Scope Recall journal digest chunk {idx} should keep processing other chunks when one JSON payload is malformed.",
+        )
+
+    import scope_recall.journal as journal_module
+    import scope_recall.journal_extractors as journal_extractors
+
+    monkeypatch.setattr(journal_extractors, "session_chunks", lambda *args, **kwargs: ["bad chunk", "good chunk"])
+    calls = {"count": 0}
+
+    def flaky_json_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float, api_mode: str = "chat_completions", endpoint: str = "", append_v1: bool = True) -> str:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return "```json\n[{\"action\": \"insert\", \"content\": \"unterminated"
+        return json.dumps(
+            [
+                {
+                    "action": "insert",
+                    "content": "Scope Recall journal digest skips one malformed JSON chunk while preserving valid candidates from later chunks.",
+                    "target": "ops",
+                    "memory_type": "pitfall",
+                    "importance": 0.7,
+                    "confidence": 0.85,
+                    "entities": ["scope-recall"],
+                    "tags": ["journal-digest", "parse-recovery"],
+                    "reason": "valid second chunk",
+                }
+            ]
+        )
+
+    monkeypatch.setattr(journal_module, "call_llm", flaky_json_call_llm)
+
+    result = run_journal_digest(hermes_home=hermes_home, scope=scope, interval_label="test", limit_entries=50)
+
+    assert calls["count"] == 2
+    assert result["ok"] is True
+    assert result["extractor_used"] == "llm"
+    assert result["inserted"] == 1
+    assert result["processed_entries"] == 2
+    assert result.get("quarantine_counts") in ({}, None)
+    assert conn.execute("SELECT COUNT(*) FROM journal_rejections WHERE reason LIKE 'dead-letter:%'").fetchone()[0] == 0
+
+
 def test_llm_digest_transient_failure_retries_before_quarantine(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     storage = hermes_home / "scope-recall"
@@ -1517,7 +1684,19 @@ def test_journal_digest_dynamic_limit_scales_up_when_backlog_is_large(tmp_path, 
     assert result["limit_entries"] == 5
     assert result["processed_entries"] == 5
     assert result["skipped"] == 5
+    assert result["backlog_before"] == 5
+    assert result["backlog_after"] == 0
+    assert result["backlog_delta"] == -5
+    assert result["productive_writes"] == 0
+    assert result["no_insert_reason"] == "explicit_skip"
+    assert "no_productive_write" in result["health_flags"]
     assert conn.execute("SELECT COUNT(*) FROM journal_entries WHERE processed_run_id = ''").fetchone()[0] == 0
+    run = conn.execute("SELECT metadata FROM journal_digest_runs WHERE id = ?", (result["run_id"],)).fetchone()
+    metadata = json.loads(run["metadata"])
+    assert metadata["backlog_after"] == 0
+    assert metadata["backlog_delta"] == -5
+    assert metadata["productive_writes"] == 0
+    assert metadata["no_insert_reason"] == "explicit_skip"
 
 
 def test_journal_capture_keeps_long_english_text_that_only_looks_base64ish(tmp_path):

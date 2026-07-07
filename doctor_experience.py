@@ -48,6 +48,48 @@ def _list_count(raw: Any) -> int:
     return 0
 
 
+def _scope_values(row: sqlite3.Row | dict[str, Any]) -> set[str]:
+    return {value for value in (str(row["scope_id"] or ""), str(row["shared_scope_id"] or "")) if value}
+
+
+def _duplicate_playbook_groups(rows: list[sqlite3.Row], *, limit: int = 10) -> list[dict[str, Any]]:
+    """Return duplicate playbook groups within overlapping owner/shared scopes only."""
+
+    by_title: dict[tuple[str, str], list[sqlite3.Row]] = {}
+    for row in rows:
+        key = (str(row["task_class"] or ""), str(row["title"] or ""))
+        by_title.setdefault(key, []).append(row)
+    duplicate_groups: list[dict[str, Any]] = []
+    for (task_class, title), group_rows in by_title.items():
+        remaining = list(group_rows)
+        while remaining:
+            component = [remaining.pop(0)]
+            changed = True
+            while changed:
+                changed = False
+                component_scopes = set().union(*(_scope_values(item) for item in component))
+                rest: list[sqlite3.Row] = []
+                for row in remaining:
+                    if component_scopes & _scope_values(row):
+                        component.append(row)
+                        changed = True
+                    else:
+                        rest.append(row)
+                remaining = rest
+            if len(component) <= 1:
+                continue
+            duplicate_groups.append(
+                {
+                    "task_class": redact_secret_like_text(task_class),
+                    "title": redact_secret_like_text(title),
+                    "count": len(component),
+                    "statuses": redact_secret_like_text(",".join(str(row["status"] or "") for row in component)),
+                }
+            )
+    duplicate_groups.sort(key=lambda item: (-int(item["count"]), str(item["title"])))
+    return duplicate_groups[: max(0, int(limit))]
+
+
 def _replay_case_count(raw_metadata: Any) -> int:
     metadata = _json_value(raw_metadata)
     if not isinstance(metadata, dict):
@@ -164,25 +206,15 @@ def experience_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any]
                 ORDER BY updated_at DESC, id ASC
                 """
             ).fetchall()
-            duplicate_groups = [
-                {
-                    "task_class": redact_secret_like_text(str(row["task_class"] or "")),
-                    "title": redact_secret_like_text(str(row["title"] or "")),
-                    "count": int(row["count"]),
-                    "statuses": redact_secret_like_text(str(row["statuses"] or "")),
-                }
-                for row in conn.execute(
-                    """
-                    SELECT task_class, title, COUNT(*) AS count, GROUP_CONCAT(status, ',') AS statuses
-                    FROM procedural_playbooks
-                    WHERE status NOT IN ('superseded', 'quarantined')
-                    GROUP BY task_class, title
-                    HAVING COUNT(*) > 1
-                    ORDER BY count DESC, title ASC
-                    LIMIT 10
-                    """
-                )
-            ]
+            duplicate_rows = conn.execute(
+                """
+                SELECT task_class, title, status, scope_id, shared_scope_id
+                FROM procedural_playbooks
+                WHERE status NOT IN ('superseded', 'quarantined')
+                ORDER BY task_class, title, updated_at DESC, id ASC
+                """
+            ).fetchall()
+            duplicate_groups = _duplicate_playbook_groups(duplicate_rows, limit=10)
             misleading_runs = int(conn.execute("SELECT COUNT(*) FROM experience_runs WHERE outcome = 'misleading'").fetchone()[0])
             stale_runs = int(conn.execute("SELECT COUNT(*) FROM experience_runs WHERE outcome = 'stale'").fetchone()[0])
             unresolved_feedback = {
@@ -222,24 +254,33 @@ def experience_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any]
         recommendations.append(f"Experience promotion funnel is review-heavy ({needs_review_count}/{playbook_total} needs_review); tighten promotion scoring and dedupe candidates.")
     if duplicate_groups:
         recommendations.append(f"Experience playbooks contain {len(duplicate_groups)} duplicate title/task-class group(s); run dedupe/merge review before auto-promotion.")
+    failures: list[str] = []
     if promoted_missing_verified_at:
-        recommendations.append(f"{promoted_missing_verified_at} promoted playbook(s) lack last_verified_at; require verification feedback before direct reuse.")
+        message = f"{promoted_missing_verified_at} promoted playbook(s) lack last_verified_at; require verification feedback before direct reuse."
+        failures.append(message)
+        recommendations.append(message)
     if int(maturity_payload.get("promoted_missing_evidence_anchors") or 0):
-        recommendations.append(
+        message = (
             f"{maturity_payload.get('promoted_missing_evidence_anchors')} promoted playbook(s) lack evidence anchors; "
             "keep them guided/reviewed until source journal or verification anchors are attached."
         )
+        failures.append(message)
+        recommendations.append(message)
     if int(maturity_payload.get("promoted_missing_replay_cases") or 0):
-        recommendations.append(
+        message = (
             f"{maturity_payload.get('promoted_missing_replay_cases')} promoted playbook(s) lack replay coverage; "
             "add positive and negative replay cases before relying on reusable experience quality."
         )
+        failures.append(message)
+        recommendations.append(message)
     if unresolved_misleading_runs or unresolved_stale_runs:
-        recommendations.append(
+        message = (
             f"Experience feedback includes unresolved stale/misleading outcomes "
             f"(stale={unresolved_stale_runs}/{stale_runs}, misleading={unresolved_misleading_runs}/{misleading_runs}); "
             "quarantine or review affected playbooks."
         )
+        failures.append(message)
+        recommendations.append(message)
     if int(freshness_report.get("needs_live_check") or 0):
         recommendations.append(
             f"Fact freshness has {freshness_report.get('needs_live_check')} stale/needs-live-check fact(s); "
@@ -249,7 +290,7 @@ def experience_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any]
     payload = {
         "enabled": True,
         "path": str(db_path),
-        "status": "ready",
+        "status": "ready" if not failures else "needs_attention",
         "tables": sorted(required_tables),
         "playbooks": {"total": playbook_total, "by_status": dict(sorted(playbook_by_status.items()))},
         "promotion_funnel": {
@@ -271,7 +312,7 @@ def experience_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any]
         "stale_facts": stale_facts,
         "fact_freshness": freshness_report,
     }
-    return payload, {"ok": True, "failures": []}, recommendations
+    return payload, {"ok": not failures, "failures": failures}, recommendations
 
 
 def nightly_digest_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], list[str]]:

@@ -95,7 +95,7 @@ def test_playbook_tool_flow_create_search_inspect_preflight_feedback(provider):
     reviewed = json.loads(
         provider.handle_tool_call(
             "scope_recall_playbook_review",
-            {"id": "pb_tool", "action": "promote", "reason": "fixture review"},
+            {"id": "pb_tool", "action": "promote", "reason": "fixture review", "dry_run": False},
         )
     )
     assert reviewed["reviewed"] is True
@@ -203,6 +203,89 @@ def test_playbook_review_tool_can_dedupe_and_merge(provider):
     assert row["superseded_by"] == "pb_tool_b"
 
 
+def test_playbook_review_tool_non_merge_actions_default_to_dry_run_and_require_apply(provider):
+    provider.handle_tool_call("scope_recall_playbook_create", {"id": "pb_review_target", "payload": _payload(), "status": "candidate", "confidence": 0.9})
+    provider.handle_tool_call("scope_recall_playbook_create", {"id": "pb_review_source", "payload": _payload(), "status": "candidate", "confidence": 0.7})
+
+    dry_promote = json.loads(provider.handle_tool_call("scope_recall_playbook_review", {"id": "pb_review_target", "action": "promote", "reason": "operator inspected"}))
+
+    assert dry_promote["dry_run"] is True
+    assert dry_promote["changed"] is True
+    assert dry_promote["reviewed"] is False
+    with provider._lock:
+        row = provider._require_conn().execute("SELECT status FROM procedural_playbooks WHERE id = ?", ("pb_review_target",)).fetchone()
+        anchors = provider._require_conn().execute("SELECT COUNT(*) FROM skill_anchors WHERE playbook_id = ?", ("pb_review_target",)).fetchone()[0]
+    assert row["status"] == "candidate"
+    assert anchors == 0
+
+    applied_promote = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_playbook_review",
+            {"id": "pb_review_target", "action": "promote", "reason": "operator inspected", "dry_run": False},
+        )
+    )
+    assert applied_promote["dry_run"] is False
+    assert applied_promote["reviewed"] is True
+    with provider._lock:
+        row = provider._require_conn().execute("SELECT status FROM procedural_playbooks WHERE id = ?", ("pb_review_target",)).fetchone()
+    assert row["status"] == "promoted"
+
+    dry_supersede = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_playbook_review",
+            {"id": "pb_review_source", "action": "supersede", "superseded_by": "pb_review_target", "reason": "duplicate"},
+        )
+    )
+    assert dry_supersede["dry_run"] is True
+    assert dry_supersede["changed"] is True
+    with provider._lock:
+        row = provider._require_conn().execute("SELECT status, superseded_by FROM procedural_playbooks WHERE id = ?", ("pb_review_source",)).fetchone()
+    assert row["status"] == "candidate"
+    assert row["superseded_by"] == ""
+
+    applied_supersede = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_playbook_review",
+            {"id": "pb_review_source", "action": "supersede", "superseded_by": "pb_review_target", "reason": "duplicate", "dry_run": False},
+        )
+    )
+    assert applied_supersede["reviewed"] is True
+    assert applied_supersede["superseded_by"] == "pb_review_target"
+
+
+def test_playbook_review_tool_threads_force_cross_class_to_supersede(provider):
+    canonical = _payload()
+    source = _payload()
+    source["task_class"] = "unrelated_task_class"
+    source["title"] = "Unrelated playbook"
+    provider.handle_tool_call("scope_recall_playbook_create", {"id": "pb_force_target", "payload": canonical, "status": "candidate", "confidence": 0.9})
+    provider.handle_tool_call("scope_recall_playbook_create", {"id": "pb_force_source", "payload": source, "status": "candidate", "confidence": 0.7})
+
+    blocked = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_playbook_review",
+            {"id": "pb_force_source", "action": "supersede", "superseded_by": "pb_force_target", "reason": "operator cross-class check", "dry_run": False},
+        )
+    )
+    assert blocked["error"] == "semantic_mismatch"
+
+    forced = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_playbook_review",
+            {
+                "id": "pb_force_source",
+                "action": "supersede",
+                "superseded_by": "pb_force_target",
+                "reason": "operator cross-class check",
+                "dry_run": False,
+                "force_cross_class": True,
+            },
+        )
+    )
+    assert forced["reviewed"] is True
+    assert forced["superseded_by"] == "pb_force_target"
+
+
 def test_promoting_playbook_writes_skill_anchors(provider):
     created = json.loads(
         provider.handle_tool_call(
@@ -221,7 +304,7 @@ def test_promoting_playbook_writes_skill_anchors(provider):
     reviewed = json.loads(
         provider.handle_tool_call(
             "scope_recall_playbook_review",
-            {"id": "pb_anchor", "action": "promote", "reason": "fixture review"},
+            {"id": "pb_anchor", "action": "promote", "reason": "fixture review", "dry_run": False},
         )
     )
     assert reviewed["reviewed"] is True
@@ -248,7 +331,7 @@ def test_preflight_blocks_playbook_with_open_skill_conflict(provider):
             "related_skills": ["debugging-and-quality-workflows"],
         },
     )
-    provider.handle_tool_call("scope_recall_playbook_review", {"id": "pb_conflict", "action": "promote", "reason": "fixture review"})
+    provider.handle_tool_call("scope_recall_playbook_review", {"id": "pb_conflict", "action": "promote", "reason": "fixture review", "dry_run": False})
     with provider._lock:
         provider._require_conn().execute(
             """
@@ -275,7 +358,7 @@ def test_preflight_degrades_direct_reuse_when_promoted_playbook_has_related_skil
             "related_skills": ["debugging-and-quality-workflows"],
         },
     )
-    provider.handle_tool_call("scope_recall_playbook_review", {"id": "pb_missing_anchor", "action": "promote", "reason": "fixture review"})
+    provider.handle_tool_call("scope_recall_playbook_review", {"id": "pb_missing_anchor", "action": "promote", "reason": "fixture review", "dry_run": False})
     with provider._lock:
         provider._require_conn().execute("DELETE FROM skill_anchors WHERE playbook_id = ?", ("pb_missing_anchor",))
         provider._require_conn().commit()
@@ -297,7 +380,7 @@ def test_feedback_stale_opens_skill_conflict_for_related_skills(provider):
             "related_skills": ["debugging-and-quality-workflows"],
         },
     )
-    provider.handle_tool_call("scope_recall_playbook_review", {"id": "pb_feedback_conflict", "action": "promote", "reason": "fixture review"})
+    provider.handle_tool_call("scope_recall_playbook_review", {"id": "pb_feedback_conflict", "action": "promote", "reason": "fixture review", "dry_run": False})
 
     feedback = json.loads(
         provider.handle_tool_call(
@@ -365,7 +448,7 @@ def test_experience_prefetch_records_unknown_run_for_feedback_loop(provider):
         "scope_recall_playbook_create",
         {"id": "pb_prefetch_run", "payload": _payload(), "status": "candidate", "confidence": 0.95},
     )
-    provider.handle_tool_call("scope_recall_playbook_review", {"id": "pb_prefetch_run", "action": "promote", "reason": "fixture"})
+    provider.handle_tool_call("scope_recall_playbook_review", {"id": "pb_prefetch_run", "action": "promote", "reason": "fixture", "dry_run": False})
     provider._config["experience"]["prefetch_enabled"] = True
 
     block = provider.prefetch("Need one-way headscale ACL with live node verification")
@@ -417,7 +500,7 @@ def test_experience_enabled_false_disables_tool_preflight_and_prefetch(provider)
     reviewed = json.loads(
         provider.handle_tool_call(
             "scope_recall_playbook_review",
-            {"id": "pb_disabled", "action": "promote", "reason": "fixture"},
+            {"id": "pb_disabled", "action": "promote", "reason": "fixture", "dry_run": False},
         )
     )
     assert reviewed["reviewed"] is True

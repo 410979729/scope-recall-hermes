@@ -27,6 +27,15 @@ def _write_scope_recall_config(hermes_home, values):
 
 @pytest.fixture
 def provider(tmp_path):
+    _write_scope_recall_config(
+        tmp_path,
+        {
+            "vector": {
+                "embedder": {"provider": "local-hash", "dimensions": 256, "model": "hash-v1"},
+                "fallback_embedder": {"provider": "local-hash", "dimensions": 256, "model": "hash-v1"},
+            }
+        },
+    )
     plugin = load_memory_provider("scope-recall")
     assert plugin is not None, "scope-recall plugin should load from $HERMES_HOME/plugins"
     plugin.initialize(
@@ -39,6 +48,25 @@ def provider(tmp_path):
     )
     yield plugin
     plugin.shutdown()
+
+
+def _assert_sqlite_writer_released(provider):
+    with provider._lock:
+        assert provider._require_conn().in_transaction is False
+    external = sqlite3.connect(provider._db_path, timeout=0.2)
+    try:
+        external.execute("BEGIN IMMEDIATE")
+        external.rollback()
+    finally:
+        external.close()
+
+
+def _open_transaction_and_raise(provider, marker: str) -> None:
+    conn = provider._require_conn()
+    conn.execute("CREATE TABLE IF NOT EXISTS rollback_probe(marker TEXT PRIMARY KEY)")
+    conn.execute("INSERT INTO rollback_probe(marker) VALUES (?)", (marker,))
+    assert conn.in_transaction
+    raise RuntimeError(f"synthetic {marker} failure")
 
 
 def test_scope_recall_plugin_loads_from_hermes_home_plugins():
@@ -90,6 +118,138 @@ def test_initialize_sets_sqlite_busy_timeout(provider):
         timeout_ms = provider._require_conn().execute("PRAGMA busy_timeout").fetchone()[0]
 
     assert timeout_ms >= 10_000
+
+
+def test_provider_store_rolls_back_open_sqlite_transaction(provider, monkeypatch):
+    def broken_store_memory_now(provider_arg, **kwargs):
+        del kwargs
+        _open_transaction_and_raise(provider_arg, "provider-store")
+
+    monkeypatch.setitem(provider._store_now.__globals__, "store_memory_now", broken_store_memory_now)
+
+    with pytest.raises(RuntimeError, match="synthetic provider-store failure"):
+        provider._store_now(
+            content="rollback regression content for provider store exception",
+            source="tool-store",
+            target="ops",
+            session_id=provider._session_id,
+        )
+
+    _assert_sqlite_writer_released(provider)
+
+
+def test_tool_dispatch_rolls_back_open_sqlite_transaction(provider, monkeypatch):
+    def broken_store_now(**kwargs):
+        del kwargs
+        _open_transaction_and_raise(provider, "tool-dispatch")
+
+    monkeypatch.setattr(provider, "_store_now", broken_store_now)
+
+    payload = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_store",
+            {"content": "rollback regression content for tool dispatch exception", "target": "ops"},
+        )
+    )
+
+    assert payload["error"] == "synthetic tool-dispatch failure"
+    _assert_sqlite_writer_released(provider)
+
+
+def test_background_writer_rolls_back_open_sqlite_transaction(provider, monkeypatch):
+    calls = []
+
+    def broken_store_now(provider_arg, **kwargs):
+        del kwargs
+        calls.append("background-writer")
+        _open_transaction_and_raise(provider_arg, "background-writer")
+
+    monkeypatch.setitem(provider._writer_thread._target.__globals__, "store_now", broken_store_now)
+
+    provider._write_queue.put(
+        {
+            "kind": "store",
+            "content": "rollback regression content for background writer exception",
+            "source": "test",
+            "target": "memory",
+            "session_id": provider._session_id,
+            "metadata": {},
+        }
+    )
+
+    assert provider.flush(timeout=2.0) is True
+    assert calls == ["background-writer"]
+    _assert_sqlite_writer_released(provider)
+
+
+def test_relation_store_failure_rolls_back_open_sqlite_transaction(provider, monkeypatch):
+    calls = []
+    memory_ops_globals = provider._store_now.__globals__["store_memory_now"].__globals__
+
+    def broken_relation_sync(conn, **kwargs):
+        del kwargs
+        calls.append("relation-store")
+        conn.execute("CREATE TABLE IF NOT EXISTS rollback_probe(marker TEXT PRIMARY KEY)")
+        conn.execute("INSERT INTO rollback_probe(marker) VALUES ('relation-store')")
+        assert conn.in_transaction
+        raise RuntimeError("synthetic relation-store failure")
+
+    monkeypatch.setitem(provider._config, "relation_extraction_enabled", True)
+    monkeypatch.setitem(memory_ops_globals, "sync_extracted_relations_for_memory", broken_relation_sync)
+
+    memory_id, inserted, outcome = provider._store_now(
+        content="rollback regression content for relation store exception",
+        source="tool-store",
+        target="ops",
+        session_id=provider._session_id,
+        allow_duplicate=True,
+    )
+
+    assert memory_id
+    assert inserted is True
+    assert outcome == "stored"
+    assert calls == ["relation-store"]
+    _assert_sqlite_writer_released(provider)
+
+
+def test_relation_update_failure_rolls_back_open_sqlite_transaction(provider, monkeypatch):
+    calls = []
+    memory_ops_globals = provider._store_now.__globals__["store_memory_now"].__globals__
+
+    monkeypatch.setitem(provider._config, "relation_extraction_enabled", False)
+    memory_id, inserted, outcome = provider._store_now(
+        content="rollback regression original content for relation update exception",
+        source="tool-store",
+        target="ops",
+        session_id=provider._session_id,
+        allow_duplicate=True,
+    )
+    assert memory_id
+    assert inserted is True
+    assert outcome == "stored"
+
+    def broken_relation_sync(conn, **kwargs):
+        del kwargs
+        calls.append("relation-update")
+        conn.execute("CREATE TABLE IF NOT EXISTS rollback_probe(marker TEXT PRIMARY KEY)")
+        conn.execute("INSERT INTO rollback_probe(marker) VALUES ('relation-update')")
+        assert conn.in_transaction
+        raise RuntimeError("synthetic relation-update failure")
+
+    monkeypatch.setitem(provider._config, "relation_extraction_enabled", True)
+    monkeypatch.setitem(memory_ops_globals, "sync_extracted_relations_for_memory", broken_relation_sync)
+
+    updated, summary, updated_at = provider._update_memory(
+        memory_id,
+        "rollback regression updated content for relation update exception",
+        "ops",
+    )
+
+    assert updated is True
+    assert summary
+    assert updated_at
+    assert calls == ["relation-update"]
+    _assert_sqlite_writer_released(provider)
 
 
 def test_save_config_bootstraps_sqlite_vector_meta_for_install_verification(tmp_path, monkeypatch):
@@ -189,6 +349,52 @@ def test_append_session_tool_journal_skips_session_message_dumps(provider):
     with provider._lock:
         row = provider._require_conn().execute("SELECT COUNT(*) FROM journal_entries WHERE role = 'tool'").fetchone()
     assert row[0] == 0
+
+
+def test_background_journal_digest_allows_dynamic_limit_when_not_overridden(tmp_path, monkeypatch):
+    _write_scope_recall_config(
+        tmp_path,
+        {
+            "vector": {"enabled": False},
+            "journal": {
+                "enabled": True,
+                "background_digest_enabled": True,
+                "background_digest_synchronous": True,
+                "digest_interval_hours": 0.001,
+                "max_entries_per_digest": 5,
+                "dynamic_max_entries_enabled": True,
+                "dynamic_backlog_threshold": 10,
+                "max_entries_per_digest_ceiling": 50,
+                "extractor": "llm",
+            },
+        },
+    )
+    captured = {}
+
+    def fake_digest(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "status": "ok", "processed_entries": 0}
+
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    monkeypatch.setitem(plugin._run_background_journal_digest.__globals__, "run_journal_digest", fake_digest)
+    plugin.initialize(
+        "session-background-dynamic-limit",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="joy",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        plugin._run_background_journal_digest(plugin._journal_config())
+    finally:
+        plugin.shutdown()
+
+    assert captured["dry_run"] is False
+    assert captured["extractor"] == "llm"
+    assert captured["limit_entries"] is None
 
 
 def test_background_digest_auto_promotion_runs_when_enabled(tmp_path, monkeypatch):
