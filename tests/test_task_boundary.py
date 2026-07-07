@@ -5,7 +5,7 @@ isolated historical success tokens.
 """
 from __future__ import annotations
 
-from scope_recall.task_boundary import classify_task_closure, extract_final_evidence, is_low_signal_goal
+from scope_recall.task_boundary import classify_task_closure, extract_final_evidence, has_failure_signal, is_low_signal_goal
 
 
 def _entry(role: str, content: str) -> dict[str, str]:
@@ -96,6 +96,32 @@ def test_task_closure_english_negative_failure_context_is_not_failed():
         closure = classify_task_closure([_entry("user", "修复并收口。"), _entry("assistant", text)])
         assert closure.state in allowed_states
         assert closure.state != "failed"
+
+
+def test_chinese_negative_discovery_phrases_are_not_failure_signals():
+    examples = [
+        "没有发现阻塞",
+        "没有发现失败",
+        "没发现阻塞",
+        "没有发现任何阻塞",
+        "没有找到失败项",
+        "无发现报错",
+        "不是失败",
+        "不是阻塞问题",
+    ]
+
+    for text in examples:
+        assert has_failure_signal(text) is False
+
+    final_examples = [
+        "完成：验证通过，没有发现阻塞。",
+        "完成：测试通过，没有发现失败。",
+        "完成：验证通过，不是失败。",
+    ]
+    for text in final_examples:
+        closure = classify_task_closure([_entry("user", "修复并收口。"), _entry("assistant", text)])
+        assert closure.state == "success"
+        assert closure.reason == "final_success_signal"
 
 
 def test_low_signal_goal_detection_matches_experience_policy():

@@ -95,6 +95,9 @@ class ScopeRecallToolService:
         try:
             return handler(args)
         except Exception as exc:
+            rollback = getattr(self.provider, "_rollback_conn_after_error", None)
+            if callable(rollback):
+                rollback(f"tool {normalized}")
             safe_error = sanitize_report_text(str(exc))
             logger.warning("Scope Recall tool %s failed: %s", tool_name, safe_error)
             return tool_error(safe_error)
@@ -727,6 +730,7 @@ class ScopeRecallToolService:
                     accessible_scope_ids=self.provider._accessible_scope_ids,
                     reason=self.provider._clean_text(str(args.get("reason") or "")),
                     dry_run=self._bool_arg(args, "dry_run", True),
+                    force_cross_class=self._bool_arg(args, "force_cross_class", False),
                 )
             return self._json(payload)
         with self.provider._lock:
@@ -737,6 +741,8 @@ class ScopeRecallToolService:
                 action=action,
                 reason=self.provider._clean_text(str(args.get("reason") or "")),
                 superseded_by=str(args.get("superseded_by") or ""),
+                dry_run=self._bool_arg(args, "dry_run", True),
+                force_cross_class=self._bool_arg(args, "force_cross_class", False),
             )
         return self._json(payload)
 

@@ -4,6 +4,7 @@ The report is diagnostic only: it classifies recovery work so operators can deci
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,16 @@ def classify_reason_counts(reason_counts: dict[str, int]) -> dict[str, int]:
         category = classify_rejection_reason(reason)
         category_counts[category] = category_counts.get(category, 0) + int(count)
     return dict(sorted(category_counts.items()))
+
+
+def _json_dict(raw: Any) -> dict[str, Any]:
+    if raw in (None, ""):
+        return {}
+    try:
+        value = json.loads(str(raw))
+    except Exception:
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
@@ -158,11 +169,26 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
                     """
                 )
             }
+            unresolved_quarantine_run_ids = {
+                str(row["id"] or "")
+                for row in conn.execute(
+                    """
+                    SELECT DISTINCT d.id
+                    FROM journal_digest_runs AS d
+                    JOIN journal_entries AS e ON e.processed_run_id = d.id
+                    JOIN journal_rejections AS r ON r.journal_entry_id = e.id AND r.run_id = d.id
+                    LEFT JOIN memory_journal_sources AS s ON s.journal_entry_id = e.id
+                    WHERE d.extractor = 'llm-quarantine'
+                      AND (r.reason LIKE 'retry-exhausted:%' OR r.reason LIKE 'dead-letter:%')
+                      AND s.memory_id IS NULL
+                    """
+                )
+            }
             recent_runs = [
                 dict(row)
                 for row in conn.execute(
                     """
-                    SELECT id, started_at, status, extractor, processed_entries, inserted, updated, skipped,
+                    SELECT id, started_at, status, extractor, processed_entries, inserted, updated, skipped, metadata,
                            CASE
                                WHEN json_valid(metadata) THEN COALESCE(json_extract(metadata, '$.operator_classification'), '')
                                ELSE ''
@@ -175,9 +201,33 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
             ]
             recent_status_counts: dict[str, int] = {}
             recent_extractor_counts: dict[str, int] = {}
+            recent_no_insert_risk_runs = 0
+            recent_no_insert_explicit_skip_runs = 0
+            recent_no_insert_reasons: dict[str, int] = {}
             for row in recent_runs:
                 recent_status_counts[str(row.get("status") or "unknown")] = recent_status_counts.get(str(row.get("status") or "unknown"), 0) + 1
                 recent_extractor_counts[str(row.get("extractor") or "unknown")] = recent_extractor_counts.get(str(row.get("extractor") or "unknown"), 0) + 1
+                metadata = _json_dict(row.pop("metadata", ""))
+                no_insert_reason = str(metadata.get("no_insert_reason") or "").strip()
+                raw_productive = metadata.get("productive_writes")
+                try:
+                    productive_writes = int(raw_productive) if raw_productive is not None else int(row.get("inserted") or 0) + int(row.get("updated") or 0)
+                except (TypeError, ValueError):
+                    productive_writes = int(row.get("inserted") or 0) + int(row.get("updated") or 0)
+                health_flags = metadata.get("health_flags") if isinstance(metadata.get("health_flags"), list) else []
+                row["productive_writes"] = productive_writes
+                row["no_insert_reason"] = no_insert_reason
+                row["health_flags"] = health_flags
+                if int(row.get("processed_entries") or 0) > 0 and productive_writes == 0 and no_insert_reason:
+                    is_resolved_quarantine = str(row.get("extractor") or "") == "llm-quarantine" and str(row.get("id") or "") not in unresolved_quarantine_run_ids
+                    operator_classification = str(row.get("operator_classification") or metadata.get("operator_classification") or "").strip()
+                    is_operator_no_durable = operator_classification in {"no_durable_memory", "no_replay"} or no_insert_reason.startswith("operator_review")
+                    if no_insert_reason == "explicit_skip" or is_resolved_quarantine or is_operator_no_durable:
+                        recent_no_insert_explicit_skip_runs += 1
+                    else:
+                        recent_no_insert_risk_runs += 1
+                        recent_no_insert_reasons[no_insert_reason] = recent_no_insert_reasons.get(no_insert_reason, 0) + 1
+            recent_no_insert_reasons = dict(sorted(recent_no_insert_reasons.items()))
             rejection_reason_counts = {
                 str(row["reason"] or ""): int(row["count"])
                 for row in conn.execute(
@@ -258,19 +308,7 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
             dead_letter_replay_candidates = sum(dead_letter_replay_candidate_reason_counts.values())
             retry_exhausted_rejections = retry_replay_candidates
             dead_letter_rejections = dead_letter_replay_candidates
-            quarantine_runs = int(
-                conn.execute(
-                    """
-                    SELECT COUNT(*)
-                    FROM journal_digest_runs
-                    WHERE extractor = 'llm-quarantine'
-                      AND NOT (
-                          json_valid(metadata)
-                          AND COALESCE(json_extract(metadata, '$.operator_classification'), '') IN ('no_replay', 'handled', 'classified_no_replay')
-                      )
-                    """
-                ).fetchone()[0]
-            )
+            quarantine_runs = len(unresolved_quarantine_run_ids)
             historical_quarantine_runs = int(
                 conn.execute("SELECT COUNT(*) FROM journal_digest_runs WHERE extractor = 'llm-quarantine'").fetchone()[0]
             )
@@ -288,6 +326,7 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
     fail_entries = max(0, coerce_int(journal_config.get("backlog_fail_entries"), 3000))
     max_age_hours = max(0, coerce_int(journal_config.get("backlog_max_age_hours"), 72))
     max_entries_per_digest = max(1, coerce_int(journal_config.get("max_entries_per_digest"), 500))
+    no_insert_fail_streak = max(0, coerce_int(journal_config.get("no_insert_fail_streak"), 3))
     dynamic_threshold = max(0, coerce_int(journal_config.get("dynamic_backlog_threshold"), warn_entries or 500))
     ceiling = max(max_entries_per_digest, coerce_int(journal_config.get("max_entries_per_digest_ceiling"), max_entries_per_digest))
     if unprocessed_entries >= max(dynamic_threshold, 1):
@@ -328,7 +367,7 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
         1
         for row in recent_runs
         if str(row.get("extractor") or "") == "llm-quarantine"
-        and str(row.get("operator_classification") or "") not in {"no_replay", "handled", "classified_no_replay"}
+        and str(row.get("id") or "") in unresolved_quarantine_run_ids
     )
     if recent_bad_runs or recent_quarantine_runs:
         digest_health_status = "degraded"
@@ -338,6 +377,16 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
         digest_health_status = "degraded"
         digest_health_reasons.append("recent_heuristic_fallback")
         recommendations.append("Journal digest recently used heuristic fallback; verify LLM extractor health and quality flags.")
+    if recent_no_insert_risk_runs:
+        digest_health_status = "degraded"
+        digest_health_reasons.append("recent_no_productive_write_risk")
+        recommendations.append(
+            f"Journal digest has {recent_no_insert_risk_runs} recent run(s) with no productive writes for provider/schema/quality reasons; inspect no_insert_reason before relying on automated summaries."
+        )
+    if no_insert_fail_streak and recent_no_insert_risk_runs >= no_insert_fail_streak:
+        failures.append(
+            f"journal digest has {recent_no_insert_risk_runs} recent no productive writes run(s), at or above fail streak {no_insert_fail_streak}"
+        )
     if quarantine_runs:
         digest_health_reasons.append("historical_llm_quarantine")
         recommendations.append(f"Journal digest has {quarantine_runs} historical llm-quarantine run(s); replay or classify them through retry/dead-letter tooling.")
@@ -407,6 +456,10 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
             "extractor_counts": digest_extractor_counts,
             "recent_status_counts": recent_status_counts,
             "recent_extractor_counts": recent_extractor_counts,
+            "recent_no_insert_risk_runs": recent_no_insert_risk_runs,
+            "recent_no_insert_explicit_skip_runs": recent_no_insert_explicit_skip_runs,
+            "recent_no_insert_reasons": recent_no_insert_reasons,
+            "no_insert_fail_streak": no_insert_fail_streak,
             "fallback_runs": fallback_runs,
             "llm_quarantine_runs": quarantine_runs,
             "historical_llm_quarantine_runs": historical_quarantine_runs,

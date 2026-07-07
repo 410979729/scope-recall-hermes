@@ -83,6 +83,14 @@ def test_memory_quality_report_flags_active_lint_rules_and_ignores_archived_rows
     )
     _insert_memory(
         conn,
+        memory_id="stale-status",
+        content="Scope Recall 当前系统现状与技术债务：本地配置文件路径为 [REDACTED_PATH]，当前仍有 backlog。 Artifact anchors: /tmp/report.json",
+        target="project",
+        source="journal-digest",
+        metadata={"memory_type": "project"},
+    )
+    _insert_memory(
+        conn,
         memory_id="archived-template",
         content="Journal digest memory: old archived noise should stay out of active lint.",
         metadata={"lifecycle": "archived"},
@@ -93,15 +101,18 @@ def test_memory_quality_report_flags_active_lint_rules_and_ignores_archived_rows
 
     assert conn.total_changes == before
     assert report["status"] == "needs_review"
-    assert report["active_rows"] == 5
+    assert report["active_rows"] == 6
     assert report["by_rule"]["template_prefix"] == 1
     assert report["by_rule"]["raw_attachment_marker"] == 1
-    assert report["by_rule"]["cache_or_tmp_path"] == 1
+    assert report["by_rule"]["cache_or_tmp_path"] == 2
     assert report["by_rule"]["stale_review_active"] == 1
     assert report["by_rule"]["missing_memory_type"] == 1
+    assert report["by_rule"]["redacted_path_marker"] == 1
+    assert report["by_rule"]["artifact_anchor_marker"] == 1
+    assert report["by_rule"]["stale_status_snapshot"] == 1
     sample_ids = {sample["id"] for sample in report["samples"]}
     assert "archived-template" not in sample_ids
-    assert {"template", "attachment", "stale", "missing-type"} <= sample_ids
+    assert {"template", "attachment", "stale", "missing-type", "stale-status"} <= sample_ids
 
 
 def test_memory_quality_ignores_hidden_lifecycle_rows_in_active_report():
@@ -163,6 +174,19 @@ def test_quality_decision_contract_is_shared_with_candidate_promotion():
     )
     _insert_memory(
         conn,
+        memory_id="stale-review-candidate",
+        content="Stable workflow candidate with explicit stale-review flag should not auto-promote.",
+        metadata={
+            "lifecycle": "candidate",
+            "memory_type": "workflow",
+            "confidence": 0.95,
+            "importance": 0.95,
+            "evidence_refs": ["journal:2"],
+            "expires_at": "stale-review",
+        },
+    )
+    _insert_memory(
+        conn,
         memory_id="active-noise",
         content="Journal digest memory: active template noise should be reviewed.",
         metadata={"memory_type": "workflow"},
@@ -170,6 +194,7 @@ def test_quality_decision_contract_is_shared_with_candidate_promotion():
 
     safe = conn.execute("SELECT * FROM memories WHERE id='safe-candidate'").fetchone()
     risky = conn.execute("SELECT * FROM memories WHERE id='high-risk'").fetchone()
+    stale_candidate = conn.execute("SELECT * FROM memories WHERE id='stale-review-candidate'").fetchone()
     active_noise = conn.execute("SELECT * FROM memories WHERE id='active-noise'").fetchone()
 
     safe_quality = quality_decision_for_memory(safe)
@@ -184,6 +209,12 @@ def test_quality_decision_contract_is_shared_with_candidate_promotion():
     assert risky_quality.redaction_status == "secret_like"
     assert classify_candidate_row(risky).lane == "needs_review_high_risk"
 
+    stale_quality = quality_decision_for_memory(stale_candidate)
+    assert stale_quality.action == "keep_candidate"
+    assert stale_quality.reason == "stale_review_requires_operator_review"
+    assert stale_quality.risk == "medium"
+    assert classify_candidate_row(stale_candidate).lane == "needs_review"
+
     active_quality = quality_decision_for_memory(active_noise)
     assert active_quality.action == "needs_review"
     assert active_quality.risk == "medium"
@@ -191,7 +222,7 @@ def test_quality_decision_contract_is_shared_with_candidate_promotion():
 
     summary = quality_decision_summary(conn, limit=10)
     assert summary["by_action"]["promote"] == 1
-    assert summary["by_action"]["keep_candidate"] == 1
+    assert summary["by_action"]["keep_candidate"] == 2
     assert summary["by_action"]["needs_review"] == 1
     assert summary["by_risk"]["high"] == 1
     assert summary["status"] == "needs_review"

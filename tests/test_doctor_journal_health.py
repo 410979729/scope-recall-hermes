@@ -138,6 +138,42 @@ def test_journal_report_surfaces_digest_health_and_batch_policy(tmp_path):
     assert any("llm-quarantine" in item or "retry/dead-letter" in item for item in recommendations)
 
 
+def test_journal_report_fails_when_provider_risk_no_insert_streak_exceeds_threshold(tmp_path):
+    conn = _conn(tmp_path)
+    risk_metadata = json.dumps(
+        {
+            "productive_writes": 0,
+            "no_insert_reason": "provider_or_schema_risk",
+            "health_flags": ["no_productive_write", "extractor_error"],
+        },
+        sort_keys=True,
+    )
+    conn.executemany(
+        """
+        INSERT INTO journal_digest_runs(id, started_at, finished_at, status, extractor, processed_entries, inserted, updated, skipped, error, metadata)
+        VALUES (?, ?, ?, 'ok', 'llm', 10, 0, 0, 10, NULL, ?)
+        """,
+        [
+            ("run-risk-1", "2026-01-03T00:00:00+00:00", "2026-01-03T00:00:01+00:00", risk_metadata),
+            ("run-risk-2", "2026-01-04T00:00:00+00:00", "2026-01-04T00:00:01+00:00", risk_metadata),
+        ],
+    )
+    conn.commit()
+    conn.close()
+    doctor = _doctor_module()
+
+    payload, check, recommendations = doctor.journal_report(tmp_path, journal_config={"no_insert_fail_streak": 2})
+
+    assert check["ok"] is False
+    assert any("no productive writes" in failure for failure in check["failures"])
+    health = payload["digest_health"]
+    assert health["status"] == "degraded"
+    assert health["recent_no_insert_risk_runs"] == 2
+    assert health["recent_no_insert_reasons"] == {"provider_or_schema_risk": 2}
+    assert "recent_no_productive_write_risk" in health["reasons"]
+    assert any("no productive writes" in item for item in recommendations)
+
+
 def test_journal_report_does_not_degrade_for_operator_classified_quarantine_and_sourced_retry(tmp_path):
     conn = _conn(tmp_path)
     _store_memory(conn, memory_id="memory-from-retry", content="Retry-exhausted entry already produced durable memory.")
@@ -175,6 +211,84 @@ def test_journal_report_does_not_degrade_for_operator_classified_quarantine_and_
     assert health["historical_retry_exhausted_rejections"] == 1
     assert health["recovery_queue"]["retry_exhausted_candidates"] == 0
     assert not any("llm-quarantine" in item or "retry/dead-letter" in item for item in recommendations)
+
+
+def test_journal_report_treats_operator_classified_rejection_reasons_as_resolved_quarantine(tmp_path):
+    conn = _conn(tmp_path)
+    metadata = json.dumps(
+        {
+            "productive_writes": 0,
+            "no_insert_reason": "quarantine",
+            "health_flags": ["quarantine", "extractor_error", "no_productive_write"],
+        },
+        sort_keys=True,
+    )
+    conn.execute(
+        """
+        INSERT INTO journal_entries(id, scope_id, shared_scope_id, session_id, turn_number, role, content, content_hash, created_at, processed_run_id, processed_at)
+        VALUES (20, 'scope', 'shared', 's', 1, 'tool', 'Tool execution summary output_preview=omitted', 'h20', '2026-01-05T00:00:00+00:00', 'run-quota-classified', '2026-01-05T00:00:01+00:00')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO journal_digest_runs(id, started_at, finished_at, status, extractor, processed_entries, inserted, updated, skipped, error, metadata)
+        VALUES ('run-quota-classified', '2026-01-05T00:00:00+00:00', '2026-01-05T00:00:01+00:00', 'ok', 'llm-quarantine', 1, 0, 0, 1, NULL, ?)
+        """,
+        (metadata,),
+    )
+    conn.execute(
+        """
+        INSERT INTO journal_rejections(journal_entry_id, run_id, reason, candidate, created_at)
+        VALUES (20, 'run-quota-classified', 'operator-classified:no_replay:retry-exhausted:rate_limit', 'operator reviewed quota/tool noise', '2026-01-05T00:00:01+00:00')
+        """
+    )
+    conn.commit()
+    conn.close()
+    doctor = _doctor_module()
+
+    payload, check, recommendations = doctor.journal_report(tmp_path, journal_config={"no_insert_fail_streak": 1})
+
+    assert check["ok"] is True
+    health = payload["digest_health"]
+    assert health["status"] == "ready"
+    assert health["llm_quarantine_runs"] == 0
+    assert health["historical_llm_quarantine_runs"] == 1
+    assert health["recent_no_insert_risk_runs"] == 0
+    assert health["recent_no_insert_explicit_skip_runs"] == 1
+    assert health["recovery_queue"]["retry_exhausted_candidates"] == 0
+    assert not any("no productive writes" in item for item in recommendations)
+
+
+def test_journal_report_treats_operator_review_no_durable_digest_run_as_explicit_skip(tmp_path):
+    conn = _conn(tmp_path)
+    metadata = json.dumps(
+        {
+            "productive_writes": 0,
+            "no_insert_reason": "operator_review_no_durable_memory",
+            "operator_classification": "no_durable_memory",
+        },
+        sort_keys=True,
+    )
+    conn.execute(
+        """
+        INSERT INTO journal_digest_runs(id, started_at, finished_at, status, extractor, processed_entries, inserted, updated, skipped, error, metadata)
+        VALUES ('operator-review-no-durable', '2026-01-06T00:00:00+00:00', '2026-01-06T00:00:01+00:00', 'ok', 'operator-reviewed-no-durable', 12, 0, 0, 12, NULL, ?)
+        """,
+        (metadata,),
+    )
+    conn.commit()
+    conn.close()
+    doctor = _doctor_module()
+
+    payload, check, recommendations = doctor.journal_report(tmp_path, journal_config={"no_insert_fail_streak": 1})
+
+    assert check["ok"] is True
+    health = payload["digest_health"]
+    assert health["status"] == "ready"
+    assert health["recent_no_insert_risk_runs"] == 0
+    assert health["recent_no_insert_explicit_skip_runs"] == 1
+    assert health["recent_no_insert_reasons"] == {}
+    assert not any("no productive writes" in item for item in recommendations)
 
 
 def test_doctor_vector_report_marks_empty_index_needs_repair_when_sqlite_has_indexable_memories(tmp_path):

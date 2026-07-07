@@ -13,6 +13,7 @@ _DESCRIPTION_OVERRIDES = {
     "auto_capture": "Capture eligible conversation turns into Scope Recall.",
     "journal.max_entries_per_digest": "Maximum journal entries a digest run may review before dynamic backlog expansion.",
     "journal.backlog_fail_entries": "Doctor failure threshold for unprocessed journal backlog.",
+    "journal.no_insert_fail_streak": "Doctor failure threshold for recent digest runs that processed entries but produced no durable writes for provider/schema/quality-risk reasons.",
     "retrieval.mode": "Recall mode: lexical, vector, or hybrid.",
     "retrieval.relation_rerank_enabled": "Enable small relation-graph rerank bonuses after primary recall scoring.",
     "retrieval.vector_only_min_score": "Minimum score for vector-only candidates to survive recall filtering.",

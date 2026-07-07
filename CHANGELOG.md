@@ -4,14 +4,22 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.6.2] - 2026-07-07
+
 ### Added
 - Added `scripts/backfill.graph_relations.py`, a dry-run-by-default deterministic graph backfill that creates same-scope `supersedes` edges from trusted `metadata.superseded_by` provenance.
 - Added `scripts/benchmark.graph_relations.py`, a deterministic API-free graph benchmark covering opt-in `supersedes` rerank improvement, hidden-peer leak prevention, and explicit zero relation weights; release readiness now runs it alongside the golden benchmark.
 - Exposed graph density and hygiene counters in `scope_recall_stats`, including relation type distribution, orphan relation count, and lifecycle-hidden peer relation count.
 
+### Changed
+- Maintained the stable V1 release line and release-gate coverage across forgetting, governance, journal recovery, dashboard reporting, experience replay, installer rollback, fact freshness, relation extraction, and golden benchmark surfaces while publishing graph-relation and maintenance-tool hardening updates.
+
 ### Fixed
 - Scope-filtered relation evidence in `scope_recall_inspect` and `scope_recall_explain` so graph relations never expose inaccessible, deleted, or lifecycle-hidden peer memory ids.
 - Made explicit relation reranking symmetric for `supersedes` edges: enabling `retrieval.relation_rerank_enabled` boosts superseding memories and applies the configured `relation_superseded_penalty` to superseded peers while respecting explicit zero weights.
+- Made `scope_recall_playbook_review` inspect-only by default for promote, quarantine, supersede, review, and merge write paths; operators must pass `dry_run=false` to apply DB mutations, and `force_cross_class` is documented and threaded through supersede/merge review flows.
+- Made repeated `merge_playbooks()` apply calls idempotent when sources are already superseded by the selected target, avoiding duplicate `playbook_versions` rows and unnecessary `updated_at` churn.
+- Classified LLM journal digest outputs filtered by quality gates as `filtered_or_rejected` through `candidate_status_counts`, keeping them observable in run metadata without routing non-error filtering into dead-letter handling.
 
 ## [1.6.1] - 2026-06-30
 

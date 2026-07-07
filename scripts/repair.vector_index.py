@@ -57,6 +57,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Allow rebuilding with vector.fallback_embedder when the primary embedder is unavailable. By default this is blocked to avoid silently downgrading production vector dimensions/quality.",
     )
+    parser.add_argument("--json", action="store_true", help="emit JSON output (default; accepted for operator/script consistency)")
     return parser.parse_args()
 
 

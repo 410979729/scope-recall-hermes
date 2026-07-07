@@ -90,6 +90,17 @@ def test_llm_candidate_parser_extracts_json_array_from_fenced_text_with_preamble
     assert candidates[0].confidence >= 0.65
 
 
+def test_llm_candidate_parser_extracts_unfenced_json_array_with_preamble_and_epilogue():
+    raw = """可以，下面是提取结果：\n[{\"action\": \"create\", \"content\": \"Stable reusable workflow: before replaying journal dead letters, classify auth, quota, timeout, parse, and low-value failures separately with audit evidence.\", \"target\": \"ops\", \"memory_type\": \"workflow\", \"importance\": 0.72, \"confidence\": 0.81, \"entities\": [\"journal recovery\"], \"tags\": [\"journal-digest\"], \"reason\": \"Reusable recovery workflow\"}]\n以上。"""
+
+    candidates, status = _parse_llm_candidates_with_status(raw, bundle=_parse_test_bundle())
+
+    assert status == "parsed"
+    assert len(candidates) == 1
+    assert candidates[0].target == "ops"
+    assert candidates[0].memory_type == "workflow"
+
+
 def _create_state_db(path: Path, day: date, *, content_suffix: str = "") -> None:
     conn = sqlite3.connect(path)
     try:
@@ -747,7 +758,7 @@ def test_llm_digest_timeout_falls_back_to_heuristic_and_records_degraded_ok(tmp_
         conn.close()
 
 
-def test_llm_empty_array_falls_back_and_records_degraded_ok(tmp_path, monkeypatch):
+def test_llm_empty_array_skips_heuristic_template_and_records_error(tmp_path, monkeypatch):
     import scope_recall.nightly_digest as nightly_digest
 
     day = date(2026, 6, 1)
@@ -772,26 +783,27 @@ def test_llm_empty_array_falls_back_and_records_degraded_ok(tmp_path, monkeypatc
         )
     )
 
-    assert result["ok"] is True
-    assert result["status"] == "ok_with_fallback"
-    assert result["inserted"] == 1
-    assert result["extractor_used"] == "heuristic-fallback"
-    assert result["extractor_fallbacks"][0]["kind"] == "llm_empty"
+    assert result["ok"] is False
+    assert result["status"] == "error"
+    assert result["error"]
+    assert result["inserted"] == 0
+    assert result["extractor_used"] == "llm-degraded"
+    assert result["extractor_fallbacks"][0]["kind"] == "llm_empty_skipped"
 
     conn = sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3")
     conn.row_factory = sqlite3.Row
     try:
         run = conn.execute("SELECT status, error, metadata FROM nightly_digest_runs").fetchone()
-        assert run["status"] == "ok_with_fallback"
-        assert run["error"] is None
+        assert run["status"] == "error"
+        assert run["error"]
         metadata = json.loads(run["metadata"])
-        assert metadata["extractor_used"] == "heuristic-fallback"
-        assert metadata["extractor_fallbacks"][0]["kind"] == "llm_empty"
+        assert metadata["extractor_used"] == "llm-degraded"
+        assert metadata["extractor_fallbacks"][0]["kind"] == "llm_empty_skipped"
     finally:
         conn.close()
 
 
-def test_llm_bad_json_falls_back_and_records_degraded_ok(tmp_path, monkeypatch):
+def test_llm_bad_json_skips_heuristic_template_and_records_error(tmp_path, monkeypatch):
     import scope_recall.nightly_digest as nightly_digest
 
     day = date(2026, 6, 1)
@@ -816,21 +828,22 @@ def test_llm_bad_json_falls_back_and_records_degraded_ok(tmp_path, monkeypatch):
         )
     )
 
-    assert result["ok"] is True
-    assert result["status"] == "ok_with_fallback"
-    assert result["inserted"] == 1
-    assert result["extractor_used"] == "heuristic-fallback"
-    assert result["extractor_fallbacks"][0]["kind"] == "llm_parse"
+    assert result["ok"] is False
+    assert result["status"] == "error"
+    assert result["error"]
+    assert result["inserted"] == 0
+    assert result["extractor_used"] == "llm-degraded"
+    assert result["extractor_fallbacks"][0]["kind"] == "llm_parse_skipped"
 
     conn = sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3")
     conn.row_factory = sqlite3.Row
     try:
         run = conn.execute("SELECT status, error, metadata FROM nightly_digest_runs").fetchone()
-        assert run["status"] == "ok_with_fallback"
-        assert run["error"] is None
+        assert run["status"] == "error"
+        assert run["error"]
         metadata = json.loads(run["metadata"])
-        assert metadata["extractor_used"] == "heuristic-fallback"
-        assert metadata["extractor_fallbacks"][0]["kind"] == "llm_parse"
+        assert metadata["extractor_used"] == "llm-degraded"
+        assert metadata["extractor_fallbacks"][0]["kind"] == "llm_parse_skipped"
     finally:
         conn.close()
 
@@ -972,7 +985,7 @@ def test_llm_explicit_skip_before_candidate_continues_to_next_chunk(tmp_path, mo
     assert result["extractor_fallbacks"] == []
 
 
-def test_llm_empty_and_empty_heuristic_records_error(tmp_path, monkeypatch):
+def test_llm_empty_and_empty_heuristic_records_degraded_skip(tmp_path, monkeypatch):
     import scope_recall.nightly_digest as nightly_digest
 
     day = date(2026, 6, 1)
@@ -1000,18 +1013,21 @@ def test_llm_empty_and_empty_heuristic_records_error(tmp_path, monkeypatch):
 
     assert result["ok"] is False
     assert result["status"] == "error"
+    assert result["error"]
     assert result["candidates"] == 0
-    assert result["extractor_fallbacks"][0]["kind"] == "llm_empty_no_candidates"
-    assert "no candidates" in result["error"]
+    assert result["inserted"] == 0
+    assert result["extractor_used"] == "llm-degraded"
+    assert result["extractor_fallbacks"][0]["kind"] == "llm_empty_skipped"
 
     conn = sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3")
     conn.row_factory = sqlite3.Row
     try:
         run = conn.execute("SELECT status, error, metadata FROM nightly_digest_runs").fetchone()
         assert run["status"] == "error"
-        assert "no candidates" in run["error"]
+        assert run["error"]
         metadata = json.loads(run["metadata"])
-        assert metadata["extractor_fallbacks"][0]["kind"] == "llm_empty_no_candidates"
+        assert metadata["extractor_used"] == "llm-degraded"
+        assert metadata["extractor_fallbacks"][0]["kind"] == "llm_empty_skipped"
     finally:
         conn.close()
 

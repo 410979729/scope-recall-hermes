@@ -35,12 +35,32 @@ ATTACHMENT_MARKERS = (
     "attachment://",
     "sandbox:/mnt/data/",
 )
+ARTIFACT_ANCHOR_MARKERS = (
+    "Artifact anchors:",
+    "artifact anchors:",
+)
+REDACTED_PATH_MARKERS = (
+    "[REDACTED_PATH]",
+)
+STALE_STATUS_SNAPSHOT_TERMS = (
+    "当前系统现状",
+    "当前技术现状",
+    "当前系统状态",
+    "当前状态",
+    "技术债务",
+    "current status",
+    "current state",
+    "technical debt",
+)
 STALE_REVIEW_VALUES = {"stale-review", "stale_review", "stale review"}
 QUALITY_RULES = {
     "template_prefix",
     "raw_attachment_marker",
+    "artifact_anchor_marker",
+    "redacted_path_marker",
     "cache_or_tmp_path",
     "overlong_transcript",
+    "stale_status_snapshot",
     "stale_review_active",
     "missing_memory_type",
     "secret_like_content",
@@ -261,6 +281,8 @@ def quality_decision_for_memory(row: sqlite3.Row | Mapping[str, Any]) -> MemoryQ
         return MemoryQualityDecision("keep_candidate", "target_not_profile_surface", **base)
     if redaction_status != "clean":
         return MemoryQualityDecision("keep_candidate", "secret_like_content_requires_human_review", risk="high", **base)
+    if freshness.strip().lower() in STALE_REVIEW_VALUES or str(metadata.get("review_status") or "").strip().lower() in STALE_REVIEW_VALUES:
+        return MemoryQualityDecision("keep_candidate", "stale_review_requires_operator_review", risk="medium", **base)
     if _has_any(text, REVIEW_TERMS):
         return MemoryQualityDecision("keep_candidate", "high_risk_terms_require_human_review", risk="high", **base)
     if memory_type in NOISE_MEMORY_TYPES:
@@ -365,8 +387,14 @@ def lint_memory_row(row: sqlite3.Row) -> list[str]:
         rules.append("template_prefix")
     if _has_any(text, ATTACHMENT_MARKERS):
         rules.append("raw_attachment_marker")
+    if _has_any(text, ARTIFACT_ANCHOR_MARKERS):
+        rules.append("artifact_anchor_marker")
+    if _has_any(text, REDACTED_PATH_MARKERS):
+        rules.append("redacted_path_marker")
     if _has_any(text, PATH_CACHE_PATTERNS):
         rules.append("cache_or_tmp_path")
+    if _has_any(text, STALE_STATUS_SNAPSHOT_TERMS) and str(row["source"] or "").strip().lower() == "journal-digest":
+        rules.append("stale_status_snapshot")
     if _looks_like_transcript(content):
         rules.append("overlong_transcript")
     expires_at = str(metadata.get("expires_at") or metadata.get("freshness") or "").strip().lower()

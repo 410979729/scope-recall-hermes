@@ -22,6 +22,29 @@ def _step(number: int, action: str, evidence_required: str, *, capability_class:
     return payload
 
 
+def _default_replay_cases(*, playbook_id: str, task_class: str, title: str, trigger: str, risk_level: str) -> list[dict[str, Any]]:
+    """Return one positive and one negative replay case for curated core playbooks."""
+
+    expected_decision = "guided_reuse"
+    return [
+        {
+            "id": f"{playbook_id}-positive",
+            "case_type": "positive",
+            "query": f"{title} {task_class}: {trigger}",
+            "expected_decision": expected_decision,
+            "expected_playbook_id": playbook_id,
+            "required_terms": [title, task_class, "live evidence"],
+            "min_coverage_gain": 0.0,
+        },
+        {
+            "id": f"{playbook_id}-negative",
+            "case_type": "negative_no_reuse",
+            "query": "请给我一句轻松的日常问候，不要调用任何工程、发布、记忆或运维流程。",
+            "expect_no_reuse": True,
+        },
+    ]
+
+
 def _playbook(
     *,
     playbook_id: str,
@@ -33,6 +56,7 @@ def _playbook(
     verification: Sequence[str],
     risk_level: str = "low",
     related_skills: Sequence[str] = (),
+    replay_cases: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": playbook_id,
@@ -64,7 +88,13 @@ def _playbook(
         },
         "related_skills": list(related_skills),
         "environment_constraints": {"risk_level": risk_level, "requires_live_check": True},
-        "metadata": {"source": "experience_bootstrap", "curated": True},
+        "metadata": {
+            "source": "experience_bootstrap",
+            "curated": True,
+            "replay_cases": list(replay_cases)
+            if replay_cases is not None
+            else _default_replay_cases(playbook_id=playbook_id, task_class=task_class, title=title, trigger=trigger, risk_level=risk_level),
+        },
     }
 
 

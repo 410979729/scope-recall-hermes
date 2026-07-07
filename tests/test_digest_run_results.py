@@ -8,6 +8,7 @@ from collections import Counter
 
 from scope_recall.digest_run_results import (
     journal_digest_metadata,
+    journal_digest_receipt_fields,
     journal_digest_success_result,
     nightly_digest_metadata,
     nightly_digest_result,
@@ -70,18 +71,61 @@ def test_journal_digest_result_and_metadata_preserve_counts_and_limits():
 
     assert result["processed_entries"] == 8
     assert result["inserted"] == 1
+    assert result["productive_writes"] == 3
+    assert result["backlog_after"] == 20
+    assert result["backlog_delta"] == 0
+    assert result["recommended_next_limit"] == 100
     assert result["actions"] == actions[:50]
     assert metadata["extractor_errors"] == ["e"] * 5
     assert metadata["actions"] == actions[:50]
+    assert metadata["productive_writes"] == 0
+    assert metadata["backlog_after"] == 20
+
+
+def test_journal_digest_receipt_distinguishes_explicit_skip_from_provider_risk():
+    explicit = journal_digest_receipt_fields(
+        total_loaded_entries=10,
+        total_candidates=0,
+        counts=Counter({"skipped": 10}),
+        quarantine_counts=Counter(),
+        extractor_errors=[],
+        backlog_before=20,
+        backlog_after=10,
+        effective_limit=50,
+        recommended_next_limit=25,
+    )
+    assert explicit["productive_writes"] == 0
+    assert explicit["no_insert_reason"] == "explicit_skip"
+    assert explicit["recommended_next_limit"] == 25
+    assert "no_productive_write" in explicit["health_flags"]
+    assert "extractor_error" not in explicit["health_flags"]
+
+    provider_risk = journal_digest_receipt_fields(
+        total_loaded_entries=10,
+        total_candidates=0,
+        counts=Counter({"skipped": 10}),
+        quarantine_counts=Counter(),
+        extractor_errors=[{"kind": "parse"}],
+        backlog_before=20,
+        backlog_after=20,
+        effective_limit=50,
+    )
+    assert provider_risk["no_insert_reason"] == "provider_or_schema_risk"
+    assert {"backlog_not_decreasing", "extractor_error", "no_productive_write"} <= set(provider_risk["health_flags"])
 
 
 def test_nightly_status_payload_and_result_contract():
-    fallback_events = [{"kind": "llm_empty_no_candidates"}]
+    fallback_events = [{"kind": "llm_parse_skipped"}]
     ok, status, error = nightly_status_payload(dry_run=False, fallback_events=fallback_events, candidate_count=0)
 
     assert ok is False
     assert status == "error"
-    assert error == "LLM extraction fell back to heuristic but no candidates were produced."
+    assert error == "LLM extraction degraded and produced no durable candidates; check provider/schema before relying on nightly digest."
+
+    ok_legacy, status_legacy, error_legacy = nightly_status_payload(dry_run=False, fallback_events=[{"kind": "llm_empty_no_candidates"}], candidate_count=0)
+    assert ok_legacy is False
+    assert status_legacy == "error"
+    assert error_legacy == error
 
     ok2, status2, error2 = nightly_status_payload(dry_run=False, fallback_events=[{"kind": "timeout"}], candidate_count=1)
     assert ok2 is True

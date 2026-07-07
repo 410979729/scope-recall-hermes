@@ -143,7 +143,16 @@ def test_doctor_reports_experience_schema_and_counts(tmp_path):
     conn.row_factory = sqlite3.Row
     try:
         ensure_schema(conn)
-        create_playbook(conn, playbook_id="pb_doc", scope_id="scope-a", payload=_payload(), status="candidate", confidence=0.9)
+        create_playbook(
+            conn,
+            playbook_id="pb_doc",
+            scope_id="scope-a",
+            payload=_payload(),
+            status="candidate",
+            confidence=0.9,
+            evidence_anchors=[{"journal_entry_id": 1, "kind": "verification"}],
+            metadata={"replay_cases": [{"id": "positive-doc"}, {"id": "negative-doc"}]},
+        )
         review_playbook(conn, playbook_id="pb_doc", accessible_scope_ids=["scope-a"], action="promote", reason="fixture review")
         record_playbook_feedback(conn, playbook_id="pb_doc", scope_id="scope-a", accessible_scope_ids=["scope-a"], outcome="success", evidence=["fixture"])
     finally:
@@ -194,7 +203,8 @@ def test_doctor_reports_experience_maturity_evidence_and_replay_coverage(tmp_pat
 
     payload, check, recommendations = doctor.experience_report(tmp_path)
 
-    assert check == {"ok": True, "failures": []}
+    assert check["ok"] is False
+    assert payload["status"] == "needs_attention"
     maturity = payload["maturity"]
     assert maturity["promoted_total"] == 2
     assert maturity["promoted_with_evidence_anchors"] == 1
@@ -238,7 +248,8 @@ def test_doctor_experience_funnel_reports_duplicates_and_review_heavy_state(tmp_
 
     payload, check, recommendations = doctor.experience_report(tmp_path)
 
-    assert check == {"ok": True, "failures": []}
+    assert check["ok"] is False
+    assert payload["status"] == "needs_attention"
     funnel = payload["promotion_funnel"]
     assert funnel["needs_review"] == 3
     assert funnel["needs_review_ratio"] == 1.0
@@ -247,6 +258,29 @@ def test_doctor_experience_funnel_reports_duplicates_and_review_heavy_state(tmp_
     assert any("review-heavy" in item for item in recommendations)
     assert any("duplicate" in item.lower() for item in recommendations)
     assert any("misleading" in item for item in recommendations)
+
+
+def test_doctor_experience_funnel_ignores_unrelated_scope_title_collisions(tmp_path):
+    doctor = _load_doctor_module()
+    storage = tmp_path / "scope-recall"
+    storage.mkdir(parents=True)
+    conn = sqlite3.connect(storage / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        create_playbook(conn, playbook_id="pb_a", scope_id="scope-a", shared_scope_id="", payload=_payload(), status="candidate", confidence=0.7)
+        create_playbook(conn, playbook_id="pb_b", scope_id="scope-b", shared_scope_id="", payload=_payload(), status="candidate", confidence=0.7)
+        create_playbook(conn, playbook_id="pb_related", scope_id="scope-a-session", shared_scope_id="scope-a", payload=_payload(), status="candidate", confidence=0.7)
+    finally:
+        conn.close()
+
+    payload, check, recommendations = doctor.experience_report(tmp_path)
+
+    assert check == {"ok": True, "failures": []}
+    groups = payload["promotion_funnel"]["duplicate_groups"]
+    assert len(groups) == 1
+    assert groups[0]["count"] == 2
+    assert "duplicate" in recommendations[0].lower()
 
 
 def test_doctor_experience_feedback_recommendation_ignores_terminal_reviewed_playbooks(tmp_path):

@@ -112,6 +112,7 @@ This file is generated from the packaged `config.json` registry. It lists every 
 - `journal.extractor` (string; risk: `medium`; restart_required: `yes`; choices: `llm, heuristic`) — Scope Recall configuration key `journal.extractor` in the `journal` group. Default: `"llm"`
 - `journal.max_entries_per_digest` (integer; risk: `medium`; restart_required: `yes`) — Maximum journal entries a digest run may review before dynamic backlog expansion. Default: `500`
 - `journal.max_entries_per_digest_ceiling` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.max_entries_per_digest_ceiling` in the `journal` group. Default: `1200`
+- `journal.no_insert_fail_streak` (integer; risk: `medium`; restart_required: `yes`) — Doctor failure threshold for recent digest runs that processed entries but produced no durable writes for provider/schema/quality-risk reasons. Default: `3`
 - `journal.retention_days` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.retention_days` in the `journal` group. Default: `0`
 - `journal.tool_trace_hard_max_chars` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.tool_trace_hard_max_chars` in the `journal` group. Default: `4000`
 - `journal.tool_trace_include_output_preview` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.tool_trace_include_output_preview` in the `journal` group. Default: `false`
@@ -165,7 +166,7 @@ This file is generated from the packaged `config.json` registry. It lists every 
 - `retrieval.relation_contradicts_penalty` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.relation_contradicts_penalty` in the `retrieval` group. Default: `0.0`
 - `retrieval.relation_rerank_enabled` (boolean; risk: `medium`; restart_required: `no`) — Enable small relation-graph rerank bonuses after primary recall scoring. Default: `false`
 - `retrieval.relation_rerank_weight` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.relation_rerank_weight` in the `retrieval` group. Default: `0.04`
-- `retrieval.relation_superseded_penalty` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.relation_superseded_penalty` in the `retrieval` group. Default: `0.0`
+- `retrieval.relation_superseded_penalty` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.relation_superseded_penalty` in the `retrieval` group. Default: `0.04`
 - `retrieval.relation_supersedes_boost` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.relation_supersedes_boost` in the `retrieval` group. Default: `0.04`
 - `retrieval.relation_supports_boost` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.relation_supports_boost` in the `retrieval` group. Default: `0.04`
 - `retrieval.rrf_bm25_weight` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.rrf_bm25_weight` in the `retrieval` group. Default: `1.0`

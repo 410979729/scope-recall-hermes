@@ -295,7 +295,7 @@ def _setup_playbooks(plugin: Any, fixture: dict[str, Any], label_to_id: dict[str
             reviewed = json.loads(
                 plugin.handle_tool_call(
                     "scope_recall_playbook_review",
-                    {"id": playbook_id, "action": desired_status, "reason": "golden benchmark fixture"},
+                    {"id": playbook_id, "action": desired_status, "reason": "golden benchmark fixture", "dry_run": False},
                 )
             )
             if not reviewed.get("reviewed"):
