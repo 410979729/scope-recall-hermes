@@ -981,6 +981,62 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             except Exception:
                 logger.exception("Scope Recall SQLite rollback failed after %s", context)
 
+    def _recover_sqlite_connection_after_error(self, context: str) -> dict[str, Any]:
+        """Rollback/probe/reopen the provider SQLite connection after lock errors.
+
+        This is intentionally conservative and is used only by `scope_recall_store`
+        for SQLite lock/transaction errors. Non-SQLite exceptions still surface as
+        errors so business-logic failures are not hidden by a retry.
+        """
+        payload: dict[str, Any] = {"recovered": False, "rolled_back": False, "reopened": False, "write_probe": False}
+        with self._lock:
+            conn = self._conn
+            if conn is None:
+                return payload
+            if conn.in_transaction:
+                try:
+                    conn.rollback()
+                    payload["rolled_back"] = True
+                except Exception:
+                    logger.exception("Scope Recall SQLite rollback failed during recovery after %s", context)
+            if self._sqlite_write_probe(conn):
+                payload["recovered"] = True
+                payload["write_probe"] = True
+                return payload
+            if self._db_path is None:
+                return payload
+            try:
+                conn.close()
+            except Exception:
+                logger.exception("Scope Recall SQLite close failed during recovery after %s", context)
+            try:
+                reopened = sqlite3.connect(self._db_path, check_same_thread=False, timeout=SQLITE_BUSY_TIMEOUT_SECONDS)
+                reopened.row_factory = sqlite3.Row
+                reopened.execute("PRAGMA journal_mode=WAL")
+                reopened.execute("PRAGMA synchronous=NORMAL")
+                ensure_schema(reopened)
+                ensure_journal_schema(reopened)
+                self._conn = reopened
+                payload["reopened"] = True
+                payload["write_probe"] = self._sqlite_write_probe(reopened)
+                payload["recovered"] = bool(payload["write_probe"])
+            except Exception:
+                logger.exception("Scope Recall SQLite reopen failed during recovery after %s", context)
+            return payload
+
+    def _sqlite_write_probe(self, conn: sqlite3.Connection) -> bool:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.rollback()
+            return True
+        except Exception:
+            try:
+                if conn.in_transaction:
+                    conn.rollback()
+            except Exception:
+                logger.exception("Scope Recall SQLite write probe rollback failed")
+            return False
+
     def _require_conn(self) -> sqlite3.Connection:
         if self._conn is None:
             raise RuntimeError("Scope Recall is not initialized")

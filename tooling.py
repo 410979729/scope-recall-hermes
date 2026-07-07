@@ -6,8 +6,9 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from tools.registry import tool_error
 
@@ -192,14 +193,32 @@ class ScopeRecallToolService:
                     "receipt": self._receipt("rejected_sensitive", target=target, scope_mode=scope_mode, reason=filter_result.reason),
                 }
             )
-        memory_id, inserted, outcome = self.provider._store_now(
-            content=content,
-            source="tool-store",
-            target=target,
-            session_id=self.provider._session_id,
-            metadata=self._store_metadata(args),
-            scope_mode=scope_mode,
-        )
+        store_kwargs = {
+            "content": content,
+            "source": "tool-store",
+            "target": target,
+            "session_id": self.provider._session_id,
+            "metadata": self._store_metadata(args),
+            "scope_mode": scope_mode,
+        }
+        recovered = False
+        retry_count = 0
+        try:
+            memory_id, inserted, outcome = self.provider._store_now(**store_kwargs)
+        except Exception as exc:
+            if not self._recoverable_store_error(exc):
+                raise
+            recover = getattr(self.provider, "_recover_sqlite_connection_after_error", None)
+            recovery_payload = cast(dict[str, Any], recover("scope_recall_store")) if callable(recover) else {}
+            if not recovery_payload.get("recovered"):
+                raise
+            recovered = True
+            retry_count = 1
+            memory_id, inserted, outcome = self.provider._store_now(**store_kwargs)
+        receipt = self._receipt("promoted" if inserted else outcome, target=target, id=memory_id, scope_mode=scope_mode)
+        if recovered:
+            receipt["recovered"] = True
+            receipt["retry_count"] = retry_count
         return self._json(
             {
                 "stored": bool(inserted),
@@ -209,9 +228,17 @@ class ScopeRecallToolService:
                 "id": memory_id,
                 "target": target,
                 "scope_mode": scope_mode,
-                "receipt": self._receipt("promoted" if inserted else outcome, target=target, id=memory_id, scope_mode=scope_mode),
+                "recovered": recovered,
+                "retry_count": retry_count,
+                "receipt": receipt,
             }
         )
+
+    def _recoverable_store_error(self, exc: Exception) -> bool:
+        if not isinstance(exc, sqlite3.Error):
+            return False
+        message = str(exc).lower()
+        return "locked" in message or "transaction" in message
 
     def _handle_store_secret_index(self, args: dict[str, Any]) -> str:
         if not config_bool(self.provider._config, "secret_index_tools_enabled", False):
