@@ -4,6 +4,13 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.6.3] - 2026-07-07
+
+### Fixed
+- Closed the SQLite write-lock recovery gap from issue #25 by adding conservative `scope_recall_store` auto-recovery for recoverable SQLite lock/transaction errors: the provider rolls back/probes/reopens the shared connection if needed, retries the store once with identical arguments, and returns `recovered=true` plus `retry_count=1` in the receipt.
+- Kept non-SQLite store failures non-retryable so business-logic exceptions still surface while rollback guards release any dirty SQLite transaction.
+- Preserved forgetting, governance, journal recovery, dashboard, experience replay, installer rollback, fact freshness, relation extraction, and golden benchmark release-gate coverage while publishing this focused SQLite recovery patch.
+
 ## [1.6.2] - 2026-07-07
 
 ### Added

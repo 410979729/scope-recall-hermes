@@ -156,6 +156,39 @@ def test_tool_dispatch_rolls_back_open_sqlite_transaction(provider, monkeypatch)
     _assert_sqlite_writer_released(provider)
 
 
+def test_scope_recall_store_recovers_and_retries_after_sqlite_lock(provider, monkeypatch):
+    original_store_now = provider._store_now
+    calls: list[dict[str, object]] = []
+
+    def flaky_store_now(**kwargs):
+        calls.append(dict(kwargs))
+        if len(calls) == 1:
+            conn = provider._require_conn()
+            conn.execute("CREATE TABLE IF NOT EXISTS rollback_probe(marker TEXT PRIMARY KEY)")
+            conn.execute("INSERT INTO rollback_probe(marker) VALUES ('store-retry')")
+            assert conn.in_transaction
+            raise sqlite3.OperationalError("database is locked")
+        return original_store_now(**kwargs)
+
+    monkeypatch.setattr(provider, "_store_now", flaky_store_now)
+
+    payload = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_store",
+            {"content": "rollback regression content for recoverable sqlite lock", "target": "ops"},
+        )
+    )
+
+    assert payload["stored"] is True
+    assert payload["recovered"] is True
+    assert payload["retry_count"] == 1
+    assert payload["receipt"]["recovered"] is True
+    assert payload["receipt"]["retry_count"] == 1
+    assert len(calls) == 2
+    assert calls[0] == calls[1]
+    _assert_sqlite_writer_released(provider)
+
+
 def test_background_writer_rolls_back_open_sqlite_transaction(provider, monkeypatch):
     calls = []
 
