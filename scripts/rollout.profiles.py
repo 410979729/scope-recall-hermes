@@ -247,6 +247,7 @@ def rollout_profiles(
     report = {
         "ok": False if selection_error or no_apply_target or action_error else (all(bool(action.get("ok", True)) for action in applied_actions) if apply else True),
         "dry_run": not apply,
+        "plan": not apply,
         "rollback": False,
         "profiles_root": str(profiles_root),
         "missing_profiles": missing_profiles,
@@ -332,15 +333,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profiles-root", default=str(Path.home() / ".hermes" / "profiles"), help="Directory containing Hermes profile homes")
     parser.add_argument("--profile", action="append", default=[], help="Specific profile name to include; repeatable")
     parser.add_argument("--canary", default="", help="Only apply rollout to this profile name; other profiles are inventoried/skipped")
+    parser.add_argument("--plan", action="store_true", help="Explicit dry-run/inventory mode. This is the default and cannot be combined with --apply")
     parser.add_argument("--apply", action="store_true", help="Mutate profile plugin directories. Default is dry-run")
     parser.add_argument("--rollback", action="store_true", help="Rollback from a prior rollout receipt. Requires --receipt; use --apply to mutate")
     parser.add_argument("--receipt", default="", help="Receipt JSON path to write on rollout or read on rollback")
+    parser.add_argument("--json", action="store_true", help="Print JSON output (accepted for product CLI consistency; JSON is always emitted)")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     try:
+        if args.plan and args.apply:
+            raise ValueError("--plan cannot be combined with --apply")
         receipt_path = Path(args.receipt).expanduser() if args.receipt else None
         if args.rollback:
             if receipt_path is None:

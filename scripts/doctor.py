@@ -27,6 +27,7 @@ try:  # installed package / pytest package-alias path
         vector_enabled_from_config,
         vector_fallback_backend_from_config,
     )
+    from scope_recall.doctor_event_digest import event_digest_report
     from scope_recall.doctor_experience import experience_config_summary, experience_report, nightly_digest_report
     from scope_recall.doctor_journal import journal_enabled_from_config, journal_report
     from scope_recall.doctor_source import source_report
@@ -35,6 +36,7 @@ try:  # installed package / pytest package-alias path
     from scope_recall.response_schemas import DOCTOR_RESPONSE_SCHEMA_VERSION
 except ImportError:  # pragma: no cover - direct source checkout execution fallback
     from doctor_common import expected_embedder_from_config, load_runtime_config, redact_secret_like_text, vector_backend_from_config, vector_enabled_from_config, vector_fallback_backend_from_config
+    from doctor_event_digest import event_digest_report
     from doctor_experience import experience_config_summary, experience_report, nightly_digest_report
     from doctor_journal import journal_enabled_from_config, journal_report
     from doctor_source import source_report
@@ -44,6 +46,7 @@ except ImportError:  # pragma: no cover - direct source checkout execution fallb
 
 __all__ = [
     "disabled_vector_report",
+    "event_digest_report",
     "experience_config_summary",
     "experience_report",
     "expected_embedder_from_config",
@@ -107,6 +110,7 @@ def main() -> int:
         sqlite_payload, sqlite_check, sqlite_recommendations = sqlite_report(hermes_home)
         candidate_payload, candidate_check, candidate_recommendations = memory_candidate_debt_report(hermes_home)
         quality_payload, quality_check, quality_recommendations = memory_quality_lint_report(hermes_home)
+        event_digest_payload, event_digest_check, event_digest_recommendations = event_digest_report(hermes_home, runtime_config)
         secret_payload, secret_check, secret_recommendations = memory_secret_report(hermes_home)
         raw_journal = runtime_config.get("journal")
         journal_config = raw_journal if isinstance(raw_journal, dict) else {}
@@ -139,6 +143,7 @@ def main() -> int:
             "sqlite": sqlite_payload,
             "memory_candidate_debt": candidate_payload,
             "memory_quality_lint": quality_payload,
+            "event_digest": event_digest_payload,
             "memory_secret_scan": secret_payload,
             "journal": journal_payload,
             "experience": experience_payload,
@@ -148,6 +153,7 @@ def main() -> int:
         checks["sqlite_truth"] = sqlite_check
         checks["memory_candidate_debt"] = candidate_check
         checks["memory_quality_lint"] = quality_check
+        checks["event_digest"] = event_digest_check
         checks["memory_secret_scan"] = secret_check
         checks["journal_provenance"] = journal_check
         checks["experience_kernel"] = experience_check
@@ -156,6 +162,7 @@ def main() -> int:
         recommendations.extend(sqlite_recommendations)
         recommendations.extend(candidate_recommendations)
         recommendations.extend(quality_recommendations)
+        recommendations.extend(event_digest_recommendations)
         recommendations.extend(secret_recommendations)
         recommendations.extend(journal_recommendations)
         recommendations.extend(experience_recommendations)

@@ -64,11 +64,21 @@ QUALITY_RULES = {
     "stale_review_active",
     "missing_memory_type",
     "secret_like_content",
+    "secret_reference_missing_vault_ref",
 }
 HIDDEN_PROFILE_LIFECYCLES = {"archived", "candidate", "scratch", "superseded", "obsolete", "rejected"}
 PROFILE_TARGETS = {"user", "memory", "project", "ops"}
 STABLE_MEMORY_TYPES = {"factual", "preference", "procedure", "workflow", "pitfall", "decision", "constraint", "project", "resource"}
 NOISE_MEMORY_TYPES = {"summary", "episodic", "tool_trace"}
+SENSITIVITY_LEVELS = {"public", "internal", "secret_reference", "restricted"}
+SENSITIVITY_ALIASES = {
+    "normal": "internal",
+    "sensitive": "restricted",
+    "secret-index": "secret_reference",
+    "secret_index": "secret_reference",
+    "external-vault-reference": "secret_reference",
+    "external_vault_reference": "secret_reference",
+}
 REVIEW_TERMS = (
     "password",
     "token",
@@ -166,6 +176,30 @@ def _memory_type(metadata: Mapping[str, Any]) -> str:
     return str(metadata.get("memory_type") or metadata.get("type") or metadata.get("category") or "").strip().lower()
 
 
+def normalize_sensitivity(value: Any, *, content: str = "", vault_ref: str = "") -> tuple[str, str]:
+    """Normalize memory sensitivity into the v1 governance levels.
+
+    Returns ``(level, reason)`` where level is one of public/internal/
+    secret_reference/restricted. Plaintext secret-looking content is always
+    restricted and carries the `plaintext_secret_rejected` reason.
+    """
+    if contains_secret_like_text(content):
+        return "restricted", "plaintext_secret_rejected"
+    normalized = str(value or "internal").strip().lower().replace("-", "_")
+    normalized = SENSITIVITY_ALIASES.get(normalized, normalized)
+    if normalized not in SENSITIVITY_LEVELS:
+        normalized = "internal"
+    if normalized == "secret_reference" and not str(vault_ref or "").strip():
+        return "restricted", "secret_reference_missing_vault_ref"
+    return normalized, ""
+
+
+def sensitivity_metadata(metadata: Mapping[str, Any], *, content: str = "") -> dict[str, Any]:
+    vault_ref = str(metadata.get("vault_ref") or "").strip()
+    sensitivity, reason = normalize_sensitivity(metadata.get("sensitivity"), content=content, vault_ref=vault_ref)
+    return {"sensitivity": sensitivity, "sensitivity_reason": reason, "vault_ref_required": sensitivity == "secret_reference", "vault_ref_present": bool(vault_ref)}
+
+
 def _metadata_ref_values(value: Any, *, default_kind: str = "") -> list[str]:
     if isinstance(value, str):
         text = value.strip()
@@ -253,8 +287,9 @@ def quality_decision_for_memory(row: sqlite3.Row | Mapping[str, Any]) -> MemoryQ
     text = f"{_row_value(row, 'summary', '')}\n{_row_value(row, 'content', '')}"
     freshness = str(metadata.get("expires_at") or metadata.get("freshness") or "").strip()
     validator_kind = str(metadata.get("validator_kind") or "").strip()
+    sensitivity = sensitivity_metadata(metadata, content=text)
     evidence_refs = _metadata_refs(metadata, "evidence_refs", "evidence_anchors", "journal_entry_ids", "source_ids")
-    redaction_status = "secret_like" if contains_secret_like_text(text) else "clean"
+    redaction_status = "secret_like" if sensitivity.get("sensitivity_reason") == "plaintext_secret_rejected" else "clean"
 
     base = {
         "confidence": confidence,
@@ -404,6 +439,9 @@ def lint_memory_row(row: sqlite3.Row) -> list[str]:
         rules.append("missing_memory_type")
     if contains_secret_like_text(content):
         rules.append("secret_like_content")
+    sensitivity = sensitivity_metadata(metadata, content=content)
+    if sensitivity.get("sensitivity_reason") == "secret_reference_missing_vault_ref":
+        rules.append("secret_reference_missing_vault_ref")
     return rules
 
 

@@ -10,6 +10,7 @@ import importlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import shlex
 import sqlite3
@@ -138,6 +139,7 @@ def _runtime_verify(home: Path, plugin_dir: Path) -> dict[str, Any]:
         "config_schema_keys": [],
         "tool_schema_names": [],
         "sqlite_schema_current": False,
+        "vector_companion": {"enabled": None, "configured_backend": "", "status": "unknown"},
         "failures": [],
     }
     failures: list[str] = []
@@ -163,6 +165,29 @@ def _runtime_verify(home: Path, plugin_dir: Path) -> dict[str, Any]:
             missing_tools = sorted(required_tools - set(tool_names))
             if missing_tools:
                 failures.append(f"runtime tool schemas missing compact defaults: {', '.join(missing_tools)}")
+            try:
+                config_module = importlib.import_module(f"{package_name}.config")
+                storage_dir = home / "scope-recall"
+                runtime_config = config_module.load_runtime_config(plugin_dir, storage_dir)
+                vector_config = dict((runtime_config or {}).get("vector") or {})
+                vector_enabled = bool(vector_config.get("enabled", False))
+                configured_backend = str(vector_config.get("backend") or "").strip().lower()
+                vector_path = storage_dir / ("vector.sqlite3" if configured_backend == "sqlite-bruteforce" else "lancedb")
+                if not vector_enabled:
+                    vector_status = "disabled"
+                elif vector_path.exists():
+                    vector_status = "ready"
+                else:
+                    vector_status = "not_initialized"
+                payload["vector_companion"] = {
+                    "enabled": vector_enabled,
+                    "configured_backend": configured_backend,
+                    "fallback_backend": str(vector_config.get("fallback_backend") or "").strip().lower(),
+                    "status": vector_status,
+                    "path": str(vector_path),
+                }
+            except Exception as exc:
+                payload["vector_companion"] = {"enabled": None, "configured_backend": "", "status": "degraded", "error": str(exc)}
         except Exception as exc:
             failures.append(f"provider runtime load failed: {exc}")
 
@@ -274,8 +299,123 @@ def _rollback_command(home: Path, backup_path: str) -> str:
     return f"hermes-scope-recall rollback --hermes-home {_shell_quote_path(home)} --backup-dir {_shell_quote_path(Path(backup_path))}"
 
 
+def _config_restore_command(home: Path, backup_path: str, *, previous_config_existed: bool) -> str:
+    config_path = home / "config.yaml"
+    if backup_path:
+        return f"cp {_shell_quote_path(Path(backup_path))} {_shell_quote_path(config_path)}"
+    if not previous_config_existed:
+        return f"rm -f {_shell_quote_path(config_path)}"
+    return ""
+
+
 def _shell_quote_path(path: Path) -> str:
     return shlex.quote(str(path))
+
+
+def _config_backup_path(home: Path) -> Path:
+    backup_root = home / "backups" / "scope-recall-installer-config" / f"{_backup_stamp()}.{uuid.uuid4().hex[:8]}"
+    backup_root.mkdir(parents=True, exist_ok=False)
+    return backup_root / "config.yaml"
+
+
+def _set_memory_provider_yaml_text(text: str) -> tuple[str, bool]:
+    """Set top-level ``memory.provider`` in simple Hermes YAML while preserving unrelated blocks."""
+    lines = text.splitlines()
+    output: list[str] = []
+    found_memory = False
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if re.match(r"^memory\s*:\s*$", line):
+            found_memory = True
+            output.append("memory:")
+            index += 1
+            block: list[str] = []
+            while index < len(lines):
+                candidate = lines[index]
+                if candidate.strip() == "":
+                    block.append(candidate)
+                    index += 1
+                    continue
+                if candidate.startswith((" ", "\t")):
+                    block.append(candidate)
+                    index += 1
+                    continue
+                break
+            provider_found = False
+            provider_written = False
+            for block_line in block:
+                if re.match(r"^\s+provider\s*:", block_line):
+                    if not provider_written:
+                        output.append("  provider: scope-recall")
+                        provider_written = True
+                    provider_found = True
+                else:
+                    output.append(block_line)
+            if not provider_found:
+                output.insert(len(output) - len(block), "  provider: scope-recall")
+            continue
+        output.append(line)
+        index += 1
+    if not found_memory:
+        if output and output[-1].strip():
+            output.append("")
+        output.extend(["memory:", "  provider: scope-recall"])
+    new_text = "\n".join(output).rstrip() + "\n"
+    return new_text, new_text != (text.rstrip() + "\n" if text else text)
+
+
+def _write_memory_provider_config(home: Path) -> dict[str, Any]:
+    """Activate Scope Recall in Hermes config.yaml and preserve rollback evidence."""
+    config_path = home / "config.yaml"
+    previous_config_existed = config_path.is_file()
+    before = config_path.read_text(encoding="utf-8", errors="replace") if previous_config_existed else ""
+    after, changed = _set_memory_provider_yaml_text(before)
+    backup_path = ""
+    if changed:
+        home.mkdir(parents=True, exist_ok=True)
+        if previous_config_existed:
+            backup = _config_backup_path(home)
+            shutil.copy2(config_path, backup)
+            backup_path = str(backup)
+        config_path.write_text(after, encoding="utf-8")
+    return {
+        "config_path": str(config_path),
+        "config_updated": changed,
+        "previous_config_existed": previous_config_existed,
+        "config_backup_path": backup_path,
+        "config_rollback_command": _config_restore_command(home, backup_path, previous_config_existed=previous_config_existed) if changed else "",
+    }
+
+
+def _bootstrap_installed_provider(home: Path, plugin_dir: Path) -> dict[str, Any]:
+    package_name = "_scope_recall_install_activate"
+    try:
+        _load_installed_package(plugin_dir, package_name=package_name)
+        provider_module = importlib.import_module(f"{package_name}.provider")
+        provider = provider_module.ScopeRecallMemoryProvider()
+        provider.save_config({}, str(home))
+    finally:
+        _clear_runtime_verify_modules(package_name)
+    runtime_verify = verify(home, runtime=True)
+    raw_runtime = runtime_verify.get("runtime")
+    runtime_payload: dict[str, Any] = raw_runtime if isinstance(raw_runtime, dict) else {}
+    return {
+        "runtime_verify": runtime_verify,
+        "sqlite_schema_current": bool(runtime_payload.get("sqlite_schema_current")),
+        "sqlite_path": str(runtime_payload.get("sqlite_path") or home / "scope-recall" / "memory.sqlite3"),
+    }
+
+
+def _activation_payload(home: Path, plugin_dir: Path) -> dict[str, Any]:
+    config_payload = _write_memory_provider_config(home)
+    bootstrap_payload = _bootstrap_installed_provider(home, plugin_dir)
+    return {
+        "activation_requested": True,
+        "activated": bool(bootstrap_payload["runtime_verify"].get("ok")),
+        **config_payload,
+        **bootstrap_payload,
+    }
 
 
 def _next_steps(home: Path) -> list[str]:
@@ -318,6 +458,114 @@ def _verify_next_steps(
     return steps
 
 
+def _extract_memory_provider_from_config(text: str) -> str:
+    lines = text.splitlines()
+    index = 0
+    while index < len(lines):
+        if re.match(r"^memory\s*:\s*$", lines[index]):
+            index += 1
+            while index < len(lines):
+                line = lines[index]
+                if line.strip() == "":
+                    index += 1
+                    continue
+                if not line.startswith((" ", "\t")):
+                    break
+                match = re.match(r"^\s+provider\s*:\s*(.+?)\s*$", line)
+                if match:
+                    return match.group(1).strip().strip('"\'')
+                index += 1
+        else:
+            index += 1
+    return ""
+
+
+def _hermes_config_summary(home: Path) -> dict[str, Any]:
+    config_path = home / "config.yaml"
+    if not config_path.is_file():
+        return {"exists": False, "memory_provider": "", "ok": False}
+    provider = _extract_memory_provider_from_config(config_path.read_text(encoding="utf-8", errors="replace")[:200_000])
+    return {"exists": True, "memory_provider": provider, "ok": provider == PLUGIN_NAME}
+
+
+def _plugin_files_summary(plugin_dir: Path, *, missing: list[str], manifest_name: str, manifest_version: str) -> dict[str, Any]:
+    discovery_marker = _has_discovery_marker(plugin_dir) if not missing else False
+    return {
+        "ok": not missing and manifest_name == PLUGIN_NAME and discovery_marker,
+        "missing": missing,
+        "manifest_name": manifest_name,
+        "manifest_version": manifest_version,
+        "discovery_marker": discovery_marker,
+    }
+
+
+def _provider_load_summary(runtime_payload: dict[str, Any] | None) -> dict[str, Any]:
+    if runtime_payload is None:
+        return {"requested": False, "ok": None}
+    failures = [str(item) for item in runtime_payload.get("failures", []) if str(item).startswith("provider runtime load failed")]
+    return {
+        "requested": True,
+        "ok": bool(runtime_payload.get("provider_loaded")) and not failures,
+        "provider_loaded": bool(runtime_payload.get("provider_loaded")),
+        "failures": failures,
+    }
+
+
+def _sqlite_truth_summary(home: Path, runtime_payload: dict[str, Any] | None) -> dict[str, Any]:
+    db_path = Path(str((runtime_payload or {}).get("sqlite_path") or home / "scope-recall" / "memory.sqlite3"))
+    return {
+        "path": str(db_path),
+        "exists": db_path.is_file(),
+        "schema_current": bool((runtime_payload or {}).get("sqlite_schema_current")),
+        "schema_migrations": (runtime_payload or {}).get("schema_migrations") or {},
+    }
+
+
+def _tool_schema_summary(runtime_payload: dict[str, Any] | None) -> dict[str, Any]:
+    names = [str(item) for item in (runtime_payload or {}).get("tool_schema_names", [])]
+    required = {
+        "scope_recall_store",
+        "scope_recall_search",
+        "scope_recall_context",
+        "scope_recall_profile",
+        "scope_recall_memory",
+        "scope_recall_entity",
+    }
+    missing = sorted(required - set(names))
+    return {
+        "names": names,
+        "required": sorted(required),
+        "missing_required": missing,
+        "compact_required_present": not missing,
+    }
+
+
+def _vector_companion_summary(home: Path, runtime_payload: dict[str, Any] | None) -> dict[str, Any]:
+    runtime_vector = (runtime_payload or {}).get("vector_companion")
+    if isinstance(runtime_vector, dict):
+        return runtime_vector
+    return {"enabled": None, "configured_backend": "", "status": "unknown", "path": str(home / "scope-recall")}
+
+
+def _layered_verify_payload(
+    home: Path,
+    plugin_dir: Path,
+    *,
+    missing: list[str],
+    manifest_name: str,
+    manifest_version: str,
+    runtime_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "plugin_files": _plugin_files_summary(plugin_dir, missing=missing, manifest_name=manifest_name, manifest_version=manifest_version),
+        "provider_load": _provider_load_summary(runtime_payload),
+        "hermes_config": _hermes_config_summary(home),
+        "sqlite_truth": _sqlite_truth_summary(home, runtime_payload),
+        "tool_schemas": _tool_schema_summary(runtime_payload),
+        "vector_companion": _vector_companion_summary(home, runtime_payload),
+    }
+
+
 def verify(hermes_home: str | os.PathLike[str] | None = None, *, runtime: bool = False) -> dict[str, Any]:
     home = resolve_hermes_home(hermes_home)
     plugin_dir = plugin_dir_for(home)
@@ -347,6 +595,16 @@ def verify(hermes_home: str | os.PathLike[str] | None = None, *, runtime: bool =
         "runtime": runtime_payload or {"requested": bool(runtime)},
         "next_steps": next_steps,
     }
+    payload.update(
+        _layered_verify_payload(
+            home,
+            plugin_dir,
+            missing=missing,
+            manifest_name=manifest_name,
+            manifest_version=manifest_version,
+            runtime_payload=runtime_payload,
+        )
+    )
     return payload
 
 
@@ -355,6 +613,7 @@ def install(
     *,
     dry_run: bool = False,
     force: bool = False,
+    activate: bool = False,
 ) -> dict[str, Any]:
     """Install or upgrade the plugin copy in a Hermes home with backup and rollback metadata.
 
@@ -383,16 +642,38 @@ def install(
         "previous_version": previous_version,
         "backup_path": "",
         "rollback_command": "",
+        "rollback_commands": [],
+        "activation_requested": activate,
+        "activated": False,
+        "config_updated": False,
+        "config_path": str(home / "config.yaml"),
+        "config_backup_path": "",
+        "config_rollback_command": "",
+        "sqlite_schema_current": False,
+        "runtime_verify": {"requested": False},
         "next_steps": _next_steps(home),
     }
     if dry_run:
+        if activate:
+            result["next_steps"] = [
+                f"hermes-scope-recall install --activate --hermes-home {_shell_quote_path(home)}",
+                f"hermes-scope-recall verify --runtime --hermes-home {_shell_quote_path(home)}",
+            ]
         return result
 
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists() or target.is_symlink():
         if _is_same_tree(source, target):
             result["mode"] = "already-installed"
-            result["verify"] = verify(home)
+            if activate:
+                activation = _activation_payload(home, target)
+                result.update(activation)
+                if result.get("config_rollback_command"):
+                    result["rollback_command"] = str(result["config_rollback_command"])
+                    result["rollback_commands"] = [str(result["config_rollback_command"])]
+                result["verify"] = activation["runtime_verify"]
+            else:
+                result["verify"] = verify(home)
             result["ok"] = bool(result["verify"]["ok"])
             return result
         existing_name = _read_manifest_name(target)
@@ -413,6 +694,7 @@ def install(
             backup_path = str(backup)
             result["backup_path"] = backup_path
             result["rollback_command"] = _rollback_command(home, backup_path)
+            result["rollback_commands"] = [result["rollback_command"]]
             _remove_existing_plugin(target)
         try:
             staging.rename(target)
@@ -425,7 +707,19 @@ def install(
             shutil.rmtree(staging_root, ignore_errors=True)
 
     result["installed"] = True
-    result["verify"] = verify(home)
+    if activate:
+        activation = _activation_payload(home, target)
+        result.update(activation)
+        rollback_commands = [str(item) for item in result.get("rollback_commands", []) if item]
+        config_rollback = str(result.get("config_rollback_command") or "")
+        if config_rollback and config_rollback not in rollback_commands:
+            rollback_commands.append(config_rollback)
+        result["rollback_commands"] = rollback_commands
+        if not result.get("rollback_command") and rollback_commands:
+            result["rollback_command"] = rollback_commands[0]
+        result["verify"] = activation["runtime_verify"]
+    else:
+        result["verify"] = verify(home)
     result["ok"] = bool(result["verify"]["ok"])
     return result
 
@@ -508,12 +802,14 @@ def build_parser() -> argparse.ArgumentParser:
     install_parser.add_argument("--hermes-home", help="target Hermes home; defaults to HERMES_HOME or ~/.hermes")
     install_parser.add_argument("--dry-run", action="store_true", help="show what would be installed without mutating files")
     install_parser.add_argument("--force", action="store_true", help="replace an existing non-scope-recall directory")
+    install_parser.add_argument("--activate", action="store_true", help="also set memory.provider=scope-recall and bootstrap the SQLite schema")
     install_parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
 
     upgrade_parser = sub.add_parser("upgrade", help="upgrade scope-recall and back up the existing plugin copy first")
     upgrade_parser.add_argument("--hermes-home", help="target Hermes home; defaults to HERMES_HOME or ~/.hermes")
     upgrade_parser.add_argument("--dry-run", action="store_true", help="show what would be upgraded without mutating files")
     upgrade_parser.add_argument("--force", action="store_true", help="replace an existing non-scope-recall directory")
+    upgrade_parser.add_argument("--activate", action="store_true", help="also set memory.provider=scope-recall and bootstrap the SQLite schema")
     upgrade_parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
 
     rollback_parser = sub.add_parser("rollback", help="restore a previous scope-recall plugin backup")
@@ -534,7 +830,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command in {"install", "upgrade"}:
-            payload = install(args.hermes_home, dry_run=args.dry_run, force=args.force)
+            payload = install(args.hermes_home, dry_run=args.dry_run, force=args.force, activate=args.activate)
             if args.command == "upgrade":
                 payload["mode"] = "upgrade-dry-run" if args.dry_run else ("already-installed" if payload.get("mode") == "already-installed" else "upgrade")
             _print_payload(payload, as_json=args.json)

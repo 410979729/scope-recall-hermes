@@ -17,8 +17,12 @@ Use this guide when updating `scope-recall` across multiple Hermes profile homes
 
 ```bash
 hermes-scope-recall rollout profiles \
-  --profiles-root "$HOME/.hermes/profiles"
+  --profiles-root "$HOME/.hermes/profiles" \
+  --plan \
+  --json
 ```
+
+`--plan` is an explicit dry-run flag for operators who want the command to read like a deployment plan; dry-run remains the default. `--json` is accepted for consistency with other `hermes-scope-recall` commands, and rollout output is always JSON.
 
 The report includes each profile's home path, installed plugin version, basic config summary, and non-runtime installer verify result.
 

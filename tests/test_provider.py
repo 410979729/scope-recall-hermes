@@ -189,6 +189,70 @@ def test_scope_recall_store_recovers_and_retries_after_sqlite_lock(provider, mon
     _assert_sqlite_writer_released(provider)
 
 
+def test_scope_recall_store_recovers_peer_provider_dirty_transaction(tmp_path, monkeypatch):
+    _write_scope_recall_config(
+        tmp_path,
+        {
+            "vector": {
+                "embedder": {"provider": "local-hash", "dimensions": 256, "model": "hash-v1"},
+                "fallback_embedder": {"provider": "local-hash", "dimensions": 256, "model": "hash-v1"},
+            }
+        },
+    )
+    provider_a = load_memory_provider("scope-recall")
+    provider_b = load_memory_provider("scope-recall")
+    assert provider_a is not None
+    assert provider_b is not None
+    try:
+        for index, plugin in enumerate((provider_a, provider_b), start=1):
+            plugin.initialize(
+                f"session-peer-{index}",
+                hermes_home=str(tmp_path),
+                platform="cli",
+                agent_context="primary",
+                agent_identity="yuheng",
+                agent_workspace="hermes",
+            )
+        with provider_a._lock:
+            conn_a = provider_a._require_conn()
+            conn_a.execute("CREATE TABLE IF NOT EXISTS rollback_probe(marker TEXT PRIMARY KEY)")
+            conn_a.execute("INSERT INTO rollback_probe(marker) VALUES ('peer-provider')")
+            assert conn_a.in_transaction
+        with provider_b._lock:
+            provider_b._require_conn().execute("PRAGMA busy_timeout=50")
+        original_recover = provider_b._recover_sqlite_connection_after_error
+        recovery_reports: list[dict[str, object]] = []
+
+        def capture_recover(context: str) -> dict[str, object]:
+            report = original_recover(context)
+            recovery_reports.append(dict(report))
+            return report
+
+        monkeypatch.setattr(provider_b, "_recover_sqlite_connection_after_error", capture_recover)
+
+        payload = json.loads(
+            provider_b.handle_tool_call(
+                "scope_recall_store",
+                {"content": "peer provider sqlite lock recovery regression content", "target": "ops"},
+            )
+        )
+
+        assert payload["stored"] is True
+        assert payload["recovered"] is True
+        assert payload["retry_count"] == 1
+        assert recovery_reports
+        checked = recovery_reports[0]["peer_providers_checked"]
+        rollbacks = recovery_reports[0]["peer_rollbacks"]
+        assert isinstance(checked, int) and checked >= 1
+        assert rollbacks == 1
+        with provider_a._lock:
+            assert provider_a._require_conn().in_transaction is False
+        _assert_sqlite_writer_released(provider_b)
+    finally:
+        provider_b.shutdown()
+        provider_a.shutdown()
+
+
 def test_background_writer_rolls_back_open_sqlite_transaction(provider, monkeypatch):
     calls = []
 
@@ -1137,6 +1201,81 @@ def test_on_pre_compress_stages_sanitized_messages_in_journal_without_direct_mem
     assert all(item.get("source") == "pre-compression" for item in metadata)
 
 
+def test_on_pre_compress_dry_runs_event_candidates_without_memory_write(provider, monkeypatch):
+    monkeypatch.setattr(provider, "_maybe_start_background_journal_digest", lambda: None)
+
+    note = provider.on_pre_compress(
+        [
+            {
+                "role": "user",
+                "content": "User prefers concise Chinese release reports with exact verification outputs.",
+            }
+        ]
+    )
+
+    assert "Scope Recall" in note
+    report = provider._last_event_digest_report
+    assert report["events_seen"] == 1
+    assert report["candidates_proposed"] == 1
+    assert report["write_candidates"] is False
+    assert report["dry_run"] is True
+    with provider._lock:
+        assert provider._require_conn().execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+
+
+def test_on_pre_compress_writes_event_candidates_only_when_enabled(provider, monkeypatch):
+    monkeypatch.setattr(provider, "_maybe_start_background_journal_digest", lambda: None)
+    provider._config["event_digest"] = {"enabled": True, "write_candidates": True, "dry_run_log": True}
+
+    note = provider.on_pre_compress(
+        [
+            {
+                "role": "user",
+                "content": "User prefers concise Chinese release reports with exact verification outputs.",
+            }
+        ]
+    )
+
+    assert "Scope Recall" in note
+    report = provider._last_event_digest_report
+    assert report["write_candidates"] is True
+    assert report["dry_run"] is False
+    assert report["store"]["inserted"] == 1
+    with provider._lock:
+        conn = provider._require_conn()
+        row = conn.execute("SELECT target, source, metadata FROM memories").fetchone()
+        audit = conn.execute("SELECT event_type, action, target_id FROM governance_audit_events").fetchone()
+    metadata = json.loads(row["metadata"])
+    assert row["target"] == "user"
+    assert row["source"] == "event-digest"
+    assert metadata["lifecycle"] == "candidate"
+    assert metadata["event_digest"] is True
+    assert audit["event_type"] == "event_candidate"
+    assert audit["action"] == "insert_candidate"
+
+
+def test_on_pre_compress_rejects_generic_chat_even_when_candidate_writes_enabled(provider, monkeypatch):
+    monkeypatch.setattr(provider, "_maybe_start_background_journal_digest", lambda: None)
+    provider._config["event_digest"] = {"enabled": True, "write_candidates": True, "dry_run_log": True}
+
+    provider.on_pre_compress(
+        [
+            {
+                "role": "user",
+                "content": "Please review the last few messages and explain the conversation so far.",
+            }
+        ]
+    )
+
+    report = provider._last_event_digest_report
+    assert report["write_candidates"] is True
+    assert report["candidates_proposed"] == 0
+    assert report["store"]["inserted"] == 0
+    assert report["rejection_reasons"] == {"unclassified_event_candidate": 1}
+    with provider._lock:
+        assert provider._require_conn().execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+
+
 def test_on_pre_compress_filters_wrappers_tools_trivial_acks_and_secrets(provider, monkeypatch):
     monkeypatch.setattr(provider, "_maybe_start_background_journal_digest", lambda: None)
 
@@ -1861,7 +2000,7 @@ def test_secret_index_tool_stores_vault_ref_without_plaintext_secret(provider):
     assert "vault://ops/la-proxy/root-password" in row["content"]
     assert "LA proxy admin password" in row["content"]
     metadata = json.loads(row["metadata"])
-    assert metadata["sensitivity"] == "secret-index"
+    assert metadata["sensitivity"] == "secret_reference"
     assert metadata["secret_storage"] == "external-vault-reference"
     assert metadata["secret_value_stored"] is False
     assert metadata["secret_value_sha256_prefix"]

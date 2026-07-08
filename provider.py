@@ -11,15 +11,20 @@ import queue
 import sqlite3
 import threading
 import time
+import weakref
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 
 from .capture import enqueue_store, flush_writer, shutdown_writer, start_writer
+from .candidate_extraction import extract_candidates_from_packet
+from .candidate_store import store_event_candidates
 from .capture_filters import contains_secret_like_text, redact_secret_like_text, sanitize_capture_text, sanitize_report_text, should_capture_text
 from .capture_llm import extract_capture_candidates
 from .config import load_runtime_config, save_runtime_config
+from .event_digest import MemoryEvent, build_evidence_packet
 from .journal import append_journal_entry, ensure_journal_schema, run_journal_digest
 from .embedders import BaseEmbedder, build_embedder
 from .gating import clean_text, compact_text, config_bool, dedup_key, normalize_query, should_skip_retrieval
@@ -67,6 +72,8 @@ SQLITE_BUSY_TIMEOUT_SECONDS = 10.0
 
 DEFAULT_TOOL_TRACE_SKIP_NAMES = {"todo", "skill_view", "skills_list"}
 DEFAULT_TOOL_TRACE_SKIP_NAME_FRAGMENTS = {"session_messages"}
+_PROVIDER_REGISTRY_LOCK = threading.RLock()
+_PROVIDER_REGISTRY: weakref.WeakSet[Any] = weakref.WeakSet()
 
 
 class ScopeRecallMemoryProvider(MemoryProvider):
@@ -119,6 +126,15 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._last_journal_digest_status = "never_run"
         self._last_journal_digest_error = ""
         self._journal_digest_consecutive_failures = 0
+        self._last_event_digest_report: dict[str, Any] = {
+            "enabled": False,
+            "dry_run": True,
+            "write_candidates": False,
+            "events_seen": 0,
+            "candidates_proposed": 0,
+            "candidates_rejected": 0,
+            "rejection_reasons": {},
+        }
 
     @property
     def name(self) -> str:
@@ -236,6 +252,16 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         ensure_journal_schema(self._conn)
         setup_vector_layer(self)
         start_writer(self)
+        self._register_provider_instance()
+
+    def _register_provider_instance(self) -> None:
+        """Register this live provider for same-process SQLite lock recovery."""
+        with _PROVIDER_REGISTRY_LOCK:
+            _PROVIDER_REGISTRY.add(self)
+
+    def _unregister_provider_instance(self) -> None:
+        with _PROVIDER_REGISTRY_LOCK:
+            _PROVIDER_REGISTRY.discard(self)
 
     def system_prompt_block(self) -> str:
         suffix = ""
@@ -435,6 +461,85 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 session_id=self._session_id,
             )
 
+    def _event_digest_config(self) -> dict[str, Any]:
+        raw = self._config.get("event_digest")
+        return raw if isinstance(raw, dict) else {}
+
+    def _dry_run_event_candidates(self, *, kind: str, messages: List[Dict[str, Any]]) -> dict[str, Any]:
+        event_config = self._event_digest_config()
+        enabled = config_bool(event_config, "enabled", True)
+        write_candidates = config_bool(event_config, "write_candidates", False)
+        dry_run = not write_candidates
+        report: dict[str, Any] = {
+            "enabled": enabled,
+            "dry_run": dry_run,
+            "dry_run_log": config_bool(event_config, "dry_run_log", True),
+            "write_candidates": write_candidates,
+            "event_kind": kind,
+            "events_seen": 0,
+            "candidates_proposed": 0,
+            "candidates_rejected": 0,
+            "rejection_reasons": {},
+            "store": {"planned": 0, "inserted": 0, "updated_existing": 0, "ids": []},
+        }
+        if not enabled or self._scope.agent_context != "primary":
+            self._last_event_digest_report = report
+            return report
+        max_events = int(event_config.get("max_events_per_turn") or 3)
+        if max_events <= 0:
+            max_events = 3
+        reasons: Counter[str] = Counter()
+        proposed_candidates = []
+        seen = 0
+        proposed = 0
+        rejected = 0
+        for index, message in enumerate(messages, start=1):
+            if seen >= max_events:
+                break
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role") or message.get("type") or "").strip().lower()
+            if role not in {"user", "assistant"}:
+                continue
+            content = sanitize_report_text(self._clean_text(message.get("content")))
+            if not content:
+                continue
+            event = MemoryEvent(
+                kind=kind,
+                scope_id=self._scope_id,
+                session_id=self._session_id,
+                turn_number=index,
+                content=content,
+                metadata={"source": "provider-hook", "role": role},
+            )
+            packet = build_evidence_packet(event)
+            extraction = extract_candidates_from_packet(packet, dry_run=True)
+            seen += 1
+            proposed += len(extraction.candidates)
+            proposed_candidates.extend(extraction.candidates)
+            if extraction.rejection_reasons:
+                rejected += 1
+                reasons.update(extraction.rejection_reasons)
+        store_report = store_event_candidates(
+            self._require_conn(),
+            candidates=proposed_candidates,
+            scope=self._scope,
+            scope_id=self._scope_id,
+            session_id=self._session_id,
+            dry_run=dry_run,
+        )
+        report.update(
+            {
+                "events_seen": seen,
+                "candidates_proposed": proposed,
+                "candidates_rejected": rejected,
+                "rejection_reasons": dict(sorted(reasons.items())),
+                "store": store_report,
+            }
+        )
+        self._last_event_digest_report = report
+        return report
+
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         """Provide recall context before Hermes compresses the conversation.
 
@@ -488,6 +593,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                     roles.add(role)
         if not appended:
             return ""
+        self._dry_run_event_candidates(kind="pre_compress", messages=messages)
         self._maybe_start_background_journal_digest()
         role_label = "/".join(sorted(roles)) if roles else "message"
         plural = "entry" if appended == 1 else "entries"
@@ -808,6 +914,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         return self._tool_service.handle(tool_name, args)
 
     def shutdown(self) -> None:
+        self._unregister_provider_instance()
         shutdown_writer(self, timeout=3.0)
         thread = self._journal_digest_thread
         if thread is not None and thread.is_alive():
@@ -981,6 +1088,40 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             except Exception:
                 logger.exception("Scope Recall SQLite rollback failed after %s", context)
 
+    def _rollback_peer_provider_transactions(self, context: str) -> dict[str, int]:
+        """Rollback dirty same-process peer providers that share this SQLite DB.
+
+        A recoverable `database is locked` error can be caused by another live
+        Scope Recall provider instance in the same process, not by the current
+        connection. The process-local registry lets store recovery clear those
+        peer dirty transactions before probing/reopening the current connection.
+        """
+        db_path = self._db_path
+        result = {"peer_providers_checked": 0, "peer_rollbacks": 0, "peer_rollback_errors": 0}
+        if db_path is None:
+            return result
+        with _PROVIDER_REGISTRY_LOCK:
+            peers = [provider for provider in list(_PROVIDER_REGISTRY) if provider is not self]
+        for peer in peers:
+            peer_db_path = getattr(peer, "_db_path", None)
+            if peer_db_path is None or Path(peer_db_path) != db_path:
+                continue
+            result["peer_providers_checked"] += 1
+            peer_lock = getattr(peer, "_lock", None)
+            if peer_lock is None:
+                continue
+            with peer_lock:
+                peer_conn = getattr(peer, "_conn", None)
+                if peer_conn is None or not getattr(peer_conn, "in_transaction", False):
+                    continue
+                try:
+                    peer_conn.rollback()
+                    result["peer_rollbacks"] += 1
+                except Exception:
+                    result["peer_rollback_errors"] += 1
+                    logger.exception("Scope Recall peer SQLite rollback failed after %s", context)
+        return result
+
     def _recover_sqlite_connection_after_error(self, context: str) -> dict[str, Any]:
         """Rollback/probe/reopen the provider SQLite connection after lock errors.
 
@@ -989,6 +1130,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         errors so business-logic failures are not hidden by a retry.
         """
         payload: dict[str, Any] = {"recovered": False, "rolled_back": False, "reopened": False, "write_probe": False}
+        payload.update(self._rollback_peer_provider_transactions(context))
         with self._lock:
             conn = self._conn
             if conn is None:

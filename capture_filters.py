@@ -249,7 +249,7 @@ def should_capture_text(text: Any, config: dict[str, Any] | None = None) -> Capt
         return CaptureFilterResult(False, "too-long")
 
     if contains_secret_like_text(cleaned):
-        return CaptureFilterResult(False, "secret-like-content")
+        return CaptureFilterResult(False, "plaintext_secret_rejected")
 
     for pattern in _compiled_configured_patterns(_configured_patterns(config)):
         if pattern.search(cleaned):

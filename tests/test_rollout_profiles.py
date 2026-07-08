@@ -79,6 +79,24 @@ def test_rollout_profiles_default_dry_run_inventories_without_mutation(tmp_path:
     assert not (beta / "plugins" / "scope-recall").exists()
 
 
+def test_rollout_profiles_accepts_explicit_plan_and_json_flags_without_mutation(tmp_path: Path):
+    profiles_root = tmp_path / "profiles"
+    alpha = profiles_root / "alpha"
+    old_plugin = _write_plugin(alpha, version="0.1.0")
+    before = (old_plugin / "plugin.yaml").read_text(encoding="utf-8")
+
+    report = _run_rollout("--profiles-root", str(profiles_root), "--plan", "--json")
+
+    assert report["ok"] is True
+    assert report["dry_run"] is True
+    assert report["plan"] is True
+    assert report["actions"][0]["profile"] == "alpha"
+    assert report["actions"][0]["planned"] is True
+    assert report["actions"][0]["applied"] is False
+    assert (old_plugin / "plugin.yaml").read_text(encoding="utf-8") == before
+    assert not (alpha / "backups").exists()
+
+
 def test_rollout_profiles_apply_canary_backs_up_only_selected_profile(tmp_path: Path):
     profiles_root = tmp_path / "profiles"
     alpha = profiles_root / "alpha"
@@ -108,7 +126,7 @@ def test_rollout_profiles_apply_canary_backs_up_only_selected_profile(tmp_path: 
     assert by_profile["beta"]["applied"] is False
     assert by_profile["beta"]["reason"] == "not_canary"
     assert "version: 0.1.0" in (Path(by_profile["alpha"]["backup_path"]) / "plugin.yaml").read_text(encoding="utf-8")
-    assert "version: 1.6.3" in (alpha / "plugins" / "scope-recall" / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.7.0" in (alpha / "plugins" / "scope-recall" / "plugin.yaml").read_text(encoding="utf-8")
     assert "version: 0.2.0" in (beta / "plugins" / "scope-recall" / "plugin.yaml").read_text(encoding="utf-8")
 
 
@@ -260,7 +278,7 @@ def test_rollout_profiles_rollback_restores_plugin_from_receipt(tmp_path: Path):
     receipt = tmp_path / "rollout-receipt.json"
 
     _run_rollout("--profiles-root", str(profiles_root), "--canary", "alpha", "--apply", "--receipt", str(receipt))
-    assert "version: 1.6.3" in (alpha / "plugins" / "scope-recall" / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.7.0" in (alpha / "plugins" / "scope-recall" / "plugin.yaml").read_text(encoding="utf-8")
 
     rollback = _run_rollout("--profiles-root", str(profiles_root), "--rollback", "--apply", "--receipt", str(receipt))
 

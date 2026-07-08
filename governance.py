@@ -313,8 +313,15 @@ def merge_metadata(metadata_payload: dict[str, Any], raw_metadata: Any) -> dict[
         elif meta_key in {"importance", "trust"}:
             metadata_payload[meta_key] = clamp_float(value, default=float(metadata_payload.get(meta_key) or 0.5))
         elif meta_key == "sensitivity":
-            incoming = str(value or "").strip().lower()
-            if incoming in {"sensitive", "secret-index"}:
+            incoming = str(value or "").strip().lower().replace("-", "_")
+            aliases = {
+                "normal": "internal",
+                "sensitive": "restricted",
+                "secret_index": "secret_reference",
+                "external_vault_reference": "secret_reference",
+            }
+            incoming = aliases.get(incoming, incoming)
+            if incoming in {"public", "internal", "secret_reference", "restricted"}:
                 metadata_payload["sensitivity"] = incoming
         elif meta_key == "scope_mode":
             incoming = str(value or "").strip().lower()

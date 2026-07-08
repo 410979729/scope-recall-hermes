@@ -1,0 +1,53 @@
+# Governance browser and candidate review
+
+Scope Recall exposes governance inspection through read-only browser commands and dry-run-first candidate review commands. These surfaces are intended for operators who need to inspect SQLite truth rows, review candidate memories, and understand recall behavior without mutating durable state by default.
+
+## Read-only browser
+
+The browser opens SQLite with `mode=ro` and `PRAGMA query_only=ON` when a database path is provided through the CLI. Listing commands do not return full memory content unless an explicit inspect command is used.
+
+Common commands:
+
+```bash
+hermes-scope-recall memories list --target memory --limit 20 --json
+hermes-scope-recall memories inspect --id <memory-id> --json
+hermes-scope-recall candidates list --limit 20 --json
+hermes-scope-recall recall explain --query "deployment preferences" --json
+```
+
+Behavior:
+
+- `memories list` returns summaries, targets, metadata, lifecycle, and content length.
+- `memories inspect` returns one full row for explicit inspection, with content and metadata redacted for secret-like values and private paths by default. Use `--raw` only for local operator debugging when raw row material is intentionally needed.
+- `candidates list` surfaces candidate-like rows, including `event-digest` and `memory-candidate` sources.
+- `recall explain` in the browser is a read-only SQLite lexical preview. It is not the full live provider retrieval pipeline.
+
+## Candidate review commands
+
+Candidate review commands default to dry-run and return before/after metadata without writing:
+
+```bash
+hermes-scope-recall candidates promote --id <memory-id> --json
+hermes-scope-recall candidates archive --id <memory-id> --json
+hermes-scope-recall candidates supersede --id <memory-id> --superseded-by <replacement-id> --json
+```
+
+To apply a reviewed decision, pass `--apply` explicitly:
+
+```bash
+hermes-scope-recall candidates promote --id <memory-id> --apply --json
+```
+
+Apply behavior:
+
+- `promote` changes lifecycle and candidate status to promoted.
+- `archive` marks the row archived and removes graph companion entities/relations for that row.
+- `supersede` marks the row superseded, records the replacement id, and removes graph companion entities/relations for that row.
+- every applied review writes a `memory_candidate_review` governance audit event.
+
+## Safety boundaries
+
+- Candidate review does not delete SQLite truth rows.
+- Hard-delete cleanup remains a separate, explicit maintenance flow.
+- Full TUI experiences can be built on top of these stable read-only and dry-run-first commands; the CLI/browser contract is the supported base surface.
+- Secret-like content and `secret_reference` rows remain governed by the memory quality and external vault rules documented in [`external-shared-memory.md`](external-shared-memory.md).

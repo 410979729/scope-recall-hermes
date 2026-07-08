@@ -50,11 +50,11 @@ def _provider(tmp_path: Path, *, user_id: str = "joy", chat_id: str = "chat-a", 
 def test_secret_filter_rejects_bare_provider_and_bearer_tokens():
     from scope_recall.capture_filters import should_capture_text
 
-    assert should_capture_text("Use " + "sk" + "-" + "a" * 24).reason == "secret-like-content"
-    assert should_capture_text("Use " + "sk" + "-proj-" + "a" * 32).reason == "secret-like-content"
-    assert should_capture_text("Use " + "sk" + "-ant-api03-" + "a" * 32).reason == "secret-like-content"
-    assert should_capture_text("Authorization: " + "Bearer " + "b" * 24).reason == "secret-like-content"
-    assert should_capture_text("github token is " + "ghp" + "_" + "c" * 24).reason == "secret-like-content"
+    assert should_capture_text("Use " + "sk" + "-" + "a" * 24).reason == "plaintext_secret_rejected"
+    assert should_capture_text("Use " + "sk" + "-proj-" + "a" * 32).reason == "plaintext_secret_rejected"
+    assert should_capture_text("Use " + "sk" + "-ant-api03-" + "a" * 32).reason == "plaintext_secret_rejected"
+    assert should_capture_text("Authorization: " + "Bearer " + "b" * 24).reason == "plaintext_secret_rejected"
+    assert should_capture_text("github token is " + "ghp" + "_" + "c" * 24).reason == "plaintext_secret_rejected"
 
 
 def test_tool_store_rejected_secret_returns_receipt(tmp_path):

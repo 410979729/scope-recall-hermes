@@ -9,13 +9,66 @@ import logging
 import subprocess
 import sys
 from collections import Counter
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
 _NATIVE_VECTOR_PROBE: dict[str, Any] | None = None
 _NATIVE_VECTOR_PROBE_TIMEOUT = 10.0
+
+
+@dataclass(frozen=True)
+class VectorRecord:
+    id: str
+    scope_id: str
+    source: str
+    target: str
+    content: str
+    summary: str
+    updated_at: str
+    vector: list[float]
+
+
+@dataclass(frozen=True)
+class VectorHit:
+    id: str
+    scope_id: str
+    source: str
+    target: str
+    content: str
+    summary: str
+    updated_at: str
+    distance: float = 0.0
+
+
+@runtime_checkable
+class VectorStore(Protocol):
+    @property
+    def backend(self) -> str: ...
+
+    @property
+    def dimensions(self) -> int: ...
+
+    def is_available(self) -> bool: ...
+    def open(self) -> None: ...
+    def close(self) -> None: ...
+    def upsert(self, record: VectorRecord | dict[str, Any]) -> None: ...
+    def upsert_records(self, rows: Iterable[dict[str, Any]]) -> None: ...
+    def delete(self, ids: list[str]) -> int: ...
+    def delete_by_ids(self, ids: list[str]) -> None: ...
+    def list_ids(self) -> list[str]: ...
+    def list_records(self) -> dict[str, dict[str, Any]]: ...
+    def repair_records(self, desired_records: dict[str, dict[str, Any]]) -> int: ...
+    def search(self, vector: list[float], *, scope_id: str, limit: int) -> list[dict[str, Any]]: ...
+    def audit_counts(self) -> dict[str, int]: ...
+
+
+def vector_record_to_dict(record: VectorRecord | Mapping[str, Any] | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(record, VectorRecord):
+        return asdict(record)
+    return dict(record)
 
 
 def _trim_probe_output(value: str, *, limit: int = 500) -> str:
@@ -188,12 +241,21 @@ class LanceVectorStore:
             self.delete_by_ids(ids)
         table.add(payload)
 
+    def upsert(self, record: VectorRecord | Mapping[str, Any]) -> None:
+        self.upsert_records([vector_record_to_dict(record)])
+
     def delete_by_ids(self, ids: list[str]) -> None:
         if not ids:
             return
         table = self._require_table()
         quoted = ", ".join(_sql_quote(item) for item in ids)
         table.delete(f"id IN ({quoted})")
+
+    def delete(self, ids: list[str]) -> int:
+        before = set(self.list_ids())
+        self.delete_by_ids(ids)
+        after = set(self.list_ids())
+        return len(before - after)
 
     def _table_rows(self, columns: list[str] | None = None) -> list[dict[str, Any]]:
         table = self._require_table()
@@ -311,3 +373,46 @@ class LanceVectorStore:
         if self._table is None:
             raise RuntimeError("vector table is not open")
         return self._table
+
+
+def normalize_vector_backend(value: Any) -> str:
+    backend = str(value or "lancedb").strip().lower()
+    if backend == "sqlite":
+        return "sqlite-bruteforce"
+    return backend
+
+
+def build_vector_store(
+    backend: str,
+    *,
+    storage_dir: Path,
+    table_name: str,
+    dimensions: int,
+    metric: str = "cosine",
+    config: Mapping[str, Any] | None = None,
+) -> VectorStore:
+    """Build a vector companion store without opening it.
+
+    The factory centralizes backend selection while preserving the existing store
+    classes and their rebuildable-cache contract.
+    """
+    normalized = normalize_vector_backend(backend)
+    if normalized == "sqlite-bruteforce":
+        from .sqlite_vector_store import SQLiteBruteForceVectorStore
+
+        db_path = Path(storage_dir) / "vector.sqlite3"
+        return SQLiteBruteForceVectorStore(db_path, table_name=table_name, dimensions=dimensions, metric=metric)
+    if normalized == "lancedb":
+        vector_dir = Path(storage_dir) / "lancedb"
+        return LanceVectorStore(vector_dir, table_name=table_name, dimensions=dimensions, metric=metric)
+    if normalized == "pgvector":
+        from .pgvector_store import PGVectorStore
+
+        pg_config = dict((config or {}).get("pgvector") or {}) if isinstance(config, Mapping) else {}
+        return PGVectorStore(
+            dsn_env=str(pg_config.get("dsn_env") or "SCOPE_RECALL_PGVECTOR_DSN"),
+            table_name=str(pg_config.get("table_name") or table_name or "scope_recall_vectors"),
+            dimensions=dimensions,
+            metric=metric,
+        )
+    raise ValueError(f"unsupported vector backend: {backend}")

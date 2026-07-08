@@ -51,7 +51,7 @@ class FakeDoctor:
 
     @staticmethod
     def source_report(source_root):
-        return ({"pyproject_version": "1.6.3"}, {"ok": True}, [])
+        return ({"pyproject_version": "1.7.0"}, {"ok": True}, [])
 
     @staticmethod
     def sqlite_report(hermes_home):

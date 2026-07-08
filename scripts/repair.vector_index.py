@@ -41,14 +41,13 @@ from scope_recall_repair_runtime.config import load_runtime_config  # noqa: E402
 from scope_recall_repair_runtime.embedders import build_embedder  # noqa: E402
 from scope_recall_repair_runtime.gating import config_bool  # noqa: E402
 from scope_recall_repair_runtime.graph import lifecycle_visible_sql  # noqa: E402
-from scope_recall_repair_runtime.sqlite_vector_store import SQLiteBruteForceVectorStore  # type: ignore[import-not-found]  # noqa: E402
-from scope_recall_repair_runtime.vector_store import LanceVectorStore  # noqa: E402
+from scope_recall_repair_runtime.vector_store import build_vector_store, normalize_vector_backend  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Rebuild scope-recall vector companion from SQLite truth")
     parser.add_argument("--hermes-home", default=os.environ.get("HERMES_HOME", "~/.hermes"), help="Hermes home/profile path")
-    parser.add_argument("--backend", default="", choices=["", "lancedb", "sqlite-bruteforce", "sqlite"], help="Override vector.backend from config")
+    parser.add_argument("--backend", default="", choices=["", "lancedb", "sqlite-bruteforce", "sqlite", "pgvector"], help="Override vector.backend from config")
     parser.add_argument("--dry-run", action="store_true", help="Inspect planned rebuild without writing vector companion data (default)")
     parser.add_argument("--apply", action="store_true", help="Actually rebuild vector companion data; without this flag the script is read-only")
     parser.add_argument("--no-backup", action="store_true", help="Do not copy the old vector companion before rebuild")
@@ -194,12 +193,13 @@ def existing_vector_dimensions(target: Path, *, backend: str, table_name: str) -
         return existing_sqlite_dimensions(target)
     if backend == "lancedb":
         return existing_lancedb_dimensions(target, table_name)
+    if backend == "pgvector":
+        return 0
     return 0
 
 
 def normalize_backend(value: str) -> str:
-    backend = str(value or "lancedb").strip().lower()
-    return "sqlite-bruteforce" if backend == "sqlite" else backend
+    return normalize_vector_backend(value)
 
 
 def backend_from_config(config: dict[str, Any], override: str = "") -> str:
@@ -214,6 +214,8 @@ def vector_target(storage_dir: Path, backend: str) -> Path:
         return storage_dir / "lancedb"
     if backend == "sqlite-bruteforce":
         return storage_dir / "vector.sqlite3"
+    if backend == "pgvector":
+        return storage_dir / "pgvector"
     raise RuntimeError(f"unsupported vector backend: {backend}")
 
 
@@ -240,6 +242,8 @@ def backup_existing(target: Path, storage_dir: Path, backend: str) -> str:
         for path in existing:
             shutil.copy2(path, backup / path.name)
         return str(backup)
+    if backend == "pgvector":
+        return ""
     raise RuntimeError(f"unsupported vector backend: {backend}")
 
 
@@ -254,21 +258,24 @@ def remove_existing(target: Path, backend: str) -> None:
         for path in sqlite_sidecar_paths(target):
             path.unlink(missing_ok=True)
         return
+    if backend == "pgvector":
+        return
     raise RuntimeError(f"unsupported vector backend: {backend}")
 
 
-def open_store(target: Path, *, backend: str, table_name: str, dimensions: int, metric: str):
-    if backend == "lancedb":
-        store = LanceVectorStore(target, table_name=table_name, dimensions=dimensions, metric=metric)
-        if not store.is_available():
-            raise RuntimeError("lancedb/pyarrow is not installed")
-        store.open()
-        return store
-    if backend == "sqlite-bruteforce":
-        store = SQLiteBruteForceVectorStore(target, table_name=table_name, dimensions=dimensions, metric=metric)
-        store.open()
-        return store
-    raise RuntimeError(f"unsupported vector backend: {backend}")
+def open_store(target: Path, *, backend: str, table_name: str, dimensions: int, metric: str, config: dict[str, Any] | None = None):
+    store = build_vector_store(
+        backend,
+        storage_dir=target.parent,
+        table_name=table_name,
+        dimensions=dimensions,
+        metric=metric,
+        config=config or {},
+    )
+    if backend == "lancedb" and not store.is_available():
+        raise RuntimeError("lancedb/pyarrow is not installed")
+    store.open()
+    return store
 
 
 def main() -> int:
@@ -336,8 +343,10 @@ def main() -> int:
 
     remove_existing(target, backend)
 
-    store = open_store(target, backend=backend, table_name=table_name, dimensions=embedder.dimensions, metric=metric)
+    store = open_store(target, backend=backend, table_name=table_name, dimensions=embedder.dimensions, metric=metric, config=vector_config)
     try:
+        if backend == "pgvector":
+            store.delete_by_ids(store.list_ids())
         payload: list[dict[str, Any]] = []
         batch_size = 100
         for start in range(0, len(rows), batch_size):

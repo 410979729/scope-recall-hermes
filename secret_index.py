@@ -69,6 +69,8 @@ def build_secret_index(args: dict[str, Any]) -> tuple[str, dict[str, Any]]:
 
     if not label:
         label = service or account or vault_ref or "unnamed credential"
+    if not vault_ref:
+        raise ValueError("vault_ref is required for secret_reference memories")
 
     lines = [f"Secret index: {label}", f"Kind: {secret_type}"]
     if service:
@@ -99,7 +101,7 @@ def build_secret_index(args: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     metadata: dict[str, Any] = {
         "memory_type": "resource",
         "importance": 0.82,
-        "sensitivity": "secret-index",
+        "sensitivity": "secret_reference",
         "secret_storage": "external-vault-reference",
         "secret_value_stored": False,
         "secret_type": secret_type,

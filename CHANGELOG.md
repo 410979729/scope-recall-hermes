@@ -4,6 +4,22 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-07-08
+
+### Added
+- Added event-digest evidence packets and reviewable candidate extraction with dry-run-first storage controls.
+- Added read-only memory browser, candidate review commands, and humanized recall explain output for governance workflows.
+- Added Experience-to-skill bridge helpers and replay-generation support for reusable operational playbooks, with experience replay coverage preserved in the release gate.
+- Added vector backend abstraction updates, optional PGVector companion support, and vector backend operator documentation.
+- Added external shared-memory export contract helpers, optional PostgreSQL bridge prototype, and explicit sensitivity governance for shared-memory payloads.
+
+### Changed
+- Event-derived candidates now reject unclassified generic chat instead of falling back to durable `memory/factual` proposals.
+- Browser inspection redacts secret-like values and private paths by default; explicit `--raw` is required for local operator raw inspection.
+- Release-gate checks now emit machine-readable progress on stderr and explicitly list the new productization modules, scripts, docs, and examples.
+- Store recovery now rolls back dirty same-process peer providers that share the same SQLite truth DB before retrying a recoverable `database is locked` write.
+- Maintained the stable V1 release line and release-gate coverage across forgetting, governance, journal recovery, dashboard reporting, installer rollback, fact freshness, relation extraction, and the golden benchmark while publishing the 1.7.0 productization feature set.
+
 ## [1.6.3] - 2026-07-07
 
 ### Fixed

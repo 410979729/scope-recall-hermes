@@ -139,6 +139,75 @@ def test_required_source_modules_are_pyright_covered():
         assert required not in result["missing_pyright_include"]
 
 
+def test_release_gate_progress_emits_machine_readable_stderr(capsys):
+    release_check = _load_release_check_module("scope_recall_check_release_progress")
+
+    release_check.progress("pytest:start")
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.err)
+    assert payload["event"] == "release_gate_progress"
+    assert payload["stage"] == "pytest:start"
+    assert "timestamp" in payload
+
+
+def test_productization_artifacts_are_release_gate_listed():
+    release_check = _load_release_check_module("scope_recall_check_release_productization_artifacts")
+
+    for source in [
+        "candidate_extraction.py",
+        "candidate_review.py",
+        "candidate_store.py",
+        "event_digest.py",
+        "doctor_event_digest.py",
+        "memory_browser.py",
+        "skill_bridge.py",
+        "external_bridge.py",
+        "postgres_bridge.py",
+        "pgvector_store.py",
+        "experience_replay_generation.py",
+        "docs/event-digest.md",
+        "docs/governance-ui.md",
+        "docs/install.md",
+        "docs/skill-bridge.md",
+        "docs/vector-backends.md",
+        "examples/external_bridge/postgres_schema.sql",
+        "scripts/candidate.review.py",
+        "scripts/memory.browser.py",
+        "scripts/skill.bridge.py",
+    ]:
+        assert source in release_check.REQUIRED_SOURCE_FILES
+
+    for wheel_path in [
+        "scope_recall/candidate_extraction.py",
+        "scope_recall/candidate_review.py",
+        "scope_recall/candidate_store.py",
+        "scope_recall/event_digest.py",
+        "scope_recall/doctor_event_digest.py",
+        "scope_recall/memory_browser.py",
+        "scope_recall/skill_bridge.py",
+        "scope_recall/external_bridge.py",
+        "scope_recall/postgres_bridge.py",
+        "scope_recall/pgvector_store.py",
+        "scope_recall/experience_replay_generation.py",
+        "scope_recall/docs/event-digest.md",
+        "scope_recall/docs/governance-ui.md",
+        "scope_recall/docs/install.md",
+        "scope_recall/docs/skill-bridge.md",
+        "scope_recall/docs/vector-backends.md",
+        "scope_recall/examples/external_bridge/postgres_schema.sql",
+        "scope_recall/scripts/candidate.review.py",
+        "scope_recall/scripts/memory.browser.py",
+        "scope_recall/scripts/skill.bridge.py",
+    ]:
+        assert wheel_path in release_check.REQUIRED_WHEEL
+
+    pyright = release_check.pyright_include_check()
+    assert pyright["ok"] is True
+    for module in ["event_digest.py", "doctor_event_digest.py", "experience_replay_generation.py", "skill_bridge.py"]:
+        assert module not in pyright["missing_pyright_include"]
+
+
 def test_release_readiness_note_is_release_packaged():
     release_check = _load_release_check_module("scope_recall_check_release_readiness_doc")
 
@@ -197,14 +266,14 @@ def test_distribution_hygiene_blocks_plan_artifacts():
 def test_changelog_completeness_gate_requires_current_release_terms():
     release_check = _load_release_check_module("scope_recall_check_release_changelog")
 
-    empty_current = "# Changelog\n\n## [1.6.3] - 2026-07-07\n\n## [1.5.3] - 2026-06-26\n"
+    empty_current = "# Changelog\n\n## [1.7.0] - 2026-07-08\n\n## [1.6.3] - 2026-07-07\n"
     failed = release_check.changelog_completeness_check(empty_current)
     assert failed["ok"] is False
     assert failed["section_found"] is True
     assert "governance" in failed["missing_terms"]
     assert "journal recovery" in failed["missing_terms"]
 
-    complete = "# Changelog\n\n## [1.6.3] - 2026-07-07\n" + "\n".join(release_check.REQUIRED_CHANGELOG_TERMS)
+    complete = "# Changelog\n\n## [1.7.0] - 2026-07-08\n" + "\n".join(release_check.REQUIRED_CHANGELOG_TERMS)
     assert release_check.changelog_completeness_check(complete)["ok"] is True
 
 

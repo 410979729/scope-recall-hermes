@@ -27,7 +27,7 @@ def test_distribution_metadata_exposes_official_standalone_install_shape():
     pyproject = tomllib.loads((PLUGIN_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert pyproject["project"]["name"] == "hermes-scope-recall"
-    assert pyproject["project"]["version"] == "1.6.3"
+    assert pyproject["project"]["version"] == "1.7.0"
     assert pyproject["project"]["scripts"] == {
         "hermes-scope-recall": "scope_recall.cli:main"
     }
@@ -106,6 +106,34 @@ def test_installer_copies_plugin_and_verify_accepts_it(tmp_path):
     assert not any(plugin_dir.rglob("*.pyc"))
 
 
+def test_install_activate_sets_memory_provider_and_bootstraps_schema(tmp_path):
+    from scope_recall import installer
+
+    (tmp_path / "config.yaml").write_text("model:\n  provider: openrouter\n", encoding="utf-8")
+
+    result = installer.install(hermes_home=tmp_path, activate=True)
+
+    assert result["ok"] is True
+    assert result["installed"] is True
+    assert result["activated"] is True
+    assert result["config_updated"] is True
+    assert result["sqlite_schema_current"] is True
+    assert result["runtime_verify"]["ok"] is True
+    assert result["verify"]["runtime"]["sqlite_schema_current"] is True
+    assert result["rollback_command"]
+    config_text = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    assert "model:\n  provider: openrouter" in config_text
+    assert "memory:\n  provider: scope-recall" in config_text
+    db_path = tmp_path / "scope-recall" / "memory.sqlite3"
+    assert db_path.is_file()
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] >= 1
+        assert conn.execute("SELECT COUNT(*) FROM journal_entries").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
 def test_installer_upgrade_backs_up_existing_plugin_and_reports_versions(tmp_path):
     import scope_recall.installer as installer
 
@@ -118,14 +146,14 @@ def test_installer_upgrade_backs_up_existing_plugin_and_reports_versions(tmp_pat
     assert result["installed"] is True
     assert result["previous_plugin_existed"] is True
     assert result["previous_version"] == "0.9.0"
-    assert result["manifest_version"] == "1.6.3"
-    assert result["new_version"] == "1.6.3"
+    assert result["manifest_version"] == "1.7.0"
+    assert result["new_version"] == "1.7.0"
     backup_path = Path(result["backup_path"])
     assert backup_path.is_dir()
     assert tmp_path in backup_path.parents
     assert "version: 0.9.0" in (backup_path / "plugin.yaml").read_text(encoding="utf-8")
     assert "previous plugin" in (backup_path / "__init__.py").read_text(encoding="utf-8")
-    assert "version: 1.6.3" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.7.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
     assert any("restart" in step.lower() for step in result["next_steps"])
     assert any("doctor" in step for step in result["next_steps"])
     assert result["rollback_command"].endswith(str(backup_path))
@@ -137,7 +165,7 @@ def test_installer_rollback_restores_backup_and_backs_up_current_plugin(tmp_path
     plugin_dir = tmp_path / "plugins" / PLUGIN_NAME
     _write_installed_plugin(plugin_dir, version="0.9.0", marker="previous plugin")
     upgrade = installer.install(hermes_home=tmp_path)
-    assert "version: 1.6.3" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.7.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
 
     rollback = installer.rollback(hermes_home=tmp_path, backup_dir=upgrade["backup_path"])
 
@@ -145,10 +173,10 @@ def test_installer_rollback_restores_backup_and_backs_up_current_plugin(tmp_path
     assert rollback["dry_run"] is False
     assert rollback["restored"] is True
     assert rollback["restored_version"] == "0.9.0"
-    assert rollback["replaced_version"] == "1.6.3"
+    assert rollback["replaced_version"] == "1.7.0"
     current_backup = Path(rollback["current_backup_path"])
     assert current_backup.is_dir()
-    assert "version: 1.6.3" in (current_backup / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.7.0" in (current_backup / "plugin.yaml").read_text(encoding="utf-8")
     assert "version: 0.9.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
     assert "previous plugin" in (plugin_dir / "__init__.py").read_text(encoding="utf-8")
 
@@ -157,7 +185,7 @@ def test_installer_rollback_refuses_bad_backup_without_mutating_current_plugin(t
     import scope_recall.installer as installer
 
     plugin_dir = tmp_path / "plugins" / PLUGIN_NAME
-    _write_installed_plugin(plugin_dir, version="1.6.3", marker="current plugin")
+    _write_installed_plugin(plugin_dir, version="1.7.0", marker="current plugin")
     bad_backup = tmp_path / "bad-backup" / PLUGIN_NAME
     bad_backup.mkdir(parents=True)
     (bad_backup / "plugin.yaml").write_text("name: other\nversion: 0.1.0\n", encoding="utf-8")
@@ -165,7 +193,7 @@ def test_installer_rollback_refuses_bad_backup_without_mutating_current_plugin(t
     with pytest.raises(installer.InstallError):
         installer.rollback(hermes_home=tmp_path, backup_dir=bad_backup)
 
-    assert "version: 1.6.3" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.7.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
     assert "current plugin" in (plugin_dir / "__init__.py").read_text(encoding="utf-8")
 
 
@@ -181,7 +209,7 @@ def test_installer_cli_upgrade_dry_run_and_rollback_are_routed_by_product_cli(tm
 
     upgrade = installer.install(hermes_home=tmp_path)
     assert cli.main(["rollback", "--hermes-home", str(tmp_path), "--backup-dir", upgrade["backup_path"], "--dry-run", "--json"]) == 0
-    assert "version: 1.6.3" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.7.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
 
 
 def test_installer_runtime_verify_reports_missing_memory_setup(tmp_path):
@@ -251,6 +279,29 @@ def test_installer_runtime_verify_loads_provider_tools_and_schema(tmp_path):
     assert {"scope_recall_memory", "scope_recall_entity"} <= set(runtime["tool_schema_names"])
     assert "auto_recall" in runtime["config_schema_keys"]
     assert not any(name == "_scope_recall_runtime_verify" or name.startswith("_scope_recall_runtime_verify.") for name in sys.modules)
+
+
+def test_verify_runtime_reports_layered_diagnostics(tmp_path):
+    from scope_recall import installer
+
+    installer.install(hermes_home=tmp_path, activate=True)
+
+    verify_result = installer.verify(hermes_home=tmp_path, runtime=True)
+
+    assert verify_result["ok"] is True
+    assert verify_result["plugin_files"]["ok"] is True
+    assert verify_result["provider_load"]["ok"] is True
+    assert verify_result["hermes_config"] == {
+        "exists": True,
+        "memory_provider": "scope-recall",
+        "ok": True,
+    }
+    assert verify_result["sqlite_truth"]["exists"] is True
+    assert verify_result["sqlite_truth"]["schema_current"] is True
+    assert verify_result["tool_schemas"]["compact_required_present"] is True
+    assert "scope_recall_memory" in verify_result["tool_schemas"]["names"]
+    assert verify_result["vector_companion"]["configured_backend"] in {"lancedb", "sqlite-bruteforce"}
+    assert verify_result["vector_companion"]["status"] in {"ready", "disabled", "not_initialized", "degraded"}
 
 
 def test_installer_runtime_verify_schema_check_opens_sqlite_read_only_query_only(tmp_path, monkeypatch):
@@ -430,6 +481,15 @@ def test_installer_cli_json_verify_round_trip(tmp_path):
     assert install_exit == 0
     assert verify_exit == 0
     assert (tmp_path / "plugins" / PLUGIN_NAME / "plugin.yaml").is_file()
+
+
+def test_installer_cli_activate_bootstraps_runtime(tmp_path):
+    from scope_recall import installer
+
+    assert installer.main(["install", "--activate", "--hermes-home", str(tmp_path), "--json"]) == 0
+    assert "memory:\n  provider: scope-recall" in (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    assert (tmp_path / "scope-recall" / "memory.sqlite3").is_file()
+    assert installer.main(["verify", "--runtime", "--hermes-home", str(tmp_path), "--json"]) == 0
 
 
 def test_installer_cli_runtime_verify_after_memory_setup(tmp_path):

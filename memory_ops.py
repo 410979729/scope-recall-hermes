@@ -19,6 +19,7 @@ from .graph import clamp_float, compact_context_lines, lifecycle_visible_sql, lo
 from .graph_relations import graph_relation_stats
 from .governance import classify_memory, is_conflicting, merge_memory_text, semantic_similarity
 from .models import recall_scope_mode
+from .recall_pipeline import humanize_filter_trace, humanize_recall_components
 from .relation_extraction import sync_extracted_relations_for_memory
 from .sql_store import curated_recall_item_id, delete_rows, exact_duplicate_groups, iter_curated_entries, record_governance_audit_event, update_row
 from .storage_views import _curated_memory_allowed
@@ -1266,7 +1267,7 @@ def explain_query(provider: Any, *, query: str, limit: int = 5) -> dict[str, Any
         components["relation_rerank_enabled"] = bool(metadata.get("relation_rerank_enabled") or False)
         components["temporal_policy_class"] = str(metadata.get("temporal_policy_class") or "")
         components["rejected_reason"] = str(metadata.get("rejected_reason") or "")
-        return {
+        payload = {
             "rank": rank,
             "id": item.id,
             "target": item.target,
@@ -1276,18 +1277,26 @@ def explain_query(provider: Any, *, query: str, limit: int = 5) -> dict[str, Any
             "updated_at": item.updated_at,
             "components": components,
         }
+        payload.update(humanize_recall_components(components, rejected=bool(metadata.get("rejected_reason"))))
+        return payload
 
     for rank, item in enumerate(results, start=1):
         payload_results.append(_payload_for_item(item, rank))
     rejected_candidates = list(getattr(provider._recall_service, "last_rejected_candidates", []) or [])
-    rejected_payload = [_payload_for_item(item, rank) for rank, item in enumerate(rejected_candidates[: max(1, min(20, limit))], start=1)]
+    rejected_payload: list[dict[str, Any]] = []
+    for rank, item in enumerate(rejected_candidates[: max(1, min(20, limit))], start=1):
+        rejected_item = _payload_for_item(item, rank)
+        rejected_item.update(humanize_recall_components(rejected_item.get("components", {}), rejected=True))
+        rejected_payload.append(rejected_item)
+    funnel_trace = dict(getattr(provider._recall_service, "last_funnel_trace", {}) or {})
     return {
         "query": query,
         "count": len(payload_results),
         "results": payload_results,
         "rejected_count": len(rejected_candidates),
         "rejected_candidates": rejected_payload,
-        "funnel_trace": dict(getattr(provider._recall_service, "last_funnel_trace", {}) or {}),
+        "funnel_trace": funnel_trace,
+        "filter_explanations": humanize_filter_trace(funnel_trace),
     }
 
 

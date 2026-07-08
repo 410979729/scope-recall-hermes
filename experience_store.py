@@ -1033,6 +1033,7 @@ def _record_feedback_reflection_event(
     steps_completed: Any,
     outcome_reason: str,
     created_at: str,
+    recommended_status: str = "needs_review",
 ) -> bool:
     """Record the durable event generated from playbook feedback reflection.
 
@@ -1056,7 +1057,7 @@ def _record_feedback_reflection_event(
     proposed_updates = [
         {
             "playbook_id": str(row["id"]),
-            "recommended_status": "needs_review",
+            "recommended_status": recommended_status,
             "preconditions_checked": preconditions_checked,
             "steps_completed": steps_completed,
         }
@@ -1107,6 +1108,7 @@ def record_playbook_feedback(
     model_name: str = "",
     tool_call_count: int = 0,
     token_estimate: int = 0,
+    negative_feedback_threshold: int = 1,
 ) -> dict[str, Any]:
     """Record user/operator feedback for an Experience playbook.
 
@@ -1138,6 +1140,12 @@ def record_playbook_feedback(
     if current_status in {"quarantined", "superseded"}:
         return {"recorded": False, "id": playbook_id, "error": "terminal_status", "status": current_status}
     global_update_allowed = str(scope_id) == str(row["scope_id"])
+    success_delta = 1 if normalized_outcome == "success" else 0
+    failure_delta = 1 if normalized_outcome in {"failed", "misleading"} else 0
+    stale_delta = 1 if normalized_outcome == "stale" else 0
+    threshold = max(1, int(negative_feedback_threshold or 1))
+    negative_feedback_count = int(row["failure_count"]) + failure_delta + int(row["stale_count"]) + stale_delta
+    recommended_status = "needs_review" if normalized_outcome in {"failed", "misleading", "stale"} and negative_feedback_count >= threshold else current_status
     conn.execute(
         """
         INSERT INTO experience_runs(
@@ -1174,6 +1182,7 @@ def record_playbook_feedback(
         steps_completed=safe_steps_completed,
         outcome_reason=safe_outcome_reason,
         created_at=now,
+        recommended_status=recommended_status,
     )
     if not global_update_allowed or normalized_outcome == "unknown":
         conn.commit()
@@ -1189,12 +1198,7 @@ def record_playbook_feedback(
             "stale_count": int(row["stale_count"]),
             "reflection_recorded": reflection_recorded,
         }
-    success_delta = 1 if normalized_outcome == "success" else 0
-    failure_delta = 1 if normalized_outcome in {"failed", "misleading"} else 0
-    stale_delta = 1 if normalized_outcome == "stale" else 0
-    new_status = str(row["status"])
-    if normalized_outcome in {"failed", "misleading", "stale"}:
-        new_status = "needs_review"
+    new_status = recommended_status
     last_verified_at = now if normalized_outcome == "success" else row["last_verified_at"]
     conn.execute(
         """
@@ -1227,6 +1231,8 @@ def record_playbook_feedback(
         "success_count": int(final["success_count"]),
         "failure_count": int(final["failure_count"]),
         "stale_count": int(final["stale_count"]),
+        "negative_feedback_threshold": threshold,
+        "negative_feedback_count": negative_feedback_count,
         "skill_conflicts_opened": opened_conflicts,
         "reflection_recorded": reflection_recorded,
     }
