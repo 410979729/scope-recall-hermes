@@ -9,6 +9,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from .vector_store import normalize_vector_backend
+
 def lancedb_table_names(db: Any) -> list[str]:
     """Return table names across LanceDB list_tables API shapes."""
     list_tables = getattr(db, "list_tables", None)
@@ -318,8 +320,8 @@ def vector_report(
     fallback_backend: str = "",
     index_general: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
-    normalized = "sqlite-bruteforce" if str(backend or "lancedb").strip().lower() == "sqlite" else str(backend or "lancedb").strip().lower()
-    fallback = "sqlite-bruteforce" if str(fallback_backend or "").strip().lower() == "sqlite" else str(fallback_backend or "").strip().lower()
+    normalized = normalize_vector_backend(backend or "lancedb")
+    fallback = normalize_vector_backend(fallback_backend or "") if str(fallback_backend or "").strip() else ""
     if normalized == "sqlite-bruteforce":
         return sqlite_vector_report(hermes_home, expected_embedder=expected_embedder, index_general=index_general)
     if normalized == "lancedb":

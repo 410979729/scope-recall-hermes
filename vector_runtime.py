@@ -12,8 +12,7 @@ from .capture_filters import sanitize_report_text
 from .embedders import build_embedder
 from .gating import config_bool
 from .graph import lifecycle_is_hidden, lifecycle_visible_sql, load_metadata
-from .sqlite_vector_store import SQLiteBruteForceVectorStore
-from .vector_store import LanceVectorStore, native_vector_dependency_status
+from .vector_store import LanceVectorStore, build_vector_store, native_vector_dependency_status, normalize_vector_backend
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +36,7 @@ def mark_vector_needs_repair(provider: Any, exc: Exception | str) -> None:
 
 
 def _normalize_vector_backend(value: Any) -> str:
-    backend = str(value or "lancedb").strip().lower()
-    if backend == "sqlite":
-        return "sqlite-bruteforce"
-    return backend
+    return normalize_vector_backend(value)
 
 
 def _append_vector_message(provider: Any, message: str) -> None:
@@ -49,8 +45,9 @@ def _append_vector_message(provider: Any, message: str) -> None:
 
 
 def _open_sqlite_vector_store(provider: Any, *, table_name: str, dimensions: int, metric: str) -> None:
-    temp_store = SQLiteBruteForceVectorStore(
-        provider._storage_dir / "vector.sqlite3",
+    temp_store = build_vector_store(
+        "sqlite-bruteforce",
+        storage_dir=provider._storage_dir,
         table_name=table_name,
         dimensions=dimensions,
         metric=metric,
@@ -77,13 +74,36 @@ def _open_vector_store(provider: Any, *, dimensions: int) -> None:
         _open_sqlite_vector_store(provider, table_name=table_name, dimensions=dimensions, metric=metric)
         return
 
+    fallback_backend = _normalize_vector_backend((provider._vector_config or {}).get("fallback_backend") or "")
+
+    if backend == "pgvector":
+        temp_store = build_vector_store(
+            backend,
+            storage_dir=provider._storage_dir,
+            table_name=table_name,
+            dimensions=dimensions,
+            metric=metric,
+            config=provider._vector_config or {},
+        )
+        if not temp_store.is_available():
+            if fallback_backend == "sqlite-bruteforce":
+                message = "pgvector unavailable or not configured; using sqlite-bruteforce fallback"
+                _append_vector_message(provider, message)
+                logger.warning("Scope Recall vector backend fallback: %s", message)
+                _open_sqlite_vector_store(provider, table_name=table_name, dimensions=dimensions, metric=metric)
+                return
+            raise RuntimeError("pgvector dependencies or DSN are not configured")
+        temp_store.open()
+        provider._vector_backend = "pgvector"
+        provider._vector_store = temp_store
+        return
+
     if backend != "lancedb":
         raise RuntimeError(f"unsupported backend {backend}")
 
     vector_dir = provider._storage_dir / "lancedb"
     temp_store = LanceVectorStore(vector_dir, table_name=table_name, dimensions=dimensions, metric=metric)
     if not temp_store.is_available():
-        fallback_backend = _normalize_vector_backend((provider._vector_config or {}).get("fallback_backend") or "")
         if fallback_backend == "sqlite-bruteforce":
             status = native_vector_dependency_status()
             detail = f"returncode={status.get('returncode')}" if status.get("returncode") is not None else str(status.get("stderr") or "not installed")

@@ -191,6 +191,46 @@ def test_review_and_feedback_update_status_counts_and_stats():
     assert stats["runs"]["by_outcome"] == {"failed": 1, "success": 1}
 
 
+def test_negative_feedback_threshold_delays_needs_review_until_limit():
+    conn = _conn()
+    _create_promoted(conn, playbook_id="pb_threshold")
+
+    first = record_playbook_feedback(
+        conn,
+        playbook_id="pb_threshold",
+        scope_id="scope-a",
+        accessible_scope_ids=["scope-a"],
+        outcome="failed",
+        decision="guided_reuse",
+        evidence=["skill smoke failed once"],
+        outcome_reason="first skill failure",
+        negative_feedback_threshold=2,
+    )
+    row_after_first = conn.execute("SELECT status, failure_count FROM procedural_playbooks WHERE id = ?", ("pb_threshold",)).fetchone()
+
+    assert first["recorded"] is True
+    assert first["negative_feedback_threshold"] == 2
+    assert first["negative_feedback_count"] == 1
+    assert first["status"] == "promoted"
+    assert row_after_first["status"] == "promoted"
+    assert row_after_first["failure_count"] == 1
+
+    second = record_playbook_feedback(
+        conn,
+        playbook_id="pb_threshold",
+        scope_id="scope-a",
+        accessible_scope_ids=["scope-a"],
+        outcome="failed",
+        decision="guided_reuse",
+        evidence=["skill smoke failed again"],
+        outcome_reason="second skill failure",
+        negative_feedback_threshold=2,
+    )
+
+    assert second["negative_feedback_count"] == 2
+    assert second["status"] == "needs_review"
+
+
 def test_unknown_feedback_records_run_without_changing_confidence_or_counts():
     conn = _conn()
     _create_promoted(conn, playbook_id="pb_unknown", confidence=0.9)

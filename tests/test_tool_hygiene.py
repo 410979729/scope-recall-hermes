@@ -211,7 +211,7 @@ def test_tool_store_uses_capture_filter_for_secret_like_content(provider):
 
     assert payload["stored"] is False
     assert payload["skipped"] is True
-    assert payload["skip_reason"] == "secret-like-content"
+    assert payload["skip_reason"] == "plaintext_secret_rejected"
 
 
 def test_tool_update_uses_capture_filter_for_secret_like_content(provider):
@@ -231,7 +231,7 @@ def test_tool_update_uses_capture_filter_for_secret_like_content(provider):
 
     assert payload["error"] == "content is not suitable for storage"
     assert payload["skipped"] is True
-    assert payload["skip_reason"] == "secret-like-content"
+    assert payload["skip_reason"] == "plaintext_secret_rejected"
 
     provider.on_turn_start(1, "What does Joy prefer for memory inspection?")
     assert "read-only sqlite viewers" in provider.prefetch("What does Joy prefer for memory inspection?").lower()

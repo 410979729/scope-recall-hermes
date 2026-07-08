@@ -559,7 +559,10 @@ class ScopeRecallToolService:
         query = self._clean_query(args)
         if not query:
             return tool_error("query is required")
-        return self._json(self.provider._explain_query(query=query, limit=self._retrieval_limit(args)))
+        payload = self.provider._explain_query(query=query, limit=self._retrieval_limit(args))
+        if isinstance(payload, dict):
+            payload.setdefault("humanized", True)
+        return self._json(payload)
 
     def _handle_benchmark(self, args: dict[str, Any]) -> str:
         char_limit = int(self.provider._config_value("query_char_limit", 1000))

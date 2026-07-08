@@ -11,6 +11,7 @@ import sqlite3
 from scope_recall.experience_evidence import extract_evidence_anchors
 from scope_recall.experience_preflight import experience_preflight
 from scope_recall.experience_quality import assess_experience_quality
+from scope_recall.experience_replay_generation import generate_replay_case_drafts
 from scope_recall.experience_store import create_playbook, review_playbook
 from scope_recall.experience_synthesis import build_experience_playbook_payload
 from scope_recall.sql_store import ensure_schema
@@ -106,3 +107,71 @@ def test_preflight_for_generated_playbook_returns_verification_steps_for_weak_mo
     assert "pytest tests passed" in preflight["packet"]
     assert "dry-run JSON parsed" in preflight["packet"]
     assert preflight["summary"]["source_evidence_anchor_count"] >= 2
+
+
+def test_generate_replay_case_drafts_from_promoted_playbooks_without_mutating_store():
+    conn = _conn()
+    entries = _successful_entries()
+    anchors = extract_evidence_anchors(entries)
+    payload = build_experience_playbook_payload(
+        task_class="scope_recall_governance_scheduler",
+        title="Scope Recall governance scheduler repair",
+        goal="Fix Scope Recall governance scheduler",
+        risk_level="high",
+        tool_names=["terminal", "patch"],
+        verification=["pytest tests passed", "dry-run JSON parsed"],
+        evidence_anchors=anchors,
+    )
+    create_playbook(conn, playbook_id="pb_scheduler_replay", scope_id="scope-a", shared_scope_id="", payload=payload, status="candidate", confidence=0.9, evidence_anchors=anchors)
+    review_playbook(conn, playbook_id="pb_scheduler_replay", accessible_scope_ids=["scope-a"], action="promote", reason="fixture")
+    before_runs = conn.execute("SELECT COUNT(*) FROM experience_runs").fetchone()[0]
+
+    report = generate_replay_case_drafts(conn, accessible_scope_ids=["scope-a"], limit=10)
+
+    assert conn.execute("SELECT COUNT(*) FROM experience_runs").fetchone()[0] == before_runs == 0
+    assert report["ok"] is True
+    assert report["dry_run"] is True
+    assert report["count"] == 1
+    draft = report["drafts"][0]
+    assert draft["schema_version"] == "experience_replay_case_draft.v1"
+    assert draft["source_playbook_id"] == "pb_scheduler_replay"
+    assert draft["expected_playbook_id"] == "pb_scheduler_replay"
+    assert draft["expected_decision"] == "guided_reuse"
+    assert draft["requires_operator_review"] is True
+    assert "Scope Recall governance scheduler repair" in draft["query"]
+    assert {"pytest", "dry-run json"}.issubset(set(draft["required_terms"]))
+
+
+def test_generate_replay_case_drafts_includes_candidates_but_skips_needs_review(tmp_path):
+    db_path = tmp_path / "memory.sqlite3"
+    writer = sqlite3.connect(db_path)
+    writer.row_factory = sqlite3.Row
+    try:
+        ensure_schema(writer)
+        anchors = extract_evidence_anchors(_successful_entries())
+        payload = build_experience_playbook_payload(
+            task_class="scope_recall_candidate_review",
+            title="Scope Recall candidate review",
+            goal="Review memory candidates safely",
+            risk_level="medium",
+            tool_names=["terminal"],
+            verification=["dry-run candidate report parsed"],
+            evidence_anchors=anchors,
+        )
+        create_playbook(writer, playbook_id="pb_candidate_draft", scope_id="scope-a", payload=payload, status="candidate", confidence=0.8, evidence_anchors=anchors)
+        create_playbook(writer, playbook_id="pb_needs_review", scope_id="scope-a", payload=payload, status="candidate", confidence=0.8, evidence_anchors=anchors)
+        review_playbook(writer, playbook_id="pb_needs_review", accessible_scope_ids=["scope-a"], action="needs_review", reason="fixture")
+    finally:
+        writer.close()
+
+    readonly = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    readonly.row_factory = sqlite3.Row
+    readonly.execute("PRAGMA query_only=ON")
+    try:
+        report = generate_replay_case_drafts(readonly, accessible_scope_ids=["scope-a"], limit=10)
+    finally:
+        readonly.close()
+
+    assert report["count"] == 1
+    assert report["drafts"][0]["source_playbook_id"] == "pb_candidate_draft"
+    assert report["drafts"][0]["expected_decision"] == "guided_reuse"

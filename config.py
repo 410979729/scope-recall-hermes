@@ -56,6 +56,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "per_turn_extraction": {
         "enabled": False,
     },
+    "event_digest": {
+        "enabled": True,
+        "write_candidates": False,
+        "dry_run_log": True,
+        "max_events_per_turn": 3,
+    },
     "capture_hard_max_chars": 2500,
     "capture_skip_patterns": [
         r"^\[Recent Telegram chat history",
@@ -176,6 +182,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "backend": "lancedb",
         "fallback_backend": "sqlite-bruteforce",
         "table_name": "memories",
+        "pgvector": {
+            "dsn_env": "SCOPE_RECALL_PGVECTOR_DSN",
+            "table_name": "scope_recall_vectors",
+        },
         "top_k": 8,
         "sync_mode": "incremental",
         "index_general": False,

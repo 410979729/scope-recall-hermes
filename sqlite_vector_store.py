@@ -10,7 +10,7 @@ import sqlite3
 import threading
 from collections import Counter
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 
 class SQLiteBruteForceVectorStore:
@@ -155,6 +155,13 @@ class SQLiteBruteForceVectorStore:
                 )
             conn.commit()
 
+    def upsert(self, record: Mapping[str, Any] | Any) -> None:
+        try:
+            payload = dict(record)
+        except TypeError:
+            payload = dict(vars(record))
+        self.upsert_records([payload])
+
     def delete_by_ids(self, ids: list[str]) -> None:
         ids = [str(item) for item in ids if str(item)]
         if not ids:
@@ -164,6 +171,12 @@ class SQLiteBruteForceVectorStore:
             conn = self._require_conn()
             conn.execute(f"DELETE FROM vector_records WHERE id IN ({placeholders})", ids)
             conn.commit()
+
+    def delete(self, ids: list[str]) -> int:
+        before = set(self.list_ids())
+        self.delete_by_ids(ids)
+        after = set(self.list_ids())
+        return len(before - after)
 
     def list_ids(self) -> list[str]:
         with self._lock:

@@ -123,3 +123,79 @@ def final_trace_payload(*, returned: list[RecallItem], ranked_rejected: list[Rec
         "returned_chars": sum(len(str(item.content or "")) for item in returned),
         "rejected_count": len(ranked_rejected),
     }
+
+
+def humanize_filter_trace(trace: dict[str, Any]) -> list[dict[str, Any]]:
+    """Convert raw funnel filter counters into operator-readable reasons."""
+    filters = trace.get("filters") if isinstance(trace, dict) else {}
+    filters = filters if isinstance(filters, dict) else {}
+    labels = {
+        "lifecycle_removed": "Rows hidden by lifecycle policy, such as archived, superseded, rejected, candidate, or in-progress memories.",
+        "general_policy_removed": "General scratch rows removed by the configured general-memory policy.",
+        "entity_scope_mismatch": "Rows removed because entity scoping did not match the query context.",
+        "vector_only_below_min_score": "Vector-only rows rejected because their semantic score was below the stricter vector-only threshold.",
+        "below_min_score": "Rows rejected because final score was below the retrieval minimum.",
+    }
+    explanations: list[dict[str, Any]] = []
+    for key, label in labels.items():
+        try:
+            count = int(filters.get(key) or 0)
+        except (TypeError, ValueError):
+            count = 0
+        explanations.append({"filter": key, "count": count, "meaning": label})
+    return explanations
+
+
+def humanize_recall_components(components: dict[str, Any], *, rejected: bool = False) -> dict[str, Any]:
+    """Build a stable human-readable explanation from numeric retrieval components."""
+    def _float(key: str, default: float = 0.0) -> float:
+        try:
+            return float(components.get(key, default) or default)
+        except (TypeError, ValueError):
+            return default
+
+    lexical_score = _float("lexical_score")
+    vector_score = _float("vector_score")
+    rrf_score = _float("rrf_score")
+    recency_bonus = _float("recency_bonus")
+    relation_bonus = _float("relation_rerank_bonus")
+    entity_bonus = _float("entity_overlap_bonus") + _float("entity_distance_bonus")
+    temporal_multiplier = _float("temporal_decay_multiplier", 1.0)
+    final_score = _float("final_score")
+    min_score = _float("min_score")
+    rejected_reason = str(components.get("rejected_reason") or "")
+    why: list[str] = []
+    if lexical_score > 0:
+        why.append(f"lexical match contributed {lexical_score:.3f}")
+    if vector_score > 0:
+        why.append(f"vector similarity contributed {vector_score:.3f}")
+    if rrf_score > 0:
+        why.append(f"RRF fusion contributed {rrf_score:.3f}")
+    if recency_bonus > 0:
+        why.append(f"freshness/recency added {recency_bonus:.3f}")
+    if relation_bonus != 0:
+        why.append(f"relation rerank adjusted score by {relation_bonus:.3f}")
+    if entity_bonus > 0:
+        why.append(f"entity evidence added {entity_bonus:.3f}")
+    if temporal_multiplier != 1.0:
+        why.append(f"temporal policy multiplied score by {temporal_multiplier:.3f}")
+    if not why:
+        why.append("no strong individual scoring signal was recorded")
+    if rejected:
+        why.append(rejected_reason or f"final score {final_score:.3f} did not pass threshold {min_score:.3f}")
+    else:
+        why.append(f"final score is {final_score:.3f}")
+    return {
+        "score_breakdown": {
+            "lexical_score": lexical_score,
+            "vector_score": vector_score,
+            "rrf_contribution": rrf_score,
+            "freshness_bonus": recency_bonus,
+            "relation_adjustment": relation_bonus,
+            "entity_bonus": entity_bonus,
+            "temporal_multiplier": temporal_multiplier,
+            "final_score": final_score,
+            "min_score": min_score,
+        },
+        "why_excluded" if rejected else "why_included": why,
+    }

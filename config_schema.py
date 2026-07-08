@@ -54,7 +54,7 @@ _CHOICES = {
     "retrieval.metric": ["cosine", "dot", "l2"],
     "retrieval.fusion_strategy": ["rrf", "weighted"],
     "retrieval.relation_contradiction_mode": ["surface", "suppress", "penalize"],
-    "vector.backend": ["lancedb", "sqlite-bruteforce"],
+    "vector.backend": ["lancedb", "sqlite-bruteforce", "pgvector"],
     "vector.fallback_backend": ["sqlite-bruteforce", "disabled"],
     "vector.embedder.provider": ["openai-compatible", "openai", "sentence-transformers", "local-hash"],
     "vector.sync_mode": ["incremental", "rebuild"],

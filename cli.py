@@ -16,6 +16,10 @@ _SCRIPT_COMMANDS: dict[tuple[str, ...], tuple[str, list[str]]] = {
     ("journal", "digest"): ("journal-digest.py", []),
     ("journal", "recovery"): ("journal.recovery.py", []),
     ("candidates", "report"): ("promote.memory_candidates.py", ["--dry-run"]),
+    ("candidates", "list"): ("memory.browser.py", ["candidates", "list"]),
+    ("candidates", "promote"): ("candidate.review.py", ["promote", "--dry-run"]),
+    ("candidates", "archive"): ("candidate.review.py", ["archive", "--dry-run"]),
+    ("candidates", "supersede"): ("candidate.review.py", ["supersede", "--dry-run"]),
     ("candidates", "apply"): ("promote.memory_candidates.py", ["--apply"]),
     ("vector", "repair", "apply"): ("repair.vector_index.py", ["--apply"]),
     ("vector", "repair"): ("repair.vector_index.py", ["--dry-run"]),
@@ -29,11 +33,15 @@ _SCRIPT_COMMANDS: dict[tuple[str, ...], tuple[str, list[str]]] = {
     ("rollout", "profiles"): ("rollout.profiles.py", []),
     ("benchmark", "golden"): ("benchmark.golden.py", []),
     ("benchmark", "experience"): ("experience-replay.py", []),
+    ("memories", "list"): ("memory.browser.py", ["memories", "list"]),
+    ("memories", "inspect"): ("memory.browser.py", ["memories", "inspect"]),
+    ("recall", "explain"): ("memory.browser.py", ["recall", "explain"]),
     ("playbooks", "bootstrap"): ("playbook.bootstrap.py", []),
     ("playbooks", "list"): ("playbooks.py", ["list"]),
     ("playbooks", "dedupe"): ("playbooks.py", ["dedupe"]),
     ("playbooks", "review"): ("playbooks.py", ["review"]),
     ("playbooks", "promote"): ("playbooks.py", ["promote"]),
+    ("playbooks", "skill-candidates"): ("skill.bridge.py", ["skill-candidates", "--dry-run"]),
     ("playbooks", "quarantine"): ("playbooks.py", ["quarantine"]),
     ("playbooks", "supersede"): ("playbooks.py", ["supersede"]),
 }
@@ -50,6 +58,10 @@ Usage:
   hermes-scope-recall journal digest [digest options]
   hermes-scope-recall journal recovery [recovery options]
   hermes-scope-recall candidates report [candidate options]
+  hermes-scope-recall candidates list --json [browser options]
+  hermes-scope-recall candidates promote --id <id> --dry-run --json [review options]
+  hermes-scope-recall candidates archive --id <id> --dry-run --json [review options]
+  hermes-scope-recall candidates supersede --id <id> --superseded-by <id> --dry-run --json [review options]
   hermes-scope-recall candidates apply [candidate options]
   hermes-scope-recall vector repair [vector options]          # dry-run by default
   hermes-scope-recall vector repair apply [vector options]    # rebuilds with backup
@@ -63,10 +75,14 @@ Usage:
   hermes-scope-recall rollout profiles [rollout options]
   hermes-scope-recall benchmark golden [benchmark options]
   hermes-scope-recall benchmark experience [experience replay options]
+  hermes-scope-recall memories list --target project --json [browser options]
+  hermes-scope-recall memories inspect --id <id> --json [browser options]
+  hermes-scope-recall recall explain --query <query> --json [browser options]
   hermes-scope-recall playbooks bootstrap [bootstrap options]
   hermes-scope-recall playbooks list [playbook options]
   hermes-scope-recall playbooks review --id <id> [review options]
   hermes-scope-recall playbooks dedupe [dedupe options]
+  hermes-scope-recall playbooks skill-candidates --dry-run --json [bridge options]
   hermes-scope-recall playbooks promote --id <id> [review options]
   hermes-scope-recall playbooks quarantine --id <id> [review options]
   hermes-scope-recall playbooks supersede --id <id> --superseded-by <id> [review options]

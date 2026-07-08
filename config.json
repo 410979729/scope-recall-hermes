@@ -56,6 +56,12 @@
   "per_turn_extraction": {
     "enabled": false
   },
+  "event_digest": {
+    "enabled": true,
+    "write_candidates": false,
+    "dry_run_log": true,
+    "max_events_per_turn": 3
+  },
   "capture_hard_max_chars": 2500,
   "capture_skip_patterns": [
     "^\\[Recent Telegram chat history",
@@ -208,6 +214,10 @@
     "backend": "lancedb",
     "fallback_backend": "sqlite-bruteforce",
     "table_name": "memories",
+    "pgvector": {
+      "dsn_env": "SCOPE_RECALL_PGVECTOR_DSN",
+      "table_name": "scope_recall_vectors"
+    },
     "top_k": 8,
     "sync_mode": "incremental",
     "index_general": false,

@@ -30,7 +30,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-PACKAGE_VERSION = "1.6.3"
+PACKAGE_VERSION = "1.7.0"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 RELEASE_READINESS_DOC = f"docs/release-readiness.{PACKAGE_VERSION}.md"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
@@ -67,6 +67,21 @@ REQUIRED_SOURCE_FILES = {
     "config.json",
     "cli.py",
     "config_schema.py",
+    "candidate_extraction.py",
+    "candidate_review.py",
+    "candidate_store.py",
+    "capture_filters.py",
+    "doctor_event_digest.py",
+    "event_digest.py",
+    "external_bridge.py",
+    "memory_browser.py",
+    "pgvector_store.py",
+    "postgres_bridge.py",
+    "secret_index.py",
+    "skill_bridge.py",
+    "vector_runtime.py",
+    "vector_store.py",
+    "experience_replay_generation.py",
     "digest_quality.py",
     "digest_run_results.py",
     "doctor_common.py",
@@ -108,6 +123,11 @@ REQUIRED_SOURCE_FILES = {
     "docs/governance.cleanup.md",
     "docs/memory-quality-kernel.md",
     "docs/configuration.md",
+    "docs/event-digest.md",
+    "docs/governance-ui.md",
+    "docs/install.md",
+    "docs/skill-bridge.md",
+    "docs/vector-backends.md",
     "docs/operator-runbook.md",
     "docs/cross-profile-rollout.md",
     "docs/response-contracts.md",
@@ -117,6 +137,7 @@ REQUIRED_SOURCE_FILES = {
     "examples/external_bridge/import.jsonl",
     "examples/external_bridge/export.jsonl",
     "examples/external_bridge/conflict_resolution.jsonl",
+    "examples/external_bridge/postgres_schema.sql",
     "scripts/import.openclaw.memory_lancedb_pro.py",
     "scripts/nightly-digest.py",
     "scripts/journal-digest.py",
@@ -138,6 +159,9 @@ REQUIRED_SOURCE_FILES = {
     "scripts/playbooks.py",
     "scripts/report.dashboard.py",
     "scripts/rollout.profiles.py",
+    "scripts/candidate.review.py",
+    "scripts/memory.browser.py",
+    "scripts/skill.bridge.py",
     "experience_bootstrap.py",
     "experience_classification.py",
     "experience_replay.py",
@@ -157,6 +181,19 @@ REQUIRED_WHEEL = {
     "scope_recall/provider.py",
     "scope_recall/cli.py",
     "scope_recall/config_schema.py",
+    "scope_recall/candidate_extraction.py",
+    "scope_recall/candidate_review.py",
+    "scope_recall/candidate_store.py",
+    "scope_recall/doctor_event_digest.py",
+    "scope_recall/event_digest.py",
+    "scope_recall/external_bridge.py",
+    "scope_recall/memory_browser.py",
+    "scope_recall/pgvector_store.py",
+    "scope_recall/postgres_bridge.py",
+    "scope_recall/skill_bridge.py",
+    "scope_recall/vector_runtime.py",
+    "scope_recall/vector_store.py",
+    "scope_recall/experience_replay_generation.py",
     "scope_recall/installer.py",
     "scope_recall/capture_llm.py",
     "scope_recall/capture_filters.py",
@@ -233,6 +270,11 @@ REQUIRED_WHEEL = {
     "scope_recall/docs/governance.cleanup.md",
     "scope_recall/docs/memory-quality-kernel.md",
     "scope_recall/docs/configuration.md",
+    "scope_recall/docs/event-digest.md",
+    "scope_recall/docs/governance-ui.md",
+    "scope_recall/docs/install.md",
+    "scope_recall/docs/skill-bridge.md",
+    "scope_recall/docs/vector-backends.md",
     "scope_recall/docs/operator-runbook.md",
     "scope_recall/docs/cross-profile-rollout.md",
     "scope_recall/docs/response-contracts.md",
@@ -242,6 +284,7 @@ REQUIRED_WHEEL = {
     "scope_recall/examples/external_bridge/import.jsonl",
     "scope_recall/examples/external_bridge/export.jsonl",
     "scope_recall/examples/external_bridge/conflict_resolution.jsonl",
+    "scope_recall/examples/external_bridge/postgres_schema.sql",
     "scope_recall/scripts/import.openclaw.memory_lancedb_pro.py",
     "scope_recall/scripts/nightly-digest.py",
     "scope_recall/scripts/journal-digest.py",
@@ -263,6 +306,9 @@ REQUIRED_WHEEL = {
     "scope_recall/scripts/playbooks.py",
     "scope_recall/scripts/report.dashboard.py",
     "scope_recall/scripts/rollout.profiles.py",
+    "scope_recall/scripts/candidate.review.py",
+    "scope_recall/scripts/memory.browser.py",
+    "scope_recall/scripts/skill.bridge.py",
 }
 STABLE_TOOL_NAMES = {
     "scope_recall_store",
@@ -328,6 +374,15 @@ def fail_if_bad(result: dict[str, object]) -> None:
     if result["returncode"] != 0:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         raise SystemExit(int(result["returncode"]))
+
+
+def progress(stage: str) -> None:
+    """Emit machine-readable progress on stderr so long release gates are diagnosable."""
+    print(
+        json.dumps({"event": "release_gate_progress", "stage": stage, "timestamp": dt.datetime.now(dt.timezone.utc).isoformat()}, ensure_ascii=False),
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -1209,27 +1264,38 @@ def main() -> int:
 
     The command is intentionally strict because it is used by CI, tag release workflows, and local pre-publish checks."""
     args = parse_args()
+    progress("cleanup_generated:start")
     cleanup_generated()
+    progress("environment:start")
     environment = release_environment_check()
     if not environment["ok"]:
         print(json.dumps({"ok": False, "environment": environment}, ensure_ascii=False, indent=2))
         return 1
+    progress("git_tree:start")
     git_tree = git_tree_check(allow_dirty=bool(args.allow_dirty))
+    progress("metadata:start")
     metadata = metadata_check()
+    progress("live_dashboard:start")
     live_dashboard = live_dashboard_file_check(str(args.live_dashboard_json or ""), accept_stale=bool(args.accept_stale_live_waiver))
-    for cmd in (
-        [sys.executable, "-m", "ruff", "check", "."],
-        [sys.executable, "-m", "pyright"],
-        [sys.executable, "-m", "pytest", "-q"],
-        [sys.executable, "-m", "compileall", "-q", "."],
+    for stage, cmd in (
+        ("ruff", [sys.executable, "-m", "ruff", "check", "."]),
+        ("pyright", [sys.executable, "-m", "pyright"]),
+        ("pytest", [sys.executable, "-m", "pytest", "-q"]),
+        ("compileall", [sys.executable, "-m", "compileall", "-q", "."]),
     ):
+        progress(f"{stage}:start")
         fail_if_bad(run(cmd))
+        progress(f"{stage}:done")
+    progress("benchmark:start")
     benchmark = benchmark_check()
     if not benchmark["ok"]:
         print(json.dumps({"ok": False, "benchmark": benchmark}, ensure_ascii=False, indent=2))
         return 1
+    progress("wheel:start")
     wheel = wheel_check()
+    progress("cleanup_generated:final")
     cleanup_generated()
+    progress("scan:start")
     scan = scan_tree()
     blocking_scan = {key: value for key, value in scan.items() if value}
     failures: dict[str, object] = {}
@@ -1242,6 +1308,7 @@ def main() -> int:
     if blocking_scan:
         failures["scan"] = blocking_scan
     if failures:
+        progress("release_gate:failed")
         print(
             json.dumps(
                 {
@@ -1257,6 +1324,7 @@ def main() -> int:
             )
         )
         return 1
+    progress("release_gate:done")
     print(
         json.dumps(
             {

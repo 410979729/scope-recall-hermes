@@ -67,6 +67,13 @@ This file is generated from the packaged `config.json` registry. It lists every 
 
 - `enable_tools` (boolean; risk: `low`; restart_required: `no`) — Scope Recall configuration key `enable_tools` in the `enable_tools` group. Default: `true`
 
+## `event_digest`
+
+- `event_digest.dry_run_log` (boolean; risk: `low`; restart_required: `no`) — Scope Recall configuration key `event_digest.dry_run_log` in the `event_digest` group. Default: `true`
+- `event_digest.enabled` (boolean; risk: `low`; restart_required: `no`) — Scope Recall configuration key `event_digest.enabled` in the `event_digest` group. Default: `true`
+- `event_digest.max_events_per_turn` (integer; risk: `low`; restart_required: `no`) — Scope Recall configuration key `event_digest.max_events_per_turn` in the `event_digest` group. Default: `3`
+- `event_digest.write_candidates` (boolean; risk: `low`; restart_required: `no`) — Scope Recall configuration key `event_digest.write_candidates` in the `event_digest` group. Default: `false`
+
 ## `experience`
 
 - `experience.allow_risky_direct_reuse` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `experience.allow_risky_direct_reuse` in the `experience` group. Default: `false`
@@ -214,7 +221,7 @@ This file is generated from the packaged `config.json` registry. It lists every 
 
 ## `vector`
 
-- `vector.backend` (string; risk: `medium`; restart_required: `yes`; choices: `lancedb, sqlite-bruteforce`) — Vector companion backend used for semantic recall. Default: `"lancedb"`
+- `vector.backend` (string; risk: `medium`; restart_required: `yes`; choices: `lancedb, sqlite-bruteforce, pgvector`) — Vector companion backend used for semantic recall. Default: `"lancedb"`
 - `vector.embedder.api_key_env` (array; risk: `high`; restart_required: `yes`) — Environment variable names that may hold the embedding API key. Default: `["SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY"]`
 - `vector.embedder.base_url` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.embedder.base_url` in the `vector` group. Default: `"https://generativelanguage.googleapis.com/v1beta/openai"`
 - `vector.embedder.dimensions` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.embedder.dimensions` in the `vector` group. Default: `3072`
@@ -226,6 +233,8 @@ This file is generated from the packaged `config.json` registry. It lists every 
 - `vector.fallback_embedder.model` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.fallback_embedder.model` in the `vector` group. Default: `"hash-v1"`
 - `vector.fallback_embedder.provider` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.fallback_embedder.provider` in the `vector` group. Default: `"local-hash"`
 - `vector.index_general` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.index_general` in the `vector` group. Default: `false`
+- `vector.pgvector.dsn_env` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.pgvector.dsn_env` in the `vector` group. Default: `"SCOPE_RECALL_PGVECTOR_DSN"`
+- `vector.pgvector.table_name` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.pgvector.table_name` in the `vector` group. Default: `"scope_recall_vectors"`
 - `vector.sync_mode` (string; risk: `medium`; restart_required: `yes`; choices: `incremental, rebuild`) — Scope Recall configuration key `vector.sync_mode` in the `vector` group. Default: `"incremental"`
 - `vector.table_name` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.table_name` in the `vector` group. Default: `"memories"`
 - `vector.top_k` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.top_k` in the `vector` group. Default: `8`

@@ -1,0 +1,251 @@
+"""Optional PGVector vector companion backend.
+
+PGVector is an optional backend for operators who already run PostgreSQL with the
+pgvector extension. SQLite memory rows remain the source of truth; this store is
+only a rebuildable vector companion.
+"""
+
+from __future__ import annotations
+
+import importlib
+import os
+import re
+from collections import Counter
+from typing import Any, Iterable, Mapping
+
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _quote_identifier(value: str) -> str:
+    name = str(value or "scope_recall_vectors").strip()
+    if not _IDENTIFIER_RE.fullmatch(name):
+        raise ValueError("pgvector table_name must be a simple SQL identifier")
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _record_to_dict(record: Mapping[str, Any] | Any) -> dict[str, Any]:
+    try:
+        return dict(record)
+    except TypeError:
+        return dict(vars(record))
+
+
+class PGVectorStore:
+    """PostgreSQL/pgvector companion store.
+
+    The store intentionally requires an explicit DSN environment variable so
+    package installs do not attempt network/database connections by default.
+    """
+
+    def __init__(self, *, dsn_env: str = "SCOPE_RECALL_PGVECTOR_DSN", table_name: str = "scope_recall_vectors", dimensions: int, metric: str = "cosine") -> None:
+        self._dsn_env = str(dsn_env or "SCOPE_RECALL_PGVECTOR_DSN")
+        self._table_name = str(table_name or "scope_recall_vectors")
+        self._quoted_table = _quote_identifier(self._table_name)
+        self._dimensions = int(dimensions)
+        self._metric = str(metric or "cosine").strip().lower()
+        self._conn: Any = None
+
+    @property
+    def backend(self) -> str:
+        return "pgvector"
+
+    @property
+    def dimensions(self) -> int:
+        return self._dimensions
+
+    @property
+    def table_name(self) -> str:
+        return self._table_name
+
+    @property
+    def dsn_env(self) -> str:
+        return self._dsn_env
+
+    def is_available(self) -> bool:
+        if not os.environ.get(self._dsn_env):
+            return False
+        try:
+            importlib.import_module("psycopg")
+            importlib.import_module("pgvector.psycopg")
+        except Exception:
+            return False
+        return True
+
+    def open(self) -> None:
+        dsn = os.environ.get(self._dsn_env)
+        if not dsn:
+            raise RuntimeError(f"pgvector DSN environment variable is not set: {self._dsn_env}")
+        psycopg = importlib.import_module("psycopg")
+        pgvector_psycopg = importlib.import_module("pgvector.psycopg")
+        self._conn = psycopg.connect(dsn)
+        register_vector = getattr(pgvector_psycopg, "register_vector", None)
+        if callable(register_vector):
+            register_vector(self._conn)
+        self._ensure_schema()
+
+    def _require_conn(self) -> Any:
+        if self._conn is None:
+            raise RuntimeError("pgvector store is not open")
+        return self._conn
+
+    def _ensure_schema(self) -> None:
+        conn = self._require_conn()
+        with conn.cursor() as cur:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._quoted_table} (
+                    id TEXT PRIMARY KEY,
+                    scope_id TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT '',
+                    target TEXT NOT NULL DEFAULT '',
+                    content TEXT NOT NULL DEFAULT '',
+                    summary TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    vector vector({self._dimensions}) NOT NULL
+                )
+                """
+            )
+            cur.execute(f"CREATE INDEX IF NOT EXISTS {self._table_name}_scope_idx ON {self._quoted_table}(scope_id)")
+        conn.commit()
+
+    def upsert(self, record: Mapping[str, Any] | Any) -> None:
+        self.upsert_records([_record_to_dict(record)])
+
+    def upsert_records(self, rows: Iterable[dict[str, Any]]) -> None:
+        payload = [dict(row) for row in rows]
+        if not payload:
+            return
+        conn = self._require_conn()
+        with conn.cursor() as cur:
+            for row in payload:
+                memory_id = str(row.get("id") or "")
+                vector = [float(item) for item in (row.get("vector") or [])]
+                if not memory_id:
+                    continue
+                if len(vector) != self._dimensions:
+                    raise ValueError(f"vector dimension mismatch: expected {self._dimensions}, got {len(vector)}")
+                cur.execute(
+                    f"""
+                    INSERT INTO {self._quoted_table}(id, scope_id, source, target, content, summary, updated_at, vector)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO UPDATE SET
+                        scope_id = excluded.scope_id,
+                        source = excluded.source,
+                        target = excluded.target,
+                        content = excluded.content,
+                        summary = excluded.summary,
+                        updated_at = excluded.updated_at,
+                        vector = excluded.vector
+                    """,
+                    (
+                        memory_id,
+                        str(row.get("scope_id") or ""),
+                        str(row.get("source") or ""),
+                        str(row.get("target") or ""),
+                        str(row.get("content") or ""),
+                        str(row.get("summary") or ""),
+                        str(row.get("updated_at") or ""),
+                        vector,
+                    ),
+                )
+        conn.commit()
+
+    def delete_by_ids(self, ids: list[str]) -> None:
+        ids = [str(item) for item in ids if str(item)]
+        if not ids:
+            return
+        conn = self._require_conn()
+        with conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {self._quoted_table} WHERE id = ANY(%s)", (ids,))
+        conn.commit()
+
+    def delete(self, ids: list[str]) -> int:
+        before = set(self.list_ids())
+        self.delete_by_ids(ids)
+        after = set(self.list_ids())
+        return len(before - after)
+
+    def list_ids(self) -> list[str]:
+        conn = self._require_conn()
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT id FROM {self._quoted_table} ORDER BY id")
+            return [str(row[0]) for row in cur.fetchall()]
+
+    def list_records(self) -> dict[str, dict[str, Any]]:
+        conn = self._require_conn()
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT id, scope_id, source, target, content, summary, updated_at FROM {self._quoted_table}")
+            rows = cur.fetchall()
+        output: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            output[str(row[0])] = {
+                "id": str(row[0]),
+                "scope_id": str(row[1]),
+                "source": str(row[2]),
+                "target": str(row[3]),
+                "content": str(row[4]),
+                "summary": str(row[5]),
+                "updated_at": str(row[6]),
+            }
+        return output
+
+    def audit_counts(self) -> dict[str, int]:
+        ids = self.list_ids()
+        counts = Counter(ids)
+        return {
+            "physical_rows": len(ids),
+            "unique_ids": len(counts),
+            "duplicate_rows": sum(count - 1 for count in counts.values() if count > 1),
+            "duplicate_ids": sum(1 for count in counts.values() if count > 1),
+        }
+
+    def repair_records(self, desired_records: dict[str, dict[str, Any]]) -> int:
+        desired_ids = set(str(memory_id) for memory_id in desired_records)
+        stale_ids = sorted(set(self.list_ids()) - desired_ids)
+        if stale_ids:
+            self.delete_by_ids(stale_ids)
+        return len(desired_records)
+
+    def search(self, vector: list[float], *, scope_id: str, limit: int) -> list[dict[str, Any]]:
+        query_vector = [float(item) for item in vector]
+        if len(query_vector) != self._dimensions:
+            raise ValueError(f"vector dimension mismatch: expected {self._dimensions}, got {len(query_vector)}")
+        operator = "<=>" if self._metric == "cosine" else "<->"
+        conn = self._require_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT id, scope_id, source, target, content, summary, updated_at, vector {operator} %s AS distance
+                FROM {self._quoted_table}
+                WHERE scope_id = %s
+                ORDER BY vector {operator} %s
+                LIMIT %s
+                """,
+                (query_vector, str(scope_id), query_vector, max(0, int(limit))),
+            )
+            rows = cur.fetchall()
+        return [
+            {
+                "id": str(row[0]),
+                "scope_id": str(row[1]),
+                "source": str(row[2]),
+                "target": str(row[3]),
+                "content": str(row[4]),
+                "summary": str(row[5]),
+                "updated_at": str(row[6]),
+                "_distance": float(row[7]),
+            }
+            for row in rows
+        ]
+
+    def count_rows(self) -> int:
+        conn = self._require_conn()
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) FROM {self._quoted_table}")
+            return int(cur.fetchone()[0])
+
+    def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None

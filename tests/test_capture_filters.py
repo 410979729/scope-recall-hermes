@@ -54,14 +54,14 @@ def test_secret_like_text_is_rejected():
     result = should_capture_text("The credential_placeholder = *** should not be retained.")
 
     assert result.allowed is False
-    assert result.reason == "secret-like-content"
+    assert result.reason == "plaintext_secret_rejected"
 
 
 def test_secret_assignment_with_is_is_rejected():
     result = should_capture_text("The token is abcdefghijklmnopqrstuvwxyz should not be retained.")
 
     assert result.allowed is False
-    assert result.reason == "secret-like-content"
+    assert result.reason == "plaintext_secret_rejected"
 
 
 def test_private_key_redaction_removes_entire_pem_block():
@@ -93,7 +93,7 @@ def test_partially_masked_provider_key_is_rejected():
     result = should_capture_text(f"Incorrect API key provided: {masked_key}")
 
     assert result.allowed is False
-    assert result.reason == "secret-like-content"
+    assert result.reason == "plaintext_secret_rejected"
 
 
 def test_sk_prefixed_non_secret_labels_are_not_rejected():
@@ -121,7 +121,7 @@ def test_common_unlabeled_secret_token_formats_are_rejected():
         result = should_capture_text(text)
         redacted = redact_secret_like_text(text)
         assert result.allowed is False
-        assert result.reason == "secret-like-content"
+        assert result.reason == "plaintext_secret_rejected"
         assert "[REDACTED_SECRET]" in redacted
 
 

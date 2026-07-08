@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-scope-recall"
-version = "1.6.3"
+version = "1.7.0"
 description = "Hermes scoped memory provider with journal-first capture, SQLite truth, vector companions, and hybrid RRF retrieval."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -31,9 +31,15 @@ lancedb = [
   "lancedb>=0.30.2",
   "pyarrow>=24,<25",
 ]
+pgvector = [
+  "psycopg[binary]>=3",
+  "pgvector>=0.3",
+]
 all = [
   "lancedb>=0.30.2",
   "pyarrow>=24,<25",
+  "psycopg[binary]>=3",
+  "pgvector>=0.3",
 ]
 dev = [
   "build",
@@ -71,6 +77,7 @@ package-dir = {"scope_recall" = "."}
   "scripts/*.py",
   "benchmarks/*.json",
   "examples/external_bridge/*.jsonl",
+  "examples/external_bridge/*.sql",
 ]
 
 [tool.pytest.ini_options]
@@ -78,7 +85,11 @@ pythonpath = ["."]
 
 [tool.pyright]
 include = [
+  "candidate_extraction.py",
   "candidate_promotion.py",
+  "candidate_review.py",
+  "candidate_store.py",
+  "capture_filters.py",
   "cli.py",
   "config.py",
   "config_schema.py",
@@ -90,7 +101,9 @@ include = [
   "doctor_source.py",
   "doctor_sqlite.py",
   "doctor_vector.py",
+  "doctor_event_digest.py",
   "embedders.py",
+  "event_digest.py",
   "experience_bootstrap.py",
   "experience_classification.py",
   "experience_evidence.py",
@@ -99,8 +112,10 @@ include = [
   "experience_promotion.py",
   "experience_quality.py",
   "experience_replay.py",
+  "experience_replay_generation.py",
   "experience_store.py",
   "experience_synthesis.py",
+  "external_bridge.py",
   "forgetting.py",
   "freshness.py",
   "governance_cleanup.py",
@@ -116,22 +131,28 @@ include = [
   "journal_extractors.py",
   "journal_recovery.py",
   "memory_ops.py",
+  "memory_browser.py",
   "memory_quality.py",
   "migration_openclaw.py",
   "nightly_llm.py",
   "provider_schemas.py",
+  "pgvector_store.py",
+  "postgres_bridge.py",
   "recall.py",
   "recall_pipeline.py",
   "relation_extraction.py",
   "response_schemas.py",
   "schemas.py",
   "scoring.py",
+  "secret_index.py",
+  "skill_bridge.py",
   "sqlite_vector_store.py",
   "sql_store.py",
   "storage_views.py",
   "task_boundary.py",
   "tooling.py",
   "vector_runtime.py",
+  "vector_store.py",
 ]
 exclude = [
   ".git",

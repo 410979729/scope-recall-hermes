@@ -9,6 +9,7 @@ This maintainer verification note records release-gate evidence for the `1.6.3` 
 - Package/plugin version: `1.6.3`.
 - Code-level release blockers: none known after the 1.6.3 issue #25 recovery patch and local verification cycle.
 - Release artifacts are expected to pass the strict `python3 scripts/check.release.py` gate on a clean tree before publication.
+- Dirty productization work after this baseline is tracked under `CHANGELOG.md` `[Unreleased]`; do not tag the dirty tree as `1.6.3` unless maintainers intentionally promote those changes into the release scope and refresh this evidence note.
 
 ## Covered release areas
 

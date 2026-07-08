@@ -90,6 +90,10 @@ def build_dashboard(source_root: Path, hermes_home: Path, *, previous_path: Path
         memory_quality_payload, memory_quality_check, memory_quality_recommendations = doctor.memory_quality_lint_report(hermes_home)
     else:
         memory_quality_payload, memory_quality_check, memory_quality_recommendations = ({}, {"ok": True}, [])
+    if hasattr(doctor, "event_digest_report"):
+        event_digest_payload, event_digest_check, event_digest_recommendations = doctor.event_digest_report(hermes_home, runtime_config)
+    else:
+        event_digest_payload, event_digest_check, event_digest_recommendations = ({}, {"ok": True}, [])
     secret_payload, secret_check, secret_recommendations = doctor.memory_secret_report(hermes_home)
     raw_journal = runtime_config.get("journal")
     journal_config = raw_journal if isinstance(raw_journal, dict) else {}
@@ -119,6 +123,7 @@ def build_dashboard(source_root: Path, hermes_home: Path, *, previous_path: Path
         "sqlite_truth": sqlite_check,
         "memory_candidate_debt": candidate_debt_check,
         "memory_quality_lint": memory_quality_check,
+        "event_digest": event_digest_check,
         "memory_secret_scan": secret_check,
         "journal_provenance": journal_check,
         "experience_kernel": experience_check,
@@ -130,6 +135,7 @@ def build_dashboard(source_root: Path, hermes_home: Path, *, previous_path: Path
         *sqlite_recommendations,
         *candidate_debt_recommendations,
         *memory_quality_recommendations,
+        *event_digest_recommendations,
         *secret_recommendations,
         *journal_recommendations,
         *experience_recommendations,
@@ -175,6 +181,12 @@ def build_dashboard(source_root: Path, hermes_home: Path, *, previous_path: Path
         "candidate_debt_oldest_age_hours": candidate_debt.get("oldest_age_hours", 0),
         "memory_quality_active_hits": memory_quality_lint.get("active_lint_hits", memory_quality_lint.get("active_hits", 0)),
         "memory_quality_high_severity": memory_quality_lint.get("high_severity", memory_quality_lint.get("high", 0)),
+        "event_digest_status": event_digest_payload.get("status", ""),
+        "event_digest_candidates_persisted": event_digest_payload.get("candidates_persisted", 0),
+        "event_digest_oldest_candidate_age_hours": event_digest_payload.get("oldest_candidate_age_hours", 0),
+        "event_digest_high_risk_candidate_count": event_digest_payload.get("high_risk_candidate_count", 0),
+        "event_digest_audit_events": event_digest_payload.get("audit_events", 0),
+        "event_digest_audit_missing": event_digest_payload.get("audit_missing", 0),
         "fact_freshness_needs_live_check": freshness.get("needs_live_check", 0),
         "fact_freshness_expired": freshness.get("expired", (freshness.get("by_status") or {}).get("expired", 0)),
         "fact_freshness_total": freshness.get("total", freshness.get("tracked_facts", 0)),
@@ -205,6 +217,7 @@ def build_dashboard(source_root: Path, hermes_home: Path, *, previous_path: Path
             "journal": journal_payload,
             "candidate_debt": candidate_debt,
             "memory_quality_lint": memory_quality_lint,
+            "event_digest": event_digest_payload,
             "schema_migration": schema_migration,
             "freshness": freshness,
             "memory_secret_scan": secret_payload,
@@ -244,6 +257,11 @@ def render_markdown(payload: dict[str, Any]) -> str:
         ("Active secret-like memories", "memory_secret_active"),
         ("Candidate debt", "candidate_debt_count"),
         ("Memory quality active hits", "memory_quality_active_hits"),
+        ("Event digest status", "event_digest_status"),
+        ("Event digest candidates", "event_digest_candidates_persisted"),
+        ("Event digest oldest age hours", "event_digest_oldest_candidate_age_hours"),
+        ("Event digest high-risk candidates", "event_digest_high_risk_candidate_count"),
+        ("Event digest audit missing", "event_digest_audit_missing"),
         ("Fact freshness needs live check", "fact_freshness_needs_live_check"),
         ("Schema migration current", "schema_migration_current"),
         ("Vector status", "vector_status"),
