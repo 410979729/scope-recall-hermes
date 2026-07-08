@@ -106,6 +106,10 @@ def main() -> int:
     if args.hermes_home:
         hermes_home = Path(args.hermes_home).expanduser().resolve()
         runtime_config = load_runtime_config(source_root, hermes_home)
+        config_errors = runtime_config.get("_config_load_errors") if isinstance(runtime_config.get("_config_load_errors"), list) else []
+        config_check = {"ok": not config_errors, "errors": config_errors}
+        if config_errors:
+            recommendations.append("Fix malformed or unreadable Scope Recall config files; runtime is using defaults or partial config.")
         expected_embedder = expected_embedder_from_config(runtime_config)
         sqlite_payload, sqlite_check, sqlite_recommendations = sqlite_report(hermes_home)
         candidate_payload, candidate_check, candidate_recommendations = memory_candidate_debt_report(hermes_home)
@@ -138,6 +142,7 @@ def main() -> int:
         vector_payload.setdefault("backend", backend)
         payload["runtime"] = {
             "hermes_home": str(hermes_home),
+            "config_load": {"errors": config_errors},
             "expected_embedder": expected_embedder,
             "vector_backend": backend,
             "sqlite": sqlite_payload,
@@ -150,6 +155,7 @@ def main() -> int:
             "nightly_digest": nightly_payload,
             "vector": vector_payload,
         }
+        checks["config_load"] = config_check
         checks["sqlite_truth"] = sqlite_check
         checks["memory_candidate_debt"] = candidate_check
         checks["memory_quality_lint"] = quality_check

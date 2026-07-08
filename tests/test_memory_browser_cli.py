@@ -15,6 +15,38 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PLUGIN_ROOT / "scripts" / "memory.browser.py"
 
 
+def _insert_browser_row(
+    conn: sqlite3.Connection,
+    *,
+    memory_id: str,
+    scope_id: str = "scope-a",
+    source: str = "event-digest",
+    target: str = "memory",
+    content: str = "Candidate memory waits for operator review.",
+    metadata: dict[str, object] | None = None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO memories(
+            id, scope_id, platform, user_id, chat_id, thread_id, gateway_session_key,
+            agent_identity, agent_workspace, session_id, source, target, content,
+            summary, created_at, updated_at, metadata
+        ) VALUES (?, ?, 'cli', 'joy', '', '', '', 'yuheng', 'hermes', 'session', ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            memory_id,
+            scope_id,
+            source,
+            target,
+            content,
+            content,
+            "2026-01-01T00:00:00+00:00",
+            "2026-01-01T00:00:00+00:00",
+            json.dumps(metadata or {}, ensure_ascii=False),
+        ),
+    )
+
+
 def _make_db(tmp_path: Path) -> Path:
     db_path = tmp_path / "memory.sqlite3"
     conn = sqlite3.connect(db_path)
@@ -62,24 +94,12 @@ def _make_db(tmp_path: Path) -> Path:
             ),
             allow_duplicate=True,
         )
-        store_row(
+        _insert_browser_row(
             conn,
             memory_id="cand-1",
-            scope_id="scope-a",
-            platform="cli",
-            user_id="joy",
-            chat_id="",
-            thread_id="",
-            gateway_session_key="",
-            agent_identity="yuheng",
-            agent_workspace="hermes",
-            session_id="session",
-            source="event-digest",
-            target="memory",
-            content="Candidate memory waits for operator review.",
-            metadata=json.dumps({"lifecycle": "candidate", "memory_type": "factual"}, ensure_ascii=False),
-            allow_duplicate=True,
+            metadata={"lifecycle": "candidate", "memory_type": "factual"},
         )
+        conn.commit()
     finally:
         conn.close()
     return db_path
@@ -178,3 +198,69 @@ def test_memory_browser_lists_candidates_and_explains_recall_preview(tmp_path: P
     assert trace["trace"]["lifecycle_filtered"] == 1
     assert trace["results"][0]["id"] == "mem-project"
     assert "project" in trace["results"][0]["explain"]["matched_terms"]
+
+
+def test_memory_browser_candidate_list_queries_candidates_directly(tmp_path: Path):
+    db_path = _make_db(tmp_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        for index in range(100):
+            store_row(
+                conn,
+                memory_id=f"active-{index:03d}",
+                scope_id="scope-a",
+                platform="cli",
+                user_id="joy",
+                chat_id="",
+                thread_id="",
+                gateway_session_key="",
+                agent_identity="yuheng",
+                agent_workspace="hermes",
+                session_id="session",
+                source="tool-store",
+                target="memory",
+                content=f"Active promoted row {index}",
+                metadata=json.dumps({"lifecycle": "active", "memory_type": "factual"}, ensure_ascii=False),
+                allow_duplicate=True,
+            )
+        conn.execute("UPDATE memories SET updated_at = '2026-01-01T00:00:00+00:00' WHERE id = 'cand-1'")
+        conn.commit()
+    finally:
+        conn.close()
+
+    candidates = _run_browser("candidates", "list", "--db", str(db_path), "--limit", "20", "--json")
+    assert candidates.returncode == 0, candidates.stderr
+    payload = json.loads(candidates.stdout)
+    assert payload["count"] == 1
+    assert payload["candidates"][0]["id"] == "cand-1"
+
+
+def test_memory_browser_candidates_exclude_processed_event_digest_rows(tmp_path: Path):
+    db_path = _make_db(tmp_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        for lifecycle in ("promoted", "archived", "rejected"):
+            _insert_browser_row(
+                conn,
+                memory_id=f"event-{lifecycle}",
+                content=f"Processed event digest row {lifecycle} should stay out of candidates.",
+                metadata={"lifecycle": lifecycle, "event_digest": True, "candidate_status": lifecycle},
+            )
+        _insert_browser_row(
+            conn,
+            memory_id="event-legacy",
+            content="Legacy event digest row without lifecycle remains reviewable.",
+            metadata={"event_digest": True},
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    candidates = _run_browser("candidates", "list", "--db", str(db_path), "--limit", "20", "--json")
+    assert candidates.returncode == 0, candidates.stderr
+    payload = json.loads(candidates.stdout)
+    ids = {item["id"] for item in payload["candidates"]}
+
+    assert ids == {"cand-1", "event-legacy"}

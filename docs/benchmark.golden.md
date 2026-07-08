@@ -9,7 +9,10 @@ The golden benchmark is the commercial memory readiness gate. It uses an isolate
 
 ## What it covers
 
-Current fixture: `benchmarks/golden_recall_cases.json`
+Current fixtures:
+
+- `benchmarks/golden_recall_cases.json`: lexical commercial-quality regression cases.
+- `benchmarks/golden_recall_hybrid_cases.json`: default hybrid/vector smoke cases using the built-in `local-hash` embedder and `sqlite-bruteforce` companion so CI/release gates exercise semantic/vector paths without external API keys.
 
 - Durable procedure retrieval beats low-value same-scope `general` scratch.
 - Archived old facts are excluded when a newer current fact exists.

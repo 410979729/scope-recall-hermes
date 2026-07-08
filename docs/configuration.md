@@ -61,7 +61,7 @@ This file is generated from the packaged `config.json` registry. It lists every 
 ## `curated_memory`
 
 - `curated_memory.allowed_user_ids` (array; risk: `low`; restart_required: `no`) — Scope Recall configuration key `curated_memory.allowed_user_ids` in the `curated_memory` group. Default: `[]`
-- `curated_memory.mode` (string; risk: `low`; restart_required: `no`; choices: `single-user, shared`) — Scope Recall configuration key `curated_memory.mode` in the `curated_memory` group. Default: `"single-user"`
+- `curated_memory.mode` (string; risk: `low`; restart_required: `no`; choices: `single-user, explicit-users, profile-global, disabled`) — Scope Recall configuration key `curated_memory.mode` in the `curated_memory` group. Default: `"single-user"`
 
 ## `enable_tools`
 

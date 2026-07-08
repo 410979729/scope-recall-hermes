@@ -1,0 +1,155 @@
+{
+  "name": "commercial_recall_quality_default_hybrid_vector_v1",
+  "description": "Default hybrid/vector smoke cases for commercial scope-recall readiness. This fixture uses the built-in local-hash embedder and sqlite-bruteforce vector companion so release gates exercise the default hybrid retrieval path without external embedding services.",
+  "config": {
+    "maintenance_tools_enabled": true,
+    "fact_freshness_enabled": true,
+    "vector": {
+      "enabled": true,
+      "backend": "sqlite-bruteforce",
+      "fallback_backend": "sqlite-bruteforce",
+      "embedder": {
+        "provider": "local-hash",
+        "dimensions": 256,
+        "model": "hash-v1"
+      }
+    },
+    "retrieval": {
+      "mode": "hybrid",
+      "min_score": 0.0,
+      "include_general": "same-scope",
+      "relation_rerank_enabled": true
+    },
+    "experience": {
+      "enabled": true,
+      "min_query_chars": 8,
+      "direct_reuse_min_confidence": 0.82,
+      "allow_risky_direct_reuse": false
+    }
+  },
+  "setup": [
+    {
+      "label": "atlas_deploy",
+      "content": "Project Atlas production deploy command is uv run atlas-server --env prod. Always run pytest before deploy.",
+      "target": "project",
+      "memory_type": "procedure",
+      "importance": 0.92,
+      "entities": ["Project Atlas"]
+    },
+    {
+      "label": "atlas_low_value_general",
+      "content": "Temporary Project Atlas dinner note: Joy likes warm soup tonight after deployment discussion.",
+      "target": "general",
+      "memory_type": "episodic",
+      "importance": 0.1,
+      "entities": ["Project Atlas"]
+    },
+    {
+      "label": "zephyr_ops",
+      "content": "Project Zephyr rollback runbook uses systemctl restart zephyr-worker after verifying queue drain metrics.",
+      "target": "ops",
+      "memory_type": "procedure",
+      "importance": 0.85,
+      "entities": ["Project Zephyr"]
+    },
+    {
+      "label": "orion_promoted_runbook",
+      "content": "Project Orion release runbook: run uv run pytest, then uv run orion deploy --stable, then verify /health returns ok.",
+      "target": "project",
+      "memory_type": "procedure",
+      "importance": 0.93,
+      "entities": ["Project Orion"]
+    },
+    {
+      "label": "orion_candidate_idea",
+      "content": "Project Orion release candidate idea: maybe deploy with orion experimental fast path after more review.",
+      "target": "project",
+      "memory_type": "procedure",
+      "importance": 0.62,
+      "entities": ["Project Orion"],
+      "lifecycle": "candidate"
+    },
+    {
+      "label": "lyra_final_status",
+      "content": "Project Lyra migration final status is complete: data moved, checksums verified, and cleanup finished.",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.9,
+      "entities": ["Project Lyra"]
+    },
+    {
+      "label": "lyra_progress_note",
+      "content": "Project Lyra migration progress note: partial copy is still running and checksum verification is pending.",
+      "target": "general",
+      "memory_type": "episodic",
+      "importance": 0.28,
+      "entities": ["Project Lyra"],
+      "lifecycle": "in_progress"
+    }
+  ],
+  "playbooks": [
+    {
+      "label": "scope_recall_release_playbook_promoted",
+      "title": "Scope Recall release verification playbook",
+      "task_class": "scope_recall_release",
+      "trigger": "release or verify Scope Recall package after code changes",
+      "goal": "Verify Scope Recall release readiness with source tests and live-safe checks before publishing.",
+      "step": "Run focused pytest, release gate, and inspect live-safe doctor output before publishing.",
+      "status": "promoted",
+      "confidence": 0.91
+    },
+    {
+      "label": "scope_recall_release_playbook_candidate",
+      "title": "Scope Recall release verification draft",
+      "task_class": "scope_recall_release",
+      "trigger": "release or verify Scope Recall package draft idea",
+      "goal": "Draft release verification flow that still needs independent review.",
+      "step": "Maybe skip focused tests and rely on release gate only after later review.",
+      "status": "needs_review",
+      "confidence": 0.73
+    }
+  ],
+  "cases": [
+    {
+      "name": "hybrid procedure beats low-value general",
+      "query": "Project Atlas production deploy command",
+      "expected_labels": ["atlas_deploy"],
+      "forbidden_labels": ["atlas_low_value_general"],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "hybrid candidate memory cannot outrank promoted runbook",
+      "query": "Project Orion release runbook deploy stable health",
+      "expected_labels": ["orion_promoted_runbook"],
+      "forbidden_labels": ["orion_candidate_idea"],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "hybrid progress note cannot outrank final status",
+      "query": "Project Lyra migration final status checksums cleanup complete",
+      "expected_labels": ["lyra_final_status"],
+      "forbidden_labels": ["lyra_progress_note"],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "hybrid topic isolation avoids atlas on zephyr rollback",
+      "query": "Project Zephyr rollback worker queue drain",
+      "expected_labels": ["zephyr_ops"],
+      "forbidden_labels": ["atlas_deploy", "atlas_low_value_general"],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "surface": "experience",
+      "name": "hybrid experience preflight selects promoted playbook only",
+      "query": "Scope Recall release verification after code changes",
+      "expected_decision": "guided_reuse",
+      "expected_playbook_labels": ["scope_recall_release_playbook_promoted"],
+      "forbidden_playbook_labels": ["scope_recall_release_playbook_candidate"],
+      "required_terms": ["focused pytest", "release gate", "doctor"]
+    }
+  ]
+}

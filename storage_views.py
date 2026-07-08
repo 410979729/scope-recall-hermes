@@ -292,6 +292,10 @@ def _curated_memory_allowed(provider: Any) -> bool:
         return bool(user_id and user_id in allowed)
     if mode in {"explicit-users", "allow-list", "allowlist"}:
         return False
+    if mode in {"shared"}:
+        # Deprecated compatibility alias kept explicit so operator-facing schema
+        # can advertise only the canonical runtime modes.
+        mode = "profile-global"
     if mode in {"profile-global", "global", "all-users"}:
         return True
     # Safe default: global curated files may be injected only when Hermes is not

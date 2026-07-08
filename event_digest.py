@@ -80,6 +80,20 @@ def _event_ref(event: MemoryEvent) -> str:
     return f"session:{event.session_id}:turn:{event.turn_number}"
 
 
+def _sanitize_metadata(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, dict):
+        return {sanitize_report_text(str(key)): _sanitize_metadata(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_sanitize_metadata(item) for item in value]
+    if isinstance(value, bytes):
+        return sanitize_report_text(value.decode("utf-8", errors="replace"))
+    if isinstance(value, str):
+        return sanitize_report_text(value)
+    return sanitize_report_text(str(value))
+
+
 def build_evidence_packet(event: MemoryEvent, *, min_content_chars: int = 16, max_content_chars: int = 4000) -> EvidencePacket:
     """Build a sanitized evidence packet without performing durable writes."""
     rejection_reasons: list[str] = []
@@ -100,7 +114,7 @@ def build_evidence_packet(event: MemoryEvent, *, min_content_chars: int = 16, ma
         "scope_id": event.scope_id,
         "session_id": event.session_id,
         "turn_number": event.turn_number,
-        "source_metadata": dict(event.metadata or {}),
+        "source_metadata": _sanitize_metadata(event.metadata or {}),
         "secret_like": secret_like,
     }
     return EvidencePacket(

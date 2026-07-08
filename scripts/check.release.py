@@ -30,7 +30,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-PACKAGE_VERSION = "1.7.0"
+PACKAGE_VERSION = "1.7.1"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 RELEASE_READINESS_DOC = f"docs/release-readiness.{PACKAGE_VERSION}.md"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
@@ -133,6 +133,7 @@ REQUIRED_SOURCE_FILES = {
     "docs/response-contracts.md",
     RELEASE_READINESS_DOC,
     "benchmarks/golden_recall_cases.json",
+    "benchmarks/golden_recall_hybrid_cases.json",
     "benchmarks/experience_replay_cases.json",
     "examples/external_bridge/import.jsonl",
     "examples/external_bridge/export.jsonl",
@@ -280,6 +281,7 @@ REQUIRED_WHEEL = {
     "scope_recall/docs/response-contracts.md",
     f"scope_recall/{RELEASE_READINESS_DOC}",
     "scope_recall/benchmarks/golden_recall_cases.json",
+    "scope_recall/benchmarks/golden_recall_hybrid_cases.json",
     "scope_recall/benchmarks/experience_replay_cases.json",
     "scope_recall/examples/external_bridge/import.jsonl",
     "scope_recall/examples/external_bridge/export.jsonl",
@@ -445,14 +447,45 @@ def git_tree_check(*, allow_dirty: bool) -> dict[str, object]:
     }
 
 
-def benchmark_check() -> dict[str, object]:
-    golden_result = run([sys.executable, "scripts/benchmark.golden.py"])
-    if golden_result["returncode"] != 0:
-        return {"ok": False, "golden_result": golden_result}
+def _run_golden_benchmark(cases_path: str) -> tuple[dict[str, object], dict[str, object] | None]:
+    args = [sys.executable, "scripts/benchmark.golden.py"]
+    if cases_path:
+        args.extend(["--cases", cases_path])
+    result = run(args)
+    if result["returncode"] != 0:
+        return result, None
     try:
-        golden_payload = json.loads(str(golden_result["stdout"] or "{}"))
+        payload = json.loads(str(result["stdout"] or "{}"))
     except json.JSONDecodeError as exc:
-        return {"ok": False, "error": f"invalid golden benchmark json: {exc}", "golden_result": golden_result}
+        return {"returncode": result.get("returncode"), "error": f"invalid golden benchmark json: {exc}", "result": result}, None
+    return result, payload if isinstance(payload, dict) else None
+
+
+def _int_payload_value(payload: dict[str, object], key: str) -> int:
+    value = payload.get(key)
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return 0
+
+
+def _payload_failures(payload: dict[str, object]) -> list[object]:
+    failures = payload.get("failures")
+    return list(failures) if isinstance(failures, list) else []
+
+
+def benchmark_check() -> dict[str, object]:
+    golden_payloads: list[dict[str, object]] = []
+    for cases_path in ("", "benchmarks/golden_recall_hybrid_cases.json"):
+        golden_result, golden_payload = _run_golden_benchmark(cases_path)
+        if golden_payload is None:
+            return {"ok": False, "golden_result": golden_result, "cases_path": cases_path or "benchmarks/golden_recall_cases.json"}
+        golden_payloads.append(golden_payload)
 
     graph_result = run([sys.executable, "scripts/benchmark.graph_relations.py"])
     if graph_result["returncode"] != 0:
@@ -462,14 +495,22 @@ def benchmark_check() -> dict[str, object]:
     except json.JSONDecodeError as exc:
         return {"ok": False, "error": f"invalid graph benchmark json: {exc}", "graph_result": graph_result}
 
+    golden_ok = all(bool(payload.get("passed")) and payload.get("schema_version") == "golden_benchmark_report.v1" for payload in golden_payloads)
     return {
-        "ok": bool(golden_payload.get("passed"))
-        and golden_payload.get("schema_version") == "golden_benchmark_report.v1"
-        and bool(graph_payload.get("passed")),
-        "schema_version": golden_payload.get("schema_version"),
-        "golden_name": golden_payload.get("golden_name"),
-        "query_count": golden_payload.get("query_count"),
-        "failures": golden_payload.get("failures"),
+        "ok": golden_ok and bool(graph_payload.get("passed")),
+        "schema_version": golden_payloads[0].get("schema_version"),
+        "golden_profiles": [
+            {
+                "golden_name": payload.get("golden_name"),
+                "query_count": _int_payload_value(payload, "query_count"),
+                "failures": _payload_failures(payload),
+                "metrics": payload.get("metrics"),
+            }
+            for payload in golden_payloads
+        ],
+        "golden_name": golden_payloads[0].get("golden_name"),
+        "query_count": sum(_int_payload_value(payload, "query_count") for payload in golden_payloads),
+        "failures": [failure for payload in golden_payloads for failure in _payload_failures(payload)],
         "graph_name": graph_payload.get("benchmark_name"),
         "graph_metrics": graph_payload.get("metrics"),
     }

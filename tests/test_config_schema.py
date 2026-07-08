@@ -52,6 +52,16 @@ def test_provider_config_schema_uses_registry_for_deep_keys():
     assert by_key["journal.max_entries_per_digest"]["type"] == "integer"
 
 
+def test_curated_memory_mode_choices_match_runtime_modes():
+    from scope_recall.config_schema import build_config_registry
+
+    by_key = {entry["key"]: entry for entry in build_config_registry()}
+    choices = set(by_key["curated_memory.mode"]["choices"])
+
+    assert {"single-user", "explicit-users", "profile-global", "disabled"} <= choices
+    assert "shared" not in choices
+
+
 def test_configuration_doc_mentions_all_registry_keys():
     from scope_recall.config_schema import build_config_registry
 
