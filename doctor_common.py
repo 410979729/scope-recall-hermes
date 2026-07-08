@@ -101,20 +101,33 @@ def load_profile_dotenv(hermes_home: Path) -> set[str]:
     return loaded
 
 
+def _config_load_error(path: Path, *, kind: str, message: str) -> dict[str, str]:
+    return {"path": str(path), "kind": kind, "message": message}
+
+
 def load_runtime_config(source_root: Path, hermes_home: Path) -> dict[str, Any]:
     profile_env_keys = load_profile_dotenv(hermes_home)
     config: dict[str, Any] = {}
+    errors: list[dict[str, str]] = []
     for path in (source_root / "config.json", hermes_home / "scope-recall" / "config.json"):
         if not path.exists():
             continue
         try:
             raw = json.loads(read_text(path))
-        except Exception:
+        except json.JSONDecodeError as exc:
+            errors.append(_config_load_error(path, kind="json_decode", message=str(exc)))
+            continue
+        except OSError as exc:
+            errors.append(_config_load_error(path, kind="read_error", message=str(exc)))
             continue
         if isinstance(raw, dict):
             config = deep_merge(config, raw)
+        else:
+            errors.append(_config_load_error(path, kind="non_dict_payload", message="config payload must be a JSON object"))
     if profile_env_keys:
         config["_profile_env_keys"] = sorted(profile_env_keys)
+    if errors:
+        config["_config_load_errors"] = errors
     return config
 
 

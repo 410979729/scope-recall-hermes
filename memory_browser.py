@@ -119,15 +119,38 @@ def inspect_memory(conn: sqlite3.Connection, *, memory_id: str, raw: bool = Fals
 
 
 def list_candidates(conn: sqlite3.Connection, *, target: str = "", limit: int = 20, scope_id: str = "", raw: bool = False) -> dict[str, Any]:
-    listed = list_memories(conn, target=target, limit=max(1, int(limit) * 3), scope_id=scope_id, raw=raw)
-    candidates = []
-    for item in listed["memories"]:
-        lifecycle = str(item.get("lifecycle") or "").lower()
-        source = str(item.get("source") or "").lower()
-        metadata = dict(item.get("metadata") or {})
-        if lifecycle == "candidate" or bool(metadata.get("event_digest")) or source in {"event-digest", "memory-candidate"}:
-            candidates.append(item)
-    candidates = candidates[: max(1, int(limit))]
+    where = [
+        """
+        (
+            (
+                LOWER(COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.lifecycle') END, '')) = 'candidate'
+                OR (
+                    (
+                        LOWER(source) IN ('event-digest', 'memory-candidate')
+                        OR (json_valid(metadata) AND json_extract(metadata, '$.event_digest') IN (1, '1', 'true'))
+                    )
+                    AND LOWER(COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.lifecycle') END, '')) IN ('', 'candidate')
+                )
+            )
+            AND LOWER(COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.lifecycle') END, ''))
+                NOT IN ('promoted', 'archived', 'rejected', 'superseded', 'obsolete', 'in_progress')
+            AND LOWER(COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.candidate_status') END, ''))
+                NOT IN ('promoted', 'archived', 'rejected', 'superseded', 'obsolete', 'in_progress')
+        )
+        """
+    ]
+    params: list[Any] = []
+    if target:
+        where.append("target = ?")
+        params.append(target)
+    if scope_id:
+        where.append("scope_id = ?")
+        params.append(scope_id)
+    sql = f"SELECT {', '.join(_memory_columns(conn))} FROM memories WHERE " + " AND ".join(where)
+    sql += " ORDER BY updated_at DESC LIMIT ?"
+    params.append(max(1, int(limit)))
+    rows = conn.execute(sql, params).fetchall()
+    candidates = [_row_payload(row, raw=raw) for row in rows]
     return {"ok": True, "read_only": True, "raw": raw, "count": len(candidates), "candidates": candidates}
 
 

@@ -12,6 +12,8 @@ from scope_recall.external_bridge import (
     DURABLE_EXPORT_TARGETS,
     EXPORT_SCHEMA_VERSION,
     build_external_memory_export,
+    build_external_memory_export_preview,
+    build_external_memory_export_with_receipt,
     validate_conflict_policy,
 )
 from scope_recall.sql_store import ensure_schema, store_row
@@ -185,24 +187,37 @@ def test_external_export_runs_on_query_only_connection_without_mutation(tmp_path
     ro_conn.row_factory = sqlite3.Row
     try:
         ro_conn.execute("PRAGMA query_only = ON")
-        payload = build_external_memory_export(ro_conn, accessible_scope_ids=["scope-a"], conflict_policy="manual_review")
+        payload = build_external_memory_export_preview(ro_conn, accessible_scope_ids=["scope-a"], conflict_policy="manual_review")
         after = ro_conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
     finally:
         ro_conn.close()
 
     assert payload["count"] == 1
+    assert payload["read_only"] is True
+    assert payload["audit_recorded"] is False
     assert before == after == 1
+
+
+def test_legacy_external_export_default_is_preview_only(tmp_path: Path):
+    conn = _make_conn(tmp_path)
+    try:
+        _store(conn, memory_id="memory-1", target="memory", content="Preview export fact.")
+        payload = build_external_memory_export(conn, accessible_scope_ids=["scope-a"], conflict_policy="manual_review")
+    finally:
+        conn.close()
+
+    assert payload["read_only"] is True
+    assert payload["audit_recorded"] is False
 
 
 def test_external_export_can_record_governance_audit_event(tmp_path: Path):
     conn = _make_conn(tmp_path)
     try:
         _store(conn, memory_id="memory-1", target="memory", content="Audited export fact.")
-        payload = build_external_memory_export(
+        payload = build_external_memory_export_with_receipt(
             conn,
             accessible_scope_ids=["scope-a"],
             conflict_policy="manual_review",
-            record_audit=True,
             actor="pytest",
             batch_id="batch-1",
         )
@@ -214,6 +229,7 @@ def test_external_export_can_record_governance_audit_event(tmp_path: Path):
         conn.close()
 
     assert payload["read_only"] is False
+    assert payload["audit_recorded"] is True
     assert audit_row["event_type"] == "external_memory_export"
     assert audit_row["action"] == "export"
     assert audit_row["batch_id"] == "batch-1"

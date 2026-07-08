@@ -4,6 +4,20 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-07-08
+
+### Fixed
+- Kept runtime config diagnostics out of persisted operator config by filtering internal `_...` keys from both loaded config state and incoming dotted updates before writing `config.json`.
+- Reported malformed runtime config through doctor/dashboard diagnostics instead of silently swallowing JSON/read errors, while keeping diagnostic fields read-only and non-persistent.
+- Tightened candidate browser queries so processed event-digest rows marked promoted, archived, rejected, superseded, obsolete, or in-progress are not resurfaced as operator candidates.
+- Made event-digest metadata redaction JSON-safe for nested dict/list/tuple/set/bytes/path/custom-object values before evidence packets reach candidate extraction or reports.
+- Preserved cross-platform runtime-config tests by avoiding POSIX-only path suffix assertions.
+
+### Changed
+- Clarified external shared-memory bridge preview versus audit-writing receipt paths and retained read-only defaults for export inspection.
+- Added hybrid/vector golden benchmark smoke coverage with `local-hash` and `sqlite-bruteforce` so release gates exercise semantic/vector recall paths without external credentials.
+- Maintained release-gate coverage across forgetting, governance, journal recovery, dashboard, experience replay, installer rollback, fact freshness, relation extraction, and the golden benchmark while publishing this 1.7.1 patch.
+
 ## [1.7.0] - 2026-07-08
 
 ### Added

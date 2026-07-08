@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 import json
 
+_CONFIG_LOAD_ERRORS_KEY = "_config_load_errors"
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "auto_recall": True,
     "auto_capture": True,
@@ -240,17 +242,62 @@ def _expand_dotted_keys(values: dict[str, Any]) -> dict[str, Any]:
 
 
 
+def _config_load_error(path: Path, *, kind: str, message: str) -> dict[str, str]:
+    return {"path": str(path), "kind": kind, "message": message}
+
+
+def load_runtime_config_errors(config: dict[str, Any]) -> list[dict[str, str]]:
+    """Return non-fatal runtime config loading diagnostics."""
+    raw_errors = config.get(_CONFIG_LOAD_ERRORS_KEY)
+    if not isinstance(raw_errors, list):
+        return []
+    errors: list[dict[str, str]] = []
+    for item in raw_errors:
+        if not isinstance(item, dict):
+            continue
+        errors.append(
+            {
+                "path": str(item.get("path") or ""),
+                "kind": str(item.get("kind") or ""),
+                "message": str(item.get("message") or ""),
+            }
+        )
+    return errors
+
+
+def _without_internal_config_keys(config: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of config without private runtime/diagnostic keys."""
+
+    def clean(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {str(key): clean(item) for key, item in value.items() if not str(key).startswith("_")}
+        if isinstance(value, list):
+            return [clean(item) for item in value]
+        return value
+
+    return clean(config)
+
+
 def load_runtime_config(plugin_dir: Path, storage_dir: Path) -> dict[str, Any]:
     config: dict[str, Any] = json.loads(json.dumps(DEFAULT_CONFIG))
+    errors: list[dict[str, str]] = []
     for path in (plugin_dir / "config.json", storage_dir / "config.json"):
         if not path.exists():
             continue
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
+        except json.JSONDecodeError as exc:
+            errors.append(_config_load_error(path, kind="json_decode", message=str(exc)))
+            continue
+        except OSError as exc:
+            errors.append(_config_load_error(path, kind="read_error", message=str(exc)))
             continue
         if isinstance(raw, dict):
             config = _deep_merge(config, raw)
+        else:
+            errors.append(_config_load_error(path, kind="non_dict_payload", message="config payload must be a JSON object"))
+    if errors:
+        config[_CONFIG_LOAD_ERRORS_KEY] = errors
     return config
 
 
@@ -259,5 +306,6 @@ def save_runtime_config(values: dict[str, Any], hermes_home: str) -> None:
     path = Path(hermes_home) / "scope-recall" / "config.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = load_runtime_config(Path(__file__).resolve().parent, path.parent)
-    merged = _deep_merge(existing, _expand_dotted_keys(values or {}))
+    expanded = _expand_dotted_keys(values or {})
+    merged = _deep_merge(_without_internal_config_keys(existing), _without_internal_config_keys(expanded))
     path.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

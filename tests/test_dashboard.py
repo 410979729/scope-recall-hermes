@@ -51,7 +51,7 @@ class FakeDoctor:
 
     @staticmethod
     def source_report(source_root):
-        return ({"pyproject_version": "1.7.0"}, {"ok": True}, [])
+        return ({"pyproject_version": "1.7.1"}, {"ok": True}, [])
 
     @staticmethod
     def sqlite_report(hermes_home):
@@ -164,6 +164,18 @@ class FakeFallbackReadyDoctor(FakeDoctor):
         )
 
 
+class FakeConfigErrorDoctor(FakeFallbackReadyDoctor):
+    @staticmethod
+    def load_runtime_config(source_root, hermes_home):
+        return {
+            "journal": {"enabled": True},
+            "vector": {"enabled": False},
+            "_config_load_errors": [
+                {"path": str(hermes_home / "scope-recall" / "config.json"), "kind": "json_decode", "message": "invalid json"}
+            ],
+        }
+
+
 def test_dashboard_payload_has_schema_severity_sections_and_trend(monkeypatch, tmp_path):
     dashboard = _load_dashboard()
     monkeypatch.setattr(dashboard, "_load_doctor", lambda: FakeDoctor)
@@ -191,12 +203,28 @@ def test_dashboard_payload_has_schema_severity_sections_and_trend(monkeypatch, t
     assert payload["summary"]["fact_freshness_needs_live_check"] == 3
     assert payload["summary"]["fact_freshness_expired"] == 1
     assert payload["summary"]["fact_freshness_total"] == 11
+    assert payload["summary"]["config_load_errors"] == 0
+    assert payload["sections"]["config_load"] == {"errors": []}
     assert payload["sections"]["candidate_debt"]["count"] == 3
     assert payload["sections"]["memory_quality_lint"]["high_severity"] == 1
     assert payload["sections"]["schema_migration"]["current"] is True
     assert payload["sections"]["freshness"]["by_status"]["expired"] == 1
     assert payload["trend"]["journal_unprocessed"]["delta"] == -9
     assert payload["trend"]["candidate_debt_count"]["delta"] == 2
+
+
+def test_dashboard_surfaces_runtime_config_load_errors(monkeypatch, tmp_path):
+    dashboard = _load_dashboard()
+    monkeypatch.setattr(dashboard, "_load_doctor", lambda: FakeConfigErrorDoctor)
+
+    payload = dashboard.build_dashboard(tmp_path / "src", tmp_path / "home")
+
+    assert payload["ok"] is False
+    assert payload["severity"] == "FAIL"
+    assert payload["checks"]["config_load"]["ok"] is False
+    assert payload["summary"]["config_load_errors"] == 1
+    assert payload["sections"]["config_load"]["errors"][0]["kind"] == "json_decode"
+    assert any("config" in item.lower() for item in payload["recommendations"])
 
 
 def test_dashboard_cli_writes_output_file(monkeypatch, tmp_path):

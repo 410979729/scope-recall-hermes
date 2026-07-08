@@ -80,6 +80,8 @@ def build_dashboard(source_root: Path, hermes_home: Path, *, previous_path: Path
     Dashboard severity summarizes existing debt; this function must not repair or mutate state while gathering evidence for release/readiness reports."""
     doctor = _load_doctor()
     runtime_config = doctor.load_runtime_config(source_root, hermes_home)
+    config_errors = runtime_config.get("_config_load_errors") if isinstance(runtime_config.get("_config_load_errors"), list) else []
+    config_check = {"ok": not config_errors, "errors": config_errors}
     source, source_check, source_recommendations = doctor.source_report(source_root)
     sqlite_payload, sqlite_check, sqlite_recommendations = doctor.sqlite_report(hermes_home)
     if hasattr(doctor, "memory_candidate_debt_report"):
@@ -120,6 +122,7 @@ def build_dashboard(source_root: Path, hermes_home: Path, *, previous_path: Path
         vector_payload, vector_check, vector_recommendations = doctor.disabled_vector_report()
     checks = {
         "source_metadata": source_check,
+        "config_load": config_check,
         "sqlite_truth": sqlite_check,
         "memory_candidate_debt": candidate_debt_check,
         "memory_quality_lint": memory_quality_check,
@@ -132,6 +135,7 @@ def build_dashboard(source_root: Path, hermes_home: Path, *, previous_path: Path
     }
     recommendations = [
         *source_recommendations,
+        *(["Fix malformed or unreadable Scope Recall config files; runtime is using defaults or partial config."] if config_errors else []),
         *sqlite_recommendations,
         *candidate_debt_recommendations,
         *memory_quality_recommendations,
@@ -203,6 +207,7 @@ def build_dashboard(source_root: Path, hermes_home: Path, *, previous_path: Path
         "memory_feedback_unresolved_stale": experience_feedback.get("unresolved_stale", 0),
         "memory_feedback_unresolved_misleading": experience_feedback.get("unresolved_misleading", 0),
         "nightly_status": nightly_payload.get("status"),
+        "config_load_errors": len(config_errors),
     }
     return {
         "schema_version": DASHBOARD_RESPONSE_SCHEMA_VERSION,
@@ -215,6 +220,7 @@ def build_dashboard(source_root: Path, hermes_home: Path, *, previous_path: Path
         "trend": _trend(summary, _load_previous_summary(previous_path)),
         "sections": {
             "journal": journal_payload,
+            "config_load": {"errors": config_errors},
             "candidate_debt": candidate_debt,
             "memory_quality_lint": memory_quality_lint,
             "event_digest": event_digest_payload,
@@ -276,6 +282,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
         ("Memory feedback unresolved stale", "memory_feedback_unresolved_stale"),
         ("Memory feedback unresolved misleading", "memory_feedback_unresolved_misleading"),
         ("Nightly status", "nightly_status"),
+        ("Config load errors", "config_load_errors"),
     ]
     for label, key in labels:
         lines.append(f"- {label}: `{summary.get(key)}`")

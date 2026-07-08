@@ -1,9 +1,10 @@
 """External shared-memory bridge contract helpers.
 
-The bridge exports reviewed durable facts from SQLite truth into a neutral payload
-that another backend can import. It is read-only and local-first: Scope Recall's
-SQLite rows remain authoritative, and temporary `general` scratch is never
-exported by default.
+The preview path exports reviewed durable facts from SQLite truth into a neutral
+payload that another backend can import. Preview is read-only and local-first:
+Scope Recall's SQLite rows remain authoritative, and temporary `general` scratch
+is never exported by default. The receipt path explicitly records a governance
+audit event and is therefore not read-only.
 """
 
 from __future__ import annotations
@@ -69,7 +70,12 @@ def build_external_memory_export(
     actor: str = "scope-recall:external-bridge",
     batch_id: str = "",
 ) -> dict[str, Any]:
-    """Build a read-only export payload for durable shared-memory backends."""
+    """Build an export payload for durable shared-memory backends.
+
+    This legacy entry point remains default read-only for compatibility. Prefer
+    `build_external_memory_export_preview()` for read-only callers and
+    `build_external_memory_export_with_receipt()` when recording an audit event.
+    """
     policy = validate_conflict_policy(conflict_policy)
     export_targets = _target_list(targets)
     target_placeholders = ",".join("?" for _ in export_targets)
@@ -141,6 +147,7 @@ def build_external_memory_export(
         "schema_version": EXPORT_SCHEMA_VERSION,
         "ok": True,
         "read_only": not record_audit,
+        "audit_recorded": bool(record_audit),
         "conflict_policy": policy,
         "allowed_targets": list(DURABLE_EXPORT_TARGETS),
         "count": len(records),
@@ -170,3 +177,45 @@ def build_external_memory_export(
         conn.commit()
         payload["audit_event_id"] = audit_event_id
     return payload
+
+
+def build_external_memory_export_preview(
+    conn: sqlite3.Connection,
+    *,
+    accessible_scope_ids: Sequence[str] | None,
+    conflict_policy: str,
+    targets: Iterable[str] | None = None,
+    limit: int = 500,
+) -> dict[str, Any]:
+    """Build a strictly read-only external-memory export preview."""
+    return build_external_memory_export(
+        conn,
+        accessible_scope_ids=accessible_scope_ids,
+        conflict_policy=conflict_policy,
+        targets=targets,
+        limit=limit,
+        record_audit=False,
+    )
+
+
+def build_external_memory_export_with_receipt(
+    conn: sqlite3.Connection,
+    *,
+    accessible_scope_ids: Sequence[str] | None,
+    conflict_policy: str,
+    targets: Iterable[str] | None = None,
+    limit: int = 500,
+    actor: str = "scope-recall:external-bridge",
+    batch_id: str = "",
+) -> dict[str, Any]:
+    """Build an external-memory export and record a governance audit receipt."""
+    return build_external_memory_export(
+        conn,
+        accessible_scope_ids=accessible_scope_ids,
+        conflict_policy=conflict_policy,
+        targets=targets,
+        limit=limit,
+        record_audit=True,
+        actor=actor,
+        batch_id=batch_id,
+    )

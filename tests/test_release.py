@@ -172,6 +172,7 @@ def test_productization_artifacts_are_release_gate_listed():
         "docs/skill-bridge.md",
         "docs/vector-backends.md",
         "examples/external_bridge/postgres_schema.sql",
+        "benchmarks/golden_recall_hybrid_cases.json",
         "scripts/candidate.review.py",
         "scripts/memory.browser.py",
         "scripts/skill.bridge.py",
@@ -196,6 +197,7 @@ def test_productization_artifacts_are_release_gate_listed():
         "scope_recall/docs/skill-bridge.md",
         "scope_recall/docs/vector-backends.md",
         "scope_recall/examples/external_bridge/postgres_schema.sql",
+        "scope_recall/benchmarks/golden_recall_hybrid_cases.json",
         "scope_recall/scripts/candidate.review.py",
         "scope_recall/scripts/memory.browser.py",
         "scope_recall/scripts/skill.bridge.py",
@@ -266,14 +268,14 @@ def test_distribution_hygiene_blocks_plan_artifacts():
 def test_changelog_completeness_gate_requires_current_release_terms():
     release_check = _load_release_check_module("scope_recall_check_release_changelog")
 
-    empty_current = "# Changelog\n\n## [1.7.0] - 2026-07-08\n\n## [1.6.3] - 2026-07-07\n"
+    empty_current = "# Changelog\n\n## [1.7.1] - 2026-07-08\n\n## [1.6.3] - 2026-07-07\n"
     failed = release_check.changelog_completeness_check(empty_current)
     assert failed["ok"] is False
     assert failed["section_found"] is True
     assert "governance" in failed["missing_terms"]
     assert "journal recovery" in failed["missing_terms"]
 
-    complete = "# Changelog\n\n## [1.7.0] - 2026-07-08\n" + "\n".join(release_check.REQUIRED_CHANGELOG_TERMS)
+    complete = "# Changelog\n\n## [1.7.1] - 2026-07-08\n" + "\n".join(release_check.REQUIRED_CHANGELOG_TERMS)
     assert release_check.changelog_completeness_check(complete)["ok"] is True
 
 

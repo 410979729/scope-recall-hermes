@@ -36,17 +36,33 @@ Supported conflict policy values:
 
 ## Python API
 
-```python
-from scope_recall.external_bridge import build_external_memory_export
+Read-only preview:
 
-payload = build_external_memory_export(
+```python
+from scope_recall.external_bridge import build_external_memory_export_preview
+
+payload = build_external_memory_export_preview(
     conn,
     accessible_scope_ids=["scope-a"],
     conflict_policy="manual_review",
 )
 ```
 
-The helper is read-only by default and returns JSON-serializable records. It does not write to SQLite, vector companions, or remote services unless `record_audit=True` is explicitly requested for an export audit event.
+Preview helpers are strictly read-only: they do not write to SQLite, vector companions, or remote services. When an operator wants an auditable export receipt, use the explicit receipt helper instead:
+
+```python
+from scope_recall.external_bridge import build_external_memory_export_with_receipt
+
+payload = build_external_memory_export_with_receipt(
+    conn,
+    accessible_scope_ids=["scope-a"],
+    conflict_policy="manual_review",
+    actor="operator",
+    batch_id="export-batch-1",
+)
+```
+
+The legacy `build_external_memory_export(..., record_audit=False)` entry point remains default read-only for compatibility. Passing `record_audit=True` records a governance audit event, commits that audit row, and returns `read_only=false` plus `audit_recorded=true`.
 
 ## JSONL exchange examples
 
@@ -69,10 +85,10 @@ The contract is backend-neutral. Specific adapters, such as PostgreSQL shared ta
 The optional `PostgresSharedMemoryBridge` publishes contract-v1 payloads into a PostgreSQL table. It does not require `psycopg` at import time; install and configure PostgreSQL support only for deployments that need a shared backend.
 
 ```python
-from scope_recall.external_bridge import build_external_memory_export
+from scope_recall.external_bridge import build_external_memory_export_preview
 from scope_recall.postgres_bridge import PostgresSharedMemoryBridge
 
-payload = build_external_memory_export(
+payload = build_external_memory_export_preview(
     conn,
     accessible_scope_ids=["scope-a"],
     conflict_policy="manual_review",

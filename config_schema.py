@@ -59,7 +59,7 @@ _CHOICES = {
     "vector.embedder.provider": ["openai-compatible", "openai", "sentence-transformers", "local-hash"],
     "vector.sync_mode": ["incremental", "rebuild"],
     "journal.extractor": ["llm", "heuristic"],
-    "curated_memory.mode": ["single-user", "shared"],
+    "curated_memory.mode": ["single-user", "explicit-users", "profile-global", "disabled"],
 }
 
 
