@@ -12,6 +12,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from scope_recall.candidate_promotion import candidate_debt_report, candidate_rows, classify_candidate_row
 from scope_recall.governance_cleanup import governance_audit_coverage_report
 from scope_recall.sql_store import ensure_schema, store_row
@@ -542,6 +544,27 @@ def test_promote_memory_candidates_cli_dry_run_wins_and_sanitizes_reviewed_summa
     assert "[REDACTED_SECRET]" in reviewed_summary
     assert "[REDACTED_PATH]" in reviewed_summary
 
+    summary_result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--hermes-home",
+            str(hermes_home),
+            "--dry-run",
+            "--summary-only",
+            "--json",
+        ],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    summary_payload = json.loads(summary_result.stdout)
+    assert summary_payload["reviewed_count"] == 1
+    assert summary_payload["reviewed_by_effective_action"] == {"keep_candidate": 1}
+    assert "reviewed" not in summary_payload
+    assert "samples" not in summary_payload["before"]
+    assert len(summary_result.stdout) < 5000
+
     conn = sqlite3.connect(db_path)
     try:
         assert conn.execute("SELECT COUNT(*) FROM governance_audit_events").fetchone()[0] == 0
@@ -656,7 +679,8 @@ def test_promote_memory_candidates_does_not_audit_when_update_is_ignored(tmp_pat
     assert applied["mutations"]["promoted"] == 0
     assert applied["mutations"]["skipped"] == 1
     assert applied["reviewed"][0]["effective_action"] == "skip"
-    assert applied["reviewed"][0]["skip_reason"] == "row_not_updated"
+    assert applied["reviewed"][0]["skip_reason"] == "conflict"
+    assert applied["reviewed"][0]["conflict"]["status"] == "conflict"
     conn = sqlite3.connect(db_path)
     try:
         assert conn.execute("SELECT json_extract(metadata, '$.lifecycle') FROM memories WHERE id='safe'").fetchone()[0] == "candidate"
@@ -698,3 +722,57 @@ def test_candidate_promotion_archive_counts_as_governance_audited_archive(tmp_pa
     assert report["archived_total"] == 1
     assert report["archived_with_audit"] == 1
     assert report["archived_without_audit"] == 0
+
+
+@pytest.mark.parametrize("configured_backend", ["sqlite-bruteforce", "lancedb"])
+def test_bulk_archive_deletes_existing_sqlite_vector_companion(tmp_path, configured_backend):
+    hermes_home = tmp_path / "hermes"
+    storage_dir = hermes_home / "scope-recall"
+    storage_dir.mkdir(parents=True)
+    (storage_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "vector": {
+                    "enabled": True,
+                    "backend": configured_backend,
+                    "fallback_backend": "sqlite-bruteforce",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    truth = _conn(storage_dir / "memory.sqlite3")
+    try:
+        _insert_memory(truth, "archive-vector")
+    finally:
+        truth.close()
+    vector = sqlite3.connect(storage_dir / "vector.sqlite3")
+    try:
+        vector.execute("CREATE TABLE vector_records(id TEXT PRIMARY KEY)")
+        vector.execute("INSERT INTO vector_records(id) VALUES ('archive-vector')")
+        vector.commit()
+    finally:
+        vector.close()
+
+    script = _load_script_module("promote_memory_candidates_vector_cleanup", SCRIPT_PATH)
+    applied = script.promote_memory_candidates(
+        hermes_home,
+        apply=True,
+        scope_ids=["scope-test"],
+        review_ids=["archive-vector"],
+        review_decision="archive",
+        review_reason="reviewed test archive",
+    )
+
+    vector = sqlite3.connect(storage_dir / "vector.sqlite3")
+    try:
+        remaining = int(vector.execute("SELECT COUNT(*) FROM vector_records WHERE id='archive-vector'").fetchone()[0])
+    finally:
+        vector.close()
+    assert applied["vector_cleanup"] == {
+        "status": "ok",
+        "backend": "sqlite-bruteforce",
+        "requested": 1,
+        "deleted": 1,
+    }
+    assert remaining == 0

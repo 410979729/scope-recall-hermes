@@ -26,9 +26,12 @@
   "query_char_limit": 1000,
   "min_capture_length": 40,
   "journal": {
+    "allow_heuristic_fallback": false,
+    "allow_session_end_llm": false,
     "enabled": true,
     "digest_on_session_end": false,
     "background_digest_enabled": true,
+    "background_digest_synchronous": false,
     "extractor": "llm",
     "digest_interval_hours": 2,
     "retention_days": 0,
@@ -40,6 +43,10 @@
     "backlog_fail_entries": 3000,
     "backlog_max_age_hours": 72,
     "no_insert_fail_streak": 3,
+    "llm_chunk_chars": 7000,
+    "llm_max_session_chars": 16000,
+    "llm_retry_delay": 1.0,
+    "llm_timeout": 60.0,
     "tool_trace_skip_names": [
       "todo",
       "skill_view",
@@ -228,7 +235,11 @@
       "api_key_env": [
         "SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY"
       ],
-      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai"
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "request_dimensions": false,
+      "document_prefix": "",
+      "query_prefix": "",
+      "prompt_profile": "default-v1"
     },
     "fallback_embedder": {
       "provider": "local-hash",

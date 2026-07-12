@@ -21,10 +21,21 @@ class _FakeEmbeddingsAPI:
     def __init__(self) -> None:
         self.calls: list[int] = []
         self.encoding_formats: list[str | None] = []
+        self.dimensions: list[int | None] = []
+        self.inputs: list[list[str]] = []
 
-    def create(self, *, model: str, input: list[str], encoding_format: str | None = None):
+    def create(
+        self,
+        *,
+        model: str,
+        input: list[str],
+        encoding_format: str | None = None,
+        dimensions: int | None = None,
+    ):
         self.calls.append(len(input))
         self.encoding_formats.append(encoding_format)
+        self.dimensions.append(dimensions)
+        self.inputs.append(list(input))
         if len(input) > 100:
             raise AssertionError(f"batch too large: {len(input)}")
 
@@ -67,6 +78,69 @@ def test_openai_compatible_embedder_chunks_large_batches(monkeypatch):
     assert fake_client.embeddings.calls == [100, 100, 5]
     assert fake_client.embeddings.encoding_formats == ["float", "float", "float"]
     assert embedder.dimensions == 3
+
+
+def test_openai_compatible_embedder_sends_dimensions_and_separates_query_document_prompts(monkeypatch):
+    fake_client = _FakeOpenAIClient()
+    monkeypatch.setattr(OpenAICompatibleEmbedder, "_client_or_raise", lambda self: fake_client)
+    embedder = OpenAICompatibleEmbedder(
+        model="gemini-embedding-2",
+        api_key="pk-test",
+        base_url="https://example.invalid/v1",
+        dimensions=3,
+        request_dimensions=True,
+        document_prefix="Represent this document for retrieval: ",
+        query_prefix="Represent this query for retrieval: ",
+        prompt_profile="gemini-retrieval-v1",
+    )
+
+    embedder.embed_texts(["alpha"])
+    embedder.embed_query("beta")
+
+    assert fake_client.embeddings.dimensions == [3, 3]
+    assert fake_client.embeddings.inputs == [
+        ["Represent this document for retrieval: alpha"],
+        ["Represent this query for retrieval: beta"],
+    ]
+    assert embedder.describe()["prompt_profile"] == "gemini-retrieval-v1"
+
+
+def test_openai_compatible_embedder_rejects_response_count_and_dimension_mismatch(monkeypatch):
+    class BadAPI:
+        def __init__(self, vectors):
+            self.vectors = vectors
+
+        def create(self, **_kwargs):
+            class Item:
+                def __init__(self, vector):
+                    self.embedding = vector
+
+            class Response:
+                def __init__(self, vectors):
+                    self.data = [Item(vector) for vector in vectors]
+
+            return Response(self.vectors)
+
+    class BadClient:
+        def __init__(self, vectors):
+            self.embeddings = BadAPI(vectors)
+
+    embedder = OpenAICompatibleEmbedder(model="gemini-embedding-2", api_key="pk-test", dimensions=3)
+    monkeypatch.setattr(embedder, "_client_or_raise", lambda: BadClient([[0.1, 0.2, 0.3]]))
+    with pytest.raises(RuntimeError, match="response count"):
+        embedder.embed_texts(["alpha", "beta"])
+
+    monkeypatch.setattr(embedder, "_client_or_raise", lambda: BadClient([[0.1, 0.2]]))
+    with pytest.raises(RuntimeError, match="dimensions"):
+        embedder.embed_texts(["alpha"])
+
+    monkeypatch.setattr(embedder, "_client_or_raise", lambda: BadClient([[0.1, float("nan"), 0.3]]))
+    with pytest.raises(RuntimeError, match="non-finite"):
+        embedder.embed_texts(["alpha"])
+
+    monkeypatch.setattr(embedder, "_client_or_raise", lambda: BadClient([[0.0, 0.0, 0.0]]))
+    with pytest.raises(RuntimeError, match="zero vector"):
+        embedder.embed_texts(["alpha"])
 
 
 # ---------------------------------------------------------------------------

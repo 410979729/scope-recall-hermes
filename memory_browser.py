@@ -12,9 +12,22 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from .capture_filters import contains_secret_like_text, sanitize_report_text
+from .capture_filters import contains_secret_like_text, sanitize_mapping_key, sanitize_report_text
+from .lifecycle_policy import ordinary_recall_lifecycle_visible
 
-_HIDDEN_RECALL_LIFECYCLES = {"archived", "candidate", "in_progress", "obsolete", "rejected", "superseded"}
+_CANDIDATE_SUMMARY_METADATA_KEYS = {
+    "candidate_status",
+    "confidence",
+    "entities",
+    "event_digest",
+    "evidence_refs",
+    "importance",
+    "lifecycle",
+    "memory_type",
+    "recommended_action",
+    "risk_flags",
+    "tags",
+}
 
 
 def memory_db_path(hermes_home: Path) -> Path:
@@ -47,14 +60,20 @@ def _parse_json(value: Any) -> dict[str, Any]:
 def _sanitize_metadata(value: Any, *, key: str = "", derived_from_sensitive_content: bool = False) -> Any:
     """Redact secrets and private paths from metadata before operator display."""
     if isinstance(value, dict):
-        return {
-            str(item_key): _sanitize_metadata(
+        output: dict[str, Any] = {}
+        for item_key, item in value.items():
+            safe_key, _ = sanitize_mapping_key(item_key)
+            candidate = safe_key
+            suffix = 2
+            while candidate in output:
+                candidate = f"{safe_key}#{suffix}"
+                suffix += 1
+            output[candidate] = _sanitize_metadata(
                 item,
-                key=str(item_key),
+                key=safe_key,
                 derived_from_sensitive_content=derived_from_sensitive_content,
             )
-            for item_key, item in value.items()
-        }
+        return output
     if isinstance(value, list):
         return [_sanitize_metadata(item, key=key, derived_from_sensitive_content=derived_from_sensitive_content) for item in value]
     if isinstance(value, tuple):
@@ -93,6 +112,37 @@ def _row_payload(row: sqlite3.Row, *, include_content: bool = False, raw: bool =
     return payload
 
 
+def _compact_candidate_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_compact_candidate_value(item) for item in value[:6]]
+    if isinstance(value, dict):
+        return {str(key): _compact_candidate_value(item) for key, item in list(value.items())[:8]}
+    if isinstance(value, str) and len(value) > 120:
+        return value[:117].rstrip() + "..."
+    return value
+
+
+def _candidate_summary_payload(row: sqlite3.Row, *, raw: bool = False) -> dict[str, Any]:
+    payload = _row_payload(row, raw=raw)
+    metadata_value = payload.get("metadata")
+    metadata: dict[str, Any] = metadata_value if isinstance(metadata_value, dict) else {}
+    kept = {
+        key: _compact_candidate_value(metadata[key])
+        for key in sorted(_CANDIDATE_SUMMARY_METADATA_KEYS)
+        if key in metadata
+    }
+    omitted = sorted(str(key) for key in metadata if key not in _CANDIDATE_SUMMARY_METADATA_KEYS)
+    summary = str(payload.get("summary") or "")
+    payload["summary_chars"] = len(summary)
+    if len(summary) > 320:
+        payload["summary"] = summary[:317].rstrip() + "..."
+    payload["metadata"] = kept
+    payload["metadata_chars"] = len(json.dumps(metadata, ensure_ascii=False, sort_keys=True))
+    payload["metadata_omitted_keys"] = omitted[:12]
+    payload["metadata_omitted_keys_count"] = len(omitted)
+    return payload
+
+
 def list_memories(conn: sqlite3.Connection, *, target: str = "", limit: int = 20, scope_id: str = "", raw: bool = False) -> dict[str, Any]:
     where = []
     params: list[Any] = []
@@ -118,7 +168,15 @@ def inspect_memory(conn: sqlite3.Connection, *, memory_id: str, raw: bool = Fals
     return {"ok": True, "read_only": True, "raw": raw, "memory": _row_payload(row, include_content=True, raw=raw)}
 
 
-def list_candidates(conn: sqlite3.Connection, *, target: str = "", limit: int = 20, scope_id: str = "", raw: bool = False) -> dict[str, Any]:
+def list_candidates(
+    conn: sqlite3.Connection,
+    *,
+    target: str = "",
+    limit: int = 20,
+    scope_id: str = "",
+    raw: bool = False,
+    full: bool = False,
+) -> dict[str, Any]:
     where = [
         """
         (
@@ -150,8 +208,19 @@ def list_candidates(conn: sqlite3.Connection, *, target: str = "", limit: int = 
     sql += " ORDER BY updated_at DESC LIMIT ?"
     params.append(max(1, int(limit)))
     rows = conn.execute(sql, params).fetchall()
-    candidates = [_row_payload(row, raw=raw) for row in rows]
-    return {"ok": True, "read_only": True, "raw": raw, "count": len(candidates), "candidates": candidates}
+    full_detail = bool(full or raw)
+    candidates = [
+        _row_payload(row, raw=raw) if full_detail else _candidate_summary_payload(row, raw=raw)
+        for row in rows
+    ]
+    return {
+        "ok": True,
+        "read_only": True,
+        "raw": raw,
+        "detail": "full" if full_detail else "summary",
+        "count": len(candidates),
+        "candidates": candidates,
+    }
 
 
 def _tokens(query: str) -> list[str]:
@@ -173,8 +242,12 @@ def explain_recall(conn: sqlite3.Connection, *, query: str, limit: int = 5, scop
     for row in rows:
         item = _row_payload(row, include_content=True)
         lifecycle = str(item.get("lifecycle") or "").lower()
+        target = str(item.get("target") or "").lower()
         source = str(item.get("source") or "").lower()
-        if lifecycle in _HIDDEN_RECALL_LIFECYCLES or source in {"event-digest", "memory-candidate"}:
+        if not ordinary_recall_lifecycle_visible(lifecycle=lifecycle, target=target) or source in {
+            "event-digest",
+            "memory-candidate",
+        }:
             lifecycle_filtered += 1
             continue
         considered += 1

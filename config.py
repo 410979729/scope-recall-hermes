@@ -4,9 +4,11 @@ Configuration is merged from defaults and Hermes-home state; callers should use 
 
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
-import json
 
 _CONFIG_LOAD_ERRORS_KEY = "_config_load_errors"
 
@@ -35,9 +37,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "min_capture_length": 40,
     "capture_raw_user": False,
     "journal": {
+        "allow_heuristic_fallback": False,
+        "allow_session_end_llm": False,
         "enabled": True,
         "digest_on_session_end": False,
         "background_digest_enabled": True,
+        "background_digest_synchronous": False,
         "extractor": "llm",
         "digest_interval_hours": 2,
         "retention_days": 0,
@@ -49,6 +54,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "backlog_fail_entries": 3000,
         "backlog_max_age_hours": 72,
         "no_insert_fail_streak": 3,
+        "llm_chunk_chars": 7000,
+        "llm_max_session_chars": 16000,
+        "llm_retry_delay": 1.0,
+        "llm_timeout": 60.0,
         "tool_trace_skip_names": ["todo", "skill_view", "skills_list", "session_messages"],
         "tool_trace_hard_max_chars": 4000,
         "tool_trace_max_chars": 1800,
@@ -197,6 +206,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "model": "gemini-embedding-001",
             "api_key_env": ["SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY"],
             "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+            "request_dimensions": False,
+            "document_prefix": "",
+            "query_prefix": "",
+            "prompt_profile": "default-v1",
         },
         "fallback_embedder": {
             "provider": "local-hash",
@@ -205,6 +218,28 @@ DEFAULT_CONFIG: dict[str, Any] = {
         },
     },
 }
+
+# Supported compatibility keys accepted in home overrides but intentionally
+# absent from runtime defaults. Non-empty alias defaults could mask canonical
+# journal keys selected later through ``or`` fallback chains.
+CONFIG_SCHEMA_EXTRAS: dict[str, Any] = {
+    "journal": {
+        "api_key": "",
+        "api_key_env": "",
+        "api_mode": "chat_completions",
+        "base_url": "",
+        "chat_endpoint": "",
+        "key_env": "",
+        "llm_max_attempts": 3,
+        "llm_provider": "",
+        "llm_retry_attempts": 3,
+        "model": "",
+        "provider": "",
+        "timeout": 60.0,
+    }
+}
+CONFIG_OPEN_MAP_PATHS = frozenset({"identity.user_aliases"})
+CONFIG_BOOL_OR_OBJECT_PATHS = frozenset({"curated_memory"})
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -246,6 +281,93 @@ def _config_load_error(path: Path, *, kind: str, message: str) -> dict[str, str]
     return {"path": str(path), "kind": kind, "message": message}
 
 
+def _config_type_name(value: Any) -> str:
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    if value is None:
+        return "null"
+    return "string"
+
+
+def _config_value_matches_template(value: Any, expected: Any) -> bool:
+    if isinstance(expected, bool):
+        if isinstance(value, bool):
+            return True
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "0", "true", "false", "yes", "no", "on", "off"}
+        return False
+    if isinstance(expected, int) and not isinstance(expected, bool):
+        return isinstance(value, int) and not isinstance(value, bool)
+    if isinstance(expected, float):
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if isinstance(expected, dict):
+        return isinstance(value, dict)
+    if isinstance(expected, list):
+        return isinstance(value, list)
+    if expected is None:
+        return value is None
+    return isinstance(value, type(expected))
+
+
+def validate_config_override(
+    values: dict[str, Any],
+    template: dict[str, Any],
+    *,
+    path: Path,
+    prefix: str = "",
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """Filter one operator override against the source configuration contract.
+
+    Unknown keys and incompatible leaf types are ignored rather than merged.
+    Diagnostics contain key names and type names only; config values are never
+    copied into doctor output where they could expose credentials.
+    """
+
+    cleaned: dict[str, Any] = {}
+    errors: list[dict[str, str]] = []
+    expanded = _expand_dotted_keys(values) if not prefix else values
+    for key, value in expanded.items():
+        dotted = f"{prefix}.{key}" if prefix else str(key)
+        if key not in template:
+            errors.append(_config_load_error(path, kind="unknown_key", message=f"unknown config key: {dotted}"))
+            continue
+        expected = template[key]
+        if dotted in CONFIG_BOOL_OR_OBJECT_PATHS and isinstance(value, bool):
+            cleaned[key] = value
+            continue
+        if isinstance(expected, dict) and isinstance(value, dict):
+            if dotted in CONFIG_OPEN_MAP_PATHS:
+                cleaned[key] = dict(value)
+                continue
+            child, child_errors = validate_config_override(value, expected, path=path, prefix=dotted)
+            if child:
+                cleaned[key] = child
+            errors.extend(child_errors)
+            continue
+        if not _config_value_matches_template(value, expected):
+            errors.append(
+                _config_load_error(
+                    path,
+                    kind="invalid_type",
+                    message=(
+                        f"invalid type for {dotted}: expected {_config_type_name(expected)}, "
+                        f"got {_config_type_name(value)}"
+                    ),
+                )
+            )
+            continue
+        cleaned[key] = value
+    return cleaned, errors
+
+
 def load_runtime_config_errors(config: dict[str, Any]) -> list[dict[str, str]]:
     """Return non-fatal runtime config loading diagnostics."""
     raw_errors = config.get(_CONFIG_LOAD_ERRORS_KEY)
@@ -281,7 +403,7 @@ def _without_internal_config_keys(config: dict[str, Any]) -> dict[str, Any]:
 def load_runtime_config(plugin_dir: Path, storage_dir: Path) -> dict[str, Any]:
     config: dict[str, Any] = json.loads(json.dumps(DEFAULT_CONFIG))
     errors: list[dict[str, str]] = []
-    for path in (plugin_dir / "config.json", storage_dir / "config.json"):
+    for index, path in enumerate((plugin_dir / "config.json", storage_dir / "config.json")):
         if not path.exists():
             continue
         try:
@@ -293,7 +415,15 @@ def load_runtime_config(plugin_dir: Path, storage_dir: Path) -> dict[str, Any]:
             errors.append(_config_load_error(path, kind="read_error", message=str(exc)))
             continue
         if isinstance(raw, dict):
-            config = _deep_merge(config, raw)
+            if index == 0:
+                # The packaged/source config extends DEFAULT_CONFIG and is the
+                # schema authority for installation-specific feature keys.
+                config = _deep_merge(config, raw)
+            else:
+                validation_template = _deep_merge(CONFIG_SCHEMA_EXTRAS, config)
+                override, validation_errors = validate_config_override(raw, validation_template, path=path)
+                errors.extend(validation_errors)
+                config = _deep_merge(config, override)
         else:
             errors.append(_config_load_error(path, kind="non_dict_payload", message="config payload must be a JSON object"))
     if errors:
@@ -303,9 +433,41 @@ def load_runtime_config(plugin_dir: Path, storage_dir: Path) -> dict[str, Any]:
 
 
 def save_runtime_config(values: dict[str, Any], hermes_home: str) -> None:
+    """Validate and atomically persist one runtime-config update.
+
+    Save and load deliberately share the same schema contract. Invalid dotted
+    keys or leaf types reject the whole update so operators never receive a
+    false success for values that the next load would discard.
+    """
+
     path = Path(hermes_home) / "scope-recall" / "config.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = load_runtime_config(Path(__file__).resolve().parent, path.parent)
-    expanded = _expand_dotted_keys(values or {})
-    merged = _deep_merge(_without_internal_config_keys(existing), _without_internal_config_keys(expanded))
-    path.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    expanded = _without_internal_config_keys(_expand_dotted_keys(values or {}))
+    validation_template = _deep_merge(CONFIG_SCHEMA_EXTRAS, _without_internal_config_keys(existing))
+    validated, errors = validate_config_override(expanded, validation_template, path=path)
+    if errors:
+        messages = "; ".join(str(item.get("message") or item.get("kind") or "invalid config") for item in errors)
+        raise ValueError(f"runtime config update rejected: {messages}")
+
+    merged = _deep_merge(_without_internal_config_keys(existing), validated)
+    payload = json.dumps(merged, indent=2, ensure_ascii=False) + "\n"
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+        try:
+            directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        except OSError:
+            directory_fd = -1
+        if directory_fd >= 0:
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+    finally:
+        temporary_path.unlink(missing_ok=True)

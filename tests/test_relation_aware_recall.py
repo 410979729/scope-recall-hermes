@@ -31,11 +31,16 @@ class DummyProvider:
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(":memory:")
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute("CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, scope_id TEXT NOT NULL DEFAULT '', metadata TEXT NOT NULL DEFAULT '{}')")
+        self._conn.execute("CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, scope_id TEXT NOT NULL DEFAULT '', target TEXT NOT NULL DEFAULT '', metadata TEXT NOT NULL DEFAULT '{}')")
         for item in self._items:
             self._conn.execute(
-                "INSERT OR REPLACE INTO memories(id, scope_id, metadata) VALUES (?, ?, ?)",
-                (item.id, str((item.metadata or {}).get("scope_id") or self._shared_scope_id), json.dumps(item.metadata or {}, ensure_ascii=False, sort_keys=True)),
+                "INSERT OR REPLACE INTO memories(id, scope_id, target, metadata) VALUES (?, ?, ?, ?)",
+                (
+                    item.id,
+                    str((item.metadata or {}).get("scope_id") or self._shared_scope_id),
+                    str(item.target or ""),
+                    json.dumps(item.metadata or {}, ensure_ascii=False, sort_keys=True),
+                ),
             )
         ensure_graph_schema(self._conn)
         self._conn.commit()
@@ -133,6 +138,59 @@ def test_relation_evidence_ignores_lifecycle_hidden_peers():
         assert results[0].metadata["relation_evidence_count"] == 0
         assert results[0].metadata["relation_evidence_ids"] == []
         assert results[0].metadata["relation_rerank_bonus"] == 0.0
+    finally:
+        provider.close()
+
+
+def test_relation_evidence_includes_general_scratch_allowed_by_shared_lifecycle_policy():
+    scratch = RecallItem(
+        id="general-scratch-note",
+        content="Current local scratch note for Project Atlas deploy evidence.",
+        summary="Current local scratch note for Project Atlas deploy evidence.",
+        source="tool-store",
+        target="general",
+        score=0.82,
+        updated_at="2026-06-01T00:00:00+00:00",
+        metadata={
+            "lexical_score": 0.82,
+            "scope_id": "local-scope",
+            "memory_type": "scratch",
+            "lifecycle": "scratch",
+        },
+    )
+    provider = DummyProvider(
+        {
+            "mode": "lexical",
+            "min_score": 0.01,
+            "relation_rerank_enabled": True,
+            "relation_supports_boost": 0.08,
+        },
+        [scratch],
+    )
+    try:
+        provider._require_conn().execute(
+            "INSERT OR REPLACE INTO memories(id, scope_id, target, metadata) VALUES (?, ?, ?, ?)",
+            (
+                "active-evidence-peer",
+                "local-scope",
+                "project",
+                json.dumps({"lifecycle": "active", "scope_id": "local-scope"}, sort_keys=True),
+            ),
+        )
+        provider._require_conn().execute(
+            """
+            INSERT INTO memory_relations(source_memory_id, target_memory_id, relation_type, confidence, note, created_at)
+            VALUES ('general-scratch-note', 'active-evidence-peer', 'supports', 1.0, 'real scratch relation', '2026-06-01T00:00:00+00:00')
+            """
+        )
+        provider._require_conn().commit()
+
+        results = RecallService(provider).search_memories("Project Atlas deploy evidence", limit=1)
+
+        assert [item.id for item in results] == ["general-scratch-note"]
+        assert results[0].metadata["relation_evidence_count"] == 1
+        assert results[0].metadata["relation_evidence_ids"] == ["active-evidence-peer"]
+        assert "supports" in results[0].metadata["relation_evidence_types"]
     finally:
         provider.close()
 

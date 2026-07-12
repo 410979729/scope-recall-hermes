@@ -21,6 +21,9 @@ _SCRIPT_COMMANDS: dict[tuple[str, ...], tuple[str, list[str]]] = {
     ("candidates", "archive"): ("candidate.review.py", ["archive", "--dry-run"]),
     ("candidates", "supersede"): ("candidate.review.py", ["supersede", "--dry-run"]),
     ("candidates", "apply"): ("promote.memory_candidates.py", ["--apply"]),
+    ("vector", "generation", "activate"): ("migrate.vector_generation.py", ["--activate-existing-ready"]),
+    ("vector", "generation", "build"): ("migrate.vector_generation.py", ["--apply"]),
+    ("vector", "generation", "plan"): ("migrate.vector_generation.py", ["--dry-run"]),
     ("vector", "repair", "apply"): ("repair.vector_index.py", ["--apply"]),
     ("vector", "repair"): ("repair.vector_index.py", ["--dry-run"]),
     ("governance", "cleanup"): ("governance.cleanup.py", []),
@@ -63,8 +66,11 @@ Usage:
   hermes-scope-recall candidates archive --id <id> --dry-run --json [review options]
   hermes-scope-recall candidates supersede --id <id> --superseded-by <id> --dry-run --json [review options]
   hermes-scope-recall candidates apply [candidate options]
-  hermes-scope-recall vector repair [vector options]          # dry-run by default
-  hermes-scope-recall vector repair apply [vector options]    # rebuilds with backup
+  hermes-scope-recall vector generation plan [generation options]      # zero-write plan
+  hermes-scope-recall vector generation build [generation options]     # build READY shadow
+  hermes-scope-recall vector generation activate --generation-id <id>  # explicit CAS switch
+  hermes-scope-recall vector repair [vector options]          # legacy dry-run repair
+  hermes-scope-recall vector repair apply [vector options]    # legacy repair path
   hermes-scope-recall governance cleanup [cleanup options]
   hermes-scope-recall governance rollback [rollback options]
   hermes-scope-recall governance audit-coverage [audit options]

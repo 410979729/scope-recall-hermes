@@ -222,6 +222,13 @@ def test_private_path_redaction_covers_windows_drive_unc_and_posix_paths():
         assert "C:" not in redacted
 
 
+def test_colon_delimited_evidence_reference_is_not_a_windows_path():
+    evidence_ref = "session:session-a:turn:4"
+
+    assert redact_private_paths(evidence_ref) == evidence_ref
+    assert sanitize_report_text(evidence_ref) == evidence_ref
+
+
 def test_attachment_markers_are_removed_before_capture_filtering():
     text = """现在要我扫码，我去哪扫啊
 
@@ -247,6 +254,33 @@ def test_inline_attachment_marker_preserves_surrounding_text():
     assert "image_cache" not in sanitized
     assert result.allowed is True
     assert result.reason == ""
+
+
+def test_data_url_sanitizer_handles_wrapping_containers_and_multiple_payloads():
+    payload_a = "A" * 512
+    payload_b = "B" * 512
+    cases = [
+        ("before data:image/png;base64,QUJDRA== after", ("before", "after")),
+        (f"width64 before data:image/png;base64,{'A' * 64}\n{'B' * 64}. after", ("width64 before", ". after")),
+        (f"width76 before data:image/png;base64,{'A' * 76}\n{'B' * 76}) after", ("width76 before", ") after")),
+        (f"width512 before data:image/png;base64,{payload_a}\n{payload_b}] after", ("width512 before", "] after")),
+        (f"escaped before data:image/png;base64,{payload_a}\\n{payload_b}; after", ("escaped before", "; after")),
+        (f"![diagram](data:image/png;base64,{payload_a}) markdown after", ("![diagram](", ") markdown after")),
+        (f'<img src="data:image/png;base64,{payload_a}"> html after', ('<img src="', '"> html after')),
+        (f'{{"image":"data:image/png;base64,{payload_a}","note":"json after"}}', ('{"image":"', '","note":"json after"}')),
+        (
+            f"multi before data:image/png;base64,{payload_a}, middle data:image/jpeg;base64,{payload_b}; multi after",
+            ("multi before", ", middle", "; multi after"),
+        ),
+    ]
+
+    for raw, anchors in cases:
+        sanitized = sanitize_capture_text(raw)
+        assert "data:image" not in sanitized
+        assert payload_a[:128] not in sanitized
+        assert payload_b[:128] not in sanitized
+        for anchor in anchors:
+            assert anchor in sanitized
 
 
 def test_attachment_only_payload_is_rejected_after_sanitizing():

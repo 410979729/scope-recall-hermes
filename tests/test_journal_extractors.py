@@ -17,7 +17,7 @@ from scope_recall.models import RuntimeScope
 def _scope() -> RuntimeScope:
     return RuntimeScope(
         platform="telegram",
-        user_id="8176453077",
+        user_id="9000000001",
         chat_id="dm",
         thread_id="",
         gateway_session_key="",

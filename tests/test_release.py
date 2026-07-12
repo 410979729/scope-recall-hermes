@@ -250,6 +250,31 @@ def test_public_doc_hygiene_blocks_private_plan_markers(tmp_path, monkeypatch):
     assert ("docs/plans/internal.md", "manual_review_private_context") in markers
 
 
+def test_release_readiness_hygiene_excludes_deployment_local_state():
+    release_check = _load_release_check_module("scope_recall_check_release_readiness_hygiene")
+    current = (PLUGIN_ROOT / release_check.RELEASE_READINESS_DOC).read_text(encoding="utf-8")
+
+    assert release_check.release_readiness_public_hygiene_check(current) == {"ok": True, "findings": []}
+    assert release_check.release_readiness_tree_hygiene_check() == {"ok": True, "findings": []}
+
+    private = """
+Current read-only snapshot from /home/operator/.hermes:
+- `severity=DEGRADED`
+- `journal_unprocessed=7`
+- `dead-letter:auth=1`
+"""
+    result = release_check.release_readiness_public_hygiene_check(private)
+
+    assert result["ok"] is False
+    assert {item["marker"] for item in result["findings"]} == {
+        "embedded_live_snapshot",
+        "embedded_severity_counter",
+        "embedded_journal_counter",
+        "embedded_dead_letter_counter",
+        "embedded_private_path",
+    }
+
+
 def test_distribution_hygiene_blocks_plan_artifacts():
     release_check = _load_release_check_module("scope_recall_check_release_distribution_hygiene")
 
@@ -268,14 +293,14 @@ def test_distribution_hygiene_blocks_plan_artifacts():
 def test_changelog_completeness_gate_requires_current_release_terms():
     release_check = _load_release_check_module("scope_recall_check_release_changelog")
 
-    empty_current = "# Changelog\n\n## [1.7.1] - 2026-07-08\n\n## [1.6.3] - 2026-07-07\n"
+    empty_current = "# Changelog\n\n## [1.7.2] - 2026-07-11\n\n## [1.6.3] - 2026-07-07\n"
     failed = release_check.changelog_completeness_check(empty_current)
     assert failed["ok"] is False
     assert failed["section_found"] is True
     assert "governance" in failed["missing_terms"]
     assert "journal recovery" in failed["missing_terms"]
 
-    complete = "# Changelog\n\n## [1.7.1] - 2026-07-08\n" + "\n".join(release_check.REQUIRED_CHANGELOG_TERMS)
+    complete = "# Changelog\n\n## [1.7.2] - 2026-07-11\n" + "\n".join(release_check.REQUIRED_CHANGELOG_TERMS)
     assert release_check.changelog_completeness_check(complete)["ok"] is True
 
 
@@ -1010,7 +1035,7 @@ def test_doctor_expected_embedder_prefers_available_primary(monkeypatch):
 
 
 
-def test_doctor_expected_embedder_uses_fallback_when_primary_unavailable(monkeypatch):
+def test_doctor_reports_primary_unavailable_without_cross_space_fallback(monkeypatch):
     spec = importlib.util.spec_from_file_location("scope_recall_doctor", DOCTOR_PATH)
     assert spec is not None
     assert spec.loader is not None
@@ -1032,10 +1057,13 @@ def test_doctor_expected_embedder_uses_fallback_when_primary_unavailable(monkeyp
 
     payload = doctor.expected_embedder_from_config(config)
 
-    assert payload["source"] == "fallback_embedder"
-    assert payload["provider"] == "local-hash"
-    assert payload["model"] == "hash-v1"
-    assert payload["dimensions"] == 256
+    assert payload["source"] == "embedder"
+    assert payload["provider"] == "openai-compatible"
+    assert payload["model"] == "gemini-embedding-001"
+    assert payload["dimensions"] == 3072
+    assert payload["available"] is False
+    assert payload["fallback_available"] is True
+    assert payload["fallback_compatible"] is False
 
 
 
@@ -1312,7 +1340,7 @@ def test_incremental_vector_sync_removes_stale_rows(tmp_path):
 
 
 
-def test_incremental_vector_sync_deduplicates_duplicate_ids(tmp_path):
+def test_incremental_vector_sync_refuses_destructive_duplicate_repair(tmp_path):
     _write_local_debug_vector_config(tmp_path)
     plugin = load_memory_provider("scope-recall")
     assert plugin is not None
@@ -1366,14 +1394,12 @@ def test_incremental_vector_sync_deduplicates_duplicate_ids(tmp_path):
         agent_workspace="hermes",
     )
     try:
-        assert plugin._vector_store is not None
-        assert plugin._vector_store.count_rows() == 1
-        assert plugin._vector_store.audit_counts()["duplicate_rows"] == 0
-        assert plugin._vector_store.list_ids().count(memory_id) == 1
-        stats = json.loads(plugin.handle_tool_call("scope_recall_stats", {}))
-        assert stats["vector"]["row_count"] == 1
-        assert stats["vector"]["unique_id_count"] == 1
-        assert stats["vector"]["duplicate_row_count"] == 0
+        assert plugin._vector_store is None
+        assert plugin._vector_status == "degraded"
+        assert "explicit shadow generation" in plugin._vector_message
+        db = lancedb.connect(str(tmp_path / "scope-recall" / "lancedb"))
+        table = db.open_table("memories")
+        assert table.count_rows() == 2
     finally:
         plugin.shutdown()
 
@@ -1412,12 +1438,45 @@ def test_vector_upsert_failure_marks_needs_repair_without_losing_sqlite_row(tmp_
         assert stats["vector"]["ready"] is False
         assert stats["vector"]["status"] == "needs_repair"
         assert "simulated LanceDB delete failure" in stats["vector"]["message"]
+        event = plugin._conn.execute(
+            "SELECT status, operation, generation_id FROM vector_outbox WHERE memory_id = ?",
+            (payload["id"],),
+        ).fetchone()
+        assert event is not None
+        assert event["status"] == "pending"
+        assert event["operation"] == "upsert"
+        assert event["generation_id"] == plugin._vector_generation_id
+        failed_memory_id = payload["id"]
+    finally:
+        plugin.shutdown()
+
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    plugin.initialize(
+        "session-vector-replay",
+        hermes_home=str(tmp_path),
+        platform="cli",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        assert plugin._conn is not None
+        replayed = plugin._conn.execute(
+            "SELECT status, completed_at FROM vector_outbox WHERE memory_id = ?",
+            (failed_memory_id,),
+        ).fetchone()
+        assert replayed is not None
+        assert replayed["status"] == "completed"
+        assert replayed["completed_at"]
+        assert plugin._vector_store is not None
+        assert failed_memory_id in plugin._vector_store.list_ids()
     finally:
         plugin.shutdown()
 
 
 
-def test_default_runtime_falls_back_to_local_hash_when_api_embedder_is_unavailable(tmp_path, monkeypatch):
+def test_default_runtime_rejects_cross_space_fallback_when_api_embedder_is_unavailable(tmp_path, monkeypatch):
     for name in ("SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_BASE_URL", "OPENAI_BASE_URL"):
         monkeypatch.delenv(name, raising=False)
 
@@ -1433,19 +1492,18 @@ def test_default_runtime_falls_back_to_local_hash_when_api_embedder_is_unavailab
     )
     try:
         plugin.flush(timeout=5.0)
-        assert plugin._vector_store is not None
+        assert plugin._vector_store is None
         assert plugin._embedder is not None
-        assert plugin._embedder.provider == "local-hash"
-        assert plugin._vector_store.dimensions == 256
-        assert "using fallback local-hash" in plugin._vector_message
-        schema_field = plugin._vector_store._require_table().schema.field("vector")
-        assert int(schema_field.type.list_size) == 256
+        assert plugin._embedder.provider == "openai-compatible"
+        assert plugin._vector_status == "degraded"
+        assert "different embedding space" in plugin._vector_message
+        assert not (tmp_path / "scope-recall" / "lancedb").exists()
     finally:
         plugin.shutdown()
 
 
 
-def test_vector_store_rebuilds_when_embedder_dimensions_change(tmp_path):
+def test_vector_store_preserves_active_generation_when_embedder_dimensions_change(tmp_path):
     config_path = tmp_path / "scope-recall" / "config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
@@ -1517,10 +1575,13 @@ def test_vector_store_rebuilds_when_embedder_dimensions_change(tmp_path):
         agent_workspace="hermes",
     )
     try:
-        assert plugin._vector_store is not None
-        assert plugin._vector_store.dimensions == 256
-        schema_field = plugin._vector_store._require_table().schema.field("vector")
-        assert int(schema_field.type.list_size) == 256
+        assert plugin._vector_store is None
+        assert plugin._vector_status == "degraded"
+        assert "identity mismatch" in plugin._vector_message
+        db = lancedb.connect(str(tmp_path / "scope-recall" / "lancedb"))
+        table = db.open_table("memories")
+        schema_field = table.schema.field("vector")
+        assert int(schema_field.type.list_size) == 3072
     finally:
         plugin.shutdown()
 

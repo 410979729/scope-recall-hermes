@@ -83,6 +83,35 @@ def test_doctor_vector_report_accepts_configured_sqlite_fallback_when_lancedb_un
     assert any("sqlite-bruteforce fallback" in item for item in recommendations)
 
 
+def test_doctor_uses_native_probe_before_importing_lancedb(monkeypatch, tmp_path):
+    import builtins
+    import scope_recall.doctor_vector as doctor_vector
+
+    storage = tmp_path / "scope-recall"
+    (storage / "lancedb").mkdir(parents=True)
+    monkeypatch.setattr(
+        doctor_vector,
+        "native_vector_dependency_status",
+        lambda: {"safe": False, "returncode": 132, "stderr": "Illegal instruction"},
+    )
+    original_import = builtins.__import__
+    attempts = []
+
+    def guarded_import(name, *args, **kwargs):
+        if name == "lancedb" or name.startswith("lancedb."):
+            attempts.append(name)
+            raise AssertionError("unsafe in-process lancedb import")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    payload, check, _ = doctor_vector.lancedb_vector_report(tmp_path, expected_embedder={"dimensions": 2})
+
+    assert attempts == []
+    assert check["ok"] is False
+    assert payload["status"] == "needs_repair"
+    assert payload["native_dependency"]["returncode"] == 132
+
+
 def test_vector_runtime_imports_when_lancedb_and_pyarrow_are_unavailable():
     root = Path(__file__).resolve().parents[1]
     script = textwrap.dedent(

@@ -88,6 +88,15 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._lock = threading.RLock()
         self._write_queue: queue.Queue[Any] = queue.Queue()
         self._writer_thread: threading.Thread | None = None
+        # Queue-order receipts: a flush acknowledges every write job before its
+        # marker and must report whether any of those jobs failed.  Keep only
+        # the exception class for diagnostics so provider/auth text cannot leak
+        # through the stats tool.
+        self._writer_failed_writes = 0
+        self._writer_reported_failures = 0
+        self._writer_last_error_type = ""
+        self._freshness_write_failures = 0
+        self._freshness_last_error_type = ""
         self._stop = threading.Event()
         self._session_id = ""
         self._current_turn = 0
@@ -268,7 +277,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         if self._vector_enabled and self._vector_ready:
             suffix = f" Hybrid lexical+vector recall is enabled with a local {self._vector_backend} companion index."
         elif self._vector_enabled and not self._vector_ready:
-            suffix = f" Vector companion requested but not active ({self._vector_message or self._vector_status})."
+            status = str(self._vector_status or "unavailable")[:64]
+            suffix = f" Vector companion requested but not active (status={status})."
         return (
             "# Scope Recall Memory\n"
             "Active. Uses current-turn local recall with conservative gating."

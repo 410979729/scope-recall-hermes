@@ -24,6 +24,7 @@ from scope_recall.nightly_digest import (
     candidate_is_allowed,
     candidate_metadata,
     cleanup_exact_duplicates,
+    existing_memory_context,
     heuristic_candidates,
     load_session_bundles,
     redact_sensitive,
@@ -33,6 +34,7 @@ from scope_recall.nightly_digest import (
 )
 from scope_recall.models import RuntimeScope
 from scope_recall.sql_store import delete_rows, ensure_schema, store_row
+from scope_recall.vector_generation import GenerationIdentity, bootstrap_legacy_generation
 
 
 def _ts(day: date, hour: int = 12) -> float:
@@ -127,7 +129,7 @@ def _create_state_db(path: Path, day: date, *, content_suffix: str = "") -> None
         )
         conn.execute(
             "INSERT INTO sessions(id, source, user_id, model, title, started_at) VALUES (?, ?, ?, ?, ?, ?)",
-            ("session-task", "telegram", "8176453077", "deepseek-v4-pro", "scope-recall live validation", _ts(day, 9)),
+            ("session-task", "telegram", "9000000001", "deepseek-v4-pro", "scope-recall live validation", _ts(day, 9)),
         )
         tool_calls = [
             {
@@ -181,7 +183,7 @@ def _create_progress_only_state_db(path: Path, day: date) -> None:
         )
         conn.execute(
             "INSERT INTO sessions(id, source, user_id, model, title, started_at) VALUES (?, ?, ?, ?, ?, ?)",
-            ("session-progress", "telegram", "8176453077", "gpt-5.5", "停服维护进度更新 #10", _ts(day, 9)),
+            ("session-progress", "telegram", "9000000001", "gpt-5.5", "停服维护进度更新 #10", _ts(day, 9)),
         )
         messages = [
             ("user", "进度如何了", "", ""),
@@ -317,6 +319,140 @@ def test_digest_candidate_quality_action_is_stored_as_review_candidate_lifecycle
     assert metadata["digest_quality"]["recommended_action"] == "candidate"
     assert metadata["lifecycle"] == "candidate"
     assert metadata["candidate_status"] == "needs_review"
+
+
+def test_nightly_digest_excludes_provisional_rows_from_context_and_matching():
+    for lifecycle in ("archived", "candidate", "in_progress"):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        ensure_schema(conn)
+        scope = ScopeProfile(
+            scope=RuntimeScope(platform="telegram", user_id="joy", chat_id="dm", agent_identity="yuheng", agent_workspace="hermes"),
+            scope_id="scope-local",
+            shared_scope_id="scope-shared",
+            accessible_scope_ids=["scope-local", "scope-shared"],
+            writable_scope_ids=["scope-local", "scope-shared"],
+        )
+        content = (
+            "When Scope Recall nightly digest sees provisional rows, it must insert a visible durable memory "
+            "after release gate verification."
+        )
+        store_row(
+            conn,
+            memory_id=f"hidden-{lifecycle}",
+            scope_id="scope-shared",
+            platform="telegram",
+            user_id="joy",
+            chat_id="dm",
+            thread_id="",
+            gateway_session_key="",
+            agent_identity="yuheng",
+            agent_workspace="hermes",
+            session_id="hidden-match",
+            source="nightly-digest",
+            target="memory",
+            content=content,
+        )
+        conn.execute(
+            "UPDATE memories SET metadata = json_set(metadata, '$.lifecycle', ?) WHERE id = ?",
+            (lifecycle, f"hidden-{lifecycle}"),
+        )
+        conn.commit()
+
+        assert all(content not in item for item in existing_memory_context(conn, scope))
+        result = apply_candidates(
+            conn,
+            None,
+            scope,
+            run_id=f"run-{lifecycle}",
+            candidates=[
+                DigestCandidate(
+                    content=content,
+                    target="memory",
+                    memory_type="workflow",
+                    confidence=0.9,
+                    reason="verified release workflow",
+                    verification=["release gate passed"],
+                )
+            ],
+            dry_run=False,
+            runtime_config={},
+        )
+        assert result["counts"]["inserted"] == 1
+        assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 2
+        conn.close()
+
+
+def test_nightly_semantic_update_sanitizes_candidate_metadata():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    scope = ScopeProfile(
+        scope=RuntimeScope(platform="cli", user_id="joy", agent_identity="yuheng", agent_workspace="hermes"),
+        scope_id="scope-a",
+        shared_scope_id="scope-a",
+        accessible_scope_ids=["scope-a"],
+        writable_scope_ids=["scope-a"],
+    )
+    existing = (
+        "When release review finds stale vector companions, run vector repair dry-run then apply only after "
+        "truth hash verification passes."
+    )
+    candidate_content = (
+        "When release review finds stale vector companions, run vector repair dry run and apply after the "
+        "truth hash check passes."
+    )
+    store_row(
+        conn,
+        memory_id="active-1",
+        scope_id="scope-a",
+        platform="cli",
+        user_id="joy",
+        chat_id="",
+        thread_id="",
+        gateway_session_key="",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+        session_id="semantic-update",
+        source="nightly-digest",
+        target="memory",
+        content=existing,
+    )
+    marker = "S" * 24
+    private_path = "/home/synthetic/.ssh/id_rsa"
+    result = apply_candidates(
+        conn,
+        None,
+        scope,
+        run_id="secret-metadata-update",
+        candidates=[
+            DigestCandidate(
+                content=candidate_content,
+                target="memory",
+                memory_type="workflow",
+                importance=0.9,
+                confidence=0.95,
+                reason="verified release workflow",
+                tags=["api_key=sk-" + marker],
+                entities=[private_path],
+                verification=["release gate passed"],
+            )
+        ],
+        dry_run=False,
+        runtime_config={},
+    )
+
+    assert result["counts"]["updated"] == 1
+    rendered = conn.execute("SELECT metadata FROM memories WHERE id='active-1'").fetchone()[0]
+    entities = "\n".join(
+        str(row[0]) for row in conn.execute("SELECT entity FROM memory_entities WHERE memory_id='active-1'").fetchall()
+    )
+    assert marker not in rendered and marker.lower() not in rendered
+    assert "api_key=" not in rendered
+    assert private_path not in rendered
+    assert private_path not in entities
+    assert "[REDACTED_" in rendered or "[redacted_" in rendered
+    conn.close()
 
 
 def test_heuristic_digest_rejects_progress_toolchain_only_summary(tmp_path):
@@ -1080,18 +1216,46 @@ def _store_duplicate_cleanup_row(conn: sqlite3.Connection, *, memory_id: str) ->
     )
 
 
-def test_nightly_duplicate_cleanup_keeps_sql_truth_when_vector_delete_fails():
+def test_nightly_duplicate_cleanup_commits_hard_delete_audit():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     ensure_schema(conn)
+    _store_duplicate_cleanup_row(conn, memory_id="dupe-new")
+    _store_duplicate_cleanup_row(conn, memory_id="dupe-old")
+
+    deleted = cleanup_exact_duplicates(conn, _duplicate_cleanup_scope(), None)
+
+    assert deleted == 1
+    assert conn.execute("SELECT COUNT(*) FROM memories WHERE id IN ('dupe-new', 'dupe-old')").fetchone()[0] == 1
+    audit = conn.execute(
+        "SELECT event_type, action, target_id FROM governance_audit_events WHERE event_type = 'nightly_duplicate_hard_delete'"
+    ).fetchone()
+    assert audit is not None
+    assert audit["action"] == "hard_delete"
+    assert audit["target_id"] in {"dupe-new", "dupe-old"}
+
+
+def test_nightly_duplicate_cleanup_commits_truth_and_queues_retry_when_vector_delete_fails():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    bootstrap_legacy_generation(
+        conn,
+        identity=GenerationIdentity(
+            backend="lancedb", provider="local-hash", model="hash-v1", dimensions=16
+        ),
+        row_count=0,
+    )
+    conn.commit()
     _store_duplicate_cleanup_row(conn, memory_id="dupe-new")
     _store_duplicate_cleanup_row(conn, memory_id="dupe-old")
     vector_runtime = _FakeDigestVectorRuntime()
 
     deleted = cleanup_exact_duplicates(conn, _duplicate_cleanup_scope(), vector_runtime)
 
-    assert deleted == 0
-    assert conn.execute("SELECT COUNT(*) FROM memories WHERE id IN ('dupe-new', 'dupe-old')").fetchone()[0] == 2
+    assert deleted == 1
+    assert conn.execute("SELECT COUNT(*) FROM memories WHERE id IN ('dupe-new', 'dupe-old')").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM vector_outbox WHERE status = 'pending'").fetchone()[0] == 1
     assert vector_runtime._vector_status == "needs_repair"
     assert "[REDACTED_SECRET]" in vector_runtime._vector_message
     assert "[REDACTED_PATH]" in vector_runtime._vector_message

@@ -26,7 +26,9 @@ if PACKAGE_NAME not in sys.modules:
     spec.loader.exec_module(package)
 
 from scope_recall_candidate_review_runtime.candidate_review import review_candidate  # noqa: E402
+from scope_recall_candidate_review_runtime.config import load_runtime_config  # noqa: E402
 from scope_recall_candidate_review_runtime.memory_browser import memory_db_path  # noqa: E402
+from scope_recall_candidate_review_runtime.vector_runtime import cleanup_persisted_vector_companions  # noqa: E402
 
 
 def _add_common_options(parser: argparse.ArgumentParser) -> None:
@@ -36,6 +38,8 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dry-run", action="store_true", default=argparse.SUPPRESS, help="Preview the review action without mutation")
     parser.add_argument("--apply", action="store_true", default=argparse.SUPPRESS, help="Apply the review action")
     parser.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="Emit JSON output")
+    parser.add_argument("--expected-updated-at", default=argparse.SUPPRESS, help="CAS token returned by dry-run")
+    parser.add_argument("--expected-lifecycle", default=argparse.SUPPRESS, help="Expected lifecycle returned by dry-run")
 
 
 def parse_args() -> argparse.Namespace:
@@ -72,8 +76,9 @@ def main() -> int:
     dry_run = not bool(getattr(args, "apply", False))
     if getattr(args, "dry_run", False):
         dry_run = True
+    db_path = _db_path(args)
     try:
-        conn = sqlite3.connect(_db_path(args))
+        conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
     except sqlite3.Error as exc:
         payload = {"ok": False, "dry_run": dry_run, "error": str(exc)}
@@ -86,9 +91,22 @@ def main() -> int:
             action=args.action,
             superseded_by=getattr(args, "superseded_by", ""),
             dry_run=dry_run,
+            expected_updated_at=getattr(args, "expected_updated_at", ""),
+            expected_lifecycle=getattr(args, "expected_lifecycle", ""),
         )
     finally:
         conn.close()
+    if payload.get("applied") and args.action in {"archive", "supersede"}:
+        config = load_runtime_config(PLUGIN_ROOT, db_path.parent)
+        vector_cleanup = cleanup_persisted_vector_companions(
+            db_path.parent,
+            memory_ids=[str(args.id)],
+            vector_config=dict(config.get("vector") or {}),
+            retrieval_config=dict(config.get("retrieval") or {}),
+        )
+        payload["vector_cleanup"] = vector_cleanup
+        if vector_cleanup.get("status") == "needs_repair":
+            payload["needs_repair"] = True
     print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else _render_text(payload))
     return 0 if payload.get("ok") else 1
 

@@ -40,14 +40,24 @@ if PACKAGE_NAME not in sys.modules:
 from scope_recall_repair_runtime.config import load_runtime_config  # noqa: E402
 from scope_recall_repair_runtime.embedders import build_embedder  # noqa: E402
 from scope_recall_repair_runtime.gating import config_bool  # noqa: E402
-from scope_recall_repair_runtime.graph import lifecycle_visible_sql  # noqa: E402
+from scope_recall_repair_runtime.lifecycle_policy import ordinary_recall_lifecycle_visible_sql  # noqa: E402
+from scope_recall_repair_runtime.vector_generation import (  # noqa: E402
+    GenerationIdentity,
+    resolve_generation_storage_root,
+    validate_generation_compatibility,
+)
 from scope_recall_repair_runtime.vector_store import build_vector_store, normalize_vector_backend  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Rebuild scope-recall vector companion from SQLite truth")
     parser.add_argument("--hermes-home", default=os.environ.get("HERMES_HOME", "~/.hermes"), help="Hermes home/profile path")
-    parser.add_argument("--backend", default="", choices=["", "lancedb", "sqlite-bruteforce", "sqlite", "pgvector"], help="Override vector.backend from config")
+    parser.add_argument("--backend", default="", choices=["", "lancedb", "sqlite-bruteforce", "sqlite", "pgvector"], help="Override vector.backend only for legacy-root repair")
+    parser.add_argument(
+        "--legacy-root",
+        action="store_true",
+        help="Explicitly repair the pre-generation storage root instead of the active generation manifest target",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Inspect planned rebuild without writing vector companion data (default)")
     parser.add_argument("--apply", action="store_true", help="Actually rebuild vector companion data; without this flag the script is read-only")
     parser.add_argument("--no-backup", action="store_true", help="Do not copy the old vector companion before rebuild")
@@ -65,8 +75,33 @@ def load_rows(db_path: Path) -> list[sqlite3.Row]:
     conn.row_factory = sqlite3.Row
     try:
         return conn.execute(
-            f"SELECT id, scope_id, source, target, content, summary, updated_at FROM memories m WHERE {lifecycle_visible_sql('m')} ORDER BY updated_at ASC"
+            f"SELECT id, scope_id, source, target, content, summary, updated_at FROM memories m WHERE {ordinary_recall_lifecycle_visible_sql('m')} ORDER BY updated_at ASC"
         ).fetchall()
+    finally:
+        conn.close()
+
+
+def load_active_generation(db_path: Path) -> dict[str, Any] | None:
+    """Read the pointer-selected manifest without initializing generation schema."""
+
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        tables = {
+            str(row[0])
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        }
+        if not {"vector_generation_state", "vector_generations"} <= tables:
+            return None
+        row = conn.execute(
+            """
+            SELECT g.*
+            FROM vector_generation_state AS s
+            JOIN vector_generations AS g ON g.generation_id = s.value
+            WHERE s.key = 'current_generation'
+            """
+        ).fetchone()
+        return dict(row) if row is not None else None
     finally:
         conn.close()
 
@@ -293,17 +328,66 @@ def main() -> int:
 
     config = load_runtime_config(PLUGIN_ROOT, storage_dir)
     vector_config = dict(config.get("vector") or {})
+    manifest = None if bool(args.legacy_root) else load_active_generation(db_path)
     backend = backend_from_config(config, args.backend)
     table_name = str(vector_config.get("table_name") or "memories")
     metric = str((config.get("retrieval") or {}).get("metric") or "cosine")
+    storage_root = storage_dir
+    manifest_error = ""
+    if manifest is not None:
+        manifest_backend = normalize_backend(str(manifest.get("backend") or ""))
+        if str(manifest.get("status") or "") != "active":
+            manifest_error = (
+                f"current vector generation {manifest.get('generation_id')} is "
+                f"{manifest.get('status')!r}, expected 'active'"
+            )
+        if args.backend and backend != manifest_backend:
+            manifest_error = (
+                f"--backend {backend!r} does not match active generation backend {manifest_backend!r}; "
+                "use --legacy-root only for an explicit legacy companion repair"
+            )
+        backend = manifest_backend
+        table_name = str(manifest.get("table_name") or "memories")
+        metric = str(manifest.get("metric") or "cosine")
+        try:
+            storage_root = resolve_generation_storage_root(storage_dir, manifest.get("storage_path"))
+        except Exception as exc:
+            manifest_error = str(exc)
+        vector_config.update({"backend": backend, "table_name": table_name})
+
     rows = load_rows(db_path)
     if not config_bool(vector_config, "index_general", False):
         rows = [row for row in rows if str(row["target"]) != "general"]
-    target = vector_target(storage_dir, backend)
+    target = vector_target(storage_root, backend)
     selection = select_embedder(config, allow_fallback_embedder=bool(args.allow_fallback_embedder))
     embedder = selection["embedder"]
     primary = selection["primary"]
     fallback = selection.get("fallback")
+    if manifest is not None and not manifest_error:
+        selected_raw = (
+            vector_config.get("fallback_embedder")
+            if selection.get("using_fallback")
+            else vector_config.get("embedder")
+        )
+        selected_config: dict[str, Any] = dict(selected_raw) if isinstance(selected_raw, dict) else {}
+        try:
+            validate_generation_compatibility(
+                manifest,
+                GenerationIdentity(
+                    backend=backend,
+                    provider=str(getattr(embedder, "provider", "") or selected_config.get("provider") or "unknown"),
+                    model=str(getattr(embedder, "model", "") or selected_config.get("model") or "unknown"),
+                    dimensions=int(getattr(embedder, "dimensions", 0) or 0),
+                    metric=metric,
+                    prompt_profile=str(selected_config.get("prompt_profile") or "default-v1"),
+                    document_prefix=str(selected_config.get("document_prefix") or ""),
+                    query_prefix=str(selected_config.get("query_prefix") or ""),
+                    request_dimensions=bool(selected_config.get("request_dimensions", False)),
+                    table_name=table_name,
+                ),
+            )
+        except Exception as exc:
+            manifest_error = str(exc)
     existing_dimensions = existing_vector_dimensions(target, backend=backend, table_name=table_name)
     planned_dimensions = int(getattr(embedder, "dimensions", 0) or 0)
     dimension_mismatch_with_existing = bool(existing_dimensions and planned_dimensions and existing_dimensions != planned_dimensions)
@@ -316,6 +400,9 @@ def main() -> int:
         "sqlite_db": str(db_path),
         "vector_backend": backend,
         "vector_path": str(target),
+        "generation_id": str((manifest or {}).get("generation_id") or ""),
+        "storage_root": str(storage_root),
+        "legacy_root": bool(args.legacy_root),
         "table": table_name,
         "rows": len(rows),
         "embedder": embedder.describe(),
@@ -329,8 +416,22 @@ def main() -> int:
         "planned_dimensions": planned_dimensions,
         "dimension_mismatch_with_existing": dimension_mismatch_with_existing,
     }
-    if selection.get("error"):
-        plan.update({"ok": False, "status": "blocked", "error": str(selection["error"])})
+    blocking_errors = [item for item in (manifest_error, str(selection.get("error") or "")) if item]
+    if blocking_errors:
+        plan.update({"ok": False, "status": "blocked", "error": "; ".join(blocking_errors)})
+        print(json.dumps(plan, ensure_ascii=False, indent=2))
+        return 2
+    if manifest is not None and not dry_run:
+        plan.update(
+            {
+                "ok": False,
+                "status": "blocked",
+                "error": (
+                    "in-place repair of the active vector generation is blocked; build and validate a shadow "
+                    "generation with scripts/migrate.vector_generation.py, then activate it explicitly"
+                ),
+            }
+        )
         print(json.dumps(plan, ensure_ascii=False, indent=2))
         return 2
     if dry_run:

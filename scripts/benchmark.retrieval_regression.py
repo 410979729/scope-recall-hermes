@@ -16,6 +16,7 @@ without API keys or native vector dependencies.
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import shutil
@@ -52,7 +53,7 @@ BASE_MEMORIES: list[dict[str, Any]] = [
     },
     {
         "label": "atlas_low_value_general",
-        "content": "Temporary Project Atlas dinner note: Joy likes warm soup tonight after deployment discussion.",
+        "content": "Temporary Project Atlas dinner note: a teammate likes warm soup tonight after deployment discussion.",
         "target": "general",
         "memory_type": "episodic",
         "importance": 0.1,
@@ -177,17 +178,27 @@ def _load_provider_for_home(hermes_home: Path) -> Any:
 
 def _mark_archived(plugin: Any, memory_id: str) -> None:
     conn = plugin._require_conn()
-    row = conn.execute("SELECT metadata FROM memories WHERE id = ?", (memory_id,)).fetchone()
+    row = conn.execute("SELECT updated_at FROM memories WHERE id = ?", (memory_id,)).fetchone()
     if row is None:
         raise RuntimeError(f"stored memory not found for archive marker: {memory_id}")
+    package = plugin.__class__.__module__.rsplit(".", 1)[0]
+    lifecycle_service = importlib.import_module(f"{package}.lifecycle_service")
     try:
-        metadata = json.loads(str(row["metadata"] or "{}"))
+        lifecycle_service.transition_memory_lifecycle(
+            conn,
+            memory_id=memory_id,
+            lifecycle="archived",
+            metadata_updates={"archived_by": "synthetic-retrieval-benchmark"},
+            expected_updated_at=str(row["updated_at"] or ""),
+            actor="synthetic-retrieval-benchmark",
+            reason="isolated benchmark fixture lifecycle marker",
+            event_type="benchmark_fixture_lifecycle",
+            action="archive_fixture",
+        )
+        conn.commit()
     except Exception:
-        metadata = {}
-    metadata["lifecycle"] = "archived"
-    metadata["archived_by"] = "synthetic-retrieval-benchmark"
-    conn.execute("UPDATE memories SET metadata = ? WHERE id = ?", (json.dumps(metadata, ensure_ascii=False, sort_keys=True), memory_id))
-    conn.commit()
+        conn.rollback()
+        raise
 
 
 def _distractor(index: int) -> dict[str, Any]:
@@ -206,6 +217,40 @@ def _distractor(index: int) -> dict[str, Any]:
         "importance": 0.2,
         "entities": [f"Project {project}"],
     }
+
+
+def _store_distractor(plugin: Any, index: int) -> str:
+    """Insert retrieval-only noise without running quadratic governance hooks."""
+
+    payload = _distractor(index)
+    package = plugin.__class__.__module__.rsplit(".", 1)[0]
+    sql_store = importlib.import_module(f"{package}.sql_store")
+    metadata = {
+        key: value
+        for key, value in payload.items()
+        if key not in {"content", "target"}
+    }
+    memory_id, _summary, _updated_at, inserted = sql_store.store_row(
+        plugin._require_conn(),
+        memory_id=f"benchmark-noise-{index:04d}",
+        scope_id=str(plugin._shared_scope_id),
+        platform="cli",
+        user_id="benchmark-user",
+        chat_id="",
+        thread_id="",
+        gateway_session_key="",
+        agent_identity="benchmark-agent",
+        agent_workspace="hermes",
+        session_id="synthetic-retrieval-benchmark",
+        source="benchmark-distractor",
+        target=str(payload.get("target") or "memory"),
+        content=str(payload["content"]),
+        metadata=metadata,
+        allow_duplicate=True,
+    )
+    if not inserted:
+        raise RuntimeError(f"failed to store distractor {index}")
+    return str(memory_id)
 
 
 def _resolve_case_labels(case: dict[str, Any], label_to_id: dict[str, str]) -> dict[str, Any]:
@@ -229,6 +274,7 @@ def _resolve_case_labels(case: dict[str, Any], label_to_id: dict[str, str]) -> d
 def _fixture_config(*, candidate_pool: int, top_k: int) -> dict[str, Any]:
     return {
         "vector": {"enabled": False},
+        "relation_extraction_enabled": False,
         "retrieval": {
             "mode": "lexical",
             "min_score": 0.0,
@@ -270,9 +316,9 @@ def run_synthetic(args: argparse.Namespace, hermes_home: Path) -> dict[str, Any]
                 hermes_home=str(hermes_home),
                 platform="cli",
                 agent_context="primary",
-                agent_identity="yuheng",
+                agent_identity="benchmark-agent",
                 agent_workspace="hermes",
-                user_id="joy",
+                user_id="benchmark-user",
             )
             for item in BASE_MEMORIES:
                 label = str(item["label"])
@@ -285,9 +331,7 @@ def run_synthetic(args: argparse.Namespace, hermes_home: Path) -> dict[str, Any]
                 if str(item.get("lifecycle") or "").lower() == "archived":
                     _mark_archived(plugin, memory_id)
             for index in range(max(0, int(args.distractors))):
-                stored = json.loads(plugin.handle_tool_call("scope_recall_store", _distractor(index)))
-                if not str(stored.get("id") or ""):
-                    raise RuntimeError(f"failed to store distractor {index}: {stored}")
+                _store_distractor(plugin, index)
             resolved_cases = [_resolve_case_labels(case, label_to_id) for case in BASE_CASES]
             result = json.loads(
                 plugin.handle_tool_call(

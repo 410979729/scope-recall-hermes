@@ -388,6 +388,53 @@ def test_doctor_vector_report_marks_lifecycle_hidden_vector_ids_stale(tmp_path):
     assert any("stale ids" in item for item in recommendations)
 
 
+def test_doctor_vector_report_classifies_stale_debt_by_reason(tmp_path):
+    conn = _conn(tmp_path)
+    _store_memory(conn, memory_id="active-memory", content="Active vector truth should stay indexed.")
+    _store_memory(conn, memory_id="archived-memory", content="Archived vector truth should be removed.", lifecycle="archived")
+    _store_memory(conn, memory_id="general-memory", content="General memory is excluded by index policy.", target="general")
+    conn.close()
+    vector_path = tmp_path / "scope-recall" / "vector.sqlite3"
+    vector = sqlite3.connect(vector_path)
+    try:
+        vector.execute(
+            """
+            CREATE TABLE vector_records (
+                id TEXT PRIMARY KEY, scope_id TEXT NOT NULL, source TEXT NOT NULL DEFAULT '',
+                target TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT '', vector_json TEXT NOT NULL
+            )
+            """
+        )
+        vector.execute("CREATE TABLE vector_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        vector.execute("INSERT INTO vector_meta(key, value) VALUES ('dimensions', '2'), ('table_name', 'memories')")
+        vector.executemany(
+            "INSERT INTO vector_records(id, scope_id, source, target, content, summary, updated_at, vector_json) VALUES (?, 'shared', 'tool-store', ?, ?, ?, '2026-01-01T00:00:00+00:00', '[0.0, 0.0]')",
+            [
+                ("active-memory", "memory", "active", "active"),
+                ("archived-memory", "memory", "archived", "archived"),
+                ("general-memory", "general", "general", "general"),
+                ("orphan-memory", "memory", "orphan", "orphan"),
+            ],
+        )
+        vector.commit()
+    finally:
+        vector.close()
+    doctor = _doctor_module()
+
+    payload, check, _recommendations = doctor.sqlite_vector_report(tmp_path, index_general=False)
+
+    assert payload["status"] == "needs_repair"
+    assert payload["terminal_hidden_vector_id_count"] == 1
+    assert payload["terminal_hidden_vector_id_samples"] == ["archived-memory"]
+    assert payload["policy_excluded_vector_id_count"] == 1
+    assert payload["policy_excluded_vector_id_samples"] == ["general-memory"]
+    assert payload["orphan_vector_id_count"] == 1
+    assert payload["orphan_vector_id_samples"] == ["orphan-memory"]
+    assert payload["stale_vector_id_count"] == 3
+    assert check["ok"] is False
+
+
 def test_repair_vector_index_load_rows_excludes_lifecycle_hidden_memories(tmp_path):
     conn = _conn(tmp_path)
     _store_memory(conn, memory_id="active-memory", content="Active vector repair row.")

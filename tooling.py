@@ -12,7 +12,7 @@ from typing import Any, Callable, cast
 
 from tools.registry import tool_error
 
-from .capture_filters import CaptureFilterResult, sanitize_report_text, should_capture_text
+from .capture_filters import CaptureFilterResult, sanitize_report_text, sanitize_structured_value, should_capture_text
 from .gating import config_bool
 from .graph import clamp_float
 from .experience_preflight import experience_preflight
@@ -888,6 +888,9 @@ class ScopeRecallToolService:
             "trust": self._rounded_metadata(metadata, "trust"),
             "importance": self._rounded_metadata(metadata, "importance"),
             "entities": metadata.get("entities") if isinstance(metadata.get("entities"), list) else [],
+            "fact_freshness_status": str(metadata.get("fact_freshness_status") or "untracked"),
+            "needs_live_check": bool(metadata.get("needs_live_check", False)),
+            "fact_freshness_penalty": self._rounded_metadata(metadata, "fact_freshness_penalty"),
         }
 
     def _store_metadata(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -896,6 +899,26 @@ class ScopeRecallToolService:
             metadata["memory_type"] = str(args.get("memory_type"))
         if args.get("importance") is not None:
             metadata["importance"] = clamp_float(args.get("importance"), default=0.5)
+        freshness = args.get("freshness")
+        if isinstance(freshness, dict):
+            allowed_freshness_keys = {
+                "fact_key",
+                "truth_type",
+                "validator_kind",
+                "validator_spec",
+                "ttl_days",
+                "last_checked_at",
+                "valid_until",
+                "status",
+                "stale_reason",
+                "superseded_by",
+            }
+            metadata["freshness"] = {
+                str(key): value for key, value in freshness.items() if str(key) in allowed_freshness_keys
+            }
+            validator_spec = metadata["freshness"].get("validator_spec")
+            if isinstance(validator_spec, dict):
+                metadata["freshness"]["validator_spec"] = sanitize_structured_value(validator_spec)[0]
         for key in ("entities", "tags"):
             value = args.get(key)
             if isinstance(value, str):

@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 import sqlite3
 
+import pytest
+
 from scope_recall.sql_store import ensure_schema, store_row
 from scope_recall.vector_runtime import sync_vector_index, upsert_vector_record
 
@@ -231,6 +233,32 @@ def test_upsert_vector_record_deletes_existing_lifecycle_hidden_vector():
 
     assert "archived-1" not in provider._vector_store.records
     assert provider._vector_store.deleted == ["archived-1"]
+    assert provider._embedder.embedded_texts == []
+
+
+@pytest.mark.parametrize("lifecycle", ["candidate", "in_progress"])
+def test_upsert_vector_record_deletes_provisional_lifecycle_vector(lifecycle):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    _insert(conn, memory_id="provisional-1", target="memory", scope_id="shared-scope")
+    _set_lifecycle(conn, "provisional-1", lifecycle)
+    provider = FakeProvider(conn, index_general=False)
+    provider._vector_store.records["provisional-1"] = {"id": "provisional-1", "target": "memory"}
+
+    upsert_vector_record(
+        provider,
+        id="provisional-1",
+        source="tool-store",
+        target="memory",
+        content="provisional row must not be indexed",
+        summary="provisional row must not be indexed",
+        updated_at="2026-07-11T00:00:00+00:00",
+        scope_id="shared-scope",
+    )
+
+    assert "provisional-1" not in provider._vector_store.records
+    assert provider._vector_store.deleted == ["provisional-1"]
     assert provider._embedder.embedded_texts == []
 
 

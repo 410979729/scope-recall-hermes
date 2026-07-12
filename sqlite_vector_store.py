@@ -12,6 +12,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from .vector_store import VectorStoreCompatibilityError
+
 
 class SQLiteBruteForceVectorStore:
     """Pure-SQLite vector companion for hosts where LanceDB/pyarrow is unsafe.
@@ -60,10 +62,46 @@ class SQLiteBruteForceVectorStore:
             stored_dimensions = self._get_meta_int("dimensions")
             stored_table = self._get_meta_text("table_name")
             if (stored_dimensions and stored_dimensions != self._dimensions) or (stored_table and stored_table != self._table_name):
-                self._conn.execute("DELETE FROM vector_records")
+                requested = f"dimensions={self._dimensions}, table_name={self._table_name!r}"
+                existing = f"dimensions={stored_dimensions}, table_name={stored_table!r}"
+                self._conn.rollback()
+                self._conn.close()
+                self._conn = None
+                raise VectorStoreCompatibilityError(
+                    "existing sqlite-bruteforce generation is incompatible: "
+                    f"{existing}; requested {requested}; build and activate a shadow generation explicitly"
+                )
             self._set_meta("dimensions", str(self._dimensions))
             self._set_meta("table_name", self._table_name)
             self._conn.commit()
+
+    def open_existing(self) -> None:
+        """Open an existing companion read-only; never create files, schema, or metadata."""
+
+        if not self._db_path.is_file():
+            raise FileNotFoundError("sqlite-bruteforce physical storage is missing")
+        uri = f"file:{self._db_path.resolve()}?mode=ro"
+        with self._lock:
+            self._conn = sqlite3.connect(uri, uri=True, check_same_thread=False, timeout=30.0)
+            self._conn.row_factory = sqlite3.Row
+            tables = {
+                str(row[0])
+                for row in self._conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+            }
+            required = {"vector_records", "vector_meta"}
+            if not required <= tables:
+                self.close()
+                raise VectorStoreCompatibilityError(
+                    "sqlite-bruteforce physical storage is corrupt or incomplete: missing required tables"
+                )
+            stored_dimensions = self._get_meta_int("dimensions")
+            stored_table = self._get_meta_text("table_name")
+            if stored_dimensions != self._dimensions or stored_table != self._table_name:
+                self.close()
+                raise VectorStoreCompatibilityError(
+                    "sqlite-bruteforce physical identity mismatch: "
+                    f"dimensions={stored_dimensions}, table_name={stored_table!r}"
+                )
 
     def _ensure_schema(self) -> None:
         conn = self._require_conn()

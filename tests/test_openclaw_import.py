@@ -126,6 +126,57 @@ def test_openclaw_import_blocks_secret_like_source_metadata_before_writing(tmp_p
     assert not target_db.exists()
 
 
+def test_openclaw_import_blocks_path_like_metadata_keys(tmp_path: Path):
+    target_db = tmp_path / "hermes" / "scope-recall" / "memory.sqlite3"
+    row = _openclaw_row(row_id="metadata-path-key", text="Safe operational note", category="ops")
+    private_key = "/home/synthetic/.ssh/id_rsa"
+    row["metadata"] = {private_key: "safe-label"}
+
+    report = run_openclaw_import_rows(
+        [row],
+        source_path=Path("/home/synthetic/private/openclaw"),
+        target_db=target_db,
+        allowed_targets={"ops"},
+        apply=False,
+    )
+
+    assert report["safe_to_apply"] is False
+    assert any(finding["kind"] == "path_like" for finding in report["lint"]["findings"])
+    assert private_key not in json.dumps(report["lint"], ensure_ascii=False)
+    assert not target_db.exists()
+
+
+def test_openclaw_import_persists_hashed_source_provenance_not_raw_path(tmp_path: Path):
+    target_db = tmp_path / "hermes" / "scope-recall" / "memory.sqlite3"
+    raw_source = Path("/home/synthetic/private/openclaw")
+    row = _openclaw_row(row_id="safe-source-provenance", text="Safe OpenClaw gateway recovery procedure", category="ops")
+
+    report = run_openclaw_import_rows(
+        [row],
+        source_path=raw_source,
+        target_db=target_db,
+        allowed_targets={"ops"},
+        apply=True,
+    )
+
+    assert report["ok"] is True
+    conn = sqlite3.connect(target_db)
+    conn.row_factory = sqlite3.Row
+    try:
+        memory_metadata = conn.execute("SELECT metadata FROM memories WHERE id LIKE 'openclaw:%'").fetchone()[0]
+        ledger_source = conn.execute("SELECT source_path FROM import_ledger").fetchone()[0]
+    finally:
+        conn.close()
+    raw = str(raw_source)
+    assert raw not in memory_metadata
+    assert raw not in ledger_source
+    metadata = json.loads(memory_metadata)
+    provenance = metadata["source_import"]
+    assert provenance["source_path"] == "[REDACTED_PATH]"
+    assert len(provenance["source_path_sha256"]) == 64
+    assert ledger_source == "sha256:" + provenance["source_path_sha256"]
+
+
 def test_openclaw_import_rejects_raw_transcript_even_when_target_allowed(tmp_path: Path):
     target_db = tmp_path / "hermes" / "scope-recall" / "memory.sqlite3"
     transcript = "User: please restart the gateway\nAssistant: I will run systemctl and paste logs\nTool execution trace: stdout stderr"

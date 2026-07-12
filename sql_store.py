@@ -12,11 +12,11 @@ from pathlib import Path
 from typing import Any
 
 from .artifacts import enrich_content_with_artifact_anchors, merge_artifact_metadata
-from .capture_filters import sanitize_report_text
+from .capture_filters import sanitize_capture_text, sanitize_report_text, sanitize_structured_value
 from .gating import compact_text, dedup_key
 from .governance import classify_memory, merge_metadata
 from .graph import backfill_memory_entities, ensure_graph_schema, sync_memory_entities
-from .memory_quality import HIDDEN_PROFILE_LIFECYCLES
+from .lifecycle_policy import ordinary_recall_lifecycle_visible, ordinary_recall_lifecycle_visible_sql
 
 ENTRY_DELIMITER = "\n§\n"
 SCHEMA_VERSION = 10600
@@ -188,6 +188,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     ensure_graph_schema(conn)
     ensure_experience_schema(conn)
     ensure_governance_schema(conn)
+    from .vector_generation import ensure_vector_generation_schema
+
+    ensure_vector_generation_schema(conn)
     ensure_schema_migrations(conn)
     rebuild_fts_if_empty(conn)
     backfill_memory_entities(conn)
@@ -259,15 +262,7 @@ def _redact_governance_payload(value: Any) -> Any:
     secrets can be resurrected from `before_json`/`after_json`.
     """
 
-    if isinstance(value, dict):
-        return {str(key): _redact_governance_payload(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_redact_governance_payload(item) for item in value]
-    if isinstance(value, tuple):
-        return [_redact_governance_payload(item) for item in value]
-    if isinstance(value, str):
-        return sanitize_report_text(value)
-    return value
+    return sanitize_structured_value(value)[0]
 
 
 def record_governance_audit_event(
@@ -613,25 +608,26 @@ def store_row(
     """Insert one durable memory row into the SQLite truth store.
 
     The helper centralizes IDs, timestamps, scope, metadata serialization, and duplicate-sensitive fields used by downstream companions."""
-    content = enrich_content_with_artifact_anchors(content)
     now = now_iso()
+    content = sanitize_capture_text(content)
+    if not content:
+        return "", "", now, False
+    content = enrich_content_with_artifact_anchors(content)
     summary = compact_text(content, 220)
     key = dedup_key(content)
     if not allow_duplicate:
-        hidden_lifecycle_values = tuple(sorted(HIDDEN_PROFILE_LIFECYCLES))
-        hidden_placeholders = ", ".join("?" for _ in hidden_lifecycle_values)
         existing = conn.execute(
             f"""
-            SELECT id, summary, updated_at, metadata
-            FROM memories
-            WHERE scope_id = ?
-              AND target = ?
-              AND dedup_key = ?
-              AND LOWER(COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.lifecycle') ELSE '' END, '')) NOT IN ({hidden_placeholders})
-            ORDER BY updated_at DESC
+            SELECT m.id, m.summary, m.updated_at, m.metadata
+            FROM memories AS m
+            WHERE m.scope_id = ?
+              AND m.target = ?
+              AND m.dedup_key = ?
+              AND {ordinary_recall_lifecycle_visible_sql('m')}
+            ORDER BY m.updated_at DESC
             LIMIT 1
             """,
-            (scope_id, target, key, *hidden_lifecycle_values),
+            (scope_id, target, key),
         ).fetchone()
         if existing is not None:
             conn.execute("UPDATE memories SET updated_at = ? WHERE id = ?", (now, existing["id"]))
@@ -640,6 +636,8 @@ def store_row(
 
     metadata_payload = merge_metadata(dict(classify_memory(content, target, source)), metadata)
     metadata_payload = merge_artifact_metadata(metadata_payload, content)
+    safe_metadata, _ = sanitize_structured_value(metadata_payload)
+    metadata_payload = safe_metadata if isinstance(safe_metadata, dict) else {}
     metadata_json = json.dumps(metadata_payload, ensure_ascii=False, sort_keys=True)
 
     conn.execute(
@@ -693,6 +691,9 @@ def update_row(
     """Update one SQLite truth row while preserving metadata and lifecycle invariants.
 
     Callers use this helper so conflict review, freshness, and governance state do not get accidentally discarded by ad-hoc SQL."""
+    content = sanitize_capture_text(content)
+    if not content:
+        return False, "", ""
     content = enrich_content_with_artifact_anchors(content)
     if scope_ids is not None:
         clean_scope_ids = [str(item) for item in scope_ids if str(item)]
@@ -725,6 +726,7 @@ def update_row(
     # not erase accumulated quality/governance evidence that came from explicit
     # feedback or prior conflict review.
     for protected_key in (
+        "lifecycle",
         "feedback_count",
         "helpful_count",
         "unhelpful_count",
@@ -750,6 +752,8 @@ def update_row(
     if old_importance > new_importance:
         metadata_payload["importance"] = old_metadata["importance"]
     metadata_payload = merge_artifact_metadata(metadata_payload, content)
+    safe_metadata, _ = sanitize_structured_value(metadata_payload)
+    metadata_payload = safe_metadata if isinstance(safe_metadata, dict) else {}
     metadata_json = json.dumps(metadata_payload, ensure_ascii=False, sort_keys=True)
     conn.execute(
         """
@@ -760,8 +764,32 @@ def update_row(
         (content, summary, new_target, updated_at, dedup_key(content), metadata_json, memory_id, str(row["scope_id"])),
     )
     conn.execute("DELETE FROM memories_fts WHERE memory_id = ?", (memory_id,))
-    conn.execute("INSERT INTO memories_fts(memory_id, content, summary) VALUES (?, ?, ?)", (memory_id, content, summary))
-    sync_memory_entities(conn, memory_id=memory_id, content=content, target=new_target, metadata=metadata_payload)
+    lifecycle = str(metadata_payload.get("lifecycle") or "").strip().lower()
+    if ordinary_recall_lifecycle_visible(lifecycle=lifecycle, target=new_target):
+        conn.execute("INSERT INTO memories_fts(memory_id, content, summary) VALUES (?, ?, ?)", (memory_id, content, summary))
+        sync_memory_entities(conn, memory_id=memory_id, content=content, target=new_target, metadata=metadata_payload)
+    else:
+        if _table_exists(conn, "memory_entities"):
+            conn.execute("DELETE FROM memory_entities WHERE memory_id = ?", (memory_id,))
+        peer_rows = conn.execute(
+            """
+            SELECT CASE WHEN source_memory_id = ? THEN target_memory_id ELSE source_memory_id END AS peer_id
+            FROM memory_relations
+            WHERE source_memory_id = ? OR target_memory_id = ?
+            """,
+            (memory_id, memory_id, memory_id),
+        ).fetchall()
+        peer_ids = [str(peer["peer_id"] or "") for peer in peer_rows if str(peer["peer_id"] or "")]
+        conn.execute(
+            "DELETE FROM memory_relations WHERE source_memory_id = ? OR target_memory_id = ?",
+            (memory_id, memory_id),
+        )
+        if _table_exists(conn, "fact_freshness"):
+            conn.execute(
+                "DELETE FROM fact_freshness WHERE subject_type = 'memory' AND subject_id = ?",
+                (memory_id,),
+            )
+        _sync_conflict_metadata_after_relation_delete(conn, peer_ids)
     conn.commit()
     return True, summary, updated_at
 
@@ -804,6 +832,8 @@ def _sync_conflict_metadata_after_relation_delete(conn: sqlite3.Connection, memo
             metadata["conflict_review_count"] = 0
             metadata["needs_conflict_review"] = False
         metadata["relation_types"] = relation_types
+        safe_metadata, _ = sanitize_structured_value(metadata)
+        metadata = safe_metadata if isinstance(safe_metadata, dict) else {}
         conn.execute(
             "UPDATE memories SET metadata = ? WHERE id = ?",
             (json.dumps(metadata, ensure_ascii=False, sort_keys=True), memory_id),
@@ -816,10 +846,14 @@ def delete_rows(
     *,
     scope_id: str | None = None,
     scope_ids: list[str] | tuple[str, ...] | None = None,
+    commit: bool = True,
 ) -> int:
-    """Delete truth rows only for explicit hard-delete maintenance flows.
+    """Delete selected truth/companion rows.
 
-    Most forgetting paths should soft-archive instead; callers reaching this helper must already have rollback/audit justification."""
+    Public maintenance callers keep the historical commit-by-default behavior.
+    Atomic hard-delete domains pass ``commit=False`` so audit and vector intent
+    remain in the caller-owned transaction.
+    """
     ids = [str(memory_id) for memory_id in ids if str(memory_id).strip()]
     if not ids:
         return 0
@@ -870,9 +904,15 @@ def delete_rows(
         conn.execute(f"DELETE FROM memory_digest_sources WHERE memory_id IN ({placeholders})", scoped_ids)
     if _table_exists(conn, "memory_journal_sources"):
         conn.execute(f"DELETE FROM memory_journal_sources WHERE memory_id IN ({placeholders})", scoped_ids)
+    if _table_exists(conn, "fact_freshness"):
+        conn.execute(
+            f"DELETE FROM fact_freshness WHERE subject_type = 'memory' AND subject_id IN ({placeholders})",
+            scoped_ids,
+        )
     conn.execute(f"DELETE FROM memories WHERE id IN ({placeholders})", scoped_ids)
     _sync_conflict_metadata_after_relation_delete(conn, conflict_peer_ids)
-    conn.commit()
+    if commit:
+        conn.commit()
     after = int(conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0])
     return max(0, before - after)
 
@@ -888,24 +928,25 @@ def exact_duplicate_groups(
     scope_id: str | None = None,
     scope_ids: list[str] | tuple[str, ...] | None = None,
 ) -> list[dict[str, Any]]:
+    conditions = [ordinary_recall_lifecycle_visible_sql("m")]
     if scope_ids is not None:
         clean_scope_ids = [str(item) for item in scope_ids if str(item)]
         if not clean_scope_ids:
             return []
-        where = f"WHERE scope_id IN ({','.join('?' for _ in clean_scope_ids)})"
+        conditions.append(f"m.scope_id IN ({','.join('?' for _ in clean_scope_ids)})")
         params: tuple[Any, ...] = tuple(clean_scope_ids)
     elif scope_id:
-        where = "WHERE scope_id = ?"
+        conditions.append("m.scope_id = ?")
         params = (scope_id,)
     else:
-        where = ""
         params = ()
+    where = "WHERE " + " AND ".join(f"({condition})" for condition in conditions)
     rows = conn.execute(
         f"""
-        SELECT scope_id, target, dedup_key, COUNT(*) AS count
-        FROM memories
+        SELECT m.scope_id, m.target, m.dedup_key, COUNT(*) AS count
+        FROM memories AS m
         {where}
-        GROUP BY scope_id, target, dedup_key
+        GROUP BY m.scope_id, m.target, m.dedup_key
         HAVING COUNT(*) > 1
         ORDER BY count DESC
         """,
@@ -914,11 +955,14 @@ def exact_duplicate_groups(
     groups: list[dict[str, Any]] = []
     for row in rows:
         members = conn.execute(
-            """
-            SELECT id, content, created_at, updated_at
-            FROM memories
-            WHERE scope_id = ? AND target = ? AND dedup_key = ?
-            ORDER BY updated_at DESC, created_at DESC, id DESC
+            f"""
+            SELECT m.id, m.content, m.created_at, m.updated_at
+            FROM memories AS m
+            WHERE m.scope_id = ?
+              AND m.target = ?
+              AND m.dedup_key = ?
+              AND {ordinary_recall_lifecycle_visible_sql('m')}
+            ORDER BY m.updated_at DESC, m.created_at DESC, m.id DESC
             """,
             (row["scope_id"], row["target"], row["dedup_key"]),
         ).fetchall()

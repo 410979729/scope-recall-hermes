@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 
 from .capture_filters import contains_secret_like_text, sanitize_report_text
 from .gating import compact_text
+from .lifecycle_policy import PROFILE_HIDDEN_LIFECYCLES
 
 TEMPLATE_PREFIXES = (
     "Journal digest memory",
@@ -66,7 +67,7 @@ QUALITY_RULES = {
     "secret_like_content",
     "secret_reference_missing_vault_ref",
 }
-HIDDEN_PROFILE_LIFECYCLES = {"archived", "candidate", "scratch", "superseded", "obsolete", "rejected"}
+HIDDEN_PROFILE_LIFECYCLES = set(PROFILE_HIDDEN_LIFECYCLES)
 PROFILE_TARGETS = {"user", "memory", "project", "ops"}
 STABLE_MEMORY_TYPES = {"factual", "preference", "procedure", "workflow", "pitfall", "decision", "constraint", "project", "resource"}
 NOISE_MEMORY_TYPES = {"summary", "episodic", "tool_trace"}

@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import scope_recall.cli as cli
+from scope_recall.candidate_review import review_candidate
 from scope_recall.sql_store import ensure_schema, store_row
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -112,6 +113,17 @@ def test_candidate_review_promote_defaults_to_dry_run_without_mutation(tmp_path:
 
 def test_candidate_review_apply_archives_and_writes_audit_event(tmp_path: Path):
     db_path = _make_db(tmp_path)
+    (tmp_path / "config.json").write_text(
+        json.dumps({"vector": {"enabled": True, "backend": "sqlite-bruteforce"}}),
+        encoding="utf-8",
+    )
+    vector = sqlite3.connect(tmp_path / "vector.sqlite3")
+    try:
+        vector.execute("CREATE TABLE vector_records(id TEXT PRIMARY KEY)")
+        vector.execute("INSERT INTO vector_records(id) VALUES ('candidate-1')")
+        vector.commit()
+    finally:
+        vector.close()
 
     result = _run_review("archive", "--db", str(db_path), "--id", "candidate-1", "--apply", "--json")
 
@@ -120,6 +132,17 @@ def test_candidate_review_apply_archives_and_writes_audit_event(tmp_path: Path):
     assert payload["ok"] is True
     assert payload["dry_run"] is False
     assert payload["applied"] is True
+    assert payload["vector_cleanup"] == {
+        "status": "ok",
+        "backend": "sqlite-bruteforce",
+        "requested": 1,
+        "deleted": 1,
+    }
+    vector = sqlite3.connect(tmp_path / "vector.sqlite3")
+    try:
+        assert vector.execute("SELECT COUNT(*) FROM vector_records WHERE id='candidate-1'").fetchone()[0] == 0
+    finally:
+        vector.close()
     metadata = _metadata(db_path, "candidate-1")
     assert metadata["lifecycle"] == "archived"
     assert metadata["candidate_review_action"] == "archive"
@@ -153,3 +176,86 @@ def test_candidate_review_supersede_requires_existing_replacement(tmp_path: Path
     metadata = _metadata(db_path, "candidate-1")
     assert metadata["lifecycle"] == "superseded"
     assert metadata["superseded_by"] == "memory-keep"
+
+
+def test_candidate_review_cas_conflict_preserves_newer_row_and_has_zero_side_effects(tmp_path: Path):
+    db_path = _make_db(tmp_path)
+    first = sqlite3.connect(db_path)
+    second = sqlite3.connect(db_path)
+    first.row_factory = sqlite3.Row
+    second.row_factory = sqlite3.Row
+    try:
+        plan = review_candidate(first, memory_id="candidate-1", action="archive", dry_run=True)
+        token = plan["version_token"]
+        metadata = _metadata(db_path, "candidate-1")
+        lifecycle_after_newer_edit = metadata.get("lifecycle")
+        metadata["newer_operator_edit"] = True
+        second.execute(
+            "UPDATE memories SET metadata = ?, updated_at = ? WHERE id = 'candidate-1'",
+            (json.dumps(metadata, ensure_ascii=False, sort_keys=True), "2099-01-01T00:00:00+00:00"),
+        )
+        second.commit()
+        audit_before = second.execute("SELECT COUNT(*) FROM governance_audit_events").fetchone()[0]
+        outbox_before = second.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0]
+
+        conflict = review_candidate(
+            first,
+            memory_id="candidate-1",
+            action="archive",
+            dry_run=False,
+            expected_updated_at=token["updated_at"],
+            expected_lifecycle=token["lifecycle"],
+        )
+
+        assert conflict["ok"] is False
+        assert conflict["status"] == "conflict"
+        assert conflict["applied"] is False
+        current = json.loads(first.execute("SELECT metadata FROM memories WHERE id = 'candidate-1'").fetchone()[0])
+        assert current["newer_operator_edit"] is True
+        assert current["lifecycle"] == lifecycle_after_newer_edit
+        assert first.execute("SELECT COUNT(*) FROM governance_audit_events").fetchone()[0] == audit_before
+        assert first.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0] == outbox_before
+    finally:
+        first.close()
+        second.close()
+
+
+def test_two_candidate_reviewers_only_one_cas_apply_succeeds(tmp_path: Path):
+    db_path = _make_db(tmp_path)
+    first = sqlite3.connect(db_path)
+    second = sqlite3.connect(db_path)
+    first.row_factory = sqlite3.Row
+    second.row_factory = sqlite3.Row
+    try:
+        first_plan = review_candidate(first, memory_id="candidate-1", action="promote", dry_run=True)
+        second_plan = review_candidate(second, memory_id="candidate-1", action="archive", dry_run=True)
+        assert first_plan["version_token"] == second_plan["version_token"]
+
+        winner = review_candidate(
+            first,
+            memory_id="candidate-1",
+            action="promote",
+            dry_run=False,
+            expected_updated_at=first_plan["version_token"]["updated_at"],
+            expected_lifecycle=first_plan["version_token"]["lifecycle"],
+        )
+        loser = review_candidate(
+            second,
+            memory_id="candidate-1",
+            action="archive",
+            dry_run=False,
+            expected_updated_at=second_plan["version_token"]["updated_at"],
+            expected_lifecycle=second_plan["version_token"]["lifecycle"],
+        )
+
+        assert winner["status"] == "applied"
+        assert loser["status"] == "conflict"
+        current = _metadata(db_path, "candidate-1")
+        assert current["lifecycle"] == "promoted"
+        assert current["candidate_review_action"] == "promote"
+        assert first.execute(
+            "SELECT COUNT(*) FROM governance_audit_events WHERE event_type = 'memory_candidate_review'"
+        ).fetchone()[0] == 1
+    finally:
+        first.close()
+        second.close()

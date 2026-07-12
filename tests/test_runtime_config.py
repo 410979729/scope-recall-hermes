@@ -17,6 +17,103 @@ def _path_tail(path: str) -> tuple[str, ...]:
     return tuple(str(path).replace("\\", "/").split("/")[-2:])
 
 
+def test_runtime_config_rejects_unknown_and_invalid_typed_overrides(tmp_path: Path):
+    plugin_dir = tmp_path / "plugin"
+    storage_dir = tmp_path / "scope-recall"
+    plugin_dir.mkdir()
+    storage_dir.mkdir()
+    (plugin_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "journal": {"max_entries_per_digest": 500},
+                "retrieval": {"min_score": 0.18},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (storage_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "journal": {
+                    "max_entries_per_digets": 999,
+                    "max_entries_per_digest": "999",
+                },
+                "retrival": {"min_score": 0.99},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(plugin_dir, storage_dir)
+    errors = load_runtime_config_errors(config)
+
+    assert config["journal"]["max_entries_per_digest"] == 500
+    assert "max_entries_per_digets" not in config["journal"]
+    assert "retrival" not in config
+    assert {(item["kind"], item["message"]) for item in errors} == {
+        ("unknown_key", "unknown config key: journal.max_entries_per_digets"),
+        ("invalid_type", "invalid type for journal.max_entries_per_digest: expected integer, got string"),
+        ("unknown_key", "unknown config key: retrival"),
+    }
+
+
+def test_doctor_runtime_config_rejects_unknown_and_invalid_typed_overrides(tmp_path: Path):
+    source_root = tmp_path / "source"
+    hermes_home = tmp_path / "home"
+    storage_dir = hermes_home / "scope-recall"
+    source_root.mkdir()
+    storage_dir.mkdir(parents=True)
+    (source_root / "config.json").write_text(
+        json.dumps({"journal": {"max_entries_per_digest": 500}}),
+        encoding="utf-8",
+    )
+    (storage_dir / "config.json").write_text(
+        json.dumps({"journal": {"max_entries_per_digets": 999, "max_entries_per_digest": "999"}}),
+        encoding="utf-8",
+    )
+
+    config = doctor_load_runtime_config(source_root, hermes_home)
+    errors = config.get("_config_load_errors")
+
+    assert config["journal"]["max_entries_per_digest"] == 500
+    assert "max_entries_per_digets" not in config["journal"]
+    assert isinstance(errors, list)
+    assert {item["kind"] for item in errors} == {"unknown_key", "invalid_type"}
+
+
+def test_runtime_and_doctor_accept_explicit_journal_compatibility_keys(tmp_path: Path):
+    source_root = tmp_path / "source"
+    hermes_home = tmp_path / "home"
+    storage_dir = hermes_home / "scope-recall"
+    source_root.mkdir()
+    storage_dir.mkdir(parents=True)
+    (source_root / "config.json").write_text(
+        json.dumps({"journal": {"enabled": True}}),
+        encoding="utf-8",
+    )
+    (storage_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "journal": {
+                    "llm_max_attempts": 2,
+                    "llm_retry_attempts": 4,
+                    "timeout": 12.0,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runtime = load_runtime_config(source_root, storage_dir)
+    doctor = doctor_load_runtime_config(source_root, hermes_home)
+
+    assert load_runtime_config_errors(runtime) == []
+    assert doctor.get("_config_load_errors") is None
+    assert runtime["journal"]["llm_max_attempts"] == 2
+    assert runtime["journal"]["llm_retry_attempts"] == 4
+    assert runtime["journal"]["timeout"] == 12.0
+
+
 def test_load_runtime_config_reports_malformed_storage_json(tmp_path: Path):
     plugin_dir = tmp_path / "plugin"
     storage_dir = tmp_path / "scope-recall"

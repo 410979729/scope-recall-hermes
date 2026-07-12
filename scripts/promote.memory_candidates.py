@@ -11,11 +11,11 @@ candidate rows. Low-value archival decisions are never applied unless
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 import os
 import sqlite3
 import sys
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -32,9 +32,13 @@ def _ensure_source_import() -> None:
 _ensure_source_import()
 
 from scope_recall.candidate_promotion import candidate_debt_report, candidate_rows, classify_candidate_row, load_metadata, now_iso  # noqa: E402
+from scope_recall.candidate_review import transition_candidate_metadata  # noqa: E402
 from scope_recall.capture_filters import sanitize_report_text  # noqa: E402
+from scope_recall.config import load_runtime_config  # noqa: E402
+from scope_recall.lifecycle_service import LifecycleConflictError, transition_memory_lifecycle  # noqa: E402
 from scope_recall.maintenance_ops import connect_memory_db, effective_apply, memory_db_path  # noqa: E402
-from scope_recall.sql_store import ensure_governance_schema, record_governance_audit_event  # noqa: E402
+from scope_recall.sql_store import ensure_governance_schema  # noqa: E402
+from scope_recall.vector_runtime import cleanup_persisted_vector_companions  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -56,6 +60,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--review-ids-file", default="", help="JSON/JSONL/text file containing explicit candidate ids reviewed by an operator")
     parser.add_argument("--review-decision", choices=["", "promote", "archive"], default="", help="operator decision for ids from --review-ids-file")
     parser.add_argument("--review-reason", default="", help="required human-readable reason for --review-ids-file decisions")
+    parser.add_argument("--summary-only", action="store_true", help="emit bounded counts and omit candidate samples/review rows")
     parser.add_argument("--json", action="store_true", help="emit JSON output (accepted for operator convenience)")
     return parser.parse_args()
 
@@ -64,21 +69,28 @@ def _db_path(hermes_home: Path) -> Path:
     return memory_db_path(hermes_home)
 
 
+def _cleanup_vector_companions(hermes_home: Path, memory_ids: list[str]) -> dict[str, Any]:
+    """Load profile config and clean persisted companions after truth commit."""
+
+    storage_dir = hermes_home / "scope-recall"
+    config = load_runtime_config(Path(__file__).resolve().parents[1], storage_dir)
+    return cleanup_persisted_vector_companions(
+        storage_dir,
+        memory_ids=memory_ids,
+        vector_config=dict(config.get("vector") or {}),
+        retrieval_config=dict(config.get("retrieval") or {}),
+    )
+
+
 def _metadata_after(metadata: dict[str, Any], *, action: str, reason: str, batch_id: str, at: str) -> dict[str, Any]:
-    updated = dict(metadata)
-    if action == "promote":
-        updated["lifecycle"] = "promoted"
-        updated["promoted_at"] = at
-        updated["promoted_by"] = "candidate-promotion"
-        updated["promotion_reason"] = reason
-        updated["candidate_promotion_batch_id"] = batch_id
-    elif action == "archive":
-        updated["lifecycle"] = "archived"
-        updated["archived_at"] = at
-        updated["archived_by"] = "candidate-promotion"
-        updated["archive_reason"] = reason
-        updated["candidate_promotion_batch_id"] = batch_id
-    return updated
+    return transition_candidate_metadata(
+        metadata,
+        action=action,
+        actor="candidate-promotion",
+        reason=reason,
+        timestamp=at,
+        batch_id=batch_id,
+    )
 
 
 def _audit_payload(row: sqlite3.Row, metadata: dict[str, Any]) -> dict[str, Any]:
@@ -178,6 +190,8 @@ def promote_memory_candidates(
         rows = candidate_rows(conn, scope_ids=candidate_scope_ids, limit=limit)
         reviewed: list[dict[str, Any]] = []
         mutations = {"promoted": 0, "archived": 0, "kept": 0, "skipped": 0}
+        archived_memory_ids: list[str] = []
+        vector_cleanup: dict[str, Any] = {"status": "not_needed", "requested": 0, "deleted": 0}
         at = now_iso()
         action_filter = str(action or "all").strip().lower()
         row_ids = {str(row["id"]) for row in rows}
@@ -239,41 +253,36 @@ def promote_memory_candidates(
 
             before_metadata = load_metadata(row["metadata"])
             after_metadata = _metadata_after(before_metadata, action=effective_action, reason=effective_reason, batch_id=batch, at=at)
-            cursor = conn.execute(
-                """
-                UPDATE memories
-                SET metadata = ?, updated_at = ?
-                WHERE id = ?
-                  AND LOWER(COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.lifecycle') ELSE '' END, '')) = 'candidate'
-                """,
-                (json.dumps(after_metadata, ensure_ascii=False, sort_keys=True), at, str(row["id"])),
-            )
-            if cursor.rowcount != 1:
+            try:
+                transition_memory_lifecycle(
+                    conn,
+                    memory_id=row_id,
+                    lifecycle=str(after_metadata["lifecycle"]),
+                    metadata_updates=after_metadata,
+                    expected_updated_at=str(row["updated_at"] or ""),
+                    expected_lifecycle=str(before_metadata.get("lifecycle") or "candidate"),
+                    actor="scripts/promote.memory_candidates.py",
+                    reason=effective_reason,
+                    event_type="memory_candidate_promotion",
+                    action=effective_action,
+                    batch_id=batch,
+                    timestamp=at,
+                )
+            except LifecycleConflictError as exc:
                 item["effective_action"] = "skip"
-                item["skip_reason"] = "row_not_updated"
+                item["skip_reason"] = "conflict"
+                item["conflict"] = exc.as_dict()
                 mutations["skipped"] += 1
                 continue
+            if effective_action == "archive":
+                archived_memory_ids.append(row_id)
             if effective_action == "promote":
                 mutations["promoted"] += 1
             else:
                 mutations["archived"] += 1
-            record_governance_audit_event(
-                conn,
-                event_id=f"govevt_{uuid.uuid4().hex}",
-                event_type="memory_candidate_promotion",
-                action=effective_action,
-                scope_id=str(row["scope_id"] or ""),
-                target_id=str(row["id"]),
-                batch_id=batch,
-                before=_audit_payload(row, before_metadata),
-                after=_audit_payload(row, after_metadata),
-                reason=effective_reason,
-                actor="scripts/promote.memory_candidates.py",
-                dry_run=False,
-                created_at=at,
-            )
         if apply:
             conn.commit()
+            vector_cleanup = _cleanup_vector_companions(hermes_home, archived_memory_ids)
         after = candidate_debt_report(conn, scope_ids=candidate_scope_ids, limit=limit)
     finally:
         conn.close()
@@ -294,9 +303,50 @@ def promote_memory_candidates(
         },
         "before": before,
         "mutations": mutations,
+        "vector_cleanup": vector_cleanup,
         "after": after,
         "reviewed": reviewed,
     }
+
+
+def _summary_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return an operator-safe bounded view of a promotion plan or receipt."""
+
+    reviewed = payload.get("reviewed")
+    reviewed_rows = reviewed if isinstance(reviewed, list) else []
+
+    def _debt_summary(value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        return {key: item for key, item in value.items() if key != "samples"}
+
+    summary = {
+        key: payload.get(key)
+        for key in (
+            "ok",
+            "status",
+            "dry_run",
+            "path",
+            "batch_id",
+            "scope_filter",
+            "archive_noise",
+            "action_filter",
+            "operator_review",
+            "mutations",
+            "vector_cleanup",
+        )
+    }
+    summary.update(
+        {
+            "before": _debt_summary(payload.get("before")),
+            "after": _debt_summary(payload.get("after")),
+            "reviewed_count": len(reviewed_rows),
+            "reviewed_by_effective_action": dict(Counter(str(row.get("effective_action") or "") for row in reviewed_rows if isinstance(row, dict))),
+            "reviewed_by_lane": dict(Counter(str(row.get("lane") or "") for row in reviewed_rows if isinstance(row, dict))),
+            "reviewed_by_risk": dict(Counter(str(row.get("risk") or "") for row in reviewed_rows if isinstance(row, dict))),
+        }
+    )
+    return summary
 
 
 def main() -> int:
@@ -319,7 +369,8 @@ def main() -> int:
         review_decision=str(args.review_decision or ""),
         review_reason=str(args.review_reason or ""),
     )
-    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    output = _summary_payload(payload) if args.summary_only else payload
+    print(json.dumps(output, ensure_ascii=False, indent=2, sort_keys=True))
     return 0 if payload.get("ok") else 1
 
 

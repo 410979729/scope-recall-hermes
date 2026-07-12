@@ -105,8 +105,11 @@ This file is generated from the packaged `config.json` registry. It lists every 
 
 ## `journal`
 
+- `journal.allow_heuristic_fallback` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.allow_heuristic_fallback` in the `journal` group. Default: `false`
+- `journal.allow_session_end_llm` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.allow_session_end_llm` in the `journal` group. Default: `false`
 - `journal.append_v1` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.append_v1` in the `journal` group. Default: `true`
 - `journal.background_digest_enabled` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.background_digest_enabled` in the `journal` group. Default: `true`
+- `journal.background_digest_synchronous` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.background_digest_synchronous` in the `journal` group. Default: `false`
 - `journal.backlog_fail_entries` (integer; risk: `medium`; restart_required: `yes`) — Doctor failure threshold for unprocessed journal backlog. Default: `3000`
 - `journal.backlog_max_age_hours` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.backlog_max_age_hours` in the `journal` group. Default: `72`
 - `journal.backlog_warn_entries` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.backlog_warn_entries` in the `journal` group. Default: `500`
@@ -117,6 +120,10 @@ This file is generated from the packaged `config.json` registry. It lists every 
 - `journal.enabled` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.enabled` in the `journal` group. Default: `true`
 - `journal.endpoint` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.endpoint` in the `journal` group. Default: `""`
 - `journal.extractor` (string; risk: `medium`; restart_required: `yes`; choices: `llm, heuristic`) — Scope Recall configuration key `journal.extractor` in the `journal` group. Default: `"llm"`
+- `journal.llm_chunk_chars` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.llm_chunk_chars` in the `journal` group. Default: `7000`
+- `journal.llm_max_session_chars` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.llm_max_session_chars` in the `journal` group. Default: `16000`
+- `journal.llm_retry_delay` (number; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.llm_retry_delay` in the `journal` group. Default: `1.0`
+- `journal.llm_timeout` (number; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.llm_timeout` in the `journal` group. Default: `60.0`
 - `journal.max_entries_per_digest` (integer; risk: `medium`; restart_required: `yes`) — Maximum journal entries a digest run may review before dynamic backlog expansion. Default: `500`
 - `journal.max_entries_per_digest_ceiling` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.max_entries_per_digest_ceiling` in the `journal` group. Default: `1200`
 - `journal.no_insert_fail_streak` (integer; risk: `medium`; restart_required: `yes`) — Doctor failure threshold for recent digest runs that processed entries but produced no durable writes for provider/schema/quality-risk reasons. Default: `3`
@@ -225,8 +232,12 @@ This file is generated from the packaged `config.json` registry. It lists every 
 - `vector.embedder.api_key_env` (array; risk: `high`; restart_required: `yes`) — Environment variable names that may hold the embedding API key. Default: `["SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY"]`
 - `vector.embedder.base_url` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.embedder.base_url` in the `vector` group. Default: `"https://generativelanguage.googleapis.com/v1beta/openai"`
 - `vector.embedder.dimensions` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.embedder.dimensions` in the `vector` group. Default: `3072`
+- `vector.embedder.document_prefix` (string; risk: `medium`; restart_required: `yes`) — Optional instruction prefix applied only when embedding indexed documents. Default: `""`
 - `vector.embedder.model` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.embedder.model` in the `vector` group. Default: `"gemini-embedding-001"`
+- `vector.embedder.prompt_profile` (string; risk: `medium`; restart_required: `yes`) — Versioned identifier for the query/document instruction profile; changing it requires a new vector generation. Default: `"default-v1"`
 - `vector.embedder.provider` (string; risk: `medium`; restart_required: `yes`; choices: `openai-compatible, openai, sentence-transformers, local-hash`) — Scope Recall configuration key `vector.embedder.provider` in the `vector` group. Default: `"openai-compatible"`
+- `vector.embedder.query_prefix` (string; risk: `medium`; restart_required: `yes`) — Optional instruction prefix applied only when embedding retrieval queries. Default: `""`
+- `vector.embedder.request_dimensions` (boolean; risk: `medium`; restart_required: `yes`) — Send the configured output dimension to providers that support explicit dimensionality. Default: `false`
 - `vector.enabled` (boolean; risk: `medium`; restart_required: `yes`) — Enable the rebuildable vector companion index. Default: `true`
 - `vector.fallback_backend` (string; risk: `medium`; restart_required: `yes`; choices: `sqlite-bruteforce, disabled`) — Scope Recall configuration key `vector.fallback_backend` in the `vector` group. Default: `"sqlite-bruteforce"`
 - `vector.fallback_embedder.dimensions` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.fallback_embedder.dimensions` in the `vector` group. Default: `256`

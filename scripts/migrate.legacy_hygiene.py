@@ -35,6 +35,8 @@ if PACKAGE_NAME not in sys.modules:
 
 from scope_recall_legacy_hygiene_runtime.gating import compact_text  # noqa: E402
 from scope_recall_legacy_hygiene_runtime.governance import classify_memory  # noqa: E402
+from scope_recall_legacy_hygiene_runtime.lifecycle_service import transition_memory_lifecycle  # noqa: E402
+from scope_recall_legacy_hygiene_runtime.sql_store import ensure_schema  # noqa: E402
 
 SCRATCH_SOURCES = {"raw", "scratch", "legacy-raw", "legacy-scratch", "turn-user", "turn-assistant"}
 SCRATCH_TYPES = {"raw", "scratch", "general"}
@@ -159,6 +161,42 @@ def count_after(conn: sqlite3.Connection) -> dict[str, int]:
     return {"legacy_scratch_remaining": scratch, "durable_missing_lifecycle_or_category": missing, "archived_rows": archived}
 
 
+def apply_lifecycle_updates(
+    conn: sqlite3.Connection,
+    updates: list[tuple[str, str]],
+    *,
+    action: str,
+    migrated_at: str,
+) -> int:
+    """Apply planned metadata through the atomic lifecycle domain service."""
+
+    applied = 0
+    for metadata_json, memory_id in updates:
+        row = conn.execute(
+            "SELECT updated_at, metadata FROM memories WHERE id = ?",
+            (memory_id,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(f"planned legacy-hygiene row disappeared: {memory_id}")
+        metadata = load_metadata(metadata_json)
+        lifecycle = str(metadata.get("lifecycle") or "active").strip().lower()
+        transition_memory_lifecycle(
+            conn,
+            memory_id=memory_id,
+            lifecycle=lifecycle,
+            metadata_updates=metadata,
+            expected_updated_at=str(row["updated_at"] or ""),
+            actor="scope-recall-legacy-hygiene",
+            reason=action.replace("_", "-"),
+            event_type="legacy_hygiene",
+            action=action,
+            batch_id=f"legacy-hygiene:{migrated_at}",
+            timestamp=migrated_at,
+        )
+        applied += 1
+    return applied
+
+
 def main() -> int:
     args = parse_args()
     if args.db:
@@ -177,12 +215,25 @@ def main() -> int:
         before = count_after(conn)
         archive_updates, normalize_updates, archive_samples, normalize_samples = planned_updates(rows, migrated_at=migrated_at)
         backup = ""
+        applied_archive = 0
+        applied_normalize = 0
         if args.apply and (archive_updates or normalize_updates):
             if not args.no_backup:
                 backup = backup_sqlite(conn, db_path)
+            ensure_schema(conn)
             with conn:
-                conn.executemany("UPDATE memories SET metadata = ? WHERE id = ?", archive_updates)
-                conn.executemany("UPDATE memories SET metadata = ? WHERE id = ?", normalize_updates)
+                applied_archive = apply_lifecycle_updates(
+                    conn,
+                    archive_updates,
+                    action="archive_legacy_scratch",
+                    migrated_at=migrated_at,
+                )
+                applied_normalize = apply_lifecycle_updates(
+                    conn,
+                    normalize_updates,
+                    action="normalize_durable_metadata",
+                    migrated_at=migrated_at,
+                )
         after = count_after(conn)
         result = {
             "ok": True,
@@ -191,8 +242,8 @@ def main() -> int:
             "backup": backup,
             "planned_archive_legacy_scratch": len(archive_updates),
             "planned_normalize_durable_metadata": len(normalize_updates),
-            "applied_archive_legacy_scratch": len(archive_updates) if args.apply else 0,
-            "applied_normalize_durable_metadata": len(normalize_updates) if args.apply else 0,
+            "applied_archive_legacy_scratch": applied_archive,
+            "applied_normalize_durable_metadata": applied_normalize,
             "before": before,
             "after": after,
             "archive_samples": archive_samples[: max(0, int(args.limit))],

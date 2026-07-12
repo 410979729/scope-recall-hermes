@@ -13,6 +13,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Protocol, runtime_checkable
 
+from .capture_filters import sanitize_report_text
+
 logger = logging.getLogger(__name__)
 
 _NATIVE_VECTOR_PROBE: dict[str, Any] | None = None
@@ -43,6 +45,15 @@ class VectorHit:
     distance: float = 0.0
 
 
+class VectorStoreCompatibilityError(RuntimeError):
+    """An existing vector table cannot be opened with the requested schema.
+
+    Compatibility failures are deliberately non-destructive. Callers that
+    need a different schema or embedding space must build a new generation
+    explicitly instead of replacing the active table during startup.
+    """
+
+
 @runtime_checkable
 class VectorStore(Protocol):
     @property
@@ -53,6 +64,7 @@ class VectorStore(Protocol):
 
     def is_available(self) -> bool: ...
     def open(self) -> None: ...
+    def open_existing(self) -> None: ...
     def close(self) -> None: ...
     def upsert(self, record: VectorRecord | dict[str, Any]) -> None: ...
     def upsert_records(self, rows: Iterable[dict[str, Any]]) -> None: ...
@@ -72,7 +84,7 @@ def vector_record_to_dict(record: VectorRecord | Mapping[str, Any] | dict[str, A
 
 
 def _trim_probe_output(value: str, *, limit: int = 500) -> str:
-    text = (value or "").strip()
+    text = sanitize_report_text(value or "").strip()
     if len(text) <= limit:
         return text
     return text[: limit - 3] + "..."
@@ -114,7 +126,7 @@ def _probe_native_vector_dependencies() -> dict[str, Any]:
             "stderr": f"native dependency import probe timed out after {_NATIVE_VECTOR_PROBE_TIMEOUT:.1f}s",
         }
     except Exception as exc:  # pragma: no cover - defensive
-        status = {"safe": False, "returncode": None, "stdout": "", "stderr": str(exc)}
+        status = {"safe": False, "returncode": None, "stdout": "", "stderr": _trim_probe_output(str(exc))}
     _NATIVE_VECTOR_PROBE = status
     return dict(status)
 
@@ -186,17 +198,40 @@ class LanceVectorStore:
         self._db_path.mkdir(parents=True, exist_ok=True)
         self._db = lancedb.connect(str(self._db_path))
         self._table = self._open_or_create_table()
+        self._ensure_schema_compatible()
 
-    def _open_or_create_table(self):
+    def open_existing(self) -> None:
+        """Open an existing table without creating a directory, database, or table."""
+
+        lancedb = _optional_lancedb()
+        if lancedb is None or _optional_pyarrow() is None:
+            raise RuntimeError("lancedb/pyarrow is not installed")
+        if not self._db_path.is_dir():
+            raise FileNotFoundError("LanceDB physical storage is missing")
+        self._db = lancedb.connect(str(self._db_path))
+        tables = self._listed_tables()
+        if self._table_name not in tables:
+            self.close()
+            raise VectorStoreCompatibilityError(
+                f"LanceDB physical storage is missing table {self._table_name!r}"
+            )
+        self._table = self._db.open_table(self._table_name)
+        self._ensure_schema_compatible()
+
+    def _listed_tables(self) -> set[str]:
         assert self._db is not None
         try:
             listed = self._db.list_tables()
-            tables = set(getattr(listed, "tables", listed))
+            return set(getattr(listed, "tables", listed))
         except Exception:
             try:
-                tables = set(self._db.table_names())
+                return set(self._db.table_names())
             except Exception:
-                tables = set()
+                return set()
+
+    def _open_or_create_table(self):
+        assert self._db is not None
+        tables = self._listed_tables()
         if self._table_name in tables:
             return self._db.open_table(self._table_name)
         schema = self._schema()
@@ -223,12 +258,27 @@ class LanceVectorStore:
         table = self._require_table()
         existing = set(getattr(table.schema, "names", []) or [])
         required = {"id", "scope_id", "source", "target", "content", "summary", "updated_at", "vector"}
-        if required <= existing:
+        missing = sorted(required - existing)
+        actual_dimensions = 0
+        if "vector" in existing:
+            try:
+                vector_field = table.schema.field("vector")
+                actual_dimensions = int(getattr(vector_field.type, "list_size", 0) or 0)
+            except Exception:
+                actual_dimensions = 0
+        if not missing and (not actual_dimensions or actual_dimensions == self._dimensions):
             return
-        if self._db is None:
-            raise RuntimeError("vector database is not open")
-        self._db.drop_table(self._table_name, ignore_missing=True)
-        self._table = self._db.create_table(self._table_name, schema=self._schema())
+        details: list[str] = []
+        if missing:
+            details.append(f"missing fields: {', '.join(missing)}")
+        if actual_dimensions and actual_dimensions != self._dimensions:
+            details.append(f"dimensions {actual_dimensions} != requested {self._dimensions}")
+        if not actual_dimensions and "vector" in existing:
+            details.append("vector dimensions are unreadable")
+        raise VectorStoreCompatibilityError(
+            f"LanceDB table {self._table_name!r} is incompatible ({'; '.join(details)}); "
+            "build and activate a new vector generation explicitly"
+        )
 
     def upsert_records(self, rows: Iterable[dict[str, Any]]) -> None:
         self._ensure_schema_compatible()
@@ -317,42 +367,18 @@ class LanceVectorStore:
         }
 
     def repair_records(self, desired_records: dict[str, dict[str, Any]]) -> int:
-        """Rewrite the Lance table to exactly one newest row per desired id.
+        """Refuse in-place full rewrites of an active LanceDB table.
 
-        SQLite remains the source of truth; this method only repairs the vector
-        companion by removing stale ids and duplicate physical rows.
+        A rewrite cannot be made failure-atomic with the ordinary table API:
+        deleting the current table before the replacement is validated can
+        destroy a healthy generation.  Explicit migration code must build a
+        separate generation, validate it, then CAS-switch the durable pointer.
         """
-        if self._db is None:
-            raise RuntimeError("vector database is not open")
-        rows = self._table_rows()
-        latest_by_id: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            memory_id = str(row.get("id") or "")
-            if not memory_id or memory_id not in desired_records:
-                continue
-            current = latest_by_id.get(memory_id)
-            if current is None or str(row.get("updated_at") or "") >= str(current.get("updated_at") or ""):
-                latest_by_id[memory_id] = row
 
-        repaired: list[dict[str, Any]] = []
-        for memory_id, desired in desired_records.items():
-            row = latest_by_id.get(memory_id)
-            if row is None:
-                continue
-            if str(row.get("updated_at") or "") != str(desired.get("updated_at") or ""):
-                continue
-            repaired.append(row)
-
-        self._db.drop_table(self._table_name, ignore_missing=True)
-        schema = self._schema()
-        if repaired:
-            pa = _optional_pyarrow()
-            if pa is None:
-                raise RuntimeError("pyarrow is not installed")
-            self._table = self._db.create_table(self._table_name, data=pa.Table.from_pylist(repaired, schema=schema))
-        else:
-            self._table = self._db.create_table(self._table_name, schema=schema)
-        return len(repaired)
+        del desired_records
+        raise VectorStoreCompatibilityError(
+            "in-place LanceDB repair is disabled; build and activate a shadow vector generation explicitly"
+        )
 
     def search(self, vector: list[float], *, scope_id: str, limit: int) -> list[dict[str, Any]]:
         if not vector:
