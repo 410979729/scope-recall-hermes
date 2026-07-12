@@ -25,7 +25,14 @@ from .recall_pipeline import humanize_filter_trace, humanize_recall_components
 from .relation_extraction import sync_extracted_relations_for_memory
 from .sql_store import curated_recall_item_id, exact_duplicate_groups, iter_curated_entries, update_row
 from .storage_views import _curated_memory_allowed
-from .vector_runtime import mark_vector_needs_repair, refresh_vector_audit, replay_vector_outbox, setup_vector_layer, upsert_vector_record
+from .vector_runtime import (
+    mark_vector_needs_repair,
+    refresh_vector_audit,
+    replay_vector_outbox,
+    setup_vector_layer,
+    upsert_vector_record,
+    vector_delete_intent_required,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -591,10 +598,7 @@ def _hard_delete_provider_memories(
     """Commit hard-delete truth plus outbox and expose companion status."""
 
     with provider._lock:
-        vector_store = getattr(provider, "_vector_store", None)
-        vector_enabled = bool(getattr(provider, "_vector_enabled", False))
-        vector_status = str(getattr(provider, "_vector_status", "") or "").lower()
-        require_vector_delete = vector_store is not None or (vector_enabled and vector_status != "disabled")
+        require_vector_delete = vector_delete_intent_required(provider)
 
         result = hard_delete_memories(
             provider._require_conn(),

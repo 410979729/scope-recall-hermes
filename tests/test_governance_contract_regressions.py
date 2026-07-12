@@ -75,7 +75,8 @@ def test_tool_store_rejected_secret_returns_receipt(tmp_path):
     assert payload["receipt"]["provider"] == "scope-recall"
 
 
-def test_store_and_merge_return_contract_receipts(tmp_path):
+def test_store_and_merge_return_contract_receipts(tmp_path, monkeypatch):
+    monkeypatch.delenv("SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY", raising=False)
     provider = _provider(tmp_path)
     try:
         first = json.loads(provider.handle_tool_call("scope_recall_store", {"content": "Joy prefers direct answers.", "target": "user"}))

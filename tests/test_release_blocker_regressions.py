@@ -108,6 +108,47 @@ def test_dedupe_without_generation_fails_closed_and_preserves_truth(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0] == 0
 
 
+def test_dedupe_degraded_never_initialized_vector_has_no_outbox_precondition(tmp_path):
+    conn = _conn(tmp_path / "memory.sqlite3")
+    _add_memory(conn, "dupe-a")
+    _add_memory(conn, "dupe-b")
+    conn.commit()
+    provider = _MemoryProvider(conn)
+    provider._vector_status = "degraded"
+
+    result = dedupe_memories(provider, dry_run=False, scope_only=False)
+
+    assert result["ok"] is True
+    assert result["deleted"] == 1
+    assert result["vector_status"] == "not_required"
+    assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0] == 0
+
+
+def test_vector_delete_requirement_reads_generation_when_runtime_is_disabled(tmp_path):
+    conn = _conn(tmp_path / "memory.sqlite3")
+    _add_memory(conn, "dupe-a")
+    _add_memory(conn, "dupe-b")
+    _register_generation(conn)
+    provider = _MemoryProvider(conn)
+    provider._vector_enabled = False
+    provider._vector_status = "disabled"
+
+    result = dedupe_memories(provider, dry_run=False, scope_only=False)
+
+    assert result["deleted"] == 1
+    assert result["vector_pending"] is True
+    assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM vector_outbox WHERE operation = 'delete'").fetchone()[0] == 1
+
+
+def test_vector_delete_requirement_fails_closed_for_store_without_generation(tmp_path):
+    conn = _conn(tmp_path / "memory.sqlite3")
+    provider = _MemoryProvider(conn, vector_store=object())
+
+    assert vector_runtime.vector_delete_intent_required(provider) is True
+
+
 def test_dedupe_degraded_store_uses_durable_outbox_without_silent_zero(tmp_path):
     conn = _conn(tmp_path / "memory.sqlite3")
     _add_memory(conn, "dupe-a")
