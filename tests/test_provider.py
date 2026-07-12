@@ -3112,7 +3112,8 @@ def test_dedupe_scope_only_false_requires_operator_mode(tmp_path):
         p2.shutdown()
 
 
-def test_dedupe_scope_only_false_allowed_only_with_operator_config(tmp_path):
+def test_dedupe_scope_only_false_allowed_only_with_operator_config(tmp_path, monkeypatch):
+    monkeypatch.delenv("SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY", raising=False)
     _write_scope_recall_config(tmp_path, {"maintenance_tools_enabled": True})
     p1 = load_memory_provider("scope-recall")
     p2 = load_memory_provider("scope-recall")

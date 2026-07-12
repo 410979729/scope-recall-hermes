@@ -49,7 +49,13 @@ from .nightly_llm import (
 )
 from .scope import accessible_scope_ids, build_scope_id, build_shared_scope_id, canonical_user_id, normalize_scope_identity, writable_scope_ids
 from .sql_store import ensure_schema, exact_duplicate_groups, store_row, update_row
-from .vector_runtime import _vector_mutation_lock, mark_vector_needs_repair, setup_vector_layer, upsert_vector_record
+from .vector_runtime import (
+    _vector_mutation_lock,
+    mark_vector_needs_repair,
+    setup_vector_layer,
+    upsert_vector_record,
+    vector_delete_intent_required,
+)
 
 __all__ = [
     "DigestCandidate",
@@ -1119,9 +1125,11 @@ def cleanup_exact_duplicates(conn: sqlite3.Connection, scope: ScopeProfile, vect
     if not delete_ids:
         return 0
     vector_store = getattr(vector_runtime, "_vector_store", None) if vector_runtime is not None else None
-    vector_enabled = bool(getattr(vector_runtime, "_vector_enabled", False)) if vector_runtime is not None else False
-    vector_status = str(getattr(vector_runtime, "_vector_status", "") or "").lower() if vector_runtime is not None else "disabled"
-    require_vector_delete = vector_store is not None or (vector_enabled and vector_status != "disabled")
+    require_vector_delete = (
+        vector_delete_intent_required(vector_runtime)
+        if vector_runtime is not None
+        else vector_store is not None
+    )
     vector_attempted = False
 
     def vector_delete(memory_ids: list[str]) -> None:

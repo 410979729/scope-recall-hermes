@@ -1185,6 +1185,20 @@ class _FakeDigestVectorRuntime:
         self._vector_message = ""
 
 
+class _NeverInitializedDigestVectorRuntime:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        self._vector_store = None
+        self._vector_enabled = True
+        self._vector_ready = False
+        self._vector_status = "degraded"
+        self._vector_generation_id = ""
+        self._vector_message = "embedder unavailable before companion initialization"
+
+    def _require_conn(self) -> sqlite3.Connection:
+        return self._conn
+
+
 def _duplicate_cleanup_scope() -> ScopeProfile:
     scope = RuntimeScope(platform="cli", user_id="local", agent_identity="default", agent_workspace="hermes")
     return ScopeProfile(
@@ -1233,6 +1247,21 @@ def test_nightly_duplicate_cleanup_commits_hard_delete_audit():
     assert audit is not None
     assert audit["action"] == "hard_delete"
     assert audit["target_id"] in {"dupe-new", "dupe-old"}
+
+
+def test_nightly_duplicate_cleanup_allows_degraded_never_initialized_vector_runtime():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    _store_duplicate_cleanup_row(conn, memory_id="dupe-new")
+    _store_duplicate_cleanup_row(conn, memory_id="dupe-old")
+    vector_runtime = _NeverInitializedDigestVectorRuntime(conn)
+
+    deleted = cleanup_exact_duplicates(conn, _duplicate_cleanup_scope(), vector_runtime)
+
+    assert deleted == 1
+    assert conn.execute("SELECT COUNT(*) FROM memories WHERE id IN ('dupe-new', 'dupe-old')").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0] == 0
 
 
 def test_nightly_duplicate_cleanup_commits_truth_and_queues_retry_when_vector_delete_fails():

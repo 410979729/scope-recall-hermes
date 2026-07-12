@@ -23,6 +23,7 @@ All notable changes to `scope-recall` will be documented in this file.
 - Sanitized native-dependency probe output and bounded aggregated vector fallback diagnostics across internal status, operator stats, and warning logs.
 - Added a subprocess native-dependency safety probe before doctor imports LanceDB/PyArrow in-process, preventing illegal-instruction crashes from unsafe wheels.
 - Hardened archive and hard-delete flows with exact-ID scoping, vector-companion cleanup across active-generation and legacy roots, rollback recovery records, and truth-drift guards for repair apply.
+- Allowed merge, dedupe, and nightly hard-delete flows to proceed when vector startup degraded before any companion generation existed, while continuing to require durable outbox intent for active, disabled, or repair-needed companions.
 - Hardened automatic capture against folded inline data URLs while preserving surrounding prose.
 - Added lifecycle-safe vector cleanup when candidate memories are archived, including fallback SQLite companion cleanup and repair-debt reporting.
 - Removed folded/multiline data-URL payload continuations at the journal storage boundary while preserving surrounding user prose.

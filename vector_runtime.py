@@ -622,6 +622,48 @@ def setup_vector_layer(provider: Any) -> None:
         provider._vector_message = ""
 
 
+def vector_delete_intent_required(provider: Any) -> bool:
+    """Return whether hard delete must persist a vector outbox intent.
+
+    Merely configuring a vector backend does not mean a companion generation
+    has ever existed. A fresh runtime can be ``degraded`` before opening any
+    store (for example, when its primary embedder credentials are absent). In
+    that state there is no vector row to delete and therefore no generation to
+    key a durable event to.
+
+    Existing stores, active generation state, and ambiguous repair/error states
+    remain fail-closed. The SQLite lookup also covers a runtime where vectors
+    are currently disabled and setup did not hydrate ``_vector_generation_id``.
+    """
+
+    if getattr(provider, "_vector_store", None) is not None:
+        return True
+    if str(getattr(provider, "_vector_generation_id", "") or "").strip():
+        return True
+
+    try:
+        conn = provider._require_conn()
+        state_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vector_generation_state'"
+        ).fetchone()
+        if state_table is not None:
+            row = conn.execute(
+                "SELECT value FROM vector_generation_state WHERE key = 'current_generation'"
+            ).fetchone()
+            if row is not None and str(row[0] or "").strip():
+                return True
+    except Exception:
+        # An unreadable truth boundary is not evidence that no companion exists.
+        return True
+
+    status = str(getattr(provider, "_vector_status", "") or "").strip().lower()
+    enabled = bool(getattr(provider, "_vector_enabled", False))
+    if status == "degraded":
+        return False
+    if not enabled and status in {"", "disabled"}:
+        return False
+    return status not in {"disabled", "degraded"}
+
 
 def refresh_vector_audit(provider: Any) -> dict[str, int]:
     with _vector_mutation_lock(provider):
