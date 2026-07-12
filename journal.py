@@ -15,11 +15,12 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from .capture_filters import sanitize_report_text, should_capture_text
+from .capture_filters import sanitize_report_text, sanitize_structured_value, should_capture_text
 from .digest_run_results import journal_digest_metadata, journal_digest_receipt_fields, journal_digest_success_result, no_unprocessed_journal_result
 from .gating import clean_text, compact_text, dedup_key
 from .governance import is_conflicting, merge_memory_text, semantic_similarity
 from .models import RuntimeScope
+from .lifecycle_policy import ordinary_recall_lifecycle_visible_sql
 from .nightly_digest import call_llm
 from .journal_candidates import (
     JournalDigestCandidate,
@@ -273,10 +274,12 @@ def _find_match(conn: sqlite3.Connection, scope_ids: list[str], candidate: Journ
     placeholders = ",".join("?" for _ in scope_ids)
     rows = conn.execute(
         f"""
-        SELECT id, content, metadata
-        FROM memories
-        WHERE scope_id IN ({placeholders}) AND target = ?
-        ORDER BY updated_at DESC
+        SELECT m.id, m.content, m.metadata
+        FROM memories AS m
+        WHERE m.scope_id IN ({placeholders})
+          AND m.target = ?
+          AND {ordinary_recall_lifecycle_visible_sql('m')}
+        ORDER BY m.updated_at DESC
         LIMIT 300
         """,
         [*scope_ids, candidate.target],
@@ -289,15 +292,11 @@ def _find_match(conn: sqlite3.Connection, scope_ids: list[str], candidate: Journ
     candidate_tags = set(candidate.tags)
     candidate_topic_tags = {tag for tag in candidate_tags if tag.startswith("topic:")}
     candidate_session_tags = {tag for tag in candidate_tags if tag.startswith("session:")}
-    hidden_lifecycles = {"archived", "candidate", "scratch", "superseded", "obsolete", "rejected"}
     for row in rows:
         try:
             metadata = json.loads(str(row["metadata"] or "{}"))
         except Exception:
             metadata = {}
-        lifecycle = str(metadata.get("lifecycle") or "promoted").strip().lower() if isinstance(metadata, dict) else "promoted"
-        if lifecycle in hidden_lifecycles:
-            continue
         content = str(row["content"])
         if dedup_key(content) == candidate_key:
             return str(row["id"]), content, 1.0
@@ -326,6 +325,16 @@ def _find_match(conn: sqlite3.Connection, scope_ids: list[str], candidate: Journ
             best_content = content
             best_score = score
     return best_id, best_content, best_score
+
+
+def _ordinary_match_still_visible(conn: sqlite3.Connection, memory_id: str) -> bool:
+    if not memory_id:
+        return False
+    row = conn.execute(
+        f"SELECT 1 FROM memories AS m WHERE m.id = ? AND {ordinary_recall_lifecycle_visible_sql('m')}",
+        (memory_id,),
+    ).fetchone()
+    return row is not None
 
 
 def _memory_scope_id(conn: sqlite3.Connection, memory_id: str) -> str:
@@ -380,8 +389,10 @@ def _merge_metadata(conn: sqlite3.Connection, *, memory_id: str, candidate: Jour
     existing = load_metadata(row["metadata"])
     incoming = candidate_metadata(candidate, run_id)
     for key in ("entities", "tags", "journal_entry_ids", "journal_session_ids"):
-        existing_values = existing.get(key) if isinstance(existing.get(key), list) else []
-        incoming_values = incoming.get(key) if isinstance(incoming.get(key), list) else []
+        existing_value = existing.get(key)
+        incoming_value = incoming.get(key)
+        existing_values: list[Any] = existing_value if isinstance(existing_value, list) else []
+        incoming_values: list[Any] = incoming_value if isinstance(incoming_value, list) else []
         merged = _unique([*map(str, existing_values), *map(str, incoming_values)], limit=240 if key == "journal_entry_ids" else 40)
         if merged:
             existing[key] = merged
@@ -390,6 +401,8 @@ def _merge_metadata(conn: sqlite3.Connection, *, memory_id: str, candidate: Jour
             existing[key] = incoming[key]
     existing["importance"] = max(float(existing.get("importance") or 0.0), float(incoming.get("importance") or 0.0))
     existing["confidence"] = max(float(existing.get("confidence") or 0.0), float(incoming.get("confidence") or 0.0))
+    safe_metadata, _ = sanitize_structured_value(existing)
+    existing = safe_metadata if isinstance(safe_metadata, dict) else {}
     conn.execute("UPDATE memories SET metadata = ? WHERE id = ?", (json.dumps(existing, ensure_ascii=False, sort_keys=True), memory_id))
     sync_memory_entities(conn, memory_id=memory_id, content=str(row["content"]), target=str(row["target"]), metadata=existing)
 
@@ -460,6 +473,8 @@ def apply_journal_candidates(
                 conn.commit()
             continue
         match_id, match_content, score = _find_match(conn, scope_ids, candidate)
+        if match_id and not _ordinary_match_still_visible(conn, match_id):
+            match_id, match_content, score = "", "", 0.0
         match_scope_id = _memory_scope_id(conn, match_id) if match_id else ""
         match_is_writable = bool(match_scope_id and match_scope_id in set(write_scope_ids))
         if match_id and score >= 0.88:
@@ -1010,10 +1025,27 @@ def main(argv: list[str] | None = None) -> int:
             llm_append_v1=args.append_v1,
         )
         result["elapsed_seconds"] = round(time.time() - started, 3)
-        if args.verbose or args.dry_run:
+        if args.verbose:
             print(json.dumps(result, ensure_ascii=False, indent=2))
         else:
-            compact = {key: result.get(key) for key in ("ok", "status", "processed_entries", "candidates", "inserted", "updated", "skipped")}
+            compact = {
+                key: result.get(key)
+                for key in (
+                    "ok",
+                    "status",
+                    "processed_entries",
+                    "candidates",
+                    "inserted",
+                    "updated",
+                    "skipped",
+                    "productive_writes",
+                    "backlog_before",
+                    "backlog_after",
+                    "backlog_delta",
+                    "quarantine_counts",
+                    "health_flags",
+                )
+            }
             print(json.dumps(compact, ensure_ascii=False))
         return 0 if result.get("ok") else 1
     except Exception as exc:

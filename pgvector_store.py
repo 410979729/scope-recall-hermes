@@ -83,6 +83,46 @@ class PGVectorStore:
             register_vector(self._conn)
         self._ensure_schema()
 
+    def open_existing(self) -> None:
+        """Open an existing PGVector table in a read-only transaction."""
+
+        dsn = os.environ.get(self._dsn_env)
+        if not dsn:
+            raise RuntimeError(f"pgvector DSN environment variable is not set: {self._dsn_env}")
+        psycopg = importlib.import_module("psycopg")
+        pgvector_psycopg = importlib.import_module("pgvector.psycopg")
+        self._conn = psycopg.connect(dsn)
+        register_vector = getattr(pgvector_psycopg, "register_vector", None)
+        if callable(register_vector):
+            register_vector(self._conn)
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute("SET TRANSACTION READ ONLY")
+                cur.execute("SELECT to_regclass(%s)", (self._table_name,))
+                if cur.fetchone()[0] is None:
+                    raise RuntimeError(f"PGVector physical storage is missing table {self._table_name!r}")
+                cur.execute(
+                    """
+                    SELECT format_type(attribute.atttypid, attribute.atttypmod)
+                    FROM pg_attribute AS attribute
+                    WHERE attribute.attrelid = to_regclass(%s)
+                      AND attribute.attname = 'vector'
+                      AND NOT attribute.attisdropped
+                    """,
+                    (self._table_name,),
+                )
+                row = cur.fetchone()
+                vector_type = str(row[0] or "") if row else ""
+                match = re.fullmatch(r"vector\((\d+)\)", vector_type)
+                if match is None or int(match.group(1)) != self._dimensions:
+                    raise RuntimeError(
+                        "PGVector physical identity mismatch: "
+                        f"vector_type={vector_type!r}, expected_dimensions={self._dimensions}"
+                    )
+        except Exception:
+            self.close()
+            raise
+
     def _require_conn(self) -> Any:
         if self._conn is None:
             raise RuntimeError("pgvector store is not open")
@@ -175,7 +215,9 @@ class PGVectorStore:
     def list_records(self) -> dict[str, dict[str, Any]]:
         conn = self._require_conn()
         with conn.cursor() as cur:
-            cur.execute(f"SELECT id, scope_id, source, target, content, summary, updated_at FROM {self._quoted_table}")
+            cur.execute(
+                f"SELECT id, scope_id, source, target, content, summary, updated_at, vector FROM {self._quoted_table}"
+            )
             rows = cur.fetchall()
         output: dict[str, dict[str, Any]] = {}
         for row in rows:
@@ -187,6 +229,7 @@ class PGVectorStore:
                 "content": str(row[4]),
                 "summary": str(row[5]),
                 "updated_at": str(row[6]),
+                "vector": [float(value) for value in row[7]],
             }
         return output
 

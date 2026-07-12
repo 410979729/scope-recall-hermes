@@ -69,6 +69,7 @@ def parse_args() -> argparse.Namespace:
     candidates_list.add_argument("--target", default="")
     candidates_list.add_argument("--scope-id", default="")
     candidates_list.add_argument("--limit", type=int, default=20)
+    candidates_list.add_argument("--full", action="store_true", help="Include complete candidate metadata (still redacted unless --raw)")
     _add_common_options(candidates_list)
 
     recall = subparsers.add_parser("recall")
@@ -85,9 +86,12 @@ def _db_path(args: argparse.Namespace) -> Path:
     return Path(args.db).expanduser().resolve() if args.db else memory_db_path(Path(args.hermes_home))
 
 
-def _emit(payload: dict[str, Any], *, json_output: bool, text_key: str) -> int:
+def _emit(payload: dict[str, Any], *, json_output: bool, text_key: str, compact_json: bool = False) -> int:
     if json_output:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        if compact_json:
+            print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        else:
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
         print(render_text(payload, key=text_key))
     return 0 if payload.get("ok") else 1
@@ -109,8 +113,20 @@ def main() -> int:
             payload = inspect_memory(conn, memory_id=args.id, raw=bool(args.raw))
             return _emit(payload, json_output=args.json, text_key="memory")
         if args.command == "candidates" and args.candidates_command == "list":
-            payload = list_candidates(conn, target=args.target, scope_id=args.scope_id, limit=args.limit, raw=bool(args.raw))
-            return _emit(payload, json_output=args.json, text_key="candidates")
+            payload = list_candidates(
+                conn,
+                target=args.target,
+                scope_id=args.scope_id,
+                limit=args.limit,
+                raw=bool(args.raw),
+                full=bool(args.full),
+            )
+            return _emit(
+                payload,
+                json_output=args.json,
+                text_key="candidates",
+                compact_json=not bool(args.full or args.raw),
+            )
         if args.command == "recall" and args.recall_command == "explain":
             payload = explain_recall(conn, query=args.query, scope_id=args.scope_id, limit=args.limit)
             return _emit(payload, json_output=args.json, text_key="results")

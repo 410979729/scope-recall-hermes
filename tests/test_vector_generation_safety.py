@@ -1,0 +1,1058 @@
+"""Adversarial safety tests for vector generations and non-destructive runtime behavior."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+from types import SimpleNamespace
+
+import pytest
+
+import scope_recall.vector_runtime as vector_runtime_module
+import scope_recall.vector_store as vector_store_module
+from scope_recall import memory_ops
+from scope_recall.doctor_vector import vector_generation_report
+from scope_recall.embedders import LocalHashEmbedder
+from scope_recall.provider import MemoryProvider
+from scope_recall.sql_store import ensure_schema
+from scope_recall.sqlite_vector_store import SQLiteBruteForceVectorStore
+from scope_recall.vector_generation import (
+    GenerationCompatibilityError,
+    GenerationIdentity,
+    activate_generation,
+    bootstrap_legacy_generation,
+    claim_vector_events,
+    complete_vector_event,
+    current_generation,
+    enqueue_vector_event,
+    ensure_vector_generation_schema,
+    fail_vector_event,
+    finish_migration_receipt,
+    generation_health_report,
+    register_generation,
+    start_migration_receipt,
+    validate_generation_compatibility,
+)
+from scope_recall.vector_runtime import _open_vector_store, replay_vector_outbox, setup_vector_layer
+from scope_recall.vector_migration import build_vector_generation
+from scope_recall.vector_store import LanceVectorStore
+
+
+def _sentinel_row(dimensions: int) -> dict[str, object]:
+    return {
+        "id": "sentinel-3072",
+        "scope_id": "scope-a",
+        "source": "test",
+        "target": "memory",
+        "content": "healthy primary index sentinel",
+        "summary": "healthy primary index sentinel",
+        "updated_at": "2026-07-10T00:00:00+00:00",
+        "vector": [0.0] * dimensions,
+    }
+
+
+def test_dimension_mismatch_never_drops_healthy_lancedb_table(tmp_path):
+    vector_dir = tmp_path / "lancedb"
+    original = LanceVectorStore(vector_dir, table_name="memories", dimensions=3072)
+    original.open()
+    original.upsert_records([_sentinel_row(3072)])
+    original.close()
+
+    provider = SimpleNamespace(
+        _storage_dir=tmp_path,
+        _vector_config={"backend": "lancedb", "table_name": "memories"},
+        _retrieval_config={"metric": "cosine"},
+        _vector_backend="lancedb",
+        _vector_store=None,
+        _vector_message="",
+    )
+
+    try:
+        _open_vector_store(provider, dimensions=256)
+    except RuntimeError:
+        # A compatibility failure is the expected safe behavior. The durable
+        # assertion below proves it did not mutate the existing generation.
+        pass
+    finally:
+        if provider._vector_store is not None:
+            provider._vector_store.close()
+
+    reopened = LanceVectorStore(vector_dir, table_name="memories", dimensions=3072)
+    reopened.open()
+    try:
+        assert reopened.dimensions == 3072
+        assert reopened.count_rows() == 1
+        assert reopened.list_ids() == ["sentinel-3072"]
+    finally:
+        reopened.close()
+
+
+def _identity(*, model: str = "gemini-embedding-001", dimensions: int = 3072) -> GenerationIdentity:
+    return GenerationIdentity(
+        backend="lancedb",
+        provider="openai-compatible",
+        model=model,
+        dimensions=dimensions,
+        metric="cosine",
+        prompt_profile="retrieval-v1",
+        table_name="memories",
+    )
+
+
+@pytest.mark.parametrize(
+    "storage_path",
+    [
+        "/" + "home/operator/private/generation",
+        "../escape",
+        "vector-generations/../escape",
+        "C:" + "\\Users\\operator\\private\\generation",
+        "\\\\" + "server\\share\\generation",
+    ],
+)
+def test_generation_registration_rejects_invalid_storage_paths_before_persistence(storage_path):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_vector_generation_schema(conn)
+
+    with pytest.raises(GenerationCompatibilityError, match="storage_path"):
+        register_generation(
+            conn,
+            generation_id="gen-invalid-path",
+            identity=_identity(),
+            storage_path=storage_path,
+            status="ready",
+        )
+
+    assert conn.execute("SELECT COUNT(*) FROM vector_generations").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("storage_path", [".", "vector-generations/gen-safe", "./vector-generations/gen-safe"])
+def test_generation_registration_accepts_safe_relative_storage_paths(storage_path):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_vector_generation_schema(conn)
+
+    manifest = register_generation(
+        conn,
+        generation_id="gen-safe-" + str(abs(hash(storage_path))),
+        identity=_identity(),
+        storage_path=storage_path,
+        status="ready",
+    )
+
+    assert manifest["storage_path"] == storage_path
+
+
+@pytest.mark.parametrize("legacy_path", ["/" + "home/operator/private/legacy", "../legacy-escape"])
+def test_generation_health_marks_legacy_invalid_storage_paths(legacy_path):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_vector_generation_schema(conn)
+    register_generation(
+        conn,
+        generation_id="gen-legacy-invalid-path",
+        identity=_identity(),
+        storage_path="vector-generations/gen-legacy-invalid-path",
+        status="active",
+    )
+    conn.execute(
+        "INSERT INTO vector_generation_state(key, value, updated_at) VALUES (?, ?, ?)",
+        ("current_generation", "gen-legacy-invalid-path", "2026-07-10T00:00:00+00:00"),
+    )
+    conn.execute(
+        "UPDATE vector_generations SET storage_path = ? WHERE generation_id = ?",
+        (legacy_path, "gen-legacy-invalid-path"),
+    )
+
+    rendered = json.dumps(generation_health_report(conn), ensure_ascii=False)
+    assert legacy_path not in rendered
+    assert "[INVALID_STORAGE_PATH]" in rendered
+
+
+def test_setup_vector_layer_redacts_legacy_invalid_path_from_all_status_surfaces(monkeypatch, tmp_path):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE memories (
+            id TEXT PRIMARY KEY, scope_id TEXT, source TEXT, target TEXT,
+            content TEXT, summary TEXT, updated_at TEXT, metadata TEXT
+        );
+        CREATE TABLE memory_entities (memory_id TEXT, entity TEXT);
+        CREATE TABLE memory_feedback (memory_id TEXT);
+        """
+    )
+    ensure_vector_generation_schema(conn)
+    identity = GenerationIdentity(
+        backend="sqlite-bruteforce",
+        provider="local-hash",
+        model="hash-v1",
+        dimensions=8,
+        metric="cosine",
+        prompt_profile="default-v1",
+        table_name="memories",
+    )
+    generation_id = f"legacy-{identity.fingerprint[:16]}"
+    register_generation(
+        conn,
+        generation_id=generation_id,
+        identity=identity,
+        storage_path=".",
+        status="active",
+    )
+    raw_path = "/" + "home/operator/private/legacy-generation"
+    conn.execute(
+        "UPDATE vector_generations SET storage_path = ? WHERE generation_id = ?",
+        (raw_path, generation_id),
+    )
+    conn.execute("DELETE FROM vector_generation_state")
+
+    class Provider:
+        name = "scope-recall"
+        _storage_dir = tmp_path
+        _vector_config = {
+            "enabled": True,
+            "backend": "sqlite-bruteforce",
+            "table_name": "memories",
+            "embedder": {"provider": "local-hash", "model": "hash-v1", "dimensions": 8},
+        }
+        _retrieval_config = {"metric": "cosine"}
+        _lock = threading.RLock()
+        _vector_lock = threading.RLock()
+        _scope_id = "scope-a"
+        _shared_scope_id = "shared-a"
+        _shared_pool_scope_id = ""
+        _accessible_scope_ids = ("scope-a", "shared-a")
+        _vector_status = ""
+        _vector_message = ""
+        _vector_store = None
+        _db_path = None
+        _hermes_home = tmp_path
+        _migration_info = {}
+
+        def _require_conn(self):
+            return conn
+
+        @staticmethod
+        def _vector_text(summary, content):
+            return summary or content
+
+        @staticmethod
+        def _memory_isolated_for_scope():
+            return False
+
+    provider = Provider()
+    setup_vector_layer(provider)
+    monkeypatch.setattr(memory_ops, "graph_relation_stats", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(memory_ops, "iter_curated_entries", lambda *_args, **_kwargs: [])
+
+    prompt = MemoryProvider.system_prompt_block(provider)
+    status = memory_ops.stats_payload(provider)
+    rendered_status = json.dumps(status, ensure_ascii=False)
+
+    assert provider._vector_status == "degraded"
+    assert raw_path not in provider._vector_message
+    assert raw_path not in prompt
+    assert raw_path not in rendered_status
+    assert "storage_path" in provider._vector_message
+    assert provider._vector_message not in prompt
+    assert len(provider._vector_message) <= 300
+
+
+def test_native_dependency_status_redacts_defensive_exception_path(monkeypatch):
+    raw_path = "/" + "home/operator/private/native-probe"
+
+    def fail_probe(*_args, **_kwargs):
+        raise RuntimeError("probe failed at " + raw_path)
+
+    monkeypatch.setattr(vector_store_module, "_NATIVE_VECTOR_PROBE", None)
+    monkeypatch.setattr(vector_store_module.subprocess, "run", fail_probe)
+
+    status = vector_store_module.native_vector_dependency_status()
+
+    assert raw_path not in str(status.get("stderr") or "")
+    assert "[REDACTED_PATH]" in str(status.get("stderr") or "")
+
+
+def test_native_fallback_redacts_internal_stats_and_warning_surfaces(monkeypatch, tmp_path, caplog):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE memories (
+            id TEXT PRIMARY KEY, scope_id TEXT, source TEXT, target TEXT,
+            content TEXT, summary TEXT, updated_at TEXT, metadata TEXT
+        );
+        CREATE TABLE memory_entities (memory_id TEXT, entity TEXT);
+        CREATE TABLE memory_feedback (memory_id TEXT);
+        """
+    )
+    raw_path = "/" + "home/operator/private/native-fallback"
+
+    class UnavailableLanceStore:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        @staticmethod
+        def is_available():
+            return False
+
+        @staticmethod
+        def close():
+            return None
+
+    class Provider:
+        name = "scope-recall"
+        _storage_dir = tmp_path
+        _vector_storage_dir = tmp_path
+        _vector_config = {
+            "enabled": True,
+            "backend": "lancedb",
+            "fallback_backend": "sqlite-bruteforce",
+            "table_name": "memories",
+        }
+        _retrieval_config = {"metric": "cosine"}
+        _lock = threading.RLock()
+        _vector_lock = threading.RLock()
+        _scope_id = "scope-a"
+        _shared_scope_id = "shared-a"
+        _shared_pool_scope_id = ""
+        _accessible_scope_ids = ("scope-a", "shared-a")
+        _vector_enabled = True
+        _vector_ready = False
+        _vector_status = "degraded"
+        _vector_backend = "lancedb"
+        _vector_message = ""
+        _vector_store = None
+        _vector_row_count = 0
+        _vector_unique_id_count = 0
+        _vector_duplicate_row_count = 0
+        _embedder = None
+        _db_path = None
+        _hermes_home = tmp_path
+        _migration_info = {}
+
+        def _require_conn(self):
+            return conn
+
+        @staticmethod
+        def _memory_isolated_for_scope():
+            return False
+
+    monkeypatch.setattr(vector_runtime_module, "LanceVectorStore", UnavailableLanceStore)
+    monkeypatch.setattr(
+        vector_runtime_module,
+        "native_vector_dependency_status",
+        lambda: {
+            "safe": False,
+            "returncode": None,
+            "stdout": "",
+            "stderr": "probe failed at " + raw_path,
+        },
+    )
+    monkeypatch.setattr(memory_ops, "graph_relation_stats", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(memory_ops, "iter_curated_entries", lambda *_args, **_kwargs: [])
+    caplog.set_level("WARNING", logger=vector_runtime_module.__name__)
+
+    provider = Provider()
+    vector_runtime_module._open_vector_store(provider, dimensions=8)
+    try:
+        stats = memory_ops.stats_payload(provider)
+        prompt = MemoryProvider.system_prompt_block(provider)
+    finally:
+        if provider._vector_store is not None:
+            provider._vector_store.close()
+
+    rendered_stats = json.dumps(stats, ensure_ascii=False)
+    assert provider._vector_backend == "sqlite-bruteforce"
+    assert raw_path not in provider._vector_message
+    assert raw_path not in rendered_stats
+    assert raw_path not in caplog.text
+    assert raw_path not in prompt
+    assert "[REDACTED_PATH]" in provider._vector_message
+    assert len(provider._vector_message) <= 300
+
+
+def test_generation_schema_upgrade_adds_instruction_contract_columns():
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(
+        """
+        CREATE TABLE vector_generations (
+            generation_id TEXT PRIMARY KEY,
+            backend TEXT NOT NULL,
+            storage_path TEXT NOT NULL,
+            table_name TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            dimensions INTEGER NOT NULL,
+            metric TEXT NOT NULL,
+            prompt_profile TEXT NOT NULL,
+            schema_version INTEGER NOT NULL,
+            identity_hash TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            activated_at TEXT NOT NULL DEFAULT '',
+            row_count INTEGER NOT NULL DEFAULT 0,
+            unique_id_count INTEGER NOT NULL DEFAULT 0,
+            source_hash TEXT NOT NULL DEFAULT '',
+            config_hash TEXT NOT NULL DEFAULT '',
+            error TEXT NOT NULL DEFAULT '',
+            metadata TEXT NOT NULL DEFAULT '{}'
+        );
+        """
+    )
+    ensure_vector_generation_schema(conn)
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(vector_generations)")}
+    assert {"document_prefix", "query_prefix", "request_dimensions"} <= columns
+
+
+def test_generation_activation_is_cas_and_rollback_keeps_old_generation(tmp_path):
+    storage = tmp_path / "scope-recall"
+    storage.mkdir()
+    conn = sqlite3.connect(storage / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    old_identity = GenerationIdentity(
+        backend="sqlite-bruteforce",
+        provider="local-hash",
+        model="hash-v1",
+        dimensions=16,
+        table_name="memories",
+    )
+    old_store = SQLiteBruteForceVectorStore(
+        storage / "vector.sqlite3",
+        table_name="memories",
+        dimensions=16,
+    )
+    old_store.open()
+    old_store.close()
+    old = bootstrap_legacy_generation(conn, identity=old_identity, row_count=0)
+    conn.commit()
+
+    new_identity = GenerationIdentity(
+        backend="sqlite-bruteforce",
+        provider="local-hash",
+        model="hash-v2",
+        dimensions=16,
+        table_name="memories",
+    )
+    built = build_vector_generation(
+        storage,
+        conn,
+        generation_id="gen-embedding-2",
+        identity=new_identity,
+        embedder=LocalHashEmbedder(dimensions=16, model="hash-v2"),
+        index_general=False,
+        activate=True,
+        expected_current=str(old["generation_id"]),
+    )
+    assert built["status"] == "activated"
+    assert current_generation(conn)["generation_id"] == "gen-embedding-2"
+
+    with pytest.raises(GenerationCompatibilityError, match="CAS conflict"):
+        activate_generation(
+            conn,
+            old["generation_id"],
+            expected_current="stale-browser-version",
+            storage_dir=storage,
+        )
+    assert current_generation(conn)["generation_id"] == "gen-embedding-2"
+
+    rolled_back = activate_generation(
+        conn,
+        old["generation_id"],
+        expected_current="gen-embedding-2",
+        storage_dir=storage,
+    )
+    assert rolled_back["generation_id"] == old["generation_id"]
+    assert current_generation(conn)["generation_id"] == old["generation_id"]
+    conn.close()
+
+
+def test_generation_identity_requires_same_embedding_space():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_vector_generation_schema(conn)
+    manifest = register_generation(
+        conn,
+        generation_id="gen-001",
+        identity=_identity(),
+        storage_path=".",
+        status="ready",
+    )
+    validate_generation_compatibility(manifest, _identity())
+    with pytest.raises(GenerationCompatibilityError, match="model"):
+        validate_generation_compatibility(manifest, _identity(model="gemini-embedding-2"))
+    with pytest.raises(GenerationCompatibilityError, match="dimensions"):
+        validate_generation_compatibility(manifest, _identity(dimensions=256))
+    for field, value in (
+        ("document_prefix", "document: "),
+        ("query_prefix", "query: "),
+        ("request_dimensions", True),
+    ):
+        changed = _identity()
+        changed_payload = changed.canonical()
+        changed_payload[field] = value
+        with pytest.raises(GenerationCompatibilityError, match=field):
+            validate_generation_compatibility(manifest, GenerationIdentity(**changed_payload))
+
+
+def test_generation_identity_preserves_prefix_trailing_whitespace_on_idempotent_refresh():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_vector_generation_schema(conn)
+    payload = _identity(model="gemini-embedding-2").canonical()
+    payload.update(
+        {
+            "prompt_profile": "retrieval-v1",
+            "document_prefix": "Represent this document for retrieval: ",
+            "query_prefix": "Represent this query for retrieval: ",
+            "request_dimensions": True,
+        }
+    )
+    identity = GenerationIdentity(**payload)
+
+    manifest = register_generation(
+        conn,
+        generation_id="gen-prefix-whitespace",
+        identity=identity,
+        storage_path="vector-generations/gen-prefix-whitespace",
+        status="building",
+    )
+    refreshed = register_generation(
+        conn,
+        generation_id="gen-prefix-whitespace",
+        identity=identity,
+        storage_path="vector-generations/gen-prefix-whitespace",
+        status="ready",
+    )
+
+    assert manifest["document_prefix"].endswith(" ")
+    assert manifest["query_prefix"].endswith(" ")
+    assert refreshed["status"] == "ready"
+    validate_generation_compatibility(refreshed, identity)
+
+
+def test_generation_fingerprint_changes_with_actual_instruction_contract():
+    base = _identity()
+    for field, value in (
+        ("document_prefix", "document: "),
+        ("query_prefix", "query: "),
+        ("request_dimensions", True),
+    ):
+        payload = base.canonical()
+        payload[field] = value
+        assert GenerationIdentity(**payload).fingerprint != base.fingerprint
+
+
+def test_vector_outbox_is_idempotent_and_claims_once():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_vector_generation_schema(conn)
+    first = enqueue_vector_event(
+        conn,
+        event_key="memory-1:upsert:v1",
+        generation_id="gen-001",
+        memory_id="memory-1",
+        operation="upsert",
+        payload={"updated_at": "v1"},
+    )
+    duplicate = enqueue_vector_event(
+        conn,
+        event_key="memory-1:upsert:v1",
+        generation_id="gen-001",
+        memory_id="memory-1",
+        operation="upsert",
+        payload={"updated_at": "v1"},
+    )
+    assert duplicate["id"] == first["id"]
+    assert conn.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0] == 1
+
+    claimed = claim_vector_events(conn, generation_id="gen-001", worker_id="worker-a", limit=10)
+    assert [row["id"] for row in claimed] == [first["id"]]
+    assert claim_vector_events(conn, generation_id="gen-001", worker_id="worker-b", limit=10) == []
+
+    complete_vector_event(conn, first["id"], worker_id="worker-a")
+    assert conn.execute("SELECT status FROM vector_outbox WHERE id = ?", (first["id"],)).fetchone()[0] == "completed"
+
+
+def test_vector_outbox_reclaims_expired_worker_lease_with_cas():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_vector_generation_schema(conn)
+    event = enqueue_vector_event(
+        conn,
+        event_key="lease-event",
+        generation_id="gen-001",
+        memory_id="memory-lease",
+        operation="delete",
+        timestamp="2026-07-10T00:00:00+00:00",
+    )
+    first = claim_vector_events(
+        conn,
+        generation_id="gen-001",
+        worker_id="worker-a",
+        lease_seconds=300,
+        timestamp="2026-07-10T00:10:00+00:00",
+    )
+    assert [row["id"] for row in first] == [event["id"]]
+    assert claim_vector_events(
+        conn,
+        generation_id="gen-001",
+        worker_id="worker-b",
+        lease_seconds=300,
+        timestamp="2026-07-10T00:14:59+00:00",
+    ) == []
+    reclaimed = claim_vector_events(
+        conn,
+        generation_id="gen-001",
+        worker_id="worker-b",
+        lease_seconds=300,
+        timestamp="2026-07-10T00:15:01+00:00",
+    )
+    assert [row["id"] for row in reclaimed] == [event["id"]]
+    assert reclaimed[0]["attempts"] == 2
+    with pytest.raises(GenerationCompatibilityError, match="completion CAS conflict"):
+        complete_vector_event(conn, event["id"], worker_id="worker-a")
+    complete_vector_event(conn, event["id"], worker_id="worker-b")
+
+
+def test_vector_outbox_dead_letters_after_bounded_failures():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_vector_generation_schema(conn)
+    event = enqueue_vector_event(
+        conn,
+        event_key="dead-letter-event",
+        generation_id="gen-001",
+        memory_id="memory-dead-letter",
+        operation="upsert",
+        timestamp="2026-07-10T00:00:00+00:00",
+    )
+    for attempt in range(2):
+        worker = f"worker-{attempt}"
+        at = f"2026-07-10T00:0{attempt + 1}:00+00:00"
+        claimed = claim_vector_events(
+            conn,
+            generation_id="gen-001",
+            worker_id=worker,
+            timestamp=at,
+        )
+        assert [row["id"] for row in claimed] == [event["id"]]
+        fail_vector_event(
+            conn,
+            event["id"],
+            worker_id=worker,
+            error="bounded failure",
+            max_attempts=2,
+            timestamp=at,
+        )
+    status = conn.execute(
+        "SELECT status, attempts, completed_at FROM vector_outbox WHERE id = ?",
+        (event["id"],),
+    ).fetchone()
+    assert tuple(status[:2]) == ("dead_letter", 2)
+    assert status["completed_at"]
+    assert claim_vector_events(
+        conn,
+        generation_id="gen-001",
+        worker_id="worker-late",
+        timestamp="2026-07-11T00:00:00+00:00",
+    ) == []
+
+
+def test_vector_generation_durable_error_helpers_redact_at_storage_boundary():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_vector_generation_schema(conn)
+    secret = "sk-" + "durable-helper-secret"
+    private_path = "/home/" + "operator/private.txt"
+    raw_error = f"api_key={secret} failed while reading {private_path}"
+
+    manifest = register_generation(
+        conn,
+        generation_id="gen-redaction",
+        identity=_identity(),
+        storage_path="vector-generations/gen-redaction",
+        status="failed",
+        error=raw_error,
+    )
+    start_migration_receipt(
+        conn,
+        receipt_id="receipt-redaction",
+        generation_id="gen-redaction",
+    )
+    receipt = finish_migration_receipt(
+        conn,
+        "receipt-redaction",
+        status="failed",
+        error=raw_error,
+    )
+    event = enqueue_vector_event(
+        conn,
+        event_key="outbox-redaction",
+        generation_id="gen-redaction",
+        memory_id="memory-redaction",
+        operation="delete",
+    )
+    claimed = claim_vector_events(
+        conn,
+        generation_id="gen-redaction",
+        worker_id="worker-redaction",
+    )
+    assert [row["id"] for row in claimed] == [event["id"]]
+    fail_vector_event(
+        conn,
+        event["id"],
+        worker_id="worker-redaction",
+        error=raw_error,
+        max_attempts=1,
+    )
+    outbox_error = conn.execute(
+        "SELECT last_error FROM vector_outbox WHERE id = ?",
+        (event["id"],),
+    ).fetchone()[0]
+
+    for stored in (manifest["error"], receipt["error"], outbox_error):
+        assert secret not in stored
+        assert private_path not in stored
+        assert "[REDACTED" in stored
+
+
+def test_vector_generation_mapping_helpers_redact_nested_keys_and_values_at_storage_boundary():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_vector_generation_schema(conn)
+    secret = "sk-" + ("A" * 24)
+    private_path = "/home/" + "operator/private/vector.json"
+    nested = {
+        "api_key": secret,
+        "child": [{"path": private_path, "token": secret}],
+    }
+
+    manifest = register_generation(
+        conn,
+        generation_id="gen-mapping-redaction",
+        identity=_identity(),
+        storage_path="vector-generations/gen-mapping-redaction",
+        status="active",
+        metadata=nested,
+    )
+    conn.execute(
+        "INSERT INTO vector_generation_state(key, value, updated_at) VALUES (?, ?, ?)",
+        ("current_generation", "gen-mapping-redaction", "2026-07-10T00:00:00+00:00"),
+    )
+    started = start_migration_receipt(
+        conn,
+        receipt_id="receipt-mapping-redaction",
+        generation_id="gen-mapping-redaction",
+        details=nested,
+    )
+    finished = finish_migration_receipt(
+        conn,
+        "receipt-mapping-redaction",
+        status="ready",
+        details=nested,
+    )
+
+    for stored in (manifest["metadata"], started["details"], finished["details"]):
+        assert secret not in stored
+        assert private_path not in stored
+        assert "[REDACTED" in stored
+
+    # Health output must remain safe even if an older caller inserted an
+    # unsanitized manifest before this storage-boundary hardening existed.
+    conn.execute(
+        "UPDATE vector_generations SET metadata = ? WHERE generation_id = ?",
+        (json.dumps(nested), "gen-mapping-redaction"),
+    )
+    health = generation_health_report(conn)
+    rendered = json.dumps(health, ensure_ascii=False)
+    assert secret not in rendered
+    assert private_path not in rendered
+    assert "[REDACTED" in rendered
+
+
+def test_vector_outbox_payload_is_allowlisted_and_redacted_at_storage_boundary():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_vector_generation_schema(conn)
+    secret = "sk-" + "outbox-payload-secret"
+    private_path = "/home/" + "operator/outbox-private.txt"
+
+    event = enqueue_vector_event(
+        conn,
+        event_key="outbox-payload-boundary",
+        generation_id="gen-001",
+        memory_id="memory-payload",
+        operation="upsert",
+        payload={
+            "updated_at": "2026-07-11T00:00:00+00:00",
+            "reason": f"api_key={secret} failed at {private_path}",
+            "content": secret,
+            "nested": {"path": private_path},
+        },
+    )
+    stored = json.loads(str(event["payload"]))
+
+    assert set(stored) == {"updated_at", "reason"}
+    assert stored["updated_at"] == "2026-07-11T00:00:00+00:00"
+    assert secret not in stored["reason"]
+    assert private_path not in stored["reason"]
+    assert "[REDACTED" in stored["reason"]
+
+
+def test_doctor_fails_closed_on_vector_outbox_dead_letter(tmp_path):
+    storage = tmp_path / "scope-recall"
+    storage.mkdir()
+    conn = sqlite3.connect(storage / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    ensure_vector_generation_schema(conn)
+    identity = _identity()
+    generation = bootstrap_legacy_generation(conn, identity=identity, row_count=0)
+    event = enqueue_vector_event(
+        conn,
+        event_key="doctor-dead-letter",
+        generation_id=str(generation["generation_id"]),
+        memory_id="memory-doctor-dead",
+        operation="delete",
+        timestamp="2026-07-10T00:00:00+00:00",
+    )
+    claimed = claim_vector_events(
+        conn,
+        generation_id=str(generation["generation_id"]),
+        worker_id="doctor-test-worker",
+        timestamp="2026-07-10T00:01:00+00:00",
+    )
+    assert [row["id"] for row in claimed] == [event["id"]]
+    fail_vector_event(
+        conn,
+        event["id"],
+        worker_id="doctor-test-worker",
+        error="permanent failure",
+        max_attempts=1,
+        timestamp="2026-07-10T00:01:00+00:00",
+    )
+    conn.commit()
+    conn.close()
+
+    payload, check, recommendations = vector_generation_report(
+        tmp_path,
+        expected_embedder={
+            "provider": identity.provider,
+            "model": identity.model,
+            "dimensions": identity.dimensions,
+            "metric": identity.metric,
+            "prompt_profile": identity.prompt_profile,
+            "document_prefix": identity.document_prefix,
+            "query_prefix": identity.query_prefix,
+            "request_dimensions": identity.request_dimensions,
+            "available": True,
+        },
+        backend=identity.backend,
+    )
+    assert payload["status"] == "outbox_dead_letter"
+    assert payload["outbox_dead_letters"] == 1
+    assert check["ok"] is False
+    assert any("dead-letter" in failure for failure in check["failures"])
+    assert any("requeue" in item for item in recommendations)
+
+
+def test_replay_failure_does_not_claim_unattempted_events():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE memories (
+            id TEXT PRIMARY KEY, scope_id TEXT, source TEXT, target TEXT,
+            content TEXT, summary TEXT, updated_at TEXT, metadata TEXT
+        )
+        """
+    )
+    ensure_vector_generation_schema(conn)
+    for index in range(2):
+        enqueue_vector_event(
+            conn,
+            event_key=f"replay-failure-{index}",
+            generation_id="gen-001",
+            memory_id=f"memory-{index}",
+            operation="delete",
+            timestamp="2026-07-10T00:00:00+00:00",
+        )
+    conn.commit()
+
+    class FailingStore:
+        def delete_by_ids(self, _ids):
+            raise RuntimeError("injected store outage")
+
+        def audit_counts(self):
+            return {"physical_rows": 0, "unique_ids": 0, "duplicate_rows": 0}
+
+    provider = SimpleNamespace(
+        _vector_generation_id="gen-001",
+        _vector_store=FailingStore(),
+        _embedder=object(),
+        _lock=threading.RLock(),
+        _vector_lock=threading.RLock(),
+        _require_conn=lambda: conn,
+    )
+    result = replay_vector_outbox(provider, limit=2)
+
+    assert result == {"claimed": 1, "completed": 0, "failed": 1}
+    statuses = [
+        str(row[0])
+        for row in conn.execute("SELECT status FROM vector_outbox ORDER BY id")
+    ]
+    assert statuses == ["retry", "pending"]
+
+
+def test_replay_outbox_deletes_candidate_instead_of_upserting_it():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE memories (
+            id TEXT PRIMARY KEY, scope_id TEXT, source TEXT, target TEXT,
+            content TEXT, summary TEXT, updated_at TEXT, metadata TEXT
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "candidate-1",
+            "scope-a",
+            "event-digest",
+            "memory",
+            "candidate content",
+            "candidate summary",
+            "2026-07-11T00:00:00+00:00",
+            '{"lifecycle":"candidate"}',
+        ),
+    )
+    ensure_vector_generation_schema(conn)
+    enqueue_vector_event(
+        conn,
+        event_key="candidate-replay",
+        generation_id="gen-001",
+        memory_id="candidate-1",
+        operation="upsert",
+        timestamp="2026-07-11T00:00:00+00:00",
+    )
+    conn.commit()
+
+    class Store:
+        def __init__(self):
+            self.records = {"candidate-1": {"id": "candidate-1"}}
+            self.deleted = []
+
+        def delete_by_ids(self, ids):
+            self.deleted.extend(ids)
+            for memory_id in ids:
+                self.records.pop(memory_id, None)
+
+        def upsert_records(self, rows):
+            for row in rows:
+                self.records[str(row["id"])] = dict(row)
+
+        def audit_counts(self):
+            return {"physical_rows": len(self.records), "unique_ids": len(self.records), "duplicate_rows": 0}
+
+    class Embedder:
+        @staticmethod
+        def embed(_text):
+            return [1.0, 0.0]
+
+    store = Store()
+    provider = SimpleNamespace(
+        _vector_generation_id="gen-001",
+        _vector_store=store,
+        _embedder=Embedder(),
+        _vector_config={"index_general": False},
+        _lock=threading.RLock(),
+        _vector_lock=threading.RLock(),
+        _scope_id="scope-a",
+        _vector_row_count=0,
+        _vector_unique_id_count=0,
+        _vector_duplicate_row_count=0,
+        _vector_status="ready",
+        _vector_message="",
+        _require_conn=lambda: conn,
+        _vector_text=lambda summary, content: summary or content,
+    )
+
+    assert replay_vector_outbox(provider) == {"claimed": 1, "completed": 1, "failed": 0}
+    assert store.records == {}
+    assert store.deleted == ["candidate-1"]
+
+
+def test_setup_never_uses_different_space_fallback_for_active_generation(monkeypatch, tmp_path):
+    monkeypatch.delenv("SCOPE_RECALL_TEST_MISSING_EMBED_KEY", raising=False)
+    vector_dir = tmp_path / "lancedb"
+    store = LanceVectorStore(vector_dir, table_name="memories", dimensions=3072)
+    store.open()
+    store.upsert_records([_sentinel_row(3072)])
+    store.close()
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_vector_generation_schema(conn)
+    bootstrap_legacy_generation(
+        conn,
+        identity=GenerationIdentity(
+            backend="lancedb",
+            provider="openai-compatible",
+            model="gemini-embedding-001",
+            dimensions=3072,
+            metric="cosine",
+            prompt_profile="default-v1",
+            table_name="memories",
+        ),
+        row_count=1,
+    )
+
+    class Provider:
+        _storage_dir = tmp_path
+        _vector_config = {
+            "enabled": True,
+            "backend": "lancedb",
+            "table_name": "memories",
+            "embedder": {
+                "provider": "openai-compatible",
+                "model": "gemini-embedding-001",
+                "dimensions": 3072,
+                "api_key_env": ["SCOPE_RECALL_TEST_MISSING_EMBED_KEY"],
+            },
+            "fallback_embedder": {"provider": "local-hash", "model": "hash-v1", "dimensions": 256},
+        }
+        _retrieval_config = {"metric": "cosine"}
+        _lock = threading.RLock()
+        _vector_lock = threading.RLock()
+        _scope_id = "scope-a"
+        _vector_status = ""
+        _vector_message = ""
+        _vector_store = None
+
+        def _require_conn(self):
+            return conn
+
+        @staticmethod
+        def _vector_text(summary, content):
+            return summary or content
+
+    provider = Provider()
+    setup_vector_layer(provider)
+
+    assert provider._vector_status == "degraded"
+    assert "different embedding space" in provider._vector_message
+    assert provider._vector_store is None
+    reopened = LanceVectorStore(vector_dir, table_name="memories", dimensions=3072)
+    reopened.open()
+    try:
+        assert reopened.count_rows() == 1
+        assert reopened.list_ids() == ["sentinel-3072"]
+    finally:
+        reopened.close()
+        conn.close()

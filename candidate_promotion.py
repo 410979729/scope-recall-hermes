@@ -30,6 +30,10 @@ class CandidateDecision:
             object.__setattr__(self, "lane", default_lane_for_decision(self.action, self.reason, self.risk))
 
 
+class CandidateConflictCheckError(RuntimeError):
+    """The durable-memory conflict query could not be evaluated safely."""
+
+
 def default_lane_for_decision(action: str, reason: str, risk: str = "low") -> str:
     if action == "promote":
         return "promote_safe"
@@ -120,8 +124,8 @@ def _active_memory_conflict(conn: sqlite3.Connection, row: sqlite3.Row | Mapping
             """,
             (candidate_id, scope_id, target, *hidden_lifecycle_values),
         ).fetchall()
-    except sqlite3.Error:
-        return ""
+    except sqlite3.Error as exc:
+        raise CandidateConflictCheckError("candidate conflict query failed") from exc
     for active in rows:
         active_texts = {
             _normalized_conflict_text(str(active["summary"] or "")),
@@ -136,7 +140,18 @@ def _active_memory_conflict(conn: sqlite3.Connection, row: sqlite3.Row | Mapping
 def classify_candidate_row(row: sqlite3.Row | Mapping[str, Any], conn: sqlite3.Connection | None = None) -> CandidateDecision:
     quality = quality_decision_for_memory(row)
     if quality.action == "promote" and conn is not None:
-        conflict_with = _active_memory_conflict(conn, row)
+        try:
+            conflict_with = _active_memory_conflict(conn, row)
+        except CandidateConflictCheckError:
+            return CandidateDecision(
+                "keep_candidate",
+                "conflict_check_failed",
+                quality.confidence,
+                quality.importance,
+                quality.memory_type,
+                risk="high",
+                evidence_refs=quality.evidence_refs,
+            )
         if conflict_with:
             return CandidateDecision(
                 "keep_candidate",

@@ -11,6 +11,11 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from .config import CONFIG_SCHEMA_EXTRAS, validate_config_override
+except ImportError:  # pragma: no cover - standalone doctor execution
+    from config import CONFIG_SCHEMA_EXTRAS, validate_config_override
+
+try:
     from .capture_filters import contains_secret_like_text as _contains_secret_like_text
     from .capture_filters import redact_secret_like_text as _redact_secret_like_text
     from .capture_filters import sanitize_report_text as _sanitize_report_text
@@ -109,7 +114,7 @@ def load_runtime_config(source_root: Path, hermes_home: Path) -> dict[str, Any]:
     profile_env_keys = load_profile_dotenv(hermes_home)
     config: dict[str, Any] = {}
     errors: list[dict[str, str]] = []
-    for path in (source_root / "config.json", hermes_home / "scope-recall" / "config.json"):
+    for index, path in enumerate((source_root / "config.json", hermes_home / "scope-recall" / "config.json")):
         if not path.exists():
             continue
         try:
@@ -121,7 +126,13 @@ def load_runtime_config(source_root: Path, hermes_home: Path) -> dict[str, Any]:
             errors.append(_config_load_error(path, kind="read_error", message=str(exc)))
             continue
         if isinstance(raw, dict):
-            config = deep_merge(config, raw)
+            if index == 0:
+                config = deep_merge(config, raw)
+            else:
+                validation_template = deep_merge(CONFIG_SCHEMA_EXTRAS, config)
+                override, validation_errors = validate_config_override(raw, validation_template, path=path)
+                errors.extend(validation_errors)
+                config = deep_merge(config, override)
         else:
             errors.append(_config_load_error(path, kind="non_dict_payload", message="config payload must be a JSON object"))
     if profile_env_keys:
@@ -179,18 +190,46 @@ def expected_embedder_from_config(config: dict[str, Any]) -> dict[str, Any]:
     primary: dict[str, Any] = raw_primary if isinstance(raw_primary, dict) else {}
     fallback: dict[str, Any] = raw_fallback if isinstance(raw_fallback, dict) else {}
     profile_env_keys = set(coerce_list(config.get("_profile_env_keys")))
-    source = "embedder"
     selected: dict[str, Any] = dict(primary)
-    if selected and not embedder_config_available(selected, profile_env_keys=profile_env_keys) and fallback and embedder_config_available(fallback, profile_env_keys=profile_env_keys):
-        selected = dict(fallback)
-        source = "fallback_embedder"
     if not selected:
         return {}
+    primary_available = embedder_config_available(selected, profile_env_keys=profile_env_keys)
+    fallback_available = bool(fallback) and embedder_config_available(fallback, profile_env_keys=profile_env_keys)
+    fallback_compatible = bool(fallback) and all(
+        (
+            bool(fallback.get(key, False)) == bool(selected.get(key, False))
+            if key == "request_dimensions"
+            else (
+                str(fallback.get(key) or "") == str(selected.get(key) or "")
+                if key in {"document_prefix", "query_prefix"}
+                else str(fallback.get(key) or "").strip().lower() == str(selected.get(key) or "").strip().lower()
+            )
+        )
+        for key in (
+            "provider",
+            "model",
+            "dimensions",
+            "prompt_profile",
+            "document_prefix",
+            "query_prefix",
+            "request_dimensions",
+        )
+    )
+    raw_retrieval = config.get("retrieval")
+    retrieval: dict[str, Any] = raw_retrieval if isinstance(raw_retrieval, dict) else {}
     return {
-        "source": source,
+        "source": "embedder",
         "provider": str(selected.get("provider") or ""),
         "model": str(selected.get("model") or ""),
         "dimensions": int(selected.get("dimensions") or 0),
+        "metric": str(retrieval.get("metric") or "cosine"),
+        "prompt_profile": str(selected.get("prompt_profile") or "default-v1"),
+        "document_prefix": str(selected.get("document_prefix") or ""),
+        "query_prefix": str(selected.get("query_prefix") or ""),
+        "request_dimensions": bool(selected.get("request_dimensions", False)),
+        "available": bool(primary_available),
+        "fallback_available": bool(fallback_available),
+        "fallback_compatible": bool(fallback_compatible),
     }
 
 

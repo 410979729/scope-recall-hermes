@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-scope-recall"
-version = "1.7.1"
+version = "1.7.2"
 description = "Hermes scoped memory provider with journal-first capture, SQLite truth, vector companions, and hybrid RRF retrieval."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -44,6 +44,7 @@ all = [
 dev = [
   "build",
   "pytest",
+  "PyYAML>=6",
   "ruff",
   "wheel",
   "pyright",
@@ -85,11 +86,15 @@ pythonpath = ["."]
 
 [tool.pyright]
 include = [
+  "aliases.py",
+  "artifacts.py",
   "candidate_extraction.py",
   "candidate_promotion.py",
   "candidate_review.py",
   "candidate_store.py",
+  "capture.py",
   "capture_filters.py",
+  "capture_llm.py",
   "cli.py",
   "config.py",
   "config_schema.py",
@@ -118,32 +123,46 @@ include = [
   "external_bridge.py",
   "forgetting.py",
   "freshness.py",
+  "gating.py",
+  "governance.py",
   "governance_cleanup.py",
   "governance_scheduler.py",
   "graph_hygiene.py",
   "graph_relations.py",
   "maintenance_ops.py",
   "graph.py",
+  "http_utils.py",
+  "hygiene.py",
   "installer.py",
+  "journal.py",
   "journal_llm.py",
   "journal_store.py",
   "journal_candidates.py",
   "journal_extractors.py",
   "journal_recovery.py",
+  "lifecycle_policy.py",
+  "lifecycle_service.py",
   "memory_ops.py",
   "memory_browser.py",
   "memory_quality.py",
+  "migration.py",
   "migration_openclaw.py",
+  "models.py",
+  "nightly_digest.py",
   "nightly_llm.py",
   "provider_schemas.py",
   "pgvector_store.py",
   "postgres_bridge.py",
+  "prompting.py",
+  "provider.py",
   "recall.py",
   "recall_pipeline.py",
   "relation_extraction.py",
   "response_schemas.py",
   "schemas.py",
   "scoring.py",
+  "scope.py",
+  "scope_recall.py",
   "secret_index.py",
   "skill_bridge.py",
   "sqlite_vector_store.py",
@@ -151,6 +170,10 @@ include = [
   "storage_views.py",
   "task_boundary.py",
   "tooling.py",
+  "vector_generation.py",
+  "vector_generation_preflight.py",
+  "vector_migration.py",
+  "vector_repair.py",
   "vector_runtime.py",
   "vector_store.py",
 ]

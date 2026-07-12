@@ -15,6 +15,7 @@ original config is backed up and restored in ``finally``.
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import shutil
@@ -188,50 +189,28 @@ def _resolve_case_labels(case: dict[str, Any], label_to_id: dict[str, str]) -> d
 
 def _mark_lifecycle(plugin: Any, memory_id: str, lifecycle: str) -> None:
     conn = plugin._require_conn()
-    row = conn.execute("SELECT metadata FROM memories WHERE id = ?", (memory_id,)).fetchone()
+    row = conn.execute("SELECT updated_at FROM memories WHERE id = ?", (memory_id,)).fetchone()
     if row is None:
         raise RuntimeError(f"stored memory not found for lifecycle marker: {memory_id}")
+    normalized = str(lifecycle or "").strip().lower()
+    package = plugin.__class__.__module__.rsplit(".", 1)[0]
+    lifecycle_service = importlib.import_module(f"{package}.lifecycle_service")
     try:
-        metadata = json.loads(str(row["metadata"] or "{}"))
+        lifecycle_service.transition_memory_lifecycle(
+            conn,
+            memory_id=memory_id,
+            lifecycle=normalized,
+            metadata_updates={f"{normalized}_by": "golden-benchmark-fixture"},
+            expected_updated_at=str(row["updated_at"] or ""),
+            actor="golden-benchmark-fixture",
+            reason="isolated golden benchmark lifecycle marker",
+            event_type="benchmark_fixture_lifecycle",
+            action="mark_fixture_lifecycle",
+        )
+        conn.commit()
     except Exception:
-        metadata = {}
-    metadata["lifecycle"] = str(lifecycle or "").strip().lower()
-    metadata[f"{metadata['lifecycle']}_by"] = "golden-benchmark-fixture"
-    conn.execute("UPDATE memories SET metadata = ? WHERE id = ?", (json.dumps(metadata, ensure_ascii=False, sort_keys=True), memory_id))
-    conn.commit()
-
-
-def _mark_fact_freshness(plugin: Any, memory_id: str, item: dict[str, Any]) -> None:
-    freshness = item.get("fact_freshness")
-    if not isinstance(freshness, dict):
-        return
-    conn = plugin._require_conn()
-    now = "2026-06-01T00:00:00+00:00"
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO fact_freshness(
-            id, subject_type, subject_id, fact_key, truth_type, validator_kind,
-            validator_spec, ttl_days, last_checked_at, valid_until, status,
-            stale_reason, superseded_by, created_at, updated_at
-        ) VALUES (?, 'memory', ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            f"golden_fresh_{memory_id}",
-            memory_id,
-            str(freshness.get("fact_key") or "golden_fact"),
-            str(freshness.get("truth_type") or "fixture"),
-            str(freshness.get("validator_kind") or "fixture"),
-            int(freshness.get("ttl_days") or 7),
-            str(freshness.get("last_checked_at") or now),
-            str(freshness.get("valid_until") or "2026-01-01T00:00:00+00:00"),
-            str(freshness.get("status") or "unknown"),
-            str(freshness.get("stale_reason") or "golden benchmark fixture"),
-            str(freshness.get("superseded_by") or ""),
-            now,
-            now,
-        ),
-    )
-    conn.commit()
+        conn.rollback()
+        raise
 
 
 def _playbook_payload(item: dict[str, Any]) -> dict[str, Any]:
@@ -387,7 +366,14 @@ def run_golden(
                     label = str(item.get("label") or "").strip()
                     if not label:
                         raise ValueError("setup item missing label")
-                    payload = {key: value for key, value in item.items() if key not in {"label", "lifecycle", "fact_freshness"}}
+                    payload = {
+                        key: value
+                        for key, value in item.items()
+                        if key not in {"label", "lifecycle", "fact_freshness"}
+                    }
+                    freshness = item.get("fact_freshness")
+                    if isinstance(freshness, dict):
+                        payload["freshness"] = dict(freshness)
                     stored = json.loads(plugin.handle_tool_call("scope_recall_store", payload))
                     memory_id = str(stored.get("id") or "")
                     if not memory_id:
@@ -396,7 +382,7 @@ def run_golden(
                     lifecycle = str(item.get("lifecycle") or "").strip().lower()
                     if lifecycle:
                         _mark_lifecycle(plugin, memory_id, lifecycle)
-                    _mark_fact_freshness(plugin, memory_id, item)
+
                 playbook_label_to_id = _setup_playbooks(plugin, fixture, label_to_id)
                 recall_cases = [case for case in (fixture.get("cases") or []) if str(case.get("surface") or case.get("kind") or "recall") == "recall"]
                 experience_cases = [case for case in (fixture.get("cases") or []) if str(case.get("surface") or case.get("kind") or "recall") == "experience"]

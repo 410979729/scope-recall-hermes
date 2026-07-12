@@ -20,6 +20,10 @@ _DESCRIPTION_OVERRIDES = {
     "vector.enabled": "Enable the rebuildable vector companion index.",
     "vector.backend": "Vector companion backend used for semantic recall.",
     "vector.embedder.api_key_env": "Environment variable names that may hold the embedding API key.",
+    "vector.embedder.request_dimensions": "Send the configured output dimension to providers that support explicit dimensionality.",
+    "vector.embedder.document_prefix": "Optional instruction prefix applied only when embedding indexed documents.",
+    "vector.embedder.query_prefix": "Optional instruction prefix applied only when embedding retrieval queries.",
+    "vector.embedder.prompt_profile": "Versioned identifier for the query/document instruction profile; changing it requires a new vector generation.",
     "experience.enabled": "Enable reusable Experience playbook surfaces.",
     "forgetting.hard_delete_sensitive": "Allow sensitive-data cleanup paths to hard-delete when explicitly invoked.",
 }

@@ -21,7 +21,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .artifacts import artifact_anchor_block, extract_artifacts
-from .capture_filters import sanitize_report_text, should_capture_text
+from .capture_filters import sanitize_report_text, sanitize_structured_value, should_capture_text
 from .config import load_runtime_config
 from .digest_quality import score_digest_candidate
 from .digest_run_results import nightly_digest_metadata, nightly_digest_result, nightly_status_payload
@@ -29,6 +29,8 @@ from .gating import clean_text, compact_text, dedup_key
 from .governance import is_conflicting, merge_memory_text, normalize_memory_type, semantic_similarity
 from .graph import clamp_float, load_metadata, normalize_entity, sync_memory_entities
 from .http_utils import redact_sensitive as _shared_redact_sensitive
+from .lifecycle_service import hard_delete_memories
+from .lifecycle_policy import ordinary_recall_lifecycle_visible_sql
 from .models import RuntimeScope
 from .nightly_llm import (
     call_anthropic_messages_llm as _call_anthropic_messages_llm,
@@ -46,8 +48,8 @@ from .nightly_llm import (
     urllib,
 )
 from .scope import accessible_scope_ids, build_scope_id, build_shared_scope_id, canonical_user_id, normalize_scope_identity, writable_scope_ids
-from .sql_store import delete_rows, ensure_schema, exact_duplicate_groups, store_row, update_row
-from .vector_runtime import mark_vector_needs_repair, setup_vector_layer, upsert_vector_record
+from .sql_store import ensure_schema, exact_duplicate_groups, store_row, update_row
+from .vector_runtime import _vector_mutation_lock, mark_vector_needs_repair, setup_vector_layer, upsert_vector_record
 
 __all__ = [
     "DigestCandidate",
@@ -394,7 +396,8 @@ def parse_tool_calls(raw: str) -> tuple[list[str], list[str]]:
     for call in calls:
         if not isinstance(call, dict):
             continue
-        function = call.get("function") if isinstance(call.get("function"), dict) else {}
+        function_value = call.get("function")
+        function: dict[str, Any] = function_value if isinstance(function_value, dict) else {}
         name = str(function.get("name") or call.get("name") or call.get("tool_name") or "").strip()
         if name:
             names.append(name)
@@ -692,8 +695,10 @@ def _parse_llm_candidates_with_status(raw: str, *, bundle: SessionBundle) -> tup
         target = str(item.get("target") or "memory").strip().lower()
         if target not in TARGETS:
             target = "memory"
-        entities_raw = item.get("entities") if isinstance(item.get("entities"), list) else []
-        tags_raw = item.get("tags") if isinstance(item.get("tags"), list) else []
+        entities_value = item.get("entities")
+        tags_value = item.get("tags")
+        entities_raw: list[Any] = entities_value if isinstance(entities_value, list) else []
+        tags_raw: list[Any] = tags_value if isinstance(tags_value, list) else []
         candidate = DigestCandidate(
             content=content,
             target=target,
@@ -842,10 +847,12 @@ def existing_memory_context(conn: sqlite3.Connection, scope: ScopeProfile, *, li
     placeholders = ",".join("?" for _ in scope.accessible_scope_ids)
     rows = conn.execute(
         f"""
-        SELECT target, summary, content
-        FROM memories
-        WHERE scope_id IN ({placeholders}) AND target IN ('user','memory','project','ops')
-        ORDER BY updated_at DESC
+        SELECT m.target, m.summary, m.content
+        FROM memories AS m
+        WHERE m.scope_id IN ({placeholders})
+          AND m.target IN ('user','memory','project','ops')
+          AND {ordinary_recall_lifecycle_visible_sql('m')}
+        ORDER BY m.updated_at DESC
         LIMIT ?
         """,
         [*scope.accessible_scope_ids, limit],
@@ -877,17 +884,20 @@ def candidate_metadata(candidate: DigestCandidate, run_id: str) -> dict[str, Any
         metadata.setdefault("lifecycle", "candidate")
         metadata.setdefault("candidate_status", "needs_review")
         metadata.setdefault("candidate_reason", "digest_quality_candidate")
-    return metadata
+    safe_metadata, _ = sanitize_structured_value(metadata)
+    return safe_metadata if isinstance(safe_metadata, dict) else {}
 
 
 def find_match(conn: sqlite3.Connection, scope: ScopeProfile, candidate: DigestCandidate) -> tuple[str, str, float]:
     placeholders = ",".join("?" for _ in scope.accessible_scope_ids)
     rows = conn.execute(
         f"""
-        SELECT id, content
-        FROM memories
-        WHERE scope_id IN ({placeholders}) AND target = ?
-        ORDER BY updated_at DESC
+        SELECT m.id, m.content
+        FROM memories AS m
+        WHERE m.scope_id IN ({placeholders})
+          AND m.target = ?
+          AND {ordinary_recall_lifecycle_visible_sql('m')}
+        ORDER BY m.updated_at DESC
         LIMIT 250
         """,
         [*scope.accessible_scope_ids, candidate.target],
@@ -906,6 +916,21 @@ def find_match(conn: sqlite3.Connection, scope: ScopeProfile, candidate: DigestC
             best_content = content
             best_score = score
     return best_id, best_content, best_score
+
+
+def _ordinary_match_still_visible(conn: sqlite3.Connection, memory_id: str) -> bool:
+    if not memory_id:
+        return False
+    row = conn.execute(
+        f"""
+        SELECT 1
+        FROM memories AS m
+        WHERE m.id = ?
+          AND {ordinary_recall_lifecycle_visible_sql('m')}
+        """,
+        (memory_id,),
+    ).fetchone()
+    return row is not None
 
 
 def record_digest_source(conn: sqlite3.Connection, *, memory_id: str, run_id: str, candidate: DigestCandidate) -> None:
@@ -933,8 +958,10 @@ def merge_candidate_metadata(conn: sqlite3.Connection, *, memory_id: str, candid
     existing = load_metadata(row["metadata"])
     incoming = candidate_metadata(candidate, run_id)
     for key in ("entities", "tags", "tools_used", "commands", "verification"):
-        existing_values = existing.get(key) if isinstance(existing.get(key), list) else []
-        incoming_values = incoming.get(key) if isinstance(incoming.get(key), list) else []
+        existing_value = existing.get(key)
+        incoming_value = incoming.get(key)
+        existing_values: list[Any] = existing_value if isinstance(existing_value, list) else []
+        incoming_values: list[Any] = incoming_value if isinstance(incoming_value, list) else []
         merged = unique_strings([*map(str, existing_values), *map(str, incoming_values)], limit=24)
         if merged:
             existing[key] = merged
@@ -943,6 +970,8 @@ def merge_candidate_metadata(conn: sqlite3.Connection, *, memory_id: str, candid
             existing[key] = incoming[key]
     existing["importance"] = max(clamp_float(existing.get("importance"), default=0.5), candidate.importance)
     existing["confidence"] = max(clamp_float(existing.get("confidence"), default=0.5), candidate.confidence)
+    safe_existing, _ = sanitize_structured_value(existing)
+    existing = safe_existing if isinstance(safe_existing, dict) else {}
     metadata_json = json.dumps(existing, ensure_ascii=False, sort_keys=True)
     conn.execute("UPDATE memories SET metadata = ? WHERE id = ?", (metadata_json, memory_id))
     sync_memory_entities(conn, memory_id=memory_id, content=str(row["content"]), target=str(row["target"]), metadata=existing)
@@ -998,6 +1027,8 @@ def apply_candidates(
         seen_candidate_keys.add(key)
 
         match_id, match_content, score = find_match(conn, scope, candidate)
+        if match_id and not _ordinary_match_still_visible(conn, match_id):
+            match_id, match_content, score = "", "", 0.0
         match_scope_id = _memory_scope_id(conn, match_id) if match_id else ""
         match_is_writable = bool(match_scope_id and match_scope_id in set(_profile_writable_scope_ids(scope)))
         if match_id and score >= 0.88:
@@ -1087,18 +1118,39 @@ def cleanup_exact_duplicates(conn: sqlite3.Connection, scope: ScopeProfile, vect
     delete_ids = [memory_id for group in groups for memory_id in group["delete_ids"]]
     if not delete_ids:
         return 0
-    if vector_runtime is not None:
-        vector_store = getattr(vector_runtime, "_vector_store", None)
-        if vector_store is not None:
-            try:
-                vector_store.delete_by_ids(delete_ids)
-            except Exception as exc:
-                mark_vector_needs_repair(vector_runtime, exc)
-                return 0
-        elif bool(getattr(vector_runtime, "_vector_enabled", False)):
-            mark_vector_needs_repair(vector_runtime, "vector store unavailable before duplicate cleanup")
-            return 0
-    return delete_rows(conn, delete_ids, scope_ids=writable_scopes)
+    vector_store = getattr(vector_runtime, "_vector_store", None) if vector_runtime is not None else None
+    vector_enabled = bool(getattr(vector_runtime, "_vector_enabled", False)) if vector_runtime is not None else False
+    vector_status = str(getattr(vector_runtime, "_vector_status", "") or "").lower() if vector_runtime is not None else "disabled"
+    require_vector_delete = vector_store is not None or (vector_enabled and vector_status != "disabled")
+    vector_attempted = False
+
+    def vector_delete(memory_ids: list[str]) -> None:
+        nonlocal vector_attempted
+        vector_attempted = True
+        if vector_runtime is None or vector_store is None:
+            raise RuntimeError("vector store unavailable before duplicate cleanup")
+        with _vector_mutation_lock(vector_runtime):
+            vector_store.delete_by_ids(memory_ids)
+
+    try:
+        result = hard_delete_memories(
+            conn,
+            memory_ids=delete_ids,
+            scope_ids=writable_scopes,
+            vector_delete=vector_delete if vector_store is not None else None,
+            require_vector_delete=require_vector_delete,
+            actor="scope-recall-nightly-digest",
+            reason="exact duplicate cleanup",
+            event_type="nightly_duplicate_hard_delete",
+            batch_id=f"nightly_dedupe_{uuid.uuid4().hex}",
+        )
+        if result.get("vector_error") and vector_runtime is not None:
+            mark_vector_needs_repair(vector_runtime, result["vector_error"])
+        return int(result["deleted"])
+    except Exception as exc:
+        if vector_runtime is not None and (vector_attempted or (vector_store is None and require_vector_delete)):
+            mark_vector_needs_repair(vector_runtime, exc)
+        raise RuntimeError("nightly duplicate hard delete did not commit safely") from exc
 
 
 def collect_candidates(

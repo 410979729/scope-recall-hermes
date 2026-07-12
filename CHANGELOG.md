@@ -4,6 +4,40 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-07-12
+
+### Added
+- Added immutable vector-generation manifests with compare-and-swap activation, migration receipts, durable replay outbox handling, and explicitly activated shadow builds.
+- Added backend-agnostic vector storage, local SQLite brute-force fallback, optional PostgreSQL/pgvector support, and runtime backend selection for hybrid recall.
+- Added an optional semantic candidate-extraction pipeline with strict policy gates, provenance-preserving candidate storage, and preview-first review/apply tooling.
+- Added independent adversarial regression coverage for folded data URLs, structured secret-like metadata keys, freshness cohort integrity, config save/load symmetry, candidate concurrency, lifecycle explain parity, generation safety, and companion cleanup.
+
+### Changed
+- Unified ordinary-recall lifecycle policy so provisional and terminal-hidden rows are excluded from semantic merge, journal and nightly matching, nightly LLM context, exact insertion deduplication, maintenance deduplication, every vector mutation/replay path, migration, doctor accounting, and retrieval.
+- Made vector-index repair inspect the active generation manifest by default while blocking in-place active-generation apply; legacy-root repair now requires an explicit operator flag and incompatible embedder spaces fail closed.
+- Expanded read-only doctor and repair tooling for generation-aware SQLite/LanceDB consistency checks, hidden-vector debt, safe backups, and auditable receipts.
+
+### Fixed
+- Made positive Telegram identifier release scanning AST-aware for valid Python assignments, annotations, comparisons, mappings, allowlist collections, side-effect-free aliases, and split literals; JSON/TOML values are checked recursively, YAML lists are scanned across lines, unknown text uses bounded cross-line context, and synthetic exemptions are limited to explicitly marked test fixtures.
+- Removed raw legacy generation paths from compatibility errors, sanitized and bounded all vector-startup exception messages, and limited system prompts to a bounded vector status code instead of detailed operator errors.
+- Sanitized native-dependency probe output and bounded aggregated vector fallback diagnostics across internal status, operator stats, and warning logs.
+- Added a subprocess native-dependency safety probe before doctor imports LanceDB/PyArrow in-process, preventing illegal-instruction crashes from unsafe wheels.
+- Hardened archive and hard-delete flows with exact-ID scoping, vector-companion cleanup across active-generation and legacy roots, rollback recovery records, and truth-drift guards for repair apply.
+- Hardened automatic capture against folded inline data URLs while preserving surrounding prose.
+- Added lifecycle-safe vector cleanup when candidate memories are archived, including fallback SQLite companion cleanup and repair-debt reporting.
+- Removed folded/multiline data-URL payload continuations at the journal storage boundary while preserving surrounding user prose.
+- Sanitized both mapping keys and values before browser output, governance audit persistence, all memory-metadata write paths (including nightly merge, lifecycle transition, and external imports), and freshness validator persistence, including collision-safe redacted keys, hashed import-source provenance, and preserved structured evidence identifiers.
+- Based factual freshness numerator and denominator on the same active factual cohort and prevented non-zero eligible facts with incomplete coverage from reporting `ready`.
+- Made runtime-config saves reuse load-time schema/type validation and use fsync-backed atomic replacement, rejecting invalid dotted updates as one operation.
+- Made candidate conflict-query failures fail closed, protected bulk transitions with metadata/updated-at CAS, synchronized lifecycle and candidate status, and cleaned graph/vector companions across bulk and single candidate archive/supersede paths, including existing SQLite fallbacks.
+- Made background writer failures, freshness-companion failures, candidate CLI output, and journal dry-run receipts observable and bounded without weakening SQLite truth durability.
+- Redacted durable generation-manifest metadata/errors and migration-receipt details/errors at their authoritative storage helpers, including nested keys and values from direct callers that bypass higher-level runtime sanitization; health reports also sanitize legacy manifest metadata on output.
+- Rejected absolute, Windows drive/UNC, and parent-traversal vector-generation storage paths before manifest persistence; health reports replace legacy invalid paths with an explicit safe marker.
+- Replaced real-looking chat identity fixtures with reserved synthetic identifiers and made the release scanner reject unapproved positive and signed Telegram-style numeric IDs without echoing them.
+- Scanned decoded text members in final wheel and sdist artifacts and made public packaging reject deployment-private source-isolation modules.
+- Removed deployment-local counters from packaged historical release-readiness notes and made the release gate scan every versioned readiness document for private runtime state.
+- Maintained release-gate coverage across forgetting, governance, journal recovery, dashboard, experience replay, installer rollback, fact freshness, relation extraction, and the golden benchmark for the 1.7.2 compatibility patch.
+
 ## [1.7.1] - 2026-07-08
 
 ### Fixed

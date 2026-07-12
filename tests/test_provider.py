@@ -274,8 +274,18 @@ def test_background_writer_rolls_back_open_sqlite_transaction(provider, monkeypa
         }
     )
 
-    assert provider.flush(timeout=2.0) is True
+    assert provider.flush(timeout=2.0) is False
     assert calls == ["background-writer"]
+    stats = json.loads(provider.handle_tool_call("scope_recall_stats", {}))
+    assert stats["background_writer"] == {
+        "thread_alive": True,
+        "failed_writes": 1,
+        "unreported_failures": 0,
+        "last_error_type": "RuntimeError",
+    }
+    # The failed batch was acknowledged by the first flush; a later flush with
+    # no new failed writes should recover to a successful receipt.
+    assert provider.flush(timeout=2.0) is True
     _assert_sqlite_writer_released(provider)
 
 
@@ -845,6 +855,33 @@ def test_profile_surface_respects_gateway_user_isolation_and_multisession_durabl
     assert other_payload["sections"]["user"]["count"] == 0
 
 
+def test_ordinary_recall_hides_migrated_scratch_lifecycle(provider):
+    stored = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_store",
+            {
+                "target": "ops",
+                "content": "Quasar scratch lifecycle sentinel must never appear in ordinary recall results.",
+            },
+        )
+    )
+    assert stored["stored"] is True
+    memory_id = stored["id"]
+    with provider._lock:
+        conn = provider._require_conn()
+        row = conn.execute("SELECT metadata FROM memories WHERE id = ?", (memory_id,)).fetchone()
+        metadata = json.loads(str(row["metadata"] or "{}"))
+        metadata["lifecycle"] = "scratch"
+        conn.execute(
+            "UPDATE memories SET metadata = ? WHERE id = ?",
+            (json.dumps(metadata, ensure_ascii=False, sort_keys=True), memory_id),
+        )
+        conn.commit()
+
+    payload = json.loads(provider.handle_tool_call("scope_recall_search", {"query": "quasar scratch lifecycle sentinel", "limit": 10}))
+    assert memory_id not in {item["id"] for item in payload["results"]}
+
+
 def test_profile_surface_defaults_to_promoted_only_and_can_include_candidates(tmp_path):
     _write_scope_recall_config(tmp_path, {"vector": {"enabled": False}})
     plugin = load_memory_provider("scope-recall")
@@ -1142,6 +1179,25 @@ def test_sync_turn_accepts_structured_content_when_raw_capture_is_explicitly_ena
     provider.on_turn_start(1, "How do structured gateway messages deploy services?")
     result = provider.prefetch("How do structured gateway messages deploy services?")
     assert "uv run" in result.lower()
+
+
+def test_sync_turn_strips_raw_inline_data_url_without_losing_surrounding_text(provider):
+    payload = "A" * 1024
+    provider.sync_turn(
+        f"请分析截图并保留前文 data:image/jpeg;base64,{payload} 然后记住升级流程后文",
+        "Acknowledged.",
+    )
+    provider.flush(timeout=2.0)
+
+    with provider._lock:
+        rows = provider._require_conn().execute("SELECT role, content FROM journal_entries ORDER BY id").fetchall()
+
+    user_rows = [str(row["content"]) for row in rows if row["role"] == "user"]
+    assert user_rows == ["请分析截图并保留前文 然后记住升级流程后文"]
+    combined = "\n".join(str(row["content"]) for row in rows)
+    assert "data:image" not in combined
+    assert "inline image" not in combined.lower()
+    assert payload not in combined
 
 
 def test_sync_turn_strips_image_attachment_markers_before_journal(provider):
@@ -1683,7 +1739,7 @@ def test_cross_platform_identity_mapping_is_opt_in_and_default_keeps_platform_is
         "telegram-session",
         hermes_home=str(tmp_path),
         platform="telegram",
-        user_id="8176453077",
+        user_id="9000000001",
         chat_id="chat-a",
         agent_context="primary",
         agent_identity="yuheng",
@@ -1693,7 +1749,7 @@ def test_cross_platform_identity_mapping_is_opt_in_and_default_keeps_platform_is
         "cli-session",
         hermes_home=str(tmp_path),
         platform="cli",
-        user_id="8176453077",
+        user_id="9000000001",
         agent_context="primary",
         agent_identity="yuheng",
         agent_workspace="hermes",
@@ -1726,7 +1782,7 @@ def test_cross_platform_identity_mapping_unmapped_accounts_remain_isolated(tmp_p
             "identity": {
                 "cross_platform_shared_scope": True,
                 "cli_user_id_fallback": "local",
-                "user_aliases": {"telegram:8176453077": "joy"},
+                "user_aliases": {"telegram:9000000001": "joy"},
             },
         },
     )
@@ -1738,7 +1794,7 @@ def test_cross_platform_identity_mapping_unmapped_accounts_remain_isolated(tmp_p
         "telegram-session",
         hermes_home=str(tmp_path),
         platform="telegram",
-        user_id="8176453077",
+        user_id="9000000001",
         chat_id="chat-a",
         agent_context="primary",
         agent_identity="yuheng",
@@ -1781,7 +1837,7 @@ def test_cross_platform_identity_mapping_reads_legacy_platform_shared_rows(tmp_p
         "telegram-session",
         hermes_home=str(tmp_path),
         platform="telegram",
-        user_id="8176453077",
+        user_id="9000000001",
         chat_id="chat-a",
         agent_context="primary",
         agent_identity="yuheng",
@@ -1810,7 +1866,7 @@ def test_cross_platform_identity_mapping_reads_legacy_platform_shared_rows(tmp_p
             "identity": {
                 "cross_platform_shared_scope": True,
                 "cli_user_id_fallback": "local",
-                "user_aliases": {"telegram:8176453077": "joy", "cli:local": "joy"},
+                "user_aliases": {"telegram:9000000001": "joy", "cli:local": "joy"},
             },
         },
     )
@@ -1842,7 +1898,7 @@ def test_cross_platform_identity_mapping_shares_durable_memory_but_not_local_scr
                 "cross_platform_shared_scope": True,
                 "cli_user_id_fallback": "local",
                 "user_aliases": {
-                    "telegram:8176453077": "joy",
+                    "telegram:9000000001": "joy",
                     "cli:local": "joy",
                     "feishu:ou_xxx": "joy",
                 },
@@ -1857,7 +1913,7 @@ def test_cross_platform_identity_mapping_shares_durable_memory_but_not_local_scr
         "telegram-session",
         hermes_home=str(tmp_path),
         platform="telegram",
-        user_id="8176453077",
+        user_id="9000000001",
         chat_id="chat-a",
         agent_context="primary",
         agent_identity="yuheng",
@@ -1905,7 +1961,7 @@ def test_cross_platform_identity_mapping_shares_durable_memory_but_not_local_scr
             )
         assert metadata["canonical_user"] == "joy"
         assert metadata["raw_platform"] == "telegram"
-        assert metadata["raw_user_id"] == "8176453077"
+        assert metadata["raw_user_id"] == "9000000001"
         durable_results = json.loads(cli.handle_tool_call("scope_recall_search", {"query": "Project Atlas Rust pipeline", "limit": 5}))
         durable_ids = {item["id"] for item in durable_results["results"]}
         assert durable["id"] in durable_ids
@@ -2501,6 +2557,31 @@ def test_remove_from_curated_memory_is_reflected(provider, monkeypatch, tmp_path
 
     provider.on_turn_start(1, "What style does Joy like?")
     assert provider.prefetch("What style does Joy like?") == ""
+
+
+def test_freshness_companion_failure_is_observable_without_losing_memory(provider, monkeypatch):
+    def _fail_freshness(*args, **kwargs):
+        raise RuntimeError("synthetic freshness companion failure")
+
+    package = provider.__class__.__module__.rsplit(".", 1)[0]
+    capture_module = importlib.import_module(f"{package}.capture")
+    monkeypatch.setattr(capture_module, "upsert_memory_freshness", _fail_freshness)
+    stored = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_store",
+            {
+                "content": "Freshness failure observability sentinel is a factual operational state.",
+                "target": "ops",
+                "memory_type": "factual",
+            },
+        )
+    )
+    assert stored["stored"] is True
+    stats = json.loads(provider.handle_tool_call("scope_recall_stats", {}))
+    assert stats["freshness_writer"] == {
+        "failed_writes": 1,
+        "last_error_type": "RuntimeError",
+    }
 
 
 def test_on_memory_write_is_observational_noop(provider):
@@ -3184,6 +3265,31 @@ def test_semantic_near_duplicate_store_merges_existing_memory(provider):
     payload = json.loads(provider.handle_tool_call("scope_recall_search", {"query": "Joy response style", "limit": 5}))
     assert payload["count"] == 1
     assert "brief responses" in payload["results"][0]["content"]
+
+
+def test_semantic_merge_does_not_absorb_confirmed_store_into_candidate(provider):
+    first = json.loads(
+        provider.handle_tool_call("scope_recall_store", {"content": "Joy prefers concise replies.", "target": "user"})
+    )
+    row = provider._require_conn().execute("SELECT metadata FROM memories WHERE id = ?", (first["id"],)).fetchone()
+    metadata = json.loads(str(row["metadata"] or "{}"))
+    metadata["lifecycle"] = "candidate"
+    provider._require_conn().execute(
+        "UPDATE memories SET metadata = ? WHERE id = ?",
+        (json.dumps(metadata, ensure_ascii=False, sort_keys=True), first["id"]),
+    )
+    provider._require_conn().commit()
+
+    second = json.loads(
+        provider.handle_tool_call("scope_recall_store", {"content": "Joy likes brief responses.", "target": "user"})
+    )
+
+    assert second["stored"] is True
+    assert second.get("merged") is not True
+    assert second["id"] != first["id"]
+    candidate = provider._require_conn().execute("SELECT content, metadata FROM memories WHERE id = ?", (first["id"],)).fetchone()
+    assert json.loads(str(candidate["metadata"]))["lifecycle"] == "candidate"
+    assert candidate["content"] == "Joy prefers concise replies."
 
 
 def test_semantic_merge_does_not_hide_conflicting_memory(provider):

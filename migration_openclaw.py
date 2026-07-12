@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .capture_filters import sanitize_structured_value
 from .gating import compact_text, dedup_key
 from .governance import classify_memory
 from .graph import sync_memory_entities
@@ -74,14 +75,25 @@ def _metadata_path(prefix: str, key: str) -> str:
     return f"{prefix}.{key}" if prefix else key
 
 
+def _source_path_provenance(source_path: Path) -> tuple[str, str]:
+    canonical = str(source_path.expanduser().resolve())
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return "[REDACTED_PATH]", digest
+
+
 def lint_openclaw_metadata(row_id: str, value: Any, *, prefix: str = "metadata") -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     if isinstance(value, dict):
         for key, item in value.items():
             key_text = str(key)
-            path = _metadata_path(prefix, key_text)
-            if _SECRET_KEY_RE.search(key_text):
+            secret_key = bool(_SECRET_KEY_RE.search(key_text))
+            path_key = bool(_PATH_LIKE_RE.search(key_text))
+            safe_key = "[REDACTED_KEY]" if secret_key else ("[REDACTED_PATH]" if path_key else key_text)
+            path = _metadata_path(prefix, safe_key)
+            if secret_key:
                 findings.append({"row_id": row_id, "kind": "secret_like", "severity": "high", "field": path, "snippet": "[REDACTED]"})
+            if path_key:
+                findings.append({"row_id": row_id, "kind": "path_like", "severity": "medium", "field": path, "snippet": "[REDACTED_PATH]"})
             findings.extend(lint_openclaw_metadata(row_id, item, prefix=path))
         return findings
     if isinstance(value, (list, tuple, set)):
@@ -99,19 +111,10 @@ def lint_openclaw_metadata(row_id: str, value: Any, *, prefix: str = "metadata")
 
 
 def redact_openclaw_metadata(value: Any, *, key_hint: str = "") -> Any:
-    if isinstance(value, dict):
-        return {str(key): redact_openclaw_metadata(item, key_hint=str(key)) for key, item in value.items()}
-    if isinstance(value, list):
-        return [redact_openclaw_metadata(item, key_hint=key_hint) for item in value]
-    if isinstance(value, tuple):
-        return [redact_openclaw_metadata(item, key_hint=key_hint) for item in value]
-    if isinstance(value, set):
-        return [redact_openclaw_metadata(item, key_hint=key_hint) for item in sorted(value, key=str)]
     if _SECRET_KEY_RE.search(str(key_hint or "")):
         return "[REDACTED]"
-    if isinstance(value, str):
-        return sanitize_snippet(value, 500)
-    return value
+    safe_value, _ = sanitize_structured_value(value)
+    return safe_value
 
 
 def map_openclaw_row(row: dict[str, Any], scope_prefix: str) -> ImportedMemoryRow | None:
@@ -198,8 +201,10 @@ def build_import_plan(
     high_risk_count = sum(1 for item in lint_findings if item.get("severity") == "high")
     blocking_lint_count = len(lint_findings)
     safe_to_apply = not rejections and blocking_lint_count == 0
+    source_display, source_path_sha256 = _source_path_provenance(source_path)
     return {
-        "source": str(source_path),
+        "source": source_display,
+        "source_path_sha256": source_path_sha256,
         "target_db": str(target_db),
         "scope_prefix": scope_prefix,
         "allowed_targets": sorted(allowed),
@@ -290,15 +295,19 @@ def _metadata_for_import(row: ImportedMemoryRow, source_path: Path) -> str:
         source_metadata = json.loads(row.import_metadata or "{}")
     except Exception:
         source_metadata = {"raw_metadata": row.import_metadata}
+    source_display, source_path_sha256 = _source_path_provenance(source_path)
     metadata: dict[str, Any] = dict(classify_memory(row.content, row.target, row.source))
     metadata.update({
         "source_import": {
             "kind": IMPORT_LEDGER_SOURCE_KIND,
-            "source_path": str(source_path),
+            "source_path": source_display,
+            "source_path_sha256": source_path_sha256,
             "fingerprint": row.import_fingerprint,
             "source_metadata": redact_openclaw_metadata(source_metadata),
         }
     })
+    safe_metadata, _ = sanitize_structured_value(metadata)
+    metadata = safe_metadata if isinstance(safe_metadata, dict) else {}
     return json.dumps(metadata, ensure_ascii=False, sort_keys=True)
 
 
@@ -314,6 +323,8 @@ def import_mapped_rows(conn: sqlite3.Connection, rows: list[ImportedMemoryRow], 
     skipped_rows: list[dict[str, str]] = []
     graph_failures: list[dict[str, str]] = []
     ledger_fingerprints: list[str] = []
+    _, source_path_sha256 = _source_path_provenance(source_path)
+    source_path_reference = f"sha256:{source_path_sha256}"
     for row in rows:
         receipt_row = _row_receipt(row)
         ledger_hit = conn.execute("SELECT memory_id FROM import_ledger WHERE import_fingerprint = ?", (row.import_fingerprint,)).fetchone()
@@ -363,7 +374,7 @@ def import_mapped_rows(conn: sqlite3.Connection, rows: list[ImportedMemoryRow], 
                 import_fingerprint, source_kind, source_scope, source_path, memory_id, imported_at
             ) VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (row.import_fingerprint, IMPORT_LEDGER_SOURCE_KIND, row.scope_id, str(source_path), row.id, now_iso()),
+            (row.import_fingerprint, IMPORT_LEDGER_SOURCE_KIND, row.scope_id, source_path_reference, row.id, now_iso()),
         )
         ledger_fingerprints.append(row.import_fingerprint)
         try:

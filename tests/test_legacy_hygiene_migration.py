@@ -13,6 +13,7 @@ from pathlib import Path
 from scope_recall.models import RecallItem
 from scope_recall.recall import RecallService
 from scope_recall.sql_store import ensure_schema, store_row
+from scope_recall.vector_generation import GenerationIdentity, bootstrap_legacy_generation
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 
@@ -87,6 +88,16 @@ def test_legacy_hygiene_migration_apply_archives_and_normalizes_with_backup(tmp_
     _store(conn, memory_id="general-raw", target="general", source="turn-user", content="legacy raw turn that should be archived, not deleted")
     _store(conn, memory_id="durable-missing", target="memory", source="tool-store", content="restart gateway after model changes with uv run")
     conn.execute("UPDATE memories SET metadata = '{}' WHERE id = 'durable-missing'")
+    bootstrap_legacy_generation(
+        conn,
+        identity=GenerationIdentity(
+            backend="lancedb",
+            provider="local-hash",
+            model="hash-v1",
+            dimensions=16,
+        ),
+        row_count=2,
+    )
     conn.commit()
     conn.close()
 
@@ -104,6 +115,16 @@ def test_legacy_hygiene_migration_apply_archives_and_normalizes_with_backup(tmp_
     try:
         general_meta = json.loads(conn.execute("SELECT metadata FROM memories WHERE id = 'general-raw'").fetchone()[0])
         durable_meta = json.loads(conn.execute("SELECT metadata FROM memories WHERE id = 'durable-missing'").fetchone()[0])
+        audit_actions = {
+            (str(row["target_id"]), str(row["action"]))
+            for row in conn.execute(
+                "SELECT target_id, action FROM governance_audit_events WHERE event_type = 'legacy_hygiene'"
+            )
+        }
+        outbox_operations = {
+            (str(row["memory_id"]), str(row["operation"]))
+            for row in conn.execute("SELECT memory_id, operation FROM vector_outbox")
+        }
     finally:
         conn.close()
     assert general_meta["lifecycle"] == "archived"
@@ -112,6 +133,14 @@ def test_legacy_hygiene_migration_apply_archives_and_normalizes_with_backup(tmp_
     assert durable_meta["lifecycle"] == "promoted"
     assert durable_meta["category"] in {"procedure", "fact"}
     assert durable_meta["legacy_hygiene"]["action"] == "normalize_durable_metadata"
+    assert audit_actions == {
+        ("general-raw", "archive_legacy_scratch"),
+        ("durable-missing", "normalize_durable_metadata"),
+    }
+    assert outbox_operations == {
+        ("general-raw", "delete"),
+        ("durable-missing", "upsert"),
+    }
 
 
 def test_recall_filters_archived_lifecycle_rows():

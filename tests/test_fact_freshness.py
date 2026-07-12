@@ -9,13 +9,13 @@ import os
 import sqlite3
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from plugins.memory import load_memory_provider
 
-from scope_recall.freshness import _parse_iso, fact_freshness_report, normalize_validator_kind
+from scope_recall.freshness import _parse_iso, backfill_untracked_memory_freshness, fact_freshness_report, normalize_validator_kind
 from scope_recall.graph import ensure_graph_schema
 from scope_recall.models import RecallItem
 from scope_recall.recall import RecallService
@@ -170,6 +170,83 @@ def test_fact_freshness_report_tolerates_invalid_memory_metadata():
     assert report["coverage"]["factual_memories"] == 0
 
 
+def test_empty_memory_type_falls_back_to_category_in_report_and_backfill():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        now = now_iso()
+        metadata = {"memory_type": "", "category": "factual", "lifecycle": "promoted"}
+        conn.execute(
+            """
+            INSERT INTO memories(
+                id, scope_id, platform, user_id, chat_id, thread_id, gateway_session_key,
+                agent_identity, agent_workspace, session_id, source, target, content, summary,
+                created_at, updated_at, last_recalled_turn, dedup_key, metadata
+            ) VALUES (
+                'empty-type-factual', 'shared-scope', 'telegram', 'joy', 'dm', '', '', 'yuheng', 'hermes', 's',
+                'tool-store', 'memory', 'Explicit empty memory type factual row.', 'Explicit empty memory type factual row.',
+                ?, ?, 0, 'empty-type-factual', ?
+            )
+            """,
+            (now, now, json.dumps(metadata, ensure_ascii=False, sort_keys=True)),
+        )
+        conn.commit()
+
+        report = fact_freshness_report(conn, scope_ids=["shared-scope"])
+        plan = backfill_untracked_memory_freshness(
+            conn,
+            scope_ids=["shared-scope"],
+            apply=False,
+            limit=10,
+        )
+    finally:
+        conn.close()
+
+    assert report["status"] == "needs_review"
+    assert report["coverage"] == {
+        "factual_memories": 1,
+        "tracked_memory_facts": 0,
+        "coverage_percent": 0.0,
+    }
+    assert plan["eligible"] == 1
+    assert plan["ids"] == ["empty-type-factual"]
+
+
+def test_freshness_backfill_reuses_ordinary_lifecycle_policy_for_general_scratch():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        now = now_iso()
+        for memory_id, target, lifecycle in (
+            ("active-fact", "ops", "active"),
+            ("general-scratch-fact", "general", "scratch"),
+            ("durable-scratch-fact", "memory", "scratch"),
+            ("candidate-fact", "memory", "candidate"),
+        ):
+            metadata = {"memory_type": "factual", "lifecycle": lifecycle}
+            conn.execute(
+                """
+                INSERT INTO memories(
+                    id, scope_id, platform, user_id, chat_id, thread_id, gateway_session_key,
+                    agent_identity, agent_workspace, session_id, source, target, content, summary,
+                    created_at, updated_at, last_recalled_turn, dedup_key, metadata
+                ) VALUES (?, 'shared-scope', 'telegram', 'joy', 'dm', '', '', 'yuheng', 'hermes', 's',
+                    'tool-store', ?, 'Freshness fact.', 'Freshness fact.', ?, ?, 0, ?, ?)
+                """,
+                (memory_id, target, now, now, memory_id, json.dumps(metadata, ensure_ascii=False)),
+            )
+        conn.commit()
+
+        report = backfill_untracked_memory_freshness(conn, scope_ids=["shared-scope"], apply=False)
+    finally:
+        conn.close()
+
+    assert set(report["ids"]) == {"active-fact", "general-scratch-fact"}
+    assert report["eligible"] == 2
+
+
 def test_fact_freshness_global_report_matches_scoped_memory_join_semantics():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -287,6 +364,160 @@ def test_fact_freshness_stale_memory_is_marked_and_downgraded_below_current_fact
         assert results[1].score < results[0].score
     finally:
         provider.close()
+
+
+def test_public_store_tracks_unverified_factual_memory_as_needs_live_check(tmp_path):
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    plugin.initialize(
+        "session-freshness-production-writer",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="joy",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        stored = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_store",
+                {
+                    "content": "Northstar production API base URL is https://api.invalid/v2 and must be live-checked.",
+                    "target": "ops",
+                    "memory_type": "factual",
+                    "entities": ["Northstar"],
+                },
+            )
+        )
+        assert stored["stored"] is True
+        memory_id = stored["id"]
+        with plugin._lock:
+            row = plugin._require_conn().execute(
+                "SELECT subject_type, subject_id, fact_key, truth_type, validator_kind, status FROM fact_freshness WHERE subject_id = ?",
+                (memory_id,),
+            ).fetchone()
+
+        assert dict(row) == {
+            "subject_type": "memory",
+            "subject_id": memory_id,
+            "fact_key": "memory_fact",
+            "truth_type": "factual",
+            "validator_kind": "manual",
+            "status": "needs_live_check",
+        }
+        recalled = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_search",
+                {"query": "Northstar production API base URL", "limit": 5},
+            )
+        )
+        matches = [entry for entry in recalled["results"] if entry["id"] == memory_id]
+        assert matches
+        item = matches[0]
+        assert item["needs_live_check"] is True
+        assert item["fact_freshness_status"] == "needs_live_check"
+    finally:
+        plugin.shutdown()
+
+
+def test_public_store_honors_explicit_current_freshness_with_ttl(tmp_path):
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    plugin.initialize(
+        "session-freshness-explicit",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="joy",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        store_schema = next(schema for schema in plugin.get_tool_schemas() if schema["name"] == "scope_recall_store")
+        assert "freshness" in store_schema["parameters"]["properties"]
+        stored = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_store",
+                {
+                    "content": "Northstar status endpoint is https://status.invalid after an explicit live check.",
+                    "target": "ops",
+                    "memory_type": "factual",
+                    "freshness": {
+                        "fact_key": "northstar_status_endpoint",
+                        "truth_type": "environment_fact",
+                        "validator_kind": "http",
+                        "validator_spec": {"url": "https://status.invalid"},
+                        "status": "current",
+                        "ttl_days": 2,
+                    },
+                },
+            )
+        )
+        assert stored["stored"] is True
+        with plugin._lock:
+            row = plugin._require_conn().execute(
+                "SELECT fact_key, truth_type, validator_kind, ttl_days, last_checked_at, valid_until, status FROM fact_freshness WHERE subject_id = ?",
+                (stored["id"],),
+            ).fetchone()
+
+        assert row["fact_key"] == "northstar_status_endpoint"
+        assert row["truth_type"] == "environment_fact"
+        assert row["validator_kind"] == "http"
+        assert row["ttl_days"] == 2
+        assert row["status"] == "current"
+        checked = _parse_iso(row["last_checked_at"])
+        valid_until = _parse_iso(row["valid_until"])
+        assert checked is not None and valid_until is not None
+        assert valid_until - checked == timedelta(days=2)
+    finally:
+        plugin.shutdown()
+
+
+def test_factual_freshness_backfill_is_dry_run_bounded_and_idempotent(tmp_path):
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    plugin.initialize(
+        "session-freshness-backfill",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="joy",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        active = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_store",
+                {"content": "Backfill active factual sentinel remains visible for validation.", "target": "ops", "memory_type": "factual"},
+            )
+        )
+        hidden = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_store",
+                {"content": "Backfill hidden scratch factual sentinel must stay excluded.", "target": "ops", "memory_type": "factual"},
+            )
+        )
+        with plugin._lock:
+            conn = plugin._require_conn()
+            row = conn.execute("SELECT metadata FROM memories WHERE id = ?", (hidden["id"],)).fetchone()
+            metadata = json.loads(str(row["metadata"] or "{}"))
+            metadata["lifecycle"] = "scratch"
+            conn.execute("UPDATE memories SET metadata = ? WHERE id = ?", (json.dumps(metadata, sort_keys=True), hidden["id"]))
+            conn.execute("DELETE FROM fact_freshness WHERE subject_id IN (?, ?)", (active["id"], hidden["id"]))
+            conn.commit()
+
+            dry_run = backfill_untracked_memory_freshness(conn, apply=False, limit=10)
+            assert conn.execute("SELECT COUNT(*) FROM fact_freshness").fetchone()[0] == 0
+            applied = backfill_untracked_memory_freshness(conn, apply=True, limit=10)
+            repeated = backfill_untracked_memory_freshness(conn, apply=True, limit=10)
+
+        assert dry_run == {"apply": False, "eligible": 1, "inserted": 0, "ids": [active["id"]]}
+        assert applied == {"apply": True, "eligible": 1, "inserted": 1, "ids": [active["id"]]}
+        assert repeated == {"apply": True, "eligible": 0, "inserted": 0, "ids": []}
+    finally:
+        plugin.shutdown()
 
 
 def test_profile_marks_stale_operational_fact_as_needing_live_check(tmp_path):

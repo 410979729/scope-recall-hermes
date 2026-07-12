@@ -41,6 +41,28 @@ SCOPE_RECALL_STORE_SCHEMA = {
                 "type": "number",
                 "description": "Optional 0..1 importance hint.",
             },
+            "freshness": {
+                "type": "object",
+                "description": "Optional factual freshness evidence. Unspecified factual memories default to needs_live_check.",
+                "properties": {
+                    "fact_key": {"type": "string"},
+                    "truth_type": {"type": "string"},
+                    "validator_kind": {
+                        "type": "string",
+                        "enum": ["manual", "none", "file_exists", "command", "http"],
+                    },
+                    "validator_spec": {"type": "object"},
+                    "ttl_days": {"type": "integer", "minimum": 0},
+                    "last_checked_at": {"type": "string"},
+                    "valid_until": {"type": "string"},
+                    "status": {
+                        "type": "string",
+                        "enum": ["current", "needs_live_check", "stale", "expired"],
+                    },
+                    "stale_reason": {"type": "string"},
+                    "superseded_by": {"type": "string"},
+                },
+            },
             "entities": {
                 "type": "array",
                 "items": {"type": "string"},

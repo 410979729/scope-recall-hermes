@@ -13,6 +13,7 @@ from typing import Any
 from .gating import query_tokens
 from .freshness import attach_freshness_metadata, memory_freshness_map
 from .graph import apply_quality_weight, entity_distance_scores, entity_overlap_bonus, metadata_entities, normalize_entity, query_entities as graph_query_entities
+from .lifecycle_policy import ORDINARY_RECALL_HIDDEN_LIFECYCLE_VALUES, ordinary_recall_lifecycle_visible_sql
 from .models import RecallItem
 from .recall_pipeline import build_search_plan, final_trace_payload, initial_trace, merge_recall_candidates, rank_recall_items
 from .scoring import combine_scores, reciprocal_rank_fusion
@@ -53,14 +54,8 @@ _TEMPORAL_DURABLE_TYPES = {
 }
 _TEMPORAL_EPISODIC_TYPES = {"episodic", "summary"}
 _TEMPORAL_TEMPORARY_TYPES = {"scratch", "temporary", "temporary_state", "tool_trace"}
-_RECALL_HIDDEN_LIFECYCLE_VALUES = ("superseded", "obsolete", "rejected", "archived", "candidate", "in_progress")
+_RECALL_HIDDEN_LIFECYCLE_VALUES = ORDINARY_RECALL_HIDDEN_LIFECYCLE_VALUES
 _RECALL_HIDDEN_LIFECYCLE_TYPES = set(_RECALL_HIDDEN_LIFECYCLE_VALUES)
-
-
-def _recall_lifecycle_visible_sql(alias: str) -> str:
-    lifecycle_expr = f"LOWER(COALESCE(CASE WHEN json_valid({alias}.metadata) THEN json_extract({alias}.metadata, '$.lifecycle') ELSE '' END, ''))"
-    hidden_values = ",".join(f"'{value}'" for value in _RECALL_HIDDEN_LIFECYCLE_VALUES)
-    return f"{lifecycle_expr} NOT IN ({hidden_values})"
 
 _ENTITY_SCOPE_STOPWORDS = {
     "api",
@@ -446,8 +441,8 @@ class RecallService:
                     JOIN memories s ON s.id = r.source_memory_id
                     JOIN memories t ON t.id = r.target_memory_id
                     WHERE (r.source_memory_id IN ({placeholders}) OR r.target_memory_id IN ({placeholders}))
-                      AND {_recall_lifecycle_visible_sql('s')}
-                      AND {_recall_lifecycle_visible_sql('t')}{scope_clause}
+                      AND {ordinary_recall_lifecycle_visible_sql('s')}
+                      AND {ordinary_recall_lifecycle_visible_sql('t')}{scope_clause}
                     """
         relation_params = [*ids, *ids, *scope_params]
         try:
@@ -634,7 +629,9 @@ class RecallService:
         output: list[RecallItem] = []
         for item in items:
             lifecycle = str((item.metadata or {}).get("lifecycle") or "").strip().lower()
-            if lifecycle in _RECALL_HIDDEN_LIFECYCLE_TYPES:
+            if lifecycle in _RECALL_HIDDEN_LIFECYCLE_TYPES and not (
+                lifecycle == "scratch" and item.target == "general"
+            ):
                 continue
             output.append(item)
         return output

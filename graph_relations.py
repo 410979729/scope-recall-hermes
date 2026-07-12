@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from .graph import clamp_float, load_metadata
+from .lifecycle_policy import ordinary_recall_lifecycle_visible
 
 ALLOWED_RELATION_TYPES = {"contradicts", "supports", "supersedes"}
 HIDDEN_RELATION_PEER_LIFECYCLES = {"superseded", "obsolete", "rejected", "archived"}
@@ -37,6 +38,87 @@ def _memory_exists(conn: sqlite3.Connection, memory_id: str) -> bool:
         return conn.execute("SELECT 1 FROM memories WHERE id = ?", (memory_id,)).fetchone() is not None
     except sqlite3.Error:
         return False
+
+
+def evaluate_relation_policy(
+    conn: sqlite3.Connection,
+    *,
+    source_memory_id: str,
+    target_memory_id: str,
+    relation_type: str,
+    accessible_scope_ids: Iterable[str] | None = None,
+    same_scope_only: bool = True,
+    require_visible_endpoints: bool = True,
+    reject_contradiction_conflicts: bool = True,
+) -> dict[str, Any]:
+    """Return one reusable, non-mutating relation endpoint decision."""
+
+    source_id = _clean_id(source_memory_id)
+    target_id = _clean_id(target_memory_id)
+    normalized_type = _relation_type(relation_type)
+    decision: dict[str, Any] = {
+        "allowed": False,
+        "reason": "",
+        "source_memory_id": source_id,
+        "target_memory_id": target_id,
+        "relation_type": normalized_type,
+    }
+    if not source_id or not target_id:
+        decision["reason"] = "missing_id"
+        return decision
+    if source_id == target_id:
+        decision["reason"] = "self_relation"
+        return decision
+    if normalized_type not in ALLOWED_RELATION_TYPES:
+        decision["reason"] = "unsupported_relation_type"
+        return decision
+    rows = conn.execute(
+        "SELECT id, scope_id, target, metadata FROM memories WHERE id IN (?, ?)",
+        (source_id, target_id),
+    ).fetchall()
+    by_id = {str(row["id"]): row for row in rows}
+    if source_id not in by_id or target_id not in by_id:
+        decision["reason"] = "missing_endpoint"
+        return decision
+    source_row = by_id[source_id]
+    target_row = by_id[target_id]
+    source_scope = _clean_id(source_row["scope_id"])
+    target_scope = _clean_id(target_row["scope_id"])
+    decision["source_scope_id"] = source_scope
+    decision["target_scope_id"] = target_scope
+    scopes = _scope_set(accessible_scope_ids)
+    if scopes and (source_scope not in scopes or target_scope not in scopes):
+        decision["reason"] = "inaccessible_scope"
+        return decision
+    if same_scope_only and source_scope != target_scope:
+        decision["reason"] = "cross_scope"
+        return decision
+    if require_visible_endpoints:
+        for label, row in (("source", source_row), ("target", target_row)):
+            metadata = load_metadata(row["metadata"])
+            if not ordinary_recall_lifecycle_visible(
+                lifecycle=str(metadata.get("lifecycle") or ""),
+                target=str(row["target"] or ""),
+            ):
+                decision["reason"] = f"hidden_{label}"
+                return decision
+    if reject_contradiction_conflicts and normalized_type != "contradicts":
+        conflict = conn.execute(
+            """
+            SELECT 1 FROM memory_relations
+            WHERE relation_type = 'contradicts'
+              AND ((source_memory_id = ? AND target_memory_id = ?)
+                   OR (source_memory_id = ? AND target_memory_id = ?))
+            LIMIT 1
+            """,
+            (source_id, target_id, target_id, source_id),
+        ).fetchone()
+        if conflict is not None:
+            decision["reason"] = "contradiction_conflict"
+            return decision
+    decision["allowed"] = True
+    decision["reason"] = "allowed"
+    return decision
 
 
 def upsert_relation(

@@ -12,6 +12,7 @@ import uuid
 from typing import Any
 
 from .capture_filters import should_capture_text
+from .freshness import upsert_memory_freshness
 from .models import recall_scope_mode
 from .scope import canonical_user_id
 from .sql_store import store_row
@@ -39,6 +40,14 @@ def writer_loop(provider: Any) -> None:
                 return
             if job.get("kind") == "flush":
                 event = job.get("event")
+                result = job.get("result")
+                with provider._lock:
+                    failed_writes = int(getattr(provider, "_writer_failed_writes", 0) or 0)
+                    reported_failures = int(getattr(provider, "_writer_reported_failures", 0) or 0)
+                    success = failed_writes == reported_failures
+                    provider._writer_reported_failures = failed_writes
+                if isinstance(result, dict):
+                    result["success"] = success
                 if isinstance(event, threading.Event):
                     event.set()
                 continue
@@ -51,10 +60,13 @@ def writer_loop(provider: Any) -> None:
                     session_id=job.get("session_id") or provider._session_id,
                     metadata=job.get("metadata") or {},
                 )
-        except Exception:
+        except Exception as exc:
             rollback = getattr(provider, "_rollback_conn_after_error", None)
             if callable(rollback):
                 rollback("background writer")
+            with provider._lock:
+                provider._writer_failed_writes = int(getattr(provider, "_writer_failed_writes", 0) or 0) + 1
+                provider._writer_last_error_type = type(exc).__name__
             logger.exception("Scope Recall background write failed")
         finally:
             provider._write_queue.task_done()
@@ -64,8 +76,11 @@ def flush_writer(provider: Any, timeout: float = 2.0) -> bool:
     if not provider._writer_thread:
         return True
     done = threading.Event()
-    provider._write_queue.put({"kind": "flush", "event": done})
-    return done.wait(timeout=timeout)
+    result: dict[str, bool] = {}
+    provider._write_queue.put({"kind": "flush", "event": done, "result": result})
+    if not done.wait(timeout=timeout):
+        return False
+    return bool(result.get("success", False))
 
 
 def shutdown_writer(provider: Any, timeout: float = 3.0) -> None:
@@ -157,6 +172,15 @@ def store_now(
             allow_duplicate=allow_duplicate or str(source).startswith("legacy-"),
         )
     if inserted:
+        try:
+            with provider._lock:
+                upsert_memory_freshness(conn, memory_id=memory_id, metadata=metadata_payload)
+        except Exception as exc:
+            with provider._lock:
+                conn.rollback()
+                provider._freshness_write_failures = int(getattr(provider, "_freshness_write_failures", 0) or 0) + 1
+                provider._freshness_last_error_type = type(exc).__name__
+            logger.exception("Scope Recall freshness companion write failed")
         upsert_vector_record(
             provider,
             id=memory_id,

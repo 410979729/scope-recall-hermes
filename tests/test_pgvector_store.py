@@ -87,6 +87,7 @@ class FakeCursor:
                     record["content"],
                     record["summary"],
                     record["updated_at"],
+                    record["vector"],
                 )
                 for record in self.conn.records.values()
             ]
@@ -199,7 +200,9 @@ def test_pgvector_store_protocol_with_fake_driver(monkeypatch: pytest.MonkeyPatc
 
         assert store.count_rows() == 2
         assert store.audit_counts()["unique_ids"] == 2
-        assert set(store.list_records()) == {"m1", "m2"}
+        records = store.list_records()
+        assert set(records) == {"m1", "m2"}
+        assert records["m1"]["vector"] == [1.0, 0.0, 0.0]
         hits = store.search([1.0, 0.0, 0.0], scope_id="scope-a", limit=1)
         assert hits[0]["id"] == "m1"
         assert store.delete(["m2"]) == 1

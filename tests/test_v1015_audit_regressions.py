@@ -17,14 +17,16 @@ import pytest
 
 import scope_recall.capture_llm as capture_llm
 import scope_recall.journal as journal
+import scope_recall.lifecycle_service as lifecycle_service_module
 import scope_recall.memory_ops as memory_ops_module
 import scope_recall.nightly_digest as nightly_digest
 from scope_recall.journal import JournalDigestCandidate, JournalEntry, apply_journal_candidates, ensure_journal_schema, heuristic_journal_candidates
-from scope_recall.memory_ops import archive_memories, dedupe_memories, delete_memories
+from scope_recall.memory_ops import archive_memories, dedupe_memories, delete_memories, govern_memories, update_memory
 from scope_recall.models import RuntimeScope
 from scope_recall.nightly_digest import DigestCandidate, ScopeProfile, apply_candidates, ensure_digest_schema, infer_scope
 from scope_recall.scope import accessible_scope_ids, build_scope_id, build_shared_scope_id, normalize_scope_identity
 from scope_recall.sql_store import ensure_schema, store_row
+from scope_recall.vector_generation import GenerationIdentity, bootstrap_legacy_generation
 
 
 def _json_response(content: str = "[]"):
@@ -199,6 +201,8 @@ class _FakeProvider:
         self._accessible_scope_ids = accessible
         self._writable_scope_ids = writable
         self._vector_store: Any = None
+        self._embedder: Any = None
+        self._vector_generation_id = ""
         self._vector_enabled = False
         self._vector_ready = True
         self._vector_status = "ready"
@@ -206,6 +210,9 @@ class _FakeProvider:
 
     def _require_conn(self) -> sqlite3.Connection:
         return self._conn
+
+    def _config_value(self, _key: str, default: Any = None) -> Any:
+        return default
 
 
 class _FailingVectorStore:
@@ -217,6 +224,9 @@ class _FailingVectorStore:
         secret = "sk-" + "FAILINGDELETE123456789"
         raise RuntimeError(f"vector delete failed api_key={secret} /tmp/hermes-private")
 
+    def audit_counts(self) -> dict[str, int]:
+        return {"physical_rows": 0, "unique_ids": 0, "duplicate_rows": 0, "duplicate_ids": 0}
+
 
 class _RecordingVectorStore:
     def __init__(self) -> None:
@@ -224,6 +234,28 @@ class _RecordingVectorStore:
 
     def delete_by_ids(self, ids: list[str]) -> None:
         self.deleted_ids.append(list(ids))
+
+    def audit_counts(self) -> dict[str, int]:
+        return {"physical_rows": 0, "unique_ids": 0, "duplicate_rows": 0, "duplicate_ids": 0}
+
+
+def _enable_vector(provider: _FakeProvider, vector_store: Any) -> None:
+    manifest = bootstrap_legacy_generation(
+        provider._require_conn(),
+        identity=GenerationIdentity(
+            backend="lancedb", provider="local-hash", model="hash-v1", dimensions=16
+        ),
+        row_count=0,
+    )
+    provider._require_conn().commit()
+    provider._vector_store = vector_store
+    provider._vector_enabled = True
+    provider._vector_ready = True
+    provider._vector_status = "ready"
+    provider._vector_generation_id = str(manifest["generation_id"])
+    # Delete replay does not embed, but the worker requires an initialized
+    # embedder marker before it claims generation-scoped events.
+    provider._embedder = object()
 
 
 def _insert_test_memory(
@@ -261,14 +293,14 @@ def test_legacy_shared_scope_alias_is_not_writable_for_deletes():
         "identity": {
             "cross_platform_shared_scope": True,
             "cli_user_id_fallback": "local",
-            "user_aliases": {"telegram:8176453077": "joy", "cli:local": "joy"},
+            "user_aliases": {"telegram:9000000001": "joy", "cli:local": "joy"},
         }
     }
     cli_scope = normalize_scope_identity(
         RuntimeScope(platform="cli", user_id="", agent_identity="default", agent_workspace="hermes"),
         config,
     )
-    legacy_telegram_scope = RuntimeScope(platform="telegram", user_id="8176453077", agent_identity="default", agent_workspace="hermes")
+    legacy_telegram_scope = RuntimeScope(platform="telegram", user_id="9000000001", agent_identity="default", agent_workspace="hermes")
     legacy_shared = build_shared_scope_id(legacy_telegram_scope)
     canonical_local = build_scope_id(cli_scope, config)
     canonical_shared = build_shared_scope_id(cli_scope, config)
@@ -277,7 +309,7 @@ def test_legacy_shared_scope_alias_is_not_writable_for_deletes():
         memory_id="legacy-row",
         scope_id=legacy_shared,
         platform="telegram",
-        user_id="8176453077",
+        user_id="9000000001",
         chat_id="",
         thread_id="",
         gateway_session_key="",
@@ -310,7 +342,7 @@ def test_missing_writable_scope_list_fails_closed_for_deletes():
         memory_id="accessible-only-row",
         scope_id="legacy-readable-scope",
         platform="telegram",
-        user_id="8176453077",
+        user_id="9000000001",
         chat_id="",
         thread_id="",
         gateway_session_key="",
@@ -340,18 +372,18 @@ def test_missing_writable_scope_list_fails_closed_for_deletes():
     assert conn.execute("SELECT COUNT(*) FROM memories WHERE id = 'accessible-only-row'").fetchone()[0] == 1
 
 
-def test_scope_recall_forget_keeps_sql_truth_when_vector_delete_fails():
+def test_scope_recall_forget_commits_truth_and_retries_when_vector_delete_fails():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     ensure_schema(conn)
     _insert_test_memory(conn, memory_id="delete-row", content="Forget should fail closed when vector delete fails.")
     provider = _FakeProvider(conn, accessible=["shared-scope"], writable=["shared-scope"])
-    provider._vector_store = _FailingVectorStore()
+    _enable_vector(provider, _FailingVectorStore())
 
     deleted = delete_memories(provider, ["delete-row"])
 
-    assert deleted == 0
-    assert conn.execute("SELECT COUNT(*) FROM memories WHERE id = 'delete-row'").fetchone()[0] == 1
+    assert deleted == 1
+    assert conn.execute("SELECT COUNT(*) FROM memories WHERE id = 'delete-row'").fetchone()[0] == 0
     assert provider._vector_status == "needs_repair"
     assert "[REDACTED_SECRET]" in provider._vector_message
     assert "[REDACTED_PATH]" in provider._vector_message
@@ -366,13 +398,142 @@ def test_scope_recall_forget_deletes_sql_after_vector_delete_succeeds():
     _insert_test_memory(conn, memory_id="delete-row", content="Forget may delete SQL after vector deletion succeeds.")
     provider = _FakeProvider(conn, accessible=["shared-scope"], writable=["shared-scope"])
     vector_store = _RecordingVectorStore()
-    provider._vector_store = vector_store
+    _enable_vector(provider, vector_store)
 
     deleted = delete_memories(provider, ["delete-row"])
 
     assert deleted == 1
     assert vector_store.deleted_ids == [["delete-row"]]
     assert conn.execute("SELECT COUNT(*) FROM memories WHERE id = 'delete-row'").fetchone()[0] == 0
+
+
+def test_scope_recall_hard_delete_audit_failure_keeps_truth_and_vector_ready(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    _insert_test_memory(conn, memory_id="delete-row", content="Audit failure must keep hard-delete truth.")
+    provider = _FakeProvider(conn, accessible=["shared-scope"], writable=["shared-scope"])
+    vector_store = _RecordingVectorStore()
+    _enable_vector(provider, vector_store)
+
+    def fail_audit_insert(*_args, **_kwargs):
+        raise RuntimeError("injected hard delete audit failure")
+
+    monkeypatch.setattr(lifecycle_service_module, "record_governance_audit_event", fail_audit_insert)
+
+    with pytest.raises(RuntimeError, match="injected hard delete audit failure"):
+        delete_memories(provider, ["delete-row"])
+
+    assert vector_store.deleted_ids == []
+    assert conn.execute("SELECT COUNT(*) FROM memories WHERE id = 'delete-row'").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM governance_audit_events").fetchone()[0] == 0
+    assert provider._vector_status == "ready"
+    assert provider._vector_message == ""
+
+
+def test_update_memory_rejects_hidden_lifecycle_without_vector_mutation():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    _insert_test_memory(
+        conn,
+        memory_id="archived-update",
+        content="Archived memory content must remain unchanged by ordinary update.",
+    )
+    metadata = json.loads(
+        str(conn.execute("SELECT metadata FROM memories WHERE id = 'archived-update'").fetchone()[0])
+    )
+    metadata["lifecycle"] = "archived"
+    conn.execute(
+        "UPDATE memories SET metadata = ? WHERE id = 'archived-update'",
+        (json.dumps(metadata, ensure_ascii=False, sort_keys=True),),
+    )
+    conn.commit()
+    provider = _FakeProvider(conn, accessible=["shared-scope"], writable=["shared-scope"])
+    vector_store = _RecordingVectorStore()
+    provider._vector_store = vector_store
+
+    updated, message, updated_at = update_memory(
+        provider,
+        "archived-update",
+        "This ordinary edit must be rejected.",
+        "memory",
+    )
+
+    assert updated is False
+    assert "lifecycle" in message.lower()
+    assert updated_at == ""
+    assert conn.execute("SELECT content FROM memories WHERE id = 'archived-update'").fetchone()[0].startswith("Archived")
+    assert vector_store.deleted_ids == []
+    conn.close()
+
+
+def test_governance_apply_commits_cas_audit_and_vector_outbox():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    manifest = bootstrap_legacy_generation(
+        conn,
+        identity=GenerationIdentity(
+            backend="lancedb", provider="local-hash", model="hash-v1", dimensions=16
+        ),
+        row_count=0,
+    )
+    _insert_test_memory(conn, memory_id="govern-row", content="Governance metadata classification fixture.")
+    conn.commit()
+    provider = _FakeProvider(conn, accessible=["shared-scope"], writable=["shared-scope"])
+
+    result = govern_memories(provider, dry_run=False, scope_only=True)
+
+    assert result["dry_run"] is False
+    audit = conn.execute(
+        "SELECT action, target_id FROM governance_audit_events WHERE target_id = 'govern-row'"
+    ).fetchone()
+    assert tuple(audit) == ("classify_metadata", "govern-row")
+    outbox = conn.execute(
+        "SELECT generation_id, operation, status FROM vector_outbox WHERE memory_id = 'govern-row'"
+    ).fetchone()
+    assert tuple(outbox) == (manifest["generation_id"], "upsert", "pending")
+    conn.close()
+
+
+def test_governance_apply_cas_conflict_rolls_back_entire_batch(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    _insert_test_memory(conn, memory_id="govern-race", content="Governance CAS race fixture.")
+    conn.commit()
+    before = conn.execute(
+        "SELECT metadata, updated_at FROM memories WHERE id = 'govern-race'"
+    ).fetchone()
+    provider = _FakeProvider(conn, accessible=["shared-scope"], writable=["shared-scope"])
+    real_transition = memory_ops_module.transition_memory_lifecycle
+
+    def race_transition(connection, **kwargs):
+        row = connection.execute(
+            "SELECT metadata FROM memories WHERE id = ?",
+            (kwargs["memory_id"],),
+        ).fetchone()
+        raced_metadata = json.loads(str(row["metadata"] or "{}"))
+        raced_metadata["lifecycle"] = "archived"
+        connection.execute(
+            "UPDATE memories SET metadata = ? WHERE id = ?",
+            (json.dumps(raced_metadata, ensure_ascii=False, sort_keys=True), kwargs["memory_id"]),
+        )
+        return real_transition(connection, **kwargs)
+
+    monkeypatch.setattr(memory_ops_module, "transition_memory_lifecycle", race_transition)
+
+    with pytest.raises(Exception, match="changed after review"):
+        govern_memories(provider, dry_run=False, scope_only=True)
+
+    after = conn.execute(
+        "SELECT metadata, updated_at FROM memories WHERE id = 'govern-race'"
+    ).fetchone()
+    assert tuple(after) == tuple(before)
+    assert conn.execute("SELECT COUNT(*) FROM governance_audit_events").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0] == 0
+    conn.close()
 
 
 def test_scope_recall_forget_soft_archives_with_audit_receipt_by_default():
@@ -405,27 +566,43 @@ def test_scope_recall_forget_soft_archives_with_audit_receipt_by_default():
     assert json.loads(audit["after_json"])["metadata"]["lifecycle"] == "archived"
 
 
-def test_scope_recall_forget_soft_archive_keeps_active_when_vector_delete_fails():
+def test_scope_recall_forget_soft_archive_keeps_truth_and_retries_when_vector_delete_fails():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     ensure_schema(conn)
-    _insert_test_memory(conn, memory_id="archive-row", content="Archive should fail closed when vector delete fails.")
+    manifest = bootstrap_legacy_generation(
+        conn,
+        identity=GenerationIdentity(
+            backend="lancedb", provider="local-hash", model="hash-v1", dimensions=16
+        ),
+        row_count=0,
+    )
+    _insert_test_memory(conn, memory_id="archive-row", content="Archive remains truth when vector replay fails.")
+    conn.commit()
     provider = _FakeProvider(conn, accessible=["shared-scope"], writable=["shared-scope"])
     provider._vector_enabled = True
     provider._vector_store = _FailingVectorStore()
+    provider._vector_generation_id = manifest["generation_id"]
+    provider._embedder = object()
 
     payload = archive_memories(provider, ["archive-row"], reason="user-request", actor="scope_recall_forget", batch_id="forget-vector-fail")
 
-    assert payload["archived"] == 0
-    assert payload["ids"] == []
-    assert payload["skipped"] == ["archive-row"]
+    assert payload["archived"] == 1
+    assert payload["ids"] == ["archive-row"]
+    assert payload["skipped"] == []
     assert provider._vector_status == "needs_repair"
     row = conn.execute("SELECT metadata FROM memories WHERE id = 'archive-row'").fetchone()
-    assert json.loads(row["metadata"]).get("lifecycle") != "archived"
-    assert conn.execute("SELECT COUNT(*) FROM governance_audit_events WHERE batch_id = 'forget-vector-fail'").fetchone()[0] == 0
+    assert json.loads(row["metadata"])["lifecycle"] == "archived"
+    assert conn.execute("SELECT COUNT(*) FROM governance_audit_events WHERE batch_id = 'forget-vector-fail'").fetchone()[0] == 1
+    event = conn.execute(
+        "SELECT status, last_error FROM vector_outbox WHERE memory_id = 'archive-row'"
+    ).fetchone()
+    assert event["status"] == "retry"
+    assert "[REDACTED_SECRET]" in event["last_error"]
+    assert "sk-FAILING" not in event["last_error"]
 
 
-def test_scope_recall_forget_soft_archive_marks_vector_repair_when_sql_stage_fails(monkeypatch):
+def test_scope_recall_forget_soft_archive_sql_failure_rolls_back_before_vector_replay(monkeypatch):
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     ensure_schema(conn)
@@ -434,23 +611,23 @@ def test_scope_recall_forget_soft_archive_marks_vector_repair_when_sql_stage_fai
     vector_store = _RecordingVectorStore()
     provider._vector_store = vector_store
 
-    def fail_entity_sync(*_args, **_kwargs):
+    def fail_audit_insert(*_args, **_kwargs):
         secret = "sk-" + "ARCHIVEFAIL123456789"
-        raise RuntimeError(f"entity sync failed api_key={secret} {'/tmp/' + 'hermes-archive-fail'}")
+        raise RuntimeError(f"audit insert failed api_key={secret} {'/tmp/' + 'hermes-archive-fail'}")
 
-    monkeypatch.setattr(memory_ops_module, "sync_memory_entities", fail_entity_sync)
+    monkeypatch.setattr(lifecycle_service_module, "record_governance_audit_event", fail_audit_insert)
 
     payload = archive_memories(provider, ["archive-row"], reason="user-request", actor="scope_recall_forget", batch_id="forget-sql-fail")
 
-    assert vector_store.deleted_ids == [["archive-row"]]
+    assert vector_store.deleted_ids == []
     assert payload["archived"] == 0
     assert payload["ids"] == []
     assert payload["skipped"] == ["archive-row"]
     assert payload["receipt"]["action"] == "soft_archive_failed"
     assert "[REDACTED_SECRET]" in payload["error"]
     assert "sk-ARCHIVE" not in payload["error"]
-    assert provider._vector_status == "needs_repair"
-    assert "[REDACTED_SECRET]" in provider._vector_message
+    assert provider._vector_status == "ready"
+    assert provider._vector_message == ""
     row = conn.execute("SELECT metadata FROM memories WHERE id = 'archive-row'").fetchone()
     assert json.loads(row["metadata"]).get("lifecycle") != "archived"
     assert conn.execute("SELECT COUNT(*) FROM governance_audit_events WHERE batch_id = 'forget-sql-fail'").fetchone()[0] == 0
@@ -510,14 +687,14 @@ def test_scope_recall_forget_soft_archive_commit_failure_keeps_durable_sql_unarc
     finally:
         conn.close()
 
-    assert vector_store.deleted_ids == [["archive-row"]]
+    assert vector_store.deleted_ids == []
     assert payload["archived"] == 0
     assert payload["ids"] == []
     assert payload["skipped"] == ["archive-row"]
     assert payload["receipt"]["action"] == "soft_archive_failed"
     assert "[REDACTED_SECRET]" in payload["error"]
     assert "sk-COMMIT" not in payload["error"]
-    assert provider._vector_status == "needs_repair"
+    assert provider._vector_status == "ready"
 
     reopened = sqlite3.connect(db_path)
     reopened.row_factory = sqlite3.Row
@@ -530,37 +707,41 @@ def test_scope_recall_forget_soft_archive_commit_failure_keeps_durable_sql_unarc
         reopened.close()
 
 
-def test_dedupe_scope_only_keeps_sql_truth_when_vector_delete_fails():
+def test_dedupe_scope_only_commits_truth_and_reports_vector_retry():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     ensure_schema(conn)
     _insert_test_memory(conn, memory_id="dupe-new", content="Exact duplicate fail closed row")
     _insert_test_memory(conn, memory_id="dupe-old", content="Exact duplicate fail closed row")
     provider = _FakeProvider(conn, accessible=["shared-scope"], writable=["shared-scope"])
-    provider._vector_store = _FailingVectorStore()
+    _enable_vector(provider, _FailingVectorStore())
 
     payload = dedupe_memories(provider, dry_run=False, scope_only=True)
 
     assert payload["duplicates"] == 1
-    assert payload["deleted"] == 0
-    assert conn.execute("SELECT COUNT(*) FROM memories WHERE id IN ('dupe-new', 'dupe-old')").fetchone()[0] == 2
+    assert payload["deleted"] == 1
+    assert payload["vector_pending"] is True
+    assert payload["vector_error"]
+    assert conn.execute("SELECT COUNT(*) FROM memories WHERE id IN ('dupe-new', 'dupe-old')").fetchone()[0] == 1
     assert provider._vector_status == "needs_repair"
 
 
-def test_dedupe_global_keeps_sql_truth_when_vector_delete_fails():
+def test_dedupe_global_commits_truth_and_reports_vector_retry():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     ensure_schema(conn)
     _insert_test_memory(conn, memory_id="dupe-new", content="Exact duplicate global fail closed row")
     _insert_test_memory(conn, memory_id="dupe-old", content="Exact duplicate global fail closed row")
     provider = _FakeProvider(conn, accessible=["shared-scope"], writable=["shared-scope"])
-    provider._vector_store = _FailingVectorStore()
+    _enable_vector(provider, _FailingVectorStore())
 
     payload = dedupe_memories(provider, dry_run=False, scope_only=False)
 
     assert payload["duplicates"] == 1
-    assert payload["deleted"] == 0
-    assert conn.execute("SELECT COUNT(*) FROM memories WHERE id IN ('dupe-new', 'dupe-old')").fetchone()[0] == 2
+    assert payload["deleted"] == 1
+    assert payload["vector_pending"] is True
+    assert payload["vector_error"]
+    assert conn.execute("SELECT COUNT(*) FROM memories WHERE id IN ('dupe-new', 'dupe-old')").fetchone()[0] == 1
     assert provider._vector_status == "needs_repair"
 
 
@@ -594,11 +775,42 @@ def test_dedupe_global_vector_and_sql_delete_happen_under_provider_lock():
     lock = AssertingLock()
     provider = _FakeProvider(conn, accessible=["shared-scope"], writable=["shared-scope"])
     provider._lock = lock
-    provider._vector_store = LockCheckingVectorStore(lock)
+    _enable_vector(provider, LockCheckingVectorStore(lock))
 
     payload = dedupe_memories(provider, dry_run=False, scope_only=False)
 
     assert payload["deleted"] == 1
+
+
+def test_dedupe_never_deletes_visible_row_in_favor_of_hidden_newer_duplicate():
+    for lifecycle in ("archived", "candidate", "in_progress"):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        ensure_schema(conn)
+        content = f"Visible durable duplicate must survive hidden {lifecycle} maintenance cleanup."
+        _insert_test_memory(conn, memory_id="active-old", content=content)
+        _insert_test_memory(conn, memory_id="hidden-new", content=content)
+        conn.execute(
+            "UPDATE memories SET metadata = json_set(metadata, '$.lifecycle', ?), updated_at = ? WHERE id = 'hidden-new'",
+            (lifecycle, "2026-01-02T00:00:00+00:00"),
+        )
+        conn.execute(
+            "UPDATE memories SET updated_at = ? WHERE id = 'active-old'",
+            ("2026-01-01T00:00:00+00:00",),
+        )
+        conn.commit()
+        provider = _FakeProvider(conn, accessible=["shared-scope"], writable=["shared-scope"])
+        provider._vector_store = _RecordingVectorStore()
+
+        dry_run = dedupe_memories(provider, dry_run=True, scope_only=False)
+        applied = dedupe_memories(provider, dry_run=False, scope_only=False)
+
+        assert dry_run["duplicates"] == 0
+        assert applied["deleted"] == 0
+        assert conn.execute("SELECT COUNT(*) FROM memories WHERE id = 'active-old'").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM memories WHERE id = 'hidden-new'").fetchone()[0] == 1
+        assert provider._vector_store.deleted_ids == []
+        conn.close()
 
 
 def test_nightly_digest_does_not_update_read_only_legacy_alias_rows(monkeypatch):
@@ -606,7 +818,7 @@ def test_nightly_digest_does_not_update_read_only_legacy_alias_rows(monkeypatch)
     conn.row_factory = sqlite3.Row
     ensure_schema(conn)
     ensure_digest_schema(conn)
-    legacy_scope_id = build_shared_scope_id(RuntimeScope(platform="telegram", user_id="8176453077", agent_identity="default", agent_workspace="hermes"))
+    legacy_scope_id = build_shared_scope_id(RuntimeScope(platform="telegram", user_id="9000000001", agent_identity="default", agent_workspace="hermes"))
     canonical_scope = RuntimeScope(platform="cli", user_id="local", agent_identity="default", agent_workspace="hermes")
     scope_profile = ScopeProfile(
         scope=canonical_scope,
@@ -621,7 +833,7 @@ def test_nightly_digest_does_not_update_read_only_legacy_alias_rows(monkeypatch)
         memory_id="legacy-update-row",
         scope_id=legacy_scope_id,
         platform="telegram",
-        user_id="8176453077",
+        user_id="9000000001",
         chat_id="",
         thread_id="",
         gateway_session_key="",
@@ -682,21 +894,21 @@ def test_journal_digest_does_not_update_read_only_legacy_alias_rows(monkeypatch)
         "identity": {
             "cross_platform_shared_scope": True,
             "cli_user_id_fallback": "local",
-            "user_aliases": {"telegram:8176453077": "joy", "cli:local": "joy"},
+            "user_aliases": {"telegram:9000000001": "joy", "cli:local": "joy"},
         }
     }
     cli_scope = normalize_scope_identity(
         RuntimeScope(platform="cli", user_id="", agent_identity="default", agent_workspace="hermes"),
         config,
     )
-    legacy_scope_id = build_shared_scope_id(RuntimeScope(platform="telegram", user_id="8176453077", agent_identity="default", agent_workspace="hermes"))
+    legacy_scope_id = build_shared_scope_id(RuntimeScope(platform="telegram", user_id="9000000001", agent_identity="default", agent_workspace="hermes"))
     legacy_content = "Journal digest workflow stores durable notes with release evidence and rollback checks."
     store_row(
         conn,
         memory_id="legacy-journal-row",
         scope_id=legacy_scope_id,
         platform="telegram",
-        user_id="8176453077",
+        user_id="9000000001",
         chat_id="",
         thread_id="",
         gateway_session_key="",

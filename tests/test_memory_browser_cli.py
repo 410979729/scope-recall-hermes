@@ -236,6 +236,44 @@ def test_memory_browser_candidate_list_queries_candidates_directly(tmp_path: Pat
     assert payload["candidates"][0]["id"] == "cand-1"
 
 
+def test_candidate_json_defaults_to_compact_summary_and_full_is_explicit(tmp_path: Path):
+    db_path = _make_db(tmp_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        _insert_browser_row(
+            conn,
+            memory_id="cand-large",
+            content="Large candidate remains readable without dumping its complete evidence payload.",
+            metadata={
+                "lifecycle": "candidate",
+                "memory_type": "factual",
+                "confidence": 0.91,
+                "evidence_payload": ["evidence-block-" + ("x" * 1000) for _ in range(200)],
+            },
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    compact = _run_browser("candidates", "list", "--db", str(db_path), "--limit", "20", "--json")
+    assert compact.returncode == 0, compact.stderr
+    compact_payload = json.loads(compact.stdout)
+    assert compact_payload["detail"] == "summary"
+    assert len(compact.stdout.encode("utf-8")) < 20_000
+    compact_large = next(item for item in compact_payload["candidates"] if item["id"] == "cand-large")
+    assert "evidence_payload" not in compact_large["metadata"]
+    assert compact_large["metadata_omitted_keys_count"] >= 1
+
+    full = _run_browser("candidates", "list", "--db", str(db_path), "--limit", "20", "--full", "--json")
+    assert full.returncode == 0, full.stderr
+    full_payload = json.loads(full.stdout)
+    assert full_payload["detail"] == "full"
+    full_large = next(item for item in full_payload["candidates"] if item["id"] == "cand-large")
+    assert len(full_large["metadata"]["evidence_payload"]) == 200
+    assert len(full.stdout.encode("utf-8")) > len(compact.stdout.encode("utf-8"))
+
+
 def test_memory_browser_candidates_exclude_processed_event_digest_rows(tmp_path: Path):
     db_path = _make_db(tmp_path)
     conn = sqlite3.connect(db_path)

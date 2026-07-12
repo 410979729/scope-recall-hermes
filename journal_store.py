@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from .capture_filters import should_capture_text
+from .capture_filters import sanitize_capture_text, should_capture_text
 from .gating import clean_text
 from .models import RuntimeScope
 from .sql_store import now_iso
@@ -38,6 +38,11 @@ __all__ = [
 ]
 
 DATA_URL_PREFIX_RE = re.compile(r"data:[a-z0-9.+-]+/[a-z0-9.+-]+;base64,", re.IGNORECASE)
+INLINE_DATA_URL_RE = re.compile(
+    r"data:[a-z0-9.+-]+/[a-z0-9.+-]+;base64,[A-Za-z0-9+/]*={0,2}",
+    re.IGNORECASE,
+)
+BASE64_CONTINUATION_RE = re.compile(r"^[ \t]*[A-Za-z0-9+/]{64,}={0,2}(?=$|[ \t])")
 BASE64ISH_RE = re.compile(r"^[A-Za-z0-9+/=\s]+$")
 
 
@@ -56,11 +61,9 @@ class JournalEntry:
 
 
 def _strip_inline_data_urls(text: str) -> str:
-    match = DATA_URL_PREFIX_RE.search(text)
-    if not match:
-        return text
-    media_type = text[match.start() : match.end()].split(";", 1)[0].removeprefix("data:") or "attachment"
-    return clean_text(f"{text[:match.start()]}[inline {media_type} data omitted]")
+    """Compatibility wrapper for the unified capture/storage sanitizer."""
+
+    return sanitize_capture_text(text)
 
 
 def _looks_like_base64_blob(text: str) -> bool:
@@ -218,6 +221,9 @@ def _insert_journal_entry(
     text: str,
     metadata: dict[str, Any] | None = None,
 ) -> int:
+    text = sanitize_capture_text(text)
+    if not text:
+        return 0
     content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
     created_at = now_iso()
     cur = conn.execute(

@@ -24,19 +24,24 @@ import tempfile
 import tomllib
 import zipfile
 
+try:
+    import yaml
+except ImportError:  # pragma: no cover - release environment check reports this cleanly
+    yaml = None
+
 sys.dont_write_bytecode = True
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-PACKAGE_VERSION = "1.7.1"
+PACKAGE_VERSION = "1.7.2"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 RELEASE_READINESS_DOC = f"docs/release-readiness.{PACKAGE_VERSION}.md"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
 LOCAL_ONLY_DIRS = {".hermes"}
 EXTERNAL_TEST_DIRS = {".hermes-agent-src"}
-RELEASE_REQUIRED_MODULES = ("build", "pytest", "ruff", "wheel", "pyright", "lancedb", "pyarrow")
+RELEASE_REQUIRED_MODULES = ("build", "pytest", "ruff", "wheel", "pyright", "yaml", "lancedb", "pyarrow")
 SECRET_PATTERNS = {
     "api_key_assignment": re.compile(
         r"[\"']?\b(?:api[_ -]?key|secret|password|passwd|token)\b[\"']?\s*(?:=|:)\s*[\"']?[A-Za-z0-9._\-+/=]{12,}[\"']?",
@@ -45,7 +50,56 @@ SECRET_PATTERNS = {
     "bearer_literal": re.compile(r"bearer\s+[A-Za-z0-9._\-~+/=]{16,}", re.I),
     "github_pat": re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}"),
     "openai_style": re.compile(r"sk-[A-Za-z0-9]{20,}"),
+    # Telegram supergroup/channel IDs use a signed ``-100...`` form and may
+    # appear in Python, JSON, YAML, or list fixtures without a ``telegram:``
+    # prefix. Match the shape everywhere in public source/artifacts, but never
+    # echo the identifier in scanner output.
+    "telegram_group_id": re.compile(r"(?P<telegram_id>(?<!\d)-100\d{8,12})(?!\d)"),
 }
+
+_POSITIVE_TELEGRAM_ID = r"(?P<telegram_id>\d{8,12})(?!\d)"
+POSITIVE_TELEGRAM_ID_CONTEXT_PATTERNS = (
+    # Python/env assignments, including camelCase and compound
+    # ``telegram_chat_id`` keys. Case-insensitive matching covers env keys.
+    re.compile(
+        rf"\b(?:telegram[_-]?)?(?:chat|user)[_-]?id\b\s*=\s*[\"']?{_POSITIVE_TELEGRAM_ID}",
+        re.I,
+    ),
+    # JSON/mapping keys and Python subscript assignments such as
+    # ``payload[\"chat_id\"] = ...``.
+    re.compile(
+        rf"[\"'](?:telegram[_-]?)?(?:chat|user)[_-]?id[\"']\s*"
+        rf"(?:\]\s*=|:|,)\s*[\"']?{_POSITIVE_TELEGRAM_ID}",
+        re.I,
+    ),
+    # Unquoted YAML/TOML-like key/value mappings.
+    re.compile(
+        rf"(?<![\"'\w-])(?:telegram[_-]?)?(?:chat|user)[_-]?id\s*:\s*"
+        rf"[\"']?{_POSITIVE_TELEGRAM_ID}",
+        re.I,
+    ),
+    # CLI/config forms: ``--chat-id VALUE`` and ``--user-id=VALUE``.
+    re.compile(
+        rf"--(?:telegram-)?(?:chat|user)-id(?:\s+|=)\s*[\"']?{_POSITIVE_TELEGRAM_ID}",
+        re.I,
+    ),
+    # Preserve the legacy explicit Telegram label/tuple forms.
+    re.compile(rf"\btelegram\s*:\s*[\"']?{_POSITIVE_TELEGRAM_ID}", re.I),
+    re.compile(rf"[\"']telegram[\"']\s*,\s*[\"']?{_POSITIVE_TELEGRAM_ID}", re.I),
+)
+_POSITIVE_TELEGRAM_ID_LITERAL = re.compile(_POSITIVE_TELEGRAM_ID)
+_IDENTIFIER_CONTEXT_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,80}")
+_IDENTIFIER_CONTEXT_WINDOW_CHARS = 160
+_RESERVED_POSITIVE_IDENTIFIER = "9000000001"
+_RESERVED_IDENTIFIER_FIXTURE_PATHS = frozenset(
+    {
+        "tests/test_journal_digest.py",
+        "tests/test_journal_extractors.py",
+        "tests/test_nightly_digest.py",
+        "tests/test_provider.py",
+        "tests/test_v1015_audit_regressions.py",
+    }
+)
 FORBIDDEN_PUBLIC_DOC_MARKERS = {
     "personal_name_joy": re.compile(r"\bJoy\b"),
     "agent_persona_yuheng": re.compile(r"玉衡"),
@@ -53,7 +107,10 @@ FORBIDDEN_PUBLIC_DOC_MARKERS = {
     "private_product_promise": re.compile(r"product promise Joy cares about", re.I),
 }
 FORBIDDEN_DISTRIBUTION_PATH_FRAGMENTS = ("/docs/plans/",)
-FORBIDDEN_DISTRIBUTION_BASENAMES = {"hermes-upstream-recommendation-plan.md"}
+FORBIDDEN_DISTRIBUTION_BASENAMES = {
+    "hermes-upstream-recommendation-plan.md",
+    "source_isolation.py",
+}
 REQUIRED_SOURCE_FILES = {
     "README.md",
     "DESIGN.md",
@@ -79,6 +136,10 @@ REQUIRED_SOURCE_FILES = {
     "postgres_bridge.py",
     "secret_index.py",
     "skill_bridge.py",
+    "vector_generation.py",
+    "vector_generation_preflight.py",
+    "vector_migration.py",
+    "vector_repair.py",
     "vector_runtime.py",
     "vector_store.py",
     "experience_replay_generation.py",
@@ -91,6 +152,8 @@ REQUIRED_SOURCE_FILES = {
     "doctor_sqlite.py",
     "doctor_vector.py",
     "freshness.py",
+    "lifecycle_policy.py",
+    "lifecycle_service.py",
     "governance_scheduler.py",
     "graph_relations.py",
     "graph_hygiene.py",
@@ -143,6 +206,8 @@ REQUIRED_SOURCE_FILES = {
     "scripts/nightly-digest.py",
     "scripts/journal-digest.py",
     "scripts/repair.vector_index.py",
+    "scripts/repair.hidden_vector_companions.py",
+    "scripts/migrate.vector_generation.py",
     "scripts/report.hygiene.py",
     "scripts/migrate.legacy_hygiene.py",
     "scripts/migrate.status.py",
@@ -192,6 +257,10 @@ REQUIRED_WHEEL = {
     "scope_recall/pgvector_store.py",
     "scope_recall/postgres_bridge.py",
     "scope_recall/skill_bridge.py",
+    "scope_recall/vector_generation.py",
+    "scope_recall/vector_generation_preflight.py",
+    "scope_recall/vector_migration.py",
+    "scope_recall/vector_repair.py",
     "scope_recall/vector_runtime.py",
     "scope_recall/vector_store.py",
     "scope_recall/experience_replay_generation.py",
@@ -237,6 +306,8 @@ REQUIRED_WHEEL = {
     "scope_recall/doctor_sqlite.py",
     "scope_recall/doctor_vector.py",
     "scope_recall/freshness.py",
+    "scope_recall/lifecycle_policy.py",
+    "scope_recall/lifecycle_service.py",
     "scope_recall/governance_scheduler.py",
     "scope_recall/graph_relations.py",
     "scope_recall/graph_hygiene.py",
@@ -291,6 +362,8 @@ REQUIRED_WHEEL = {
     "scope_recall/scripts/nightly-digest.py",
     "scope_recall/scripts/journal-digest.py",
     "scope_recall/scripts/repair.vector_index.py",
+    "scope_recall/scripts/repair.hidden_vector_companions.py",
+    "scope_recall/scripts/migrate.vector_generation.py",
     "scope_recall/scripts/report.hygiene.py",
     "scope_recall/scripts/migrate.legacy_hygiene.py",
     "scope_recall/scripts/migrate.status.py",
@@ -365,6 +438,13 @@ REQUIRED_CHANGELOG_TERMS = (
     "relation extraction",
     "golden benchmark",
 )
+RELEASE_READINESS_LOCAL_STATE_PATTERNS = {
+    "embedded_live_snapshot": re.compile(r"current read-only snapshot", re.I),
+    "embedded_severity_counter": re.compile(r"\bseverity=(?:ok|degraded|blocked)\b", re.I),
+    "embedded_journal_counter": re.compile(r"\bjournal_(?:unprocessed|dead_letter_replay_candidates|llm_quarantine_runs)=", re.I),
+    "embedded_dead_letter_counter": re.compile(r"\bdead-letter:[a-z_-]+=", re.I),
+    "embedded_private_path": re.compile(r"(?:^|[\s`'\"])(?:/home/|/Users/|/root/|[A-Za-z]:[\\/](?:Users|Documents)[\\/])"),
+}
 
 
 def run(cmd: list[str], *, cwd: pathlib.Path = ROOT, env: dict[str, str] | None = None) -> dict[str, object]:
@@ -559,6 +639,36 @@ def changelog_completeness_check(changelog: str, *, version: str = PACKAGE_VERSI
     lower = section.lower()
     missing_terms = [term for term in REQUIRED_CHANGELOG_TERMS if term.lower() not in lower]
     return {"ok": not missing_terms, "version": version, "missing_terms": missing_terms, "section_found": True}
+
+
+def release_readiness_public_hygiene_check(readiness_text: str) -> dict[str, object]:
+    """Keep versioned public readiness notes free of deployment-local runtime state."""
+    findings = [
+        {"marker": name, "match": match.group(0).strip()}
+        for name, pattern in RELEASE_READINESS_LOCAL_STATE_PATTERNS.items()
+        if (match := pattern.search(readiness_text)) is not None
+    ]
+    return {"ok": not findings, "findings": findings}
+
+
+def release_readiness_tree_hygiene_check() -> dict[str, object]:
+    """Apply public-state hygiene to every readiness note shipped by package globs."""
+    findings: list[dict[str, str]] = []
+    for path in sorted((ROOT / "docs").glob("release-readiness.*.md")):
+        result = release_readiness_public_hygiene_check(path.read_text(encoding="utf-8", errors="ignore"))
+        result_findings = result.get("findings", [])
+        if not isinstance(result_findings, list):
+            continue
+        for item in result_findings:
+            if isinstance(item, dict):
+                findings.append(
+                    {
+                        "path": str(path.relative_to(ROOT)),
+                        "marker": str(item.get("marker", "")),
+                        "match": str(item.get("match", "")),
+                    }
+                )
+    return {"ok": not findings, "findings": findings}
 
 
 LIVE_DASHBOARD_WAIVER_FIELDS = (
@@ -972,6 +1082,15 @@ def _is_synthetic_test_fixture_line(rel: pathlib.Path, line: str) -> bool:
     return any(marker in lowered for marker in SYNTHETIC_TEST_FIXTURE_MARKERS)
 
 
+def _is_reserved_identifier_fixture_context(rel: pathlib.Path, context: str) -> bool:
+    """Allow one reserved value only in named historical fixture files."""
+
+    if rel.as_posix() not in _RESERVED_IDENTIFIER_FIXTURE_PATHS:
+        return False
+    identifiers = {match.group("telegram_id") for match in _POSITIVE_TELEGRAM_ID_LITERAL.finditer(context)}
+    return bool(identifiers) and identifiers <= {_RESERVED_POSITIVE_IDENTIFIER}
+
+
 def _looks_like_release_secret(match_text: str) -> bool:
     """Return true only for likely plaintext secret literals.
 
@@ -997,6 +1116,347 @@ def _looks_like_release_secret(match_text: str) -> bool:
     return len(value) >= 16 and has_alpha and has_digit
 
 
+def _is_identifier_context_name(value: str) -> bool:
+    """Recognize singular/plural Telegram identifier names after normalization."""
+
+    return _normalized_identifier_context_name(value).endswith(("chatid", "chatids", "userid", "userids"))
+
+
+def _normalized_identifier_context_name(value: object) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value).lower())
+
+
+def _ast_has_identifier_context(node: ast.AST | None) -> bool:
+    if isinstance(node, ast.Name):
+        return _is_identifier_context_name(node.id)
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return _is_identifier_context_name(node.value)
+    if isinstance(node, ast.Attribute):
+        return _is_identifier_context_name(node.attr)
+    if isinstance(node, ast.Subscript):
+        key = node.slice
+        return isinstance(key, ast.Constant) and isinstance(key.value, str) and _is_identifier_context_name(key.value)
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return any(_ast_has_identifier_context(item) for item in node.elts)
+    return False
+
+
+def _static_scalar(node: ast.AST, aliases: dict[str, str | int]) -> str | int | None:
+    """Resolve only side-effect-free scalar syntax used by release fixtures."""
+
+    if isinstance(node, ast.Constant) and not isinstance(node.value, bool) and isinstance(node.value, (int, str)):
+        return node.value
+    if isinstance(node, ast.Name):
+        return aliases.get(node.id)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _static_scalar(node.left, aliases)
+        right = _static_scalar(node.right, aliases)
+        if isinstance(left, str) and isinstance(right, str):
+            return left + right
+        if isinstance(left, int) and isinstance(right, int):
+            return left + right
+        return None
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in {"int", "str"}
+        and len(node.args) == 1
+        and not node.keywords
+    ):
+        value = _static_scalar(node.args[0], aliases)
+        if value is None:
+            return None
+        if node.func.id == "int":
+            return int(value) if str(value).isdigit() else None
+        return str(value)
+    return None
+
+
+def _positive_identifier_nodes(node: ast.AST, aliases: dict[str, str | int]) -> list[ast.AST]:
+    matches: list[ast.AST] = []
+    for child in ast.walk(node):
+        value = _static_scalar(child, aliases)
+        rendered = str(value) if value is not None else ""
+        if not rendered.isdigit() or not 8 <= len(rendered) <= 12:
+            continue
+        matches.append(child)
+    return matches
+
+
+def _update_scalar_aliases(
+    targets: list[ast.expr],
+    value: ast.AST | None,
+    aliases: dict[str, str | int],
+) -> None:
+    """Track simple aliases without executing imports, calls, or arbitrary code."""
+
+    rendered = _static_scalar(value, aliases) if value is not None else None
+    for target in targets:
+        if not isinstance(target, ast.Name) or _is_identifier_context_name(target.id):
+            continue
+        if rendered is None:
+            aliases.pop(target.id, None)
+        else:
+            aliases[target.id] = rendered
+
+
+def _python_identifier_lines(text: str) -> set[int] | None:
+    """Find positive identifier literals in valid Python using AST context."""
+
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+
+    lines: set[int] = set()
+    aliases: dict[str, str | int] = {}
+    ordered_nodes = sorted(
+        ast.walk(tree),
+        key=lambda item: (int(getattr(item, "lineno", 0)), int(getattr(item, "col_offset", 0))),
+    )
+    for node in ordered_nodes:
+        values: list[ast.AST] = []
+        if isinstance(node, ast.Assign) and any(_ast_has_identifier_context(target) for target in node.targets):
+            values.append(node.value)
+        elif isinstance(node, ast.AnnAssign) and _ast_has_identifier_context(node.target):
+            if node.value is not None:
+                values.append(node.value)
+            values.append(node.annotation)
+        elif isinstance(node, ast.Compare):
+            operands = [node.left, *node.comparators]
+            for index, operand in enumerate(operands):
+                if _ast_has_identifier_context(operand):
+                    values.extend(item for offset, item in enumerate(operands) if offset != index)
+        elif isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values, strict=True):
+                if _ast_has_identifier_context(key):
+                    values.append(value)
+        for value in values:
+            lines.update(
+                int(getattr(item, "lineno", getattr(value, "lineno", 1)))
+                for item in _positive_identifier_nodes(value, aliases)
+            )
+        if isinstance(node, ast.Assign):
+            _update_scalar_aliases(node.targets, node.value, aliases)
+        elif isinstance(node, ast.AnnAssign):
+            _update_scalar_aliases([node.target], node.value, aliases)
+    return lines
+
+
+class _JSONObjectPairs(list[tuple[str, object]]):
+    """Preserve duplicate structured-config keys so policy scans cannot be bypassed."""
+
+
+def _yaml_load_preserving_pairs(text: str) -> object:
+    """Load safe YAML while preserving duplicate mapping keys for policy scans."""
+
+    if yaml is None:
+        raise RuntimeError("PyYAML is unavailable")
+
+    class PairLoader(yaml.SafeLoader):
+        pass
+
+    def construct_pairs(loader, node, deep=False):
+        return _JSONObjectPairs(
+            [
+                (loader.construct_object(key, deep=deep), loader.construct_object(value, deep=deep))
+                for key, value in node.value
+            ]
+        )
+
+    PairLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, construct_pairs)
+    return yaml.load(text, Loader=PairLoader)
+
+
+def _value_has_positive_identifier(value: object) -> bool:
+    if isinstance(value, bool) or value is None:
+        return False
+    if isinstance(value, (int, str)):
+        rendered = str(value)
+        return rendered.isdigit() and 8 <= len(rendered) <= 12
+    if isinstance(value, _JSONObjectPairs):
+        return any(_value_has_positive_identifier(item) for _key, item in value)
+    if isinstance(value, dict):
+        return any(_value_has_positive_identifier(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_value_has_positive_identifier(item) for item in value)
+    return False
+
+
+def _collect_structured_identifier_names(value: object, found: set[str]) -> None:
+    if isinstance(value, _JSONObjectPairs):
+        items = value
+    elif isinstance(value, dict):
+        items = list(value.items())
+    else:
+        items = []
+    for key, item in items:
+        if _is_identifier_context_name(key) and _value_has_positive_identifier(item):
+            found.add(_normalized_identifier_context_name(key))
+        _collect_structured_identifier_names(item, found)
+    if isinstance(value, list) and not isinstance(value, _JSONObjectPairs):
+        for item in value:
+            _collect_structured_identifier_names(item, found)
+
+
+def _structured_config_identifier_lines(rel: pathlib.Path, text: str) -> set[int] | None:
+    """Parse JSON/YAML/TOML and return context-key lines; malformed input falls back."""
+
+    suffix = rel.suffix.lower()
+    try:
+        if suffix == ".json":
+            value = json.loads(text, object_pairs_hook=_JSONObjectPairs)
+        elif suffix in {".yaml", ".yml"}:
+            if yaml is None:
+                return None
+            value = _yaml_load_preserving_pairs(text)
+        elif suffix == ".toml":
+            value = tomllib.loads(text)
+        else:
+            return None
+    except (json.JSONDecodeError, tomllib.TOMLDecodeError, yaml.YAMLError if yaml is not None else RuntimeError):
+        return None
+    names: set[str] = set()
+    _collect_structured_identifier_names(value, names)
+    return {
+        text[: match.start()].count("\n") + 1
+        for match in _IDENTIFIER_CONTEXT_TOKEN.finditer(text)
+        if _normalized_identifier_context_name(match.group(0)) in names
+    }
+
+
+_YAML_KEY_LINE = re.compile(
+    r"^(?P<indent>[ \t]*)(?:-\s+)?(?P<key>[\"']?[A-Za-z][A-Za-z0-9_-]{0,80}[\"']?)\s*:\s*(?P<rest>.*)$"
+)
+
+
+def _yaml_identifier_lines(text: str) -> set[int]:
+    """Fallback for malformed YAML or environments missing the declared parser."""
+
+    lines = text.splitlines()
+    found: set[int] = set()
+    for index, line in enumerate(lines):
+        match = _YAML_KEY_LINE.match(line)
+        if match is None or not _is_identifier_context_name(match.group("key").strip("'\"")):
+            continue
+        rest = match.group("rest")
+        chunks = [rest]
+        meaningful_rest = rest.split("#", 1)[0].strip()
+        if (
+            not meaningful_rest
+            or meaningful_rest in {"|", ">", "|-", ">-", "|+", ">+"}
+            or (meaningful_rest.startswith("[") and "]" not in meaningful_rest)
+        ):
+            base_indent = len(match.group("indent").expandtabs(8))
+            for following in lines[index + 1 :]:
+                stripped = following.strip()
+                if not stripped or stripped.startswith("#"):
+                    chunks.append(following)
+                    continue
+                indent = len(following) - len(following.lstrip(" \t"))
+                if indent <= base_indent and not stripped.startswith("-"):
+                    break
+                chunks.append(following)
+        if _POSITIVE_TELEGRAM_ID_LITERAL.search("\n".join(chunks)):
+            found.add(index + 1)
+    return found
+
+
+def _text_identifier_lines(text: str) -> set[int]:
+    """Scan bounded cross-line key windows in docs or malformed config text."""
+
+    found: set[int] = set()
+    for key_match in _IDENTIFIER_CONTEXT_TOKEN.finditer(text):
+        if not _is_identifier_context_name(key_match.group(0)):
+            continue
+        window = text[key_match.start() : key_match.end() + _IDENTIFIER_CONTEXT_WINDOW_CHARS]
+        if _POSITIVE_TELEGRAM_ID_LITERAL.search(window):
+            found.add(text[: key_match.start()].count("\n") + 1)
+    return found
+
+
+def _non_python_identifier_lines(rel: pathlib.Path, text: str) -> set[int]:
+    structured = _structured_config_identifier_lines(rel, text)
+    if structured is not None:
+        return structured
+    if rel.suffix.lower() in {".yaml", ".yml"}:
+        return _yaml_identifier_lines(text)
+    return _text_identifier_lines(text)
+
+
+def _scan_sensitive_text(rel: pathlib.Path, text: str, *, display_path: str = "") -> dict[str, list[str]]:
+    """Scan one decoded source/artifact member without echoing sensitive values."""
+
+    findings: dict[str, list[str]] = {"secrets": [], "private_paths": []}
+    label = display_path or str(rel)
+    lines = text.splitlines()
+
+    # Regex preserves support for syntax-invalid snippets and existing textual
+    # forms. Valid Python additionally uses AST context; other text uses one
+    # bounded normalized key window instead of syntax-by-syntax regex growth.
+    positive_lines: set[int] = set()
+    for rx in POSITIVE_TELEGRAM_ID_CONTEXT_PATTERNS:
+        for match in rx.finditer(text):
+            positive_lines.add(text[: match.start()].count("\n") + 1)
+    if rel.suffix.lower() == ".py":
+        python_lines = _python_identifier_lines(text)
+        positive_lines.update(python_lines if python_lines is not None else _non_python_identifier_lines(rel, text))
+    else:
+        positive_lines.update(_non_python_identifier_lines(rel, text))
+    positive_lines = {
+        line_no
+        for line_no in positive_lines
+        if not (
+            _is_synthetic_test_fixture_line(
+                rel,
+                "\n".join(lines[line_no - 1 :])[:_IDENTIFIER_CONTEXT_WINDOW_CHARS]
+                if 0 < line_no <= len(lines)
+                else "",
+            )
+            or _is_reserved_identifier_fixture_context(
+                rel,
+                "\n".join(lines[line_no - 1 :])[:_IDENTIFIER_CONTEXT_WINDOW_CHARS]
+                if 0 < line_no <= len(lines)
+                else "",
+            )
+        )
+    }
+    findings["secrets"].extend(
+        f"{label}:{line_no}: personal_numeric_id: [REDACTED_ID]" for line_no in sorted(positive_lines)
+    )
+
+    for name, rx in SECRET_PATTERNS.items():
+        for match in rx.finditer(text):
+            if name == "api_key_assignment" and not _looks_like_release_secret(match.group(0)):
+                continue
+            line_no = text[: match.start()].count("\n") + 1
+            line = lines[line_no - 1] if 0 <= line_no - 1 < len(lines) else match.group(0)
+            if name == "telegram_group_id":
+                findings["secrets"].append(f"{label}:{line_no}: personal_numeric_id: [REDACTED_ID]")
+                continue
+            if _is_synthetic_test_fixture_line(rel, line):
+                continue
+            findings["secrets"].append(f"{label}:{line_no}: {name}: {redact_sensitive(match.group(0))}")
+
+    home = pathlib.Path.home()
+    private_markers = tuple(
+        marker
+        for marker in {
+            str(home / ".hermes-yuheng"),
+            str(home) + os.sep,
+        }
+        if marker and marker != os.sep
+    )
+    private_path_lines = [
+        line_no
+        for line_no, line in enumerate(lines, 1)
+        if any(marker in line for marker in private_markers) and not _is_synthetic_test_fixture_line(rel, line)
+    ]
+    if private_path_lines:
+        findings["private_paths"].append(f"{label}:{private_path_lines[0]}")
+    return findings
+
+
 def scan_tree() -> dict[str, list[str]]:
     findings: dict[str, list[str]] = {"generated_artifacts": [], "secrets": [], "private_paths": []}
     for path in ROOT.rglob("*"):
@@ -1016,33 +1476,79 @@ def scan_tree() -> dict[str, list[str]]:
         if not path.is_file():
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
-        lines = text.splitlines()
-        for name, rx in SECRET_PATTERNS.items():
-            for match in rx.finditer(text):
-                if name == "api_key_assignment" and not _looks_like_release_secret(match.group(0)):
-                    continue
-                line_no = text[: match.start()].count("\n") + 1
-                line = lines[line_no - 1] if 0 <= line_no - 1 < len(lines) else match.group(0)
-                if _is_synthetic_test_fixture_line(rel, line):
-                    continue
-                findings["secrets"].append(f"{rel}:{line_no}: {name}: {redact_sensitive(match.group(0))}")
-        home = pathlib.Path.home()
-        private_markers = tuple(
-            marker
-            for marker in {
-                str(home / ".hermes-yuheng"),
-                str(home) + os.sep,
-            }
-            if marker and marker != os.sep
-        )
-        private_path_lines: list[int] = []
-        for line_no, line in enumerate(lines, 1):
-            if any(marker in line for marker in private_markers) and not _is_synthetic_test_fixture_line(rel, line):
-                private_path_lines.append(line_no)
-        if private_path_lines:
-            findings["private_paths"].append(f"{rel}:{private_path_lines[0]}")
-    findings["generated_artifacts"] = sorted(set(findings["generated_artifacts"]))
+        scanned = _scan_sensitive_text(rel, text)
+        findings["secrets"].extend(scanned["secrets"])
+        findings["private_paths"].extend(scanned["private_paths"])
+    for key in findings:
+        findings[key] = sorted(set(findings[key]))
     return findings
+
+
+_DISTRIBUTION_TEXT_SUFFIXES = {
+    ".cfg",
+    ".csv",
+    ".ini",
+    ".json",
+    ".md",
+    ".py",
+    ".sh",
+    ".sql",
+    ".toml",
+    ".txt",
+    ".yaml",
+    ".yml",
+}
+_DISTRIBUTION_TEXT_NAMES = {"METADATA", "PKG-INFO", "entry_points.txt", "top_level.txt"}
+
+
+def _distribution_member_is_text(name: str) -> bool:
+    member = pathlib.PurePosixPath(str(name).replace("\\", "/"))
+    return member.suffix.lower() in _DISTRIBUTION_TEXT_SUFFIXES or member.name in _DISTRIBUTION_TEXT_NAMES
+
+
+def _distribution_member_source_path(name: str) -> pathlib.Path:
+    """Normalize an archive member to its source-tree path for fixture policy."""
+
+    parts = pathlib.PurePosixPath(str(name).replace("\\", "/")).parts
+    if len(parts) >= 2 and parts[1] == "tests":
+        parts = parts[1:]
+    return pathlib.Path(*parts)
+
+
+def scan_distribution_artifact(path: pathlib.Path) -> dict[str, list[str]]:
+    """Scan decoded wheel/sdist members so packaging cannot bypass source hygiene."""
+
+    artifact = pathlib.Path(path)
+    members: list[tuple[str, bytes]] = []
+    if zipfile.is_zipfile(artifact):
+        with zipfile.ZipFile(artifact) as archive:
+            members = [
+                (info.filename, archive.read(info))
+                for info in archive.infolist()
+                if not info.is_dir() and _distribution_member_is_text(info.filename)
+            ]
+    elif tarfile.is_tarfile(artifact):
+        with tarfile.open(artifact, "r:*") as archive:
+            for member in archive.getmembers():
+                if not member.isfile() or not _distribution_member_is_text(member.name):
+                    continue
+                handle = archive.extractfile(member)
+                if handle is not None:
+                    members.append((member.name, handle.read()))
+    else:
+        raise ValueError(f"unsupported distribution artifact: {artifact.name}")
+
+    findings: dict[str, list[str]] = {"secrets": [], "private_paths": []}
+    for name, raw in members:
+        rel = _distribution_member_source_path(name)
+        scanned = _scan_sensitive_text(
+            rel,
+            raw.decode("utf-8", errors="ignore"),
+            display_path=f"{artifact.name}:{name}",
+        )
+        findings["secrets"].extend(scanned["secrets"])
+        findings["private_paths"].extend(scanned["private_paths"])
+    return {key: sorted(set(value)) for key, value in findings.items()}
 
 
 def release_environment_check() -> dict[str, object]:
@@ -1077,6 +1583,7 @@ def metadata_check() -> dict[str, object]:
     failures: list[str] = []
     product_contract = product_contract_check()
     public_docs_hygiene = public_doc_hygiene_check()
+    release_readiness_hygiene = release_readiness_tree_hygiene_check()
     pyright_coverage = pyright_include_check()
     required_snippets = {
         "pyproject version": f'version = "{PACKAGE_VERSION}"',
@@ -1106,11 +1613,9 @@ def metadata_check() -> dict[str, object]:
         failures.append(f"changelog {PACKAGE_VERSION} missing release-note terms: {', '.join(missing_terms)}")
     for label, snippet in {
         "release readiness title": f"Scope Recall {PACKAGE_VERSION} Release Readiness",
-        "live dashboard waiver": "Live dashboard waiver",
-        "dashboard degraded status": "severity=DEGRADED",
-        "auth dead-letter evidence": "dead-letter:auth",
-        "release owner": "Owner:",
-        "waiver clearance": "Clearance condition:",
+        "runtime evidence policy": "Runtime evidence policy",
+        "release owner": "Owner: maintainers.",
+        "release clearance": "Clearance condition:",
     }.items():
         if snippet not in release_readiness:
             failures.append(f"missing {label} in {RELEASE_READINESS_DOC}: {snippet}")
@@ -1124,6 +1629,10 @@ def metadata_check() -> dict[str, object]:
         failures.extend(f"product contract: {failure}" for failure in product_failures)
     if not public_docs_hygiene["ok"]:
         failures.append(f"public docs hygiene: {json.dumps(public_docs_hygiene, ensure_ascii=False, sort_keys=True)}")
+    if not release_readiness_hygiene["ok"]:
+        failures.append(
+            f"release readiness public hygiene: {json.dumps(release_readiness_hygiene, ensure_ascii=False, sort_keys=True)}"
+        )
     if not pyright_coverage["ok"]:
         missing_pyright = pyright_coverage.get("missing_pyright_include", [])
         missing_pyright_list = missing_pyright if isinstance(missing_pyright, list) else []
@@ -1134,6 +1643,7 @@ def metadata_check() -> dict[str, object]:
         "failures": failures,
         "product_contract": product_contract,
         "public_docs_hygiene": public_docs_hygiene,
+        "release_readiness_hygiene": release_readiness_hygiene,
         "pyright_coverage": pyright_coverage,
     }
 
@@ -1203,6 +1713,7 @@ def wheel_check() -> dict[str, object]:
             raise SystemExit(f"expected wheel {expected_name}, got {wheels[0].name}")
         with zipfile.ZipFile(wheels[0]) as zf:
             names = set(zf.namelist())
+        wheel_scan = scan_distribution_artifact(wheels[0])
         missing = sorted(item for item in REQUIRED_WHEEL if item not in names)
         pycache = sorted(name for name in names if "__pycache__" in name or name.endswith(".pyc"))
         wheel_forbidden = forbidden_distribution_entries(names)
@@ -1217,9 +1728,28 @@ def wheel_check() -> dict[str, object]:
             raise SystemExit(f"expected sdist {expected_sdist}, found {sdists}")
         with tarfile.open(sdists[0], "r:gz") as tf:
             sdist_names = set(tf.getnames())
+        sdist_scan = scan_distribution_artifact(sdists[0])
         sdist_forbidden = forbidden_distribution_entries(sdist_names)
-        if sdist_forbidden:
-            raise SystemExit(json.dumps({"sdist_forbidden": sdist_forbidden}, ensure_ascii=False, indent=2))
+        artifact_scan = {
+            "wheel": wheel_scan,
+            "sdist": sdist_scan,
+        }
+        blocking_artifact_scan = {
+            artifact_type: {key: value for key, value in scan.items() if value}
+            for artifact_type, scan in artifact_scan.items()
+            if any(scan.values())
+        }
+        if sdist_forbidden or blocking_artifact_scan:
+            raise SystemExit(
+                json.dumps(
+                    {
+                        "sdist_forbidden": sdist_forbidden,
+                        "artifact_scan": blocking_artifact_scan,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
 
         install_dir = dist / "install"
         install_dir.mkdir()
@@ -1273,6 +1803,7 @@ print(json.dumps({'plugin_dir': str(plugin_dir), 'version': verified['manifest_v
             "wheel": wheels[0].name,
             "sdist": sdists[0].name,
             "file_count": len(names),
+            "artifact_scan": artifact_scan,
             "import_stdout": str(result["stdout"]).strip(),
             "install_smoke": str(install_smoke["stdout"]).strip(),
             "doctor_smoke": json.dumps(
@@ -1318,6 +1849,36 @@ def main() -> int:
     metadata = metadata_check()
     progress("live_dashboard:start")
     live_dashboard = live_dashboard_file_check(str(args.live_dashboard_json or ""), accept_stale=bool(args.accept_stale_live_waiver))
+    # Scan release source before the multi-minute test/build stages. A known
+    # sensitive identifier or private path should fail cheaply and must never be
+    # hidden behind a later green wheel/install result.
+    progress("scan:start")
+    scan = scan_tree()
+    blocking_scan = {key: value for key, value in scan.items() if value}
+    preflight_failures: dict[str, object] = {}
+    if not git_tree["ok"]:
+        preflight_failures["git_tree"] = git_tree
+    if not metadata["ok"]:
+        preflight_failures["metadata"] = metadata
+    if not live_dashboard["ok"]:
+        preflight_failures["live_dashboard"] = live_dashboard
+    if blocking_scan:
+        preflight_failures["scan"] = blocking_scan
+    if preflight_failures:
+        progress("release_gate:failed")
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "environment": environment,
+                    "failures": preflight_failures,
+                    "live_dashboard": live_dashboard,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 1
     for stage, cmd in (
         ("ruff", [sys.executable, "-m", "ruff", "check", "."]),
         ("pyright", [sys.executable, "-m", "pyright"]),
@@ -1336,35 +1897,6 @@ def main() -> int:
     wheel = wheel_check()
     progress("cleanup_generated:final")
     cleanup_generated()
-    progress("scan:start")
-    scan = scan_tree()
-    blocking_scan = {key: value for key, value in scan.items() if value}
-    failures: dict[str, object] = {}
-    if not git_tree["ok"]:
-        failures["git_tree"] = git_tree
-    if not metadata["ok"]:
-        failures["metadata"] = metadata
-    if not live_dashboard["ok"]:
-        failures["live_dashboard"] = live_dashboard
-    if blocking_scan:
-        failures["scan"] = blocking_scan
-    if failures:
-        progress("release_gate:failed")
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "environment": environment,
-                    "failures": failures,
-                    "benchmark": benchmark,
-                    "wheel": wheel,
-                    "live_dashboard": live_dashboard,
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
-        return 1
     progress("release_gate:done")
     print(
         json.dumps(

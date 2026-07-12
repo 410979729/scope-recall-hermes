@@ -36,6 +36,7 @@ _KNOWN_EMBEDDING_DIMS = {
     "text-embedding-3-large": 3072,
     "text-embedding-004": 768,
     "gemini-embedding-001": 3072,
+    "gemini-embedding-2": 3072,
     "jina-embeddings-v5-text-small": 1024,
     "jina-embeddings-v5-text-nano": 768,
     "voyage-3": 1024,
@@ -225,11 +226,19 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
         base_url: str | None = None,
         base_url_env: Any = None,
         dimensions: int | None = None,
+        request_dimensions: bool = False,
+        document_prefix: str = "",
+        query_prefix: str = "",
+        prompt_profile: str = "default-v1",
     ) -> None:
         resolved_dimensions = int(dimensions or _known_dimensions(model, 1536) or 1536)
         super().__init__(provider=provider, dimensions=resolved_dimensions, model=model)
         self._api_keys = _resolve_api_keys(api_key, api_key_env or "OPENAI_API_KEY")
         self._base_url = _resolve_optional_value(base_url, base_url_env or "OPENAI_BASE_URL")
+        self._request_dimensions = bool(request_dimensions)
+        self._document_prefix = str(document_prefix or "")
+        self._query_prefix = str(query_prefix or "")
+        self._prompt_profile = str(prompt_profile or "default-v1")
         self._client = None
         self._active_key_index = 0
 
@@ -240,6 +249,14 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
         payload = super().describe()
         if self._base_url:
             payload["base_url"] = self._base_url
+        payload.update(
+            {
+                "request_dimensions": self._request_dimensions,
+                "prompt_profile": self._prompt_profile,
+                "document_prefix_configured": bool(self._document_prefix),
+                "query_prefix_configured": bool(self._query_prefix),
+            }
+        )
         return payload
 
     def _client_or_raise(self):
@@ -256,8 +273,8 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
         self._client = None
         return True
 
-    def embed_texts(self, texts: Iterable[str]) -> list[list[float]]:
-        items = [clean_text(text) or " " for text in texts]
+    def _embed_with_prefix(self, texts: Iterable[str], *, prefix: str) -> list[list[float]]:
+        items = [clean_text(f"{prefix}{clean_text(text)}") or " " for text in texts]
         if not items:
             return []
         vectors: list[list[float]] = []
@@ -269,7 +286,14 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
             for _ in range(max(1, len(self._api_keys))):
                 client = self._client_or_raise()
                 try:
-                    response = client.embeddings.create(model=self.model, input=batch, encoding_format="float")
+                    request: dict[str, Any] = {
+                        "model": self.model,
+                        "input": batch,
+                        "encoding_format": "float",
+                    }
+                    if self._request_dimensions:
+                        request["dimensions"] = self.dimensions
+                    response = client.embeddings.create(**request)
                     break
                 except Exception as exc:
                     last_error = exc
@@ -278,10 +302,30 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
             if response is None:
                 assert last_error is not None
                 raise last_error
-            vectors.extend(list(row.embedding) for row in response.data)
-        if vectors:
-            self.info.dimensions = len(vectors[0])
+            response_rows = list(response.data)
+            if len(response_rows) != len(batch):
+                raise RuntimeError(
+                    f"{self.provider} embedding response count {len(response_rows)} does not match input count {len(batch)}"
+                )
+            for offset, row in enumerate(response_rows):
+                vector = [float(value) for value in row.embedding]
+                if len(vector) != self.dimensions:
+                    raise RuntimeError(
+                        f"{self.provider} embedding dimensions {len(vector)} do not match configured {self.dimensions} "
+                        f"at batch offset {offset}"
+                    )
+                if not all(math.isfinite(value) for value in vector):
+                    raise RuntimeError(f"{self.provider} embedding contains non-finite values at batch offset {offset}")
+                if not any(value != 0.0 for value in vector):
+                    raise RuntimeError(f"{self.provider} embedding contains a zero vector at batch offset {offset}")
+                vectors.append(vector)
         return vectors
+
+    def embed_texts(self, texts: Iterable[str]) -> list[list[float]]:
+        return self._embed_with_prefix(texts, prefix=self._document_prefix)
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._embed_with_prefix([text], prefix=self._query_prefix)[0]
 
 
 class OpenAIEmbedder(OpenAICompatibleEmbedder):
@@ -517,6 +561,10 @@ def build_embedder(config: dict[str, Any]) -> BaseEmbedder:
             base_url=raw.get("base_url"),
             base_url_env=raw.get("base_url_env"),
             dimensions=dimensions or None,
+            request_dimensions=bool(raw.get("request_dimensions", False)),
+            document_prefix=str(raw.get("document_prefix") or ""),
+            query_prefix=str(raw.get("query_prefix") or ""),
+            prompt_profile=str(raw.get("prompt_profile") or "default-v1"),
         )
 
     if provider in {"sentence-transformers", "local-model", "local-embedding", "huggingface"}:

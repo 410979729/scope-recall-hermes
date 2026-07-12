@@ -10,6 +10,7 @@ from typing import Any
 from .gating import build_fts_query, compact_text, like_terms, normalized_token_set, query_tokens
 from .governance import classify_memory
 from .graph import load_metadata
+from .lifecycle_policy import ORDINARY_RECALL_HIDDEN_LIFECYCLE_VALUES, ordinary_recall_lifecycle_visible_sql
 from .models import RecallItem
 from .scoring import bm25_to_score, lexical_score
 from .sql_store import curated_recall_item_id, iter_curated_entries
@@ -18,14 +19,12 @@ from .vector_runtime import mark_vector_needs_repair
 # Defensive retrieval boundary: lifecycle filtering must happen in the candidate
 # SQL/vector-adapter layer, not only after merge/dedupe. Fresh archived rows can
 # otherwise consume LIMIT budget or suppress active duplicates.
-_RECALL_HIDDEN_LIFECYCLE_VALUES = ("superseded", "obsolete", "rejected", "archived", "candidate", "in_progress")
+_RECALL_HIDDEN_LIFECYCLE_VALUES = ORDINARY_RECALL_HIDDEN_LIFECYCLE_VALUES
 _RECALL_HIDDEN_LIFECYCLE_SET = set(_RECALL_HIDDEN_LIFECYCLE_VALUES)
 
 
 def _recall_lifecycle_visible_sql(alias: str) -> str:
-    lifecycle_expr = f"LOWER(COALESCE(CASE WHEN json_valid({alias}.metadata) THEN json_extract({alias}.metadata, '$.lifecycle') ELSE '' END, ''))"
-    hidden_values = ",".join(f"'{value}'" for value in _RECALL_HIDDEN_LIFECYCLE_VALUES)
-    return f"{lifecycle_expr} NOT IN ({hidden_values})"
+    return ordinary_recall_lifecycle_visible_sql(alias)
 
 
 _ACTIVE_MEMORY_SQL = _recall_lifecycle_visible_sql("memories")
@@ -258,7 +257,10 @@ def search_vector_memories(provider: Any, query: str, *, limit: int) -> list[Rec
             continue
         metadata = dict(id_metadata.get(row_id) or {})
         lifecycle = str(metadata.get("lifecycle") or "").strip().lower()
-        if lifecycle in _RECALL_HIDDEN_LIFECYCLE_SET:
+        target = str(row.get("target") or "")
+        if lifecycle in _RECALL_HIDDEN_LIFECYCLE_SET and not (
+            lifecycle == "scratch" and target == "general"
+        ):
             continue
         metadata.update({"lexical_score": 0.0, "vector_score": vector_score, "scope_id": row.get("scope_id")})
         results.append(

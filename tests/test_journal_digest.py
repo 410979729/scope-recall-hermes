@@ -36,7 +36,7 @@ from scope_recall.journal import (
 def _scope() -> RuntimeScope:
     return RuntimeScope(
         platform="telegram",
-        user_id="8176453077",
+        user_id="9000000001",
         chat_id="dm",
         thread_id="",
         gateway_session_key="",
@@ -236,6 +236,63 @@ def test_journal_digest_does_not_update_archived_memory_matches(tmp_path):
         "SELECT COUNT(*) FROM memories WHERE id != 'archived-memory' AND target = 'memory'"
     ).fetchone()[0]
     assert active_count == 1
+
+
+@pytest.mark.parametrize("lifecycle", ["candidate", "in_progress"])
+def test_journal_digest_does_not_consume_provisional_memory_matches(tmp_path, lifecycle):
+    conn = _open_memory_db(tmp_path / "memory.sqlite3")
+    scope = _scope()
+    shared_scope_id = build_shared_scope_id(scope)
+    content = (
+        "Journal promotion must create a recall-visible durable memory instead of consuming evidence into "
+        "a provisional row that is still under review."
+    )
+    entry_id = append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=build_scope_id(scope),
+        shared_scope_id=shared_scope_id,
+        session_id=f"{lifecycle}-match",
+        turn_number=1,
+        role="user",
+        content=content,
+    )
+    store_row(
+        conn,
+        memory_id="provisional-memory",
+        scope_id=shared_scope_id,
+        platform=scope.platform,
+        user_id=scope.user_id,
+        chat_id=scope.chat_id,
+        thread_id=scope.thread_id,
+        gateway_session_key=scope.gateway_session_key,
+        agent_identity=scope.agent_identity,
+        agent_workspace=scope.agent_workspace,
+        session_id=f"{lifecycle}-match",
+        source="journal-digest",
+        target="memory",
+        content=content,
+    )
+    conn.execute(
+        "UPDATE memories SET metadata = json_set(metadata, '$.lifecycle', ?) WHERE id = 'provisional-memory'",
+        (lifecycle,),
+    )
+    conn.commit()
+
+    result = apply_journal_candidates(
+        conn,
+        None,
+        scope,
+        run_id=f"{lifecycle}-match-test",
+        candidates=[JournalDigestCandidate(content=content, target="memory", entry_ids=[entry_id])],
+    )
+
+    assert result["counts"]["inserted"] == 1
+    assert result["counts"].get("skipped", 0) == 0
+    assert result["counts"].get("updated", 0) == 0
+    provisional = conn.execute("SELECT metadata FROM memories WHERE id = 'provisional-memory'").fetchone()
+    assert json.loads(provisional["metadata"])["lifecycle"] == lifecycle
+    assert conn.execute("SELECT COUNT(*) FROM memories WHERE id != 'provisional-memory'").fetchone()[0] == 1
 
 
 def test_journal_digest_rejects_ephemeral_release_issue_state_candidates(tmp_path):
@@ -1132,9 +1189,10 @@ def test_journal_capture_omits_inline_data_url_payload(tmp_path):
     assert entry_id
     rows = conn.execute("SELECT content FROM journal_entries ORDER BY id").fetchall()
     assert len(rows) == 1
-    assert "inline image/jpeg data omitted" in rows[0]["content"]
+    assert rows[0]["content"] == "请看截图并审计 scope-recall。"
+    assert "inline image/jpeg data omitted" not in rows[0]["content"]
     assert "data:image" not in rows[0]["content"]
-    assert blob[:100] not in rows[0]["content"]
+    assert blob not in rows[0]["content"]
 
 
 def test_legacy_base64_journal_chunk_is_processed_without_calling_llm(tmp_path, monkeypatch):
@@ -1759,3 +1817,32 @@ def test_journal_digest_cli_forwards_llm_provider_overrides(monkeypatch, tmp_pat
     assert captured["llm_append_v1"] is False
     assert captured["dry_run"] is True
     assert json.loads(capsys.readouterr().out)["ok"] is True
+
+
+def test_journal_cli_dry_run_is_compact_unless_verbose(monkeypatch, capsys, tmp_path: Path):
+    result = {
+        "ok": True,
+        "status": "dry_run",
+        "processed_entries": 500,
+        "candidates": 2,
+        "inserted": 1,
+        "updated": 1,
+        "skipped": 498,
+        "productive_writes": 2,
+        "backlog_before": 1000,
+        "backlog_after": 1000,
+        "backlog_delta": 0,
+        "quarantine_counts": {},
+        "health_flags": ["backlog_remaining"],
+        "actions": [{"action": "insert", "entry_ids": list(range(10_000))}],
+    }
+    monkeypatch.setattr(journal_module, "run_journal_digest", lambda **_kwargs: dict(result))
+
+    assert journal_module.main(["--hermes-home", str(tmp_path), "--dry-run"]) == 0
+    compact = json.loads(capsys.readouterr().out)
+    assert compact["productive_writes"] == 2
+    assert "actions" not in compact
+
+    assert journal_module.main(["--hermes-home", str(tmp_path), "--dry-run", "--verbose"]) == 0
+    verbose = json.loads(capsys.readouterr().out)
+    assert len(verbose["actions"][0]["entry_ids"]) == 10_000
