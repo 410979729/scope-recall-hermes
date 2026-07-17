@@ -230,6 +230,7 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
         document_prefix: str = "",
         query_prefix: str = "",
         prompt_profile: str = "default-v1",
+        connection_retry_delays: list[float] | None = None,
     ) -> None:
         resolved_dimensions = int(dimensions or _known_dimensions(model, 1536) or 1536)
         super().__init__(provider=provider, dimensions=resolved_dimensions, model=model)
@@ -239,6 +240,7 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
         self._document_prefix = str(document_prefix or "")
         self._query_prefix = str(query_prefix or "")
         self._prompt_profile = str(prompt_profile or "default-v1")
+        self._connection_retry_delays = list(connection_retry_delays) if connection_retry_delays else []
         self._client = None
         self._active_key_index = 0
 
@@ -273,8 +275,6 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
         self._client = None
         return True
 
-    _CONNECTION_RETRY_DELAYS = [2.0, 4.0, 8.0]
-
     @staticmethod
     def _is_connection_error(exc: Exception) -> bool:
         msg = str(exc).lower()
@@ -290,7 +290,7 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
             batch = items[start : start + batch_size]
             response = None
             last_error: Exception | None = None
-            for attempt in range(1 + len(self._CONNECTION_RETRY_DELAYS)):
+            for attempt in range(1 + len(self._connection_retry_delays)):
                 for _ in range(max(1, len(self._api_keys))):
                     client = self._client_or_raise()
                     try:
@@ -313,8 +313,8 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
                             raise
                 if response is not None:
                     break
-                if attempt < len(self._CONNECTION_RETRY_DELAYS):
-                    delay = self._CONNECTION_RETRY_DELAYS[attempt]
+                if attempt < len(self._connection_retry_delays):
+                    delay = self._connection_retry_delays[attempt]
                     import time as _time
 
                     _time.sleep(delay)
@@ -584,6 +584,7 @@ def build_embedder(config: dict[str, Any]) -> BaseEmbedder:
             document_prefix=str(raw.get("document_prefix") or ""),
             query_prefix=str(raw.get("query_prefix") or ""),
             prompt_profile=str(raw.get("prompt_profile") or "default-v1"),
+            connection_retry_delays=raw.get("connection_retry_delays"),
         )
 
     if provider in {"sentence-transformers", "local-model", "local-embedding", "huggingface"}:
