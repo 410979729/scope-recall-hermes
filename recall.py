@@ -186,7 +186,7 @@ class RecallService:
         # substantially higher bar than the broad vector candidate threshold.
         # This keeps the semantic companion useful for strong hits while
         # preventing mid-confidence neighbor drift from injecting stale topics.
-        vector_only_min_score = float(retrieval_cfg.get("vector_only_min_score") or 0.68)
+        vector_only_min_score = float(retrieval_cfg.get("vector_only_min_score") or 0.30)
         filtered: list[RecallItem] = []
         rejected: list[RecallItem] = []
         self.last_rejected_candidates = []
