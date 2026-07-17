@@ -273,6 +273,13 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
         self._client = None
         return True
 
+    _CONNECTION_RETRY_DELAYS = [2.0, 4.0, 8.0]
+
+    @staticmethod
+    def _is_connection_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return "connection" in msg or "refused" in msg or "timeout" in msg or "resolve" in msg
+
     def _embed_with_prefix(self, texts: Iterable[str], *, prefix: str) -> list[list[float]]:
         items = [clean_text(f"{prefix}{clean_text(text)}") or " " for text in texts]
         if not items:
@@ -283,22 +290,34 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
             batch = items[start : start + batch_size]
             response = None
             last_error: Exception | None = None
-            for _ in range(max(1, len(self._api_keys))):
-                client = self._client_or_raise()
-                try:
-                    request: dict[str, Any] = {
-                        "model": self.model,
-                        "input": batch,
-                        "encoding_format": "float",
-                    }
-                    if self._request_dimensions:
-                        request["dimensions"] = self.dimensions
-                    response = client.embeddings.create(**request)
+            for attempt in range(1 + len(self._CONNECTION_RETRY_DELAYS)):
+                for _ in range(max(1, len(self._api_keys))):
+                    client = self._client_or_raise()
+                    try:
+                        request: dict[str, Any] = {
+                            "model": self.model,
+                            "input": batch,
+                            "encoding_format": "float",
+                        }
+                        if self._request_dimensions:
+                            request["dimensions"] = self.dimensions
+                        response = client.embeddings.create(**request)
+                        break
+                    except Exception as exc:
+                        last_error = exc
+                        if self._is_connection_error(exc):
+                            # Connection failure: retry outer loop after delay
+                            # to give on-demand loaders (llama.cpp Hub) time.
+                            break
+                        if not self._rotate_client_after_failure():
+                            raise
+                if response is not None:
                     break
-                except Exception as exc:
-                    last_error = exc
-                    if not self._rotate_client_after_failure():
-                        raise
+                if attempt < len(self._CONNECTION_RETRY_DELAYS):
+                    delay = self._CONNECTION_RETRY_DELAYS[attempt]
+                    import time as _time
+
+                    _time.sleep(delay)
             if response is None:
                 assert last_error is not None
                 raise last_error
