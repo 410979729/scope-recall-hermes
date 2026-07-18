@@ -230,6 +230,7 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
         document_prefix: str = "",
         query_prefix: str = "",
         prompt_profile: str = "default-v1",
+        connection_retry_delays: list[float] | None = None,
     ) -> None:
         resolved_dimensions = int(dimensions or _known_dimensions(model, 1536) or 1536)
         super().__init__(provider=provider, dimensions=resolved_dimensions, model=model)
@@ -239,6 +240,7 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
         self._document_prefix = str(document_prefix or "")
         self._query_prefix = str(query_prefix or "")
         self._prompt_profile = str(prompt_profile or "default-v1")
+        self._connection_retry_delays = list(connection_retry_delays) if connection_retry_delays else []
         self._client = None
         self._active_key_index = 0
 
@@ -273,6 +275,11 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
         self._client = None
         return True
 
+    @staticmethod
+    def _is_connection_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return "connection" in msg or "refused" in msg or "timeout" in msg or "resolve" in msg
+
     def _embed_with_prefix(self, texts: Iterable[str], *, prefix: str) -> list[list[float]]:
         items = [clean_text(f"{prefix}{clean_text(text)}") or " " for text in texts]
         if not items:
@@ -283,22 +290,34 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
             batch = items[start : start + batch_size]
             response = None
             last_error: Exception | None = None
-            for _ in range(max(1, len(self._api_keys))):
-                client = self._client_or_raise()
-                try:
-                    request: dict[str, Any] = {
-                        "model": self.model,
-                        "input": batch,
-                        "encoding_format": "float",
-                    }
-                    if self._request_dimensions:
-                        request["dimensions"] = self.dimensions
-                    response = client.embeddings.create(**request)
+            for attempt in range(1 + len(self._connection_retry_delays)):
+                for _ in range(max(1, len(self._api_keys))):
+                    client = self._client_or_raise()
+                    try:
+                        request: dict[str, Any] = {
+                            "model": self.model,
+                            "input": batch,
+                            "encoding_format": "float",
+                        }
+                        if self._request_dimensions:
+                            request["dimensions"] = self.dimensions
+                        response = client.embeddings.create(**request)
+                        break
+                    except Exception as exc:
+                        last_error = exc
+                        if self._is_connection_error(exc):
+                            # Connection failure: retry outer loop after delay
+                            # to give on-demand loaders (llama.cpp Hub) time.
+                            break
+                        if not self._rotate_client_after_failure():
+                            raise
+                if response is not None:
                     break
-                except Exception as exc:
-                    last_error = exc
-                    if not self._rotate_client_after_failure():
-                        raise
+                if attempt < len(self._connection_retry_delays):
+                    delay = self._connection_retry_delays[attempt]
+                    import time as _time
+
+                    _time.sleep(delay)
             if response is None:
                 assert last_error is not None
                 raise last_error
@@ -565,6 +584,7 @@ def build_embedder(config: dict[str, Any]) -> BaseEmbedder:
             document_prefix=str(raw.get("document_prefix") or ""),
             query_prefix=str(raw.get("query_prefix") or ""),
             prompt_profile=str(raw.get("prompt_profile") or "default-v1"),
+            connection_retry_delays=raw.get("connection_retry_delays"),
         )
 
     if provider in {"sentence-transformers", "local-model", "local-embedding", "huggingface"}:
