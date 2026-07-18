@@ -134,7 +134,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "top_k": 5,
         "min_score": 0.18,
         "vector_min_score": 0.12,
-        "vector_only_min_score": 0.68,
+        "vector_only_min_score": 0.30,
         "include_general": "same-scope",
         "general_weight": 0.35,
         "general_min_importance": 0.2,
