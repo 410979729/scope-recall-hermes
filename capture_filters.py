@@ -43,7 +43,7 @@ SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"),
     # Common assignment forms: api_key=..., api key: ..., token is ..., private-key = ...
     re.compile(
-        r"(?:api[_ \t-]?key|token|secret|password|passwd|credential(?:[_ \t-]?[a-z0-9_]+)?|private[_ \t-]?key)"
+        r"(?:api[_ \t-]?key|(?<![a-zA-Z_])token|secret|password|passwd|credential(?:[_ \t-]?[a-z0-9_]+)?|private[_ \t-]?key)"
         r"(?:[ \t]*(?::|=|是)[ \t]*|[ \t]+is[ \t]+)[^\s]+",
         re.IGNORECASE,
     ),
