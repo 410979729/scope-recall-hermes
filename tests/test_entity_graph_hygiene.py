@@ -216,23 +216,26 @@ def test_extract_entities_filters_tool_trace_and_api_noise_tokens():
     } & entities
 
 
-def test_extract_entities_rejects_cjk_sentence_fragments_but_keeps_named_entities():
+def test_extract_entities_rejects_cjk_fragments_but_keeps_explicit_named_entities(
+    monkeypatch,
+):
+    monkeypatch.setattr("scope_recall.graph._jieba_entities", lambda _text: [])
     text = (
         "长上下文并不等于有效注意力：文档中段的决定性词出现在尾部时，会让模型被大量旧测试与审计材料淹没。"
-        "天璇只负责第一轮广覆盖审查，玉衡负责架构决策，Scope Recall 使用 Gemini embedding-001。"
+        "`星河`只负责第一轮广覆盖审查，`云舟`负责架构决策，Scope Recall 使用 Gemini embedding-001。"
         "所有高风险状态机最终必须交给 Codex。"
     )
 
     entities = set(extract_entities(text))
 
     assert {"scope", "gemini", "embedding-001", "codex"} & entities
-    assert {"天璇", "玉衡"} & entities
+    assert {"星河", "云舟"} <= entities
     assert not {
         "文档中段的决定性词出",
         "现在尾部时",
         "会让模型被大量旧测试与",
         "审计材料淹没",
-        "天璇只负责第一轮广覆盖审",
+        "星河只负责第一轮广覆盖审",
         "所有高风险状态机",
         "最终必须交给",
     } & entities

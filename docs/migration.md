@@ -16,7 +16,7 @@ hermes-scope-recall migrate status --hermes-home /path/to/hermes-profile
 
 The status command opens the SQLite truth DB read-only (`mode=ro` + `PRAGMA query_only=ON`) and reports `schema_migrations`, `user_version`, and missing baseline metadata. Use `scripts/doctor.py` or installer runtime verify for the broader health view.
 
-The unreleased 1.8.0 schema adds append-only migration receipts including:
+The 1.8.x schema adds append-only migration receipts including:
 
 - `0007_relation_frequency_index_v1_8_0` creates incremental relation postings/counts plus resumable backfill and reclassification state. Existing truth is not parsed in the migration transaction; background maintenance advances a bounded cursor.
 - `0008_relation_rebuild_progress_v1_8_0` adds lifetime/pass counters and next-revision handoff. Existing `processed_pairs` is preserved when upgrading the queue.

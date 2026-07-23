@@ -67,6 +67,21 @@ class SQLiteBruteForceVectorStore:
             if path.exists() or path.is_symlink()
         ]
 
+    @staticmethod
+    def _harden_descriptor_mode(descriptor: int) -> None:
+        """Apply an owner-only POSIX mode when descriptor chmod is available.
+
+        Windows uses ACL inheritance rather than POSIX owner/group/other mode
+        bits, and CPython does not expose ``os.fchmod`` there. The containing
+        Hermes profile remains the Windows access-control boundary; pretending
+        that ``os.chmod(path, 0o600)`` is equivalent would be misleading and
+        would reintroduce a path race.
+        """
+
+        fchmod = getattr(os, "fchmod", None)
+        if fchmod is not None:
+            fchmod(descriptor, 0o600)
+
     def _prepare_mutable_storage(self, *, create: bool) -> None:
         """Create or harden mutable SQLite files without following symlinks."""
 
@@ -89,7 +104,7 @@ class SQLiteBruteForceVectorStore:
                 raise VectorStoreCompatibilityError(
                     "sqlite-bruteforce mutable storage is not a regular file"
                 )
-            os.fchmod(descriptor, 0o600)
+            self._harden_descriptor_mode(descriptor)
         finally:
             os.close(descriptor)
 
@@ -111,7 +126,7 @@ class SQLiteBruteForceVectorStore:
                     raise VectorStoreCompatibilityError(
                         "sqlite-bruteforce mutable sidecar is not a regular file"
                     )
-                os.fchmod(descriptor, 0o600)
+                self._harden_descriptor_mode(descriptor)
             finally:
                 os.close(descriptor)
 

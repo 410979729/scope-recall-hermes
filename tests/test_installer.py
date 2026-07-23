@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tomllib
 import zipfile
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -129,7 +130,7 @@ def test_distribution_metadata_exposes_official_standalone_install_shape():
     pyproject = tomllib.loads((PLUGIN_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert pyproject["project"]["name"] == "hermes-scope-recall"
-    assert pyproject["project"]["version"] == "1.8.0"
+    assert pyproject["project"]["version"] == "1.8.1"
     assert pyproject["project"]["scripts"] == {
         "hermes-scope-recall": "scope_recall.cli:main"
     }
@@ -219,7 +220,13 @@ def test_install_activate_sets_memory_provider_and_bootstraps_schema(tmp_path, m
 
     result = installer.install(hermes_home=tmp_path, activate=True)
 
-    assert result["ok"] is True
+    assert result["ok"] is True, {
+        "mode": result.get("mode"),
+        "activation_error": result.get("activation_error"),
+        "runtime_verify": result.get("runtime_verify"),
+        "postdeploy_doctor": result.get("postdeploy_doctor"),
+        "activation_transaction": result.get("activation_transaction"),
+    }
     assert result["installed"] is True
     assert result["activated"] is True
     assert result["config_updated"] is True
@@ -924,7 +931,7 @@ def test_activation_guard_precedes_online_backup_and_backup_is_guard_free(
     observed = {"raw_writer_blocked": False}
 
     def probing_backup(source: Path, destination: Path) -> None:
-        with sqlite3.connect(source) as raw_writer:
+        with closing(sqlite3.connect(source)) as raw_writer:
             with pytest.raises(sqlite3.OperationalError, match="no such function"):
                 raw_writer.execute(
                     "INSERT INTO installer_sentinel(value) VALUES ('during-backup')"
@@ -962,7 +969,7 @@ def test_activation_guard_precedes_online_backup_and_backup_is_guard_free(
         plugin_backup_path="",
         plugin_replaced=False,
     )
-    assert receipt["status"] == "rolled_back"
+    assert receipt["status"] == "rolled_back", receipt
     assert receipt["automatic_rollback"] is True
     assert receipt["sqlite"]["backup_guards_removed"] is True
     with sqlite3.connect(db_path) as check:
@@ -986,7 +993,7 @@ def test_activation_epoch_registrar_cannot_mask_raw_post_snapshot_write(tmp_path
     snapshot = capture_activation_state(tmp_path, writer_quiesced=True)
     db_path = tmp_path / "scope-recall" / "memory.sqlite3"
 
-    with sqlite3.connect(db_path) as external_writer:
+    with closing(sqlite3.connect(db_path)) as external_writer:
         with pytest.raises(sqlite3.OperationalError, match="no such function"):
             external_writer.execute(
                 "INSERT INTO installer_sentinel(value) VALUES ('external')"
@@ -1002,7 +1009,7 @@ def test_activation_epoch_registrar_cannot_mask_raw_post_snapshot_write(tmp_path
         plugin_backup_path="",
         plugin_replaced=False,
     )
-    assert receipt["status"] == "rolled_back"
+    assert receipt["status"] == "rolled_back", receipt
     assert receipt["automatic_rollback"] is True
     assert receipt["sqlite"]["guards_removed"] is True
     with sqlite3.connect(db_path) as check:
@@ -1039,7 +1046,7 @@ def test_activation_guard_blocks_unregistered_writer_at_each_failure_stage(
             encoding="utf-8",
         )
         db_path = home / "scope-recall" / "memory.sqlite3"
-        with sqlite3.connect(db_path) as external_writer:
+        with closing(sqlite3.connect(db_path)) as external_writer:
             with pytest.raises(sqlite3.OperationalError, match="no such function"):
                 external_writer.execute(
                     "INSERT INTO installer_sentinel(value) VALUES (?)",
@@ -1065,7 +1072,7 @@ def test_activation_guard_blocks_unregistered_writer_at_each_failure_stage(
     )
 
     transaction = result["activation_transaction"]
-    assert transaction["status"] == "rolled_back"
+    assert transaction["status"] == "rolled_back", transaction
     assert transaction["automatic_rollback"] is True
     assert transaction["sqlite"]["restored"] is True
     assert transaction["sqlite"]["guards_removed"] is True
@@ -1647,14 +1654,14 @@ def test_installer_upgrade_backs_up_existing_plugin_and_reports_versions(tmp_pat
     assert result["installed"] is True
     assert result["previous_plugin_existed"] is True
     assert result["previous_version"] == "0.9.0"
-    assert result["manifest_version"] == "1.8.0"
-    assert result["new_version"] == "1.8.0"
+    assert result["manifest_version"] == "1.8.1"
+    assert result["new_version"] == "1.8.1"
     backup_path = Path(result["backup_path"])
     assert backup_path.is_dir()
     assert tmp_path in backup_path.parents
     assert "version: 0.9.0" in (backup_path / "plugin.yaml").read_text(encoding="utf-8")
     assert "previous plugin" in (backup_path / "__init__.py").read_text(encoding="utf-8")
-    assert "version: 1.8.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.8.1" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
     assert any("restart" in step.lower() for step in result["next_steps"])
     assert any("doctor" in step for step in result["next_steps"])
     assert result["rollback_command"].endswith(str(backup_path))
@@ -1666,7 +1673,7 @@ def test_installer_rollback_restores_backup_and_backs_up_current_plugin(tmp_path
     plugin_dir = tmp_path / "plugins" / PLUGIN_NAME
     _write_installed_plugin(plugin_dir, version="0.9.0", marker="previous plugin")
     upgrade = installer.install(hermes_home=tmp_path)
-    assert "version: 1.8.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.8.1" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
 
     rollback = installer.rollback(hermes_home=tmp_path, backup_dir=upgrade["backup_path"])
 
@@ -1674,10 +1681,10 @@ def test_installer_rollback_restores_backup_and_backs_up_current_plugin(tmp_path
     assert rollback["dry_run"] is False
     assert rollback["restored"] is True
     assert rollback["restored_version"] == "0.9.0"
-    assert rollback["replaced_version"] == "1.8.0"
+    assert rollback["replaced_version"] == "1.8.1"
     current_backup = Path(rollback["current_backup_path"])
     assert current_backup.is_dir()
-    assert "version: 1.8.0" in (current_backup / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.8.1" in (current_backup / "plugin.yaml").read_text(encoding="utf-8")
     assert "version: 0.9.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
     assert "previous plugin" in (plugin_dir / "__init__.py").read_text(encoding="utf-8")
 
@@ -1686,7 +1693,7 @@ def test_installer_rollback_refuses_bad_backup_without_mutating_current_plugin(t
     import scope_recall.installer as installer
 
     plugin_dir = tmp_path / "plugins" / PLUGIN_NAME
-    _write_installed_plugin(plugin_dir, version="1.8.0", marker="current plugin")
+    _write_installed_plugin(plugin_dir, version="1.8.1", marker="current plugin")
     bad_backup = tmp_path / "bad-backup" / PLUGIN_NAME
     bad_backup.mkdir(parents=True)
     (bad_backup / "plugin.yaml").write_text("name: other\nversion: 0.1.0\n", encoding="utf-8")
@@ -1694,7 +1701,7 @@ def test_installer_rollback_refuses_bad_backup_without_mutating_current_plugin(t
     with pytest.raises(installer.InstallError):
         installer.rollback(hermes_home=tmp_path, backup_dir=bad_backup)
 
-    assert "version: 1.8.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.8.1" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
     assert "current plugin" in (plugin_dir / "__init__.py").read_text(encoding="utf-8")
 
 
@@ -1710,7 +1717,7 @@ def test_installer_cli_upgrade_dry_run_and_rollback_are_routed_by_product_cli(tm
 
     upgrade = installer.install(hermes_home=tmp_path)
     assert cli.main(["rollback", "--hermes-home", str(tmp_path), "--backup-dir", upgrade["backup_path"], "--dry-run", "--json"]) == 0
-    assert "version: 1.8.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.8.1" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
 
 
 def test_installer_runtime_verify_reports_missing_memory_setup(tmp_path):

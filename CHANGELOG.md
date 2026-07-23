@@ -41,6 +41,14 @@ All notable changes to `scope-recall` will be documented in this file.
 - Preserved the original `2/4/8s` OpenAI-compatible connection-retry behavior from #27 while keeping the hardened bounded schedule configurable and allowing an explicit empty array to disable it.
 - Refined the token-assignment boundary issue reported by @df-5c in #28: `per_token` and `*_per_token` metric assignments no longer trip plaintext-secret filtering, while compound credential keys such as `access_token`, `session_token`, and `super_token` remain blocked and redacted across text and structured-key surfaces.
 
+## [1.8.1] - 2026-07-23
+
+### Fixed
+- Made the dependency-free SQLite vector fallback portable to Windows by applying descriptor-based POSIX mode hardening only where CPython exposes `os.fchmod`; Windows continues to rely on the inherited profile-directory ACL boundary.
+- Closed raw SQLite test connections before activation compensation replaces database files, covering Windows' refusal to unlink or replace an open database while preserving the same fail-closed rollback contract.
+- Made explicit CJK entity regression coverage deterministic without the optional `jieba` package, and declared the `setuptools` build backend in the development test environment used by no-isolation clean-build checks.
+- Preserved the 1.8.0 Fact Evolution, temporal, Reflection, scope routing, evidence authority, provenance-root, idempotency, journal checkpoint, and release-identity contracts unchanged.
+
 ## [1.8.0] - 2026-07-15
 
 ### Added
