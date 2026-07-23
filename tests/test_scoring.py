@@ -9,6 +9,7 @@ import json
 from plugins.memory import load_memory_provider
 
 from scope_recall.aliases import canonicalize_alias
+from scope_recall.models import RecallItem
 from scope_recall.scoring import lexical_score
 
 
@@ -64,5 +65,41 @@ def test_freshness_substrings_do_not_trigger_recency_bonus(tmp_path):
         assert service._freshness_weight("What do we know about production deploy?") == 0.0
         assert service._freshness_weight("What day do we deploy prod?") == 0.0
         assert service._freshness_weight("How do we find the updated deploy guide?") > 0.0
+        bonus = service._recency_bonus(
+            base_score=0.5,
+            updated_at="1970-01-01T00:01:40+00:00",
+            freshness_weight=1.0,
+            oldest=0.0,
+            span=100.0,
+        )
+        assert bonus <= 0.06
+        assert bonus <= 0.5 * 0.12
+
+        chinese = RecallItem(
+            id="cloud-boat",
+            content="云舟目前的生产端口是10443。",
+            summary="云舟生产端口",
+            source="test",
+            target="project",
+            score=0.8,
+            updated_at="2026-07-16T00:00:00+00:00",
+            metadata={"entities": ["云舟"]},
+        )
+        titan = RecallItem(
+            id="titan",
+            content="Titan operations recovery procedure.",
+            summary="Titan recovery",
+            source="test",
+            target="ops",
+            score=0.8,
+            updated_at="2026-07-16T00:00:00+00:00",
+            metadata={"entities": ["Titan"]},
+        )
+        assert service._entity_scope_mismatch(
+            "云舟现在的生产端口是什么？", chinese, chinese.metadata
+        ) is False
+        assert service._entity_scope_mismatch(
+            "What must be verified before Quartz recovery?", titan, titan.metadata
+        ) is True
     finally:
         plugin.shutdown()

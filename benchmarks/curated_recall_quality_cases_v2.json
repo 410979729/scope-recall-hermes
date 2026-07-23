@@ -1,0 +1,2387 @@
+{
+  "name": "curated_recall_regression_v2",
+  "description": "Curated lexical regression benchmark: 120 labeled query cases across English procedures, current facts, Chinese natural questions, cross-target noise, and mixed-language facts. Every case has a positive target and an explicit negative/distractor. This synthetic fixture is not production or commercial-quality evidence.",
+  "quality_tier": "curated-regression",
+  "annotation": "curated_expected_and_forbidden_labels",
+  "config": {
+    "maintenance_tools_enabled": true,
+    "fact_freshness_enabled": true,
+    "vector": {
+      "enabled": false
+    },
+    "retrieval": {
+      "mode": "lexical",
+      "min_score": 0.0,
+      "include_general": "same-scope",
+      "relation_rerank_enabled": true
+    },
+    "experience": {
+      "enabled": false
+    }
+  },
+  "setup": [
+    {
+      "label": "commercial_01_expected",
+      "content": "Project Atlas production runbook uses `uv run atlas-server --env prod` after verifying pytest.",
+      "target": "project",
+      "memory_type": "procedure",
+      "importance": 0.92,
+      "entities": [
+        "Atlas"
+      ]
+    },
+    {
+      "label": "commercial_01_distractor",
+      "content": "Project Atlas draft idea may skip pytest and use an experimental fast path.",
+      "target": "project",
+      "memory_type": "procedure",
+      "importance": 0.35,
+      "entities": [
+        "Atlas"
+      ],
+      "lifecycle": "candidate"
+    },
+    {
+      "label": "commercial_02_expected",
+      "content": "Project Borealis production runbook uses `borealisctl deploy --ring stable` after verifying /health.",
+      "target": "project",
+      "memory_type": "procedure",
+      "importance": 0.92,
+      "entities": [
+        "Borealis"
+      ]
+    },
+    {
+      "label": "commercial_02_distractor",
+      "content": "Project Borealis draft idea may skip /health and use an experimental fast path.",
+      "target": "project",
+      "memory_type": "procedure",
+      "importance": 0.35,
+      "entities": [
+        "Borealis"
+      ],
+      "lifecycle": "candidate"
+    },
+    {
+      "label": "commercial_03_expected",
+      "content": "Project Cygnus production runbook uses `cygnus release apply --channel blue` after verifying queue drain.",
+      "target": "project",
+      "memory_type": "procedure",
+      "importance": 0.92,
+      "entities": [
+        "Cygnus"
+      ]
+    },
+    {
+      "label": "commercial_03_distractor",
+      "content": "Project Cygnus draft idea may skip queue drain and use an experimental fast path.",
+      "target": "project",
+      "memory_type": "procedure",
+      "importance": 0.35,
+      "entities": [
+        "Cygnus"
+      ],
+      "lifecycle": "candidate"
+    },
+    {
+      "label": "commercial_04_expected",
+      "content": "Project Draco production runbook uses `draco ship --region eu-west-1` after verifying smoke test.",
+      "target": "project",
+      "memory_type": "procedure",
+      "importance": 0.92,
+      "entities": [
+        "Draco"
+      ]
+    },
+    {
+      "label": "commercial_04_distractor",
+      "content": "Project Draco draft idea may skip smoke test and use an experimental fast path.",
+      "target": "project",
+      "memory_type": "procedure",
+      "importance": 0.35,
+      "entities": [
+        "Draco"
+      ],
+      "lifecycle": "candidate"
+    },
+    {
+      "label": "commercial_05_expected",
+      "content": "Project Equinox production runbook uses `equinox rollout --batch 20` after verifying error budget.",
+      "target": "project",
+      "memory_type": "procedure",
+      "importance": 0.92,
+      "entities": [
+        "Equinox"
+      ]
+    },
+    {
+      "label": "commercial_05_distractor",
+      "content": "Project Equinox draft idea may skip error budget and use an experimental fast path.",
+      "target": "project",
+      "memory_type": "procedure",
+      "importance": 0.35,
+      "entities": [
+        "Equinox"
+      ],
+      "lifecycle": "candidate"
+    },
+    {
+      "label": "commercial_06_expected",
+      "content": "Project Fornax production runbook uses `fornax-worker promote --slot green` after verifying lag metric.",
+      "target": "project",
+      "memory_type": "procedure",
+      "importance": 0.92,
+      "entities": [
+        "Fornax"
+      ]
+    },
+    {
+      "label": "commercial_06_distractor",
+      "content": "Project Fornax draft idea may skip lag metric and use an experimental fast path.",
+      "target": "project",
+      "memory_type": "procedure",
+      "importance": 0.35,
+      "entities": [
+        "Fornax"
+      ],
+      "lifecycle": "candidate"
+    },
+    {
+      "label": "commercial_07_expected",
+      "content": "Project Gemini production runbook uses `gemini-api publish --track lts` after verifying contract tests.",
+      "target": "project",
+      "memory_type": "procedure",
+      "importance": 0.92,
+      "entities": [
+        "Gemini"
+      ]
+    },
+    {
+      "label": "commercial_07_distractor",
+      "content": "Project Gemini draft idea may skip contract tests and use an experimental fast path.",
+      "target": "project",
+      "memory_type": "procedure",
+      "importance": 0.35,
+      "entities": [
+        "Gemini"
+      ],
+      "lifecycle": "candidate"
+    },
+    {
+      "label": "commercial_08_expected",
+      "content": "Project Helios production runbook uses `heliosctl upgrade --canary 5` after verifying rollback marker.",
+      "target": "project",
+      "memory_type": "procedure",
+      "importance": 0.92,
+      "entities": [
+        "Helios"
+      ]
+    },
+    {
+      "label": "commercial_08_distractor",
+      "content": "Project Helios draft idea may skip rollback marker and use an experimental fast path.",
+      "target": "project",
+      "memory_type": "procedure",
+      "importance": 0.35,
+      "entities": [
+        "Helios"
+      ],
+      "lifecycle": "candidate"
+    },
+    {
+      "label": "commercial_09_expected",
+      "content": "Iris current API endpoint is https://api.iris.example/v3, confirmed by the latest configuration check.",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.92,
+      "entities": [
+        "Iris"
+      ]
+    },
+    {
+      "label": "commercial_09_distractor",
+      "content": "Iris old API endpoint was https://old.iris.invalid/v1 before migration.",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.35,
+      "entities": [
+        "Iris"
+      ],
+      "lifecycle": "archived"
+    },
+    {
+      "label": "commercial_10_expected",
+      "content": "Juno current queue name is juno-events-v2, confirmed by the latest configuration check.",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.92,
+      "entities": [
+        "Juno"
+      ]
+    },
+    {
+      "label": "commercial_10_distractor",
+      "content": "Juno old queue name was juno-events-legacy before migration.",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.35,
+      "entities": [
+        "Juno"
+      ],
+      "lifecycle": "archived"
+    },
+    {
+      "label": "commercial_11_expected",
+      "content": "Kepler current primary region is ap-southeast-2, confirmed by the latest configuration check.",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.92,
+      "entities": [
+        "Kepler"
+      ]
+    },
+    {
+      "label": "commercial_11_distractor",
+      "content": "Kepler old primary region was us-east-1 before migration.",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.35,
+      "entities": [
+        "Kepler"
+      ],
+      "lifecycle": "archived"
+    },
+    {
+      "label": "commercial_12_expected",
+      "content": "Luna current service port is 9443, confirmed by the latest configuration check.",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.92,
+      "entities": [
+        "Luna"
+      ]
+    },
+    {
+      "label": "commercial_12_distractor",
+      "content": "Luna old service port was 8443 before migration.",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.35,
+      "entities": [
+        "Luna"
+      ],
+      "lifecycle": "archived"
+    },
+    {
+      "label": "commercial_13_expected",
+      "content": "Mira current on-call owner is Mira Platform Team, confirmed by the latest configuration check.",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.92,
+      "entities": [
+        "Mira"
+      ]
+    },
+    {
+      "label": "commercial_13_distractor",
+      "content": "Mira old on-call owner was Legacy Operations before migration.",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.35,
+      "entities": [
+        "Mira"
+      ],
+      "lifecycle": "archived"
+    },
+    {
+      "label": "commercial_14_expected",
+      "content": "Nova current log retention is 45 days, confirmed by the latest configuration check.",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.92,
+      "entities": [
+        "Nova"
+      ]
+    },
+    {
+      "label": "commercial_14_distractor",
+      "content": "Nova old log retention was 7 days before migration.",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.35,
+      "entities": [
+        "Nova"
+      ],
+      "lifecycle": "archived"
+    },
+    {
+      "label": "commercial_15_expected",
+      "content": "Orion current database engine is PostgreSQL 17, confirmed by the latest configuration check.",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.92,
+      "entities": [
+        "Orion"
+      ]
+    },
+    {
+      "label": "commercial_15_distractor",
+      "content": "Orion old database engine was MySQL 5.7 before migration.",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.35,
+      "entities": [
+        "Orion"
+      ],
+      "lifecycle": "archived"
+    },
+    {
+      "label": "commercial_16_expected",
+      "content": "Pulsar current business timezone is Asia/Shanghai, confirmed by the latest configuration check.",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.92,
+      "entities": [
+        "Pulsar"
+      ]
+    },
+    {
+      "label": "commercial_16_distractor",
+      "content": "Pulsar old business timezone was UTC before migration.",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.35,
+      "entities": [
+        "Pulsar"
+      ],
+      "lifecycle": "archived"
+    },
+    {
+      "label": "commercial_17_expected",
+      "content": "云舟目前的生产端口是10443，这是最近一次在线配置核验结果。",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.92,
+      "entities": [
+        "云舟"
+      ]
+    },
+    {
+      "label": "commercial_17_distractor",
+      "content": "云舟以前的生产端口是9443，该记录已经归档。",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.35,
+      "entities": [
+        "云舟"
+      ],
+      "lifecycle": "archived"
+    },
+    {
+      "label": "commercial_18_expected",
+      "content": "星河目前的API 地址是https://api.xinghe.example/v2，这是最近一次在线配置核验结果。",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.92,
+      "entities": [
+        "星河"
+      ]
+    },
+    {
+      "label": "commercial_18_distractor",
+      "content": "星河以前的API 地址是https://old.xinghe.invalid/v1，该记录已经归档。",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.35,
+      "entities": [
+        "星河"
+      ],
+      "lifecycle": "archived"
+    },
+    {
+      "label": "commercial_19_expected",
+      "content": "天琴目前的备份时间是每天 02:30，这是最近一次在线配置核验结果。",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.92,
+      "entities": [
+        "天琴"
+      ]
+    },
+    {
+      "label": "commercial_19_distractor",
+      "content": "天琴以前的备份时间是每天 05:00，该记录已经归档。",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.35,
+      "entities": [
+        "天琴"
+      ],
+      "lifecycle": "archived"
+    },
+    {
+      "label": "commercial_20_expected",
+      "content": "玄武目前的数据库是PostgreSQL 17，这是最近一次在线配置核验结果。",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.92,
+      "entities": [
+        "玄武"
+      ]
+    },
+    {
+      "label": "commercial_20_distractor",
+      "content": "玄武以前的数据库是MySQL 5.7，该记录已经归档。",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.35,
+      "entities": [
+        "玄武"
+      ],
+      "lifecycle": "archived"
+    },
+    {
+      "label": "commercial_21_expected",
+      "content": "青鸟目前的负责人是平台保障组，这是最近一次在线配置核验结果。",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.92,
+      "entities": [
+        "青鸟"
+      ]
+    },
+    {
+      "label": "commercial_21_distractor",
+      "content": "青鸟以前的负责人是旧运维组，该记录已经归档。",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.35,
+      "entities": [
+        "青鸟"
+      ],
+      "lifecycle": "archived"
+    },
+    {
+      "label": "commercial_22_expected",
+      "content": "朱雀目前的告警频道是#zhuque-alerts，这是最近一次在线配置核验结果。",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.92,
+      "entities": [
+        "朱雀"
+      ]
+    },
+    {
+      "label": "commercial_22_distractor",
+      "content": "朱雀以前的告警频道是#legacy-alerts，该记录已经归档。",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.35,
+      "entities": [
+        "朱雀"
+      ],
+      "lifecycle": "archived"
+    },
+    {
+      "label": "commercial_23_expected",
+      "content": "白泽目前的日志保留期是60 天，这是最近一次在线配置核验结果。",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.92,
+      "entities": [
+        "白泽"
+      ]
+    },
+    {
+      "label": "commercial_23_distractor",
+      "content": "白泽以前的日志保留期是14 天，该记录已经归档。",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.35,
+      "entities": [
+        "白泽"
+      ],
+      "lifecycle": "archived"
+    },
+    {
+      "label": "commercial_24_expected",
+      "content": "鲲鹏目前的运行区域是华东二区，这是最近一次在线配置核验结果。",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.92,
+      "entities": [
+        "鲲鹏"
+      ]
+    },
+    {
+      "label": "commercial_24_distractor",
+      "content": "鲲鹏以前的运行区域是华北一区，该记录已经归档。",
+      "target": "project",
+      "memory_type": "factual",
+      "importance": 0.35,
+      "entities": [
+        "鲲鹏"
+      ],
+      "lifecycle": "archived"
+    },
+    {
+      "label": "commercial_25_expected",
+      "content": "Quartz operations recovery procedure runs `systemctl restart quartz-worker` only after queue depth below 10.",
+      "target": "ops",
+      "memory_type": "procedure",
+      "importance": 0.92,
+      "entities": [
+        "Quartz"
+      ]
+    },
+    {
+      "label": "commercial_25_distractor",
+      "content": "Temporary Quartz chat note: dinner and coffee were discussed while somebody mentioned systemctl restart quartz-worker.",
+      "target": "general",
+      "memory_type": "procedure",
+      "importance": 0.35,
+      "entities": [
+        "Quartz"
+      ]
+    },
+    {
+      "label": "commercial_26_expected",
+      "content": "Raven operations recovery procedure runs `ravenctl rollback --last-good` only after checksum match.",
+      "target": "ops",
+      "memory_type": "procedure",
+      "importance": 0.92,
+      "entities": [
+        "Raven"
+      ]
+    },
+    {
+      "label": "commercial_26_distractor",
+      "content": "Temporary Raven chat note: dinner and coffee were discussed while somebody mentioned ravenctl rollback --last-good.",
+      "target": "general",
+      "memory_type": "procedure",
+      "importance": 0.35,
+      "entities": [
+        "Raven"
+      ]
+    },
+    {
+      "label": "commercial_27_expected",
+      "content": "Sable operations recovery procedure runs `sable gateway reload --safe` only after active sessions drained.",
+      "target": "ops",
+      "memory_type": "procedure",
+      "importance": 0.92,
+      "entities": [
+        "Sable"
+      ]
+    },
+    {
+      "label": "commercial_27_distractor",
+      "content": "Temporary Sable chat note: dinner and coffee were discussed while somebody mentioned sable gateway reload --safe.",
+      "target": "general",
+      "memory_type": "procedure",
+      "importance": 0.35,
+      "entities": [
+        "Sable"
+      ]
+    },
+    {
+      "label": "commercial_28_expected",
+      "content": "Titan operations recovery procedure runs `titan scheduler resume --verified` only after missed jobs reconciled.",
+      "target": "ops",
+      "memory_type": "procedure",
+      "importance": 0.92,
+      "entities": [
+        "Titan"
+      ]
+    },
+    {
+      "label": "commercial_28_distractor",
+      "content": "Temporary Titan chat note: dinner and coffee were discussed while somebody mentioned titan scheduler resume --verified.",
+      "target": "general",
+      "memory_type": "procedure",
+      "importance": 0.35,
+      "entities": [
+        "Titan"
+      ]
+    },
+    {
+      "label": "commercial_29_expected",
+      "content": "Umbra operations recovery procedure runs `umbra cache rotate --graceful` only after hit rate recovered.",
+      "target": "ops",
+      "memory_type": "procedure",
+      "importance": 0.92,
+      "entities": [
+        "Umbra"
+      ]
+    },
+    {
+      "label": "commercial_29_distractor",
+      "content": "Temporary Umbra chat note: dinner and coffee were discussed while somebody mentioned umbra cache rotate --graceful.",
+      "target": "general",
+      "memory_type": "procedure",
+      "importance": 0.35,
+      "entities": [
+        "Umbra"
+      ]
+    },
+    {
+      "label": "commercial_30_expected",
+      "content": "Vega operations recovery procedure runs `vega index rebuild --online` only after replica lag under 2s.",
+      "target": "ops",
+      "memory_type": "procedure",
+      "importance": 0.92,
+      "entities": [
+        "Vega"
+      ]
+    },
+    {
+      "label": "commercial_30_distractor",
+      "content": "Temporary Vega chat note: dinner and coffee were discussed while somebody mentioned vega index rebuild --online.",
+      "target": "general",
+      "memory_type": "procedure",
+      "importance": 0.35,
+      "entities": [
+        "Vega"
+      ]
+    },
+    {
+      "label": "commercial_31_expected",
+      "content": "Willow operations recovery procedure runs `willow broker failover --planned` only after consumer offsets synced.",
+      "target": "ops",
+      "memory_type": "procedure",
+      "importance": 0.92,
+      "entities": [
+        "Willow"
+      ]
+    },
+    {
+      "label": "commercial_31_distractor",
+      "content": "Temporary Willow chat note: dinner and coffee were discussed while somebody mentioned willow broker failover --planned.",
+      "target": "general",
+      "memory_type": "procedure",
+      "importance": 0.35,
+      "entities": [
+        "Willow"
+      ]
+    },
+    {
+      "label": "commercial_32_expected",
+      "content": "Xenon operations recovery procedure runs `xenon proxy reload --validate` only after TLS probe passed.",
+      "target": "ops",
+      "memory_type": "procedure",
+      "importance": 0.92,
+      "entities": [
+        "Xenon"
+      ]
+    },
+    {
+      "label": "commercial_32_distractor",
+      "content": "Temporary Xenon chat note: dinner and coffee were discussed while somebody mentioned xenon proxy reload --validate.",
+      "target": "general",
+      "memory_type": "procedure",
+      "importance": 0.35,
+      "entities": [
+        "Xenon"
+      ]
+    },
+    {
+      "label": "commercial_33_expected",
+      "content": "Yarrow 当前 release channel is stable-cn; live verification status is current.",
+      "target": "user",
+      "memory_type": "factual",
+      "importance": 0.92,
+      "entities": [
+        "Yarrow"
+      ]
+    },
+    {
+      "label": "commercial_33_distractor",
+      "content": "Yarrow 迁移中的 release channel was preview; this progress note is not final.",
+      "target": "user",
+      "memory_type": "factual",
+      "importance": 0.35,
+      "entities": [
+        "Yarrow"
+      ],
+      "lifecycle": "in_progress"
+    },
+    {
+      "label": "commercial_34_expected",
+      "content": "Zenith 当前 metrics namespace is zenith.prod; live verification status is current.",
+      "target": "user",
+      "memory_type": "factual",
+      "importance": 0.92,
+      "entities": [
+        "Zenith"
+      ]
+    },
+    {
+      "label": "commercial_34_distractor",
+      "content": "Zenith 迁移中的 metrics namespace was zenith.test; this progress note is not final.",
+      "target": "user",
+      "memory_type": "factual",
+      "importance": 0.35,
+      "entities": [
+        "Zenith"
+      ],
+      "lifecycle": "in_progress"
+    },
+    {
+      "label": "commercial_35_expected",
+      "content": "Aria 当前 主数据库端口 is 6432; live verification status is current.",
+      "target": "user",
+      "memory_type": "factual",
+      "importance": 0.92,
+      "entities": [
+        "Aria"
+      ]
+    },
+    {
+      "label": "commercial_35_distractor",
+      "content": "Aria 迁移中的 主数据库端口 was 5432; this progress note is not final.",
+      "target": "user",
+      "memory_type": "factual",
+      "importance": 0.35,
+      "entities": [
+        "Aria"
+      ],
+      "lifecycle": "in_progress"
+    },
+    {
+      "label": "commercial_36_expected",
+      "content": "Beidou 当前 current backup bucket is s3://beidou-prod-backup; live verification status is current.",
+      "target": "user",
+      "memory_type": "factual",
+      "importance": 0.92,
+      "entities": [
+        "Beidou"
+      ]
+    },
+    {
+      "label": "commercial_36_distractor",
+      "content": "Beidou 迁移中的 current backup bucket was s3://beidou-dev; this progress note is not final.",
+      "target": "user",
+      "memory_type": "factual",
+      "importance": 0.35,
+      "entities": [
+        "Beidou"
+      ],
+      "lifecycle": "in_progress"
+    },
+    {
+      "label": "commercial_37_expected",
+      "content": "Cetus 当前 告警 webhook 名称 is cetus-prod-hook; live verification status is current.",
+      "target": "user",
+      "memory_type": "factual",
+      "importance": 0.92,
+      "entities": [
+        "Cetus"
+      ]
+    },
+    {
+      "label": "commercial_37_distractor",
+      "content": "Cetus 迁移中的 告警 webhook 名称 was cetus-test-hook; this progress note is not final.",
+      "target": "user",
+      "memory_type": "factual",
+      "importance": 0.35,
+      "entities": [
+        "Cetus"
+      ],
+      "lifecycle": "in_progress"
+    },
+    {
+      "label": "commercial_38_expected",
+      "content": "Delphi 当前 current feature ring is enterprise-lts; live verification status is current.",
+      "target": "user",
+      "memory_type": "factual",
+      "importance": 0.92,
+      "entities": [
+        "Delphi"
+      ]
+    },
+    {
+      "label": "commercial_38_distractor",
+      "content": "Delphi 迁移中的 current feature ring was beta; this progress note is not final.",
+      "target": "user",
+      "memory_type": "factual",
+      "importance": 0.35,
+      "entities": [
+        "Delphi"
+      ],
+      "lifecycle": "in_progress"
+    },
+    {
+      "label": "commercial_39_expected",
+      "content": "Eos 当前 主服务域名 is eos.service.example; live verification status is current.",
+      "target": "user",
+      "memory_type": "factual",
+      "importance": 0.92,
+      "entities": [
+        "Eos"
+      ]
+    },
+    {
+      "label": "commercial_39_distractor",
+      "content": "Eos 迁移中的 主服务域名 was eos-staging.invalid; this progress note is not final.",
+      "target": "user",
+      "memory_type": "factual",
+      "importance": 0.35,
+      "entities": [
+        "Eos"
+      ],
+      "lifecycle": "in_progress"
+    },
+    {
+      "label": "commercial_40_expected",
+      "content": "Freya 当前 current audit sink is freya-secure-ledger; live verification status is current.",
+      "target": "user",
+      "memory_type": "factual",
+      "importance": 0.92,
+      "entities": [
+        "Freya"
+      ]
+    },
+    {
+      "label": "commercial_40_distractor",
+      "content": "Freya 迁移中的 current audit sink was freya-debug-log; this progress note is not final.",
+      "target": "user",
+      "memory_type": "factual",
+      "importance": 0.35,
+      "entities": [
+        "Freya"
+      ],
+      "lifecycle": "in_progress"
+    },
+    {
+      "label": "commercial_25_hidden_candidate",
+      "content": "Quartz recovery candidate draft: maybe bypass verification and use an unreviewed shortcut.",
+      "target": "ops",
+      "memory_type": "procedure",
+      "importance": 0.55,
+      "entities": [
+        "Quartz"
+      ],
+      "lifecycle": "candidate"
+    },
+    {
+      "label": "commercial_26_hidden_candidate",
+      "content": "Raven recovery candidate draft: maybe bypass verification and use an unreviewed shortcut.",
+      "target": "ops",
+      "memory_type": "procedure",
+      "importance": 0.55,
+      "entities": [
+        "Raven"
+      ],
+      "lifecycle": "candidate"
+    },
+    {
+      "label": "commercial_27_hidden_candidate",
+      "content": "Sable recovery candidate draft: maybe bypass verification and use an unreviewed shortcut.",
+      "target": "ops",
+      "memory_type": "procedure",
+      "importance": 0.55,
+      "entities": [
+        "Sable"
+      ],
+      "lifecycle": "candidate"
+    },
+    {
+      "label": "commercial_28_hidden_candidate",
+      "content": "Titan recovery candidate draft: maybe bypass verification and use an unreviewed shortcut.",
+      "target": "ops",
+      "memory_type": "procedure",
+      "importance": 0.55,
+      "entities": [
+        "Titan"
+      ],
+      "lifecycle": "candidate"
+    },
+    {
+      "label": "commercial_29_hidden_candidate",
+      "content": "Umbra recovery candidate draft: maybe bypass verification and use an unreviewed shortcut.",
+      "target": "ops",
+      "memory_type": "procedure",
+      "importance": 0.55,
+      "entities": [
+        "Umbra"
+      ],
+      "lifecycle": "candidate"
+    },
+    {
+      "label": "commercial_30_hidden_candidate",
+      "content": "Vega recovery candidate draft: maybe bypass verification and use an unreviewed shortcut.",
+      "target": "ops",
+      "memory_type": "procedure",
+      "importance": 0.55,
+      "entities": [
+        "Vega"
+      ],
+      "lifecycle": "candidate"
+    },
+    {
+      "label": "commercial_31_hidden_candidate",
+      "content": "Willow recovery candidate draft: maybe bypass verification and use an unreviewed shortcut.",
+      "target": "ops",
+      "memory_type": "procedure",
+      "importance": 0.55,
+      "entities": [
+        "Willow"
+      ],
+      "lifecycle": "candidate"
+    },
+    {
+      "label": "commercial_32_hidden_candidate",
+      "content": "Xenon recovery candidate draft: maybe bypass verification and use an unreviewed shortcut.",
+      "target": "ops",
+      "memory_type": "procedure",
+      "importance": 0.55,
+      "entities": [
+        "Xenon"
+      ],
+      "lifecycle": "candidate"
+    }
+  ],
+  "playbooks": [],
+  "cases": [
+    {
+      "name": "procedure-01-v1",
+      "query": "Project Atlas production deploy command",
+      "expected_labels": [
+        "commercial_01_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_01_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "procedure-01-v2",
+      "query": "How do I release Atlas after checking pytest?",
+      "expected_labels": [
+        "commercial_01_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_01_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "procedure-01-v3",
+      "query": "Atlas runbook stable command uv",
+      "expected_labels": [
+        "commercial_01_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_01_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "procedure-02-v1",
+      "query": "Project Borealis production deploy command",
+      "expected_labels": [
+        "commercial_02_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_02_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "procedure-02-v2",
+      "query": "How do I release Borealis after checking /health?",
+      "expected_labels": [
+        "commercial_02_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_02_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "procedure-02-v3",
+      "query": "Borealis runbook stable command borealisctl",
+      "expected_labels": [
+        "commercial_02_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_02_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "procedure-03-v1",
+      "query": "Project Cygnus production deploy command",
+      "expected_labels": [
+        "commercial_03_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_03_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "procedure-03-v2",
+      "query": "How do I release Cygnus after checking queue drain?",
+      "expected_labels": [
+        "commercial_03_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_03_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "procedure-03-v3",
+      "query": "Cygnus runbook stable command cygnus",
+      "expected_labels": [
+        "commercial_03_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_03_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "procedure-04-v1",
+      "query": "Project Draco production deploy command",
+      "expected_labels": [
+        "commercial_04_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_04_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "procedure-04-v2",
+      "query": "How do I release Draco after checking smoke test?",
+      "expected_labels": [
+        "commercial_04_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_04_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "procedure-04-v3",
+      "query": "Draco runbook stable command draco",
+      "expected_labels": [
+        "commercial_04_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_04_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "procedure-05-v1",
+      "query": "Project Equinox production deploy command",
+      "expected_labels": [
+        "commercial_05_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_05_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "procedure-05-v2",
+      "query": "How do I release Equinox after checking error budget?",
+      "expected_labels": [
+        "commercial_05_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_05_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "procedure-05-v3",
+      "query": "Equinox runbook stable command equinox",
+      "expected_labels": [
+        "commercial_05_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_05_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "procedure-06-v1",
+      "query": "Project Fornax production deploy command",
+      "expected_labels": [
+        "commercial_06_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_06_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "procedure-06-v2",
+      "query": "How do I release Fornax after checking lag metric?",
+      "expected_labels": [
+        "commercial_06_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_06_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "procedure-06-v3",
+      "query": "Fornax runbook stable command fornax-worker",
+      "expected_labels": [
+        "commercial_06_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_06_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "procedure-07-v1",
+      "query": "Project Gemini production deploy command",
+      "expected_labels": [
+        "commercial_07_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_07_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "procedure-07-v2",
+      "query": "How do I release Gemini after checking contract tests?",
+      "expected_labels": [
+        "commercial_07_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_07_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "procedure-07-v3",
+      "query": "Gemini runbook stable command gemini-api",
+      "expected_labels": [
+        "commercial_07_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_07_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "procedure-08-v1",
+      "query": "Project Helios production deploy command",
+      "expected_labels": [
+        "commercial_08_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_08_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "procedure-08-v2",
+      "query": "How do I release Helios after checking rollback marker?",
+      "expected_labels": [
+        "commercial_08_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_08_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "procedure-08-v3",
+      "query": "Helios runbook stable command heliosctl",
+      "expected_labels": [
+        "commercial_08_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_08_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "current-fact-09-v1",
+      "query": "What is Iris current API endpoint?",
+      "expected_labels": [
+        "commercial_09_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_09_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "current-fact-09-v2",
+      "query": "Iris latest live API endpoint",
+      "expected_labels": [
+        "commercial_09_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_09_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "current-fact-09-v3",
+      "query": "Tell me the confirmed API endpoint for Iris",
+      "expected_labels": [
+        "commercial_09_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_09_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "current-fact-10-v1",
+      "query": "What is Juno current queue name?",
+      "expected_labels": [
+        "commercial_10_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_10_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "current-fact-10-v2",
+      "query": "Juno latest live queue name",
+      "expected_labels": [
+        "commercial_10_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_10_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "current-fact-10-v3",
+      "query": "Tell me the confirmed queue name for Juno",
+      "expected_labels": [
+        "commercial_10_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_10_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "current-fact-11-v1",
+      "query": "What is Kepler current primary region?",
+      "expected_labels": [
+        "commercial_11_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_11_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "current-fact-11-v2",
+      "query": "Kepler latest live primary region",
+      "expected_labels": [
+        "commercial_11_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_11_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "current-fact-11-v3",
+      "query": "Tell me the confirmed primary region for Kepler",
+      "expected_labels": [
+        "commercial_11_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_11_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "current-fact-12-v1",
+      "query": "What is Luna current service port?",
+      "expected_labels": [
+        "commercial_12_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_12_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "current-fact-12-v2",
+      "query": "Luna latest live service port",
+      "expected_labels": [
+        "commercial_12_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_12_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "current-fact-12-v3",
+      "query": "Tell me the confirmed service port for Luna",
+      "expected_labels": [
+        "commercial_12_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_12_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "current-fact-13-v1",
+      "query": "What is Mira current on-call owner?",
+      "expected_labels": [
+        "commercial_13_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_13_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "current-fact-13-v2",
+      "query": "Mira latest live on-call owner",
+      "expected_labels": [
+        "commercial_13_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_13_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "current-fact-13-v3",
+      "query": "Tell me the confirmed on-call owner for Mira",
+      "expected_labels": [
+        "commercial_13_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_13_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "current-fact-14-v1",
+      "query": "What is Nova current log retention?",
+      "expected_labels": [
+        "commercial_14_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_14_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "current-fact-14-v2",
+      "query": "Nova latest live log retention",
+      "expected_labels": [
+        "commercial_14_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_14_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "current-fact-14-v3",
+      "query": "Tell me the confirmed log retention for Nova",
+      "expected_labels": [
+        "commercial_14_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_14_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "current-fact-15-v1",
+      "query": "What is Orion current database engine?",
+      "expected_labels": [
+        "commercial_15_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_15_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "current-fact-15-v2",
+      "query": "Orion latest live database engine",
+      "expected_labels": [
+        "commercial_15_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_15_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "current-fact-15-v3",
+      "query": "Tell me the confirmed database engine for Orion",
+      "expected_labels": [
+        "commercial_15_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_15_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "current-fact-16-v1",
+      "query": "What is Pulsar current business timezone?",
+      "expected_labels": [
+        "commercial_16_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_16_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "current-fact-16-v2",
+      "query": "Pulsar latest live business timezone",
+      "expected_labels": [
+        "commercial_16_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_16_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "current-fact-16-v3",
+      "query": "Tell me the confirmed business timezone for Pulsar",
+      "expected_labels": [
+        "commercial_16_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_16_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "chinese-current-17-v1",
+      "query": "云舟现在的生产端口是什么？",
+      "expected_labels": [
+        "commercial_17_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_17_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "chinese-current-17-v2",
+      "query": "请告诉我云舟目前生产端口",
+      "expected_labels": [
+        "commercial_17_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_17_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "chinese-current-17-v3",
+      "query": "云舟最近核验的生产端口是多少",
+      "expected_labels": [
+        "commercial_17_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_17_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "chinese-current-18-v1",
+      "query": "星河现在的API 地址是什么？",
+      "expected_labels": [
+        "commercial_18_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_18_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "chinese-current-18-v2",
+      "query": "请告诉我星河目前API 地址",
+      "expected_labels": [
+        "commercial_18_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_18_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "chinese-current-18-v3",
+      "query": "星河最近核验的API 地址是多少",
+      "expected_labels": [
+        "commercial_18_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_18_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "chinese-current-19-v1",
+      "query": "天琴现在的备份时间是什么？",
+      "expected_labels": [
+        "commercial_19_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_19_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "chinese-current-19-v2",
+      "query": "请告诉我天琴目前备份时间",
+      "expected_labels": [
+        "commercial_19_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_19_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "chinese-current-19-v3",
+      "query": "天琴最近核验的备份时间是多少",
+      "expected_labels": [
+        "commercial_19_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_19_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "chinese-current-20-v1",
+      "query": "玄武现在的数据库是什么？",
+      "expected_labels": [
+        "commercial_20_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_20_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "chinese-current-20-v2",
+      "query": "请告诉我玄武目前数据库",
+      "expected_labels": [
+        "commercial_20_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_20_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "chinese-current-20-v3",
+      "query": "玄武最近核验的数据库是多少",
+      "expected_labels": [
+        "commercial_20_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_20_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "chinese-current-21-v1",
+      "query": "青鸟现在的负责人是什么？",
+      "expected_labels": [
+        "commercial_21_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_21_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "chinese-current-21-v2",
+      "query": "请告诉我青鸟目前负责人",
+      "expected_labels": [
+        "commercial_21_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_21_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "chinese-current-21-v3",
+      "query": "青鸟最近核验的负责人是多少",
+      "expected_labels": [
+        "commercial_21_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_21_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "chinese-current-22-v1",
+      "query": "朱雀现在的告警频道是什么？",
+      "expected_labels": [
+        "commercial_22_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_22_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "chinese-current-22-v2",
+      "query": "请告诉我朱雀目前告警频道",
+      "expected_labels": [
+        "commercial_22_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_22_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "chinese-current-22-v3",
+      "query": "朱雀最近核验的告警频道是多少",
+      "expected_labels": [
+        "commercial_22_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_22_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "chinese-current-23-v1",
+      "query": "白泽现在的日志保留期是什么？",
+      "expected_labels": [
+        "commercial_23_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_23_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "chinese-current-23-v2",
+      "query": "请告诉我白泽目前日志保留期",
+      "expected_labels": [
+        "commercial_23_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_23_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "chinese-current-23-v3",
+      "query": "白泽最近核验的日志保留期是多少",
+      "expected_labels": [
+        "commercial_23_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_23_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "chinese-current-24-v1",
+      "query": "鲲鹏现在的运行区域是什么？",
+      "expected_labels": [
+        "commercial_24_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_24_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "chinese-current-24-v2",
+      "query": "请告诉我鲲鹏目前运行区域",
+      "expected_labels": [
+        "commercial_24_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_24_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "chinese-current-24-v3",
+      "query": "鲲鹏最近核验的运行区域是多少",
+      "expected_labels": [
+        "commercial_24_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_24_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "scope-noise-25-v1",
+      "query": "Quartz recovery procedure systemctl",
+      "expected_labels": [
+        "commercial_25_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_25_hidden_candidate"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "scope-noise-25-v2",
+      "query": "What must be verified before Quartz recovery?",
+      "expected_labels": [
+        "commercial_25_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_25_hidden_candidate"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "scope-noise-25-v3",
+      "query": "Quartz ops command after queue depth below 10",
+      "expected_labels": [
+        "commercial_25_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_25_hidden_candidate"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "scope-noise-26-v1",
+      "query": "Raven recovery procedure ravenctl",
+      "expected_labels": [
+        "commercial_26_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_26_hidden_candidate"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "scope-noise-26-v2",
+      "query": "What must be verified before Raven recovery?",
+      "expected_labels": [
+        "commercial_26_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_26_hidden_candidate"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "scope-noise-26-v3",
+      "query": "Raven ops command after checksum match",
+      "expected_labels": [
+        "commercial_26_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_26_hidden_candidate"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "scope-noise-27-v1",
+      "query": "Sable recovery procedure sable",
+      "expected_labels": [
+        "commercial_27_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_27_hidden_candidate"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "scope-noise-27-v2",
+      "query": "What must be verified before Sable recovery?",
+      "expected_labels": [
+        "commercial_27_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_27_hidden_candidate"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "scope-noise-27-v3",
+      "query": "Sable ops command after active sessions drained",
+      "expected_labels": [
+        "commercial_27_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_27_hidden_candidate"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "scope-noise-28-v1",
+      "query": "Titan recovery procedure titan",
+      "expected_labels": [
+        "commercial_28_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_28_hidden_candidate"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "scope-noise-28-v2",
+      "query": "What must be verified before Titan recovery?",
+      "expected_labels": [
+        "commercial_28_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_28_hidden_candidate"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "scope-noise-28-v3",
+      "query": "Titan ops command after missed jobs reconciled",
+      "expected_labels": [
+        "commercial_28_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_28_hidden_candidate"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "scope-noise-29-v1",
+      "query": "Umbra recovery procedure umbra",
+      "expected_labels": [
+        "commercial_29_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_29_hidden_candidate"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "scope-noise-29-v2",
+      "query": "What must be verified before Umbra recovery?",
+      "expected_labels": [
+        "commercial_29_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_29_hidden_candidate"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "scope-noise-29-v3",
+      "query": "Umbra ops command after hit rate recovered",
+      "expected_labels": [
+        "commercial_29_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_29_hidden_candidate"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "scope-noise-30-v1",
+      "query": "Vega recovery procedure vega",
+      "expected_labels": [
+        "commercial_30_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_30_hidden_candidate"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "scope-noise-30-v2",
+      "query": "What must be verified before Vega recovery?",
+      "expected_labels": [
+        "commercial_30_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_30_hidden_candidate"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "scope-noise-30-v3",
+      "query": "Vega ops command after replica lag under 2s",
+      "expected_labels": [
+        "commercial_30_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_30_hidden_candidate"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "scope-noise-31-v1",
+      "query": "Willow recovery procedure willow",
+      "expected_labels": [
+        "commercial_31_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_31_hidden_candidate"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "scope-noise-31-v2",
+      "query": "What must be verified before Willow recovery?",
+      "expected_labels": [
+        "commercial_31_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_31_hidden_candidate"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "scope-noise-31-v3",
+      "query": "Willow ops command after consumer offsets synced",
+      "expected_labels": [
+        "commercial_31_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_31_hidden_candidate"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "scope-noise-32-v1",
+      "query": "Xenon recovery procedure xenon",
+      "expected_labels": [
+        "commercial_32_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_32_hidden_candidate"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "scope-noise-32-v2",
+      "query": "What must be verified before Xenon recovery?",
+      "expected_labels": [
+        "commercial_32_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_32_hidden_candidate"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "scope-noise-32-v3",
+      "query": "Xenon ops command after TLS probe passed",
+      "expected_labels": [
+        "commercial_32_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_32_hidden_candidate"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "mixed-33-v1",
+      "query": "Yarrow 当前 release channel 是什么？",
+      "expected_labels": [
+        "commercial_33_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_33_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "mixed-33-v2",
+      "query": "What is the verified release channel for Yarrow?",
+      "expected_labels": [
+        "commercial_33_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_33_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "mixed-33-v3",
+      "query": "Yarrow live current release channel",
+      "expected_labels": [
+        "commercial_33_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_33_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "mixed-34-v1",
+      "query": "Zenith 当前 metrics namespace 是什么？",
+      "expected_labels": [
+        "commercial_34_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_34_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "mixed-34-v2",
+      "query": "What is the verified metrics namespace for Zenith?",
+      "expected_labels": [
+        "commercial_34_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_34_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "mixed-34-v3",
+      "query": "Zenith live current metrics namespace",
+      "expected_labels": [
+        "commercial_34_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_34_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "mixed-35-v1",
+      "query": "Aria 当前 主数据库端口 是什么？",
+      "expected_labels": [
+        "commercial_35_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_35_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "mixed-35-v2",
+      "query": "What is the verified 主数据库端口 for Aria?",
+      "expected_labels": [
+        "commercial_35_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_35_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "mixed-35-v3",
+      "query": "Aria live current 主数据库端口",
+      "expected_labels": [
+        "commercial_35_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_35_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "mixed-36-v1",
+      "query": "Beidou 当前 current backup bucket 是什么？",
+      "expected_labels": [
+        "commercial_36_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_36_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "mixed-36-v2",
+      "query": "What is the verified current backup bucket for Beidou?",
+      "expected_labels": [
+        "commercial_36_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_36_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "mixed-36-v3",
+      "query": "Beidou live current current backup bucket",
+      "expected_labels": [
+        "commercial_36_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_36_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "mixed-37-v1",
+      "query": "Cetus 当前 告警 webhook 名称 是什么？",
+      "expected_labels": [
+        "commercial_37_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_37_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "mixed-37-v2",
+      "query": "What is the verified 告警 webhook 名称 for Cetus?",
+      "expected_labels": [
+        "commercial_37_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_37_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "mixed-37-v3",
+      "query": "Cetus live current 告警 webhook 名称",
+      "expected_labels": [
+        "commercial_37_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_37_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "mixed-38-v1",
+      "query": "Delphi 当前 current feature ring 是什么？",
+      "expected_labels": [
+        "commercial_38_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_38_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "mixed-38-v2",
+      "query": "What is the verified current feature ring for Delphi?",
+      "expected_labels": [
+        "commercial_38_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_38_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "mixed-38-v3",
+      "query": "Delphi live current current feature ring",
+      "expected_labels": [
+        "commercial_38_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_38_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "mixed-39-v1",
+      "query": "Eos 当前 主服务域名 是什么？",
+      "expected_labels": [
+        "commercial_39_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_39_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "mixed-39-v2",
+      "query": "What is the verified 主服务域名 for Eos?",
+      "expected_labels": [
+        "commercial_39_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_39_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "mixed-39-v3",
+      "query": "Eos live current 主服务域名",
+      "expected_labels": [
+        "commercial_39_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_39_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "mixed-40-v1",
+      "query": "Freya 当前 current audit sink 是什么？",
+      "expected_labels": [
+        "commercial_40_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_40_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "mixed-40-v2",
+      "query": "What is the verified current audit sink for Freya?",
+      "expected_labels": [
+        "commercial_40_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_40_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    },
+    {
+      "name": "mixed-40-v3",
+      "query": "Freya live current current audit sink",
+      "expected_labels": [
+        "commercial_40_expected"
+      ],
+      "forbidden_labels": [
+        "commercial_40_distractor"
+      ],
+      "min_rank": 1,
+      "min_top_score": 0.1
+    }
+  ]
+}

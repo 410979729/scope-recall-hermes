@@ -1,0 +1,173 @@
+{
+  "schema": "scope-recall.release-invariants.v1",
+  "suites": [
+    {
+      "id": "fact-authority-and-temporal-semantics",
+      "nodes": [
+        "tests/test_evolution_policy.py::test_claim_argument_order_and_entity_boundaries_fail_closed",
+        "tests/test_tool_fact_evolution.py::test_tool_caller_cannot_auto_apply_forged_source_id_and_quote",
+        "tests/test_evolution_action_pipeline.py::test_maintenance_auto_apply_in_legacy_config_still_fails_closed",
+        "tests/test_evolution_action_pipeline.py::test_runtime_binds_retract_target_claim_and_rejects_unrelated_evidence",
+        "tests/test_fact_executor.py::test_future_supersede_fails_closed_without_current_truth_gap",
+        "tests/test_fact_executor.py::test_finite_historical_add_fails_closed_without_claim_slot_pollution",
+        "tests/test_fact_executor.py::test_future_add_fails_closed_without_occupying_the_current_slot",
+        "tests/test_fact_executor.py::test_retract_defaults_valid_time_boundary_to_execution_timestamp",
+        "tests/test_fact_executor.py::test_retract_explicit_past_boundary_preserves_recorded_as_of_semantics",
+        "tests/test_fact_executor.py::test_future_retract_fails_closed_without_hiding_current_truth",
+        "tests/test_tool_fact_evolution.py::test_legacy_update_fails_closed_for_fact_owned_memory",
+        "tests/test_tool_fact_evolution.py::test_legacy_soft_archive_fails_closed_for_fact_owned_memory",
+        "tests/test_tool_fact_evolution.py::test_legacy_merge_fails_closed_when_any_memory_owns_a_fact",
+        "tests/test_tool_fact_evolution.py::test_legacy_hard_delete_fails_closed_for_fact_owned_memory",
+        "tests/test_evolution_policy.py::test_ambiguous_predicate_frames_and_cjk_substrings_fail_closed",
+        "tests/test_evolution_action_pipeline.py::test_ambiguous_relation_evidence_is_review_and_zero_write_end_to_end",
+        "tests/test_sixth_audit_regressions.py::test_past_future_and_temporary_events_cannot_authorize_current_fact",
+        "tests/test_sixth_audit_regressions.py::test_transition_event_cannot_add_current_fact_but_can_retract",
+        "tests/test_sixth_audit_regressions.py::test_durable_state_authority_matrix",
+        "tests/test_fact_executor.py::test_last_summer_employment_requires_review_and_executor_writes_nothing"
+      ]
+    },
+    {
+      "id": "journal-fact-closure-atomicity",
+      "nodes": [
+        "tests/test_journal_fact_integration.py::test_journal_same_entry_fact_closure_rolls_back_if_later_candidate_crashes",
+        "tests/test_journal_fact_integration.py::test_journal_overlapping_entry_sets_form_one_atomic_fact_closure",
+        "tests/test_journal_fact_integration.py::test_journal_same_entry_fact_and_quarantine_outcome_roll_back_together",
+        "tests/test_journal_fact_integration.py::test_journal_same_entry_fact_and_quarantine_commit_as_one_terminal_closure",
+        "tests/test_journal_fact_integration.py::test_journal_same_entry_fact_and_legacy_candidate_roll_back_together",
+        "tests/test_journal_fact_integration.py::test_journal_same_entry_fact_and_legacy_candidate_commit_as_one_closure",
+        "tests/test_journal_fact_integration.py::test_journal_same_entry_fact_closure_commits_all_and_replays_idempotently"
+      ]
+    },
+    {
+      "id": "memory-mutation-serializability-and-atomicity",
+      "nodes": [
+        "tests/test_sql_store_fts.py::test_update_row_is_transaction_neutral_and_caller_can_rollback",
+        "tests/test_provider.py::test_relation_update_failure_rolls_back_open_sqlite_transaction",
+        "tests/test_sixth_audit_regressions.py::test_legacy_update_is_serializable_with_concurrent_fact_claim",
+        "tests/test_sixth_audit_regressions.py::test_merge_rolls_back_target_when_source_delete_fails",
+        "tests/test_sixth_audit_regressions.py::test_merge_rolls_back_when_relation_sync_fails",
+        "tests/test_sixth_audit_regressions.py::test_merge_rolls_back_when_source_relation_cleanup_fails",
+        "tests/test_sixth_audit_regressions.py::test_merge_rolls_back_when_vector_outbox_insert_fails",
+        "tests/test_sixth_audit_regressions.py::test_update_rolls_back_when_vector_outbox_insert_fails",
+        "tests/test_sixth_audit_regressions.py::test_update_commits_durable_outbox_before_best_effort_replay",
+        "tests/test_sixth_audit_regressions.py::test_store_commits_truth_with_low_level_durable_outbox_intent",
+        "tests/test_sixth_audit_regressions.py::test_store_rolls_back_truth_when_low_level_outbox_insert_fails",
+        "tests/test_sixth_audit_regressions.py::test_update_uses_db_current_generation_when_runtime_generation_is_stale",
+        "tests/test_sixth_audit_regressions.py::test_merge_uses_db_current_generation_when_runtime_generation_is_stale",
+        "tests/test_vector_generation_safety.py::test_vector_outbox_coalesces_opposite_unprocessed_intent"
+      ]
+    },
+    {
+      "id": "activation-connection-capability-and-compensation",
+      "nodes": [
+        "tests/test_installer.py::test_existing_truth_activation_requires_explicit_maintenance_confirmation",
+        "tests/test_installer.py::test_maintenance_activation_refuses_an_active_sqlite_writer_before_replacement",
+        "tests/test_installer.py::test_unconfirmed_activation_compensation_never_overwrites_post_snapshot_truth",
+        "tests/test_installer.py::test_confirmed_activation_compensation_refuses_post_snapshot_truth_drift",
+        "tests/test_installer.py::test_activation_guard_precedes_online_backup_and_backup_is_guard_free",
+        "tests/test_installer.py::test_activation_epoch_registrar_cannot_mask_raw_post_snapshot_write",
+        "tests/test_installer.py::test_activation_guard_blocks_unregistered_writer_at_each_failure_stage",
+        "tests/test_maintenance_lease.py::test_activation_guard_blocks_raw_writer_until_commit_cleanup",
+        "tests/test_maintenance_lease.py::test_existing_writer_connection_is_blocked_when_lease_appears",
+        "tests/test_maintenance_lease.py::test_matching_activation_capability_can_write_and_nonmatching_cannot",
+        "tests/test_sixth_audit_regressions.py::test_activation_capability_is_not_inherited_by_sibling_thread"
+      ]
+    },
+    {
+      "id": "installer-portability-and-n-minus-one-upgrade",
+      "nodes": [
+        "tests/test_installer.py::test_inline_memory_yaml_preserves_sibling_keys_and_single_top_level_key",
+        "tests/test_installer.py::test_provider_yaml_rejects_ambiguous_or_lossy_documents",
+        "tests/test_installer.py::test_atomic_config_replace_keeps_original_on_replace_failure",
+        "tests/test_installer.py::test_atomic_config_replace_rejects_concurrent_content_change",
+        "tests/test_installer.py::test_atomic_replace_treats_unsupported_parent_fsync_as_success_after_replace",
+        "tests/test_installer.py::test_installer_from_read_only_source_root_can_atomically_rename_staging",
+        "tests/test_upgrade_compatibility.py::test_n_minus_one_isolation_key_passes_read_only_upgrade_preflight",
+        "tests/test_upgrade_compatibility.py::test_unknown_n_minus_one_config_key_blocks_before_backup_or_replace",
+        "tests/test_upgrade_compatibility.py::test_ready_generation_without_receipt_blocks_before_backup_or_replace",
+        "tests/test_upgrade_compatibility.py::test_ready_generation_with_bound_receipt_passes_upgrade_preflight",
+        "tests/test_upgrade_compatibility.py::test_runtime_verify_surfaces_candidate_config_load_errors"
+      ]
+    },
+    {
+      "id": "source-isolation-privacy",
+      "nodes": [
+        "tests/test_sixth_audit_regressions.py::test_n_minus_one_chat_isolation_config_remains_supported",
+        "tests/test_source_isolation.py::test_source_isolation_policy_normalizes_runtime_only_identifiers",
+        "tests/test_source_isolation.py::test_isolated_chat_denies_prompt_recall_tools_capture_and_journal",
+        "tests/test_source_isolation.py::test_historical_isolated_journal_backlog_is_not_consumed"
+      ]
+    },
+    {
+      "id": "relation-budget-and-schema-integrity",
+      "nodes": [
+        "tests/test_runtime_config.py::test_direct_runtime_config_reads_are_declared_in_canonical_schema",
+        "tests/test_runtime_config.py::test_relation_runtime_config_accepts_canonical_bounded_overrides",
+        "tests/test_runtime_config.py::test_runtime_config_normalizes_supported_boolean_aliases",
+        "tests/test_runtime_config.py::test_relation_runtime_config_rejects_out_of_range_overrides",
+        "tests/test_runtime_config.py::test_relation_budget_helpers_fail_closed_for_internal_config_bypass",
+        "tests/test_relation_extraction.py::test_focus_relation_budget_defers_unscanned_pairs_without_partial_delete",
+        "tests/test_temporal_claim_schema.py::test_temporal_schema_detects_and_repairs_same_name_wrong_unique_index"
+      ]
+    },
+    {
+      "id": "independent-audit-2026-07-release-blockers",
+      "nodes": [
+        "tests/test_provider.py::test_provider_initial_and_reconnected_writer_keep_foreign_keys_enabled",
+        "tests/test_new_independent_audit_regressions.py::test_truth_connection_enables_fk_before_schema_and_cascades_claims",
+        "tests/test_new_independent_audit_regressions.py::test_maintenance_apply_and_read_connections_enable_foreign_keys",
+        "tests/test_new_independent_audit_regressions.py::test_temporal_doctor_fails_on_orphan_claim_without_silent_repair",
+        "tests/test_new_independent_audit_regressions.py::test_ensure_schema_commit_false_preserves_callers_transaction",
+        "tests/test_new_independent_audit_regressions.py::test_unknown_historical_predicates_review_and_executor_writes_nothing",
+        "tests/test_new_independent_audit_regressions.py::test_explicit_english_and_chinese_current_states_remain_authoritative",
+        "tests/test_new_independent_audit_regressions.py::test_temporal_recall_preserves_relevance_against_current_distractors",
+        "tests/test_new_independent_audit_regressions.py::test_indexed_current_recall_finds_answer_beyond_legacy_1000_window",
+        "tests/test_new_independent_audit_regressions.py::test_chinese_current_question_uses_shared_tokenizer_and_finds_fact",
+        "tests/test_new_independent_audit_regressions.py::test_indexed_candidate_overflow_is_explicit_not_silent",
+        "tests/test_golden_benchmark.py::test_curated_fixture_has_regression_scale_and_smoke_profiles_are_labeled",
+        "tests/test_scoring.py::test_freshness_substrings_do_not_trigger_recency_bonus"
+      ]
+    },
+    {
+      "id": "seventh-independent-audit-2026-07-release-blockers",
+      "nodes": [
+        "tests/test_seventh_independent_audit_regressions.py::test_cjk_historical_adverbial_prefixes_are_review_and_zero_write",
+        "tests/test_seventh_independent_audit_regressions.py::test_cjk_proper_nouns_do_not_count_as_negation",
+        "tests/test_seventh_independent_audit_regressions.py::test_real_cjk_negation_remains_review_only",
+        "tests/test_seventh_independent_audit_regressions.py::test_complete_fts_second_start_is_bounded_and_write_free",
+        "tests/test_seventh_independent_audit_regressions.py::test_long_query_tail_terms_survive_real_candidate_limit",
+        "tests/test_seventh_independent_audit_regressions.py::test_public_recall_json_exposes_incomplete_candidate_diagnostics",
+        "tests/test_seventh_independent_audit_regressions.py::test_truth_read_connection_enforces_query_only",
+        "tests/test_seventh_independent_audit_regressions.py::test_candidate_review_missing_db_dry_run_creates_no_file",
+        "tests/test_seventh_independent_audit_regressions.py::test_journal_recovery_missing_db_dry_run_creates_no_file",
+        "tests/test_seventh_independent_audit_regressions.py::test_temporal_scale_gate_checks_real_truncated_diagnostic_key",
+        "tests/test_seventh_independent_audit_regressions.py::test_shipped_truth_connections_use_the_unified_boundary"
+      ]
+    },
+    {
+      "id": "sixteenth-independent-audit-performance-liveness-blockers",
+      "nodes": [
+        "tests/test_relation_frequency_incremental.py::test_immediate_relation_sync_never_scans_all_truth_in_a_large_scope",
+        "tests/test_relation_queue_liveness.py::test_relation_queue_progress_is_monotonic_during_twelve_interleaved_writes",
+        "tests/test_relation_queue_liveness.py::test_relation_queue_defers_when_frequency_receipt_cas_loses_cross_connection_race",
+        "tests/test_vector_startup_reconciliation.py::test_setup_entrypoint_contains_no_full_reconciliation_or_audit_call",
+        "tests/test_vector_startup_reconciliation.py::test_startup_reconciliation_touches_only_one_twenty_five_row_page",
+        "tests/test_vector_startup_reconciliation.py::test_existing_outbox_backlog_blocks_truth_page_and_watermark_advance",
+        "tests/test_vector_startup_reconciliation.py::test_page_outbox_and_watermark_roll_back_together",
+        "tests/test_vector_startup_reconciliation.py::test_doctor_reports_running_and_failed_reconciliation_watermark"
+      ]
+    },
+    {
+      "id": "seventeenth-independent-audit-security-transaction-liveness-blockers",
+      "nodes": [
+        "tests/test_capture_filters.py::test_sensitive_token_prefix_cannot_be_whitelisted_by_metric_suffix",
+        "tests/test_doctor_secret_scan.py::test_doctor_detects_sensitive_token_prefix_with_metric_suffix",
+        "tests/test_relation_queue_liveness.py::test_relation_queue_rolls_back_when_corpus_changes_after_receipt_commit",
+        "tests/test_relation_queue_liveness.py::test_expired_relation_leases_dead_letter_and_yield_to_later_work",
+        "tests/test_relation_queue_liveness.py::test_successful_relation_chunk_resets_current_pass_expiry_budget",
+        "tests/test_relation_queue_liveness.py::test_expired_relation_lease_budget_promotes_newer_revision",
+        "tests/test_schema_migrations.py::test_relation_lease_expiry_budget_migration_upgrades_pre_0010_in_place"
+      ]
+    }
+  ]
+}

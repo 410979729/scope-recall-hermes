@@ -10,6 +10,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
+
 
 def test_doctor_vector_report_accepts_configured_sqlite_fallback_when_lancedb_unavailable(monkeypatch, tmp_path):
     from scope_recall.doctor_vector import vector_report
@@ -112,8 +114,9 @@ def test_doctor_uses_native_probe_before_importing_lancedb(monkeypatch, tmp_path
     assert payload["native_dependency"]["returncode"] == 132
 
 
-def test_vector_runtime_imports_when_lancedb_and_pyarrow_are_unavailable():
+def test_vector_runtime_imports_when_lancedb_and_pyarrow_are_unavailable(tmp_path):
     root = Path(__file__).resolve().parents[1]
+    temporary_db = tmp_path / "no-native-vector.sqlite3"
     script = textwrap.dedent(
         f"""
         import importlib.abc
@@ -121,6 +124,7 @@ def test_vector_runtime_imports_when_lancedb_and_pyarrow_are_unavailable():
         from pathlib import Path
 
         root = Path({str(root)!r})
+        temporary_db = Path({str(temporary_db)!r})
         sys.path.insert(0, str(root.parent))
         sys.path.insert(0, str(root))
 
@@ -134,15 +138,15 @@ def test_vector_runtime_imports_when_lancedb_and_pyarrow_are_unavailable():
 
         import scope_recall.vector_runtime  # noqa: F401
         from scope_recall.sqlite_vector_store import SQLiteBruteForceVectorStore
-        store = SQLiteBruteForceVectorStore(root / '.tmp-no-native-vector.sqlite3', dimensions=2)
+        store = SQLiteBruteForceVectorStore(temporary_db, dimensions=2)
         store.open()
         try:
             print(store.backend)
         finally:
             store.close()
-            (root / '.tmp-no-native-vector.sqlite3').unlink(missing_ok=True)
-            (root / '.tmp-no-native-vector.sqlite3-wal').unlink(missing_ok=True)
-            (root / '.tmp-no-native-vector.sqlite3-shm').unlink(missing_ok=True)
+            temporary_db.unlink(missing_ok=True)
+            Path(str(temporary_db) + '-wal').unlink(missing_ok=True)
+            Path(str(temporary_db) + '-shm').unlink(missing_ok=True)
         """
     )
     result = subprocess.run([sys.executable, "-c", script], text=True, capture_output=True, check=False)
@@ -181,7 +185,7 @@ def test_lancedb_availability_probe_does_not_import_unsafe_native_modules_in_pro
         sys.meta_path.remove(detector)
 
 
-def test_vector_runtime_falls_back_to_sqlite_backend_when_lancedb_probe_sigills(monkeypatch, tmp_path):
+def test_active_vector_generation_does_not_fallback_when_lancedb_probe_sigills(monkeypatch, tmp_path):
     import scope_recall.vector_store as vector_store
     from scope_recall.vector_runtime import _open_vector_store
 
@@ -202,17 +206,15 @@ def test_vector_runtime_falls_back_to_sqlite_backend_when_lancedb_probe_sigills(
     monkeypatch.setattr(vector_store, "subprocess", type("SubprocessStub", (), {"run": staticmethod(lambda *args, **kwargs: Result())}), raising=False)
     provider = Provider()
 
-    _open_vector_store(provider, dimensions=2)
+    with pytest.raises(RuntimeError, match="returncode=132"):
+        _open_vector_store(provider, dimensions=2)
 
-    try:
-        assert provider._vector_store.backend == "sqlite-bruteforce"
-        assert provider._vector_backend == "sqlite-bruteforce"
-        assert "lancedb unavailable" in provider._vector_message.lower()
-    finally:
-        provider._vector_store.close()
+    assert provider._vector_store is None
+    assert provider._vector_backend == "lancedb"
+    assert not (tmp_path / "vector.sqlite3").exists()
 
 
-def test_default_vector_config_falls_back_to_sqlite_backend_when_lancedb_probe_sigills(monkeypatch, tmp_path):
+def test_default_config_does_not_override_an_active_lancedb_generation_when_probe_sigills(monkeypatch, tmp_path):
     import scope_recall.vector_store as vector_store
     from scope_recall.config import DEFAULT_CONFIG
     from scope_recall.vector_runtime import _open_vector_store
@@ -234,12 +236,10 @@ def test_default_vector_config_falls_back_to_sqlite_backend_when_lancedb_probe_s
     monkeypatch.setattr(vector_store, "subprocess", type("SubprocessStub", (), {"run": staticmethod(lambda *args, **kwargs: Result())}), raising=False)
     provider = Provider()
 
-    _open_vector_store(provider, dimensions=2)
+    with pytest.raises(RuntimeError, match="returncode=132"):
+        _open_vector_store(provider, dimensions=2)
 
-    try:
-        assert DEFAULT_CONFIG["vector"]["fallback_backend"] == "sqlite-bruteforce"
-        assert provider._vector_store.backend == "sqlite-bruteforce"
-        assert provider._vector_backend == "sqlite-bruteforce"
-        assert "using sqlite-bruteforce fallback" in provider._vector_message.lower()
-    finally:
-        provider._vector_store.close()
+    assert DEFAULT_CONFIG["vector"]["fallback_backend"] == "sqlite-bruteforce"
+    assert provider._vector_store is None
+    assert provider._vector_backend == "lancedb"
+    assert not (tmp_path / "vector.sqlite3").exists()

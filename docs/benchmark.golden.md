@@ -1,22 +1,29 @@
 # Scope Recall Golden and Retrieval-Regression Benchmarks
 
-This document covers the two repository-owned recall quality gates:
+This document covers two repository-owned recall quality tiers:
 
-- `scripts/benchmark.golden.py`: commercial-quality golden cases backed by fixture JSON.
-- `scripts/benchmark.retrieval_regression.py`: synthetic Recall Funnel regression cases with configurable distractor rows, `candidate_pool`, `top_k`, and prompt-budget metrics.
+- `scripts/benchmark.golden.py` defaults to a curated lexical-regression fixture with 120 labeled cases.
+- The lexical and hybrid fixtures retained under the historical `golden_recall_*` names are **smoke profiles**, not production or commercial evidence.
+- `scripts/benchmark.retrieval_regression.py` provides synthetic Recall Funnel stress cases with configurable distractor rows, `candidate_pool`, `top_k`, and prompt-budget metrics.
 
-The golden benchmark is the commercial memory readiness gate. It uses an isolated temporary Hermes home by default, stores labeled fixture memories through the public `scope_recall_store` tool, resolves labels to real runtime memory ids, and runs `scope_recall_benchmark` assertions.
+The curated regression benchmark is a release regression gate, not a claim of real-world commercial quality. It uses an isolated temporary Hermes home by default, stores labeled fixture memories through the public `scope_recall_store` tool, resolves labels to real runtime memory ids, and runs `scope_recall_benchmark` assertions.
 
 ## What it covers
 
 Current fixtures:
 
-- `benchmarks/golden_recall_cases.json`: lexical commercial-quality regression cases.
-- `benchmarks/golden_recall_hybrid_cases.json`: default hybrid/vector smoke cases using the built-in `local-hash` embedder and `sqlite-bruteforce` companion so CI/release gates exercise semantic/vector paths without external API keys.
+- `benchmarks/curated_recall_quality_cases_v2.json`: release gate, 88 setup rows and 120 curated expected/forbidden-label cases.
+- `benchmarks/golden_recall_cases.json`: fast lexical smoke profile (7 queries).
+- `benchmarks/golden_recall_hybrid_cases.json`: fast hybrid/vector smoke profile (5 queries) using the built-in `local-hash` embedder and `sqlite-bruteforce` companion.
 
-- Durable procedure retrieval beats low-value same-scope `general` scratch.
-- Archived old facts are excluded when a newer current fact exists.
-- Explicit project/entity scope avoids cross-topic/project bleed.
+The curated fixture covers:
+
+- English procedures with same-entity candidate distractors.
+- Current facts with archived stale predecessors.
+- Chinese natural questions and current-fact wording.
+- Cross-target low-value `general` noise versus `ops` procedures.
+- Mixed Chinese/English facts with in-progress distractors.
+- Positive, negative, distractor, and lifecycle-isolation assertions for every query.
 
 ## Run
 

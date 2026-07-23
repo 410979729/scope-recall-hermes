@@ -22,9 +22,17 @@ GRAPH_REPAIR_SCRIPT = PLUGIN_ROOT / "scripts" / "repair.graph_hygiene.py"
 
 
 @pytest.fixture
-def provider(tmp_path):
+def provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    config_dir = tmp_path / "scope-recall"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "config.json").write_text(
+        json.dumps({"vector": {"enabled": False}}), encoding="utf-8"
+    )
     plugin = load_memory_provider("scope-recall")
     assert plugin is not None
+    monkeypatch.setitem(
+        plugin.initialize.__func__.__globals__, "start_writer", lambda _provider: None
+    )
     plugin.initialize(
         "session-entity-hygiene",
         hermes_home=str(tmp_path),
@@ -206,6 +214,46 @@ def test_extract_entities_filters_tool_trace_and_api_noise_tokens():
         "tool",
         "path",
     } & entities
+
+
+def test_extract_entities_rejects_cjk_sentence_fragments_but_keeps_named_entities():
+    text = (
+        "长上下文并不等于有效注意力：文档中段的决定性词出现在尾部时，会让模型被大量旧测试与审计材料淹没。"
+        "天璇只负责第一轮广覆盖审查，玉衡负责架构决策，Scope Recall 使用 Gemini embedding-001。"
+        "所有高风险状态机最终必须交给 Codex。"
+    )
+
+    entities = set(extract_entities(text))
+
+    assert {"scope", "gemini", "embedding-001", "codex"} & entities
+    assert {"天璇", "玉衡"} & entities
+    assert not {
+        "文档中段的决定性词出",
+        "现在尾部时",
+        "会让模型被大量旧测试与",
+        "审计材料淹没",
+        "天璇只负责第一轮广覆盖审",
+        "所有高风险状态机",
+        "最终必须交给",
+    } & entities
+    assert all(not (len(entity) > 8 and all("\u4e00" <= char <= "\u9fff" for char in entity)) for entity in entities)
+
+
+def test_candidate_lifecycle_is_removed_from_graph_companions():
+    conn = _memory_conn()
+    _store_sqlite(conn, memory_id="candidate-memory", content="Project Atlas provisional candidate.")
+
+    sync_memory_entities(
+        conn,
+        memory_id="candidate-memory",
+        content="Project Atlas provisional candidate.",
+        target="project",
+        metadata={"entities": ["project-atlas"], "lifecycle": "candidate"},
+    )
+
+    assert conn.execute(
+        "SELECT COUNT(*) FROM memory_entities WHERE memory_id='candidate-memory'"
+    ).fetchone()[0] == 0
 
 
 def test_graph_hygiene_cli_accepts_explicit_dry_run_over_apply(tmp_path):

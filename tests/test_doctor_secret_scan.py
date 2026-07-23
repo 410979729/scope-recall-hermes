@@ -32,6 +32,8 @@ def _conn(hermes_home: Path) -> sqlite3.Connection:
 
 
 def _insert(conn: sqlite3.Connection, *, memory_id: str, content: str, metadata: str = "{}") -> None:
+    """Seed a legacy/raw row while bypassing the new authoritative write guard."""
+
     store_row(
         conn,
         memory_id=memory_id,
@@ -46,10 +48,15 @@ def _insert(conn: sqlite3.Connection, *, memory_id: str, content: str, metadata:
         session_id="session",
         source="tool-store",
         target="ops",
-        content=content,
-        metadata=metadata,
+        content="Legacy doctor fixture placeholder before raw import simulation.",
+        metadata="{}",
         allow_duplicate=True,
     )
+    conn.execute(
+        "UPDATE memories SET content=?, summary=?, metadata=? WHERE id=?",
+        (content, content[:220], metadata, memory_id),
+    )
+    conn.commit()
 
 
 def test_doctor_memory_secret_scan_fails_on_active_plaintext_secret(tmp_path):
@@ -92,3 +99,28 @@ def test_doctor_memory_secret_scan_ignores_archived_secret_rows(tmp_path):
     assert payload["samples"] == []
     assert check["ok"] is True
     assert recommendations == []
+
+
+def test_doctor_detects_sensitive_token_prefix_with_metric_suffix(tmp_path):
+    """Doctor must share capture's fail-closed token-key classification."""
+
+    conn = _conn(tmp_path)
+    key = "api_token_per_token"
+    raw_value = "SYNTHETIC_NON_SECRET_TEST_VALUE"
+    _insert(
+        conn,
+        memory_id="suffix-bypass-row",
+        content=f"{key}={raw_value}",
+    )
+    conn.close()
+    doctor = _doctor_module()
+
+    payload, check, recommendations = doctor.memory_secret_report(tmp_path)
+
+    assert payload["active_secret_like_count"] == 1
+    assert payload["samples"][0]["id"] == "suffix-bypass-row"
+    assert key not in payload["samples"][0]["preview"]
+    assert raw_value not in payload["samples"][0]["preview"]
+    assert "[REDACTED_SECRET]" in payload["samples"][0]["preview"]
+    assert check["ok"] is False
+    assert recommendations

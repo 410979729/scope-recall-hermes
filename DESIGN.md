@@ -22,6 +22,14 @@ Its implementation is intentionally split into three clear layers:
 
 That split is deliberate. SQLite is the durable source of truth; the configured vector backend is only the retrieval accelerator/semantic companion.
 
+### Bounded companion maintenance
+
+Relation statistics are a transactionally maintained SQLite companion rather than a foreground scope scan. Each truth mutation updates one indexed-memory row, the changed entity postings, and per-scope/entity document counts in the caller's transaction. Existing databases enter a paged, durable backfill state; foreground relation sync defers instead of silently scanning the scope while that state is incomplete. A blocked-entity threshold change creates resumable scope reclassification debt.
+
+Relation rebuild work is organized as monotonic passes. A peer or focus revision arriving during a leased pass records a next-pass revision without changing the active cursor, lease, lifetime processed count, attempts, or lifetime failures. New and changed peers carry their own rebuild events, and the active pass atomically promotes the latest pending revision only after reaching its current end.
+
+Vector startup uses the durable outbox before reconciliation. Once replayable debt is empty, one short SQLite transaction reads at most one `(updated_at, id)` truth page, writes deterministic outbox events, and advances the generation-bound watermark. Embedding and physical-store I/O happen only after that commit. Interrupted cycles resume from the persisted cursor and upper bound; ordinary startup never calls full vector enumeration or a stale-row sweep. Full duplicate/stale-vector audits remain explicit doctor/repair operations.
+
 ## Goals
 
 1. Fix cross-turn topic bleed caused by queued previous-turn recall.
@@ -32,6 +40,7 @@ That split is deliberate. SQLite is the durable source of truth; the configured 
 6. Isolate `general` scratch captures strongly enough for gateway multi-chat / multi-topic use.
 7. Preserve an offline-capable default path for local operation and open-source onboarding.
 8. Make retrieval quality observable through Recall Funnel traces and regression benchmarks before optimizing graph or memory-quality heuristics.
+9. Allow operators to isolate selected chats from every memory surface without embedding deployment identifiers in the package.
 
 ## V1 scope
 
@@ -100,6 +109,8 @@ SQLite schema includes:
 
 An FTS5 side table provides fast lexical retrieval.
 
+Public durable mutations have one transaction owner. The mutation service acquires `BEGIN IMMEDIATE` before ownership reads and keeps truth rows, FTS/entity/conflict/relation companions, governance records, and vector replay intent in the same SQLite commit. External vector I/O runs only after commit from a durable outbox; replay failure leaves repairable intent rather than a falsely complete mutation.
+
 ### Layer B0 — journal/provenance staging
 
 Stored in the same SQLite database but deliberately outside ordinary recall:
@@ -160,6 +171,12 @@ This architecture gives us:
 - `queue_prefetch()` is intentionally a no-op
 
 This is the core anti-topic-bleed decision.
+
+### Runtime chat source isolation
+
+`memory_isolated_chat_ids` is a runtime-only denylist. A matching chat receives no system-prompt memory block, prefetch recall, memory tool schemas, capture, pre-compression or session journal writes, digest execution, or experience promotion. Historical unprocessed journal rows from denied chats are filtered in SQLite before backlog selection, so they cannot be promoted later by a scheduler running outside that chat.
+
+The policy module and tests are public; identifier values belong only in `$HERMES_HOME/scope-recall/config.json`. Release artifacts scan for hard-coded deployment identifiers.
 
 ### Conservative gating
 

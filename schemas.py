@@ -2,6 +2,164 @@
 
 Schema changes must stay synchronized with migration ledger constants and release tests."""
 
+FACT_CLAIM_HINT_SCHEMA = {
+    "type": "object",
+    "description": "Optional structured factual claim. Scope is always bound by the runtime.",
+    "properties": {
+        "subject": {"type": "string", "maxLength": 200},
+        "predicate": {"type": "string", "maxLength": 120},
+        "value": {"type": "string", "maxLength": 2000},
+        "cardinality": {
+            "type": "string",
+            "enum": ["single", "multi", "multiple", "many"],
+        },
+        "valid_from": {"type": "string", "maxLength": 64},
+        "valid_to": {"type": "string", "maxLength": 64},
+    },
+    "required": ["subject", "predicate", "value"],
+}
+
+FACT_EVOLUTION_HINT_SCHEMA = {
+    "type": "object",
+    "description": (
+        "Optional fact-evolution proposal. Apply mode is controlled only by trusted "
+        "local configuration; tool arguments cannot elevate it."
+    ),
+    "properties": {
+        "action": {
+            "type": "string",
+            "enum": ["noop", "add", "enrich", "supersede", "retract", "review"],
+        },
+        "target_ids": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {"type": "string", "maxLength": 160},
+        },
+        "evidence": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "source_type": {"type": "string", "maxLength": 64},
+                    "source_id": {"type": "string", "maxLength": 160},
+                    "quote": {"type": "string", "maxLength": 800},
+                },
+                "required": ["source_type", "source_id"],
+            },
+        },
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "reason": {"type": "string", "maxLength": 500},
+        "existing_hint": {"type": "string", "maxLength": 1000},
+        "idempotency_key": {"type": "string", "maxLength": 200},
+    },
+}
+
+
+FACT_EVOLUTION_PROPOSAL_SCHEMA = {
+    "type": "object",
+    "description": "Evidence-bound evolution proposal; runtime binds scope and execution policy.",
+    "properties": {
+        **FACT_EVOLUTION_HINT_SCHEMA["properties"],
+        "claim": FACT_CLAIM_HINT_SCHEMA,
+        "content": {"type": "string", "maxLength": 8000},
+        "target": {
+            "type": "string",
+            "enum": ["user", "memory", "project", "ops"],
+        },
+        "memory_type": {
+            "type": "string",
+            "enum": ["factual", "preference", "project", "resource", "constraint"],
+        },
+    },
+    "required": ["action"],
+}
+
+
+SCOPE_RECALL_FACT_SCHEMA = {
+    "name": "scope_recall_fact",
+    "description": "Read one scoped fact slot in current, as-of, or full-history mode.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["current", "as_of", "history"],
+            },
+            "subject": {"type": "string", "maxLength": 200},
+            "predicate": {"type": "string", "maxLength": 120},
+            "at": {
+                "type": "string",
+                "maxLength": 64,
+                "description": "ISO-8601 semantic instant; required for as_of.",
+            },
+            "known_at": {
+                "type": "string",
+                "maxLength": 64,
+                "description": "Optional recorded-time cutoff for delayed-ingestion as_of queries.",
+            },
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+        },
+        "required": ["action", "subject", "predicate"],
+    },
+}
+
+
+SCOPE_RECALL_EVOLVE_SCHEMA = {
+    "name": "scope_recall_evolve",
+    "description": "Maintenance review surface for a structured fact proposal; dry-run is the default.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "proposal": FACT_EVOLUTION_PROPOSAL_SCHEMA,
+            "dry_run": {
+                "type": "boolean",
+                "default": True,
+                "description": "Must be explicitly false to request reviewed apply.",
+            },
+        },
+        "required": ["proposal"],
+    },
+}
+
+
+SCOPE_RECALL_REFLECT_SCHEMA = {
+    "name": "scope_recall_reflect",
+    "description": (
+        "Run bounded, citation-grounded cross-memory reflection. Read-only by "
+        "default; proposing a hidden mental-model candidate requires explicit "
+        "maintenance and reflection write gates."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "maxLength": 1000},
+            "budget": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "max_evidence": {"type": "integer", "minimum": 1, "maximum": 64},
+                    "max_chars": {"type": "integer", "minimum": 128, "maximum": 50000},
+                    "max_item_chars": {"type": "integer", "minimum": 40, "maximum": 4000},
+                    "recall_limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    "fact_limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                },
+            },
+            "include_trace": {"type": "boolean", "default": False},
+            "propose_memory": {
+                "type": "boolean",
+                "default": False,
+                "description": (
+                    "Request a hidden needs_review mental-model candidate. "
+                    "Requires maintenance_tools_enabled and reflection.write_candidates."
+                ),
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+
 SCOPE_RECALL_STORE_SCHEMA = {
     "name": "scope_recall_store",
     "description": "Store a Scope Recall memory; durable targets are user/memory/project/ops, general is local scratch.",
@@ -16,8 +174,19 @@ SCOPE_RECALL_STORE_SCHEMA = {
             },
             "scope_mode": {
                 "type": "string",
-                "description": "Optional write scope override.",
+                "description": (
+                    "Optional write scope selection. It cannot override target policy: "
+                    "general is local; durable targets are shared or explicitly shared_pool."
+                ),
                 "enum": ["shared", "local", "shared_pool"],
+            },
+            "semantic_merge": {
+                "type": "boolean",
+                "default": False,
+                "description": (
+                    "Opt in to conservative contained-text merge. Similar paraphrases and "
+                    "changed values remain separate; exact duplicates are always suppressed."
+                ),
             },
             "memory_type": {
                 "type": "string",
@@ -39,6 +208,8 @@ SCOPE_RECALL_STORE_SCHEMA = {
             },
             "importance": {
                 "type": "number",
+                "minimum": 0,
+                "maximum": 1,
                 "description": "Optional 0..1 importance hint.",
             },
             "freshness": {
@@ -73,6 +244,8 @@ SCOPE_RECALL_STORE_SCHEMA = {
                 "items": {"type": "string"},
                 "description": "Tags for filtering/audit.",
             },
+            "claim": FACT_CLAIM_HINT_SCHEMA,
+            "evolution": FACT_EVOLUTION_HINT_SCHEMA,
         },
         "required": ["content"],
     },
@@ -119,7 +292,12 @@ SCOPE_RECALL_SEARCH_SCHEMA = {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "Search query."},
-            "limit": {"type": "integer", "description": "Max results."},
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20,
+                "description": "Max results.",
+            },
             "include_trace": {"type": "boolean", "description": "Include Recall Funnel trace."},
         },
         "required": ["query"],
@@ -142,6 +320,12 @@ SCOPE_RECALL_MEMORY_SCHEMA = {
             "target_id": {"type": "string", "description": "Merge target id."},
             "source_ids": {"type": "array", "items": {"type": "string"}, "description": "Merge source ids."},
             "source_candidate_id": {"type": "string", "description": "Optional merge audit candidate id."},
+            "memory_type": {
+                "type": "string",
+                "description": "Optional semantic type for a structured update.",
+            },
+            "claim": FACT_CLAIM_HINT_SCHEMA,
+            "evolution": FACT_EVOLUTION_HINT_SCHEMA,
         },
         "required": ["action"],
     },
@@ -188,6 +372,12 @@ SCOPE_RECALL_UPDATE_SCHEMA = {
                 "description": "Optional replacement category.",
                 "enum": ["user", "memory", "project", "ops", "general"],
             },
+            "memory_type": {
+                "type": "string",
+                "description": "Optional semantic type for a structured factual update.",
+            },
+            "claim": FACT_CLAIM_HINT_SCHEMA,
+            "evolution": FACT_EVOLUTION_HINT_SCHEMA,
         },
         "required": ["id", "content"],
     },

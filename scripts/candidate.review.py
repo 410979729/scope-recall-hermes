@@ -7,7 +7,6 @@ import argparse
 import importlib.util
 import json
 import os
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -26,9 +25,9 @@ if PACKAGE_NAME not in sys.modules:
     spec.loader.exec_module(package)
 
 from scope_recall_candidate_review_runtime.candidate_review import review_candidate  # noqa: E402
-from scope_recall_candidate_review_runtime.config import load_runtime_config  # noqa: E402
 from scope_recall_candidate_review_runtime.memory_browser import memory_db_path  # noqa: E402
-from scope_recall_candidate_review_runtime.vector_runtime import cleanup_persisted_vector_companions  # noqa: E402
+from scope_recall_candidate_review_runtime.truth_connection import connect_truth_database  # noqa: E402
+from scope_recall_candidate_review_runtime.vector_runtime import queued_vector_outbox_receipt  # noqa: E402
 
 
 def _add_common_options(parser: argparse.ArgumentParser) -> None:
@@ -77,12 +76,36 @@ def main() -> int:
     if getattr(args, "dry_run", False):
         dry_run = True
     db_path = _db_path(args)
+    if not db_path.is_file():
+        payload = {
+            "ok": False,
+            "dry_run": dry_run,
+            "error_code": "truth_db_missing",
+            "error": f"SQLite truth DB does not exist: {db_path}",
+        }
+        print(
+            json.dumps(payload, ensure_ascii=False, indent=2)
+            if args.json
+            else _render_text(payload)
+        )
+        return 1
     try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-    except sqlite3.Error as exc:
-        payload = {"ok": False, "dry_run": dry_run, "error": str(exc)}
-        print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else _render_text(payload))
+        conn = connect_truth_database(
+            db_path,
+            mode="ro" if dry_run else "rw",
+        )
+    except Exception as exc:
+        payload = {
+            "ok": False,
+            "dry_run": dry_run,
+            "error_code": "truth_db_open_failed",
+            "error": str(exc),
+        }
+        print(
+            json.dumps(payload, ensure_ascii=False, indent=2)
+            if args.json
+            else _render_text(payload)
+        )
         return 1
     try:
         payload = review_candidate(
@@ -97,16 +120,9 @@ def main() -> int:
     finally:
         conn.close()
     if payload.get("applied") and args.action in {"archive", "supersede"}:
-        config = load_runtime_config(PLUGIN_ROOT, db_path.parent)
-        vector_cleanup = cleanup_persisted_vector_companions(
-            db_path.parent,
-            memory_ids=[str(args.id)],
-            vector_config=dict(config.get("vector") or {}),
-            retrieval_config=dict(config.get("retrieval") or {}),
+        payload["vector_cleanup"] = queued_vector_outbox_receipt(
+            [str(args.id)] if payload.get("outbox_enqueued") else []
         )
-        payload["vector_cleanup"] = vector_cleanup
-        if vector_cleanup.get("status") == "needs_repair":
-            payload["needs_repair"] = True
     print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else _render_text(payload))
     return 0 if payload.get("ok") else 1
 

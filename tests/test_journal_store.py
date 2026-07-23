@@ -92,3 +92,35 @@ def test_journal_store_append_load_mark_and_prune_round_trip(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM journal_entries").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM journal_rejections").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM memory_journal_sources").fetchone()[0] == 0
+
+
+def test_journal_retention_prunes_in_bounded_sqlite_batches(tmp_path):
+    """Retention must stay below deployments with a low SQLite variable cap."""
+
+    import sqlite3
+
+    conn = sqlite3.connect(tmp_path / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    journal_store.ensure_journal_schema(conn)
+    conn.executemany(
+        """
+        INSERT INTO journal_entries(
+            scope_id, shared_scope_id, platform, user_id, chat_id, thread_id,
+            gateway_session_key, agent_identity, agent_workspace, session_id,
+            turn_number, role, content, content_hash, created_at,
+            processed_run_id, processed_at, metadata
+        ) VALUES ('scope', 'shared', 'telegram', 'joy', 'dm', '', '',
+                  'default', 'hermes', ?, 1, 'user', ?, ?,
+                  '2000-01-01T00:00:00+00:00', 'run-1',
+                  '2000-01-01T00:00:00+00:00', '{}')
+        """,
+        [
+            (f"session-{index}", f"content-{index}", f"hash-{index}")
+            for index in range(1200)
+        ],
+    )
+    conn.commit()
+    conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 500)
+
+    assert journal_store._prune_processed_journal(conn, retention_days=1) == 1200
+    assert conn.execute("SELECT COUNT(*) FROM journal_entries").fetchone()[0] == 0

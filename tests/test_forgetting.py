@@ -40,6 +40,7 @@ def _insert(
     content: str = "Memory row for forgetting tests.",
     allow_duplicate: bool = False,
     metadata: dict | None = None,
+    raw_legacy: bool = False,
 ):
     store_row(
         conn,
@@ -55,10 +56,20 @@ def _insert(
         session_id="session",
         source=source,
         target=target,
-        content=content,
+        content=(
+            "Legacy forgetting fixture placeholder before raw import simulation."
+            if raw_legacy
+            else content
+        ),
         allow_duplicate=allow_duplicate,
         metadata=metadata,
     )
+    if raw_legacy:
+        conn.execute(
+            "UPDATE memories SET content=?, summary=? WHERE id=?",
+            (content, content[:220], memory_id),
+        )
+        conn.commit()
 
 
 def _metadata(conn: sqlite3.Connection, memory_id: str) -> dict:
@@ -285,8 +296,9 @@ class FailingVectorStore:
         raise RuntimeError("vector delete failed with api_key=" + "sk-" + "V" * 24)
 
 
-def test_forgetting_soft_archive_removes_vector_records_when_store_is_available():
+def test_forgetting_soft_archive_queues_vector_delete_without_direct_store_mutation():
     conn = _conn()
+    _register_generation(conn)
     _insert(conn, memory_id="assistant-vector", target="general", source="turn-assistant", content="Assistant scratch prose to archive from vector.")
     vector_store = FakeVectorStore()
 
@@ -299,12 +311,15 @@ def test_forgetting_soft_archive_removes_vector_records_when_store_is_available(
     )
 
     assert applied["archived"] == 1
-    assert applied["archived_vector_deleted"] == 1
-    assert vector_store.deleted_ids == [["assistant-vector"]]
+    assert applied["archived_vector_deleted"] == 0
+    assert vector_store.deleted_ids == []
     assert _metadata(conn, "assistant-vector")["lifecycle"] == "archived"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM vector_outbox WHERE memory_id='assistant-vector' AND status='pending'"
+    ).fetchone()[0] == 1
 
 
-def test_forgetting_soft_archive_keeps_sqlite_truth_and_queues_replay_when_vector_delete_fails():
+def test_forgetting_soft_archive_never_calls_failing_store_and_keeps_pending_intent():
     conn = _conn()
     bootstrap_legacy_generation(
         conn,
@@ -326,7 +341,7 @@ def test_forgetting_soft_archive_keeps_sqlite_truth_and_queues_replay_when_vecto
 
     assert applied["archived"] == 1
     assert applied["archive_ids"] == ["assistant-vector-fail"]
-    assert "[REDACTED_SECRET]" in applied["vector_error"]
+    assert "vector_error" not in applied
     assert _metadata(conn, "assistant-vector-fail")["lifecycle"] == "archived"
     assert conn.execute("SELECT COUNT(*) FROM governance_audit_events WHERE batch_id = 'soft-vector-fail'").fetchone()[0] == 1
     event = conn.execute(
@@ -339,7 +354,13 @@ def test_forgetting_hard_delete_removes_vector_records():
     conn = _conn()
     _register_generation(conn)
     secret = "sk-" + "F" * 24
-    _insert(conn, memory_id="secret-row", target="ops", content="Temporary api_key=" + secret + " should be hard-deleted.")
+    _insert(
+        conn,
+        memory_id="secret-row",
+        target="ops",
+        content="Temporary api_key=" + secret + " should be hard-deleted.",
+        raw_legacy=True,
+    )
     _insert(
         conn,
         memory_id="keep-row",
@@ -374,7 +395,9 @@ def test_forgetting_hard_delete_removes_vector_records():
     assert applied["batch_id"] == "hard-batch"
     assert applied["deleted"] == 1
     assert applied["delete_ids"] == ["secret-row"]
-    assert vector_store.deleted_ids == [["secret-row"]]
+    assert vector_store.deleted_ids == []
+    assert applied["vector_deleted"] == 0
+    assert applied["vector_pending"] is True
     assert conn.execute("SELECT COUNT(*) FROM memories WHERE id = ?", ("secret-row",)).fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM memories WHERE id = ?", ("keep-row",)).fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM memory_relations WHERE source_memory_id = ? OR target_memory_id = ?", ("secret-row", "secret-row")).fetchone()[0] == 0
@@ -396,11 +419,17 @@ def test_forgetting_hard_delete_removes_vector_records():
     assert json.loads(audit["after_json"])["deleted"] is True
 
 
-def test_forgetting_hard_delete_commits_truth_and_queues_retry_when_vector_delete_fails():
+def test_forgetting_hard_delete_never_calls_failing_store_and_keeps_pending_intent():
     conn = _conn()
     _register_generation(conn)
     secret = "sk-" + "G" * 24
-    _insert(conn, memory_id="secret-row", target="ops", content="Temporary token=" + secret + " should be hard-deleted.")
+    _insert(
+        conn,
+        memory_id="secret-row",
+        target="ops",
+        content="Temporary token=" + secret + " should be hard-deleted.",
+        raw_legacy=True,
+    )
 
     applied = run_forgetting(
         conn,
@@ -415,8 +444,7 @@ def test_forgetting_hard_delete_commits_truth_and_queues_retry_when_vector_delet
     assert applied["delete_ids"] == ["secret-row"]
     assert applied["vector_deleted"] == 0
     assert applied["vector_pending"] is True
-    assert "[REDACTED_SECRET]" in applied["vector_error"]
-    assert "sk-" not in applied["vector_error"]
+    assert "vector_error" not in applied
     assert conn.execute("SELECT COUNT(*) FROM memories WHERE id = ?", ("secret-row",)).fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM governance_audit_events WHERE batch_id = 'hard-vector-fail'").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM vector_outbox WHERE memory_id = 'secret-row' AND status = 'pending'").fetchone()[0] == 1
@@ -426,7 +454,13 @@ def test_forgetting_hard_delete_audit_failure_keeps_truth_and_vector(tmp_path):
     conn = _conn()
     _register_generation(conn)
     secret = "sk-" + "A" * 24
-    _insert(conn, memory_id="secret-row", target="ops", content="Temporary token=" + secret + " should be hard-deleted.")
+    _insert(
+        conn,
+        memory_id="secret-row",
+        target="ops",
+        content="Temporary token=" + secret + " should be hard-deleted.",
+        raw_legacy=True,
+    )
     conn.execute(
         """
         CREATE TRIGGER fail_forgetting_hard_delete_audit
@@ -460,7 +494,13 @@ def test_forgetting_hard_delete_audit_failure_keeps_truth_and_vector(tmp_path):
 def test_forgetting_hard_delete_requires_vector_store_by_default():
     conn = _conn()
     secret = "sk-" + "H" * 24
-    _insert(conn, memory_id="secret-row", target="ops", content="Temporary api_key=" + secret + " should be hard-deleted.")
+    _insert(
+        conn,
+        memory_id="secret-row",
+        target="ops",
+        content="Temporary api_key=" + secret + " should be hard-deleted.",
+        raw_legacy=True,
+    )
 
     applied = run_forgetting(
         conn,

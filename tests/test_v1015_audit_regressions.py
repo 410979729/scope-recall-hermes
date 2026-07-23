@@ -480,6 +480,10 @@ def test_governance_apply_commits_cas_audit_and_vector_outbox():
         row_count=0,
     )
     _insert_test_memory(conn, memory_id="govern-row", content="Governance metadata classification fixture.")
+    conn.execute(
+        "UPDATE memories SET metadata = ? WHERE id = ?",
+        (json.dumps({"lifecycle": "active"}), "govern-row"),
+    )
     conn.commit()
     provider = _FakeProvider(conn, accessible=["shared-scope"], writable=["shared-scope"])
 
@@ -845,7 +849,7 @@ def test_nightly_digest_does_not_update_read_only_legacy_alias_rows(monkeypatch)
         content=legacy_content,
         metadata="{}",
     )
-    captured: list[dict[str, str]] = []
+    replayed: list[int] = []
 
     monkeypatch.setattr(
         nightly_digest,
@@ -856,7 +860,12 @@ def test_nightly_digest_does_not_update_read_only_legacy_alias_rows(monkeypatch)
             0.60,
         ),
     )
-    monkeypatch.setattr(nightly_digest, "upsert_vector_record", lambda _runtime, **kwargs: captured.append(kwargs))
+    monkeypatch.setattr(
+        nightly_digest,
+        "replay_vector_outbox",
+        lambda _runtime, *, limit=200: replayed.append(limit)
+        or {"claimed": 0, "completed": 0, "failed": 0},
+    )
 
     result = apply_candidates(
         conn,
@@ -882,7 +891,7 @@ def test_nightly_digest_does_not_update_read_only_legacy_alias_rows(monkeypatch)
     assert legacy_row["content"] == legacy_content
     inserted_row = conn.execute("SELECT scope_id FROM memories WHERE id != 'legacy-update-row'").fetchone()
     assert inserted_row["scope_id"] == "canonical-shared-scope"
-    assert captured and captured[0]["scope_id"] == "canonical-shared-scope"
+    assert replayed == [20]
 
 
 def test_journal_digest_does_not_update_read_only_legacy_alias_rows(monkeypatch):
@@ -920,9 +929,14 @@ def test_journal_digest_does_not_update_read_only_legacy_alias_rows(monkeypatch)
         content=legacy_content,
         metadata="{}",
     )
-    captured: list[dict[str, str]] = []
+    replayed: list[int] = []
     monkeypatch.setattr(journal, "_find_match", lambda _conn, _scope_ids, _candidate: ("legacy-journal-row", legacy_content, 0.60))
-    monkeypatch.setattr(journal, "upsert_vector_record", lambda _runtime, **kwargs: captured.append(kwargs))
+    monkeypatch.setattr(
+        journal,
+        "replay_vector_outbox",
+        lambda _runtime, *, limit=200: replayed.append(limit)
+        or {"claimed": 0, "completed": 0, "failed": 0},
+    )
 
     result = apply_journal_candidates(
         conn,
@@ -947,7 +961,7 @@ def test_journal_digest_does_not_update_read_only_legacy_alias_rows(monkeypatch)
     assert legacy_row["content"] == legacy_content
     inserted_row = conn.execute("SELECT scope_id FROM memories WHERE id != 'legacy-journal-row'").fetchone()
     assert "canonical_user:3:joy" in inserted_row["scope_id"]
-    assert captured and "canonical_user:3:joy" in captured[0]["scope_id"]
+    assert replayed == [20]
 
 
 def test_release_secret_scan_reports_locations_without_secret_text(tmp_path, monkeypatch):

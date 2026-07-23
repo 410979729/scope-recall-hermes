@@ -102,7 +102,7 @@ def test_journal_digest_dry_run_reads_source_db_read_only_and_does_not_mutate(tm
     finally:
         writer.close()
 
-    import scope_recall.journal as journal_module
+    import scope_recall.truth_connection as truth_connection_module
 
     calls: list[tuple[Any, tuple[Any, ...], dict[str, Any]]] = []
     real_connect = sqlite3.connect
@@ -111,12 +111,15 @@ def test_journal_digest_dry_run_reads_source_db_read_only_and_does_not_mutate(tm
         calls.append((database, args, kwargs))
         return real_connect(database, *args, **kwargs)
 
-    monkeypatch.setattr(journal_module.sqlite3, "connect", capture_connect)
+    monkeypatch.setattr(truth_connection_module.sqlite3, "connect", capture_connect)
 
     result = run_journal_digest(hermes_home=hermes_home, extractor="heuristic", scope=_scope(), interval_label="test", limit_entries=50, dry_run=True)
 
     assert result["status"] == "dry_run"
-    assert any(str(database) == ":memory:" for database, _args, _kwargs in calls)
+    assert any(
+        str(database) == "file::memory:?mode=rwc" and kwargs.get("uri") is True
+        for database, _args, kwargs in calls
+    )
     assert any(str(database) == f"file:{db_path}?mode=ro" and kwargs.get("uri") is True for database, _args, kwargs in calls)
 
     verifier = real_connect(db_path)

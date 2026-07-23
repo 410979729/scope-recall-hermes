@@ -7,7 +7,13 @@ import subprocess
 import sys
 
 from scope_recall.forgetting import _archive_memory
-from scope_recall.graph_relations import backfill_supersedes_from_metadata, graph_relation_stats, upsert_relation
+from scope_recall.graph_relations import (
+    ALLOWED_RELATION_TYPES,
+    backfill_supersedes_from_metadata,
+    evaluate_relation_policy,
+    graph_relation_stats,
+    upsert_relation,
+)
 from scope_recall.sql_store import ensure_schema
 
 
@@ -171,3 +177,32 @@ def test_backfill_cli_accepts_explicit_dry_run_flag(tmp_path):
     assert payload["dry_run"] is True
     assert payload["backfill"]["candidate_supersedes"] == 1
     assert payload["backfill"]["inserted_supersedes"] == 0
+
+
+def test_central_policy_supports_every_extractor_relation_type(tmp_path):
+    """Writers and validators must share one relation-type contract."""
+
+    extracted_types = {
+        "same_topic",
+        "supersedes",
+        "depends_on",
+        "owned_by",
+        "affects",
+        "invalidates",
+    }
+    assert extracted_types <= ALLOWED_RELATION_TYPES
+
+    conn = _conn(tmp_path)
+    try:
+        _insert_memory(conn, "source")
+        _insert_memory(conn, "target")
+        for relation_type in sorted(extracted_types):
+            decision = evaluate_relation_policy(
+                conn,
+                source_memory_id="source",
+                target_memory_id="target",
+                relation_type=relation_type,
+            )
+            assert decision["allowed"] is True, decision
+    finally:
+        conn.close()

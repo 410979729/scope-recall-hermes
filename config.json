@@ -1,6 +1,7 @@
 {
   "auto_recall": true,
   "auto_capture": true,
+  "memory_isolated_chat_ids": [],
   "auto_recall_min_length": 15,
   "auto_recall_min_repeated": 8,
   "auto_recall_max_items": 3,
@@ -63,11 +64,51 @@
   "per_turn_extraction": {
     "enabled": false
   },
+  "relation_extraction_enabled": true,
+  "relation_extraction_max_pairs": 1000,
+  "relation_sync_neighbor_limit": 32,
+  "relation_rebuild_chunk_pairs": 250,
   "event_digest": {
     "enabled": true,
     "write_candidates": false,
     "dry_run_log": true,
     "max_events_per_turn": 3
+  },
+  "fact_evolution": {
+    "enabled": false,
+    "mode": "preview",
+    "nightly_mode": "preview",
+    "journal_mode": "preview",
+    "tool_mode": "preview",
+    "maintenance_mode": "preview"
+  },
+  "temporal_queries": {
+    "enabled": false,
+    "timezone": "UTC",
+    "current_limit": 50
+  },
+  "reflection": {
+    "enabled": false,
+    "write_candidates": false,
+    "provider": "",
+    "model": "",
+    "base_url": "",
+    "endpoint": "",
+    "append_v1": true,
+    "api_key_env": "SCOPE_RECALL_REFLECTION_API_KEY",
+    "api_mode": "chat_completions",
+    "timeout": 30.0,
+    "max_attempts": 1,
+    "retry_delay": 0.0,
+    "max_hops": 1,
+    "max_evidence": 24,
+    "max_chars": 12000,
+    "max_item_chars": 2000,
+    "recall_limit": 24,
+    "fact_limit": 24,
+    "candidate_min_citations": 2,
+    "candidate_min_sources": 2,
+    "candidate_min_confidence": 0.8
   },
   "capture_hard_max_chars": 2500,
   "capture_skip_patterns": [
@@ -110,7 +151,7 @@
     "archive_very_short": true,
     "archive_assistant_scratch": true,
     "archive_duplicates": true,
-    "hard_delete_sensitive": true
+    "hard_delete_sensitive": false
   },
   "curated_memory": {
     "mode": "single-user",
@@ -142,6 +183,8 @@
     "vector_only_min_score": 0.30,
     "include_general": "same-scope",
     "general_weight": 0.35,
+    "general_min_importance": 0.2,
+    "entity_scope_filter_enabled": true,
     "metric": "cosine",
     "fusion_strategy": "rrf",
     "bm25_weight": 0.15,
@@ -223,11 +266,18 @@
     "table_name": "memories",
     "pgvector": {
       "dsn_env": "SCOPE_RECALL_PGVECTOR_DSN",
-      "table_name": "scope_recall_vectors"
+      "table_name": "scope_recall_vectors",
+      "connect_timeout_seconds": 10,
+      "statement_timeout_ms": 30000,
+      "lock_timeout_ms": 5000
     },
     "top_k": 8,
     "sync_mode": "incremental",
     "index_general": false,
+    "startup_reconcile_page_size": 200,
+    "startup_outbox_limit": 200,
+    "write_outbox_replay_limit": 20,
+    "startup_reconcile_interval_seconds": 86400,
     "embedder": {
       "provider": "openai-compatible",
       "dimensions": 3072,
@@ -239,7 +289,12 @@
       "request_dimensions": false,
       "document_prefix": "",
       "query_prefix": "",
-      "prompt_profile": "default-v1"
+      "prompt_profile": "default-v1",
+      "connection_retry_delays": [
+        2.0,
+        4.0,
+        8.0
+      ]
     },
     "fallback_embedder": {
       "provider": "local-hash",

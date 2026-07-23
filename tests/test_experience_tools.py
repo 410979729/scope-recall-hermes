@@ -467,13 +467,16 @@ def test_experience_prefetch_records_unknown_run_for_feedback_loop(provider):
 
 
 def test_playbook_create_tool_rejects_direct_promoted_status(provider):
-    result = provider.handle_tool_call(
-        "scope_recall_playbook_create",
-        {"id": "pb_promoted", "payload": _payload(), "status": "promoted", "confidence": 0.9},
+    payload = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_playbook_create",
+            {"id": "pb_promoted", "payload": _payload(), "status": "promoted", "confidence": 0.9},
+        )
     )
 
-    assert "promoted" in result
-    assert "review" in result.lower()
+    assert payload["invalid_arguments"] is True
+    assert payload["field"] == "status"
+    assert payload["constraint"] == "enum"
     found = json.loads(provider.handle_tool_call("scope_recall_playbook_search", {"query": "one-way management ACL", "limit": 5}))
     assert found["count"] == 0
 

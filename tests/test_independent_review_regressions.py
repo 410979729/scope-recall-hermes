@@ -28,7 +28,7 @@ from scope_recall.vector_generation import (
     register_generation,
 )
 from scope_recall.vector_migration import build_vector_generation
-from scope_recall.vector_runtime import cleanup_persisted_vector_companions, sync_vector_index
+from scope_recall.vector_runtime import sync_vector_index
 from scope_recall.vector_store import VectorStoreCompatibilityError
 import scope_recall.vector_repair as vector_repair
 
@@ -147,27 +147,6 @@ def test_sqlite_dimension_mismatch_is_non_destructive(tmp_path: Path) -> None:
     incompatible.close()
 
     assert _sqlite_ids(path, dimensions=2) == ["sentinel"]
-
-
-def test_candidate_cleanup_uses_active_generation_storage_path(tmp_path: Path) -> None:
-    hermes_home, generation_path, conn, identity = _active_generation_home(tmp_path)
-    conn.close()
-
-    result = cleanup_persisted_vector_companions(
-        hermes_home / "scope-recall",
-        memory_ids=["active-row"],
-        vector_config={
-            "enabled": True,
-            "backend": "sqlite-bruteforce",
-            "table_name": "memories",
-            "embedder": {"dimensions": identity.dimensions},
-        },
-        retrieval_config={"metric": "cosine"},
-    )
-
-    assert result["status"] == "ok"
-    assert result["deleted"] == 1
-    assert _sqlite_ids(generation_path, dimensions=identity.dimensions) == []
 
 
 def test_doctor_inspects_active_generation_storage_path(tmp_path: Path) -> None:

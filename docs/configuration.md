@@ -89,13 +89,22 @@ This file is generated from the packaged `config.json` registry. It lists every 
 - `experience.promotion_min_tool_entries` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `experience.promotion_min_tool_entries` in the `experience` group. Default: `1`
 - `experience.promotion_require_verification` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `experience.promotion_require_verification` in the `experience` group. Default: `true`
 
+## `fact_evolution`
+
+- `fact_evolution.enabled` (boolean; risk: `high`; restart_required: `yes`) — Enable structured Fact Evolution. This switch is high risk because an already configured apply mode can persist durable memory immediately; resident providers require reload. Default: `false`
+- `fact_evolution.journal_mode` (string; risk: `high`; restart_required: `no`; choices: `preview, auto_apply`; choice_risks: `preview=medium, auto_apply=high`) — Journal lane mode loaded by each scheduled invocation. preview is medium risk; auto_apply is high risk and may persist durable memory. Default: `"preview"`
+- `fact_evolution.maintenance_mode` (string; risk: `high`; restart_required: `yes`; choices: `preview, reviewed_apply`; choice_risks: `preview=medium, reviewed_apply=high`) — Explicit maintenance-lane mode. reviewed_apply permits maintenance-gated operator corrections and is high risk; provider reload is required. Default: `"preview"`
+- `fact_evolution.mode` (string; risk: `high`; restart_required: `yes`; choices: `preview, auto_apply, reviewed_apply`; choice_risks: `preview=medium, auto_apply=high, reviewed_apply=high`) — Fallback Fact Evolution mode. preview is medium risk; auto_apply/reviewed_apply persist durable memory and are high risk. Resident providers require reload. Default: `"preview"`
+- `fact_evolution.nightly_mode` (string; risk: `high`; restart_required: `no`; choices: `preview, auto_apply`; choice_risks: `preview=medium, auto_apply=high`) — Nightly lane mode loaded by each scheduled invocation. preview is medium risk; auto_apply is high risk and may persist durable memory. Default: `"preview"`
+- `fact_evolution.tool_mode` (string; risk: `high`; restart_required: `yes`; choices: `preview, auto_apply, reviewed_apply`; choice_risks: `preview=medium, auto_apply=high, reviewed_apply=high`) — Resident public tool-lane mode. Caller evidence remains non-authoritative until a runtime-owned evidence registry is available; provider reload is required. Default: `"preview"`
+
 ## `forgetting`
 
 - `forgetting.archive_assistant_scratch` (boolean; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `forgetting.archive_assistant_scratch` in the `forgetting` group. Default: `true`
 - `forgetting.archive_duplicates` (boolean; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `forgetting.archive_duplicates` in the `forgetting` group. Default: `true`
 - `forgetting.archive_very_short` (boolean; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `forgetting.archive_very_short` in the `forgetting` group. Default: `true`
 - `forgetting.enabled` (boolean; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `forgetting.enabled` in the `forgetting` group. Default: `true`
-- `forgetting.hard_delete_sensitive` (boolean; risk: `high`; restart_required: `no`) — Allow sensitive-data cleanup paths to hard-delete when explicitly invoked. Default: `true`
+- `forgetting.hard_delete_sensitive` (boolean; risk: `high`; restart_required: `no`) — Allow sensitive-data cleanup paths to hard-delete when explicitly invoked. Default: `false`
 - `forgetting.soft_archive_default` (boolean; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `forgetting.soft_archive_default` in the `forgetting` group. Default: `true`
 
 ## `identity`
@@ -142,6 +151,10 @@ This file is generated from the packaged `config.json` registry. It lists every 
 
 - `max_recall_per_turn` (integer; risk: `low`; restart_required: `no`) — Scope Recall configuration key `max_recall_per_turn` in the `max_recall_per_turn` group. Default: `10`
 
+## `memory_isolated_chat_ids`
+
+- `memory_isolated_chat_ids` (array; risk: `high`; restart_required: `yes`) — Runtime-only chat identifiers excluded from prompt recall, tools, capture, journal, and digest surfaces. Default: `[]`
+
 ## `min_capture_length`
 
 - `min_capture_length` (integer; risk: `low`; restart_required: `no`) — Scope Recall configuration key `min_capture_length` in the `min_capture_length` group. Default: `40`
@@ -158,17 +171,59 @@ This file is generated from the packaged `config.json` registry. It lists every 
 
 - `query_char_limit` (integer; risk: `low`; restart_required: `no`) — Scope Recall configuration key `query_char_limit` in the `query_char_limit` group. Default: `1000`
 
+## `reflection`
+
+- `reflection.api_key_env` (string; risk: `high`; restart_required: `yes`) — Scope Recall configuration key `reflection.api_key_env` in the `reflection` group. Default: `"SCOPE_RECALL_REFLECTION_API_KEY"`
+- `reflection.api_mode` (string; risk: `medium`; restart_required: `yes`; choices: `chat_completions, codex_responses, anthropic_messages`) — Scope Recall configuration key `reflection.api_mode` in the `reflection` group. Default: `"chat_completions"`
+- `reflection.append_v1` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `reflection.append_v1` in the `reflection` group. Default: `true`
+- `reflection.base_url` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `reflection.base_url` in the `reflection` group. Default: `""`
+- `reflection.candidate_min_citations` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `reflection.candidate_min_citations` in the `reflection` group. Default: `2`
+- `reflection.candidate_min_confidence` (number; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `reflection.candidate_min_confidence` in the `reflection` group. Default: `0.8`
+- `reflection.candidate_min_sources` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `reflection.candidate_min_sources` in the `reflection` group. Default: `2`
+- `reflection.enabled` (boolean; risk: `medium`; restart_required: `yes`) — Expose bounded citation-grounded reflection tooling. Default: `false`
+- `reflection.endpoint` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `reflection.endpoint` in the `reflection` group. Default: `""`
+- `reflection.fact_limit` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `reflection.fact_limit` in the `reflection` group. Default: `24`
+- `reflection.max_attempts` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `reflection.max_attempts` in the `reflection` group. Default: `1`
+- `reflection.max_chars` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `reflection.max_chars` in the `reflection` group. Default: `12000`
+- `reflection.max_evidence` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `reflection.max_evidence` in the `reflection` group. Default: `24`
+- `reflection.max_hops` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `reflection.max_hops` in the `reflection` group. Default: `1`
+- `reflection.max_item_chars` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `reflection.max_item_chars` in the `reflection` group. Default: `2000`
+- `reflection.model` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `reflection.model` in the `reflection` group. Default: `""`
+- `reflection.provider` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `reflection.provider` in the `reflection` group. Default: `""`
+- `reflection.recall_limit` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `reflection.recall_limit` in the `reflection` group. Default: `24`
+- `reflection.retry_delay` (number; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `reflection.retry_delay` in the `reflection` group. Default: `0.0`
+- `reflection.timeout` (number; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `reflection.timeout` in the `reflection` group. Default: `30.0`
+- `reflection.write_candidates` (boolean; risk: `high`; restart_required: `yes`) — Allow explicit maintenance-mode reflection calls to store hidden needs_review mental-model candidates. Default: `false`
+
+## `relation_extraction_enabled`
+
+- `relation_extraction_enabled` (boolean; risk: `medium`; restart_required: `yes`) — Enable bounded extraction and maintenance of relation edges during memory mutations and background repair. Default: `true`
+
+## `relation_extraction_max_pairs`
+
+- `relation_extraction_max_pairs` (integer; risk: `medium`; restart_required: `yes`) — Maximum comparison budget for one relation extraction operation (1 to 5000 pairs). Default: `1000`
+
+## `relation_rebuild_chunk_pairs`
+
+- `relation_rebuild_chunk_pairs` (integer; risk: `medium`; restart_required: `yes`) — Maximum relation pairs processed by one background rebuild chunk (1 to 1000 pairs). Default: `250`
+
+## `relation_sync_neighbor_limit`
+
+- `relation_sync_neighbor_limit` (integer; risk: `medium`; restart_required: `yes`) — Maximum local peers synchronously compared during a foreground memory mutation (1 to 256 peers). Default: `32`
+
 ## `retrieval`
 
 - `retrieval.bm25_weight` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.bm25_weight` in the `retrieval` group. Default: `0.15`
 - `retrieval.candidate_pool` (integer; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.candidate_pool` in the `retrieval` group. Default: `12`
 - `retrieval.entity_distance_weight` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.entity_distance_weight` in the `retrieval` group. Default: `0.04`
+- `retrieval.entity_scope_filter_enabled` (boolean; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.entity_scope_filter_enabled` in the `retrieval` group. Default: `true`
 - `retrieval.entity_weight` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.entity_weight` in the `retrieval` group. Default: `0.06`
 - `retrieval.freshness_base_weight` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.freshness_base_weight` in the `retrieval` group. Default: `0.22`
 - `retrieval.freshness_hints` (array; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.freshness_hints` in the `retrieval` group. Default: `["current", "currently", "latest", "new", "newest", "now", "recent", "recently", "today", "updated"]`
 - `retrieval.freshness_max_weight` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.freshness_max_weight` in the `retrieval` group. Default: `0.42`
 - `retrieval.freshness_step_weight` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.freshness_step_weight` in the `retrieval` group. Default: `0.1`
 - `retrieval.fusion_strategy` (string; risk: `medium`; restart_required: `no`; choices: `rrf, weighted`) — Scope Recall configuration key `retrieval.fusion_strategy` in the `retrieval` group. Default: `"rrf"`
+- `retrieval.general_min_importance` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.general_min_importance` in the `retrieval` group. Default: `0.2`
 - `retrieval.general_weight` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.general_weight` in the `retrieval` group. Default: `0.35`
 - `retrieval.include_general` (string; risk: `medium`; restart_required: `no`; choices: `never, same-scope, always`) — Scope Recall configuration key `retrieval.include_general` in the `retrieval` group. Default: `"same-scope"`
 - `retrieval.lexical_weight` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.lexical_weight` in the `retrieval` group. Default: `0.45`
@@ -204,7 +259,7 @@ This file is generated from the packaged `config.json` registry. It lists every 
 - `retrieval.temporal_policy_weights.temporary` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.temporal_policy_weights.temporary` in the `retrieval` group. Default: `1.0`
 - `retrieval.top_k` (integer; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.top_k` in the `retrieval` group. Default: `5`
 - `retrieval.vector_min_score` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.vector_min_score` in the `retrieval` group. Default: `0.12`
-- `retrieval.vector_only_min_score` (number; risk: `medium`; restart_required: `no`) — Minimum score for vector-only candidates to survive recall filtering. Default: `0.68`
+- `retrieval.vector_only_min_score` (number; risk: `medium`; restart_required: `no`) — Minimum score for vector-only candidates to survive recall filtering. Default: `0.3`
 - `retrieval.vector_weight` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.vector_weight` in the `retrieval` group. Default: `0.55`
 
 ## `secret_index_tools_enabled`
@@ -217,6 +272,12 @@ This file is generated from the packaged `config.json` registry. It lists every 
 - `shared_pool.enabled` (boolean; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `shared_pool.enabled` in the `shared_pool` group. Default: `false`
 - `shared_pool.pool_id` (string; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `shared_pool.pool_id` in the `shared_pool` group. Default: `"default"`
 - `shared_pool.write_enabled` (boolean; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `shared_pool.write_enabled` in the `shared_pool` group. Default: `false`
+
+## `temporal_queries`
+
+- `temporal_queries.current_limit` (integer; risk: `low`; restart_required: `no`) — Scope Recall configuration key `temporal_queries.current_limit` in the `temporal_queries` group. Default: `50`
+- `temporal_queries.enabled` (boolean; risk: `low`; restart_required: `no`) — Scope Recall configuration key `temporal_queries.enabled` in the `temporal_queries` group. Default: `false`
+- `temporal_queries.timezone` (string; risk: `low`; restart_required: `no`) — Scope Recall configuration key `temporal_queries.timezone` in the `temporal_queries` group. Default: `"UTC"`
 
 ## `tool_schema_extra_tools`
 
@@ -231,6 +292,7 @@ This file is generated from the packaged `config.json` registry. It lists every 
 - `vector.backend` (string; risk: `medium`; restart_required: `yes`; choices: `lancedb, sqlite-bruteforce, pgvector`) — Vector companion backend used for semantic recall. Default: `"lancedb"`
 - `vector.embedder.api_key_env` (array; risk: `high`; restart_required: `yes`) — Environment variable names that may hold the embedding API key. Default: `["SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY"]`
 - `vector.embedder.base_url` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.embedder.base_url` in the `vector` group. Default: `"https://generativelanguage.googleapis.com/v1beta/openai"`
+- `vector.embedder.connection_retry_delays` (array; risk: `medium`; restart_required: `yes`) — Optional bounded delays in seconds for retrying transport-level embedding connection failures (maximum 8 entries, each 0 to 300 seconds). HTTP/API errors are not retried by this schedule; set an explicit empty array to disable retries. Default: `[2.0, 4.0, 8.0]`
 - `vector.embedder.dimensions` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.embedder.dimensions` in the `vector` group. Default: `3072`
 - `vector.embedder.document_prefix` (string; risk: `medium`; restart_required: `yes`) — Optional instruction prefix applied only when embedding indexed documents. Default: `""`
 - `vector.embedder.model` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.embedder.model` in the `vector` group. Default: `"gemini-embedding-001"`
@@ -244,8 +306,15 @@ This file is generated from the packaged `config.json` registry. It lists every 
 - `vector.fallback_embedder.model` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.fallback_embedder.model` in the `vector` group. Default: `"hash-v1"`
 - `vector.fallback_embedder.provider` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.fallback_embedder.provider` in the `vector` group. Default: `"local-hash"`
 - `vector.index_general` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.index_general` in the `vector` group. Default: `false`
+- `vector.pgvector.connect_timeout_seconds` (integer; risk: `medium`; restart_required: `yes`) — Maximum time allowed to establish a PGVector connection. Values are clamped to 1–300 seconds. Default: `10`
 - `vector.pgvector.dsn_env` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.pgvector.dsn_env` in the `vector` group. Default: `"SCOPE_RECALL_PGVECTOR_DSN"`
+- `vector.pgvector.lock_timeout_ms` (integer; risk: `medium`; restart_required: `yes`) — Maximum PostgreSQL lock wait for PGVector statements. Values are clamped to 100–600000 milliseconds. Default: `5000`
+- `vector.pgvector.statement_timeout_ms` (integer; risk: `medium`; restart_required: `yes`) — Maximum execution time for each PGVector SQL statement. Values are clamped to 100–600000 milliseconds. Default: `30000`
 - `vector.pgvector.table_name` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.pgvector.table_name` in the `vector` group. Default: `"scope_recall_vectors"`
+- `vector.startup_outbox_limit` (integer; risk: `medium`; restart_required: `yes`) — Maximum durable vector outbox events replayed in one startup or background maintenance phase. Default: `200`
+- `vector.write_outbox_replay_limit` (integer; risk: `medium`; restart_required: `yes`) — Maximum durable vector outbox events replayed after one committed memory write so transient backlog converges during normal traffic. Default: `20`
+- `vector.startup_reconcile_interval_seconds` (integer; risk: `medium`; restart_required: `yes`) — Minimum delay between completed vector reconciliation cycles; interrupted cycles resume immediately from their durable watermark. Default: `86400`
+- `vector.startup_reconcile_page_size` (integer; risk: `medium`; restart_required: `yes`) — Maximum truth rows planned into durable vector outbox events by one startup or background maintenance tick. Default: `200`
 - `vector.sync_mode` (string; risk: `medium`; restart_required: `yes`; choices: `incremental, rebuild`) — Scope Recall configuration key `vector.sync_mode` in the `vector` group. Default: `"incremental"`
 - `vector.table_name` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.table_name` in the `vector` group. Default: `"memories"`
 - `vector.top_k` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.top_k` in the `vector` group. Default: `8`

@@ -177,28 +177,31 @@ def _load_provider_for_home(hermes_home: Path) -> Any:
 
 
 def _mark_archived(plugin: Any, memory_id: str) -> None:
-    conn = plugin._require_conn()
-    row = conn.execute("SELECT updated_at FROM memories WHERE id = ?", (memory_id,)).fetchone()
-    if row is None:
-        raise RuntimeError(f"stored memory not found for archive marker: {memory_id}")
     package = plugin.__class__.__module__.rsplit(".", 1)[0]
     lifecycle_service = importlib.import_module(f"{package}.lifecycle_service")
-    try:
-        lifecycle_service.transition_memory_lifecycle(
-            conn,
-            memory_id=memory_id,
-            lifecycle="archived",
-            metadata_updates={"archived_by": "synthetic-retrieval-benchmark"},
-            expected_updated_at=str(row["updated_at"] or ""),
-            actor="synthetic-retrieval-benchmark",
-            reason="isolated benchmark fixture lifecycle marker",
-            event_type="benchmark_fixture_lifecycle",
-            action="archive_fixture",
-        )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
+    with plugin._lock:
+        conn = plugin._require_conn()
+        row = conn.execute(
+            "SELECT updated_at FROM memories WHERE id = ?", (memory_id,)
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(f"stored memory not found for archive marker: {memory_id}")
+        try:
+            lifecycle_service.transition_memory_lifecycle(
+                conn,
+                memory_id=memory_id,
+                lifecycle="archived",
+                metadata_updates={"archived_by": "synthetic-retrieval-benchmark"},
+                expected_updated_at=str(row["updated_at"] or ""),
+                actor="synthetic-retrieval-benchmark",
+                reason="isolated benchmark fixture lifecycle marker",
+                event_type="benchmark_fixture_lifecycle",
+                action="archive_fixture",
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def _distractor(index: int) -> dict[str, Any]:

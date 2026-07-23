@@ -97,6 +97,59 @@ def recall_scope_mode(target: str, source: str = "") -> str:
     return "local"
 
 
+def resolve_store_scope_mode(
+    target: str,
+    source: str = "",
+    requested_scope_mode: str | None = None,
+) -> str:
+    """Resolve a write scope without allowing overrides to violate target policy.
+
+    Durable targets may use their canonical shared scope or an explicitly
+    enabled shared pool. General/scratch records remain local. Availability and
+    write permission for the shared pool are enforced by the provider/tool layer.
+    """
+
+    canonical = recall_scope_mode(target, source)
+    requested = (
+        str(requested_scope_mode or "").strip().lower().replace("-", "_")
+    )
+    if not requested:
+        return canonical
+    if requested not in {"shared", "local", "shared_pool"}:
+        raise ValueError(f"unsupported scope mode: {requested}")
+    allowed = {canonical}
+    if canonical == "shared":
+        allowed.add("shared_pool")
+    if requested not in allowed:
+        normalized_target = str(target or "memory").strip().lower()
+        raise ValueError(
+            f"scope mode '{requested}' is incompatible with target '{normalized_target}'"
+        )
+    return requested
+
+
+def recall_scope_id_for_target(
+    target: str,
+    *,
+    local_scope_id: str,
+    shared_scope_id: str,
+    source: str = "",
+) -> str:
+    """Resolve one trusted execution scope from the canonical target policy.
+
+    Callers must provide both runtime scope IDs explicitly. This keeps target
+    semantics centralized while allowing nightly profiles, journal runtimes,
+    and tool adapters to use the exact same routing decision.
+    """
+
+    mode = recall_scope_mode(target, source)
+    resolved = shared_scope_id if mode == "shared" else local_scope_id
+    scope_id = str(resolved or "").strip()
+    if not scope_id:
+        raise ValueError(f"{mode} scope_id is required for target routing")
+    return scope_id
+
+
 def json_dumps_stable(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 

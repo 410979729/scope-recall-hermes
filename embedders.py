@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -61,6 +62,60 @@ _KNOWN_EMBEDDING_DIMS = {
 
 
 _SENTENCE_TRANSFORMER_CACHE: dict[tuple[str, str | None], Any] = {}
+
+_CONNECTION_EXCEPTION_NAMES = frozenset(
+    {
+        "APIConnectionError",
+        "APITimeoutError",
+        "ConnectError",
+        "ConnectTimeout",
+        "NetworkError",
+        "PoolTimeout",
+        "ReadError",
+        "ReadTimeout",
+        "RemoteProtocolError",
+        "WriteError",
+        "WriteTimeout",
+    }
+)
+_CONNECTION_EXCEPTION_MODULE_PREFIXES = ("httpcore", "httpx", "openai")
+_DEFAULT_CONNECTION_RETRY_DELAYS = (2.0, 4.0, 8.0)
+_MAX_CONNECTION_RETRY_DELAYS = 8
+_MAX_CONNECTION_RETRY_DELAY_SECONDS = 300.0
+
+
+def _coerce_connection_retry_delays(value: Any) -> tuple[float, ...]:
+    """Return bounded retry delays or reject unsafe/malformed configuration."""
+
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("connection_retry_delays must be an array of seconds")
+    if len(value) > _MAX_CONNECTION_RETRY_DELAYS:
+        raise ValueError(
+            f"connection_retry_delays supports at most {_MAX_CONNECTION_RETRY_DELAYS} entries"
+        )
+    delays: list[float] = []
+    for index, item in enumerate(value):
+        if isinstance(item, bool):
+            raise ValueError(
+                f"connection_retry_delays[{index}] must be a finite number between 0 and "
+                f"{_MAX_CONNECTION_RETRY_DELAY_SECONDS:g}"
+            )
+        try:
+            delay = float(item)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"connection_retry_delays[{index}] must be a finite number between 0 and "
+                f"{_MAX_CONNECTION_RETRY_DELAY_SECONDS:g}"
+            ) from exc
+        if not math.isfinite(delay) or not 0.0 <= delay <= _MAX_CONNECTION_RETRY_DELAY_SECONDS:
+            raise ValueError(
+                f"connection_retry_delays[{index}] must be a finite number between 0 and "
+                f"{_MAX_CONNECTION_RETRY_DELAY_SECONDS:g}"
+            )
+        delays.append(delay)
+    return tuple(delays)
 
 
 
@@ -230,7 +285,7 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
         document_prefix: str = "",
         query_prefix: str = "",
         prompt_profile: str = "default-v1",
-        connection_retry_delays: list[float] | None = None,
+        connection_retry_delays: Any = None,
     ) -> None:
         resolved_dimensions = int(dimensions or _known_dimensions(model, 1536) or 1536)
         super().__init__(provider=provider, dimensions=resolved_dimensions, model=model)
@@ -240,7 +295,12 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
         self._document_prefix = str(document_prefix or "")
         self._query_prefix = str(query_prefix or "")
         self._prompt_profile = str(prompt_profile or "default-v1")
-        self._connection_retry_delays = list(connection_retry_delays) if connection_retry_delays else []
+        retry_delays = (
+            _DEFAULT_CONNECTION_RETRY_DELAYS
+            if connection_retry_delays is None
+            else connection_retry_delays
+        )
+        self._connection_retry_delays = _coerce_connection_retry_delays(retry_delays)
         self._client = None
         self._active_key_index = 0
 
@@ -257,6 +317,7 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
                 "prompt_profile": self._prompt_profile,
                 "document_prefix_configured": bool(self._document_prefix),
                 "query_prefix_configured": bool(self._query_prefix),
+                "connection_retry_delays": list(self._connection_retry_delays),
             }
         )
         return payload
@@ -277,8 +338,23 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
 
     @staticmethod
     def _is_connection_error(exc: Exception) -> bool:
-        msg = str(exc).lower()
-        return "connection" in msg or "refused" in msg or "timeout" in msg or "resolve" in msg
+        """Classify transport failures by type, never by message substrings."""
+
+        current: BaseException | None = exc
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if isinstance(current, (ConnectionError, TimeoutError)):
+                return True
+            error_type = type(current)
+            module = str(error_type.__module__ or "").casefold()
+            if (
+                error_type.__name__ in _CONNECTION_EXCEPTION_NAMES
+                and module.startswith(_CONNECTION_EXCEPTION_MODULE_PREFIXES)
+            ):
+                return True
+            current = current.__cause__ or current.__context__
+        return False
 
     def _embed_with_prefix(self, texts: Iterable[str], *, prefix: str) -> list[list[float]]:
         items = [clean_text(f"{prefix}{clean_text(text)}") or " " for text in texts]
@@ -289,11 +365,12 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
         for start in range(0, len(items), batch_size):
             batch = items[start : start + batch_size]
             response = None
-            last_error: Exception | None = None
-            for attempt in range(1 + len(self._connection_retry_delays)):
-                for _ in range(max(1, len(self._api_keys))):
-                    client = self._client_or_raise()
+            key_count = max(1, len(self._api_keys))
+            for retry_index in range(len(self._connection_retry_delays) + 1):
+                connection_error: Exception | None = None
+                for key_attempt in range(key_count):
                     try:
+                        client = self._client_or_raise()
                         request: dict[str, Any] = {
                             "model": self.model,
                             "input": batch,
@@ -304,23 +381,26 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
                         response = client.embeddings.create(**request)
                         break
                     except Exception as exc:
-                        last_error = exc
                         if self._is_connection_error(exc):
-                            # Connection failure: retry outer loop after delay
-                            # to give on-demand loaders (llama.cpp Hub) time.
+                            # Transport failures are endpoint-wide, not key-specific.
+                            # Recreate the client before the next bounded retry so an
+                            # on-demand local server can finish starting cleanly.
+                            connection_error = exc
+                            self._client = None
                             break
-                        if not self._rotate_client_after_failure():
+                        if key_attempt + 1 >= key_count:
                             raise
+                        self._rotate_client_after_failure()
                 if response is not None:
                     break
-                if attempt < len(self._connection_retry_delays):
-                    delay = self._connection_retry_delays[attempt]
-                    import time as _time
-
-                    _time.sleep(delay)
+                assert connection_error is not None
+                if retry_index >= len(self._connection_retry_delays):
+                    raise connection_error
+                time.sleep(self._connection_retry_delays[retry_index])
             if response is None:
-                assert last_error is not None
-                raise last_error
+                raise RuntimeError(
+                    f"{self.provider} embedding request produced no response"
+                )
             response_rows = list(response.data)
             if len(response_rows) != len(batch):
                 raise RuntimeError(

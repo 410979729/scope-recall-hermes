@@ -16,8 +16,10 @@ if str(ROOT) not in sys.path:
 
 try:
     from scope_recall.skill_bridge import generate_skill_candidates
+    from scope_recall.truth_connection import connect_truth_database
 except Exception:  # pragma: no cover - source checkout execution fallback
     from skill_bridge import generate_skill_candidates  # type: ignore
+    from truth_connection import connect_truth_database  # type: ignore
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -56,8 +58,7 @@ def build_payload(args: argparse.Namespace) -> dict[str, Any]:
     if not db_path.exists():
         return {"ok": False, "error": "db_missing", "path": str(db_path)}
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
-        conn.row_factory = sqlite3.Row
+        conn = connect_truth_database(db_path, mode="ro", timeout=30)
         try:
             scopes = _accessible_scope_ids(conn, list(args.scope_id or []))
             payload = generate_skill_candidates(

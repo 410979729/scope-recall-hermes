@@ -120,38 +120,40 @@ def test_forgetting_run_does_not_mutate_read_only_shared_pool(tmp_path):
         plugin.shutdown()
 
 
-def test_explicit_scope_mode_is_respected_and_semantic_merge_stays_in_scope(tmp_path):
+def test_explicit_canonical_scope_mode_is_respected_and_merge_stays_in_scope(tmp_path):
     plugin = _provider(tmp_path, write_enabled=True)
     try:
-        local = json.loads(
-            plugin.handle_tool_call(
-                "scope_recall_store",
-                {
-                    "content": "Project Atlas deploy command uses alpha flag.",
-                    "target": "project",
-                    "scope_mode": "local",
-                },
-            )
-        )
         shared = json.loads(
             plugin.handle_tool_call(
                 "scope_recall_store",
                 {
-                    "content": "Project Atlas deploy command uses alpha flag.",
-                    "target": "project",
+                    "content": "Shared scope preference: concise explanations.",
+                    "target": "user",
                     "scope_mode": "shared",
                 },
             )
         )
-
-        assert local["stored"] is True
-        assert local["scope_mode"] == "local"
+        local = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_store",
+                {
+                    "content": "Local scratch note: concise explanations.",
+                    "target": "general",
+                    "scope_mode": "local",
+                },
+            )
+        )
         assert shared["stored"] is True
-        assert shared["scope_mode"] == "shared"
-        rows = plugin._require_conn().execute("SELECT id, scope_id FROM memories WHERE id IN (?, ?)", (local["id"], shared["id"])).fetchall()
-        by_id = {row["id"]: row["scope_id"] for row in rows}
-        assert by_id[local["id"]] == plugin._scope_id
+        assert local["stored"] is True
+        assert local["merged"] is False
+        assert local["id"] != shared["id"]
+        rows = plugin._require_conn().execute(
+            "SELECT id, scope_id FROM memories WHERE id IN (?, ?)",
+            (shared["id"], local["id"]),
+        ).fetchall()
+        by_id = {str(row["id"]): str(row["scope_id"]) for row in rows}
         assert by_id[shared["id"]] == plugin._shared_scope_id
+        assert by_id[local["id"]] == plugin._scope_id
     finally:
         plugin.shutdown()
 

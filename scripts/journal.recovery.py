@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -26,6 +25,7 @@ if PACKAGE_NAME not in sys.modules:
 
 from scope_recall_journal_recovery_runtime.journal_recovery import classify_recovery_candidates, recovery_report, schedule_replay  # noqa: E402
 from scope_recall_journal_recovery_runtime.maintenance_ops import effective_apply, memory_db_path  # noqa: E402
+from scope_recall_journal_recovery_runtime.truth_connection import connect_truth_database  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,8 +46,29 @@ def main() -> int:
     hermes_home = Path(args.hermes_home).expanduser().resolve()
     db_path = memory_db_path(hermes_home)
     should_apply = effective_apply(apply=args.apply, dry_run=False)
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    if not db_path.is_file():
+        payload = {
+            "ok": False,
+            "dry_run": not should_apply,
+            "error_code": "truth_db_missing",
+            "error": f"SQLite truth DB does not exist: {db_path}",
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return 1
+    try:
+        conn = connect_truth_database(
+            db_path,
+            mode="rw" if should_apply else "ro",
+        )
+    except Exception as exc:
+        payload = {
+            "ok": False,
+            "dry_run": not should_apply,
+            "error_code": "truth_db_open_failed",
+            "error": str(exc),
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return 1
     prefixes = ["retry-exhausted:"]
     if args.include_dead_letter:
         prefixes.append("dead-letter:")

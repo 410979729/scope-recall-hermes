@@ -14,11 +14,13 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Protocol, runtime_checkable
 
 from .capture_filters import sanitize_report_text
+from .vector_mutation_guard import advisory_file_lock
 
 logger = logging.getLogger(__name__)
 
 _NATIVE_VECTOR_PROBE: dict[str, Any] | None = None
 _NATIVE_VECTOR_PROBE_TIMEOUT = 10.0
+_lance_write_guard = advisory_file_lock
 
 
 @dataclass(frozen=True)
@@ -65,6 +67,7 @@ class VectorStore(Protocol):
     def is_available(self) -> bool: ...
     def open(self) -> None: ...
     def open_existing(self) -> None: ...
+    def open_existing_for_update(self) -> None: ...
     def close(self) -> None: ...
     def upsert(self, record: VectorRecord | dict[str, Any]) -> None: ...
     def upsert_records(self, rows: Iterable[dict[str, Any]]) -> None: ...
@@ -188,6 +191,10 @@ class LanceVectorStore:
     def dimensions(self) -> int:
         return self._dimensions
 
+    @property
+    def _write_lock_path(self) -> Path:
+        return self._db_path.parent / f".{self._db_path.name}.scope-recall-write.lock"
+
     def is_available(self) -> bool:
         return _optional_lancedb() is not None and _optional_pyarrow() is not None
 
@@ -217,6 +224,11 @@ class LanceVectorStore:
             )
         self._table = self._db.open_table(self._table_name)
         self._ensure_schema_compatible()
+
+    def open_existing_for_update(self) -> None:
+        """Open an existing Lance table for runtime mutation without creating it."""
+
+        self.open_existing()
 
     def _listed_tables(self) -> set[str]:
         assert self._db is not None
@@ -286,10 +298,19 @@ class LanceVectorStore:
         payload = list(rows)
         if not payload:
             return
-        ids = [str(row.get("id") or "") for row in payload if row.get("id")]
-        if ids:
-            self.delete_by_ids(ids)
-        table.add(payload)
+        # A replay can repeat after the physical commit but before the SQLite
+        # outbox completion CAS.  Lance merge_insert makes that retry one
+        # idempotent transaction instead of exposing a delete/add crash window.
+        with _lance_write_guard(self._write_lock_path):
+            checkout_latest = getattr(table, "checkout_latest", None)
+            if callable(checkout_latest):
+                checkout_latest()
+            (
+                table.merge_insert("id")
+                .when_matched_update_all()
+                .when_not_matched_insert_all()
+                .execute(payload)
+            )
 
     def upsert(self, record: VectorRecord | Mapping[str, Any]) -> None:
         self.upsert_records([vector_record_to_dict(record)])
@@ -299,7 +320,11 @@ class LanceVectorStore:
             return
         table = self._require_table()
         quoted = ", ".join(_sql_quote(item) for item in ids)
-        table.delete(f"id IN ({quoted})")
+        with _lance_write_guard(self._write_lock_path):
+            checkout_latest = getattr(table, "checkout_latest", None)
+            if callable(checkout_latest):
+                checkout_latest()
+            table.delete(f"id IN ({quoted})")
 
     def delete(self, ids: list[str]) -> int:
         before = set(self.list_ids())
@@ -339,7 +364,7 @@ class LanceVectorStore:
             memory_id = str(row.get("id") or "")
             if memory_id:
                 ids.append(memory_id)
-        return ids
+        return sorted(ids)
 
     def list_records(self) -> dict[str, dict[str, Any]]:
         rows = self._table_rows()
@@ -440,5 +465,12 @@ def build_vector_store(
             table_name=str(pg_config.get("table_name") or table_name or "scope_recall_vectors"),
             dimensions=dimensions,
             metric=metric,
+            connect_timeout_seconds=int(
+                pg_config.get("connect_timeout_seconds") or 10
+            ),
+            statement_timeout_ms=int(
+                pg_config.get("statement_timeout_ms") or 30_000
+            ),
+            lock_timeout_ms=int(pg_config.get("lock_timeout_ms") or 5_000),
         )
     raise ValueError(f"unsupported vector backend: {backend}")

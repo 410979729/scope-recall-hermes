@@ -87,12 +87,31 @@ def _make_db(tmp_path: Path) -> Path:
             session_id="session",
             source="tool-store",
             target="project",
-            content=f"Legacy imported row has api_key={secret_value} and path {private_path}.",
+            content="Legacy sensitive placeholder before raw import simulation.",
             metadata=json.dumps(
-                {"lifecycle": "active", "memory_type": "project", "note": f"token: {secret_value} at {private_path}"},
+                {"lifecycle": "active", "memory_type": "project"},
                 ensure_ascii=False,
             ),
             allow_duplicate=True,
+        )
+        legacy_content = (
+            f"Legacy imported row has api_key={secret_value} and path {private_path}."
+        )
+        conn.execute(
+            "UPDATE memories SET content=?, summary=?, metadata=? "
+            "WHERE id='mem-sensitive'",
+            (
+                legacy_content,
+                legacy_content,
+                json.dumps(
+                    {
+                        "lifecycle": "active",
+                        "memory_type": "project",
+                        "note": f"token: {secret_value} at {private_path}",
+                    },
+                    ensure_ascii=False,
+                ),
+            ),
         )
         _insert_browser_row(
             conn,

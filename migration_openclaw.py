@@ -19,6 +19,7 @@ from .governance import classify_memory
 from .graph import sync_memory_entities
 from .models import ImportedMemoryRow, build_import_fingerprint, json_dumps_stable, normalize_import_fingerprint_timestamp, normalize_import_timestamp
 from .sql_store import ensure_schema
+from .truth_connection import connect_truth_database
 
 DEFAULT_ALLOWED_TARGETS = {"memory", "ops", "project", "user"}
 IMPORT_LEDGER_SOURCE_KIND = "openclaw-memory-lancedb-pro"
@@ -252,7 +253,7 @@ def backup_sqlite(conn: sqlite3.Connection, db_path: Path) -> str:
         except FileExistsError:
             continue
         fd.close()
-        dest = sqlite3.connect(backup_path)
+        dest = connect_truth_database(backup_path, mode="rwc")
         try:
             conn.backup(dest)
         finally:
@@ -463,8 +464,7 @@ def run_openclaw_import_rows(
     importable_rows = list(plan["importable_rows"])
     target_existed = target_db.exists()
     target_db.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(target_db, timeout=30)
-    conn.row_factory = sqlite3.Row
+    conn = connect_truth_database(target_db, mode="rwc", timeout=30)
     conn.execute("pragma busy_timeout=30000")
     try:
         backup = backup_sqlite(conn, target_db) if target_existed else ""

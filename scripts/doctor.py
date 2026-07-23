@@ -32,8 +32,12 @@ try:  # installed package / pytest package-alias path
     from scope_recall.doctor_journal import journal_enabled_from_config, journal_report
     from scope_recall.doctor_source import source_report
     from scope_recall.doctor_sqlite import memory_candidate_debt_report, memory_quality_lint_report, memory_secret_report, sqlite_report
+    from scope_recall.doctor_temporal import temporal_evolution_report
     from scope_recall.doctor_vector import disabled_vector_report, sqlite_vector_report, vector_report
-    from scope_recall.response_schemas import DOCTOR_RESPONSE_SCHEMA_VERSION
+    from scope_recall.response_schemas import (
+        DOCTOR_REQUIRED_CHECK_NAMES,
+        DOCTOR_RESPONSE_SCHEMA_VERSION,
+    )
 except ImportError:  # pragma: no cover - direct source checkout execution fallback
     from doctor_common import expected_embedder_from_config, load_runtime_config, redact_secret_like_text, vector_backend_from_config, vector_enabled_from_config, vector_fallback_backend_from_config
     from doctor_event_digest import event_digest_report
@@ -41,8 +45,12 @@ except ImportError:  # pragma: no cover - direct source checkout execution fallb
     from doctor_journal import journal_enabled_from_config, journal_report
     from doctor_source import source_report
     from doctor_sqlite import memory_candidate_debt_report, memory_quality_lint_report, memory_secret_report, sqlite_report
+    from doctor_temporal import temporal_evolution_report
     from doctor_vector import disabled_vector_report, sqlite_vector_report, vector_report
-    from response_schemas import DOCTOR_RESPONSE_SCHEMA_VERSION
+    from response_schemas import (  # type: ignore
+        DOCTOR_REQUIRED_CHECK_NAMES,
+        DOCTOR_RESPONSE_SCHEMA_VERSION,
+    )
 
 __all__ = [
     "disabled_vector_report",
@@ -63,6 +71,7 @@ __all__ = [
     "source_report",
     "sqlite_report",
     "sqlite_vector_report",
+    "temporal_evolution_report",
     "vector_backend_from_config",
     "vector_enabled_from_config",
     "vector_fallback_backend_from_config",
@@ -112,6 +121,10 @@ def main() -> int:
             recommendations.append("Fix malformed or unreadable Scope Recall config files; runtime is using defaults or partial config.")
         expected_embedder = expected_embedder_from_config(runtime_config)
         sqlite_payload, sqlite_check, sqlite_recommendations = sqlite_report(hermes_home)
+        temporal_payload, temporal_check, temporal_recommendations = temporal_evolution_report(
+            hermes_home,
+            runtime_config,
+        )
         candidate_payload, candidate_check, candidate_recommendations = memory_candidate_debt_report(hermes_home)
         quality_payload, quality_check, quality_recommendations = memory_quality_lint_report(hermes_home)
         event_digest_payload, event_digest_check, event_digest_recommendations = event_digest_report(hermes_home, runtime_config)
@@ -146,6 +159,7 @@ def main() -> int:
             "expected_embedder": expected_embedder,
             "vector_backend": backend,
             "sqlite": sqlite_payload,
+            "temporal_evolution": temporal_payload,
             "memory_candidate_debt": candidate_payload,
             "memory_quality_lint": quality_payload,
             "event_digest": event_digest_payload,
@@ -157,6 +171,7 @@ def main() -> int:
         }
         checks["config_load"] = config_check
         checks["sqlite_truth"] = sqlite_check
+        checks["temporal_evolution"] = temporal_check
         checks["memory_candidate_debt"] = candidate_check
         checks["memory_quality_lint"] = quality_check
         checks["event_digest"] = event_digest_check
@@ -166,6 +181,7 @@ def main() -> int:
         checks["nightly_digest"] = nightly_check
         checks["vector_companion"] = vector_check
         recommendations.extend(sqlite_recommendations)
+        recommendations.extend(temporal_recommendations)
         recommendations.extend(candidate_recommendations)
         recommendations.extend(quality_recommendations)
         recommendations.extend(event_digest_recommendations)
@@ -175,7 +191,27 @@ def main() -> int:
         recommendations.extend(nightly_recommendations)
         recommendations.extend(vector_recommendations)
 
-    payload["ok"] = all(bool(check.get("ok")) for check in checks.values())
+    contract_ok = True
+    if args.hermes_home:
+        required_checks = set(DOCTOR_REQUIRED_CHECK_NAMES)
+        actual_checks = set(checks)
+        missing_checks = sorted(required_checks - actual_checks)
+        unexpected_checks = sorted(actual_checks - required_checks)
+        contract_ok = not missing_checks and not unexpected_checks
+        payload["check_contract"] = {
+            "ok": contract_ok,
+            "missing_checks": missing_checks,
+            "unexpected_checks": unexpected_checks,
+        }
+        if not contract_ok:
+            recommendations.append(
+                "Doctor check registry drifted from its public response contract; "
+                "update producer and registry together."
+            )
+
+    payload["ok"] = contract_ok and all(
+        bool(check.get("ok")) for check in checks.values()
+    )
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
     return 0 if payload["ok"] else 1
 

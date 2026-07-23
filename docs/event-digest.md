@@ -25,7 +25,7 @@ Unknown event kinds are rejected with `unknown_event_kind` so callers can inspec
 - reject unclassified generic chat with `unclassified_event_candidate` instead of falling back to durable memory proposals;
 - attach stable evidence references such as `session:<id>:turn:<n>` or `session:<id>:event:<kind>`.
 
-The packet is an input to candidate extraction, not a memory write by itself.
+The packet is an input to candidate extraction, not a memory write by itself. When a reviewed event produces multiple candidates, the truth rows and governance evidence commit as one SQLite batch; any candidate or audit failure rolls the entire batch back.
 
 ## Runtime configuration
 

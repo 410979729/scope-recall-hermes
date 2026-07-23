@@ -15,13 +15,19 @@ try:
     from .governance_cleanup import governance_audit_coverage_report
     from .graph_hygiene import graph_hygiene_counts, remaining_graph_hygiene_rows
     from .memory_quality import memory_quality_report
-    from .sql_store import schema_migration_status
+    from .operator_ledger import operator_ledger_report
+    from .relation_frequency_maintenance import relation_frequency_index_report
+    from .relation_rebuild_queue import relation_rebuild_queue_report
+    from .sql_store import fts_integrity_report, schema_migration_status
 except ImportError:  # pragma: no cover - direct source-script execution fallback
     from doctor_common import contains_secret_like_text, sanitize_report_text
     from governance_cleanup import governance_audit_coverage_report
     from graph_hygiene import graph_hygiene_counts, remaining_graph_hygiene_rows
     from memory_quality import memory_quality_report
-    from sql_store import schema_migration_status
+    from operator_ledger import operator_ledger_report
+    from relation_frequency_maintenance import relation_frequency_index_report
+    from relation_rebuild_queue import relation_rebuild_queue_report
+    from sql_store import fts_integrity_report, schema_migration_status
 
 def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     """Inspect SQLite truth-store health, schema, and migration status in read-only mode.
@@ -46,7 +52,24 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
             memory_count = 0
             if "memories" in tables:
                 memory_count = int(conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0])
+            fts_integrity: dict[str, Any] = {
+                "status": "schema_missing",
+                "healthy": False,
+            }
+            if "memories" in tables and "memories_fts" in tables:
+                memory_columns = {
+                    str(row["name"])
+                    for row in conn.execute("PRAGMA table_info(memories)")
+                }
+                if {"metadata", "target"}.issubset(memory_columns):
+                    fts_integrity = dict(fts_integrity_report(conn))
+                    fts_integrity["status"] = (
+                        "ready" if bool(fts_integrity.get("healthy")) else "needs_repair"
+                    )
             graph_hygiene = graph_hygiene_counts(conn)
+            operator_ledger = operator_ledger_report(conn)
+            relation_frequency = relation_frequency_index_report(conn)
+            relation_rebuild = relation_rebuild_queue_report(conn)
             schema_migrations = schema_migration_status(conn)
             governance_audit_coverage = governance_audit_coverage_report(conn)
         finally:
@@ -57,8 +80,26 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
         return sqlite_payload, {"ok": False, "failures": [f"SQLite truth DB error: {exc}"]}, recommendations
 
     orphan_graph_rows = remaining_graph_hygiene_rows(graph_hygiene)
-    status = "needs_repair" if orphan_graph_rows else "ready"
     failures: list[str] = []
+    if (
+        str(fts_integrity.get("status") or "") == "needs_repair"
+        and not bool(fts_integrity.get("healthy"))
+    ):
+        failures.append(
+            "SQLite FTS lifecycle membership drift: "
+            f"expected={int(fts_integrity.get('expected_fts_rows') or 0)}, "
+            f"actual={int(fts_integrity.get('fts_rows') or 0)}, "
+            f"missing={int(fts_integrity.get('missing_fts_rows') or 0)}, "
+            f"stale={int(fts_integrity.get('stale_fts_rows') or 0)}, "
+            f"hidden={int(fts_integrity.get('hidden_fts_rows') or 0)}, "
+            f"duplicates={int(fts_integrity.get('duplicate_fts_extra_rows') or 0)}"
+        )
+        recommendations.append(
+            "FTS lifecycle membership drift exists; run "
+            "`python scripts/repair.fts_index.py --hermes-home <profile> --dry-run`; "
+            "only add `--apply --maintenance-confirmed` after taking normal writers "
+            "offline (the apply path creates and verifies an online backup first)."
+        )
     if orphan_graph_rows:
         failures.append(
             "SQLite graph hygiene has orphan/hidden lifecycle rows: "
@@ -70,6 +111,76 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
         recommendations.append(
             "Graph hygiene orphan or hidden-lifecycle rows found; run scripts/repair.graph_hygiene.py --apply after reviewing the dry-run counts."
         )
+    relation_frequency_dirty = int(relation_frequency.get("dirty_memories") or 0)
+    relation_frequency_backfill = int(
+        relation_frequency.get("backfill_pending_scopes") or 0
+    )
+    relation_frequency_reclassification = int(
+        relation_frequency.get("reclassification_pending_scopes") or 0
+    )
+    if str(relation_frequency.get("status") or "") == "schema_missing":
+        recommendations.append(
+            "Relation frequency index schema is missing; initialize with the current provider before relying on bounded relation sync."
+        )
+    elif (
+        relation_frequency_dirty
+        or relation_frequency_backfill
+        or relation_frequency_reclassification
+    ):
+        recommendations.append(
+            "Relation frequency maintenance debt exists; keep the background writer running until dirty memories, legacy backfill scopes, and threshold reclassification scopes reach zero."
+        )
+    if relation_frequency_dirty >= 5000:
+        failures.append(
+            "relation frequency dirty-memory debt exceeds fail threshold: "
+            f"dirty_memories={relation_frequency_dirty}"
+        )
+
+    relation_unresolved = int(relation_rebuild.get("unresolved") or 0)
+    relation_dead_letter = int(relation_rebuild.get("dead_letter") or 0)
+    relation_oldest_age = float(
+        relation_rebuild.get("oldest_unresolved_age_seconds") or 0.0
+    )
+    if str(relation_rebuild.get("status") or "") == "schema_missing":
+        recommendations.append(
+            "Relation rebuild queue schema is missing; initialize with the current provider before relying on bounded relation sync."
+        )
+    elif relation_unresolved:
+        recommendations.append(
+            "Relation rebuild debt exists; keep the scope-recall background writer running or use the graph-hygiene repair CLI to seed/drain reviewed debt."
+        )
+    if relation_dead_letter:
+        failures.append(
+            f"relation rebuild queue has dead-letter events: {relation_dead_letter}"
+        )
+    elif relation_unresolved >= 500 or relation_oldest_age >= 86400:
+        failures.append(
+            "relation rebuild debt exceeds fail threshold: "
+            f"unresolved={relation_unresolved}, oldest_age_seconds={relation_oldest_age:.0f}"
+        )
+
+    if operator_ledger["status"] == "schema_missing":
+        recommendations.append(
+            "Operator ledger schema is missing; initialize with the current provider before relying on filesystem receipts."
+        )
+    else:
+        pending_receipts = int(operator_ledger.get("pending", 0) or 0)
+        failed_receipts = int(operator_ledger.get("failed", 0) or 0)
+        oldest_receipt_age = float(
+            operator_ledger.get("oldest_unresolved_age_seconds", 0.0) or 0.0
+        )
+        if pending_receipts or failed_receipts:
+            recommendations.append(
+                "Operator receipt mirrors are unresolved; inspect with `python scripts/playbooks.py receipts --json` and retry explicitly with `--apply --include-failed`."
+            )
+        if failed_receipts:
+            failures.append(
+                f"Operator receipt mirror failures require repair: failed={failed_receipts}"
+            )
+        elif pending_receipts >= 100 or oldest_receipt_age >= 3600.0:
+            failures.append(
+                f"Operator receipt mirror debt is stale or excessive: pending={pending_receipts}, oldest={oldest_receipt_age}s"
+            )
     if not bool(schema_migrations.get("current")):
         recommendations.append(
             "SQLite schema migration ledger is not current; run the current scope-recall provider or installer doctor to apply baseline schema metadata before release rollout."
@@ -87,12 +198,17 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
         recommendations.append(
             f"Legacy archived memories without governance audit coverage: {legacy_missing_audit}; run scripts/governance.audit_coverage.py --dry-run and optionally --apply to backfill lineage evidence."
         )
+    status = "needs_repair" if failures else "ready"
     sqlite_payload = {
         "path": str(db_path),
         "status": status,
         "memory_count": memory_count,
         "tables": tables,
+        "fts_integrity": fts_integrity,
         "graph_hygiene": graph_hygiene,
+        "operator_ledger": operator_ledger,
+        "relation_frequency_index": relation_frequency,
+        "relation_rebuild_queue": relation_rebuild,
         "schema_migrations": schema_migrations,
         "governance_audit_coverage": governance_audit_coverage,
     }

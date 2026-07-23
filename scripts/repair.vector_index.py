@@ -41,6 +41,7 @@ from scope_recall_repair_runtime.config import load_runtime_config  # noqa: E402
 from scope_recall_repair_runtime.embedders import build_embedder  # noqa: E402
 from scope_recall_repair_runtime.gating import config_bool  # noqa: E402
 from scope_recall_repair_runtime.lifecycle_policy import ordinary_recall_lifecycle_visible_sql  # noqa: E402
+from scope_recall_repair_runtime.truth_connection import connect_truth_database  # noqa: E402
 from scope_recall_repair_runtime.vector_generation import (  # noqa: E402
     GenerationIdentity,
     resolve_generation_storage_root,
@@ -71,8 +72,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_rows(db_path: Path) -> list[sqlite3.Row]:
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect_truth_database(db_path, mode="ro")
     try:
         return conn.execute(
             f"SELECT id, scope_id, source, target, content, summary, updated_at FROM memories m WHERE {ordinary_recall_lifecycle_visible_sql('m')} ORDER BY updated_at ASC"
@@ -84,8 +84,7 @@ def load_rows(db_path: Path) -> list[sqlite3.Row]:
 def load_active_generation(db_path: Path) -> dict[str, Any] | None:
     """Read the pointer-selected manifest without initializing generation schema."""
 
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
+    conn = connect_truth_database(db_path, mode="ro")
     try:
         tables = {
             str(row[0])

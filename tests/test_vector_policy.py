@@ -10,6 +10,7 @@ import sqlite3
 import pytest
 
 from scope_recall.sql_store import ensure_schema, store_row
+from scope_recall.vector_generation import GenerationIdentity, bootstrap_legacy_generation
 from scope_recall.vector_runtime import sync_vector_index, upsert_vector_record
 
 
@@ -118,6 +119,18 @@ class FakeProvider:
         self._vector_duplicate_row_count = 0
         self._vector_status = "ready"
         self._vector_message = ""
+        manifest = bootstrap_legacy_generation(
+            conn,
+            identity=GenerationIdentity(
+                backend="lancedb",
+                provider="fake",
+                model="fixture-v1",
+                dimensions=2,
+            ),
+            row_count=0,
+        )
+        conn.commit()
+        self._vector_generation_id = str(manifest["generation_id"])
 
     def _require_conn(self):
         return self._conn
@@ -280,6 +293,13 @@ def test_upsert_vector_record_mutates_store_under_vector_lock():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     ensure_schema(conn)
+    _insert(
+        conn,
+        memory_id="memory-locked",
+        target="memory",
+        scope_id="shared-scope",
+        content="durable memory should be indexed under lock",
+    )
     provider = FakeProvider(conn, index_general=False)
     lock = LockSpy()
     provider._vector_lock = lock

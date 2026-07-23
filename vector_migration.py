@@ -32,8 +32,10 @@ from .vector_generation import (
     register_generation,
     start_migration_receipt,
 )
+from .vector_reconciliation import mark_generation_snapshot_reconciled
 from .vector_store import build_vector_store
 from .vector_generation_preflight import (
+    PREFLIGHT_RECEIPT_FILENAME,
     physical_records_sha256,
     validate_generation_physical_store,
     write_generation_preflight_receipt,
@@ -241,6 +243,33 @@ def _validate_shadow_records(
     return search_vector, search_scope_id
 
 
+def _seal_store_for_ready(store: Any) -> None:
+    """Close a physical store, requiring checkpoint evidence for SQLite."""
+
+    backend = str(getattr(store, "backend", "") or "").strip().lower()
+    if backend != "sqlite-bruteforce":
+        store.close()
+        return
+
+    seal = getattr(store, "seal", None)
+    if not callable(seal):
+        raise RuntimeError("sqlite-bruteforce store does not support the required READY seal")
+    checkpoint = seal()
+    if not isinstance(checkpoint, Mapping):
+        raise RuntimeError("sqlite-bruteforce READY seal returned invalid checkpoint evidence")
+    try:
+        busy = int(checkpoint["busy"])
+        log = int(checkpoint["log"])
+        checkpointed = int(checkpoint["checkpointed"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("sqlite-bruteforce READY seal returned invalid checkpoint evidence") from exc
+    if busy != 0 or log != 0 or checkpointed != 0:
+        raise RuntimeError(
+            "sqlite-bruteforce READY seal checkpoint was incomplete: "
+            f"busy={busy}, log={log}, checkpointed={checkpointed}"
+        )
+
+
 def _mark_progress(
     conn: sqlite3.Connection,
     *,
@@ -276,6 +305,7 @@ def _activate_existing_ready(
         expected_current=expected_current,
         storage_dir=storage_dir,
     )
+    mark_generation_snapshot_reconciled(conn, generation_id=generation_id)
     conn.execute(
         """
         UPDATE vector_migration_receipts
@@ -336,6 +366,7 @@ def build_vector_generation(
         )
 
     target_root, relative_path = _safe_generation_root(storage_dir, generation_id)
+    preflight_receipt_path = target_root / PREFLIGHT_RECEIPT_FILENAME
     if target_root.exists():
         raise GenerationCompatibilityError(f"target generation path already exists: {target_root}")
     if generation_manifest(conn, generation_id) is not None:
@@ -444,6 +475,38 @@ def build_vector_generation(
             if not hits:
                 raise RuntimeError("shadow generation search smoke returned no result")
 
+        # Seal the physical companion before publishing READY metadata. SQLite
+        # must prove a complete TRUNCATE checkpoint and zero WAL/SHM sidecars;
+        # every backend is closed before immutable existing-store preflight.
+        _seal_store_for_ready(store)
+        store = None
+
+        sealed_manifest = register_generation(
+            conn,
+            generation_id=generation_id,
+            identity=identity,
+            storage_path=relative_path,
+            status="building",
+            row_count=physical_rows,
+            unique_id_count=unique_ids,
+            source_hash=source_digest.hexdigest(),
+            config_hash=identity.fingerprint,
+            metadata={
+                "batch_size": max(1, int(batch_size)),
+                "index_general": bool(index_general),
+                "duplicate_rows": duplicate_rows,
+                "search_smoke": "ok" if records else "skipped_empty",
+            },
+        )
+        # Validate the sealed main database before creating a receipt. Then
+        # validate again after the atomic receipt write so a sidecar appearing
+        # in either TOCTOU window fails the build before READY is published.
+        physical_preflight = validate_generation_physical_store(
+            storage_dir,
+            sealed_manifest,
+            require_receipt=False,
+        )
+        preflight_receipt = write_generation_preflight_receipt(target_root, sealed_manifest, audit)
         ready_manifest = register_generation(
             conn,
             generation_id=generation_id,
@@ -461,7 +524,9 @@ def build_vector_generation(
                 "search_smoke": "ok" if records else "skipped_empty",
             },
         )
-        preflight_receipt = write_generation_preflight_receipt(target_root, ready_manifest, audit)
+        # READY is still uncommitted here. Re-open the final manifest through
+        # the immutable path so a sidecar introduced while the status/receipt
+        # was finalized converts the build to FAILED before publication.
         physical_preflight = validate_generation_physical_store(
             storage_dir,
             ready_manifest,
@@ -474,6 +539,7 @@ def build_vector_generation(
                 expected_current=actual_current,
                 storage_dir=storage_dir,
             )
+            mark_generation_snapshot_reconciled(conn, generation_id=generation_id)
             receipt_status = "activated"
         else:
             receipt_status = "ready"
@@ -511,6 +577,13 @@ def build_vector_generation(
             "rebuilt": True,
         }
     except Exception as exc:
+        try:
+            preflight_receipt_path.unlink(missing_ok=True)
+        except OSError:
+            # Preserve the build failure as the primary error. A retained
+            # receipt cannot make a failed manifest activatable, and the
+            # durable error below still records the failed state.
+            pass
         safe_error = sanitize_report_text(str(exc)) or "shadow generation build failed"
         try:
             register_generation(

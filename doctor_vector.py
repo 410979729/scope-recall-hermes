@@ -4,6 +4,7 @@ Vector state is rebuildable companion data; failures should mark repair needs wi
 
 from __future__ import annotations
 
+from collections import Counter
 import json
 import sqlite3
 from pathlib import Path
@@ -169,6 +170,25 @@ def apply_vector_truth_consistency(
     recommendations: list[str],
     vector_ids: list[str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], list[str]] | None:
+    if vector_ids is not None:
+        counts = Counter(str(memory_id) for memory_id in vector_ids if str(memory_id))
+        duplicate_ids = sorted(memory_id for memory_id, count in counts.items() if count > 1)
+        duplicate_rows = sum(count - 1 for count in counts.values() if count > 1)
+        payload["duplicate_rows"] = duplicate_rows
+        payload["duplicate_id_count"] = len(duplicate_ids)
+        payload["duplicate_id_samples"] = duplicate_ids[:20]
+        if duplicate_rows:
+            payload.update({"status": "needs_repair", "ready": False})
+            message = (
+                "vector companion has "
+                f"{duplicate_rows} duplicate physical row(s) across "
+                f"{len(duplicate_ids)} id(s)"
+            )
+            recommendations.append(
+                "Do not rewrite the active vector table in place; build and validate a shadow generation from SQLite truth, then activate it with CAS."
+            )
+            return payload, {"ok": False, "failures": [message]}, recommendations
+
     truth_db_present = sqlite_truth_db_exists(hermes_home)
     truth_categories = sqlite_truth_vector_categories(hermes_home, index_general=index_general) if truth_db_present else {
         "all": set(),
@@ -562,6 +582,7 @@ def vector_generation_report(
     *,
     expected_embedder: dict[str, Any] | None,
     backend: str,
+    fallback_backend: str = "",
 ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     """Inspect generation identity, migration state, and durable replay debt."""
 
@@ -614,15 +635,76 @@ def vector_generation_report(
         current_payload = {key: current[key] for key in current.keys() if key != "metadata"}
         if str(current["status"] or "") != "active":
             failures.append(f"current vector generation {current_id} has status {current['status']!r}, expected 'active'")
-        expected = dict(expected_embedder or {})
+        primary_expected = dict(expected_embedder or {})
+        raw_fallback_expected = primary_expected.get("fallback")
+        fallback_expected = (
+            dict(raw_fallback_expected)
+            if isinstance(raw_fallback_expected, dict)
+            else {}
+        )
         current_keys = set(current.keys())
 
         def current_value(key: str, default: Any = "") -> Any:
             return current[key] if key in current_keys else default
 
+        current_backend = str(current["backend"] or "").lower()
+        expected = primary_expected
+        expected_backend = normalize_vector_backend(backend or "lancedb")
+        active_embedder_source = "primary"
+
+        def identity_matches(candidate: dict[str, Any], candidate_backend: str) -> bool:
+            return all(
+                (
+                    current_backend == normalize_vector_backend(candidate_backend)
+                    if key == "backend"
+                    else int(current["dimensions"] or 0) == int(candidate.get("dimensions") or 0)
+                    if key == "dimensions"
+                    else bool(current_value("request_dimensions", 0))
+                    == bool(candidate.get("request_dimensions", False))
+                    if key == "request_dimensions"
+                    else str(current_value(key, "") or "")
+                    == str(candidate.get(key) or "")
+                    if key in {"model", "document_prefix", "query_prefix"}
+                    else str(current_value(key, "") or "").lower()
+                    == str(candidate.get(key) or "").lower()
+                )
+                for key in (
+                    "backend",
+                    "provider",
+                    "model",
+                    "dimensions",
+                    "metric",
+                    "prompt_profile",
+                    "document_prefix",
+                    "query_prefix",
+                    "request_dimensions",
+                )
+            )
+
+        allowed_backends = [backend]
+        if fallback_backend and normalize_vector_backend(fallback_backend) not in {
+            normalize_vector_backend(item) for item in allowed_backends
+        }:
+            allowed_backends.append(fallback_backend)
+        identity_candidates = [("primary", primary_expected)]
+        if fallback_expected:
+            identity_candidates.append(("fallback", fallback_expected))
+        matched_identity = False
+        for candidate_source, candidate_expected in identity_candidates:
+            for candidate_backend in allowed_backends:
+                if not identity_matches(candidate_expected, candidate_backend):
+                    continue
+                expected = candidate_expected
+                expected_backend = normalize_vector_backend(candidate_backend)
+                active_embedder_source = candidate_source
+                matched_identity = True
+                break
+            if matched_identity:
+                break
+
         mismatches: list[str] = []
         comparisons = {
-            "backend": (str(current["backend"] or "").lower(), normalize_vector_backend(backend or "lancedb")),
+            "backend": (current_backend, expected_backend),
             "provider": (str(current["provider"] or "").lower(), str(expected.get("provider") or "").lower()),
             "model": (str(current["model"] or ""), str(expected.get("model") or "")),
             "dimensions": (int(current["dimensions"] or 0), int(expected.get("dimensions") or 0)),
@@ -652,9 +734,9 @@ def vector_generation_report(
             failures.append("configured embedder does not match current generation: " + "; ".join(mismatches))
         provider_available = bool(expected.get("available", True))
         if not provider_available:
-            failures.append("configured primary embedding provider is unavailable")
+            failures.append(f"configured {active_embedder_source} embedding provider is unavailable")
             recommendations.append(
-                "Restore the configured primary embedding credential/endpoint; a different fallback embedding space cannot query or write this generation."
+                f"Restore the configured {active_embedder_source} embedding provider for the active generation before vector query or write operations."
             )
         generation_counts = {
             str(row["status"]): int(row["count"])
@@ -680,19 +762,54 @@ def vector_generation_report(
                 ready_generation_preflight_failures.append(
                     {"generation_id": ready_id, "error": safe_error}
                 )
-                failures.append(
-                    f"ready vector generation {ready_id} physical preflight failed: {safe_error}"
-                )
         if ready_generation_preflight_failures:
             recommendations.append(
-                "Rebuild each invalid READY vector generation from the current truth cohort before activation."
+                "Inactive READY rollback inventory failed physical preflight; it cannot be activated until rebuilt from a current truth cohort."
             )
         outbox_counts = {
             str(row["status"]): int(row["count"])
             for row in conn.execute(
-                "SELECT status, COUNT(*) AS count FROM vector_outbox GROUP BY status"
+                "SELECT status, COUNT(*) AS count FROM vector_outbox WHERE generation_id=? GROUP BY status",
+                (current_id,),
             ).fetchall()
         }
+        inactive_outbox_counts = {
+            str(row["status"]): int(row["count"])
+            for row in conn.execute(
+                "SELECT status, COUNT(*) AS count FROM vector_outbox WHERE generation_id<>? GROUP BY status",
+                (current_id,),
+            ).fetchall()
+        }
+        reconciliation: dict[str, Any] = {"status": "schema_missing"}
+        if "vector_reconciliation_state" in tables:
+            reconciliation_row = conn.execute(
+                """
+                SELECT status, cursor_updated_at, cursor_memory_id,
+                       upper_updated_at, upper_memory_id, cycle_number,
+                       processed_rows, enqueued_events, next_cycle_at,
+                       started_at, last_progress_at, completed_at, last_error
+                FROM vector_reconciliation_state
+                WHERE generation_id=?
+                """,
+                (current_id,),
+            ).fetchone()
+            if reconciliation_row is None:
+                reconciliation = {"status": "not_started"}
+            else:
+                reconciliation = dict(reconciliation_row)
+                reconciliation["last_error"] = sanitize_report_text(
+                    str(reconciliation.get("last_error") or "")
+                )[:300]
+        reconciliation_failed = str(reconciliation.get("status") or "") == "failed"
+        if reconciliation_failed:
+            failures.append("vector reconciliation watermark is in failed state")
+            recommendations.append(
+                "Inspect the vector reconciliation watermark error, repair the underlying SQLite/outbox fault, and resume the bounded cycle without deleting its cursor."
+            )
+        elif str(reconciliation.get("status") or "") == "running":
+            recommendations.append(
+                "Vector reconciliation cycle is in progress; keep bounded maintenance running until the watermark reaches idle."
+            )
         building = int(generation_counts.get("building", 0))
         backlog = sum(int(outbox_counts.get(status, 0)) for status in ("pending", "processing", "retry"))
         dead_letters = int(outbox_counts.get("dead_letter", 0))
@@ -717,12 +834,12 @@ def vector_generation_report(
             status = "provider_unavailable"
         elif building:
             status = "generation_incomplete"
-        elif ready_generation_preflight_failures:
-            status = "ready_generation_invalid"
         elif dead_letters:
             status = "outbox_dead_letter"
         elif backlog:
             status = "outbox_backlog"
+        elif reconciliation_failed:
+            status = "reconciliation_failed"
         payload = {
             "status": status,
             "registered": True,
@@ -731,12 +848,15 @@ def vector_generation_report(
             "current": current_payload,
             "identity_mismatches": mismatches,
             "provider_available": provider_available,
+            "active_embedder_source": active_embedder_source,
             "generation_status_counts": generation_counts,
             "ready_generation_preflights": ready_generation_preflights,
             "ready_generation_preflight_failures": ready_generation_preflight_failures,
             "outbox_status_counts": outbox_counts,
+            "inactive_outbox_status_counts": inactive_outbox_counts,
             "outbox_backlog": backlog,
             "outbox_dead_letters": dead_letters,
+            "reconciliation": reconciliation,
             "failed_migration_receipts": failed_receipts,
         }
         return payload, {"ok": not failures, "failures": failures}, recommendations
@@ -763,6 +883,7 @@ def vector_report(
         hermes_home,
         expected_embedder=expected_embedder,
         backend=backend,
+        fallback_backend=fallback_backend,
     )
     payload["generation"] = generation_payload
     failures = [

@@ -46,6 +46,7 @@ _SCRIPT_COMMANDS: dict[tuple[str, ...], tuple[str, list[str]]] = {
     ("playbooks", "promote"): ("playbooks.py", ["promote"]),
     ("playbooks", "skill-candidates"): ("skill.bridge.py", ["skill-candidates", "--dry-run"]),
     ("playbooks", "quarantine"): ("playbooks.py", ["quarantine"]),
+    ("playbooks", "receipts"): ("playbooks.py", ["receipts"]),
     ("playbooks", "supersede"): ("playbooks.py", ["supersede"]),
 }
 
@@ -91,6 +92,7 @@ Usage:
   hermes-scope-recall playbooks skill-candidates --dry-run --json [bridge options]
   hermes-scope-recall playbooks promote --id <id> [review options]
   hermes-scope-recall playbooks quarantine --id <id> [review options]
+  hermes-scope-recall playbooks receipts [--apply] [--include-failed]
   hermes-scope-recall playbooks supersede --id <id> --superseded-by <id> [review options]
 
 Existing script options are forwarded unchanged. Use --help after any command

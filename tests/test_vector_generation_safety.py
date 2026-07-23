@@ -6,6 +6,7 @@ import json
 import sqlite3
 import threading
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -30,7 +31,9 @@ from scope_recall.vector_generation import (
     fail_vector_event,
     finish_migration_receipt,
     generation_health_report,
+    generation_manifest,
     register_generation,
+    retire_ready_generation,
     start_migration_receipt,
     validate_generation_compatibility,
 )
@@ -170,7 +173,7 @@ def test_generation_health_marks_legacy_invalid_storage_paths(legacy_path):
     assert "[INVALID_STORAGE_PATH]" in rendered
 
 
-def test_setup_vector_layer_redacts_legacy_invalid_path_from_all_status_surfaces(monkeypatch, tmp_path):
+def test_setup_vector_layer_does_not_leak_orphan_generation_invalid_path(monkeypatch, tmp_path):
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.executescript(
@@ -255,7 +258,7 @@ def test_setup_vector_layer_redacts_legacy_invalid_path_from_all_status_surfaces
     assert raw_path not in provider._vector_message
     assert raw_path not in prompt
     assert raw_path not in rendered_status
-    assert "storage_path" in provider._vector_message
+    assert "current_pointer" in provider._vector_message
     assert provider._vector_message not in prompt
     assert len(provider._vector_message) <= 300
 
@@ -275,7 +278,7 @@ def test_native_dependency_status_redacts_defensive_exception_path(monkeypatch):
     assert "[REDACTED_PATH]" in str(status.get("stderr") or "")
 
 
-def test_native_fallback_redacts_internal_stats_and_warning_surfaces(monkeypatch, tmp_path, caplog):
+def test_active_backend_failure_redacts_internal_stats_and_warning_surfaces(monkeypatch, tmp_path, caplog):
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.executescript(
@@ -356,16 +359,15 @@ def test_native_fallback_redacts_internal_stats_and_warning_surfaces(monkeypatch
     caplog.set_level("WARNING", logger=vector_runtime_module.__name__)
 
     provider = Provider()
-    vector_runtime_module._open_vector_store(provider, dimensions=8)
-    try:
-        stats = memory_ops.stats_payload(provider)
-        prompt = MemoryProvider.system_prompt_block(provider)
-    finally:
-        if provider._vector_store is not None:
-            provider._vector_store.close()
+    with pytest.raises(RuntimeError) as error:
+        vector_runtime_module._open_vector_store(provider, dimensions=8)
+    vector_runtime_module._mark_vector_startup_degraded(provider, error.value)
+    stats = memory_ops.stats_payload(provider)
+    prompt = MemoryProvider.system_prompt_block(provider)
 
     rendered_stats = json.dumps(stats, ensure_ascii=False)
-    assert provider._vector_backend == "sqlite-bruteforce"
+    assert provider._vector_backend == "lancedb"
+    assert provider._vector_store is None
     assert raw_path not in provider._vector_message
     assert raw_path not in rendered_stats
     assert raw_path not in caplog.text
@@ -576,6 +578,48 @@ def test_vector_outbox_is_idempotent_and_claims_once():
 
     complete_vector_event(conn, first["id"], worker_id="worker-a")
     assert conn.execute("SELECT status FROM vector_outbox WHERE id = ?", (first["id"],)).fetchone()[0] == "completed"
+
+
+def test_vector_outbox_coalesces_opposite_unprocessed_intent() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_vector_generation_schema(conn)
+    enqueue_vector_event(
+        conn,
+        event_key="memory-coalesce:upsert:v1",
+        generation_id="gen-001",
+        memory_id="memory-coalesce",
+        operation="upsert",
+    )
+    enqueue_vector_event(
+        conn,
+        event_key="memory-coalesce:delete:v2",
+        generation_id="gen-001",
+        memory_id="memory-coalesce",
+        operation="delete",
+    )
+    assert [
+        tuple(row)
+        for row in conn.execute(
+            "SELECT operation, status FROM vector_outbox WHERE memory_id = ?",
+            ("memory-coalesce",),
+        ).fetchall()
+    ] == [("delete", "pending")]
+
+    enqueue_vector_event(
+        conn,
+        event_key="memory-coalesce:upsert:v3",
+        generation_id="gen-001",
+        memory_id="memory-coalesce",
+        operation="upsert",
+    )
+    assert [
+        tuple(row)
+        for row in conn.execute(
+            "SELECT operation, status FROM vector_outbox WHERE memory_id = ?",
+            ("memory-coalesce",),
+        ).fetchall()
+    ] == [("upsert", "pending")]
 
 
 def test_vector_outbox_reclaims_expired_worker_lease_with_cas():
@@ -988,6 +1032,138 @@ def test_replay_outbox_deletes_candidate_instead_of_upserting_it():
     assert store.deleted == ["candidate-1"]
 
 
+def test_fresh_setup_may_create_real_empty_generation_with_available_fallback(
+    monkeypatch, tmp_path
+):
+    monkeypatch.delenv("SCOPE_RECALL_TEST_MISSING_EMBED_KEY", raising=False)
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+
+    class Provider:
+        _storage_dir = tmp_path
+        _vector_config = {
+            "enabled": True,
+            "backend": "sqlite-bruteforce",
+            "fallback_backend": "sqlite-bruteforce",
+            "table_name": "memories",
+            "embedder": {
+                "provider": "openai-compatible",
+                "model": "gemini-embedding-001",
+                "dimensions": 3072,
+                "api_key_env": ["SCOPE_RECALL_TEST_MISSING_EMBED_KEY"],
+            },
+            "fallback_embedder": {
+                "provider": "local-hash",
+                "model": "hash-v1",
+                "dimensions": 16,
+            },
+        }
+        _retrieval_config = {"metric": "cosine"}
+        _lock = threading.RLock()
+        _vector_lock = threading.RLock()
+        _scope_id = "scope-a"
+        _vector_status = ""
+        _vector_message = ""
+        _vector_backend = ""
+        _embedder: Any = None
+        _vector_store: Any = None
+
+        def _require_conn(self):
+            return conn
+
+        @staticmethod
+        def _vector_text(summary, content):
+            return summary or content
+
+    provider = Provider()
+    setup_vector_layer(provider)
+
+    manifest = current_generation(conn)
+    assert provider._vector_status == "ready"
+    assert provider._embedder.provider == "local-hash"
+    assert provider._vector_store.count_rows() == 0
+    assert manifest is not None
+    assert manifest["backend"] == "sqlite-bruteforce"
+    assert manifest["provider"] == "local-hash"
+    assert manifest["model"] == "hash-v1"
+    assert manifest["dimensions"] == 16
+    provider._vector_store.close()
+    conn.close()
+
+
+def test_active_fallback_generation_remains_authoritative_when_primary_returns(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("SCOPE_RECALL_TEST_EMBED_KEY", "available-test-key")
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    store = SQLiteBruteForceVectorStore(
+        tmp_path / "vector.sqlite3", table_name="memories", dimensions=16
+    )
+    store.open()
+    store.close()
+    bootstrap_legacy_generation(
+        conn,
+        identity=GenerationIdentity(
+            backend="sqlite-bruteforce",
+            provider="local-hash",
+            model="hash-v1",
+            dimensions=16,
+            metric="cosine",
+            table_name="memories",
+        ),
+        row_count=0,
+    )
+
+    class Provider:
+        _storage_dir = tmp_path
+        _vector_config = {
+            "enabled": True,
+            "backend": "lancedb",
+            "fallback_backend": "sqlite-bruteforce",
+            "table_name": "memories",
+            "embedder": {
+                "provider": "openai-compatible",
+                "model": "gemini-embedding-001",
+                "dimensions": 3072,
+                "api_key_env": ["SCOPE_RECALL_TEST_EMBED_KEY"],
+            },
+            "fallback_embedder": {
+                "provider": "local-hash",
+                "model": "hash-v1",
+                "dimensions": 16,
+            },
+        }
+        _retrieval_config = {"metric": "cosine"}
+        _lock = threading.RLock()
+        _vector_lock = threading.RLock()
+        _scope_id = "scope-a"
+        _vector_status = ""
+        _vector_message = ""
+        _vector_backend = ""
+        _embedder: Any = None
+        _vector_store: Any = None
+
+        def _require_conn(self):
+            return conn
+
+        @staticmethod
+        def _vector_text(summary, content):
+            return summary or content
+
+    provider = Provider()
+    setup_vector_layer(provider)
+
+    assert provider._vector_status == "ready"
+    assert provider._vector_backend == "sqlite-bruteforce"
+    assert provider._embedder.provider == "local-hash"
+    assert "fallback generation" in provider._vector_message
+    provider._vector_store.close()
+    conn.close()
+
+
 def test_setup_never_uses_different_space_fallback_for_active_generation(monkeypatch, tmp_path):
     monkeypatch.delenv("SCOPE_RECALL_TEST_MISSING_EMBED_KEY", raising=False)
     vector_dir = tmp_path / "lancedb"
@@ -1056,3 +1232,115 @@ def test_setup_never_uses_different_space_fallback_for_active_generation(monkeyp
     finally:
         reopened.close()
         conn.close()
+
+
+
+def test_ready_generation_retirement_is_cas_protected_and_preserves_physical_storage(tmp_path):
+    storage = tmp_path / "scope-recall"
+    target = storage / "vector-generations" / "gen-stale"
+    target.mkdir(parents=True)
+    sentinel = target / "sentinel.bin"
+    sentinel.write_bytes(b"retain-me")
+    conn = sqlite3.connect(storage / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    ensure_vector_generation_schema(conn)
+    identity = _identity()
+    active = bootstrap_legacy_generation(conn, identity=identity, row_count=0)
+    register_generation(
+        conn,
+        generation_id="gen-stale",
+        identity=identity,
+        storage_path="vector-generations/gen-stale",
+        status="ready",
+        metadata={"existing": "preserved"},
+    )
+    conn.commit()
+
+    retired = retire_ready_generation(
+        conn,
+        "gen-stale",
+        expected_current=str(active["generation_id"]),
+        reason="source cohort is stale",
+        timestamp="2026-07-18T00:00:00+00:00",
+    )
+
+    assert conn.in_transaction is True
+    assert retired["status"] == "retired"
+    assert current_generation(conn)["generation_id"] == active["generation_id"]
+    metadata = json.loads(str(retired["metadata"]))
+    assert metadata["existing"] == "preserved"
+    assert metadata["retirement"] == {
+        "at": "2026-07-18T00:00:00+00:00",
+        "previous_status": "ready",
+        "reason": "source cohort is stale",
+    }
+    assert sentinel.read_bytes() == b"retain-me"
+    conn.rollback()
+    assert generation_manifest(conn, "gen-stale")["status"] == "ready"
+    conn.close()
+
+
+
+def _retirement_fixture() -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_vector_generation_schema(conn)
+    identity = _identity()
+    register_generation(
+        conn,
+        generation_id="gen-active",
+        identity=identity,
+        storage_path=".",
+        status="active",
+    )
+    conn.execute(
+        "INSERT INTO vector_generation_state(key, value, updated_at) VALUES (?, ?, ?)",
+        ("current_generation", "gen-active", "2026-07-18T00:00:00+00:00"),
+    )
+    register_generation(
+        conn,
+        generation_id="gen-ready",
+        identity=identity,
+        storage_path="vector-generations/gen-ready",
+        status="ready",
+    )
+    register_generation(
+        conn,
+        generation_id="gen-failed",
+        identity=identity,
+        storage_path="vector-generations/gen-failed",
+        status="failed",
+    )
+    conn.commit()
+    return conn
+
+
+
+@pytest.mark.parametrize(
+    ("target_id", "expected_current", "pattern"),
+    [
+        ("gen-active", "gen-active", "current generation"),
+        ("gen-ready", "stale-browser-pointer", "CAS conflict"),
+        ("gen-failed", "gen-active", "expected 'ready'"),
+    ],
+)
+def test_generation_retirement_refuses_current_stale_cas_and_non_ready(
+    target_id,
+    expected_current,
+    pattern,
+):
+    conn = _retirement_fixture()
+
+    with pytest.raises(GenerationCompatibilityError, match=pattern):
+        retire_ready_generation(
+            conn,
+            target_id,
+            expected_current=expected_current,
+            reason="operator test",
+        )
+
+    assert conn.in_transaction is False
+    assert current_generation(conn)["generation_id"] == "gen-active"
+    assert generation_manifest(conn, "gen-ready")["status"] == "ready"
+    assert generation_manifest(conn, "gen-failed")["status"] == "failed"
+    conn.close()

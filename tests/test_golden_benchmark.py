@@ -1,6 +1,7 @@
-"""Tests for golden benchmark isolation, expected/forbidden IDs, and packaged benchmark assets.
+"""Tests for curated benchmark isolation, expected/forbidden IDs, and assets.
 
-They make commercial recall quality part of the release contract."""
+They make curated lexical recall regressions part of the release contract without
+claiming production or commercial-quality evidence."""
 
 from __future__ import annotations
 
@@ -13,6 +14,35 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_curated_fixture_has_regression_scale_and_smoke_profiles_are_labeled() -> None:
+    curated = json.loads(
+        (ROOT / "benchmarks" / "curated_recall_quality_cases_v2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    cases = curated["cases"]
+    assert curated["name"] == "curated_recall_regression_v2"
+    assert curated["quality_tier"] == "curated-regression"
+    assert "not production or commercial-quality evidence" in curated["description"]
+    assert 100 <= len(cases) <= 300
+    assert len(curated["setup"]) == 88
+    assert all(case.get("expected_labels") for case in cases)
+    assert all(case.get("forbidden_labels") for case in cases)
+    prefixes = {str(case["name"]).split("-", 1)[0] for case in cases}
+    assert {"procedure", "current", "chinese", "scope", "mixed"} <= prefixes
+
+    lexical_smoke = json.loads(
+        (ROOT / "benchmarks" / "golden_recall_cases.json").read_text(encoding="utf-8")
+    )
+    hybrid_smoke = json.loads(
+        (ROOT / "benchmarks" / "golden_recall_hybrid_cases.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert lexical_smoke["name"].startswith("recall_smoke_")
+    assert hybrid_smoke["name"].startswith("recall_smoke_")
 
 
 def _load_benchmark_module_without_plugins(monkeypatch):
@@ -68,7 +98,13 @@ def test_golden_benchmark_uses_isolated_home_and_keeps_existing_config_read_only
     original = {"retrieval": {"mode": "lexical", "min_score": 0.42}, "sentinel": "do-not-overwrite"}
     live_config.write_text(json.dumps(original, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
 
-    proc = _run_benchmark("--hermes-home", str(live_home), "--auto-explain-on-fail")
+    proc = _run_benchmark(
+        "--cases",
+        "benchmarks/golden_recall_cases.json",
+        "--hermes-home",
+        str(live_home),
+        "--auto-explain-on-fail",
+    )
 
     assert proc.returncode == 0, proc.stderr + proc.stdout
     payload = json.loads(proc.stdout)

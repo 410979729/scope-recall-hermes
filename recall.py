@@ -10,6 +10,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+from .capture_filters import redact_secret_like_text, sanitize_structured_value
 from .gating import query_tokens
 from .freshness import attach_freshness_metadata, memory_freshness_map
 from .graph import apply_quality_weight, entity_distance_scores, entity_overlap_bonus, metadata_entities, normalize_entity, query_entities as graph_query_entities
@@ -17,6 +18,11 @@ from .lifecycle_policy import ORDINARY_RECALL_HIDDEN_LIFECYCLE_VALUES, ordinary_
 from .models import RecallItem
 from .recall_pipeline import build_search_plan, final_trace_payload, initial_trace, merge_recall_candidates, rank_recall_items
 from .scoring import combine_scores, reciprocal_rank_fusion
+from .temporal_query import (
+    MAX_PRECEDENCE_MEMORY_IDS,
+    query_current_fact_views,
+    query_temporal_memory_precedence,
+)
 
 _FRESHNESS_HINTS = {
     "current",
@@ -31,9 +37,11 @@ _FRESHNESS_HINTS = {
     "updated",
 }
 
-_FRESHNESS_BASE_WEIGHT = 0.22
-_FRESHNESS_STEP_WEIGHT = 0.1
-_FRESHNESS_MAX_WEIGHT = 0.42
+_FRESHNESS_BASE_WEIGHT = 0.03
+_FRESHNESS_STEP_WEIGHT = 0.015
+_FRESHNESS_MAX_WEIGHT = 0.06
+_FRESHNESS_ABSOLUTE_BONUS_CAP = 0.06
+_FRESHNESS_RELATIVE_BONUS_RATIO = 0.12
 
 _TEMPORAL_DURABLE_TYPES = {
     "constraint",
@@ -57,9 +65,26 @@ _TEMPORAL_TEMPORARY_TYPES = {"scratch", "temporary", "temporary_state", "tool_tr
 _RECALL_HIDDEN_LIFECYCLE_VALUES = ORDINARY_RECALL_HIDDEN_LIFECYCLE_VALUES
 _RECALL_HIDDEN_LIFECYCLE_TYPES = set(_RECALL_HIDDEN_LIFECYCLE_VALUES)
 
+
+def _safe_recall_item(item: RecallItem) -> RecallItem:
+    """Redact legacy sensitive payloads at the model/tool egress boundary."""
+
+    safe_metadata, _ = sanitize_structured_value(item.metadata or {})
+    return RecallItem(
+        id=item.id,
+        content=redact_secret_like_text(item.content),
+        summary=redact_secret_like_text(item.summary),
+        source=redact_secret_like_text(item.source),
+        target=redact_secret_like_text(item.target),
+        score=item.score,
+        updated_at=item.updated_at,
+        metadata=safe_metadata if isinstance(safe_metadata, dict) else {},
+    )
+
 _ENTITY_SCOPE_STOPWORDS = {
     "api",
     "base",
+    "how",
     "is",
     "url",
     "uri",
@@ -73,6 +98,12 @@ _ENTITY_SCOPE_STOPWORDS = {
     "releases",
     "rollout",
     "style",
+    "tell",
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
     "deploy",
     "deployment",
     "rollback",
@@ -103,12 +134,16 @@ class RecallService:
         self.provider = provider
         self.last_rejected_candidates: list[RecallItem] = []
         self.last_funnel_trace: dict[str, Any] = {}
+        self.last_temporal_query_diagnostics: dict[str, Any] = {}
 
     def search_memories(self, query: str, *, limit: int) -> list[RecallItem]:
         """Search accessible memory sources and return ranked recall payloads.
 
         The method keeps lifecycle/scope filtering ahead of ranking so archived, candidate, rejected, or inaccessible rows do not spend prompt budget unless the caller explicitly asks for them."""
         started_at = time.perf_counter()
+        # Diagnostics describe one search only; never leak a prior temporal
+        # query into a later request where the feature gate is disabled.
+        self.last_temporal_query_diagnostics = {}
         retrieval_cfg = self.provider._retrieval_config or {}
         plan = build_search_plan(
             limit=limit,
@@ -142,6 +177,60 @@ class RecallService:
         trace["stages"]["curated"] = self._trace_stage(curated_candidates)
         trace["timings_ms"]["curated"] = self._elapsed_ms(stage_start)
 
+        temporal_candidates: list[RecallItem] = []
+        temporal_memory_ids = list(
+            dict.fromkeys(
+                item.id
+                for item in (
+                    lexical_candidates + vector_candidates + curated_candidates
+                )
+                if item.id
+            )
+        )
+        temporal_payload = self._temporal_current_candidates(
+            query,
+            limit=candidate_pool,
+            candidate_memory_ids=temporal_memory_ids,
+        )
+        if temporal_payload is not None:
+            temporal_candidates, suppressed_memory_ids = temporal_payload
+            current_memory_ids = {item.id for item in temporal_candidates}
+            before_temporal_filter = (
+                len(lexical_candidates)
+                + len(vector_candidates)
+                + len(curated_candidates)
+            )
+            lexical_candidates = [
+                item
+                for item in lexical_candidates
+                if item.id not in suppressed_memory_ids
+                and item.id not in current_memory_ids
+            ]
+            vector_candidates = [
+                item
+                for item in vector_candidates
+                if item.id not in suppressed_memory_ids
+                and item.id not in current_memory_ids
+            ]
+            curated_candidates = [
+                item
+                for item in curated_candidates
+                if item.id not in suppressed_memory_ids
+                and item.id not in current_memory_ids
+            ]
+            after_temporal_filter = (
+                len(lexical_candidates)
+                + len(vector_candidates)
+                + len(curated_candidates)
+            )
+            trace["filters"]["temporal_stale_removed"] = max(
+                0,
+                before_temporal_filter - after_temporal_filter,
+            )
+            trace["stages"]["temporal_current"] = self._trace_stage(
+                temporal_candidates
+            )
+
         rrf_by_id = self._rrf_scores(lexical_candidates, vector_candidates, curated_candidates)
         trace["stages"]["rrf"] = {"count": len(rrf_by_id), "ids": sorted(rrf_by_id)[:20]}
         for item in lexical_candidates + vector_candidates + curated_candidates:
@@ -149,7 +238,12 @@ class RecallService:
                 item.metadata = dict(item.metadata or {})
                 item.metadata["rrf_score"] = rrf_by_id[item.id]
 
-        all_candidates = lexical_candidates + vector_candidates + curated_candidates
+        all_candidates = (
+            lexical_candidates
+            + vector_candidates
+            + curated_candidates
+            + temporal_candidates
+        )
         merged = merge_recall_candidates(
             all_candidates,
             content_dedup_key=self.provider._dedup_key,
@@ -295,16 +389,104 @@ class RecallService:
                 item.score += bonus
                 item.metadata["final_score"] = item.score
 
-        ranked_rejected = rank_recall_items(rejected)
+        ranked_rejected = [
+            _safe_recall_item(item) for item in rank_recall_items(rejected)
+        ]
         self.last_rejected_candidates = ranked_rejected
 
-        ranked = rank_recall_items(filtered)
+        ranked = [_safe_recall_item(item) for item in rank_recall_items(filtered)]
         returned = ranked[:bounded_limit]
         trace["stages"]["ranked"] = self._trace_stage(ranked)
         trace["final"] = final_trace_payload(returned=returned, ranked_rejected=ranked_rejected)
         trace["timings_ms"]["total"] = self._elapsed_ms(started_at)
         self.last_funnel_trace = trace
         return returned
+
+    def _temporal_current_candidates(
+        self,
+        query: str,
+        *,
+        limit: int,
+        candidate_memory_ids: list[str],
+    ) -> tuple[list[RecallItem], frozenset[str]] | None:
+        raw_config = getattr(self.provider, "_config", {})
+        temporal_config = (
+            dict(raw_config.get("temporal_queries") or {})
+            if isinstance(raw_config, dict)
+            else {}
+        )
+        if not self._config_bool(temporal_config.get("enabled"), False):
+            return None
+        scopes = [
+            str(scope_id)
+            for scope_id in (
+                getattr(self.provider, "_accessible_scope_ids", []) or []
+            )
+            if str(scope_id)
+        ]
+        if not scopes:
+            raise RuntimeError("temporal recall requires at least one accessible scope")
+        configured_limit = self._positive_int(
+            temporal_config.get("current_limit"),
+            50,
+        )
+        bounded_limit = min(200, max(1, min(int(limit), configured_limit)))
+        timezone_name = str(temporal_config.get("timezone") or "UTC")
+        with self.provider._lock:
+            conn = self.provider._require_conn()
+            precedence = query_temporal_memory_precedence(
+                conn,
+                scope_ids=scopes,
+                memory_ids=candidate_memory_ids[:MAX_PRECEDENCE_MEMORY_IDS],
+                timezone_name=timezone_name,
+            )
+            query_diagnostics: dict[str, Any] = {}
+            views = query_current_fact_views(
+                conn,
+                scope_ids=scopes,
+                query=query,
+                valid_at=precedence.semantic_at,
+                timezone_name=timezone_name,
+                limit=bounded_limit,
+                diagnostics=query_diagnostics,
+            )
+        self.last_temporal_query_diagnostics = dict(query_diagnostics)
+        candidates: list[RecallItem] = []
+        for view in views:
+            lexical_score = min(1.0, max(0.0, float(view.score)))
+            candidates.append(
+                RecallItem(
+                    id=view.memory_id,
+                    content=view.content,
+                    summary=view.summary or view.content,
+                    source=view.source,
+                    target=view.target,
+                    score=lexical_score,
+                    updated_at=view.updated_at,
+                    metadata={
+                        "lexical_score": lexical_score,
+                        "vector_score": 0.0,
+                        "scope_id": view.scope_id,
+                        "importance": view.confidence,
+                        "memory_type": "factual",
+                        "temporal_fact_current": True,
+                        "temporal_authoritative": True,
+                        "temporal_claim_id": view.claim_id,
+                        "temporal_fact_key": view.fact_key,
+                        "temporal_value": view.value,
+                        "temporal_status": view.status,
+                        "temporal_valid_from": view.valid_from,
+                        "temporal_valid_to": view.valid_to,
+                        "temporal_recorded_at": view.recorded_at,
+                        "temporal_semantic_at": view.semantic_at,
+                        "temporal_evidence_count": view.evidence_count,
+                        "temporal_confidence": view.confidence,
+                        "temporal_score_explain": dict(view.score_explain),
+                        "temporal_candidate_diagnostics": dict(query_diagnostics),
+                    },
+                )
+            )
+        return candidates, precedence.suppressed_memory_ids
 
     @staticmethod
     def _positive_int(value: Any, default: int) -> int:
@@ -340,7 +522,8 @@ class RecallService:
             normalized = normalize_entity(value)
             if not normalized or normalized in _ENTITY_SCOPE_STOPWORDS:
                 continue
-            if len(normalized) < 3 and not normalized.startswith("project:"):
+            minimum_length = 2 if re.search(r"[\u4e00-\u9fff]", normalized) else 3
+            if len(normalized) < minimum_length and not normalized.startswith("project:"):
                 continue
             output.add(normalized)
         return output
@@ -354,6 +537,32 @@ class RecallService:
         values.extend(match.group(1) for match in re.finditer(r"`([^`\n]{2,80})`", raw))
         values.extend(match.group(0) for match in re.finditer(r"\b[A-Z][A-Za-z0-9_.:/#-]{2,63}\b", raw))
         values.extend(match.group(0) for match in re.finditer(r"[\u4e00-\u9fff]{2,12}", raw))
+        return self._scope_entities(values)
+
+    def _explicit_query_scope_entities(self, query: str) -> set[str]:
+        raw = str(query or "")
+        values = [
+            match.group(0)
+            for match in re.finditer(r"\b[A-Z][A-Za-z0-9_.:/#-]{2,63}\b", raw)
+        ]
+        values.extend(
+            token
+            for token in query_tokens(raw)
+            if re.fullmatch(r"[\u4e00-\u9fff]{2,24}", token)
+        )
+        return self._scope_entities(values)
+
+    def _explicit_item_scope_entities(
+        self,
+        item: RecallItem,
+    ) -> set[str]:
+        content = str(item.content or "")
+        values = [
+            match.group(0)
+            for match in re.finditer(r"\b[A-Z][A-Za-z0-9_.:/#-]{2,63}\b", content)
+        ]
+        for match in re.finditer(r"[\u4e00-\u9fff]{2,24}", content):
+            values.append(match.group(0)[:2])
         return self._scope_entities(values)
 
     def _entity_scope_mismatch(self, query: str, item: RecallItem, meta: dict[str, Any]) -> bool:
@@ -374,13 +583,24 @@ class RecallService:
             if not item_projects:
                 return False
             return not bool(query_projects & item_projects)
+        query_lower = str(query or "").lower()
+        explicit_item_entities = self._explicit_item_scope_entities(item)
+        if explicit_item_entities:
+            for entity in explicit_item_entities:
+                minimum_length = 2 if re.search(r"[\u4e00-\u9fff]", entity) else 3
+                if len(entity) >= minimum_length and entity in query_lower:
+                    return False
+            explicit_query_entities = self._explicit_query_scope_entities(query)
+            if explicit_query_entities:
+                return not bool(explicit_query_entities & explicit_item_entities)
         item_scope_entities = self._scope_entities(metadata_entities(meta, item.content, item.target))
         if not item_scope_entities:
             return False
         query_scope_entities = self._query_scope_entities(query)
         query_lower = str(query or "").lower()
         for entity in item_scope_entities:
-            if len(entity) >= 3 and entity in query_lower:
+            minimum_length = 2 if re.search(r"[\u4e00-\u9fff]", entity) else 3
+            if len(entity) >= minimum_length and entity in query_lower:
                 query_scope_entities.add(entity)
         if not query_scope_entities:
             return False
@@ -686,10 +906,10 @@ class RecallService:
         if mode == "vector":
             return vector
         if mode == "hybrid":
-            if bm25 > 0.0 and lexical <= 0.0 and vector <= 0.0:
-                base = bm25
-            elif lexical > 0.0 and vector <= 0.0 and bm25 <= 0.0:
-                base = lexical
+            if vector <= 0.0 and (lexical > 0.0 or bm25 > 0.0):
+                # Lexical score and normalized BM25 are two views of the same
+                # modality. Do not depress them with a missing vector weight.
+                base = max(lexical, bm25)
             elif vector > 0.0 and lexical <= 0.0 and bm25 <= 0.0:
                 base = vector
             else:
@@ -793,7 +1013,29 @@ class RecallService:
         timestamp = self._timestamp_value(updated_at)
         normalized_recency = max(0.0, min(1.0, (timestamp - oldest) / span))
         relevance_gate = max(0.0, min(1.0, base_score / 0.6))
-        return freshness_weight * normalized_recency * relevance_gate
+        raw_bonus = freshness_weight * normalized_recency * relevance_gate
+        retrieval_cfg = self.provider._retrieval_config or {}
+        absolute_cap = max(
+            0.0,
+            min(
+                0.15,
+                float(
+                    retrieval_cfg.get("freshness_absolute_bonus_cap")
+                    or _FRESHNESS_ABSOLUTE_BONUS_CAP
+                ),
+            ),
+        )
+        relative_ratio = max(
+            0.0,
+            min(
+                0.25,
+                float(
+                    retrieval_cfg.get("freshness_relative_bonus_ratio")
+                    or _FRESHNESS_RELATIVE_BONUS_RATIO
+                ),
+            ),
+        )
+        return min(raw_bonus, absolute_cap, base_score * relative_ratio)
 
     def _timestamp_value(self, raw: str) -> float:
         if not raw:

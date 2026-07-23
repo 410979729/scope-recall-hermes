@@ -7,10 +7,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from .fact_actions import EvolutionProposal
 from .gating import compact_text
 from .governance import normalize_memory_type
 from .graph import normalize_entity
 from .journal_store import JournalEntry
+from .memory_admission import automatic_admission_metadata
 
 __all__ = [
     "JournalDigestCandidate",
@@ -44,6 +46,7 @@ class JournalDigestCandidate:
     reason: str = ""
     entry_ids: list[int] = field(default_factory=list)
     session_ids: list[str] = field(default_factory=list)
+    evolution: EvolutionProposal | None = None
 
 
 def _unique(values: list[str], *, limit: int = 16) -> list[str]:
@@ -274,7 +277,7 @@ def heuristic_journal_candidates(entries: list[JournalEntry]) -> list[JournalDig
 
 
 def candidate_metadata(candidate: JournalDigestCandidate, run_id: str) -> dict[str, Any]:
-    return {
+    metadata: dict[str, Any] = {
         "memory_type": normalize_memory_type(candidate.memory_type, "summary"),
         "importance": max(0.0, min(1.0, float(candidate.importance))),
         "confidence": max(0.0, min(1.0, float(candidate.confidence))),
@@ -285,3 +288,15 @@ def candidate_metadata(candidate: JournalDigestCandidate, run_id: str) -> dict[s
         "journal_session_ids": candidate.session_ids[:40],
         "journal_reason": candidate.reason,
     }
+    if candidate.evolution is not None:
+        metadata["fact_evolution"] = candidate.evolution.as_dict()
+    metadata.update(
+        automatic_admission_metadata(
+            content=candidate.content,
+            memory_type=str(metadata["memory_type"]),
+            source="journal-digest",
+            recommended_action="candidate",
+            structured_evolution=candidate.evolution is not None,
+        )
+    )
+    return metadata

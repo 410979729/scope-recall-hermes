@@ -14,28 +14,55 @@ from typing import Any
 from .capture import store_now
 from .capture_filters import sanitize_report_text, sanitize_structured_value
 from .freshness import attach_freshness_metadata, memory_freshness_map
+from .fact_repository import (
+    FactMutationAuthorityError,
+    fact_ownership_for_memories,
+)
 from .gating import compact_text
-from .graph import clamp_float, compact_context_lines, lifecycle_visible_sql, load_metadata, normalize_entity
+from .graph import (
+    clamp_float,
+    compact_context_lines,
+    lifecycle_visible_sql,
+    load_metadata,
+    normalize_entity,
+)
 from .graph_relations import graph_relation_stats
-from .governance import classify_memory, is_conflicting, merge_memory_text, semantic_similarity
+from .governance import (
+    classify_memory,
+    is_conflicting,
+    merge_memory_text,
+    semantic_similarity,
+)
 from .lifecycle_service import hard_delete_memories, transition_memory_lifecycle
-from .lifecycle_policy import PROFILE_HIDDEN_LIFECYCLES, ordinary_recall_lifecycle_visible_sql
-from .models import recall_scope_mode
+from .lifecycle_policy import (
+    PROFILE_HIDDEN_LIFECYCLES,
+    ordinary_recall_lifecycle_visible_sql,
+)
+from .models import recall_scope_mode, resolve_store_scope_mode
+from .memory_text_merge import automatic_merge_is_safe
+from .memory_mutation import MemoryMutationService
+from .operator_ledger import operator_ledger_report
 from .recall_pipeline import humanize_filter_trace, humanize_recall_components
 from .relation_extraction import sync_extracted_relations_for_memory
-from .sql_store import curated_recall_item_id, exact_duplicate_groups, iter_curated_entries, update_row
+from .relation_rebuild_queue import relation_rebuild_queue_report
+from .sql_store import (
+    curated_recall_item_id,
+    exact_duplicate_groups,
+    iter_curated_entries,
+    record_governance_audit_event,
+    update_row,
+)
 from .storage_views import _curated_memory_allowed
+from .vector_generation import enqueue_current_vector_event
 from .vector_runtime import (
     mark_vector_needs_repair,
     refresh_vector_audit,
     replay_vector_outbox,
     setup_vector_layer,
-    upsert_vector_record,
     vector_delete_intent_required,
 )
 
 logger = logging.getLogger(__name__)
-
 
 
 def _scope_params(provider: Any, *, writable: bool = False) -> list[str]:
@@ -49,6 +76,39 @@ def _scope_placeholders(provider: Any, *, writable: bool = False) -> str:
     return ",".join("?" for _ in params) or "NULL"
 
 
+def fact_owned_memory_ids(provider: Any, ids: list[str]) -> list[str]:
+    """Return fact-owned IDs only when they are writable in this provider scope."""
+
+    requested = sorted({str(memory_id).strip() for memory_id in ids if str(memory_id).strip()})
+    if not requested:
+        return []
+    with provider._lock:
+        conn = provider._require_conn()
+        rows = conn.execute(
+            f"""
+            SELECT id FROM memories
+            WHERE id IN ({','.join('?' for _ in requested)})
+              AND scope_id IN ({_scope_placeholders(provider, writable=True)})
+            ORDER BY id
+            """,
+            [*requested, *_writable_scope_params(provider)],
+        ).fetchall()
+        scoped_ids = [str(row["id"]) for row in rows]
+        return sorted(fact_ownership_for_memories(conn, scoped_ids))
+
+
+def _fact_mutation_error_payload(
+    conn: Any,
+    ids: list[str],
+    *,
+    operation: str,
+) -> dict[str, Any] | None:
+    ownership = fact_ownership_for_memories(conn, ids)
+    if not ownership:
+        return None
+    return FactMutationAuthorityError(operation, ownership).as_dict()
+
+
 def _accessible_scope_params(provider: Any) -> list[str]:
     return _scope_params(provider, writable=False)
 
@@ -57,11 +117,11 @@ def _writable_scope_params(provider: Any) -> list[str]:
     return _scope_params(provider, writable=True)
 
 
-def _normalized_scope_mode(provider: Any, target: str, source: str = "", scope_mode: str | None = None) -> str:
-    requested = str(scope_mode or "").strip().lower().replace("-", "_")
-    if requested in {"shared", "local", "shared_pool"}:
-        return requested
-    return provider._scope_mode_for(target, source) if hasattr(provider, "_scope_mode_for") else recall_scope_mode(target, source)
+def _normalized_scope_mode(
+    provider: Any, target: str, source: str = "", scope_mode: str | None = None
+) -> str:
+    del provider
+    return resolve_store_scope_mode(target, source, scope_mode)
 
 
 def _payload_entities(metadata: dict[str, Any]) -> list[str]:
@@ -79,10 +139,89 @@ def _payload_entities(metadata: dict[str, Any]) -> list[str]:
     return output
 
 
+def _relation_pair_budget(provider: Any) -> int:
+    try:
+        return max(
+            1,
+            min(
+                5000,
+                int(
+                    provider._config.get("relation_extraction_max_pairs", 1000)
+                    or 1000
+                ),
+            ),
+        )
+    except (TypeError, ValueError):
+        return 1000
+
+
+def _relation_local_neighbor_limit(provider: Any) -> int:
+    pair_budget = _relation_pair_budget(provider)
+    try:
+        configured = int(provider._config.get("relation_sync_neighbor_limit", 32) or 32)
+    except (TypeError, ValueError):
+        configured = 32
+    return max(1, min(pair_budget, configured, 256))
+
+
 def _rollback_provider_conn_after_error(provider: Any, context: str) -> None:
     rollback = getattr(provider, "_rollback_conn_after_error", None)
     if callable(rollback):
         rollback(context)
+
+
+def _record_relation_sync_debt(
+    provider: Any,
+    *,
+    memory_id: str,
+    scope_id: str,
+    batch_id: str,
+    result: dict[str, Any],
+) -> bool:
+    """Persist a bounded, redacted receipt when graph work is deferred."""
+
+    if not bool(result.get("deferred")):
+        return False
+    after = {
+        key: result.get(key)
+        for key in (
+            "candidate_count",
+            "max_candidates",
+            "compared_pair_count",
+            "total_peer_count",
+            "selected_peer_count",
+            "inserted",
+            "deleted",
+        )
+    }
+    reason = str(result.get("deferred_reason") or "relation rebuild queued")
+    try:
+        with provider._lock:
+            conn = provider._require_conn()
+            record_governance_audit_event(
+                conn,
+                event_id=uuid.uuid4().hex,
+                event_type="relation_extraction",
+                action="sync_deferred",
+                scope_id=scope_id,
+                target_id=memory_id,
+                batch_id=f"relation-sync:{batch_id}",
+                after=after,
+                reason=reason,
+                actor="scope-recall-relation-sync",
+            )
+            conn.commit()
+    except Exception:
+        _rollback_provider_conn_after_error(
+            provider, "relation extraction deferred audit"
+        )
+        logger.exception("Scope Recall relation extraction deferred audit failed")
+    logger.info(
+        "Scope Recall relation rebuild deferred for memory %s: %s",
+        memory_id,
+        reason,
+    )
+    return True
 
 
 def store_memory_now(
@@ -94,18 +233,62 @@ def store_memory_now(
     session_id: str,
     metadata: dict[str, Any] | None = None,
     allow_duplicate: bool = False,
-    semantic_merge: bool = True,
+    semantic_merge: bool = False,
     scope_mode: str | None = None,
 ) -> tuple[str, bool, str]:
     resolved_scope_mode = _normalized_scope_mode(provider, target, source, scope_mode)
     if semantic_merge and not allow_duplicate and target in {"user", "ops", "project"}:
-        merge_id, merged_content = find_semantic_merge_candidate(provider, content, target, scope_mode=resolved_scope_mode)
+        merge_id, existing_content, merged_content = find_semantic_merge_candidate(
+            provider, content, target, scope_mode=resolved_scope_mode
+        )
         if merge_id:
-            if merged_content.strip() == content.strip():
+            if (
+                existing_content.strip().casefold() == content.strip().casefold()
+                or merged_content.strip() == existing_content.strip()
+            ):
                 return merge_id, False, "duplicate"
-            update_memory(provider, merge_id, merged_content, target)
+            update_result = update_memory(
+                provider,
+                merge_id,
+                merged_content,
+                target,
+            )
+            updated = (
+                bool(update_result[0])
+                if isinstance(update_result, tuple)
+                else bool(update_result)
+            )
+            if not updated:
+                raise RuntimeError(
+                    f"semantic merge update failed for memory {merge_id}"
+                )
             return merge_id, False, "merged"
-    memory_id, inserted = store_now(
+    relation_sync_enabled = bool(
+        provider._config.get("relation_extraction_enabled", True)
+    )
+    relation_scope_id = _expected_scope_id_for_mode(provider, resolved_scope_mode)
+
+    def before_store_commit(conn: Any, stored_memory_id: str) -> dict[str, Any] | None:
+        _mark_conflicts_for_memory(
+            provider,
+            memory_id=stored_memory_id,
+            content=content,
+            target=target,
+            commit=False,
+        )
+        if not relation_sync_enabled:
+            return None
+        return sync_extracted_relations_for_memory(
+            conn,
+            memory_id=stored_memory_id,
+            scope_ids=[relation_scope_id],
+            batch_id="store",
+            max_pairs=_relation_pair_budget(provider),
+            local_peer_limit=_relation_local_neighbor_limit(provider),
+            commit=False,
+        )
+
+    memory_id, inserted, relation_result = store_now(
         provider,
         content=content,
         source=source,
@@ -114,22 +297,25 @@ def store_memory_now(
         metadata=metadata,
         allow_duplicate=allow_duplicate,
         scope_mode=resolved_scope_mode,
+        before_commit=before_store_commit,
     )
-    if inserted:
-        _mark_conflicts_for_memory(provider, memory_id=memory_id, content=content, target=target)
-        if bool(provider._config.get("relation_extraction_enabled", True)):
-            try:
-                sync_extracted_relations_for_memory(
-                    provider._require_conn(),
-                    memory_id=memory_id,
-                    scope_ids=[_expected_scope_id_for_mode(provider, resolved_scope_mode)],
-                    batch_id="store",
-                    max_pairs=int(provider._config.get("relation_extraction_max_pairs", 1000) or 1000),
-                )
-            except Exception:
-                _rollback_provider_conn_after_error(provider, "relation extraction sync")
-                logger.exception("Scope Recall relation extraction sync failed")
-    outcome = "stored" if inserted else "duplicate" if memory_id else "skipped"
+    relation_sync_deferred = False
+    if inserted and relation_result is not None:
+        relation_sync_deferred = _record_relation_sync_debt(
+            provider,
+            memory_id=memory_id,
+            scope_id=relation_scope_id,
+            batch_id="store",
+            result=relation_result,
+        )
+    if not inserted:
+        outcome = "duplicate" if memory_id else "skipped"
+    elif relation_sync_deferred:
+        outcome = "stored_relation_sync_deferred"
+    elif relation_sync_enabled:
+        outcome = "stored"
+    else:
+        outcome = "stored_relation_sync_disabled"
     return memory_id, inserted, outcome
 
 
@@ -146,11 +332,19 @@ def _conflict_peer_ids(conn: Any, memory_id: str) -> list[str]:
         """,
         (memory_id, memory_id),
     ).fetchall()
-    return sorted({str(row["peer_id"]) for row in rows if str(row["peer_id"]) and str(row["peer_id"]) != memory_id})
+    return sorted(
+        {
+            str(row["peer_id"])
+            for row in rows
+            if str(row["peer_id"]) and str(row["peer_id"]) != memory_id
+        }
+    )
 
 
 def _sync_conflict_metadata(conn: Any, memory_id: str) -> None:
-    row = conn.execute("SELECT metadata FROM memories WHERE id = ?", (memory_id,)).fetchone()
+    row = conn.execute(
+        "SELECT metadata FROM memories WHERE id = ?", (memory_id,)
+    ).fetchone()
     if row is None:
         return
     metadata_payload = load_metadata(row["metadata"] if row is not None else "{}")
@@ -158,7 +352,9 @@ def _sync_conflict_metadata(conn: Any, memory_id: str) -> None:
     relation_types = metadata_payload.get("relation_types")
     if not isinstance(relation_types, list):
         relation_types = []
-    relation_types = [str(item) for item in relation_types if str(item) and str(item) != "contradicts"]
+    relation_types = [
+        str(item) for item in relation_types if str(item) and str(item) != "contradicts"
+    ]
     if conflict_ids:
         relation_types.append("contradicts")
         metadata_payload["conflict_review_ids"] = conflict_ids
@@ -180,11 +376,21 @@ def _sync_conflict_metadata(conn: Any, memory_id: str) -> None:
 
 
 def _sync_conflict_metadata_for_ids(conn: Any, memory_ids: set[str]) -> None:
-    for related_id in sorted({str(memory_id) for memory_id in memory_ids if str(memory_id)}):
+    for related_id in sorted(
+        {str(memory_id) for memory_id in memory_ids if str(memory_id)}
+    ):
         _sync_conflict_metadata(conn, related_id)
 
 
-def _mark_conflicts_for_memory(provider: Any, *, memory_id: str, content: str, target: str, rebuild_existing: bool = False) -> int:
+def _mark_conflicts_for_memory(
+    provider: Any,
+    *,
+    memory_id: str,
+    content: str,
+    target: str,
+    rebuild_existing: bool = False,
+    commit: bool = True,
+) -> int:
     """Record deterministic contradiction edges for a memory and keep conflict metadata current."""
 
     conn = provider._require_conn()
@@ -211,33 +417,53 @@ def _mark_conflicts_for_memory(provider: Any, *, memory_id: str, content: str, t
               AND {}
             ORDER BY m.updated_at DESC
             LIMIT 50
-            """.format(_scope_placeholders(provider, writable=True), lifecycle_visible_sql('m')),
+            """.format(
+                _scope_placeholders(provider, writable=True), lifecycle_visible_sql("m")
+            ),
             [memory_id, target, *_writable_scope_params(provider)],
         ).fetchall()
-        conflicting_ids = [str(row["id"]) for row in rows if is_conflicting(str(row["content"]), content)]
+        conflicting_ids = [
+            str(row["id"])
+            for row in rows
+            if is_conflicting(str(row["content"]), content)
+        ]
         for target_id in conflicting_ids:
             affected_ids.add(target_id)
-            for source_id, related_id in ((memory_id, target_id), (target_id, memory_id)):
+            for source_id, related_id in (
+                (memory_id, target_id),
+                (target_id, memory_id),
+            ):
                 conn.execute(
                     """
                     INSERT OR IGNORE INTO memory_relations(source_memory_id, target_memory_id, relation_type, confidence, note, created_at)
                     VALUES (?, ?, 'contradicts', ?, ?, ?)
                     """,
-                    (source_id, related_id, 0.74, f"conflict-review: contradicts memory {related_id}", now),
+                    (
+                        source_id,
+                        related_id,
+                        0.74,
+                        f"conflict-review: contradicts memory {related_id}",
+                        now,
+                    ),
                 )
         if rebuild_existing or conflicting_ids:
             _sync_conflict_metadata_for_ids(conn, affected_ids)
-            conn.commit()
+            if commit:
+                conn.commit()
     return len(conflicting_ids)
 
 
-def find_semantic_merge_candidate(provider: Any, content: str, target: str, *, scope_mode: str | None = None) -> tuple[str, str]:
+def find_semantic_merge_candidate(
+    provider: Any, content: str, target: str, *, scope_mode: str | None = None
+) -> tuple[str, str, str]:
     threshold = float(provider._config_value("semantic_merge_threshold", 0.72))
     conn = provider._require_conn()
-    resolved_scope_mode = _normalized_scope_mode(provider, target, "tool-store", scope_mode)
+    resolved_scope_mode = _normalized_scope_mode(
+        provider, target, "tool-store", scope_mode
+    )
     scope_id = _expected_scope_id_for_mode(provider, resolved_scope_mode)
     if not scope_id or scope_id not in _writable_scope_params(provider):
-        return "", ""
+        return "", "", ""
     with provider._lock:
         rows = conn.execute(
             f"""
@@ -245,7 +471,7 @@ def find_semantic_merge_candidate(provider: Any, content: str, target: str, *, s
             FROM memories m
             WHERE m.scope_id = ?
               AND m.target = ?
-              AND {ordinary_recall_lifecycle_visible_sql('m')}
+              AND {ordinary_recall_lifecycle_visible_sql("m")}
             ORDER BY m.updated_at DESC
             LIMIT 50
             """,
@@ -256,8 +482,8 @@ def find_semantic_merge_candidate(provider: Any, content: str, target: str, *, s
     best_score = 0.0
     for row in rows:
         existing = str(row["content"])
-        if existing.strip().lower() == content.strip().lower():
-            return str(row["id"]), existing
+        if existing.strip().casefold() == content.strip().casefold():
+            return str(row["id"]), existing, existing
         if is_conflicting(existing, content):
             continue
         score = semantic_similarity(existing, content)
@@ -265,9 +491,13 @@ def find_semantic_merge_candidate(provider: Any, content: str, target: str, *, s
             best_id = str(row["id"])
             best_content = existing
             best_score = score
-    if best_id and best_score >= threshold:
-        return best_id, merge_memory_text(best_content, content)
-    return "", ""
+    if (
+        best_id
+        and best_score >= threshold
+        and automatic_merge_is_safe(best_content, content)
+    ):
+        return best_id, best_content, merge_memory_text(best_content, content)
+    return "", "", ""
 
 
 def _expected_scope_id_for_mode(provider: Any, mode: str) -> str:
@@ -281,7 +511,9 @@ def _expected_scope_id_for_mode(provider: Any, mode: str) -> str:
 
 def _row_scope_mode(provider: Any, row: Any) -> str:
     scope_id = str(row["scope_id"])
-    if scope_id and scope_id == str(getattr(provider, "_shared_pool_scope_id", "") or ""):
+    if scope_id and scope_id == str(
+        getattr(provider, "_shared_pool_scope_id", "") or ""
+    ):
         return "shared_pool"
     return "shared" if scope_id == provider._shared_scope_id else "local"
 
@@ -294,131 +526,292 @@ def _target_scope_mode_for_existing(provider: Any, row: Any, target: str) -> str
     return default_mode
 
 
-def update_memory(provider: Any, memory_id: str, content: str, target: str | None = None) -> tuple[bool, str, str]:
-    """Update memory content and target while preserving governance evidence.
+def update_memory(
+    provider: Any, memory_id: str, content: str, target: str | None = None
+) -> tuple[bool, str, str]:
+    """Atomically update truth, SQLite companions, and durable vector intent.
 
-    After edits, conflict and relation metadata must be refreshed so recall does not rely on stale companion state."""
-    with provider._lock:
-        placeholders = _scope_placeholders(provider, writable=True)
-        scope_params = _writable_scope_params(provider)
-        existing = provider._require_conn().execute(
-            f"SELECT source, target, scope_id, metadata FROM memories WHERE id = ? AND scope_id IN ({placeholders})",
-            [memory_id, *scope_params],
-        ).fetchone()
-        if existing is None:
-            return False, "", ""
-        lifecycle = str(load_metadata(existing["metadata"]).get("lifecycle") or "").strip().lower()
-        # Candidate/terminal rows require an explicit reviewed lifecycle action.
-        # Chat-local general/scratch remains editable, so scratch is excluded.
-        non_editable_lifecycles = PROFILE_HIDDEN_LIFECYCLES - {"scratch"}
-        if lifecycle in non_editable_lifecycles:
-            return False, f"memory lifecycle '{lifecycle}' requires explicit restore or review", ""
-        new_target = target or str(existing["target"])
-        new_mode = _target_scope_mode_for_existing(provider, existing, new_target)
-        if str(existing["scope_id"]) != _expected_scope_id_for_mode(provider, new_mode):
-            return False, "target changes between shared durable and local scratch scopes are not allowed", ""
-        updated, summary, updated_at = update_row(
-            provider._require_conn(),
-            memory_id=memory_id,
-            content=content,
-            target=target,
-            scope_ids=scope_params,
-        )
-    if updated:
-        placeholders = _scope_placeholders(provider, writable=True)
-        row = provider._require_conn().execute(
-            f"SELECT source, target, content, summary, updated_at, scope_id FROM memories WHERE id = ? AND scope_id IN ({placeholders})",
-            [memory_id, *_writable_scope_params(provider)],
-        ).fetchone()
-        if row is not None:
+    The write reservation is acquired before ownership/lifecycle reads. Conflict
+    metadata, extracted relations, FTS/entities (via ``update_row``), and vector
+    outbox intent share the same commit boundary. External vector I/O is replayed
+    only after truth commits.
+    """
+
+    mutation = MemoryMutationService(provider)
+    updated = False
+    summary = ""
+    updated_at = ""
+    try:
+        with mutation.transaction() as conn:
+            placeholders = _scope_placeholders(provider, writable=True)
+            scope_params = _writable_scope_params(provider)
+            existing = conn.execute(
+                f"SELECT source, target, scope_id, metadata FROM memories WHERE id = ? AND scope_id IN ({placeholders})",
+                [memory_id, *scope_params],
+            ).fetchone()
+            if existing is None:
+                return False, "", ""
+            mutation_error = _fact_mutation_error_payload(
+                conn,
+                [memory_id],
+                operation="legacy memory update",
+            )
+            if mutation_error is not None:
+                return False, str(mutation_error["error"]), ""
+            lifecycle = (
+                str(load_metadata(existing["metadata"]).get("lifecycle") or "")
+                .strip()
+                .lower()
+            )
+            non_editable_lifecycles = PROFILE_HIDDEN_LIFECYCLES - {"scratch"}
+            if lifecycle in non_editable_lifecycles:
+                return (
+                    False,
+                    f"memory lifecycle '{lifecycle}' requires explicit restore or review",
+                    "",
+                )
+            new_target = target or str(existing["target"])
+            new_mode = _target_scope_mode_for_existing(provider, existing, new_target)
+            if str(existing["scope_id"]) != _expected_scope_id_for_mode(
+                provider, new_mode
+            ):
+                return (
+                    False,
+                    "target changes between shared durable and local scratch scopes are not allowed",
+                    "",
+                )
+            updated, summary, updated_at = update_row(
+                conn,
+                memory_id=memory_id,
+                content=content,
+                target=target,
+                scope_ids=scope_params,
+                enqueue_vector_intent=False,
+            )
+            if not updated:
+                return False, summary, updated_at
+            row = conn.execute(
+                f"SELECT source, target, content, summary, updated_at, scope_id FROM memories WHERE id = ? AND scope_id IN ({placeholders})",
+                [memory_id, *scope_params],
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("updated memory disappeared before transaction commit")
             _mark_conflicts_for_memory(
                 provider,
                 memory_id=memory_id,
                 content=str(row["content"]),
                 target=str(row["target"]),
                 rebuild_existing=True,
+                commit=False,
             )
             if bool(provider._config.get("relation_extraction_enabled", True)):
-                try:
-                    sync_extracted_relations_for_memory(
-                        provider._require_conn(),
-                        memory_id=memory_id,
-                        scope_ids=[str(row["scope_id"])],
-                        batch_id="update",
-                        max_pairs=int(provider._config.get("relation_extraction_max_pairs", 1000) or 1000),
-                    )
-                except Exception:
-                    _rollback_provider_conn_after_error(provider, "relation extraction update sync")
-                    logger.exception("Scope Recall relation extraction update sync failed")
-            upsert_vector_record(
-                provider,
-                id=memory_id,
-                source=str(row["source"]),
-                target=str(row["target"]),
-                content=str(row["content"]),
-                summary=str(row["summary"]),
+                sync_extracted_relations_for_memory(
+                    conn,
+                    memory_id=memory_id,
+                    scope_ids=[str(row["scope_id"])],
+                    batch_id="update",
+                    max_pairs=_relation_pair_budget(provider),
+                    local_peer_limit=_relation_local_neighbor_limit(provider),
+                    commit=False,
+                )
+            enqueue_current_vector_event(
+                conn,
+                memory_id=memory_id,
+                operation="upsert",
                 updated_at=str(row["updated_at"]),
-                scope_id=str(row["scope_id"]),
+                reason="atomic memory update",
+            )
+    except Exception as exc:
+        safe_error = sanitize_report_text(str(exc))
+        logger.warning("Scope Recall atomic update rolled back: %s", safe_error)
+        return False, safe_error, ""
+
+    if updated:
+        try:
+            replay_vector_outbox(provider)
+        except Exception as exc:
+            mark_vector_needs_repair(provider, exc)
+            logger.warning(
+                "Scope Recall vector outbox replay failed after atomic update: %s",
+                exc,
             )
     return updated, summary, updated_at
 
 
-def merge_memories(provider: Any, target_id: str, source_ids: list[str], content: str | None = None, target: str | None = None) -> dict[str, Any]:
-    """Merge source memories into a target memory with audit-friendly metadata updates.
+def merge_memories(
+    provider: Any,
+    target_id: str,
+    source_ids: list[str],
+    content: str | None = None,
+    target: str | None = None,
+) -> dict[str, Any]:
+    """Atomically merge sources into a target under one mutation transaction."""
 
-    The operation should preserve accumulated evidence and avoid hiding conflicts by simply deleting source rows."""
-    source_ids = [str(memory_id) for memory_id in source_ids if str(memory_id).strip()]
-    conn = provider._require_conn()
-    with provider._lock:
-        placeholders = _scope_placeholders(provider, writable=True)
-        scope_params = _writable_scope_params(provider)
-        target_row = conn.execute(f"SELECT * FROM memories WHERE id = ? AND scope_id IN ({placeholders})", [target_id, *scope_params]).fetchone()
-        source_rows = conn.execute(
-            f"SELECT * FROM memories WHERE id IN ({','.join('?' for _ in source_ids)}) AND scope_id IN ({placeholders})" if source_ids else "SELECT * FROM memories WHERE 0",
-            [*source_ids, *scope_params] if source_ids else [],
-        ).fetchall()
-    if target_row is None:
-        return {"merged": False, "error": "target_id not found", "target_id": target_id, "deleted": 0, "target": "", "scope_mode": ""}
-    found_source_ids = {str(row["id"]) for row in source_rows}
-    missing_source_ids = [memory_id for memory_id in source_ids if memory_id not in found_source_ids]
-    if missing_source_ids:
-        return {
-            "merged": False,
-            "error": "source_id not found or not accessible",
-            "target_id": target_id,
-            "missing_source_ids": missing_source_ids,
-            "deleted": 0,
-        }
-    if not source_rows and content is None:
-        return {"merged": False, "error": "source_ids or content is required", "target_id": target_id, "deleted": 0, "target": str(target_row["target"]), "scope_mode": _row_scope_mode(provider, target_row)}
-    target_scope_id = str(target_row["scope_id"])
-    if any(str(row["scope_id"]) != target_scope_id for row in source_rows):
-        return {
-            "merged": False,
-            "error": "merge cannot combine shared durable and local scratch scopes",
-            "target_id": target_id,
-            "deleted": 0,
-        }
-    requested_target = target or str(target_row["target"])
-    requested_mode = _target_scope_mode_for_existing(provider, target_row, requested_target)
-    if target_scope_id != _expected_scope_id_for_mode(provider, requested_mode):
-        return {
-            "merged": False,
-            "error": "target changes between shared durable and local scratch scopes are not allowed",
-            "target_id": target_id,
-            "deleted": 0,
-        }
-    if content is None:
-        merged = str(target_row["content"])
-        for row in source_rows:
-            merged = merge_memory_text(merged, str(row["content"]))
-    else:
-        merged = provider._clean_text(content)
-    updated, summary, updated_at = update_memory(provider, target_id, merged, requested_target)
-    if not updated:
-        return {"merged": False, "error": "target update failed", "target_id": target_id, "deleted": 0}
-    delete_ids = [str(row["id"]) for row in source_rows if str(row["id"]) != target_id]
-    deleted = delete_memories(provider, delete_ids)
+    source_ids = list(
+        dict.fromkeys(
+            str(memory_id) for memory_id in source_ids if str(memory_id).strip()
+        )
+    )
+    mutation = MemoryMutationService(provider)
+    summary = ""
+    updated_at = ""
+    requested_target = ""
+    requested_mode = ""
+    delete_ids: list[str] = []
+    try:
+        with mutation.transaction() as conn:
+            placeholders = _scope_placeholders(provider, writable=True)
+            scope_params = _writable_scope_params(provider)
+            target_row = conn.execute(
+                f"SELECT * FROM memories WHERE id = ? AND scope_id IN ({placeholders})",
+                [target_id, *scope_params],
+            ).fetchone()
+            source_rows = conn.execute(
+                f"SELECT * FROM memories WHERE id IN ({','.join('?' for _ in source_ids)}) AND scope_id IN ({placeholders})"
+                if source_ids
+                else "SELECT * FROM memories WHERE 0",
+                [*source_ids, *scope_params] if source_ids else [],
+            ).fetchall()
+            if target_row is None:
+                return {
+                    "merged": False,
+                    "error": "target_id not found",
+                    "target_id": target_id,
+                    "deleted": 0,
+                    "target": "",
+                    "scope_mode": "",
+                }
+            found_source_ids = {str(row["id"]) for row in source_rows}
+            missing_source_ids = [
+                memory_id for memory_id in source_ids if memory_id not in found_source_ids
+            ]
+            if missing_source_ids:
+                return {
+                    "merged": False,
+                    "error": "source_id not found or not accessible",
+                    "target_id": target_id,
+                    "missing_source_ids": missing_source_ids,
+                    "deleted": 0,
+                }
+            mutation_error = _fact_mutation_error_payload(
+                conn,
+                [target_id, *found_source_ids],
+                operation="legacy memory merge",
+            )
+            if mutation_error is not None:
+                return {
+                    "merged": False,
+                    "target_id": target_id,
+                    "deleted": 0,
+                    **mutation_error,
+                }
+            if not source_rows and content is None:
+                return {
+                    "merged": False,
+                    "error": "source_ids or content is required",
+                    "target_id": target_id,
+                    "deleted": 0,
+                    "target": str(target_row["target"]),
+                    "scope_mode": _row_scope_mode(provider, target_row),
+                }
+            target_scope_id = str(target_row["scope_id"])
+            if any(str(row["scope_id"]) != target_scope_id for row in source_rows):
+                return {
+                    "merged": False,
+                    "error": "merge cannot combine shared durable and local scratch scopes",
+                    "target_id": target_id,
+                    "deleted": 0,
+                }
+            requested_target = target or str(target_row["target"])
+            requested_mode = _target_scope_mode_for_existing(
+                provider, target_row, requested_target
+            )
+            if target_scope_id != _expected_scope_id_for_mode(
+                provider, requested_mode
+            ):
+                return {
+                    "merged": False,
+                    "error": "target changes between shared durable and local scratch scopes are not allowed",
+                    "target_id": target_id,
+                    "deleted": 0,
+                }
+            if content is None:
+                merged = str(target_row["content"])
+                for row in source_rows:
+                    if str(row["id"]) != target_id:
+                        merged = merge_memory_text(merged, str(row["content"]))
+            else:
+                merged = provider._clean_text(content)
+            updated, summary, updated_at = update_row(
+                conn,
+                memory_id=target_id,
+                content=merged,
+                target=requested_target,
+                scope_ids=scope_params,
+                enqueue_vector_intent=False,
+            )
+            if not updated:
+                raise RuntimeError("target update failed inside merge transaction")
+            updated_row = conn.execute(
+                "SELECT source, target, content, summary, updated_at, scope_id "
+                "FROM memories WHERE id = ?",
+                (target_id,),
+            ).fetchone()
+            if updated_row is None:
+                raise RuntimeError("merge target disappeared before commit")
+            _mark_conflicts_for_memory(
+                provider,
+                memory_id=target_id,
+                content=str(updated_row["content"]),
+                target=str(updated_row["target"]),
+                rebuild_existing=True,
+                commit=False,
+            )
+            if bool(provider._config.get("relation_extraction_enabled", True)):
+                sync_extracted_relations_for_memory(
+                    conn,
+                    memory_id=target_id,
+                    scope_ids=[target_scope_id],
+                    batch_id="merge",
+                    max_pairs=_relation_pair_budget(provider),
+                    local_peer_limit=_relation_local_neighbor_limit(provider),
+                    commit=False,
+                )
+            enqueue_current_vector_event(
+                conn,
+                memory_id=target_id,
+                operation="upsert",
+                updated_at=str(updated_row["updated_at"]),
+                reason="atomic memory merge target update",
+            )
+            delete_ids = [
+                str(row["id"])
+                for row in source_rows
+                if str(row["id"]) != target_id
+            ]
+            deleted = delete_memories(
+                provider,
+                delete_ids,
+                transaction_conn=conn,
+            )
+            if deleted != len(delete_ids):
+                raise RuntimeError(
+                    "merge source delete row-count mismatch: "
+                    f"expected={len(delete_ids)}, deleted={deleted}"
+                )
+    except Exception:
+        # The transaction context has already rolled back every companion write.
+        # Preserve the established merge API: callers receive the original fault.
+        raise
+
+    try:
+        replay_vector_outbox(provider)
+    except Exception as exc:
+        mark_vector_needs_repair(provider, exc)
+        logger.warning(
+            "Scope Recall vector outbox replay failed after atomic merge: %s",
+            exc,
+        )
     return {
         "merged": True,
         "target_id": target_id,
@@ -426,13 +819,15 @@ def merge_memories(provider: Any, target_id: str, source_ids: list[str], content
         "target": requested_target,
         "scope_mode": requested_mode,
         "source_ids": delete_ids,
-        "deleted": deleted,
+        "deleted": len(delete_ids),
         "summary": summary,
         "updated_at": updated_at,
     }
 
 
-def export_memories(provider: Any, *, fmt: str = "jsonl", scope_only: bool = True) -> dict[str, Any]:
+def export_memories(
+    provider: Any, *, fmt: str = "jsonl", scope_only: bool = True
+) -> dict[str, Any]:
     conn = provider._require_conn()
     if scope_only:
         where = f"WHERE scope_id IN ({_scope_placeholders(provider)})"
@@ -455,11 +850,20 @@ def export_memories(provider: Any, *, fmt: str = "jsonl", scope_only: bool = Tru
         data: Any = records
     else:
         fmt = "jsonl"
-        data = "\n".join(json.dumps(record, ensure_ascii=False, sort_keys=True) for record in records)
-    return {"format": fmt.lower(), "scope_only": scope_only, "count": len(records), "data": data}
+        data = "\n".join(
+            json.dumps(record, ensure_ascii=False, sort_keys=True) for record in records
+        )
+    return {
+        "format": fmt.lower(),
+        "scope_only": scope_only,
+        "count": len(records),
+        "data": data,
+    }
 
 
-def govern_memories(provider: Any, *, dry_run: bool = True, scope_only: bool = True) -> dict[str, Any]:
+def govern_memories(
+    provider: Any, *, dry_run: bool = True, scope_only: bool = True
+) -> dict[str, Any]:
     """Build governance action plans for active memories.
 
     The function keeps classification, review surfaces, and optional apply behavior together so operator tools can expose the exact proposed mutation set."""
@@ -487,15 +891,21 @@ def govern_memories(provider: Any, *, dry_run: bool = True, scope_only: bool = T
             metadata.update(json.loads(str(row["metadata"] or "{}")))
         except Exception:
             pass
-        classified = classify_memory(str(row["content"]), str(row["target"]), str(row["source"] or ""))
+        classified = classify_memory(
+            str(row["content"]), str(row["target"]), str(row["source"] or "")
+        )
         classified.update(metadata)
         tier = str(classified.get("tier") or "working")
         try:
-            updated_at = datetime.fromisoformat(str(row["updated_at"]).replace("Z", "+00:00")).astimezone(timezone.utc)
+            updated_at = datetime.fromisoformat(
+                str(row["updated_at"]).replace("Z", "+00:00")
+            ).astimezone(timezone.utc)
         except Exception:
             updated_at = now
         age_days = (now - updated_at).days
-        if tier == "working" and age_days >= int(provider._config_value("archive_after_days", 365)):
+        if tier == "working" and age_days >= int(
+            provider._config_value("archive_after_days", 365)
+        ):
             tier = "archive"
             decay_candidates.append(str(row["id"]))
             classified["tier"] = "archive"
@@ -543,7 +953,12 @@ def govern_memories(provider: Any, *, dry_run: bool = True, scope_only: bool = T
     if not dry_run:
         with provider._lock:
             try:
-                for metadata_json, memory_id, expected_updated_at, expected_lifecycle in updates:
+                for (
+                    metadata_json,
+                    memory_id,
+                    expected_updated_at,
+                    expected_lifecycle,
+                ) in updates:
                     metadata = load_metadata(metadata_json)
                     transition_memory_lifecycle(
                         conn,
@@ -561,7 +976,11 @@ def govern_memories(provider: Any, *, dry_run: bool = True, scope_only: bool = T
             except Exception:
                 conn.rollback()
                 raise
-    review_candidates = sorted(review_candidates, key=lambda item: (item["updated_at"], item["id"]), reverse=True)
+    review_candidates = sorted(
+        review_candidates,
+        key=lambda item: (item["updated_at"], item["id"]),
+        reverse=True,
+    )
     return {
         "dry_run": dry_run,
         "scope_only": scope_only,
@@ -573,10 +992,30 @@ def govern_memories(provider: Any, *, dry_run: bool = True, scope_only: bool = T
     }
 
 
-def delete_memories(provider: Any, ids: list[str]) -> int:
+def delete_memories(
+    provider: Any,
+    ids: list[str],
+    *,
+    transaction_conn: Any | None = None,
+) -> int:
     requested_ids = [str(memory_id) for memory_id in ids if str(memory_id).strip()]
     if not requested_ids:
         return 0
+    if transaction_conn is not None:
+        require_vector_delete = vector_delete_intent_required(provider)
+        result = hard_delete_memories(
+            transaction_conn,
+            memory_ids=requested_ids,
+            scope_ids=_writable_scope_params(provider),
+            vector_delete=None,
+            require_vector_delete=require_vector_delete,
+            actor="scope-recall-memory-ops",
+            reason="atomic memory merge source delete",
+            event_type="scope_recall_merge_source_delete",
+            batch_id=f"merge_delete_{uuid.uuid4().hex}",
+            commit=False,
+        )
+        return int(result["deleted"])
     result = _hard_delete_provider_memories(
         provider,
         requested_ids,
@@ -611,18 +1050,22 @@ def _hard_delete_provider_memories(
             event_type=event_type,
             batch_id=f"hard_delete_{uuid.uuid4().hex}",
         )
-        replay_result = replay_vector_outbox(provider) if require_vector_delete else {"claimed": 0, "completed": 0, "failed": 0}
-        result["vector_replay"] = replay_result
-        if int(replay_result.get("failed") or 0) > 0:
-            result["vector_status"] = "pending"
-            result["vector_pending"] = True
-            result["vector_error"] = sanitize_report_text(
-                str(getattr(provider, "_vector_message", "") or "vector delete replay failed")
-            )
-        elif int(replay_result.get("completed") or 0) >= int(result.get("outbox_enqueued") or 0):
-            result["vector_status"] = "completed" if require_vector_delete else "not_required"
-            result["vector_pending"] = False
-        return result
+    replay_result = (
+        replay_vector_outbox(provider)
+        if require_vector_delete
+        else {"claimed": 0, "completed": 0, "failed": 0}
+    )
+    result["vector_replay"] = replay_result
+    if int(replay_result.get("failed") or 0) > 0:
+        result["vector_status"] = "pending"
+        result["vector_pending"] = True
+        result["vector_error"] = sanitize_report_text(
+            str(getattr(provider, "_vector_message", "") or "vector delete replay failed")
+        )
+    elif int(replay_result.get("completed") or 0) >= int(result.get("outbox_enqueued") or 0):
+        result["vector_status"] = "completed" if require_vector_delete else "not_required"
+        result["vector_pending"] = False
+    return result
 
 
 def _forget_snapshot(row: Any) -> dict[str, Any]:
@@ -640,7 +1083,7 @@ def _forget_snapshot(row: Any) -> dict[str, Any]:
     }
 
 
-def archive_memories(
+def _archive_memories_truth(
     provider: Any,
     ids: list[str],
     *,
@@ -648,7 +1091,7 @@ def archive_memories(
     actor: str = "scope_recall_forget",
     batch_id: str = "",
 ) -> dict[str, Any]:
-    """Soft-archive selected memories with governance audit evidence.
+    """Commit soft-archive truth, governance audit, and vector intent.
 
     Archiving preserves SQLite truth and rollback metadata while removing rows from ordinary recall surfaces."""
     requested_ids = [str(memory_id) for memory_id in ids if str(memory_id).strip()]
@@ -670,19 +1113,41 @@ def archive_memories(
     placeholders = ",".join("?" for _ in requested_ids)
     now = datetime.now(timezone.utc).isoformat()
     with provider._lock:
-        rows = provider._require_conn().execute(
-            f"""
+        rows = (
+            provider._require_conn()
+            .execute(
+                f"""
             SELECT id, scope_id, source, target, content, summary, updated_at, metadata
             FROM memories
             WHERE id IN ({placeholders})
               AND scope_id IN ({_scope_placeholders(provider, writable=True)})
             """,
-            [*requested_ids, *_writable_scope_params(provider)],
-        ).fetchall()
+                [*requested_ids, *_writable_scope_params(provider)],
+            )
+            .fetchall()
+        )
         scoped_ids = [str(row["id"]) for row in rows]
         scoped_id_set = set(scoped_ids)
-        payload["skipped"] = [memory_id for memory_id in requested_ids if memory_id not in scoped_id_set]
+        payload["skipped"] = [
+            memory_id for memory_id in requested_ids if memory_id not in scoped_id_set
+        ]
         if not scoped_ids:
+            return payload
+        mutation_error = _fact_mutation_error_payload(
+            provider._require_conn(),
+            scoped_ids,
+            operation="legacy memory archive",
+        )
+        if mutation_error is not None:
+            payload.update(mutation_error)
+            payload["blocked_fact_ids"] = sorted(mutation_error["blocked_fact_ids"])
+            payload["skipped"] = scoped_ids
+            payload["receipt"].update(
+                {
+                    "action": "soft_archive_blocked",
+                    "reason": "fact mutation requires structured Fact Evolution/review",
+                }
+            )
             return payload
         try:
             archived_ids: list[str] = []
@@ -697,8 +1162,12 @@ def archive_memories(
                     lifecycle="archived",
                     metadata_updates={
                         "archived_at": now,
-                        "archived_reason": sanitize_report_text(reason or "scope_recall_forget"),
-                        "archived_by": sanitize_report_text(actor or "scope_recall_forget"),
+                        "archived_reason": sanitize_report_text(
+                            reason or "scope_recall_forget"
+                        ),
+                        "archived_by": sanitize_report_text(
+                            actor or "scope_recall_forget"
+                        ),
                         "archived_batch_id": batch,
                     },
                     expected_updated_at=str(row["updated_at"] or ""),
@@ -721,27 +1190,71 @@ def archive_memories(
             payload["ids"] = []
             payload["skipped"] = scoped_ids
             payload["error"] = safe_error
-            payload["receipt"].update({"action": "soft_archive_failed", "ids": [], "reason": sanitize_report_text(reason or "scope_recall_forget")})
+            payload["receipt"].update(
+                {
+                    "action": "soft_archive_failed",
+                    "ids": [],
+                    "reason": sanitize_report_text(reason or "scope_recall_forget"),
+                }
+            )
             return payload
         payload["archived"] = len(archived_ids)
         payload["ids"] = archived_ids
         archived_id_set = set(archived_ids)
-        payload["skipped"] = [memory_id for memory_id in requested_ids if memory_id not in archived_id_set]
-        payload["receipt"].update({"ids": archived_ids, "reason": sanitize_report_text(reason or "scope_recall_forget")})
-        try:
-            replay_result = replay_vector_outbox(provider)
-            payload["vector_replay"] = replay_result
-        except Exception as exc:
-            safe_error = sanitize_report_text(str(exc))
-            mark_vector_needs_repair(provider, safe_error)
-            payload["vector_replay"] = {"completed": 0, "failed": 1, "pending": True, "error": safe_error}
+        payload["skipped"] = [
+            memory_id for memory_id in requested_ids if memory_id not in archived_id_set
+        ]
+        payload["receipt"].update(
+            {
+                "ids": archived_ids,
+                "reason": sanitize_report_text(reason or "scope_recall_forget"),
+            }
+        )
         return payload
+
+
+def archive_memories(
+    provider: Any,
+    ids: list[str],
+    *,
+    reason: str = "scope_recall_forget",
+    actor: str = "scope_recall_forget",
+    batch_id: str = "",
+) -> dict[str, Any]:
+    """Soft-archive memories, then replay companion intent outside truth lock."""
+
+    payload = _archive_memories_truth(
+        provider,
+        ids,
+        reason=reason,
+        actor=actor,
+        batch_id=batch_id,
+    )
+    if not payload.get("ids"):
+        return payload
+    try:
+        payload["vector_replay"] = replay_vector_outbox(provider)
+    except Exception as exc:
+        safe_error = sanitize_report_text(str(exc))
+        mark_vector_needs_repair(provider, safe_error)
+        payload["vector_replay"] = {
+            "completed": 0,
+            "failed": 1,
+            "pending": True,
+            "error": safe_error,
+        }
+    return payload
 
 
 def dedupe_memories(provider: Any, *, dry_run: bool = True, scope_only: bool = True) -> dict[str, Any]:
     with provider._lock:
-        groups = exact_duplicate_groups(provider._require_conn(), scope_ids=_writable_scope_params(provider) if scope_only else None)
-        delete_ids = [memory_id for group in groups for memory_id in group["delete_ids"]]
+        groups = exact_duplicate_groups(
+            provider._require_conn(),
+            scope_ids=_writable_scope_params(provider) if scope_only else None,
+        )
+        delete_ids = [
+            memory_id for group in groups for memory_id in group["delete_ids"]
+        ]
         payload: dict[str, Any] = {
             "dry_run": dry_run,
             "scope_only": scope_only,
@@ -752,35 +1265,40 @@ def dedupe_memories(provider: Any, *, dry_run: bool = True, scope_only: bool = T
         if dry_run:
             payload["deleted"] = 0
             return payload
-        result = _hard_delete_provider_memories(
-            provider,
-            delete_ids,
-            scope_ids=_writable_scope_params(provider) if scope_only else None,
-            reason="exact duplicate cleanup",
-            event_type="memory_dedupe_hard_delete",
-        )
-        payload.update(
-            {
-                "ok": bool(result.get("ok")),
-                "deleted": int(result.get("deleted") or 0),
-                "vector_status": str(result.get("vector_status") or ""),
-                "vector_pending": bool(result.get("vector_pending")),
-                "vector_error": str(result.get("vector_error") or ""),
-            }
-        )
-        return payload
+    result = _hard_delete_provider_memories(
+        provider,
+        delete_ids,
+        scope_ids=_writable_scope_params(provider) if scope_only else None,
+        reason="exact duplicate cleanup",
+        event_type="memory_dedupe_hard_delete",
+    )
+    payload.update(
+        {
+            "ok": bool(result.get("ok")),
+            "deleted": int(result.get("deleted") or 0),
+            "vector_status": str(result.get("vector_status") or ""),
+            "vector_pending": bool(result.get("vector_pending")),
+            "vector_error": str(result.get("vector_error") or ""),
+        }
+    )
+    return payload
 
 
 def repair_vector(provider: Any) -> dict[str, Any]:
     setup_vector_layer(provider)
-    return {"repaired": provider._vector_status == "ready", "vector": stats_payload(provider)["vector"]}
+    return {
+        "repaired": provider._vector_status == "ready",
+        "vector": stats_payload(provider)["vector"],
+    }
 
 
 def hygiene_report(provider: Any, *, limit: int = 200) -> dict[str, Any]:
     from .hygiene import build_hygiene_report
 
     with provider._lock:
-        return build_hygiene_report(provider._require_conn(), vector_store=provider._vector_store, limit=limit)
+        return build_hygiene_report(
+            provider._require_conn(), vector_store=provider._vector_store, limit=limit
+        )
 
 
 def _row_payload(row: Any) -> dict[str, Any]:
@@ -828,8 +1346,13 @@ def _profile_row_payload(row: Any) -> dict[str, Any]:
         "summary": str(row["summary"]),
         "content": compact_text(str(row["content"]), 360),
         "updated_at": str(row["updated_at"]),
-        "scope_mode": str(metadata.get("scope_mode") or recall_scope_mode(str(row["target"]), str(row["source"]))),
-        "memory_type": str(metadata.get("memory_type") or metadata.get("category") or ""),
+        "scope_mode": str(
+            metadata.get("scope_mode")
+            or recall_scope_mode(str(row["target"]), str(row["source"]))
+        ),
+        "memory_type": str(
+            metadata.get("memory_type") or metadata.get("category") or ""
+        ),
         "trust": clamp_float(metadata.get("trust"), default=0.5),
         "importance": clamp_float(metadata.get("importance"), default=0.5),
         "confidence": clamp_float(metadata.get("confidence"), default=0.5),
@@ -837,7 +1360,9 @@ def _profile_row_payload(row: Any) -> dict[str, Any]:
     }
 
 
-def _profile_curated_items(provider: Any, *, targets: list[str], limit: int) -> list[dict[str, Any]]:
+def _profile_curated_items(
+    provider: Any, *, targets: list[str], limit: int
+) -> list[dict[str, Any]]:
     if not _curated_memory_allowed(provider):
         return []
     items: list[dict[str, Any]] = []
@@ -854,7 +1379,9 @@ def _profile_curated_items(provider: Any, *, targets: list[str], limit: int) -> 
                 "content": compact_text(content, 360),
                 "updated_at": updated_at,
                 "scope_mode": "curated-live",
-                "memory_type": str(metadata.get("memory_type") or metadata.get("category") or ""),
+                "memory_type": str(
+                    metadata.get("memory_type") or metadata.get("category") or ""
+                ),
                 "trust": clamp_float(metadata.get("trust"), default=0.5),
                 "importance": clamp_float(metadata.get("importance"), default=0.5),
                 "confidence": clamp_float(metadata.get("confidence"), default=0.5),
@@ -864,31 +1391,45 @@ def _profile_curated_items(provider: Any, *, targets: list[str], limit: int) -> 
     return items[: max(1, limit)]
 
 
-def _profile_relevant_ids(provider: Any, *, query: str, entity: str, limit: int) -> set[str]:
+def _profile_relevant_ids(
+    provider: Any, *, query: str, entity: str, limit: int
+) -> set[str]:
     relevant: set[str] = set()
     if query:
-        for item in provider._recall_service.search_memories(query, limit=max(10, min(50, limit * 4))):
+        for item in provider._recall_service.search_memories(
+            query, limit=max(10, min(50, limit * 4))
+        ):
             relevant.add(str(item.id))
     normalized_entity = normalize_entity(entity)
     if normalized_entity:
         with provider._lock:
-            rows = provider._require_conn().execute(
-                f"""
+            rows = (
+                provider._require_conn()
+                .execute(
+                    f"""
                 SELECT m.id
                 FROM memory_entities e
                 JOIN memories m ON m.id = e.memory_id
                 WHERE e.entity = ?
                   AND m.scope_id IN ({_scope_placeholders(provider)})
-                  AND {lifecycle_visible_sql('m')}
+                  AND {lifecycle_visible_sql("m")}
                 LIMIT ?
                 """,
-                [normalized_entity, *_accessible_scope_params(provider), max(10, min(100, limit * 8))],
-            ).fetchall()
+                    [
+                        normalized_entity,
+                        *_accessible_scope_params(provider),
+                        max(10, min(100, limit * 8)),
+                    ],
+                )
+                .fetchall()
+            )
         relevant.update(str(row["id"]) for row in rows)
     return relevant
 
 
-def _profile_lifecycle_sql(alias: str = "m", *, include_candidates: bool = False) -> str:
+def _profile_lifecycle_sql(
+    alias: str = "m", *, include_candidates: bool = False
+) -> str:
     lifecycle_expr = (
         f"LOWER(COALESCE(CASE WHEN json_valid({alias}.metadata) "
         f"THEN json_extract({alias}.metadata, '$.lifecycle') ELSE 'promoted' END, 'promoted'))"
@@ -917,13 +1458,15 @@ def _profile_rows_for_target(
         params.extend(sorted(relevant_ids))
     params.append(fetch_limit)
     with provider._lock:
-        rows = provider._require_conn().execute(
-            f"""
+        rows = (
+            provider._require_conn()
+            .execute(
+                f"""
             SELECT m.*
             FROM memories m
             WHERE m.target = ?
               AND m.scope_id IN ({_scope_placeholders(provider)})
-              AND {_profile_lifecycle_sql('m', include_candidates=include_candidates)}{relevance_clause}
+              AND {_profile_lifecycle_sql("m", include_candidates=include_candidates)}{relevance_clause}
             ORDER BY
                 CASE m.source
                     WHEN 'tool-store' THEN 0
@@ -935,13 +1478,21 @@ def _profile_rows_for_target(
                 m.id DESC
             LIMIT ?
             """,
-            params,
-        ).fetchall()
-        freshness_by_id = memory_freshness_map(provider._require_conn(), [str(row["id"]) for row in rows])
+                params,
+            )
+            .fetchall()
+        )
+        freshness_by_id = memory_freshness_map(
+            provider._require_conn(), [str(row["id"]) for row in rows]
+        )
     payloads = [_profile_row_payload(row) for row in rows]
     retrieval_cfg = getattr(provider, "_retrieval_config", {}) or {}
     for payload in payloads:
-        attach_freshness_metadata(payload, freshness_by_id.get(str(payload.get("id") or "")), config=retrieval_cfg)
+        attach_freshness_metadata(
+            payload,
+            freshness_by_id.get(str(payload.get("id") or "")),
+            config=retrieval_cfg,
+        )
     payloads.sort(key=lambda item: 1 if item.get("needs_live_check") else 0)
     return payloads[: max(1, int(limit or 1))]
 
@@ -964,7 +1515,9 @@ def profile_payload(
     limit = max(1, min(20, int(limit or 5)))
     max_chars = max(120, min(4000, int(max_chars or 1200)))
     selected_targets = _profile_targets(targets, include_general=include_general)
-    relevant_ids = _profile_relevant_ids(provider, query=query, entity=entity, limit=limit)
+    relevant_ids = _profile_relevant_ids(
+        provider, query=query, entity=entity, limit=limit
+    )
     relevance_requested = bool(query.strip() or entity.strip())
 
     sections: dict[str, dict[str, Any]] = {
@@ -987,10 +1540,14 @@ def profile_payload(
 
     curated_items: list[dict[str, Any]] = []
     if include_curated:
-        curated_items = _profile_curated_items(provider, targets=selected_targets, limit=limit)
+        curated_items = _profile_curated_items(
+            provider, targets=selected_targets, limit=limit
+        )
         for item in curated_items:
             target = str(item.get("target") or "memory")
-            section_items = sections.setdefault(target, {"count": 0, "items": []})["items"]
+            section_items = sections.setdefault(target, {"count": 0, "items": []})[
+                "items"
+            ]
             section_items.append(item)
             sections[target]["count"] = len(section_items)
         all_items = [*curated_items, *all_items]
@@ -1003,7 +1560,9 @@ def profile_payload(
         "query": query,
         "entity": normalize_entity(entity),
         "targets": selected_targets,
-        "include_general": bool(include_general or (targets is not None and "general" in selected_targets)),
+        "include_general": bool(
+            include_general or (targets is not None and "general" in selected_targets)
+        ),
         "include_candidates": bool(include_candidates),
         "context": context,
         "sections": sections,
@@ -1030,8 +1589,12 @@ def profile_payload(
     }
 
 
-def context_payload(provider: Any, *, query: str, limit: int = 5, max_chars: int = 900) -> dict[str, Any]:
-    results = provider._recall_service.search_memories(query, limit=max(1, min(20, limit)))
+def context_payload(
+    provider: Any, *, query: str, limit: int = 5, max_chars: int = 900
+) -> dict[str, Any]:
+    results = provider._recall_service.search_memories(
+        query, limit=max(1, min(20, limit))
+    )
     records: list[dict[str, Any]] = []
     entity_counts: dict[str, int] = {}
     for item in results:
@@ -1051,18 +1614,24 @@ def context_payload(provider: Any, *, query: str, limit: int = 5, max_chars: int
                 "memory_type": str(metadata.get("memory_type") or ""),
                 "entities": entities,
                 "needs_live_check": bool(metadata.get("needs_live_check")),
-                "fact_freshness_status": str(metadata.get("fact_freshness_status") or "untracked"),
+                "fact_freshness_status": str(
+                    metadata.get("fact_freshness_status") or "untracked"
+                ),
                 "fact_freshness_penalty": metadata.get("fact_freshness_penalty", 0.0),
             }
         )
     top_entities = [
         {"entity": entity, "count": count}
-        for entity, count in sorted(entity_counts.items(), key=lambda pair: (-pair[1], pair[0]))[:10]
+        for entity, count in sorted(
+            entity_counts.items(), key=lambda pair: (-pair[1], pair[0])
+        )[:10]
     ]
     return {
         "query": query,
         "count": len(records),
-        "context": compact_context_lines(records, max_chars=max(120, min(4000, max_chars))),
+        "context": compact_context_lines(
+            records, max_chars=max(120, min(4000, max_chars))
+        ),
         "entities": top_entities,
         "results": records,
     }
@@ -1081,7 +1650,7 @@ def probe_entity(provider: Any, *, entity: str, limit: int = 10) -> dict[str, An
             JOIN memories m ON m.id = e.memory_id
             WHERE e.entity = ?
               AND m.scope_id IN ({_scope_placeholders(provider)})
-              AND {lifecycle_visible_sql('m')}
+              AND {lifecycle_visible_sql("m")}
             ORDER BY
                 CASE m.target
                     WHEN 'user' THEN 0
@@ -1095,7 +1664,11 @@ def probe_entity(provider: Any, *, entity: str, limit: int = 10) -> dict[str, An
             """,
             [normalized, *_accessible_scope_params(provider), max(1, min(50, limit))],
         ).fetchall()
-    return {"entity": normalized, "count": len(rows), "results": [_row_payload(row) for row in rows]}
+    return {
+        "entity": normalized,
+        "count": len(rows),
+        "results": [_row_payload(row) for row in rows],
+    }
 
 
 def related_entities(provider: Any, *, entity: str, limit: int = 12) -> dict[str, Any]:
@@ -1112,7 +1685,7 @@ def related_entities(provider: Any, *, entity: str, limit: int = 12) -> dict[str
                 JOIN memories m ON m.id = e.memory_id
                 WHERE e.entity = ?
                   AND m.scope_id IN ({_scope_placeholders(provider)})
-                  AND {lifecycle_visible_sql('m')}
+                  AND {lifecycle_visible_sql("m")}
             )
             SELECT e.entity, COUNT(*) AS count
             FROM memory_entities e
@@ -1122,29 +1695,44 @@ def related_entities(provider: Any, *, entity: str, limit: int = 12) -> dict[str
             ORDER BY count DESC, e.entity ASC
             LIMIT ?
             """,
-            [normalized, *_accessible_scope_params(provider), normalized, max(50, min(200, max(1, int(limit)) * 8))],
+            [
+                normalized,
+                *_accessible_scope_params(provider),
+                normalized,
+                max(50, min(200, max(1, int(limit)) * 8)),
+            ],
         ).fetchall()
     related_counts: dict[str, int] = {}
     for row in rows:
         related_entity = normalize_entity(row["entity"])
         if not related_entity or related_entity == normalized:
             continue
-        related_counts[related_entity] = related_counts.get(related_entity, 0) + int(row["count"])
+        related_counts[related_entity] = related_counts.get(related_entity, 0) + int(
+            row["count"]
+        )
     related = [
         {"entity": entity, "count": count}
-        for entity, count in sorted(related_counts.items(), key=lambda item: (-item[1], item[0]))[: max(1, min(50, limit))]
+        for entity, count in sorted(
+            related_counts.items(), key=lambda item: (-item[1], item[0])
+        )[: max(1, min(50, limit))]
     ]
     return {"entity": normalized, "count": len(related), "related": related}
 
 
-def feedback_memory(provider: Any, *, memory_id: str, rating: str, note: str = "") -> dict[str, Any]:
+def feedback_memory(
+    provider: Any, *, memory_id: str, rating: str, note: str = ""
+) -> dict[str, Any]:
     rating_text = str(rating or "").strip().lower()
     if rating_text in {"helpful", "up", "+1", "1", "true", "yes"}:
         rating_value = 1
     elif rating_text in {"unhelpful", "down", "-1", "0", "false", "no"}:
         rating_value = -1
     else:
-        return {"updated": False, "error": "rating must be helpful or unhelpful", "id": memory_id}
+        return {
+            "updated": False,
+            "error": "rating must be helpful or unhelpful",
+            "id": memory_id,
+        }
 
     conn = provider._require_conn()
     with provider._lock:
@@ -1163,7 +1751,9 @@ def feedback_memory(provider: Any, *, memory_id: str, rating: str, note: str = "
         else:
             unhelpful_count += 1
         old_trust = clamp_float(metadata.get("trust"), default=0.5)
-        metadata["trust"] = clamp_float(old_trust + (0.08 if rating_value > 0 else -0.12), default=old_trust)
+        metadata["trust"] = clamp_float(
+            old_trust + (0.08 if rating_value > 0 else -0.12), default=old_trust
+        )
         metadata["feedback_count"] = feedback_count
         metadata["helpful_count"] = helpful_count
         metadata["unhelpful_count"] = unhelpful_count
@@ -1173,7 +1763,12 @@ def feedback_memory(provider: Any, *, memory_id: str, rating: str, note: str = "
         safe_note = sanitize_report_text(note)[:240]
         conn.execute(
             "INSERT INTO memory_feedback(memory_id, rating, note, created_at) VALUES (?, ?, ?, ?)",
-            (memory_id, rating_value, safe_note, datetime.now(timezone.utc).isoformat()),
+            (
+                memory_id,
+                rating_value,
+                safe_note,
+                datetime.now(timezone.utc).isoformat(),
+            ),
         )
         conn.execute(
             f"UPDATE memories SET metadata = ? WHERE id = ? AND scope_id IN ({_scope_placeholders(provider, writable=True)})",
@@ -1197,7 +1792,13 @@ def inspect_memory(provider: Any, *, memory_id: str) -> dict[str, Any]:
             [memory_id, *_accessible_scope_params(provider)],
         ).fetchone()
         if row is None:
-            return {"found": False, "id": memory_id, "memory": None, "feedback": {"count": 0, "items": []}, "relations": {"count": 0, "items": []}}
+            return {
+                "found": False,
+                "id": memory_id,
+                "memory": None,
+                "feedback": {"count": 0, "items": []},
+                "relations": {"count": 0, "items": []},
+            }
         feedback_rows = conn.execute(
             "SELECT rating, note, created_at FROM memory_feedback WHERE memory_id = ? ORDER BY created_at DESC",
             (memory_id,),
@@ -1213,8 +1814,8 @@ def inspect_memory(provider: Any, *, memory_id: str) -> dict[str, Any]:
                 ELSE r.source_memory_id
               END
             WHERE (r.source_memory_id = ? OR r.target_memory_id = ?)
-              AND peer.scope_id IN ({','.join('?' for _ in scope_params) or 'NULL'})
-              AND {lifecycle_visible_sql('peer')}
+              AND peer.scope_id IN ({",".join("?" for _ in scope_params) or "NULL"})
+              AND {lifecycle_visible_sql("peer")}
             ORDER BY r.created_at DESC
             """,
             [memory_id, memory_id, memory_id, *scope_params],
@@ -1233,12 +1834,20 @@ def inspect_memory(provider: Any, *, memory_id: str) -> dict[str, Any]:
     }
     feedback = [dict(item) for item in feedback_rows]
     relations = [dict(item) for item in relation_rows]
-    return {
+    payload = {
         "found": True,
         "id": memory_id,
         "memory": memory,
         "feedback": {"count": len(feedback), "items": feedback},
         "relations": {"count": len(relations), "items": relations},
+    }
+    safe_payload, _ = sanitize_structured_value(payload)
+    return safe_payload if isinstance(safe_payload, dict) else {
+        "found": False,
+        "id": memory_id,
+        "memory": None,
+        "feedback": {"count": 0, "items": []},
+        "relations": {"count": 0, "items": []},
     }
 
 
@@ -1246,10 +1855,14 @@ def explain_query(provider: Any, *, query: str, limit: int = 5) -> dict[str, Any
     """Return retrieval explanations for a query without changing recall state.
 
     Explanations expose filters, scores, relation evidence, and ranking reasons so benchmark failures are debuggable."""
-    results = provider._recall_service.search_memories(query, limit=max(1, min(20, limit)))
+    results = provider._recall_service.search_memories(
+        query, limit=max(1, min(20, limit))
+    )
     payload_results: list[dict[str, Any]] = []
 
-    def _component_float(metadata: dict[str, Any], key: str, default: float = 0.0) -> float:
+    def _component_float(
+        metadata: dict[str, Any], key: str, default: float = 0.0
+    ) -> float:
         try:
             return float(metadata.get(key, default) or default)
         except (TypeError, ValueError):
@@ -1283,17 +1896,36 @@ def explain_query(provider: Any, *, query: str, limit: int = 5) -> dict[str, Any
         "min_score",
         "vector_only_min_score",
     )
+
     def _payload_for_item(item: Any, rank: int) -> dict[str, Any]:
         metadata = dict(item.metadata or {})
         components: dict[str, Any] = {
-            key: _component_float(metadata, key, 1.0 if key in {"temporal_decay_multiplier", "general_weight"} else 0.0)
+            key: _component_float(
+                metadata,
+                key,
+                1.0 if key in {"temporal_decay_multiplier", "general_weight"} else 0.0,
+            )
             for key in component_keys
         }
-        components["final_score"] = float(item.score or components.get("final_score") or 0.0)
-        components["relation_evidence_types"] = metadata.get("relation_evidence_types") if isinstance(metadata.get("relation_evidence_types"), list) else []
-        components["relation_evidence_ids"] = metadata.get("relation_evidence_ids") if isinstance(metadata.get("relation_evidence_ids"), list) else []
-        components["relation_rerank_enabled"] = bool(metadata.get("relation_rerank_enabled") or False)
-        components["temporal_policy_class"] = str(metadata.get("temporal_policy_class") or "")
+        components["final_score"] = float(
+            item.score or components.get("final_score") or 0.0
+        )
+        components["relation_evidence_types"] = (
+            metadata.get("relation_evidence_types")
+            if isinstance(metadata.get("relation_evidence_types"), list)
+            else []
+        )
+        components["relation_evidence_ids"] = (
+            metadata.get("relation_evidence_ids")
+            if isinstance(metadata.get("relation_evidence_ids"), list)
+            else []
+        )
+        components["relation_rerank_enabled"] = bool(
+            metadata.get("relation_rerank_enabled") or False
+        )
+        components["temporal_policy_class"] = str(
+            metadata.get("temporal_policy_class") or ""
+        )
         components["rejected_reason"] = str(metadata.get("rejected_reason") or "")
         payload = {
             "rank": rank,
@@ -1305,18 +1937,30 @@ def explain_query(provider: Any, *, query: str, limit: int = 5) -> dict[str, Any
             "updated_at": item.updated_at,
             "components": components,
         }
-        payload.update(humanize_recall_components(components, rejected=bool(metadata.get("rejected_reason"))))
+        payload.update(
+            humanize_recall_components(
+                components, rejected=bool(metadata.get("rejected_reason"))
+            )
+        )
         return payload
 
     for rank, item in enumerate(results, start=1):
         payload_results.append(_payload_for_item(item, rank))
-    rejected_candidates = list(getattr(provider._recall_service, "last_rejected_candidates", []) or [])
+    rejected_candidates = list(
+        getattr(provider._recall_service, "last_rejected_candidates", []) or []
+    )
     rejected_payload: list[dict[str, Any]] = []
     for rank, item in enumerate(rejected_candidates[: max(1, min(20, limit))], start=1):
         rejected_item = _payload_for_item(item, rank)
-        rejected_item.update(humanize_recall_components(rejected_item.get("components", {}), rejected=True))
+        rejected_item.update(
+            humanize_recall_components(
+                rejected_item.get("components", {}), rejected=True
+            )
+        )
         rejected_payload.append(rejected_item)
-    funnel_trace = dict(getattr(provider._recall_service, "last_funnel_trace", {}) or {})
+    funnel_trace = dict(
+        getattr(provider._recall_service, "last_funnel_trace", {}) or {}
+    )
     return {
         "query": query,
         "count": len(payload_results),
@@ -1343,7 +1987,9 @@ def _benchmark_id_list(value: Any) -> list[str]:
     return output
 
 
-def _benchmark_cases(queries: list[str] | None, cases: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+def _benchmark_cases(
+    queries: list[str] | None, cases: list[dict[str, Any]] | None
+) -> list[dict[str, Any]]:
     if cases:
         normalized: list[dict[str, Any]] = []
         for case in cases:
@@ -1354,7 +2000,9 @@ def _benchmark_cases(queries: list[str] | None, cases: list[dict[str, Any]] | No
                 continue
             normalized.append(dict(case, query=query))
         return normalized
-    return [{"query": str(query).strip()} for query in (queries or []) if str(query).strip()]
+    return [
+        {"query": str(query).strip()} for query in (queries or []) if str(query).strip()
+    ]
 
 
 def _percentile(values: list[float], percentile: float) -> float:
@@ -1424,7 +2072,9 @@ def benchmark_queries(
         expected_ids = _benchmark_id_list(case.get("expected_ids"))
         forbidden_ids = _benchmark_id_list(case.get("forbidden_ids"))
         raw_expected_metadata = case.get("expected_metadata")
-        expected_metadata: dict[str, Any] = raw_expected_metadata if isinstance(raw_expected_metadata, dict) else {}
+        expected_metadata: dict[str, Any] = (
+            raw_expected_metadata if isinstance(raw_expected_metadata, dict) else {}
+        )
         min_rank_raw = case.get("min_rank")
         try:
             min_rank = int(min_rank_raw) if min_rank_raw is not None else 0
@@ -1432,7 +2082,9 @@ def benchmark_queries(
             min_rank = 0
         min_top_score_raw = case.get("min_top_score")
         try:
-            min_top_score = float(min_top_score_raw) if min_top_score_raw is not None else 0.0
+            min_top_score = (
+                float(min_top_score_raw) if min_top_score_raw is not None else 0.0
+            )
         except (TypeError, ValueError):
             min_top_score = 0.0
         raw_top_score = float(results[0].score) if results else 0.0
@@ -1449,13 +2101,17 @@ def benchmark_queries(
                 expected_found += 1
                 case_expected_hit = True
                 if min_rank > 0 and rank > min_rank:
-                    failures.append(f"expected_id_rank_too_low:{expected_id}:rank={rank}:min_rank={min_rank}")
+                    failures.append(
+                        f"expected_id_rank_too_low:{expected_id}:rank={rank}:min_rank={min_rank}"
+                    )
         if case_expected_hit:
             cases_with_expected_hit += 1
         for forbidden_id in forbidden_ids:
             if forbidden_id in ranks:
                 forbidden_violations += 1
-                failures.append(f"forbidden_id_present:{forbidden_id}:rank={ranks[forbidden_id]}")
+                failures.append(
+                    f"forbidden_id_present:{forbidden_id}:rank={ranks[forbidden_id]}"
+                )
         for memory_id, expected_values in expected_metadata.items():
             memory_id = str(memory_id)
             if not isinstance(expected_values, dict):
@@ -1468,9 +2124,13 @@ def benchmark_queries(
             for key, expected_value in expected_values.items():
                 actual_value = metadata.get(str(key))
                 if actual_value != expected_value:
-                    failures.append(f"metadata_mismatch:{memory_id}:{key}:actual={actual_value!r}:expected={expected_value!r}")
+                    failures.append(
+                        f"metadata_mismatch:{memory_id}:{key}:actual={actual_value!r}:expected={expected_value!r}"
+                    )
         if min_top_score_raw is not None and top_score < min_top_score:
-            failures.append(f"top_score_below_min:{top_score}:min_top_score={min_top_score}")
+            failures.append(
+                f"top_score_below_min:{top_score}:min_top_score={min_top_score}"
+            )
         row: dict[str, Any] = {
             "query": query,
             "count": len(results),
@@ -1483,7 +2143,14 @@ def benchmark_queries(
         }
         if prompt_budget_chars > 0:
             prompt_budget_checked += 1
-            returned_chars = int(((trace.get("final") or {}) if isinstance(trace.get("final"), dict) else {}).get("returned_chars") or 0)
+            returned_chars = int(
+                (
+                    (trace.get("final") or {})
+                    if isinstance(trace.get("final"), dict)
+                    else {}
+                ).get("returned_chars")
+                or 0
+            )
             row["prompt_budget_chars"] = prompt_budget_chars
             row["returned_chars"] = returned_chars
             row["prompt_budget_hit"] = returned_chars <= prompt_budget_chars
@@ -1498,15 +2165,21 @@ def benchmark_queries(
     metrics: dict[str, Any] = {
         "latency_ms_p50": _percentile(latencies, 50),
         "latency_ms_p95": _percentile(latencies, 95),
-        "known_answer_recall": round(expected_found / expected_total, 4) if expected_total else None,
-        "top_k_accuracy": round(cases_with_expected_hit / cases_with_expected, 4) if cases_with_expected else None,
+        "known_answer_recall": round(expected_found / expected_total, 4)
+        if expected_total
+        else None,
+        "top_k_accuracy": round(cases_with_expected_hit / cases_with_expected, 4)
+        if cases_with_expected
+        else None,
         "expected_total": expected_total,
         "expected_found": expected_found,
         "forbidden_violations": forbidden_violations,
         "filter_counts": filter_counts,
     }
     if prompt_budget_checked:
-        metrics["prompt_budget_hit_rate"] = round(prompt_budget_hits / prompt_budget_checked, 4)
+        metrics["prompt_budget_hit_rate"] = round(
+            prompt_budget_hits / prompt_budget_checked, 4
+        )
         metrics["prompt_budget_checked"] = prompt_budget_checked
     return {
         "query_count": len(normalized_cases),
@@ -1525,11 +2198,26 @@ def stats_payload(provider: Any) -> dict[str, Any]:
     conn = provider._require_conn()
     with provider._lock:
         total = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
-        scoped = conn.execute(f"SELECT COUNT(*) FROM memories WHERE scope_id IN ({_scope_placeholders(provider)})", _accessible_scope_params(provider)).fetchone()[0]
-        local = conn.execute("SELECT COUNT(*) FROM memories WHERE scope_id = ?", (provider._scope_id,)).fetchone()[0]
-        shared = conn.execute("SELECT COUNT(*) FROM memories WHERE scope_id = ?", (provider._shared_scope_id,)).fetchone()[0]
+        scoped = conn.execute(
+            f"SELECT COUNT(*) FROM memories WHERE scope_id IN ({_scope_placeholders(provider)})",
+            _accessible_scope_params(provider),
+        ).fetchone()[0]
+        local = conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE scope_id = ?", (provider._scope_id,)
+        ).fetchone()[0]
+        shared = conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE scope_id = ?",
+            (provider._shared_scope_id,),
+        ).fetchone()[0]
         shared_pool_scope_id = str(getattr(provider, "_shared_pool_scope_id", "") or "")
-        shared_pool = conn.execute("SELECT COUNT(*) FROM memories WHERE scope_id = ?", (shared_pool_scope_id,)).fetchone()[0] if shared_pool_scope_id else 0
+        shared_pool = (
+            conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE scope_id = ?",
+                (shared_pool_scope_id,),
+            ).fetchone()[0]
+            if shared_pool_scope_id
+            else 0
+        )
         entities = conn.execute(
             f"""
             SELECT COUNT(DISTINCT e.entity)
@@ -1548,7 +2236,11 @@ def stats_payload(provider: Any) -> dict[str, Any]:
             """.format(_scope_placeholders(provider)),
             _accessible_scope_params(provider),
         ).fetchone()[0]
-        graph_stats = graph_relation_stats(conn, accessible_scope_ids=_accessible_scope_params(provider))
+        graph_stats = graph_relation_stats(
+            conn, accessible_scope_ids=_accessible_scope_params(provider)
+        )
+        relation_rebuild = relation_rebuild_queue_report(conn)
+        operator_ledger = operator_ledger_report(conn)
     vector_path = ""
     vector_table = ""
     vector_embedder: dict[str, Any] = {}
@@ -1574,7 +2266,9 @@ def stats_payload(provider: Any) -> dict[str, Any]:
         "shared_pool_scope_memories": shared_pool,
         "shared_pool": {
             "enabled": bool(getattr(provider, "_shared_pool_enabled", False)),
-            "write_enabled": bool(getattr(provider, "_shared_pool_write_enabled", False)),
+            "write_enabled": bool(
+                getattr(provider, "_shared_pool_write_enabled", False)
+            ),
             "pool_id": str(getattr(provider, "_shared_pool_id", "") or ""),
             "scope_id": shared_pool_scope_id,
             "memories": shared_pool,
@@ -1582,29 +2276,54 @@ def stats_payload(provider: Any) -> dict[str, Any]:
         "scope_entities": entities,
         "scope_feedback_rows": feedback_rows,
         "graph": graph_stats,
+        "relation_rebuild_queue": relation_rebuild,
+        "operator_ledger": operator_ledger,
         "curated_memories": len(iter_curated_entries(provider._hermes_home)),
         "migration": dict(provider._migration_info),
         "background_writer": {
-            "thread_alive": bool(getattr(provider, "_writer_thread", None) is not None and provider._writer_thread.is_alive()),
+            "thread_alive": bool(
+                getattr(provider, "_writer_thread", None) is not None
+                and provider._writer_thread.is_alive()
+            ),
             "failed_writes": int(getattr(provider, "_writer_failed_writes", 0) or 0),
             "unreported_failures": max(
                 0,
                 int(getattr(provider, "_writer_failed_writes", 0) or 0)
                 - int(getattr(provider, "_writer_reported_failures", 0) or 0),
             ),
-            "last_error_type": str(getattr(provider, "_writer_last_error_type", "") or ""),
+            "last_error_type": str(
+                getattr(provider, "_writer_last_error_type", "") or ""
+            ),
         },
         "freshness_writer": {
-            "failed_writes": int(getattr(provider, "_freshness_write_failures", 0) or 0),
-            "last_error_type": str(getattr(provider, "_freshness_last_error_type", "") or ""),
+            "failed_writes": int(
+                getattr(provider, "_freshness_write_failures", 0) or 0
+            ),
+            "last_error_type": str(
+                getattr(provider, "_freshness_last_error_type", "") or ""
+            ),
         },
         "journal_digest": {
-            "thread_alive": bool(getattr(provider, "_journal_digest_thread", None) is not None and provider._journal_digest_thread.is_alive()),
-            "last_started": float(getattr(provider, "_last_journal_digest_started", 0.0) or 0.0),
-            "last_finished": float(getattr(provider, "_last_journal_digest_finished", 0.0) or 0.0),
-            "last_status": str(getattr(provider, "_last_journal_digest_status", "never_run") or "never_run"),
-            "last_error": str(getattr(provider, "_last_journal_digest_error", "") or ""),
-            "consecutive_failures": int(getattr(provider, "_journal_digest_consecutive_failures", 0) or 0),
+            "thread_alive": bool(
+                getattr(provider, "_journal_digest_thread", None) is not None
+                and provider._journal_digest_thread.is_alive()
+            ),
+            "last_started": float(
+                getattr(provider, "_last_journal_digest_started", 0.0) or 0.0
+            ),
+            "last_finished": float(
+                getattr(provider, "_last_journal_digest_finished", 0.0) or 0.0
+            ),
+            "last_status": str(
+                getattr(provider, "_last_journal_digest_status", "never_run")
+                or "never_run"
+            ),
+            "last_error": str(
+                getattr(provider, "_last_journal_digest_error", "") or ""
+            ),
+            "consecutive_failures": int(
+                getattr(provider, "_journal_digest_consecutive_failures", 0) or 0
+            ),
         },
         "vector": {
             "enabled": provider._vector_enabled,
@@ -1617,13 +2336,21 @@ def stats_payload(provider: Any) -> dict[str, Any]:
             "row_count": provider._vector_row_count,
             "unique_id_count": provider._vector_unique_id_count,
             "duplicate_row_count": provider._vector_duplicate_row_count,
-            "sync_mode": str((provider._vector_config or {}).get("sync_mode") or "incremental"),
+            "sync_mode": str(
+                (provider._vector_config or {}).get("sync_mode") or "incremental"
+            ),
             "embedder": vector_embedder,
-            "fallback_embedder": dict(((provider._vector_config or {}).get("fallback_embedder") or {})),
+            "fallback_embedder": dict(
+                ((provider._vector_config or {}).get("fallback_embedder") or {})
+            ),
         },
         "retrieval": {
             "mode": str((provider._retrieval_config or {}).get("mode") or "lexical"),
-            "lexical_weight": float((provider._retrieval_config or {}).get("lexical_weight") or 1.0),
-            "vector_weight": float((provider._retrieval_config or {}).get("vector_weight") or 0.0),
+            "lexical_weight": float(
+                (provider._retrieval_config or {}).get("lexical_weight") or 1.0
+            ),
+            "vector_weight": float(
+                (provider._retrieval_config or {}).get("vector_weight") or 0.0
+            ),
         },
     }

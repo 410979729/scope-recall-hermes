@@ -9,9 +9,16 @@ import re
 import sqlite3
 from typing import Any
 
+from .entity_quality import entity_is_indexable
 from .gating import compact_text, query_tokens
+from .lifecycle_policy import (
+    ORDINARY_RECALL_HIDDEN_LIFECYCLES,
+    ordinary_recall_lifecycle_visible,
+    ordinary_recall_lifecycle_visible_sql,
+)
+from .sqlite_schema import execute_script_transaction_neutral
 
-_ENTITY_WORD_RE = re.compile(r"`([^`\n]{2,80})`|([A-Za-z][A-Za-z0-9_.:/#-]{1,63})|([\u4e00-\u9fff]{2,12})")
+_ENTITY_WORD_RE = re.compile(r"`([^`\n]{2,80})`|([A-Za-z][A-Za-z0-9_.:/#-]{1,63})")
 _COMMON_ENTITY_WORDS = {
     "the",
     "this",
@@ -107,8 +114,7 @@ _COMMON_ENTITY_WORDS = {
     "增强",
 }
 
-_HIDDEN_LIFECYCLE_VALUES = ("archived", "superseded", "obsolete", "rejected")
-_HIDDEN_LIFECYCLE_SET = set(_HIDDEN_LIFECYCLE_VALUES)
+_HIDDEN_LIFECYCLE_SET = set(ORDINARY_RECALL_HIDDEN_LIFECYCLES)
 
 
 def lifecycle_value(metadata: dict[str, Any] | str | None) -> str:
@@ -121,9 +127,7 @@ def lifecycle_is_hidden(metadata: dict[str, Any] | str | None) -> bool:
 
 
 def lifecycle_visible_sql(alias: str = "m") -> str:
-    lifecycle_expr = f"LOWER(COALESCE(CASE WHEN json_valid({alias}.metadata) THEN json_extract({alias}.metadata, '$.lifecycle') ELSE '' END, ''))"
-    hidden_values = ",".join(f"'{value}'" for value in _HIDDEN_LIFECYCLE_VALUES)
-    return f"{lifecycle_expr} NOT IN ({hidden_values})"
+    return ordinary_recall_lifecycle_visible_sql(alias)
 
 
 _TOOL_TRACE_ENTITY_WORDS = {
@@ -203,7 +207,10 @@ def _jieba_entities(text: str) -> list[str]:
             continue
         if not re.search(r"[\u4e00-\u9fff]", clean):
             continue
-        if str(flag or "").startswith(("n", "v")) or len(clean) >= 3:
+        flag_text = str(flag or "").lower()
+        is_named = flag_text.startswith(("nr", "ns", "nt", "nz")) or flag_text == "eng"
+        is_compact_noun = flag_text == "n" and len(clean) <= 6
+        if (is_named or is_compact_noun) and entity_is_indexable(clean):
             values.append(clean)
     return values
 
@@ -243,6 +250,8 @@ def normalize_entity(value: Any) -> str:
     if lowered in _COMMON_ENTITY_WORDS or len(lowered) < 2:
         return ""
     if _is_tool_trace_entity(lowered):
+        return ""
+    if not entity_is_indexable(lowered):
         return ""
     return lowered[:96]
 
@@ -305,7 +314,8 @@ def load_metadata(raw: Any) -> dict[str, Any]:
 
 
 def ensure_graph_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(
+    execute_script_transaction_neutral(
+        conn,
         """
         CREATE TABLE IF NOT EXISTS memory_entities (
             memory_id TEXT NOT NULL,
@@ -347,7 +357,10 @@ def ensure_graph_schema(conn: sqlite3.Connection) -> None:
 def sync_memory_entities(conn: sqlite3.Connection, *, memory_id: str, content: str, target: str, metadata: dict[str, Any] | str) -> None:
     parsed = load_metadata(metadata)
     conn.execute("DELETE FROM memory_entities WHERE memory_id = ?", (memory_id,))
-    if lifecycle_is_hidden(parsed):
+    if not ordinary_recall_lifecycle_visible(
+        lifecycle=lifecycle_value(parsed),
+        target=target,
+    ):
         return
     entities = metadata_entities(parsed, content, target)
     conn.executemany(

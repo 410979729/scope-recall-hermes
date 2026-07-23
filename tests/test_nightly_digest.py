@@ -5,12 +5,16 @@ They make scheduled summarization observable rather than an opaque cron side eff
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import urllib.error
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pytest
+
+import scope_recall.nightly_digest as nightly_digest
 from scope_recall.digest_quality import score_digest_candidate
 from scope_recall.nightly_digest import (
     DigestCandidate,
@@ -31,6 +35,7 @@ from scope_recall.nightly_digest import (
     resolve_llm_config,
     run_digest,
     safe_command_hints,
+    session_chunks,
 )
 from scope_recall.models import RuntimeScope
 from scope_recall.sql_store import delete_rows, ensure_schema, store_row
@@ -80,7 +85,7 @@ def test_safe_command_hints_keeps_generic_safe_tool_categories_without_raw_comma
 
 
 def test_llm_candidate_parser_extracts_json_array_from_fenced_text_with_preamble():
-    raw = """Here is the JSON:\n```json\n[{\"action\": \"create\", \"content\": \"Stable reusable workflow: when release rollback fails, validate backup before deleting current plugin and verify rollback receipt paths.\", \"target\": \"ops\", \"memory_type\": \"workflow\", \"importance\": \"high\", \"confidence\": \"high\", \"entities\": [\"rollback\"], \"tags\": [\"workflow\"], \"reason\": \"Reusable rollback safety workflow\"}]\n```\n"""
+    raw = """Here is the JSON:\n```json\n[{\"action\": \"create\", \"evidence_message_ids\": [1], \"content\": \"Stable reusable workflow: when release rollback fails, validate backup before deleting current plugin and verify rollback receipt paths.\", \"target\": \"ops\", \"memory_type\": \"workflow\", \"importance\": \"high\", \"confidence\": \"high\", \"entities\": [\"rollback\"], \"tags\": [\"workflow\"], \"reason\": \"Reusable rollback safety workflow\"}]\n```\n"""
 
     candidates, status = _parse_llm_candidates_with_status(raw, bundle=_parse_test_bundle())
 
@@ -93,7 +98,7 @@ def test_llm_candidate_parser_extracts_json_array_from_fenced_text_with_preamble
 
 
 def test_llm_candidate_parser_extracts_unfenced_json_array_with_preamble_and_epilogue():
-    raw = """可以，下面是提取结果：\n[{\"action\": \"create\", \"content\": \"Stable reusable workflow: before replaying journal dead letters, classify auth, quota, timeout, parse, and low-value failures separately with audit evidence.\", \"target\": \"ops\", \"memory_type\": \"workflow\", \"importance\": 0.72, \"confidence\": 0.81, \"entities\": [\"journal recovery\"], \"tags\": [\"journal-digest\"], \"reason\": \"Reusable recovery workflow\"}]\n以上。"""
+    raw = """可以，下面是提取结果：\n[{\"action\": \"create\", \"evidence_message_ids\": [1], \"content\": \"Stable reusable workflow: before replaying journal dead letters, classify auth, quota, timeout, parse, and low-value failures separately with audit evidence.\", \"target\": \"ops\", \"memory_type\": \"workflow\", \"importance\": 0.72, \"confidence\": 0.81, \"entities\": [\"journal recovery\"], \"tags\": [\"journal-digest\"], \"reason\": \"Reusable recovery workflow\"}]\n以上。"""
 
     candidates, status = _parse_llm_candidates_with_status(raw, bundle=_parse_test_bundle())
 
@@ -101,6 +106,227 @@ def test_llm_candidate_parser_extracts_unfenced_json_array_with_preamble_and_epi
     assert len(candidates) == 1
     assert candidates[0].target == "ops"
     assert candidates[0].memory_type == "workflow"
+
+
+def _provenance_bundle() -> SessionBundle:
+    return SessionBundle(
+        id="provenance-session",
+        source="test",
+        title="chunk provenance",
+        messages=[
+            MessageRecord(
+                id=734829,
+                session_id="provenance-session",
+                role="user",
+                content="Scope Recall uses chunk-scoped provenance for each stable fact candidate.",
+                timestamp=0.0,
+            ),
+            MessageRecord(
+                id=734830,
+                session_id="provenance-session",
+                role="user",
+                content="A different fact belongs to a later chunk and must remain independently pending.",
+                timestamp=1.0,
+            ),
+        ],
+        is_task=True,
+        completed=True,
+    )
+
+
+def _provenance_response(message_id: int) -> str:
+    return json.dumps(
+        [
+            {
+                "action": "ADD",
+                "content": (
+                    "Stable extraction rule: every durable candidate keeps only the exact "
+                    "message identifiers that the model actually cited in its visible chunk."
+                ),
+                "claim": {
+                    "subject": "Scope Recall",
+                    "predicate": "uses",
+                    "value": "chunk-scoped provenance",
+                },
+                "evidence_message_ids": [message_id],
+                "target": "ops",
+                "memory_type": "workflow",
+                "importance": 0.8,
+                "confidence": 0.9,
+                "reason": "exact provenance regression",
+            }
+        ]
+    )
+
+
+def test_session_chunks_render_real_ids_and_reject_cross_chunk_citations() -> None:
+    bundle = _provenance_bundle()
+    chunks = session_chunks(bundle, chunk_chars=190, max_session_chars=1000)
+
+    assert len(chunks) >= 2
+    first = chunks[0]
+    assert "[message_id=734829 role=user]" in first.text
+    assert first.message_ids == (734829,)
+    assert "734830" not in first.text
+
+    forged, forged_status = _parse_llm_candidates_with_status(
+        _provenance_response(734830),
+        bundle=bundle,
+        allowed_message_ids=set(first.message_ids),
+    )
+    valid, valid_status = _parse_llm_candidates_with_status(
+        _provenance_response(734829),
+        bundle=bundle,
+        allowed_message_ids=set(first.message_ids),
+    )
+
+    assert forged == []
+    assert forged_status == "filtered"
+    assert valid_status == "parsed"
+    assert valid[0].message_ids == [734829]
+
+
+def test_candidate_provenance_is_exact_not_the_whole_session() -> None:
+    bundle = _provenance_bundle()
+
+    candidates, status = _parse_llm_candidates_with_status(
+        _provenance_response(734829),
+        bundle=bundle,
+        allowed_message_ids={734829, 734830},
+    )
+
+    assert status == "parsed"
+    assert candidates[0].message_ids == [734829]
+
+
+def test_candidate_can_bind_an_exposed_id_beyond_the_old_eighty_message_cap() -> None:
+    bundle = SessionBundle(
+        id="long-provenance-session",
+        messages=[
+            MessageRecord(
+                id=800000 + index,
+                session_id="long-provenance-session",
+                role="user",
+                content="Scope Recall uses chunk-scoped provenance for every durable candidate.",
+                timestamp=float(index),
+            )
+            for index in range(100)
+        ],
+    )
+    tail_id = 800099
+
+    candidates, status = _parse_llm_candidates_with_status(
+        _provenance_response(tail_id),
+        bundle=bundle,
+        allowed_message_ids={tail_id},
+    )
+
+    assert status == "parsed"
+    assert candidates[0].message_ids == [tail_id]
+
+
+@pytest.mark.parametrize(
+    ("chunk_chars", "max_session_chars", "contents"),
+    [
+        (1000, 300, ["A bounded fact message " + "x" * 800]),
+        (240, 1000, [f"Stable message {index} " + "y" * 180 for index in range(10)]),
+        (220, 500, ["玉衡验证 Unicode 全局预算 🌟" * 120]),
+        (120, 5000, [" ".join(f"bounded-token-{index}" for index in range(200))]),
+    ],
+)
+def test_session_chunks_never_exceed_global_or_per_call_budget(
+    chunk_chars: int,
+    max_session_chars: int,
+    contents: list[str],
+) -> None:
+    bundle = SessionBundle(
+        id="budget-session",
+        title="global budget",
+        messages=[
+            MessageRecord(
+                id=900000 + index,
+                session_id="budget-session",
+                role="user",
+                content=content,
+                timestamp=float(index),
+            )
+            for index, content in enumerate(contents)
+        ],
+    )
+
+    chunks = session_chunks(
+        bundle,
+        chunk_chars=chunk_chars,
+        max_session_chars=max_session_chars,
+    )
+
+    assert chunks
+    assert sum(chunk.exposed_chars for chunk in chunks) <= max_session_chars
+    assert all(chunk.exposed_chars == len(chunk.text) for chunk in chunks)
+    assert all(0 < chunk.exposed_chars <= chunk_chars for chunk in chunks)
+    assert all(chunk.input_chars == chunks[0].input_chars for chunk in chunks)
+    assert all(chunk.message_ids for chunk in chunks)
+    assert all(
+        any(f"message_id={message_id}" in chunk.text for message_id in chunk.message_ids)
+        for chunk in chunks
+    )
+    assert all(chunk.truncated for chunk in chunks)
+
+
+def test_original_long_session_counterexample_is_globally_bounded() -> None:
+    bundle = SessionBundle(
+        id="audit-long-session",
+        title="RB-3 replay",
+        messages=[
+            MessageRecord(
+                id=910000 + index,
+                session_id="audit-long-session",
+                role="user",
+                content=f"Valid durable preference message {index}: " + "q" * 820,
+                timestamp=float(index),
+            )
+            for index in range(20)
+        ],
+    )
+
+    chunks = session_chunks(bundle, chunk_chars=1000, max_session_chars=5000)
+
+    assert sum(len(chunk.text) for chunk in chunks) <= 5000
+    assert chunks[0].input_chars > 5000
+    assert chunks[-1].truncated is True
+
+
+def test_session_chunk_exact_boundary_is_not_reported_as_truncated() -> None:
+    bundle = SessionBundle(
+        id="exact-budget-session",
+        messages=[
+            MessageRecord(
+                id=920001,
+                session_id="exact-budget-session",
+                role="user",
+                content="A short stable preference with an exact bounded exposure.",
+                timestamp=0.0,
+            )
+        ],
+    )
+    unbounded = session_chunks(bundle, chunk_chars=10000, max_session_chars=10000)
+    exact_limit = len(unbounded[0].text)
+
+    chunks = session_chunks(
+        bundle,
+        chunk_chars=exact_limit,
+        max_session_chars=exact_limit,
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0].exposed_chars == exact_limit
+    assert chunks[0].truncated is False
+
+
+def test_tiny_budget_that_cannot_show_a_message_id_returns_no_chunk() -> None:
+    bundle = _provenance_bundle()
+
+    assert session_chunks(bundle, chunk_chars=20, max_session_chars=20) == []
 
 
 def _create_state_db(path: Path, day: date, *, content_suffix: str = "") -> None:
@@ -321,7 +547,7 @@ def test_digest_candidate_quality_action_is_stored_as_review_candidate_lifecycle
     assert metadata["candidate_status"] == "needs_review"
 
 
-def test_nightly_digest_excludes_provisional_rows_from_context_and_matching():
+def test_nightly_digest_hides_provisional_context_but_uses_it_for_deduplication():
     for lifecycle in ("archived", "candidate", "in_progress"):
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
@@ -334,8 +560,8 @@ def test_nightly_digest_excludes_provisional_rows_from_context_and_matching():
             writable_scope_ids=["scope-local", "scope-shared"],
         )
         content = (
-            "When Scope Recall nightly digest sees provisional rows, it must insert a visible durable memory "
-            "after release gate verification."
+            "Nightly extraction must hide provisional rows from ordinary context while still using them "
+            "to prevent duplicate provisional candidates."
         )
         store_row(
             conn,
@@ -378,12 +604,28 @@ def test_nightly_digest_excludes_provisional_rows_from_context_and_matching():
             dry_run=False,
             runtime_config={},
         )
-        assert result["counts"]["inserted"] == 1
-        assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 2
+        if lifecycle == "archived":
+            assert result["counts"]["inserted"] == 1
+            assert result["counts"].get("skipped", 0) == 0
+            assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 2
+            inserted = conn.execute(
+                "SELECT metadata FROM memories WHERE id != ?",
+                (f"hidden-{lifecycle}",),
+            ).fetchone()
+            assert json.loads(inserted["metadata"])["lifecycle"] == "candidate"
+        else:
+            assert result["counts"]["skipped"] == 1
+            assert result["counts"].get("inserted", 0) == 0
+            assert result["actions"][0]["reason"] == "existing memory covers candidate"
+            assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 1
+        hidden = conn.execute(
+            "SELECT metadata FROM memories WHERE id = ?", (f"hidden-{lifecycle}",)
+        ).fetchone()
+        assert json.loads(hidden["metadata"])["lifecycle"] == lifecycle
         conn.close()
 
 
-def test_nightly_semantic_update_sanitizes_candidate_metadata():
+def test_nightly_similar_candidate_is_sanitized_without_rewriting_active_memory():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     ensure_schema(conn)
@@ -442,11 +684,26 @@ def test_nightly_semantic_update_sanitizes_candidate_metadata():
         runtime_config={},
     )
 
-    assert result["counts"]["updated"] == 1
-    rendered = conn.execute("SELECT metadata FROM memories WHERE id='active-1'").fetchone()[0]
+    assert result["counts"]["inserted"] == 1
+    active = conn.execute(
+        "SELECT content, metadata FROM memories WHERE id='active-1'"
+    ).fetchone()
+    candidate = conn.execute(
+        "SELECT id, content, metadata FROM memories WHERE id <> 'active-1'"
+    ).fetchone()
+    assert active["content"] == existing
+    assert candidate is not None
+    assert candidate["content"] == candidate_content
+    rendered = candidate["metadata"]
+    parsed = json.loads(rendered)
     entities = "\n".join(
-        str(row[0]) for row in conn.execute("SELECT entity FROM memory_entities WHERE memory_id='active-1'").fetchall()
+        str(row[0])
+        for row in conn.execute(
+            "SELECT entity FROM memory_entities WHERE memory_id=?", (candidate["id"],)
+        ).fetchall()
     )
+    assert parsed["lifecycle"] == "candidate"
+    assert parsed["automatic_admission"]["route"] == "experience_review"
     assert marker not in rendered and marker.lower() not in rendered
     assert "api_key=" not in rendered
     assert private_path not in rendered
@@ -809,11 +1066,16 @@ def test_heuristic_digest_writes_workflow_memory_and_ledger_then_skips_duplicate
         assert len(rows) == 1
         assert rows[0]["target"] == "ops"
         assert "工具链" in rows[0]["content"]
+        assert "117 passed" not in rows[0]["content"]
+        assert "结果摘要" not in rows[0]["content"]
         assert "secret1234567890" not in rows[0]["content"]
         metadata = json.loads(rows[0]["metadata"])
         assert metadata["memory_type"] == "workflow"
+        assert metadata["verification"] == ["verification-evidence"]
         assert metadata["digest_quality"]["recommended_action"] == "promote"
         assert metadata["digest_quality"]["has_verification"] is True
+        assert metadata["lifecycle"] == "candidate"
+        assert metadata["automatic_admission"]["route"] == "experience_review"
         assert "terminal" in metadata["tools_used"]
         assert conn.execute("SELECT COUNT(*) FROM nightly_digest_runs").fetchone()[0] == 1
         run_metadata = json.loads(conn.execute("SELECT metadata FROM nightly_digest_runs").fetchone()[0])
@@ -1024,12 +1286,21 @@ def test_llm_explicit_skip_after_candidate_keeps_previous_chunk_candidate(tmp_pa
 
     def fake_call_llm_with_retries(*args, **kwargs):  # noqa: ARG001
         calls["count"] += 1
+        visible_ids = [int(value) for value in re.findall(r"message_id=(\d+)", str(args[0]))]
         if calls["count"] == 1:
+            assert visible_ids
             return json.dumps(
                 [
                     {
-                        "action": "insert",
+                        "action": "ADD",
+                        "evidence_message_ids": [visible_ids[0]],
                         "content": "scope-recall 多 chunk 审计流程：先保留第一段有效候选，后续 explicit skip 不应丢弃已有候选。",
+                        "claim": {
+                            "subject": "scope-recall 多 chunk 审计流程",
+                            "predicate": "候选保留规则",
+                            "value": "后续 explicit skip 不丢弃前一段有效候选",
+                            "cardinality": "single",
+                        },
                         "target": "ops",
                         "memory_type": "workflow",
                         "importance": 0.7,
@@ -1078,13 +1349,24 @@ def test_llm_explicit_skip_before_candidate_continues_to_next_chunk(tmp_path, mo
 
     def fake_call_llm_with_retries(*args, **kwargs):  # noqa: ARG001
         calls["count"] += 1
+        visible_ids = [int(value) for value in re.findall(r"message_id=(\d+)", str(args[0]))]
         if calls["count"] == 1:
             return json.dumps([{"action": "skip", "reason": "first chunk has no reusable content"}])
+        if calls["count"] > 2:
+            return json.dumps([{"action": "skip", "reason": "remaining continuation has no new candidate"}])
+        assert visible_ids
         return json.dumps(
             [
                 {
-                    "action": "insert",
+                    "action": "ADD",
+                    "evidence_message_ids": [visible_ids[0]],
                     "content": "scope-recall 多 chunk 审计流程：第一个 chunk explicit skip 后，后续 chunk 的有效候选仍必须被解析写入。",
+                    "claim": {
+                        "subject": "scope-recall 多 chunk 审计流程",
+                        "predicate": "候选保留规则",
+                        "value": "前一段 explicit skip 不阻止后一段有效候选",
+                        "cardinality": "single",
+                    },
                     "target": "ops",
                     "memory_type": "workflow",
                     "importance": 0.7,
@@ -1227,6 +1509,7 @@ def _store_duplicate_cleanup_row(conn: sqlite3.Connection, *, memory_id: str) ->
         target="memory",
         content="Nightly exact duplicate cleanup must fail closed when vector delete fails.",
         allow_duplicate=True,
+        enqueue_vector_intent=False,
     )
 
 
@@ -1264,7 +1547,9 @@ def test_nightly_duplicate_cleanup_allows_degraded_never_initialized_vector_runt
     assert conn.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0] == 0
 
 
-def test_nightly_duplicate_cleanup_commits_truth_and_queues_retry_when_vector_delete_fails():
+def test_nightly_duplicate_cleanup_uses_shared_replay_without_direct_vector_delete(
+    monkeypatch: pytest.MonkeyPatch,
+):
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     ensure_schema(conn)
@@ -1279,14 +1564,22 @@ def test_nightly_duplicate_cleanup_commits_truth_and_queues_retry_when_vector_de
     _store_duplicate_cleanup_row(conn, memory_id="dupe-new")
     _store_duplicate_cleanup_row(conn, memory_id="dupe-old")
     vector_runtime = _FakeDigestVectorRuntime()
+    replay_calls: list[tuple[object, int]] = []
+
+    def replay(runtime, *, limit):
+        replay_calls.append((runtime, limit))
+        return {"claimed": 1, "completed": 0, "failed": 1}
+
+    monkeypatch.setattr(nightly_digest, "replay_vector_outbox", replay)
 
     deleted = cleanup_exact_duplicates(conn, _duplicate_cleanup_scope(), vector_runtime)
 
     assert deleted == 1
     assert conn.execute("SELECT COUNT(*) FROM memories WHERE id IN ('dupe-new', 'dupe-old')").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM vector_outbox WHERE status = 'pending'").fetchone()[0] == 1
+    assert replay_calls == [(vector_runtime, 1)]
+    assert vector_runtime._vector_store.deleted_ids == []
     assert vector_runtime._vector_status == "needs_repair"
-    assert "[REDACTED_SECRET]" in vector_runtime._vector_message
-    assert "[REDACTED_PATH]" in vector_runtime._vector_message
+    assert vector_runtime._vector_message == "nightly duplicate vector outbox replay failed"
     assert "secret123456789" not in vector_runtime._vector_message
     assert "/tmp/hermes" not in vector_runtime._vector_message

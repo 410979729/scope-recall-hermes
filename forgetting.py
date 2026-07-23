@@ -275,19 +275,11 @@ def run_forgetting(
             archived_ids.append(str(item["id"]))
     if archived:
         conn.commit()
+    # Lifecycle transition already committed one causal vector-delete intent.
+    # This maintenance path may inspect store availability, but never mutates
+    # the physical companion directly.
     archived_vector_deleted = 0
     vector_error = ""
-    if archived_ids and vector_store is not None:
-        try:
-            # Soft-archived rows stay in SQLite for rollback/audit, but they
-            # should leave vector recall immediately. If companion deletion
-            # fails, the archive state is rolled back below to avoid split state.
-            vector_store.delete_by_ids(archived_ids)
-            archived_vector_deleted = len(archived_ids)
-        except Exception as exc:
-            vector_error = sanitize_report_text(str(exc))
-            # SQLite truth, audit, and durable outbox remain committed. The
-            # vector event will replay when the compatible generation is ready.
     deleted_ids = [str(item["id"]) for item in hard_items if str(item.get("id") or "")]
     vector_deleted = 0
     if deleted_ids and vector_store is None and not allow_sql_delete_without_vector:
@@ -309,7 +301,7 @@ def run_forgetting(
                 conn,
                 memory_ids=deleted_ids,
                 scope_ids=accessible_scope_ids,
-                vector_delete=vector_store.delete_by_ids if vector_store is not None else None,
+                vector_delete=None,
                 require_vector_delete=not allow_sql_delete_without_vector,
                 actor=actor,
                 reason="secret-like-content",
@@ -322,9 +314,7 @@ def run_forgetting(
             hard_vector_error = str(hard_result.get("vector_error") or "")
             if hard_vector_error:
                 vector_error = hard_vector_error
-                vector_deleted = 0
-            else:
-                vector_deleted = deleted if vector_store is not None else 0
+            vector_deleted = 0
             result["vector_status"] = str(hard_result.get("vector_status") or "")
             result["vector_pending"] = bool(hard_result.get("vector_pending"))
         except Exception as exc:

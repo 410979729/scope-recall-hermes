@@ -105,12 +105,15 @@ def _journal_entry_for_digest(entry: JournalEntry) -> JournalEntry | None:
     return entry
 
 
-def ensure_journal_schema(conn: sqlite3.Connection) -> None:
+def ensure_journal_schema(
+    conn: sqlite3.Connection,
+    *,
+    commit: bool = True,
+) -> None:
     """Create or migrate journal capture tables.
 
     This helper is safe to call from startup and tests; it should only establish schema, not process backlog."""
-    conn.executescript(
-        """
+    schema_script = """
         CREATE TABLE IF NOT EXISTS journal_entries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             scope_id TEXT NOT NULL,
@@ -178,8 +181,11 @@ def ensure_journal_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_scope_recall_journal_rejection_entry
             ON journal_rejections(journal_entry_id, created_at DESC);
         """
-    )
-    conn.commit()
+    for statement in schema_script.split(";"):
+        if statement.strip():
+            conn.execute(statement)
+    if commit:
+        conn.commit()
 
 
 def _metadata_json(metadata: dict[str, Any] | None) -> str:
@@ -337,25 +343,48 @@ def _row_to_entry(row: sqlite3.Row) -> JournalEntry:
     )
 
 
-def load_unprocessed_journal_entries(conn: sqlite3.Connection, *, scope_ids: list[str], limit: int = 500) -> list[JournalEntry]:
+def load_unprocessed_journal_entries(
+    conn: sqlite3.Connection,
+    *,
+    scope_ids: list[str],
+    limit: int = 500,
+    excluded_chat_ids: frozenset[str] | set[str] | list[str] | tuple[str, ...] = (),
+) -> list[JournalEntry]:
     ensure_journal_schema(conn)
     clean_scope_ids = [str(scope_id) for scope_id in scope_ids if str(scope_id)]
     if not clean_scope_ids:
         return []
+    clean_excluded = sorted(
+        {str(chat_id).strip() for chat_id in excluded_chat_ids if str(chat_id).strip()}
+    )
     placeholders = ",".join("?" for _ in clean_scope_ids)
+    exclusion_sql = ""
+    params: list[object] = [*clean_scope_ids]
+    if clean_excluded:
+        excluded_placeholders = ",".join("?" for _ in clean_excluded)
+        exclusion_sql = f" AND COALESCE(chat_id, '') NOT IN ({excluded_placeholders})"
+        params.extend(clean_excluded)
     rows = conn.execute(
         f"""
         SELECT * FROM journal_entries
-        WHERE scope_id IN ({placeholders}) AND (processed_run_id IS NULL OR processed_run_id = '')
+        WHERE scope_id IN ({placeholders})
+          AND (processed_run_id IS NULL OR processed_run_id = '')
+          {exclusion_sql}
         ORDER BY created_at ASC, id ASC
         LIMIT ?
         """,
-        [*clean_scope_ids, max(1, int(limit or 500))],
+        [*params, max(1, int(limit or 500))],
     ).fetchall()
     return [_row_to_entry(row) for row in rows]
 
 
-def mark_entries_processed(conn: sqlite3.Connection, *, entry_ids: list[int], run_id: str) -> None:
+def mark_entries_processed(
+    conn: sqlite3.Connection,
+    *,
+    entry_ids: list[int],
+    run_id: str,
+    commit: bool = True,
+) -> None:
     if not entry_ids:
         return
     placeholders = ",".join("?" for _ in entry_ids)
@@ -363,32 +392,75 @@ def mark_entries_processed(conn: sqlite3.Connection, *, entry_ids: list[int], ru
         f"UPDATE journal_entries SET processed_run_id = ?, processed_at = ? WHERE id IN ({placeholders})",
         [run_id, now_iso(), *[int(entry_id) for entry_id in entry_ids]],
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
-def _journal_unprocessed_count(conn: sqlite3.Connection) -> int:
+def _journal_unprocessed_count(
+    conn: sqlite3.Connection,
+    *,
+    excluded_chat_ids: frozenset[str] | set[str] | list[str] | tuple[str, ...] = (),
+) -> int:
+    clean_excluded = sorted(
+        {str(chat_id).strip() for chat_id in excluded_chat_ids if str(chat_id).strip()}
+    )
+    if not clean_excluded:
+        return int(
+            conn.execute(
+                "SELECT COUNT(*) FROM journal_entries "
+                "WHERE processed_run_id IS NULL OR processed_run_id = ''"
+            ).fetchone()[0]
+        )
+    placeholders = ",".join("?" for _ in clean_excluded)
     return int(
-        conn.execute("SELECT COUNT(*) FROM journal_entries WHERE processed_run_id IS NULL OR processed_run_id = ''").fetchone()[0]
+        conn.execute(
+            "SELECT COUNT(*) FROM journal_entries "
+            "WHERE (processed_run_id IS NULL OR processed_run_id = '') "
+            f"AND COALESCE(chat_id, '') NOT IN ({placeholders})",
+            clean_excluded,
+        ).fetchone()[0]
     )
 
 
 def _prune_processed_journal(conn: sqlite3.Connection, *, retention_days: int) -> int:
+    """Delete retained journal rows in batches below SQLite's variable limit."""
+
     if retention_days <= 0:
         return 0
     cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
-    rows = conn.execute(
-        """
-        SELECT id FROM journal_entries
-        WHERE processed_run_id != '' AND created_at < ?
-        """,
-        (cutoff,),
-    ).fetchall()
-    entry_ids = [int(row["id"]) for row in rows]
-    if not entry_ids:
-        return 0
-    placeholders = ",".join("?" for _ in entry_ids)
-    conn.execute(f"DELETE FROM memory_journal_sources WHERE journal_entry_id IN ({placeholders})", entry_ids)
-    conn.execute(f"DELETE FROM journal_rejections WHERE journal_entry_id IN ({placeholders})", entry_ids)
-    conn.execute(f"DELETE FROM journal_entries WHERE id IN ({placeholders})", entry_ids)
-    conn.commit()
-    return len(entry_ids)
+    variable_limit = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+    batch_size = max(1, min(400, int(variable_limit)))
+    pruned = 0
+    try:
+        while True:
+            rows = conn.execute(
+                """
+                SELECT id FROM journal_entries
+                WHERE processed_run_id != '' AND created_at < ?
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (cutoff, batch_size),
+            ).fetchall()
+            entry_ids = [int(row["id"]) for row in rows]
+            if not entry_ids:
+                break
+            placeholders = ",".join("?" for _ in entry_ids)
+            conn.execute(
+                f"DELETE FROM memory_journal_sources WHERE journal_entry_id IN ({placeholders})",
+                entry_ids,
+            )
+            conn.execute(
+                f"DELETE FROM journal_rejections WHERE journal_entry_id IN ({placeholders})",
+                entry_ids,
+            )
+            conn.execute(
+                f"DELETE FROM journal_entries WHERE id IN ({placeholders})",
+                entry_ids,
+            )
+            pruned += len(entry_ids)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return pruned

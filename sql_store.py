@@ -12,26 +12,184 @@ from pathlib import Path
 from typing import Any
 
 from .artifacts import enrich_content_with_artifact_anchors, merge_artifact_metadata
-from .capture_filters import sanitize_capture_text, sanitize_report_text, sanitize_structured_value
+from .capture_filters import (
+    contains_secret_like_text,
+    sanitize_capture_text,
+    sanitize_report_text,
+    sanitize_structured_value,
+)
 from .gating import compact_text, dedup_key
 from .governance import classify_memory, merge_metadata
 from .graph import backfill_memory_entities, ensure_graph_schema, sync_memory_entities
+from .fact_repository import require_fact_mutation_authority
 from .lifecycle_policy import ordinary_recall_lifecycle_visible, ordinary_recall_lifecycle_visible_sql
+from .operator_ledger import (
+    OPERATOR_LEDGER_MIGRATION_DESCRIPTION,
+    OPERATOR_LEDGER_MIGRATION_ID,
+    OPERATOR_LEDGER_MIGRATION_PLUGIN_VERSION,
+    OPERATOR_LEDGER_SCHEMA_VERSION,
+    ensure_operator_ledger_schema,
+    operator_ledger_schema_status,
+)
+from .relation_frequency_index import (
+    RELATION_FREQUENCY_FAILURE_MIGRATION_DESCRIPTION,
+    RELATION_FREQUENCY_FAILURE_MIGRATION_ID,
+    RELATION_FREQUENCY_FAILURE_MIGRATION_PLUGIN_VERSION,
+    RELATION_FREQUENCY_FAILURE_SCHEMA_VERSION,
+    RELATION_FREQUENCY_INDEX_MIGRATION_DESCRIPTION,
+    RELATION_FREQUENCY_INDEX_MIGRATION_ID,
+    RELATION_FREQUENCY_INDEX_MIGRATION_PLUGIN_VERSION,
+    RELATION_FREQUENCY_INDEX_SCHEMA_VERSION,
+    ensure_relation_frequency_index_schema,
+    relation_frequency_index_schema_status,
+    sync_relation_frequency_memory,
+)
+from .relation_rebuild_queue import (
+    RELATION_REBUILD_EXPIRY_MIGRATION_DESCRIPTION,
+    RELATION_REBUILD_EXPIRY_MIGRATION_ID,
+    RELATION_REBUILD_EXPIRY_MIGRATION_PLUGIN_VERSION,
+    RELATION_REBUILD_EXPIRY_SCHEMA_VERSION,
+    RELATION_REBUILD_LEASE_MIGRATION_DESCRIPTION,
+    RELATION_REBUILD_LEASE_MIGRATION_ID,
+    RELATION_REBUILD_LEASE_MIGRATION_PLUGIN_VERSION,
+    RELATION_REBUILD_LEASE_SCHEMA_VERSION,
+    RELATION_REBUILD_MIGRATION_DESCRIPTION,
+    RELATION_REBUILD_MIGRATION_ID,
+    RELATION_REBUILD_MIGRATION_PLUGIN_VERSION,
+    RELATION_REBUILD_SCHEMA_VERSION,
+    RELATION_REBUILD_PROGRESS_MIGRATION_DESCRIPTION,
+    RELATION_REBUILD_PROGRESS_MIGRATION_ID,
+    RELATION_REBUILD_PROGRESS_MIGRATION_PLUGIN_VERSION,
+    RELATION_REBUILD_PROGRESS_SCHEMA_VERSION,
+    ensure_relation_rebuild_schema,
+    relation_rebuild_schema_status,
+)
+from .relation_scope_state import (
+    RELATION_SCOPE_RECEIPT_MIGRATION_DESCRIPTION,
+    RELATION_SCOPE_RECEIPT_MIGRATION_ID,
+    RELATION_SCOPE_RECEIPT_MIGRATION_PLUGIN_VERSION,
+    RELATION_SCOPE_RECEIPT_SCHEMA_VERSION,
+)
+from .sqlite_schema import execute_script_transaction_neutral
+from .temporal_facts import (
+    FACT_CLAIMS_MIGRATION_DESCRIPTION,
+    FACT_CLAIMS_MIGRATION_ID,
+    FACT_CLAIMS_MIGRATION_PLUGIN_VERSION,
+    FACT_CLAIMS_SCHEMA_VERSION,
+    ensure_temporal_fact_schema,
+    temporal_fact_schema_status,
+)
+from .vector_generation import enqueue_current_vector_event
+from .vector_reconciliation import (
+    VECTOR_RECONCILIATION_MIGRATION_DESCRIPTION,
+    VECTOR_RECONCILIATION_MIGRATION_ID,
+    VECTOR_RECONCILIATION_MIGRATION_PLUGIN_VERSION,
+    VECTOR_RECONCILIATION_SCHEMA_VERSION,
+    ensure_vector_reconciliation_schema,
+    vector_reconciliation_schema_status,
+)
 
 ENTRY_DELIMITER = "\n§\n"
-SCHEMA_VERSION = 10600
+SCHEMA_VERSION = RELATION_FREQUENCY_FAILURE_SCHEMA_VERSION
+BASELINE_SCHEMA_VERSION = 10600
 BASELINE_MIGRATION_ID = "0001_baseline_v1_6_0"
 BASELINE_MIGRATION_PLUGIN_VERSION = "1.6.0"
 BASELINE_MIGRATION_DESCRIPTION = "Baseline schema ledger for scope-recall v1.6.0"
 
 
-def _schema_migration_checksum(*, migration_id: str, plugin_version: str, description: str) -> str:
+class UnsupportedSchemaVersionError(RuntimeError):
+    """Raised before writes when a database was created by newer code."""
+
+
+EXPECTED_SCHEMA_MIGRATIONS: tuple[dict[str, Any], ...] = (
+    {
+        "id": BASELINE_MIGRATION_ID,
+        "plugin_version": BASELINE_MIGRATION_PLUGIN_VERSION,
+        "description": BASELINE_MIGRATION_DESCRIPTION,
+        "schema_version": BASELINE_SCHEMA_VERSION,
+    },
+    {
+        "id": FACT_CLAIMS_MIGRATION_ID,
+        "plugin_version": FACT_CLAIMS_MIGRATION_PLUGIN_VERSION,
+        "description": FACT_CLAIMS_MIGRATION_DESCRIPTION,
+        "schema_version": FACT_CLAIMS_SCHEMA_VERSION,
+    },
+    {
+        "id": RELATION_REBUILD_MIGRATION_ID,
+        "plugin_version": RELATION_REBUILD_MIGRATION_PLUGIN_VERSION,
+        "description": RELATION_REBUILD_MIGRATION_DESCRIPTION,
+        "schema_version": RELATION_REBUILD_SCHEMA_VERSION,
+    },
+    {
+        "id": OPERATOR_LEDGER_MIGRATION_ID,
+        "plugin_version": OPERATOR_LEDGER_MIGRATION_PLUGIN_VERSION,
+        "description": OPERATOR_LEDGER_MIGRATION_DESCRIPTION,
+        "schema_version": OPERATOR_LEDGER_SCHEMA_VERSION,
+    },
+    {
+        "id": RELATION_REBUILD_LEASE_MIGRATION_ID,
+        "plugin_version": RELATION_REBUILD_LEASE_MIGRATION_PLUGIN_VERSION,
+        "description": RELATION_REBUILD_LEASE_MIGRATION_DESCRIPTION,
+        "schema_version": RELATION_REBUILD_LEASE_SCHEMA_VERSION,
+    },
+    {
+        "id": RELATION_SCOPE_RECEIPT_MIGRATION_ID,
+        "plugin_version": RELATION_SCOPE_RECEIPT_MIGRATION_PLUGIN_VERSION,
+        "description": RELATION_SCOPE_RECEIPT_MIGRATION_DESCRIPTION,
+        "schema_version": RELATION_SCOPE_RECEIPT_SCHEMA_VERSION,
+    },
+    {
+        "id": RELATION_FREQUENCY_INDEX_MIGRATION_ID,
+        "plugin_version": RELATION_FREQUENCY_INDEX_MIGRATION_PLUGIN_VERSION,
+        "description": RELATION_FREQUENCY_INDEX_MIGRATION_DESCRIPTION,
+        "schema_version": RELATION_FREQUENCY_INDEX_SCHEMA_VERSION,
+    },
+    {
+        "id": RELATION_REBUILD_PROGRESS_MIGRATION_ID,
+        "plugin_version": RELATION_REBUILD_PROGRESS_MIGRATION_PLUGIN_VERSION,
+        "description": RELATION_REBUILD_PROGRESS_MIGRATION_DESCRIPTION,
+        "schema_version": RELATION_REBUILD_PROGRESS_SCHEMA_VERSION,
+    },
+    {
+        "id": VECTOR_RECONCILIATION_MIGRATION_ID,
+        "plugin_version": VECTOR_RECONCILIATION_MIGRATION_PLUGIN_VERSION,
+        "description": VECTOR_RECONCILIATION_MIGRATION_DESCRIPTION,
+        "schema_version": VECTOR_RECONCILIATION_SCHEMA_VERSION,
+    },
+    {
+        "id": RELATION_REBUILD_EXPIRY_MIGRATION_ID,
+        "plugin_version": RELATION_REBUILD_EXPIRY_MIGRATION_PLUGIN_VERSION,
+        "description": RELATION_REBUILD_EXPIRY_MIGRATION_DESCRIPTION,
+        "schema_version": RELATION_REBUILD_EXPIRY_SCHEMA_VERSION,
+    },
+    {
+        "id": RELATION_FREQUENCY_FAILURE_MIGRATION_ID,
+        "plugin_version": RELATION_FREQUENCY_FAILURE_MIGRATION_PLUGIN_VERSION,
+        "description": RELATION_FREQUENCY_FAILURE_MIGRATION_DESCRIPTION,
+        "schema_version": RELATION_FREQUENCY_FAILURE_SCHEMA_VERSION,
+    },
+)
+
+
+def _schema_migration_checksum(
+    *,
+    migration_id: str,
+    plugin_version: str,
+    description: str,
+    schema_version: int,
+) -> str:
+    """Hash one immutable migration specification.
+
+    Each migration carries its own schema version so increasing the current
+    version cannot invalidate historical ledger checksums.
+    """
+
     payload = json.dumps(
         {
             "id": migration_id,
             "plugin_version": plugin_version,
             "description": description,
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": schema_version,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -39,7 +197,41 @@ def _schema_migration_checksum(*, migration_id: str, plugin_version: str, descri
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _expected_migration_row(spec: dict[str, Any]) -> dict[str, str]:
+    return {
+        "id": str(spec["id"]),
+        "plugin_version": str(spec["plugin_version"]),
+        "description": str(spec["description"]),
+        "checksum": _schema_migration_checksum(
+            migration_id=str(spec["id"]),
+            plugin_version=str(spec["plugin_version"]),
+            description=str(spec["description"]),
+            schema_version=int(spec["schema_version"]),
+        ),
+        "status": "applied",
+        "error": "",
+    }
+
+
+def _assert_supported_schema_version(conn: sqlite3.Connection) -> int:
+    user_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if user_version > SCHEMA_VERSION:
+        raise UnsupportedSchemaVersionError(
+            f"database schema version {user_version} is newer than supported "
+            f"version {SCHEMA_VERSION}"
+        )
+    return user_version
+
+
 def ensure_schema_migrations(conn: sqlite3.Connection) -> None:
+    """Apply additive schema migrations without committing the caller's work."""
+
+    existing_user_version = _assert_supported_schema_version(conn)
+    ensure_temporal_fact_schema(conn)
+    ensure_relation_rebuild_schema(conn)
+    ensure_relation_frequency_index_schema(conn)
+    ensure_vector_reconciliation_schema(conn)
+    ensure_operator_ledger_schema(conn)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -53,8 +245,11 @@ def ensure_schema_migrations(conn: sqlite3.Connection) -> None:
         );
         """
     )
-    existing_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(schema_migrations)").fetchall()}
-    migrations = {
+    existing_columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(schema_migrations)").fetchall()
+    }
+    column_migrations = {
         "applied_at": "ALTER TABLE schema_migrations ADD COLUMN applied_at TEXT NOT NULL DEFAULT ''",
         "plugin_version": "ALTER TABLE schema_migrations ADD COLUMN plugin_version TEXT NOT NULL DEFAULT ''",
         "description": "ALTER TABLE schema_migrations ADD COLUMN description TEXT NOT NULL DEFAULT ''",
@@ -62,48 +257,56 @@ def ensure_schema_migrations(conn: sqlite3.Connection) -> None:
         "status": "ALTER TABLE schema_migrations ADD COLUMN status TEXT NOT NULL DEFAULT 'applied'",
         "error": "ALTER TABLE schema_migrations ADD COLUMN error TEXT NOT NULL DEFAULT ''",
     }
-    for column, statement in migrations.items():
+    for column, statement in column_migrations.items():
         if column not in existing_columns:
             conn.execute(statement)
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO schema_migrations(
-            id, applied_at, plugin_version, description, checksum, status, error
-        ) VALUES (?, ?, ?, ?, ?, 'applied', '')
-        """,
-        (
-            BASELINE_MIGRATION_ID,
-            now_iso(),
-            BASELINE_MIGRATION_PLUGIN_VERSION,
-            BASELINE_MIGRATION_DESCRIPTION,
-            _schema_migration_checksum(
-                migration_id=BASELINE_MIGRATION_ID,
-                plugin_version=BASELINE_MIGRATION_PLUGIN_VERSION,
-                description=BASELINE_MIGRATION_DESCRIPTION,
+
+    for spec in EXPECTED_SCHEMA_MIGRATIONS:
+        expected = _expected_migration_row(spec)
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO schema_migrations(
+                id, applied_at, plugin_version, description, checksum, status, error
+            ) VALUES (?, ?, ?, ?, ?, 'applied', '')
+            """,
+            (
+                expected["id"],
+                now_iso(),
+                expected["plugin_version"],
+                expected["description"],
+                expected["checksum"],
             ),
-        ),
-    )
-    existing_user_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        )
     if existing_user_version < SCHEMA_VERSION:
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
-def _row_to_dict(cursor: sqlite3.Cursor, row: sqlite3.Row | tuple[Any, ...]) -> dict[str, Any]:
+def _row_to_dict(
+    cursor: sqlite3.Cursor,
+    row: sqlite3.Row | tuple[Any, ...],
+) -> dict[str, Any]:
     columns = [str(item[0]) for item in cursor.description or []]
     return {column: row[index] for index, column in enumerate(columns)}
 
 
 def schema_migration_status(conn: sqlite3.Connection) -> dict[str, Any]:
-    """Return live schema and migration ledger status for release/readiness checks.
+    """Return live schema and immutable migration-ledger status read-only."""
 
-    The function is read-only evidence: callers decide separately whether to run migrations."""
     user_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
     try:
-        table = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'").fetchone()
+        table = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='schema_migrations'"
+        ).fetchone()
         if table is None:
-            rows = []
+            rows: list[dict[str, Any]] = []
         else:
-            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(schema_migrations)").fetchall()}
+            columns = {
+                str(row[1])
+                for row in conn.execute(
+                    "PRAGMA table_info(schema_migrations)"
+                ).fetchall()
+            }
             select_columns = [
                 "id" if "id" in columns else "'' AS id",
                 "applied_at" if "applied_at" in columns else "'' AS applied_at",
@@ -114,47 +317,84 @@ def schema_migration_status(conn: sqlite3.Connection) -> dict[str, Any]:
                 "error" if "error" in columns else "'' AS error",
             ]
             order_by = "id" if "id" in columns else "rowid"
-            cursor = conn.execute(f"SELECT {', '.join(select_columns)} FROM schema_migrations ORDER BY {order_by}")
+            cursor = conn.execute(
+                f"SELECT {', '.join(select_columns)} "
+                f"FROM schema_migrations ORDER BY {order_by}"
+            )
             rows = [_row_to_dict(cursor, row) for row in cursor.fetchall()]
     except sqlite3.OperationalError as exc:
         if "schema_migrations" not in str(exc):
             raise
         rows = []
-    applied_ids = {str(row.get("id") or "") for row in rows if str(row.get("status") or "") == "applied"}
-    missing = [migration_id for migration_id in (BASELINE_MIGRATION_ID,) if migration_id not in applied_ids]
-    expected_baseline = {
-        "id": BASELINE_MIGRATION_ID,
-        "plugin_version": BASELINE_MIGRATION_PLUGIN_VERSION,
-        "description": BASELINE_MIGRATION_DESCRIPTION,
-        "checksum": _schema_migration_checksum(
-            migration_id=BASELINE_MIGRATION_ID,
-            plugin_version=BASELINE_MIGRATION_PLUGIN_VERSION,
-            description=BASELINE_MIGRATION_DESCRIPTION,
-        ),
-        "status": "applied",
-        "error": "",
+
+    applied_ids = {
+        str(row.get("id") or "")
+        for row in rows
+        if str(row.get("status") or "") == "applied"
     }
+    expected_rows = {
+        str(spec["id"]): _expected_migration_row(spec)
+        for spec in EXPECTED_SCHEMA_MIGRATIONS
+    }
+    missing = [
+        migration_id
+        for migration_id in expected_rows
+        if migration_id not in applied_ids
+    ]
     invalid_migrations: list[dict[str, Any]] = []
     for row in rows:
-        if str(row.get("id") or "") != BASELINE_MIGRATION_ID:
+        migration_id = str(row.get("id") or "")
+        expected = expected_rows.get(migration_id)
+        if expected is None:
             continue
-        mismatches = [key for key, expected in expected_baseline.items() if str(row.get(key) or "") != str(expected)]
+        mismatches = [
+            key
+            for key, expected_value in expected.items()
+            if str(row.get(key) or "") != str(expected_value)
+        ]
         if mismatches:
-            invalid_migrations.append({"id": BASELINE_MIGRATION_ID, "mismatches": mismatches})
+            invalid_migrations.append(
+                {"id": migration_id, "mismatches": mismatches}
+            )
+
     newer_schema = user_version > SCHEMA_VERSION
+    temporal_status = temporal_fact_schema_status(conn)
+    relation_status = relation_rebuild_schema_status(conn)
+    relation_frequency_status = relation_frequency_index_schema_status(conn)
+    vector_reconciliation_status = vector_reconciliation_schema_status(conn)
+    operator_status = operator_ledger_schema_status(conn)
     return {
         "schema_version": SCHEMA_VERSION,
         "user_version": user_version,
-        "current": user_version == SCHEMA_VERSION and not newer_schema and not missing and not invalid_migrations,
+        "current": (
+            user_version == SCHEMA_VERSION
+            and not newer_schema
+            and not missing
+            and not invalid_migrations
+            and bool(temporal_status["current"])
+            and bool(relation_status["current"])
+            and bool(relation_frequency_status["current"])
+            and bool(vector_reconciliation_status["current"])
+            and bool(operator_status["current"])
+        ),
         "newer_schema": newer_schema,
         "missing_migrations": missing,
         "invalid_migrations": invalid_migrations,
         "applied_migrations": rows,
+        "temporal_facts": temporal_status,
+        "relation_rebuild_queue": relation_status,
+        "relation_frequency_index": relation_frequency_status,
+        "vector_reconciliation": vector_reconciliation_status,
+        "operator_ledger": operator_status,
     }
 
 
-def ensure_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(
+
+def ensure_schema(conn: sqlite3.Connection, *, commit: bool = True) -> None:
+    # This guard must run before any DDL so opening a database created by newer
+    # code cannot partially mutate it with an older runtime.
+    _assert_supported_schema_version(conn)
+    for statement in (
         """
         CREATE TABLE IF NOT EXISTS memories (
             id TEXT PRIMARY KEY,
@@ -174,27 +414,36 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             last_recalled_turn INTEGER NOT NULL DEFAULT 0
-        );
+        )
+        """,
+        """
         CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
             memory_id UNINDEXED,
             content,
             summary
-        );
-        CREATE INDEX IF NOT EXISTS idx_scope_recall_scope_updated
-            ON memories(scope_id, updated_at DESC);
+        )
+        """,
         """
-    )
+        CREATE INDEX IF NOT EXISTS idx_scope_recall_scope_updated
+            ON memories(scope_id, updated_at DESC)
+        """,
+    ):
+        conn.execute(statement)
     ensure_memory_columns(conn)
     ensure_graph_schema(conn)
     ensure_experience_schema(conn)
     ensure_governance_schema(conn)
+    ensure_relation_rebuild_schema(conn)
+    ensure_relation_frequency_index_schema(conn)
     from .vector_generation import ensure_vector_generation_schema
 
     ensure_vector_generation_schema(conn)
+    ensure_vector_reconciliation_schema(conn)
     ensure_schema_migrations(conn)
-    rebuild_fts_if_empty(conn)
+    rebuild_fts_if_empty(conn, commit=False)
     backfill_memory_entities(conn)
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def ensure_governance_schema(conn: sqlite3.Connection) -> None:
@@ -310,7 +559,8 @@ def ensure_experience_schema(conn: sqlite3.Connection) -> None:
     """Create or migrate Experience Kernel tables in the SQLite truth store.
 
     The schema helper is idempotent because it may run during startup, tests, or release smoke checks before any Experience tools are used."""
-    conn.executescript(
+    execute_script_transaction_neutral(
+        conn,
         """
         CREATE TABLE IF NOT EXISTS task_episodes (
             id TEXT PRIMARY KEY,
@@ -517,7 +767,20 @@ def ensure_memory_columns(conn: sqlite3.Connection) -> None:
 
 
 def _fts_counts(conn: sqlite3.Connection) -> dict[str, int | bool]:
+    """Return lifecycle-aware integrity counts for the lexical companion.
+
+    ``memory_rows`` remains the total SQLite truth count for observability while
+    ``expected_fts_rows`` is the ordinary-recall-visible subset that belongs in
+    FTS. Hidden lifecycle rows are truth, but never expected lexical members.
+    """
+
+    visible_sql = ordinary_recall_lifecycle_visible_sql("m")
     memory_rows = int(conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0])
+    expected_fts_rows = int(
+        conn.execute(
+            f"SELECT COUNT(*) FROM memories AS m WHERE {visible_sql}"
+        ).fetchone()[0]
+    )
     fts_rows = int(conn.execute("SELECT COUNT(*) FROM memories_fts").fetchone()[0])
     stale_fts_rows = int(
         conn.execute(
@@ -529,13 +792,23 @@ def _fts_counts(conn: sqlite3.Connection) -> dict[str, int | bool]:
             """
         ).fetchone()[0]
     )
+    hidden_fts_rows = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM memories_fts AS f
+            JOIN memories AS m ON m.id = f.memory_id
+            WHERE NOT ({visible_sql})
+            """
+        ).fetchone()[0]
+    )
     missing_fts_rows = int(
         conn.execute(
-            """
+            f"""
             SELECT COUNT(*)
             FROM memories AS m
             LEFT JOIN memories_fts AS f ON f.memory_id = m.id
-            WHERE f.memory_id IS NULL
+            WHERE f.memory_id IS NULL AND {visible_sql}
             """
         ).fetchone()[0]
     )
@@ -552,11 +825,19 @@ def _fts_counts(conn: sqlite3.Connection) -> dict[str, int | bool]:
             """
         ).fetchone()[0]
     )
-    healthy = stale_fts_rows == 0 and missing_fts_rows == 0 and duplicate_fts_extra_rows == 0 and fts_rows == memory_rows
+    healthy = (
+        stale_fts_rows == 0
+        and hidden_fts_rows == 0
+        and missing_fts_rows == 0
+        and duplicate_fts_extra_rows == 0
+        and fts_rows == expected_fts_rows
+    )
     return {
         "memory_rows": memory_rows,
+        "expected_fts_rows": expected_fts_rows,
         "fts_rows": fts_rows,
         "stale_fts_rows": stale_fts_rows,
+        "hidden_fts_rows": hidden_fts_rows,
         "missing_fts_rows": missing_fts_rows,
         "duplicate_fts_extra_rows": duplicate_fts_extra_rows,
         "healthy": healthy,
@@ -567,19 +848,51 @@ def fts_integrity_report(conn: sqlite3.Connection) -> dict[str, int | bool]:
     return _fts_counts(conn)
 
 
-def reconcile_fts_index(conn: sqlite3.Connection) -> dict[str, Any]:
+def reconcile_fts_index(
+    conn: sqlite3.Connection,
+    *,
+    commit: bool = True,
+) -> dict[str, Any]:
     before = _fts_counts(conn)
     needs_rebuild = not bool(before["healthy"])
     if needs_rebuild:
+        visible_sql = ordinary_recall_lifecycle_visible_sql("m")
         conn.execute("DELETE FROM memories_fts")
-        conn.execute("INSERT INTO memories_fts(memory_id, content, summary) SELECT id, content, summary FROM memories")
-        conn.commit()
+        conn.execute(
+            "INSERT INTO memories_fts(memory_id, content, summary) "
+            f"SELECT m.id, m.content, m.summary FROM memories AS m WHERE {visible_sql}"
+        )
+        if commit:
+            conn.commit()
     after = _fts_counts(conn)
     return {"rebuilt": needs_rebuild, "before": before, "after": after}
 
 
-def rebuild_fts_if_empty(conn: sqlite3.Connection) -> None:
-    reconcile_fts_index(conn)
+def rebuild_fts_if_empty(conn: sqlite3.Connection, *, commit: bool = True) -> None:
+    """Bootstrap a wholly empty memory FTS index without scanning for drift.
+
+    Routine startup performs only two bounded existence probes. Partial, duplicate,
+    stale index states are operational anomalies and must be inspected and
+    repaired explicitly through :func:`reconcile_fts_index`, which returns a
+    receipt instead of silently rewriting the truth companion index.
+    """
+
+    visible_sql = ordinary_recall_lifecycle_visible_sql("m")
+    memory_has_rows = bool(
+        conn.execute(
+            f"SELECT EXISTS(SELECT 1 FROM memories AS m WHERE {visible_sql} LIMIT 1)"
+        ).fetchone()[0]
+    )
+    fts_has_rows = bool(
+        conn.execute("SELECT EXISTS(SELECT 1 FROM memories_fts LIMIT 1)").fetchone()[0]
+    )
+    if memory_has_rows and not fts_has_rows:
+        conn.execute(
+            "INSERT INTO memories_fts(memory_id, content, summary) "
+            f"SELECT m.id, m.content, m.summary FROM memories AS m WHERE {visible_sql}"
+        )
+        if commit:
+            conn.commit()
 
 
 def now_iso() -> str:
@@ -604,14 +917,23 @@ def store_row(
     content: str,
     metadata: str = "{}",
     allow_duplicate: bool = False,
+    commit: bool = True,
+    timestamp: str = "",
+    enqueue_vector_intent: bool = True,
 ) -> tuple[str, str, str, bool]:
+
     """Insert one durable memory row into the SQLite truth store.
 
-    The helper centralizes IDs, timestamps, scope, metadata serialization, and duplicate-sensitive fields used by downstream companions."""
-    now = now_iso()
+    The helper centralizes IDs, timestamps, scope, metadata serialization, and
+    duplicate-sensitive fields used by downstream companions. ``commit=False``
+    lets cross-surface coordinators retain the caller-owned transaction.
+    """
+    now = timestamp or now_iso()
     content = sanitize_capture_text(content)
     if not content:
         return "", "", now, False
+    if contains_secret_like_text(content):
+        raise ValueError("plaintext secret-like content rejected at durable store boundary")
     content = enrich_content_with_artifact_anchors(content)
     summary = compact_text(content, 220)
     key = dedup_key(content)
@@ -630,8 +952,26 @@ def store_row(
             (scope_id, target, key),
         ).fetchone()
         if existing is not None:
-            conn.execute("UPDATE memories SET updated_at = ? WHERE id = ?", (now, existing["id"]))
-            conn.commit()
+            try:
+                conn.execute(
+                    "UPDATE memories SET updated_at = ? WHERE id = ?",
+                    (now, existing["id"]),
+                )
+                sync_relation_frequency_memory(conn, str(existing["id"]))
+                if enqueue_vector_intent:
+                    enqueue_current_vector_event(
+                        conn,
+                        memory_id=str(existing["id"]),
+                        operation="upsert",
+                        updated_at=now,
+                        reason="durable duplicate-store timestamp update",
+                    )
+                if commit:
+                    conn.commit()
+            except BaseException:
+                if commit and conn.in_transaction:
+                    conn.rollback()
+                raise
             return str(existing["id"]), str(existing["summary"]), now, False
 
     metadata_payload = merge_metadata(dict(classify_memory(content, target, source)), metadata)
@@ -640,42 +980,65 @@ def store_row(
     metadata_payload = safe_metadata if isinstance(safe_metadata, dict) else {}
     metadata_json = json.dumps(metadata_payload, ensure_ascii=False, sort_keys=True)
 
-    conn.execute(
-        """
-        INSERT INTO memories (
-            id, scope_id, platform, user_id, chat_id, thread_id, gateway_session_key,
-            agent_identity, agent_workspace,
-            session_id, source, target, content, summary, created_at, updated_at, last_recalled_turn,
-            dedup_key, metadata
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-        """,
-        (
-            memory_id,
-            scope_id,
-            platform,
-            user_id,
-            chat_id,
-            thread_id,
-            gateway_session_key,
-            agent_identity,
-            agent_workspace,
-            session_id,
-            source,
-            target,
-            content,
-            summary,
-            now,
-            now,
-            key,
-            metadata_json,
-        ),
-    )
-    conn.execute(
-        "INSERT INTO memories_fts(memory_id, content, summary) VALUES (?, ?, ?)",
-        (memory_id, content, summary),
-    )
-    sync_memory_entities(conn, memory_id=memory_id, content=content, target=target, metadata=metadata_payload)
-    conn.commit()
+    try:
+        conn.execute(
+            """
+            INSERT INTO memories (
+                id, scope_id, platform, user_id, chat_id, thread_id, gateway_session_key,
+                agent_identity, agent_workspace,
+                session_id, source, target, content, summary, created_at, updated_at, last_recalled_turn,
+                dedup_key, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+            """,
+            (
+                memory_id,
+                scope_id,
+                platform,
+                user_id,
+                chat_id,
+                thread_id,
+                gateway_session_key,
+                agent_identity,
+                agent_workspace,
+                session_id,
+                source,
+                target,
+                content,
+                summary,
+                now,
+                now,
+                key,
+                metadata_json,
+            ),
+        )
+        lifecycle = str(metadata_payload.get("lifecycle") or "").strip().lower()
+        if ordinary_recall_lifecycle_visible(lifecycle=lifecycle, target=target):
+            conn.execute(
+                "INSERT INTO memories_fts(memory_id, content, summary) VALUES (?, ?, ?)",
+                (memory_id, content, summary),
+            )
+        sync_memory_entities(
+            conn,
+            memory_id=memory_id,
+            content=content,
+            target=target,
+            metadata=metadata_payload,
+        )
+        sync_relation_frequency_memory(conn, memory_id)
+        if enqueue_vector_intent:
+            enqueue_current_vector_event(
+                conn,
+                memory_id=memory_id,
+                operation="upsert",
+                updated_at=now,
+                reason="durable memory insert",
+            )
+        if commit:
+            conn.commit()
+    except BaseException:
+        if commit and conn.in_transaction:
+            conn.rollback()
+        raise
     return memory_id, summary, now, True
 
 
@@ -687,13 +1050,20 @@ def update_row(
     target: str | None = None,
     scope_id: str | None = None,
     scope_ids: list[str] | tuple[str, ...] | None = None,
+    fact_mutation_authority: str = "",
+    enqueue_vector_intent: bool = True,
 ) -> tuple[bool, str, str]:
-    """Update one SQLite truth row while preserving metadata and lifecycle invariants.
+    """Update one SQLite truth row without committing.
 
-    Callers use this helper so conflict review, freshness, and governance state do not get accidentally discarded by ad-hoc SQL."""
+    The helper preserves metadata/lifecycle invariants and rejects legacy edits
+    to any memory that owns structured claims. The caller owns commit/rollback;
+    only the Fact Executor may pass its explicit mutation authority.
+    """
     content = sanitize_capture_text(content)
     if not content:
         return False, "", ""
+    if contains_secret_like_text(content):
+        raise ValueError("plaintext secret-like content rejected at durable store boundary")
     content = enrich_content_with_artifact_anchors(content)
     if scope_ids is not None:
         clean_scope_ids = [str(item) for item in scope_ids if str(item)]
@@ -710,6 +1080,12 @@ def update_row(
     row = conn.execute(f"SELECT * FROM memories WHERE {where}", params).fetchone()
     if row is None:
         return False, "", ""
+    require_fact_mutation_authority(
+        conn,
+        [memory_id],
+        operation="legacy memory update",
+        authority=fact_mutation_authority,
+    )
     new_target = target or str(row["target"])
     summary = compact_text(content, 220)
     updated_at = now_iso()
@@ -790,7 +1166,15 @@ def update_row(
                 (memory_id,),
             )
         _sync_conflict_metadata_after_relation_delete(conn, peer_ids)
-    conn.commit()
+    sync_relation_frequency_memory(conn, memory_id)
+    if enqueue_vector_intent:
+        enqueue_current_vector_event(
+            conn,
+            memory_id=memory_id,
+            operation="upsert",
+            updated_at=updated_at,
+            reason="durable memory update",
+        )
     return True, summary, updated_at
 
 
@@ -910,6 +1294,8 @@ def delete_rows(
             scoped_ids,
         )
     conn.execute(f"DELETE FROM memories WHERE id IN ({placeholders})", scoped_ids)
+    for memory_id in scoped_ids:
+        sync_relation_frequency_memory(conn, memory_id)
     _sync_conflict_metadata_after_relation_delete(conn, conflict_peer_ids)
     if commit:
         conn.commit()

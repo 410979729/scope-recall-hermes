@@ -6,20 +6,47 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import importlib
 import importlib.util
 import json
 import os
-import re
-import shutil
 import shlex
+import shutil
 import sqlite3
+import stat
+import subprocess
 import sys
 import tempfile
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+from .activation_transaction import (
+    ActivationSnapshotError,
+    capture_activation_state,
+    committed_activation_receipt,
+    compensate_activation_failure,
+    refresh_activation_sqlite_epoch,
+)
+from .capture_filters import sanitize_report_text
+from .config import load_runtime_config, load_runtime_config_errors
+from .gating import config_bool
+from .installer_yaml import (
+    InstallerYamlError,
+    atomic_replace_text,
+    memory_provider_from_yaml,
+    set_memory_provider_yaml_text,
+)
+from .response_schemas import (
+    DOCTOR_REQUIRED_CHECK_NAMES,
+    DOCTOR_RESPONSE_SCHEMA_VERSION,
+)
+from .vector_bootstrap import vector_companion_presence
+from .vector_generation_preflight import validate_generation_for_activation
+from .vector_store import normalize_vector_backend
 
 PLUGIN_NAME = "scope-recall"
 PROVIDER_CONFIG_COMMAND = f"hermes config set memory.provider {PLUGIN_NAME}"
@@ -58,6 +85,71 @@ _EXCLUDED_FILE_GLOBS = (
     ".env.*",
     "review-report.*.md",
 )
+_DOCTOR_STDOUT_LIMIT_BYTES = 1_000_000
+_DOCTOR_STDERR_LIMIT_BYTES = 1_000_000
+
+
+class _BoundedPipeCapture:
+    """Continuously drain one child stream while retaining only bounded bytes.
+
+    A process-wide ``RLIMIT_FSIZE`` cannot safely bound redirected doctor
+    output: the same limit also applies to SQLite snapshots and every other
+    regular file written by the doctor.  Pipe backpressure plus a dedicated
+    reader keeps memory and disk bounded without changing the child's file
+    semantics.
+    """
+
+    def __init__(self, limit: int, *, stream_name: str) -> None:
+        read_fd, write_fd = os.pipe()
+        self._read_fd = read_fd
+        self.writer = os.fdopen(write_fd, "wb")
+        self._limit = int(limit)
+        self._buffer = bytearray()
+        self._total_bytes = 0
+        self._reader_error = False
+        self._thread = threading.Thread(
+            target=self._drain,
+            name=f"scope-recall-doctor-{stream_name}",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _drain(self) -> None:
+        try:
+            with os.fdopen(self._read_fd, "rb", buffering=0) as stream:
+                while True:
+                    chunk = stream.read(64 * 1024)
+                    if not chunk:
+                        break
+                    self._total_bytes += len(chunk)
+                    remaining = self._limit + 1 - len(self._buffer)
+                    if remaining > 0:
+                        self._buffer.extend(chunk[:remaining])
+        except Exception:
+            self._reader_error = True
+
+    def finish(self) -> None:
+        if not self.writer.closed:
+            self.writer.close()
+        self._thread.join(timeout=5)
+        if self._thread.is_alive() or self._reader_error:
+            raise RuntimeError("doctor output capture failed")
+
+    @property
+    def exceeded(self) -> bool:
+        return self._total_bytes >= self._limit
+
+    @property
+    def payload(self) -> bytes:
+        return bytes(self._buffer)
+
+
+def _register_activation_sqlite_epoch(snapshot: dict[str, Any]) -> str:
+    """Refresh the activation epoch owned by the explicitly supplied snapshot."""
+
+    return refresh_activation_sqlite_epoch(snapshot)
 
 
 class InstallError(RuntimeError):
@@ -169,6 +261,14 @@ def _runtime_verify(home: Path, plugin_dir: Path) -> dict[str, Any]:
                 config_module = importlib.import_module(f"{package_name}.config")
                 storage_dir = home / "scope-recall"
                 runtime_config = config_module.load_runtime_config(plugin_dir, storage_dir)
+                config_errors = config_module.load_runtime_config_errors(runtime_config)
+                payload["config_load_errors"] = config_errors
+                if config_errors:
+                    failures.extend(
+                        "runtime config load failed: "
+                        + str(item.get("message") or item.get("kind") or "invalid config")
+                        for item in config_errors
+                    )
                 vector_config = dict((runtime_config or {}).get("vector") or {})
                 vector_enabled = bool(vector_config.get("enabled", False))
                 configured_backend = str(vector_config.get("backend") or "").strip().lower()
@@ -203,6 +303,44 @@ def _runtime_verify(home: Path, plugin_dir: Path) -> dict[str, Any]:
                 conn.execute("PRAGMA query_only=ON")
                 try:
                     schema_status = sql_store.schema_migration_status(conn)
+                    vector_generation = importlib.import_module(
+                        f"{package_name}.vector_generation"
+                    )
+                    manifest = vector_generation.current_generation(conn)
+                    if manifest is not None:
+                        active_backend = str(
+                            manifest.get("backend") or ""
+                        ).strip().lower()
+                        generation_root = vector_generation.resolve_generation_storage_root(
+                            storage_dir,
+                            manifest.get("storage_path"),
+                        )
+                        if active_backend == "sqlite-bruteforce":
+                            active_path = generation_root / "vector.sqlite3"
+                            physical_ready = active_path.is_file()
+                        elif active_backend == "lancedb":
+                            active_path = generation_root / "lancedb"
+                            physical_ready = active_path.is_dir()
+                        else:
+                            # Remote backends have no local path to probe here;
+                            # the canonical doctor performs connectivity checks.
+                            active_path = generation_root
+                            physical_ready = active_backend == "pgvector"
+                        active_status = str(manifest.get("status") or "")
+                        payload["vector_companion"] = {
+                            **dict(payload.get("vector_companion") or {}),
+                            "active_backend": active_backend,
+                            "generation_id": str(
+                                manifest.get("generation_id") or ""
+                            ),
+                            "generation_status": active_status,
+                            "status": (
+                                "ready"
+                                if active_status == "active" and physical_ready
+                                else "degraded"
+                            ),
+                            "path": str(active_path),
+                        }
                 finally:
                     conn.close()
                 payload["schema_migrations"] = schema_status
@@ -242,11 +380,22 @@ def _should_skip_entry(directory: str, name: str) -> bool:
     return any(fnmatch.fnmatch(name, pattern) for pattern in _EXCLUDED_FILE_GLOBS)
 
 
+def _make_copied_directories_owner_writable(destination: Path) -> None:
+    """Normalize copied directory modes for staging, cleanup, and runtime use."""
+
+    directories = [destination]
+    directories.extend(path for path in destination.rglob("*") if path.is_dir())
+    for directory in directories:
+        mode = stat.S_IMODE(directory.stat().st_mode)
+        directory.chmod(mode | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+
+
 def _copy_tree(source: Path, destination: Path) -> None:
     def ignore(directory: str, names: list[str]) -> set[str]:
         return {name for name in names if _should_skip_entry(directory, name)}
 
     shutil.copytree(source, destination, ignore=ignore, symlinks=False)
+    _make_copied_directories_owner_writable(destination)
     for pyc in destination.rglob("*.pyc"):
         pyc.unlink(missing_ok=True)
     for cache in destination.rglob("__pycache__"):
@@ -272,7 +421,18 @@ def _backup_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d.%H%M%S.%f")
 
 
-def _backup_existing_plugin(home: Path, plugin_dir: Path, *, category: str) -> Path:
+def _backup_existing_plugin(
+    home: Path,
+    plugin_dir: Path,
+    *,
+    category: str,
+    pre_mutation_check: Callable[[], None] | None = None,
+) -> Path:
+    # Keep the final READY epoch check inside the first backup operation.  A
+    # wrapper that observes or delays this boundary cannot mutate the vector
+    # epoch and then enter the backup body without being revalidated first.
+    if pre_mutation_check is not None:
+        pre_mutation_check()
     backup_root = home / "backups" / category / f"{_backup_stamp()}.{uuid.uuid4().hex[:8]}"
     backup_root.mkdir(parents=True, exist_ok=False)
     backup_path = backup_root / PLUGIN_NAME
@@ -319,57 +479,23 @@ def _config_backup_path(home: Path) -> Path:
 
 
 def _set_memory_provider_yaml_text(text: str) -> tuple[str, bool]:
-    """Set top-level ``memory.provider`` in simple Hermes YAML while preserving unrelated blocks."""
-    lines = text.splitlines()
-    output: list[str] = []
-    found_memory = False
-    index = 0
-    while index < len(lines):
-        line = lines[index]
-        if re.match(r"^memory\s*:\s*$", line):
-            found_memory = True
-            output.append("memory:")
-            index += 1
-            block: list[str] = []
-            while index < len(lines):
-                candidate = lines[index]
-                if candidate.strip() == "":
-                    block.append(candidate)
-                    index += 1
-                    continue
-                if candidate.startswith((" ", "\t")):
-                    block.append(candidate)
-                    index += 1
-                    continue
-                break
-            provider_found = False
-            provider_written = False
-            for block_line in block:
-                if re.match(r"^\s+provider\s*:", block_line):
-                    if not provider_written:
-                        output.append("  provider: scope-recall")
-                        provider_written = True
-                    provider_found = True
-                else:
-                    output.append(block_line)
-            if not provider_found:
-                output.insert(len(output) - len(block), "  provider: scope-recall")
-            continue
-        output.append(line)
-        index += 1
-    if not found_memory:
-        if output and output[-1].strip():
-            output.append("")
-        output.extend(["memory:", "  provider: scope-recall"])
-    new_text = "\n".join(output).rstrip() + "\n"
-    return new_text, new_text != (text.rstrip() + "\n" if text else text)
+    """Set memory.provider only when the YAML edit is unambiguous and lossless."""
+
+    try:
+        return set_memory_provider_yaml_text(text)
+    except InstallerYamlError as exc:
+        raise InstallError(str(exc)) from exc
 
 
 def _write_memory_provider_config(home: Path) -> dict[str, Any]:
     """Activate Scope Recall in Hermes config.yaml and preserve rollback evidence."""
     config_path = home / "config.yaml"
     previous_config_existed = config_path.is_file()
-    before = config_path.read_text(encoding="utf-8", errors="replace") if previous_config_existed else ""
+    before = (
+        config_path.read_text(encoding="utf-8", errors="strict")
+        if previous_config_existed
+        else ""
+    )
     after, changed = _set_memory_provider_yaml_text(before)
     backup_path = ""
     if changed:
@@ -378,7 +504,14 @@ def _write_memory_provider_config(home: Path) -> dict[str, Any]:
             backup = _config_backup_path(home)
             shutil.copy2(config_path, backup)
             backup_path = str(backup)
-        config_path.write_text(after, encoding="utf-8")
+        try:
+            atomic_replace_text(
+                config_path,
+                after,
+                expected_before=before,
+            )
+        except InstallerYamlError as exc:
+            raise InstallError(str(exc)) from exc
     return {
         "config_path": str(config_path),
         "config_updated": changed,
@@ -388,13 +521,30 @@ def _write_memory_provider_config(home: Path) -> dict[str, Any]:
     }
 
 
-def _bootstrap_installed_provider(home: Path, plugin_dir: Path) -> dict[str, Any]:
+def _bootstrap_installed_provider(
+    home: Path,
+    plugin_dir: Path,
+    *,
+    snapshot: dict[str, Any],
+) -> dict[str, Any]:
     package_name = "_scope_recall_install_activate"
+    lease = dict(snapshot.get("maintenance_lease") or {})
+    lease_token = str(lease.get("token") or "")
+    if not lease_token:
+        raise InstallError("activation snapshot is missing its connection capability")
     try:
         _load_installed_package(plugin_dir, package_name=package_name)
         provider_module = importlib.import_module(f"{package_name}.provider")
         provider = provider_module.ScopeRecallMemoryProvider()
-        provider.save_config({}, str(home))
+        # The installer passes the lease token only to the one bootstrap
+        # connection it owns. No process-, thread-, or context-global authority
+        # is visible to ordinary provider connections.
+        provider.save_config(
+            {},
+            str(home),
+            activation_lease_token=lease_token,
+        )
+        _register_activation_sqlite_epoch(snapshot)
     finally:
         _clear_runtime_verify_modules(package_name)
     runtime_verify = verify(home, runtime=True)
@@ -407,15 +557,625 @@ def _bootstrap_installed_provider(home: Path, plugin_dir: Path) -> dict[str, Any
     }
 
 
-def _activation_payload(home: Path, plugin_dir: Path) -> dict[str, Any]:
+def _postdeploy_doctor_verify(home: Path, plugin_dir: Path) -> dict[str, Any]:
+    """Run the installed candidate's canonical operator doctor before commit.
+
+    The subprocess uses isolated Python import semantics so another installed
+    Scope Recall package cannot shadow ``plugin_dir``. Only bounded, sanitized
+    health metadata is returned; doctor runtime details may contain private
+    memory samples and therefore are intentionally not embedded in installer
+    output.
+    """
+
+    doctor_script = plugin_dir / "scripts" / "doctor.py"
+    if not doctor_script.is_file():
+        return {
+            "requested": True,
+            "ok": False,
+            "returncode": None,
+            "failed_checks": ["doctor_script"],
+            "failures": ["installed candidate doctor script is missing"],
+            "checks": {},
+            "recommendations": [],
+        }
+    env = dict(os.environ)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env.pop("PYTHONPATH", None)
+    stdout_capture = _BoundedPipeCapture(
+        _DOCTOR_STDOUT_LIMIT_BYTES,
+        stream_name="stdout",
+    )
+    stderr_capture = _BoundedPipeCapture(
+        _DOCTOR_STDERR_LIMIT_BYTES,
+        stream_name="stderr",
+    )
+    completed: subprocess.CompletedProcess[Any] | None = None
+    process_error: Exception | None = None
+    timed_out = False
+    capture_error: Exception | None = None
+    stdout_capture.start()
+    stderr_capture.start()
+    try:
+        # Dedicated readers continuously drain both pipes so child output can
+        # neither deadlock nor grow an in-memory/disk capture without bound.
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                str(doctor_script),
+                "--source-root",
+                str(plugin_dir),
+                "--hermes-home",
+                str(home),
+                "--json",
+            ],
+            cwd=plugin_dir,
+            env=env,
+            stdout=stdout_capture.writer,
+            stderr=stderr_capture.writer,
+            timeout=300,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        timed_out = True
+    except Exception as exc:
+        process_error = exc
+    finally:
+        for capture in (stdout_capture, stderr_capture):
+            try:
+                capture.finish()
+            except Exception as exc:
+                if capture_error is None:
+                    capture_error = exc
+
+    if timed_out:
+        return {
+            "requested": True,
+            "ok": False,
+            "returncode": None,
+            "timed_out": True,
+            "schema_version": "",
+            "failed_checks": ["doctor_process"],
+            "failures": ["candidate doctor process timed out"],
+            "checks": {},
+            "recommendations": [],
+        }
+    if process_error is not None or capture_error is not None:
+        exc = process_error or capture_error
+        assert exc is not None
+        safe_error = sanitize_report_text(str(exc))[:500] or type(exc).__name__
+        return {
+            "requested": True,
+            "ok": False,
+            "returncode": None,
+            "schema_version": "",
+            "failed_checks": ["doctor_process"],
+            "failures": [f"candidate doctor process failed: {safe_error}"],
+            "checks": {},
+            "recommendations": [],
+        }
+    assert completed is not None
+    if stdout_capture.exceeded or stderr_capture.exceeded:
+        return {
+            "requested": True,
+            "ok": False,
+            "returncode": int(completed.returncode),
+            "schema_version": "",
+            "failed_checks": ["doctor_output"],
+            "failures": ["candidate doctor exceeded its output limit"],
+            "checks": {},
+            "recommendations": [],
+        }
+    stdout_bytes = stdout_capture.payload
+
+    try:
+        raw_payload = json.loads(stdout_bytes.decode("utf-8", errors="strict"))
+    except (TypeError, UnicodeError, ValueError, json.JSONDecodeError):
+        return {
+            "requested": True,
+            "ok": False,
+            "returncode": int(completed.returncode),
+            "schema_version": "",
+            "failed_checks": ["doctor_payload"],
+            "failures": ["candidate doctor did not emit a valid JSON object"],
+            "checks": {},
+            "recommendations": [],
+        }
+    if not isinstance(raw_payload, dict):
+        return {
+            "requested": True,
+            "ok": False,
+            "returncode": int(completed.returncode),
+            "schema_version": "",
+            "failed_checks": ["doctor_payload"],
+            "failures": ["candidate doctor did not emit a valid JSON object"],
+            "checks": {},
+            "recommendations": [],
+        }
+
+    payload = raw_payload
+    raw_checks = payload.get("checks")
+    checks = raw_checks if isinstance(raw_checks, dict) else {}
+    bounded_checks: dict[str, dict[str, bool]] = {}
+    failed_checks: list[str] = []
+    missing_checks: list[str] = []
+    for name in DOCTOR_REQUIRED_CHECK_NAMES:
+        check = checks.get(name)
+        check_ok = isinstance(check, dict) and check.get("ok") is True
+        bounded_checks[name] = {"ok": check_ok}
+        if name not in checks:
+            missing_checks.append(name)
+        if not check_ok:
+            failed_checks.append(name)
+
+    required_check_names = set(DOCTOR_REQUIRED_CHECK_NAMES)
+    unexpected_checks = any(name not in required_check_names for name in checks)
+    if unexpected_checks:
+        failed_checks.append("doctor_check_contract")
+
+    reported_schema = payload.get("schema_version")
+    schema_ok = (
+        isinstance(reported_schema, str)
+        and reported_schema == DOCTOR_RESPONSE_SCHEMA_VERSION
+    )
+    if not schema_ok:
+        failed_checks.append("doctor_schema_version")
+    reported_ok = payload.get("ok") is True
+    if not reported_ok:
+        failed_checks.append("doctor_report")
+    process_ok = int(completed.returncode) == 0
+    if not process_ok:
+        failed_checks.append("doctor_process")
+    failures: list[str] = []
+    if missing_checks:
+        failures.append(
+            "candidate doctor is missing required checks: "
+            + ", ".join(missing_checks)
+        )
+    if unexpected_checks:
+        failures.append("candidate doctor reported checks outside its response contract")
+    unhealthy_checks = [name for name in failed_checks if name not in missing_checks]
+    if unhealthy_checks:
+        failures.append(
+            "candidate doctor failed checks: " + ", ".join(unhealthy_checks)
+        )
+    if not schema_ok:
+        failures.append("candidate doctor response schema version is incompatible")
+    if not reported_ok:
+        failures.append("candidate doctor did not report ok=true")
+    if not process_ok:
+        failures.append(f"candidate doctor exited with status {completed.returncode}")
+    return {
+        "requested": True,
+        "ok": reported_ok and process_ok and not failed_checks,
+        "returncode": int(completed.returncode),
+        "schema_version": (
+            reported_schema if isinstance(reported_schema, str) else ""
+        ),
+        "failed_checks": failed_checks,
+        "failures": failures,
+        # Never forward doctor details, runtime payloads, unknown checks,
+        # recommendations, stdout, or stderr.  Canonical names and booleans are
+        # the complete privacy-bounded installer contract.
+        "checks": bounded_checks,
+        "recommendations": [],
+    }
+
+
+def _activation_payload(
+    home: Path,
+    plugin_dir: Path,
+    snapshot: dict[str, Any],
+) -> dict[str, Any]:
     config_payload = _write_memory_provider_config(home)
-    bootstrap_payload = _bootstrap_installed_provider(home, plugin_dir)
+    bootstrap_payload = _bootstrap_installed_provider(
+        home,
+        plugin_dir,
+        snapshot=snapshot,
+    )
+    runtime_ok = bool(bootstrap_payload["runtime_verify"].get("ok"))
+    postdeploy_doctor = (
+        _postdeploy_doctor_verify(home, plugin_dir)
+        if runtime_ok
+        else {
+            "requested": False,
+            "ok": False,
+            "failed_checks": ["runtime_verify"],
+            "failures": ["candidate doctor skipped because runtime verification failed"],
+            "checks": {},
+            "recommendations": [],
+        }
+    )
     return {
         "activation_requested": True,
-        "activated": bool(bootstrap_payload["runtime_verify"].get("ok")),
+        "activated": runtime_ok and bool(postdeploy_doctor.get("ok")),
         **config_payload,
         **bootstrap_payload,
+        "postdeploy_doctor": postdeploy_doctor,
     }
+
+
+def _activation_runtime_failure(activation: dict[str, Any]) -> str:
+    runtime = activation.get("runtime_verify")
+    runtime_payload = runtime if isinstance(runtime, dict) else {}
+    if not bool(runtime_payload.get("ok")):
+        failures = [str(item) for item in runtime_payload.get("failures", []) if str(item)]
+        detail = "; ".join(failures[:8]) or "runtime verification did not report ok=true"
+        return f"activation runtime verification failed: {detail}"
+    doctor = activation.get("postdeploy_doctor")
+    doctor_payload = doctor if isinstance(doctor, dict) else {}
+    if not bool(doctor_payload.get("ok")):
+        failures = [str(item) for item in doctor_payload.get("failures", []) if str(item)]
+        failed_checks = [str(item) for item in doctor_payload.get("failed_checks", []) if str(item)]
+        detail = "; ".join(failures[:8])
+        if not detail and failed_checks:
+            detail = "failed checks: " + ", ".join(failed_checks[:20])
+        return f"activation postdeploy doctor failed: {detail or 'doctor did not report ok=true'}"
+    if bool(activation.get("activated")):
+        return ""
+    return "activation did not report activated=true after runtime and doctor verification"
+
+
+def _extend_rollback_commands(result: dict[str, Any], commands: list[str]) -> None:
+    existing = [str(item) for item in result.get("rollback_commands", []) if str(item)]
+    for command in commands:
+        _append_unique(existing, str(command))
+    result["rollback_commands"] = existing
+    if not result.get("rollback_command") and existing:
+        result["rollback_command"] = existing[0]
+
+
+def _activate_installed_target(
+    home: Path,
+    target: Path,
+    *,
+    result: dict[str, Any],
+    snapshot: dict[str, Any],
+    previous_plugin_existed: bool,
+    previous_version: str,
+    plugin_backup_path: str,
+    plugin_replaced: bool,
+) -> dict[str, Any]:
+    activation: dict[str, Any] = {}
+    transaction: dict[str, Any] = {}
+    try:
+        activation = _activation_payload(home, target, snapshot)
+        result.update(activation)
+        runtime_failure = _activation_runtime_failure(activation)
+        if runtime_failure:
+            raise InstallError(runtime_failure)
+        transaction = committed_activation_receipt(
+            snapshot,
+            plugin_dir=target,
+            previous_plugin_existed=previous_plugin_existed,
+            plugin_backup_path=plugin_backup_path,
+            plugin_replaced=plugin_replaced,
+        )
+        transaction_status = str(transaction.get("status") or "")
+        if transaction_status != "committed":
+            raw_failures = transaction.get("failures")
+            transaction_failures = (
+                [
+                    sanitize_report_text(str(item))[:300]
+                    for item in raw_failures
+                    if str(item)
+                ][:8]
+                if isinstance(raw_failures, list)
+                else []
+            )
+            detail = "; ".join(transaction_failures)
+            message = (
+                "activation transaction finalization did not commit: "
+                f"status={sanitize_report_text(transaction_status)[:100] or '<missing>'}"
+            )
+            if detail:
+                message += f"; {detail}"
+            raise InstallError(message)
+    except Exception as exc:
+        transaction = compensate_activation_failure(
+            snapshot,
+            plugin_dir=target,
+            previous_plugin_existed=previous_plugin_existed,
+            previous_version=previous_version,
+            plugin_backup_path=plugin_backup_path,
+            plugin_replaced=plugin_replaced,
+        )
+        result.update(
+            {
+                "ok": False,
+                "installed": False,
+                "activated": False,
+                "config_updated": False,
+                "mode": (
+                    "activation-failed-rolled-back"
+                    if transaction["automatic_rollback"]
+                    else "activation-failed-rollback-failed"
+                ),
+                "activation_error": {
+                    "type": type(exc).__name__,
+                    "message": str(exc)[:1000],
+                },
+                "activation_transaction": transaction,
+                "verify": verify(home),
+            }
+        )
+        _extend_rollback_commands(
+            result,
+            [str(item) for item in transaction.get("restore_commands", [])],
+        )
+        result["next_steps"] = [
+            f"hermes-scope-recall verify --hermes-home {_shell_quote_path(home)}",
+        ]
+        if not transaction["automatic_rollback"]:
+            result["next_steps"].extend(
+                str(item) for item in transaction.get("restore_commands", [])
+            )
+        return result
+
+    result["activation_transaction"] = transaction
+    config_rollback = str(result.get("config_rollback_command") or "")
+    commands = [config_rollback] if config_rollback else []
+    commands.extend(str(item) for item in transaction.get("restore_commands", []))
+    _extend_rollback_commands(result, commands)
+    result["verify"] = activation["runtime_verify"]
+    result["ok"] = bool(result["verify"].get("ok"))
+    return result
+
+
+def _manifestless_vector_state_failures(
+    storage_dir: Path,
+    conn: sqlite3.Connection,
+    runtime_config: dict[str, Any],
+) -> list[str]:
+    """Return read-only blockers for a vector-enabled DB without a current manifest."""
+
+    vector_config = dict(runtime_config.get("vector") or {})
+    if not config_bool(vector_config, "enabled", True):
+        return []
+
+    generation_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vector_generations'"
+    ).fetchone()
+    state_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vector_generation_state'"
+    ).fetchone()
+    current_id = ""
+    if state_table is not None:
+        row = conn.execute(
+            "SELECT value FROM vector_generation_state WHERE key = 'current_generation'"
+        ).fetchone()
+        current_id = str(row[0] or "") if row else ""
+    if current_id:
+        if generation_table is None:
+            return ["current vector generation pointer exists without a generation manifest table"]
+        manifest = conn.execute(
+            "SELECT status FROM vector_generations WHERE generation_id = ?",
+            (current_id,),
+        ).fetchone()
+        if manifest is None:
+            return ["current vector generation pointer references a missing manifest"]
+        if str(manifest[0] or "").strip().lower() != "active":
+            return ["current vector generation manifest is not active"]
+        return []
+
+    manifest_count = 0
+    if generation_table is not None:
+        manifest_count = int(conn.execute("SELECT COUNT(*) FROM vector_generations").fetchone()[0])
+    memories_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memories'"
+    ).fetchone()
+    truth_rows = (
+        int(conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0])
+        if memories_table is not None
+        else 0
+    )
+
+    failures: list[str] = []
+    if manifest_count:
+        failures.append(
+            "active vector generation manifest is missing while generation manifests already exist"
+        )
+    if truth_rows:
+        failures.append(
+            "active vector generation manifest is missing while SQLite truth is non-empty"
+        )
+
+    configured_backends: list[tuple[str, str]] = []
+    for label, raw_backend in (
+        ("primary", vector_config.get("backend") or "lancedb"),
+        ("fallback", vector_config.get("fallback_backend") or ""),
+    ):
+        if not str(raw_backend or "").strip():
+            continue
+        try:
+            backend = normalize_vector_backend(str(raw_backend))
+        except Exception:
+            continue
+        if any(existing_backend == backend for _, existing_backend in configured_backends):
+            continue
+        configured_backends.append((label, backend))
+
+    for label, backend in configured_backends:
+        presence = vector_companion_presence(backend, storage_dir)
+        if presence is True:
+            failures.append(
+                f"manifestless vector companion exists for configured {label} backend {backend}"
+            )
+        elif presence is None:
+            failures.append(
+                f"manifestless remote vector companion absence cannot be proven for configured {label} backend {backend}"
+            )
+    return failures
+
+
+def _upgrade_compatibility_preflight(
+    home: Path,
+    candidate_source: Path,
+) -> dict[str, Any]:
+    """Read-only N-1 contract check performed before backup or replacement."""
+
+    storage_dir = home / "scope-recall"
+    runtime_config = load_runtime_config(candidate_source, storage_dir)
+    config_errors = load_runtime_config_errors(runtime_config)
+    failures: list[str] = []
+    next_steps: list[str] = []
+    if config_errors:
+        failures.extend(str(item.get("message") or "runtime config error") for item in config_errors)
+        next_steps.append(
+            "Migrate or remove every unsupported runtime config key before retrying the upgrade."
+        )
+
+    vector_checks: list[dict[str, Any]] = []
+    manifestless_failures: list[str] = []
+    db_path = storage_dir / "memory.sqlite3"
+    if db_path.is_file():
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only=ON")
+            try:
+                table_exists = conn.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'vector_generations'"
+                ).fetchone()
+                ready_rows = (
+                    conn.execute(
+                        "SELECT * FROM vector_generations "
+                        "WHERE lower(status) = 'ready' ORDER BY generation_id"
+                    ).fetchall()
+                    if table_exists is not None
+                    else []
+                )
+                for row in ready_rows:
+                    manifest = dict(row)
+                    generation_id = str(manifest.get("generation_id") or "")
+                    manifest_sha256 = hashlib.sha256(
+                        json.dumps(
+                            manifest,
+                            ensure_ascii=True,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            default=str,
+                        ).encode("utf-8")
+                    ).hexdigest()
+                    try:
+                        # The installer must enforce the same physical + current
+                        # truth-cohort contract as activation and doctor. Keeping
+                        # this call inside the query-only connection also closes
+                        # the build-to-check race as much as a read preflight can.
+                        report = validate_generation_for_activation(
+                            storage_dir,
+                            conn,
+                            manifest,
+                        )
+                        vector_checks.append(
+                            {
+                                "generation_id": generation_id,
+                                "ok": True,
+                                "manifest_sha256": manifest_sha256,
+                                "receipt_sha256": str(report.get("receipt_sha256") or ""),
+                                "physical_rows": int(report.get("physical_rows") or 0),
+                                "physical_records_sha256": str(
+                                    report.get("physical_records_sha256") or ""
+                                ),
+                            }
+                        )
+                    except Exception as exc:
+                        safe_error = sanitize_report_text(str(exc))[:300] or type(exc).__name__
+                        failures.append(
+                            f"ready vector generation {generation_id} is not upgrade-compatible: {safe_error}"
+                        )
+                        vector_checks.append(
+                            {
+                                "generation_id": generation_id,
+                                "ok": False,
+                                "error": safe_error,
+                            }
+                        )
+                manifestless_failures = _manifestless_vector_state_failures(
+                    storage_dir,
+                    conn,
+                    runtime_config,
+                )
+                failures.extend(manifestless_failures)
+            finally:
+                conn.close()
+        except Exception as exc:
+            safe_error = sanitize_report_text(str(exc))[:300] or type(exc).__name__
+            failures.append(f"cannot inspect existing vector generation state: {safe_error}")
+    if any(not bool(item.get("ok")) for item in vector_checks):
+        next_steps.append(
+            "Explicitly rebuild or migrate each invalid READY vector generation so a bound physical preflight receipt is produced, then rerun install."
+        )
+    if manifestless_failures:
+        next_steps.append(
+            "Run scripts/migrate.vector_generation.py with --dry-run, then --apply --activate under confirmed maintenance, and rerun the upgrade."
+        )
+
+    return {
+        "ok": not failures,
+        "read_only": True,
+        "checked_before_backup": True,
+        "config": {
+            "ok": not config_errors,
+            "error_count": len(config_errors),
+            "errors": config_errors,
+        },
+        "ready_vector_generations": vector_checks,
+        "manifestless_vector_state": {
+            "ok": not manifestless_failures,
+            "failures": manifestless_failures,
+        },
+        "failures": failures,
+        "next_steps": next_steps,
+    }
+
+
+def _ready_vector_epoch(
+    compatibility: dict[str, Any],
+) -> tuple[tuple[str, str, str, int, str], ...]:
+    """Return the privacy-safe manifest/physical epoch sealed by preflight."""
+
+    raw_checks = compatibility.get("ready_vector_generations")
+    checks = raw_checks if isinstance(raw_checks, list) else []
+    return tuple(
+        sorted(
+            (
+                str(item.get("generation_id") or ""),
+                str(item.get("manifest_sha256") or ""),
+                str(item.get("receipt_sha256") or ""),
+                int(item.get("physical_rows") or 0),
+                str(item.get("physical_records_sha256") or ""),
+            )
+            for item in checks
+            if isinstance(item, dict) and item.get("ok") is True
+        )
+    )
+
+
+def _revalidate_upgrade_compatibility(
+    home: Path,
+    candidate_source: Path,
+    *,
+    initial: dict[str, Any],
+) -> dict[str, Any]:
+    """Re-run canonical checks at the first plugin mutation boundary."""
+
+    current = _upgrade_compatibility_preflight(home, candidate_source)
+    current["revalidated_before_target_mutation"] = True
+    if not bool(current.get("ok")):
+        failures = [str(item) for item in current.get("failures", [])]
+        detail = "; ".join(failures[:5]) or "unknown compatibility failure"
+        raise InstallError(
+            "upgrade compatibility revalidation failed before backup/replacement: "
+            + detail
+        )
+    if _ready_vector_epoch(current) != _ready_vector_epoch(initial):
+        raise InstallError(
+            "READY vector generation manifest/physical epoch changed after the "
+            "initial preflight and before backup/replacement"
+        )
+    return current
 
 
 def _next_steps(home: Path) -> list[str]:
@@ -459,25 +1219,10 @@ def _verify_next_steps(
 
 
 def _extract_memory_provider_from_config(text: str) -> str:
-    lines = text.splitlines()
-    index = 0
-    while index < len(lines):
-        if re.match(r"^memory\s*:\s*$", lines[index]):
-            index += 1
-            while index < len(lines):
-                line = lines[index]
-                if line.strip() == "":
-                    index += 1
-                    continue
-                if not line.startswith((" ", "\t")):
-                    break
-                match = re.match(r"^\s+provider\s*:\s*(.+?)\s*$", line)
-                if match:
-                    return match.group(1).strip().strip('"\'')
-                index += 1
-        else:
-            index += 1
-    return ""
+    try:
+        return memory_provider_from_yaml(text)
+    except InstallerYamlError:
+        return ""
 
 
 def _hermes_config_summary(home: Path) -> dict[str, Any]:
@@ -614,6 +1359,7 @@ def install(
     dry_run: bool = False,
     force: bool = False,
     activate: bool = False,
+    maintenance_mode: bool = False,
 ) -> dict[str, Any]:
     """Install or upgrade the plugin copy in a Hermes home with backup and rollback metadata.
 
@@ -644,6 +1390,7 @@ def install(
         "rollback_command": "",
         "rollback_commands": [],
         "activation_requested": activate,
+        "maintenance_mode_confirmed": bool(maintenance_mode),
         "activated": False,
         "config_updated": False,
         "config_path": str(home / "config.yaml"),
@@ -651,31 +1398,40 @@ def install(
         "config_rollback_command": "",
         "sqlite_schema_current": False,
         "runtime_verify": {"requested": False},
+        "postdeploy_doctor": {"requested": False},
+        "upgrade_compatibility": {"requested": True},
         "next_steps": _next_steps(home),
     }
+    compatibility = _upgrade_compatibility_preflight(home, source)
+    result["upgrade_compatibility"] = compatibility
+    if not bool(compatibility.get("ok")):
+        result["ok"] = False
+        result["next_steps"] = list(compatibility.get("next_steps") or [])
+        if dry_run:
+            return result
+        failures = [str(item) for item in compatibility.get("failures", [])]
+        detail = "; ".join(failures[:5]) or "unknown compatibility failure"
+        raise InstallError(
+            "upgrade compatibility preflight failed before backup/replacement: "
+            + detail
+        )
     if dry_run:
         if activate:
+            maintenance_arg = (
+                " --maintenance-mode"
+                if (home / "scope-recall" / "memory.sqlite3").is_file()
+                else ""
+            )
             result["next_steps"] = [
-                f"hermes-scope-recall install --activate --hermes-home {_shell_quote_path(home)}",
+                f"hermes-scope-recall install --activate{maintenance_arg} --hermes-home {_shell_quote_path(home)}",
                 f"hermes-scope-recall verify --runtime --hermes-home {_shell_quote_path(home)}",
             ]
         return result
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists() or target.is_symlink():
-        if _is_same_tree(source, target):
-            result["mode"] = "already-installed"
-            if activate:
-                activation = _activation_payload(home, target)
-                result.update(activation)
-                if result.get("config_rollback_command"):
-                    result["rollback_command"] = str(result["config_rollback_command"])
-                    result["rollback_commands"] = [str(result["config_rollback_command"])]
-                result["verify"] = activation["runtime_verify"]
-            else:
-                result["verify"] = verify(home)
-            result["ok"] = bool(result["verify"]["ok"])
-            return result
+    target_exists = target.exists() or target.is_symlink()
+    same_tree = target_exists and _is_same_tree(source, target)
+    if target_exists and not same_tree:
         existing_name = _read_manifest_name(target)
         if not force and existing_name != PLUGIN_NAME:
             detail = f"manifest name: {existing_name!r}" if existing_name else "missing or unreadable scope-recall manifest"
@@ -684,42 +1440,114 @@ def install(
                 "pass --force to replace it"
             )
 
+    activation_snapshot: dict[str, Any] | None = None
+    if activate:
+        truth_db = home / "scope-recall" / "memory.sqlite3"
+        if truth_db.is_file() and not maintenance_mode:
+            raise InstallError(
+                "activation against an existing truth DB requires --maintenance-mode; "
+                "stop the gateway and all Scope Recall writers before retrying"
+            )
+        try:
+            activation_snapshot = capture_activation_state(
+                home,
+                writer_quiesced=maintenance_mode,
+            )
+        except ActivationSnapshotError as exc:
+            raise InstallError(
+                f"cannot safely snapshot activation pre-state: {exc}"
+            ) from exc
+
+    if same_tree:
+        result["mode"] = "already-installed"
+        if activate:
+            assert activation_snapshot is not None
+            return _activate_installed_target(
+                home,
+                target,
+                result=result,
+                snapshot=activation_snapshot,
+                previous_plugin_existed=previous_plugin_existed,
+                previous_version=previous_version,
+                plugin_backup_path="",
+                plugin_replaced=False,
+            )
+        result["verify"] = verify(home)
+        result["ok"] = bool(result["verify"]["ok"])
+        return result
+
+    def revalidate_before_target_mutation() -> None:
+        result["upgrade_compatibility"] = _revalidate_upgrade_compatibility(
+            home,
+            source,
+            initial=compatibility,
+        )
+
     staging_root = Path(tempfile.mkdtemp(prefix="scope.recall.install.", dir=str(target.parent)))
     staging = staging_root / PLUGIN_NAME
     backup_path = ""
     try:
         _copy_tree(source, staging)
         if target.exists() or target.is_symlink():
-            backup = _backup_existing_plugin(home, target, category="scope-recall-installer")
+            backup = _backup_existing_plugin(
+                home,
+                target,
+                category="scope-recall-installer",
+                pre_mutation_check=revalidate_before_target_mutation,
+            )
             backup_path = str(backup)
             result["backup_path"] = backup_path
             result["rollback_command"] = _rollback_command(home, backup_path)
             result["rollback_commands"] = [result["rollback_command"]]
+            revalidate_before_target_mutation()
             _remove_existing_plugin(target)
         try:
+            revalidate_before_target_mutation()
             staging.rename(target)
         except Exception:
             if backup_path and not target.exists():
                 _copy_existing_plugin(Path(backup_path), target)
             raise
+    except Exception as exc:
+        if activate:
+            assert activation_snapshot is not None
+            transaction = compensate_activation_failure(
+                activation_snapshot,
+                plugin_dir=target,
+                previous_plugin_existed=previous_plugin_existed,
+                previous_version=previous_version,
+                plugin_backup_path=backup_path,
+                plugin_replaced=bool(backup_path),
+            )
+            if not bool(transaction.get("automatic_rollback")):
+                failures = "; ".join(
+                    str(item)
+                    for item in transaction.get("failures", [])
+                    if str(item)
+                )
+                raise InstallError(
+                    "pre-activation failure could not be compensated"
+                    + (f": {failures}" if failures else "")
+                ) from exc
+        raise
     finally:
         if staging_root.exists():
             shutil.rmtree(staging_root, ignore_errors=True)
 
     result["installed"] = True
     if activate:
-        activation = _activation_payload(home, target)
-        result.update(activation)
-        rollback_commands = [str(item) for item in result.get("rollback_commands", []) if item]
-        config_rollback = str(result.get("config_rollback_command") or "")
-        if config_rollback and config_rollback not in rollback_commands:
-            rollback_commands.append(config_rollback)
-        result["rollback_commands"] = rollback_commands
-        if not result.get("rollback_command") and rollback_commands:
-            result["rollback_command"] = rollback_commands[0]
-        result["verify"] = activation["runtime_verify"]
-    else:
-        result["verify"] = verify(home)
+        assert activation_snapshot is not None
+        return _activate_installed_target(
+            home,
+            target,
+            result=result,
+            snapshot=activation_snapshot,
+            previous_plugin_existed=previous_plugin_existed,
+            previous_version=previous_version,
+            plugin_backup_path=backup_path,
+            plugin_replaced=True,
+        )
+    result["verify"] = verify(home)
     result["ok"] = bool(result["verify"]["ok"])
     return result
 
@@ -803,6 +1631,11 @@ def build_parser() -> argparse.ArgumentParser:
     install_parser.add_argument("--dry-run", action="store_true", help="show what would be installed without mutating files")
     install_parser.add_argument("--force", action="store_true", help="replace an existing non-scope-recall directory")
     install_parser.add_argument("--activate", action="store_true", help="also set memory.provider=scope-recall and bootstrap the SQLite schema")
+    install_parser.add_argument(
+        "--maintenance-mode",
+        action="store_true",
+        help="confirm the gateway and all Scope Recall writers are stopped before activating an existing truth DB",
+    )
     install_parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
 
     upgrade_parser = sub.add_parser("upgrade", help="upgrade scope-recall and back up the existing plugin copy first")
@@ -810,6 +1643,11 @@ def build_parser() -> argparse.ArgumentParser:
     upgrade_parser.add_argument("--dry-run", action="store_true", help="show what would be upgraded without mutating files")
     upgrade_parser.add_argument("--force", action="store_true", help="replace an existing non-scope-recall directory")
     upgrade_parser.add_argument("--activate", action="store_true", help="also set memory.provider=scope-recall and bootstrap the SQLite schema")
+    upgrade_parser.add_argument(
+        "--maintenance-mode",
+        action="store_true",
+        help="confirm the gateway and all Scope Recall writers are stopped before activating an existing truth DB",
+    )
     upgrade_parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
 
     rollback_parser = sub.add_parser("rollback", help="restore a previous scope-recall plugin backup")
@@ -830,7 +1668,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command in {"install", "upgrade"}:
-            payload = install(args.hermes_home, dry_run=args.dry_run, force=args.force, activate=args.activate)
+            payload = install(
+                args.hermes_home,
+                dry_run=args.dry_run,
+                force=args.force,
+                activate=args.activate,
+                maintenance_mode=args.maintenance_mode,
+            )
             if args.command == "upgrade":
                 payload["mode"] = "upgrade-dry-run" if args.dry_run else ("already-installed" if payload.get("mode") == "already-installed" else "upgrade")
             _print_payload(payload, as_json=args.json)

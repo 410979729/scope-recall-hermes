@@ -18,6 +18,8 @@ from .schemas import (
     SCOPE_RECALL_EXPERIENCE_STATS_SCHEMA,
     SCOPE_RECALL_EXPLAIN_SCHEMA,
     SCOPE_RECALL_EXPORT_SCHEMA,
+    SCOPE_RECALL_EVOLVE_SCHEMA,
+    SCOPE_RECALL_FACT_SCHEMA,
     SCOPE_RECALL_FEEDBACK_SCHEMA,
     SCOPE_RECALL_FORGET_SCHEMA,
     SCOPE_RECALL_FORGETTING_REPORT_SCHEMA,
@@ -36,6 +38,7 @@ from .schemas import (
     SCOPE_RECALL_PROFILE_SCHEMA,
     SCOPE_RECALL_REPAIR_SCHEMA,
     SCOPE_RECALL_RELATED_SCHEMA,
+    SCOPE_RECALL_REFLECT_SCHEMA,
     SCOPE_RECALL_SEARCH_SCHEMA,
     SCOPE_RECALL_STATS_SCHEMA,
     SCOPE_RECALL_STORE_SCHEMA,
@@ -77,6 +80,18 @@ def build_tool_schemas(config: dict[str, Any], *, agent_context: str = "primary"
     raw_experience_config = config.get("experience")
     experience_config: dict[str, Any] = dict(raw_experience_config) if isinstance(raw_experience_config, dict) else {}
     experience_enabled = config_bool(experience_config, "enabled", True)
+    raw_temporal_config = config.get("temporal_queries")
+    temporal_config: dict[str, Any] = (
+        dict(raw_temporal_config) if isinstance(raw_temporal_config, dict) else {}
+    )
+    temporal_enabled = config_bool(temporal_config, "enabled", False)
+    raw_reflection_config = config.get("reflection")
+    reflection_config: dict[str, Any] = (
+        dict(raw_reflection_config)
+        if isinstance(raw_reflection_config, dict)
+        else {}
+    )
+    reflection_enabled = config_bool(reflection_config, "enabled", False)
     maintenance_enabled = config_bool(config, "maintenance_tools_enabled", False)
     secret_index_enabled = config_bool(config, "secret_index_tools_enabled", False)
     profile = _schema_profile(config)
@@ -109,6 +124,12 @@ def build_tool_schemas(config: dict[str, Any], *, agent_context: str = "primary"
     schemas = list(standard_schemas if profile == "standard" else compact_schemas)
 
     schema_by_name = {str(schema["name"]): schema for schema in [*compact_schemas, *standard_schemas]}
+    if temporal_enabled:
+        schemas.append(SCOPE_RECALL_FACT_SCHEMA)
+        schema_by_name[SCOPE_RECALL_FACT_SCHEMA["name"]] = SCOPE_RECALL_FACT_SCHEMA
+    if reflection_enabled:
+        schemas.append(SCOPE_RECALL_REFLECT_SCHEMA)
+        schema_by_name[SCOPE_RECALL_REFLECT_SCHEMA["name"]] = SCOPE_RECALL_REFLECT_SCHEMA
     if secret_index_enabled:
         schema_by_name[SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA["name"]] = SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA
     experience_schemas = [
@@ -136,6 +157,10 @@ def build_tool_schemas(config: dict[str, Any], *, agent_context: str = "primary"
     if experience_enabled and maintenance_enabled:
         schema_by_name.update({str(schema["name"]): schema for schema in maintenance_schemas})
         schemas.extend(maintenance_schemas)
+
+    if maintenance_enabled:
+        schemas.append(SCOPE_RECALL_EVOLVE_SCHEMA)
+        schema_by_name[SCOPE_RECALL_EVOLVE_SCHEMA["name"]] = SCOPE_RECALL_EVOLVE_SCHEMA
 
     if secret_index_enabled:
         schemas.append(SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA)

@@ -37,12 +37,29 @@ class PGVectorStore:
     package installs do not attempt network/database connections by default.
     """
 
-    def __init__(self, *, dsn_env: str = "SCOPE_RECALL_PGVECTOR_DSN", table_name: str = "scope_recall_vectors", dimensions: int, metric: str = "cosine") -> None:
+    def __init__(
+        self,
+        *,
+        dsn_env: str = "SCOPE_RECALL_PGVECTOR_DSN",
+        table_name: str = "scope_recall_vectors",
+        dimensions: int,
+        metric: str = "cosine",
+        connect_timeout_seconds: int = 10,
+        statement_timeout_ms: int = 30_000,
+        lock_timeout_ms: int = 5_000,
+    ) -> None:
         self._dsn_env = str(dsn_env or "SCOPE_RECALL_PGVECTOR_DSN")
         self._table_name = str(table_name or "scope_recall_vectors")
         self._quoted_table = _quote_identifier(self._table_name)
         self._dimensions = int(dimensions)
         self._metric = str(metric or "cosine").strip().lower()
+        self._connect_timeout_seconds = max(
+            1, min(int(connect_timeout_seconds), 300)
+        )
+        self._statement_timeout_ms = max(
+            100, min(int(statement_timeout_ms), 600_000)
+        )
+        self._lock_timeout_ms = max(100, min(int(lock_timeout_ms), 600_000))
         self._conn: Any = None
 
     @property
@@ -77,27 +94,48 @@ class PGVectorStore:
             raise RuntimeError(f"pgvector DSN environment variable is not set: {self._dsn_env}")
         psycopg = importlib.import_module("psycopg")
         pgvector_psycopg = importlib.import_module("pgvector.psycopg")
-        self._conn = psycopg.connect(dsn)
-        register_vector = getattr(pgvector_psycopg, "register_vector", None)
-        if callable(register_vector):
-            register_vector(self._conn)
-        self._ensure_schema()
+        self._conn = psycopg.connect(
+            dsn,
+            connect_timeout=self._connect_timeout_seconds,
+        )
+        try:
+            register_vector = getattr(pgvector_psycopg, "register_vector", None)
+            if callable(register_vector):
+                register_vector(self._conn)
+            self._configure_session_timeouts()
+            self._ensure_schema()
+        except Exception:
+            self.close()
+            raise
 
     def open_existing(self) -> None:
         """Open an existing PGVector table in a read-only transaction."""
 
+        self._open_existing(read_only=True)
+
+    def open_existing_for_update(self) -> None:
+        """Open an existing PGVector table for writes without creating schema."""
+
+        self._open_existing(read_only=False)
+
+    def _open_existing(self, *, read_only: bool) -> None:
         dsn = os.environ.get(self._dsn_env)
         if not dsn:
             raise RuntimeError(f"pgvector DSN environment variable is not set: {self._dsn_env}")
         psycopg = importlib.import_module("psycopg")
         pgvector_psycopg = importlib.import_module("pgvector.psycopg")
-        self._conn = psycopg.connect(dsn)
+        self._conn = psycopg.connect(
+            dsn,
+            connect_timeout=self._connect_timeout_seconds,
+        )
         register_vector = getattr(pgvector_psycopg, "register_vector", None)
         if callable(register_vector):
             register_vector(self._conn)
         try:
+            self._configure_session_timeouts()
             with self._conn.cursor() as cur:
-                cur.execute("SET TRANSACTION READ ONLY")
+                if read_only:
+                    cur.execute("SET TRANSACTION READ ONLY")
                 cur.execute("SELECT to_regclass(%s)", (self._table_name,))
                 if cur.fetchone()[0] is None:
                     raise RuntimeError(f"PGVector physical storage is missing table {self._table_name!r}")
@@ -119,6 +157,8 @@ class PGVectorStore:
                         "PGVector physical identity mismatch: "
                         f"vector_type={vector_type!r}, expected_dimensions={self._dimensions}"
                     )
+            if not read_only:
+                self._conn.commit()
         except Exception:
             self.close()
             raise
@@ -127,6 +167,21 @@ class PGVectorStore:
         if self._conn is None:
             raise RuntimeError("pgvector store is not open")
         return self._conn
+
+    def _configure_session_timeouts(self) -> None:
+        """Bound every PGVector session before schema or companion I/O."""
+
+        conn = self._require_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT set_config('statement_timeout', %s, false)",
+                (f"{self._statement_timeout_ms}ms",),
+            )
+            cur.execute(
+                "SELECT set_config('lock_timeout', %s, false)",
+                (f"{self._lock_timeout_ms}ms",),
+            )
+        conn.commit()
 
     def _ensure_schema(self) -> None:
         conn = self._require_conn()
@@ -244,11 +299,25 @@ class PGVectorStore:
         }
 
     def repair_records(self, desired_records: dict[str, dict[str, Any]]) -> int:
-        desired_ids = set(str(memory_id) for memory_id in desired_records)
-        stale_ids = sorted(set(self.list_ids()) - desired_ids)
-        if stale_ids:
-            self.delete_by_ids(stale_ids)
-        return len(desired_records)
+        """Prune rows absent from, or stale against, desired SQLite truth.
+
+        This mirrors the cleanup-only SQLite companion contract. Missing or
+        changed rows are rebuilt by the explicit embedding/sync path; repair
+        must not fabricate vectors from metadata-only desired records.
+        """
+
+        existing = self.list_records()
+        keep_ids = {
+            str(memory_id)
+            for memory_id, desired in desired_records.items()
+            if str(memory_id) in existing
+            and str(existing[str(memory_id)].get("updated_at") or "")
+            == str(desired.get("updated_at") or "")
+        }
+        remove_ids = sorted(set(existing) - keep_ids)
+        if remove_ids:
+            self.delete_by_ids(remove_ids)
+        return len(keep_ids)
 
     def search(self, vector: list[float], *, scope_id: str, limit: int) -> list[dict[str, Any]]:
         query_vector = [float(item) for item in vector]

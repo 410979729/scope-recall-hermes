@@ -8,7 +8,13 @@ from typing import Any, Iterable
 from .graph import clamp_float, load_metadata
 from .lifecycle_policy import ordinary_recall_lifecycle_visible
 
-ALLOWED_RELATION_TYPES = {"contradicts", "supports", "supersedes"}
+REVIEWED_RELATION_TYPES = frozenset({"contradicts", "supports", "supersedes"})
+EXTRACTED_RELATION_TYPES = frozenset(
+    {"same_topic", "supersedes", "depends_on", "owned_by", "affects", "invalidates"}
+)
+# Central policy must recognize every type written by reviewed and deterministic
+# extractor paths. Keep the public value as a set for backward compatibility.
+ALLOWED_RELATION_TYPES = set(REVIEWED_RELATION_TYPES | EXTRACTED_RELATION_TYPES)
 HIDDEN_RELATION_PEER_LIFECYCLES = {"superseded", "obsolete", "rejected", "archived"}
 
 

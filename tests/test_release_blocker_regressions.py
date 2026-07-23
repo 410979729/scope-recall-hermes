@@ -178,6 +178,11 @@ class _VectorProvider:
             "fallback_backend": "sqlite-bruteforce",
             "table_name": "memories",
             "embedder": {"provider": "local-hash", "model": "hash-v1", "dimensions": 16},
+            "fallback_embedder": {
+                "provider": "local-hash",
+                "model": "hash-v1",
+                "dimensions": 16,
+            },
         }
         self._retrieval_config = {"metric": "cosine"}
         self._scope_id = "scope-a"
@@ -307,27 +312,15 @@ def test_existing_lancedb_manifest_rejects_sqlite_fallback(tmp_path, monkeypatch
     assert not (tmp_path / "vector.sqlite3").exists()
 
 
-def test_hard_delete_intent_is_visible_before_vector_callback(tmp_path):
+def test_hard_delete_durable_intent_is_the_only_ordinary_vector_side_effect(tmp_path):
     db_path = tmp_path / "memory.sqlite3"
     conn = _conn(db_path)
     _add_memory(conn, "subject", content="durable callback observation")
     _register_generation(conn)
-    during: dict[str, int] = {}
+    direct_calls: list[list[str]] = []
 
-    def observe(_ids: list[str]) -> None:
-        observer = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        try:
-            during["audit"] = observer.execute(
-                "SELECT COUNT(*) FROM governance_audit_events WHERE target_id='subject'"
-            ).fetchone()[0]
-            during["outbox"] = observer.execute(
-                "SELECT COUNT(*) FROM vector_outbox WHERE memory_id='subject'"
-            ).fetchone()[0]
-            during["truth"] = observer.execute(
-                "SELECT COUNT(*) FROM memories WHERE id='subject'"
-            ).fetchone()[0]
-        finally:
-            observer.close()
+    def observe(ids: list[str]) -> None:
+        direct_calls.append(list(ids))
 
     result = hard_delete_memories(
         conn,
@@ -339,12 +332,23 @@ def test_hard_delete_intent_is_visible_before_vector_callback(tmp_path):
         reason="durable callback observation",
     )
 
-    assert during == {"audit": 1, "outbox": 1, "truth": 0}
+    assert direct_calls == []
     assert result["durable"] is True
-    assert result["vector_status"] == "applied_pending_ack"
+    assert result["vector_status"] == "pending"
+    observer = sqlite3.connect(db_path)
+    try:
+        assert observer.execute(
+            "SELECT COUNT(*) FROM governance_audit_events WHERE target_id='subject'"
+        ).fetchone()[0] == 1
+        assert observer.execute(
+            "SELECT COUNT(*) FROM vector_outbox WHERE memory_id='subject' AND status='pending'"
+        ).fetchone()[0] == 1
+        assert observer.execute("SELECT COUNT(*) FROM memories WHERE id='subject'").fetchone()[0] == 0
+    finally:
+        observer.close()
 
 
-def test_hard_delete_process_exit_leaves_durable_delete_intent(tmp_path):
+def test_hard_delete_ignores_process_exit_callback_and_leaves_durable_delete_intent(tmp_path):
     db_path = tmp_path / "memory.sqlite3"
     conn = _conn(db_path)
     _add_memory(conn, "subject", content="process exit crash window")
@@ -369,7 +373,7 @@ hard_delete_memories(
     env = dict(os.environ)
     env["PYTHONPATH"] = str(Path.cwd()) + os.pathsep + env.get("PYTHONPATH", "")
     completed = subprocess.run([sys.executable, "-c", child, str(db_path)], env=env, check=False)
-    assert completed.returncode == 91
+    assert completed.returncode == 0
 
     observer = sqlite3.connect(db_path)
     assert observer.execute("SELECT COUNT(*) FROM memories WHERE id='subject'").fetchone()[0] == 0

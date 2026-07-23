@@ -11,6 +11,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .maintenance_lease import install_activation_lease_authorizer
+from .truth_connection import connect_truth_database
+
 
 def effective_apply(*, apply: bool = False, dry_run: bool = False) -> bool:
     """Return whether a maintenance command should mutate state.
@@ -30,8 +33,9 @@ def memory_db_path(hermes_home: Path, *, db_path: Path | str | None = None) -> P
 
 def connect_memory_db(path: Path, *, apply: bool = False, timeout: float = 30.0) -> sqlite3.Connection:
     mode = "rw" if apply else "ro"
-    conn = sqlite3.connect(f"file:{path}?mode={mode}", uri=True, timeout=timeout)
-    conn.row_factory = sqlite3.Row
+    conn = connect_truth_database(path, mode=mode, timeout=timeout)
+    if apply:
+        install_activation_lease_authorizer(conn, path)
     return conn
 
 

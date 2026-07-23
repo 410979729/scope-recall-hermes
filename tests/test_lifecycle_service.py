@@ -133,6 +133,39 @@ def test_candidate_transition_enqueues_vector_delete(tmp_path):
     conn.close()
 
 
+def test_identical_lifecycle_transition_is_a_true_noop(tmp_path):
+    """Repeated governance must not churn timestamps, audit, or vector debt."""
+
+    conn, _generation_id = _fixture(tmp_path)
+    before_row = conn.execute(
+        "SELECT updated_at, metadata FROM memories WHERE id = 'subject'"
+    ).fetchone()
+    before_counts = _counts(conn)
+    metadata = json.loads(before_row["metadata"])
+
+    conn.execute("BEGIN IMMEDIATE")
+    result = transition_memory_lifecycle(
+        conn,
+        memory_id="subject",
+        lifecycle="promoted",
+        metadata_updates=metadata,
+        actor="test",
+        reason="repeat governance",
+        event_type="test_repeat_governance",
+        action="promote",
+    )
+    conn.commit()
+
+    after_row = conn.execute(
+        "SELECT updated_at, metadata FROM memories WHERE id = 'subject'"
+    ).fetchone()
+    assert result["applied"] is False
+    assert result["status"] == "no_change"
+    assert tuple(after_row) == tuple(before_row)
+    assert _counts(conn) == before_counts
+    conn.close()
+
+
 def test_transition_sanitizes_metadata_updates_before_truth_write(tmp_path):
     conn, _generation_id = _fixture(tmp_path)
     marker = "L" * 24
@@ -198,7 +231,7 @@ def test_transition_failure_rolls_back_truth_and_every_companion(tmp_path):
     conn.close()
 
 
-def test_hard_delete_commits_audit_outbox_and_truth_companions_together(tmp_path):
+def test_hard_delete_commits_audit_outbox_and_never_calls_direct_vector_callback(tmp_path):
     conn, generation_id = _fixture(tmp_path)
     vector_calls: list[list[str]] = []
 
@@ -216,7 +249,7 @@ def test_hard_delete_commits_audit_outbox_and_truth_companions_together(tmp_path
 
     assert result["deleted"] == 1
     assert result["ids"] == ["subject"]
-    assert vector_calls == [["subject"]]
+    assert vector_calls == []
     assert _counts(conn) == {
         "memory": 0,
         "fts": 0,
@@ -230,6 +263,7 @@ def test_hard_delete_commits_audit_outbox_and_truth_companions_together(tmp_path
         "SELECT generation_id, operation, status FROM vector_outbox WHERE memory_id = 'subject'"
     ).fetchone()
     assert tuple(event) == (generation_id, "delete", "pending")
+    assert result["vector_status"] == "pending"
     conn.close()
 
 

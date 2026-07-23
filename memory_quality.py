@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 
 from .capture_filters import contains_secret_like_text, sanitize_report_text
 from .gating import compact_text
+from .memory_admission import AUTO_DIGEST_SOURCES, is_time_sensitive_snapshot
 from .lifecycle_policy import PROFILE_HIDDEN_LIFECYCLES
 
 TEMPLATE_PREFIXES = (
@@ -329,6 +330,31 @@ def quality_decision_for_memory(row: sqlite3.Row | Mapping[str, Any]) -> MemoryQ
         return MemoryQualityDecision("keep_candidate", f"unsupported_memory_type:{memory_type or 'unknown'}", **base)
     if not evidence_refs:
         return MemoryQualityDecision("keep_candidate", "missing_evidence_anchor", risk="medium", **base)
+    admission = metadata.get("automatic_admission")
+    if isinstance(admission, Mapping) and not metadata.get("admission_reviewed_at"):
+        route = str(admission.get("route") or "memory_review").strip().lower()
+        if route == "experience_review":
+            return MemoryQualityDecision(
+                "keep_candidate",
+                "automatic_digest_requires_experience_review",
+                risk="medium",
+                **base,
+            )
+        if bool(admission.get("time_sensitive")) and str(
+            metadata.get("freshness_status") or metadata.get("fact_freshness_status") or ""
+        ).strip().lower() != "current":
+            return MemoryQualityDecision(
+                "keep_candidate",
+                "automatic_snapshot_requires_live_check",
+                risk="medium",
+                **base,
+            )
+        return MemoryQualityDecision(
+            "keep_candidate",
+            "automatic_digest_requires_operator_review",
+            risk="medium",
+            **base,
+        )
     if target == "user" and confidence >= 0.78:
         return MemoryQualityDecision("promote", "user_profile_candidate_confident", **base)
     if source == "tool-store" and confidence >= 0.86 and importance >= 0.55:
@@ -429,7 +455,10 @@ def lint_memory_row(row: sqlite3.Row) -> list[str]:
         rules.append("redacted_path_marker")
     if _has_any(text, PATH_CACHE_PATTERNS):
         rules.append("cache_or_tmp_path")
-    if _has_any(text, STALE_STATUS_SNAPSHOT_TERMS) and str(row["source"] or "").strip().lower() == "journal-digest":
+    source = str(row["source"] or "").strip().lower()
+    if source in AUTO_DIGEST_SOURCES and (
+        _has_any(text, STALE_STATUS_SNAPSHOT_TERMS) or is_time_sensitive_snapshot(text)
+    ):
         rules.append("stale_status_snapshot")
     if _looks_like_transcript(content):
         rules.append("overlong_transcript")
