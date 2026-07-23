@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -25,6 +24,7 @@ if PACKAGE_NAME not in sys.modules:
     spec.loader.exec_module(package)
 
 from scope_recall_experience_replay_runtime.experience_replay import build_replay_report, load_replay_cases  # noqa: E402
+from scope_recall_experience_replay_runtime.truth_connection import connect_truth_database  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -72,8 +72,7 @@ def main() -> int:
     scopes = [str(scope_id).strip() for scope_id in args.scope_id if str(scope_id).strip()]
     if not scopes:
         raise SystemExit("at least one --scope-id is required")
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
+    conn = connect_truth_database(db_path, mode="ro")
     try:
         report = build_replay_report(conn, cases=cases, accessible_scope_ids=scopes)
     finally:

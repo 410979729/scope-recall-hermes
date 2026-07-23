@@ -5,6 +5,7 @@ These cases protect durable playbook auditability and review semantics."""
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -44,6 +45,291 @@ def _conn() -> sqlite3.Connection:
     return conn
 
 
+def test_operator_cli_routes_playbook_receipt_debt_command():
+    import scope_recall.cli as cli
+
+    assert cli._SCRIPT_COMMANDS[("playbooks", "receipts")] == (
+        "playbooks.py",
+        ["receipts"],
+    )
+
+
+_LEGACY_SCHEMA_VERSION = 10600
+
+
+def _create_legacy_playbook_db(
+    db_path: Path,
+    *,
+    playbook_ids: tuple[str, ...] = ("pb_old_schema",),
+    status: str = "candidate",
+) -> None:
+    """Create a genuine v1.6-era playbook schema without current migrations.
+
+    Do not replace this fixture with ``ensure_schema()`` plus a lowered
+    ``user_version``: the missing temporal-fact tables and migration row are the
+    behavior under test.
+    """
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE memories (
+                id TEXT PRIMARY KEY,
+                scope_id TEXT NOT NULL,
+                platform TEXT,
+                user_id TEXT,
+                chat_id TEXT,
+                thread_id TEXT,
+                gateway_session_key TEXT,
+                agent_identity TEXT,
+                agent_workspace TEXT,
+                session_id TEXT,
+                source TEXT NOT NULL,
+                target TEXT NOT NULL,
+                content TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_recalled_turn INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE VIRTUAL TABLE memories_fts USING fts5(
+                memory_id UNINDEXED,
+                content,
+                summary
+            );
+            CREATE TABLE procedural_playbooks (
+                id TEXT PRIMARY KEY,
+                scope_id TEXT NOT NULL,
+                shared_scope_id TEXT NOT NULL DEFAULT '',
+                task_class TEXT NOT NULL,
+                title TEXT NOT NULL,
+                trigger TEXT NOT NULL,
+                goal TEXT NOT NULL,
+                preconditions TEXT NOT NULL DEFAULT '[]',
+                steps TEXT NOT NULL DEFAULT '[]',
+                pitfalls TEXT NOT NULL DEFAULT '[]',
+                verification TEXT NOT NULL DEFAULT '[]',
+                cleanup TEXT NOT NULL DEFAULT '[]',
+                evidence_anchors TEXT NOT NULL DEFAULT '[]',
+                related_skills TEXT NOT NULL DEFAULT '[]',
+                environment_constraints TEXT NOT NULL DEFAULT '{}',
+                reuse_policy TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'candidate',
+                confidence REAL NOT NULL DEFAULT 0.50,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                stale_count INTEGER NOT NULL DEFAULT 0,
+                created_from_episode_id TEXT NOT NULL DEFAULT '',
+                superseded_by TEXT NOT NULL DEFAULT '',
+                last_used_at TEXT,
+                last_verified_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                metadata TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE VIRTUAL TABLE procedural_playbooks_fts USING fts5(
+                playbook_id UNINDEXED,
+                title,
+                trigger,
+                goal,
+                preconditions,
+                steps,
+                pitfalls,
+                verification
+            );
+            CREATE TABLE playbook_versions (
+                id TEXT PRIMARY KEY,
+                playbook_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                change_type TEXT NOT NULL,
+                change_reason TEXT NOT NULL DEFAULT '',
+                snapshot TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE schema_migrations (
+                id TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL,
+                plugin_version TEXT NOT NULL,
+                description TEXT NOT NULL,
+                checksum TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'applied',
+                error TEXT NOT NULL DEFAULT ''
+            );
+            """
+        )
+        baseline_description = "Baseline schema ledger for scope-recall v1.6.0"
+        checksum_payload = json.dumps(
+            {
+                "id": "0001_baseline_v1_6_0",
+                "plugin_version": "1.6.0",
+                "description": baseline_description,
+                "schema_version": _LEGACY_SCHEMA_VERSION,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        conn.execute(
+            """
+            INSERT INTO schema_migrations(
+                id, applied_at, plugin_version, description, checksum, status, error
+            ) VALUES ('0001_baseline_v1_6_0', ?, '1.6.0', ?, ?, 'applied', '')
+            """,
+            (
+                "2026-01-01T00:00:00+00:00",
+                baseline_description,
+                hashlib.sha256(checksum_payload.encode("utf-8")).hexdigest(),
+            ),
+        )
+        for playbook_id in playbook_ids:
+            conn.execute(
+                """
+                INSERT INTO procedural_playbooks(
+                    id, scope_id, shared_scope_id, task_class, title, trigger, goal,
+                    preconditions, steps, pitfalls, verification, cleanup,
+                    evidence_anchors, related_skills, environment_constraints,
+                    reuse_policy, status, confidence, created_at, updated_at, metadata
+                ) VALUES (?, 'scope-a', '', 'headscale_one_way_acl',
+                    'Headscale one-way ACL', 'Temporary legacy fixture',
+                    'Apply one-way access safely',
+                    '[{"id":"p1","check":"Read live node list.","evidence_required":"headscale output"}]',
+                    '[{"number":1,"capability_class":"read_only","action":"Read current ACL policy.","evidence_required":"policy output"}]',
+                    '[{"signal":"listing only","mistake":"Assume reachability","correction":"Test connectivity"}]',
+                    '["policy validates","positive path works"]',
+                    '["Record backup path."]',
+                    '[]', '[]', '{}', '{"default_decision":"guided_reuse"}',
+                    ?, 0.8, ?, ?, '{}')
+                """,
+                (
+                    playbook_id,
+                    status,
+                    "2026-01-01T00:00:00+00:00",
+                    "2026-01-01T00:00:00+00:00",
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO procedural_playbooks_fts(
+                    playbook_id, title, trigger, goal, preconditions, steps,
+                    pitfalls, verification
+                ) VALUES (?, 'Headscale one-way ACL', 'Temporary legacy fixture',
+                    'Apply one-way access safely',
+                    '[{"id":"p1","check":"Read live node list.","evidence_required":"headscale output"}]',
+                    '[{"number":1,"capability_class":"read_only","action":"Read current ACL policy.","evidence_required":"policy output"}]',
+                    '[{"signal":"listing only","mistake":"Assume reachability","correction":"Test connectivity"}]',
+                    '["policy validates","positive path works"]')
+                """,
+                (playbook_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO playbook_versions(
+                    id, playbook_id, version, change_type, change_reason,
+                    snapshot, created_at
+                ) VALUES (?, ?, 1, 'create', 'legacy fixture', '{}', ?)
+                """,
+                (
+                    f"pbv_{playbook_id}_1",
+                    playbook_id,
+                    "2026-01-01T00:00:00+00:00",
+                ),
+            )
+            if status == "promoted":
+                conn.execute(
+                    """
+                    INSERT INTO playbook_versions(
+                        id, playbook_id, version, change_type, change_reason,
+                        snapshot, created_at
+                    ) VALUES (?, ?, 2, 'promoted', 'legacy fixture', '{}', ?)
+                    """,
+                    (
+                        f"pbv_{playbook_id}_2",
+                        playbook_id,
+                        "2026-01-02T00:00:00+00:00",
+                    ),
+                )
+        conn.execute(f"PRAGMA user_version = {_LEGACY_SCHEMA_VERSION}")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _database_snapshot(db_path: Path) -> dict[str, object]:
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+        return {
+            "user_version": conn.execute("PRAGMA user_version").fetchone()[0],
+            "schema": conn.execute(
+                """
+                SELECT type, name, tbl_name, COALESCE(sql, '')
+                FROM sqlite_master
+                WHERE name NOT LIKE 'sqlite_%'
+                ORDER BY type, name
+                """
+            ).fetchall(),
+            "playbooks": conn.execute(
+                """
+                SELECT id, scope_id, status, superseded_by, updated_at
+                FROM procedural_playbooks ORDER BY id
+                """
+            ).fetchall(),
+            "playbook_fts": conn.execute(
+                """
+                SELECT playbook_id, title, trigger, goal, preconditions, steps,
+                       pitfalls, verification
+                FROM procedural_playbooks_fts ORDER BY playbook_id
+                """
+            ).fetchall(),
+            "versions": conn.execute(
+                """
+                SELECT playbook_id, version, change_type, change_reason
+                FROM playbook_versions ORDER BY playbook_id, version
+                """
+            ).fetchall(),
+            "migrations": conn.execute(
+                "SELECT id, status FROM schema_migrations ORDER BY id"
+            ).fetchall(),
+        }
+
+
+def _operator_artifact_snapshot(root: Path) -> dict[str, object]:
+    snapshot: dict[str, object] = {}
+    for directory_name in ("backups", "receipts"):
+        directory = root / directory_name
+        snapshot[f"{directory_name}_exists"] = directory.exists()
+        if directory.exists():
+            snapshot[directory_name] = {
+                str(path.relative_to(root)): path.read_bytes()
+                for path in sorted(directory.rglob("*"))
+                if path.is_file()
+            }
+    return snapshot
+
+
+def _playbook_apply_args(
+    cli,
+    db_path: Path,
+    *,
+    command: str = "promote",
+    playbook_id: str = "pb_old_schema",
+    superseded_by: str = "",
+) -> object:
+    argv = [
+        command,
+        "--db",
+        str(db_path),
+        "--scope-id",
+        "scope-a",
+        "--id",
+        playbook_id,
+        "--reason",
+        "reviewed transactional fixture",
+        "--apply",
+    ]
+    if command == "supersede":
+        argv.extend(["--superseded-by", superseded_by or "pb_old_schema_target"])
+    return cli.parse_args(argv)
+
+
 def _create_promoted(conn: sqlite3.Connection, *, playbook_id: str, scope_id: str = "scope-a", shared_scope_id: str = "", confidence: float = 0.9) -> None:
     create_playbook(conn, playbook_id=playbook_id, scope_id=scope_id, shared_scope_id=shared_scope_id, payload=_payload(), status="candidate", confidence=confidence)
     review_playbook(conn, playbook_id=playbook_id, accessible_scope_ids=[scope_id, shared_scope_id], action="promote", reason="fixture")
@@ -80,6 +366,119 @@ def _payload(*, task_class: str = "headscale_one_way_acl", title: str = "Headsca
         "cleanup": ["Record backup path and verification output."],
         "reuse_policy": {"default_decision": "guided_reuse"},
     }
+
+
+class _FailingCommitConnection(sqlite3.Connection):
+    fail_commit = False
+
+    def commit(self) -> None:
+        if self.fail_commit:
+            raise sqlite3.OperationalError("injected review commit failure")
+        super().commit()
+
+
+def test_review_playbook_commit_false_requires_caller_owned_transaction():
+    conn = _conn()
+    create_playbook(
+        conn,
+        playbook_id="pb_commit_owner",
+        scope_id="scope-a",
+        shared_scope_id="",
+        payload=_payload(),
+        status="candidate",
+    )
+
+    with pytest.raises(ExperienceValidationError, match="caller-owned transaction"):
+        review_playbook(
+            conn,
+            playbook_id="pb_commit_owner",
+            accessible_scope_ids=["scope-a"],
+            action="promote",
+            reason="must remain uncommitted",
+            commit=False,
+        )
+
+    assert conn.execute(
+        "SELECT status FROM procedural_playbooks WHERE id='pb_commit_owner'"
+    ).fetchone()[0] == "candidate"
+
+
+def test_review_playbook_commit_failure_rolls_back_without_masking_error():
+    conn = sqlite3.connect(":memory:", factory=_FailingCommitConnection)
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    create_playbook(
+        conn,
+        playbook_id="pb_commit_failure",
+        scope_id="scope-a",
+        shared_scope_id="",
+        payload=_payload(),
+        status="candidate",
+    )
+    before_versions = conn.execute(
+        "SELECT COUNT(*) FROM playbook_versions WHERE playbook_id='pb_commit_failure'"
+    ).fetchone()[0]
+    conn.fail_commit = True
+
+    with pytest.raises(sqlite3.OperationalError, match="injected review commit failure"):
+        review_playbook(
+            conn,
+            playbook_id="pb_commit_failure",
+            accessible_scope_ids=["scope-a"],
+            action="promote",
+            reason="fault injection",
+        )
+
+    conn.fail_commit = False
+    assert conn.in_transaction is False
+    assert conn.execute(
+        "SELECT status FROM procedural_playbooks WHERE id='pb_commit_failure'"
+    ).fetchone()[0] == "candidate"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM playbook_versions WHERE playbook_id='pb_commit_failure'"
+    ).fetchone()[0] == before_versions
+
+
+def test_review_playbook_fts_trigger_failure_rolls_back_status_and_version():
+    conn = _conn()
+    create_playbook(
+        conn,
+        playbook_id="pb_fts_failure",
+        scope_id="scope-a",
+        shared_scope_id="",
+        payload=_payload(),
+        status="candidate",
+    )
+    conn.executescript(
+        """
+        CREATE TRIGGER fail_playbook_fts_after_update
+        AFTER UPDATE ON procedural_playbooks
+        BEGIN
+            SELECT RAISE(ABORT, 'injected procedural_playbooks_fts failure');
+        END;
+        """
+    )
+    conn.commit()
+    before_versions = conn.execute(
+        "SELECT COUNT(*) FROM playbook_versions WHERE playbook_id='pb_fts_failure'"
+    ).fetchone()[0]
+
+    with pytest.raises(sqlite3.DatabaseError, match="procedural_playbooks_fts"):
+        review_playbook(
+            conn,
+            playbook_id="pb_fts_failure",
+            accessible_scope_ids=["scope-a"],
+            action="promote",
+            reason="fault injection",
+        )
+
+    assert conn.in_transaction is False
+    assert conn.execute(
+        "SELECT status FROM procedural_playbooks WHERE id='pb_fts_failure'"
+    ).fetchone()[0] == "candidate"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM playbook_versions WHERE playbook_id='pb_fts_failure'"
+    ).fetchone()[0] == before_versions
 
 
 def test_create_search_inspect_playbook_with_fts_and_scope_filtering():
@@ -527,12 +926,20 @@ def test_playbooks_cli_supersede_routes_to_review_playbook(tmp_path):
     assert payload["changed"] is True
     assert Path(payload["backup_path"]).exists()
     assert Path(payload["receipt_path"]).exists()
+    receipt = json.loads(Path(payload["receipt_path"]).read_text(encoding="utf-8"))
+    assert receipt["operation_id"] == payload["operation_id"]
+    assert receipt["schema_version"] == "playbook_operator_receipt.v2"
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
         row = conn.execute("SELECT status, superseded_by FROM procedural_playbooks WHERE id = 'pb_source'").fetchone()
         assert row["status"] == "superseded"
         assert row["superseded_by"] == "pb_target"
+        ledger = conn.execute(
+            "SELECT status, receipt_state, receipt_path FROM operator_operations WHERE operation_id=?",
+            (payload["operation_id"],),
+        ).fetchone()
+        assert tuple(ledger) == ("committed", "mirrored", payload["receipt_path"])
     finally:
         conn.close()
 
@@ -561,6 +968,324 @@ def test_playbooks_cli_list_and_dedupe_do_not_write_schema(tmp_path, monkeypatch
     assert list_payload["count"] == 2
     assert dedupe_payload["ok"] is True
     assert dedupe_payload["count"] == 1
+
+
+def test_playbooks_apply_missing_id_on_empty_db_is_strictly_zero_write(
+    tmp_path: Path,
+) -> None:
+    cli = _load_playbooks_cli()
+    db_path = tmp_path / "memory.sqlite3"
+    db_path.write_bytes(b"")
+    before = (db_path.read_bytes(), db_path.stat().st_size, db_path.stat().st_mtime_ns)
+    args = cli.parse_args(
+        [
+            "promote",
+            "--db",
+            str(db_path),
+            "--scope-id",
+            "scope-a",
+            "--id",
+            "missing-playbook",
+            "--apply",
+        ]
+    )
+
+    payload = cli.build_payload(args)
+
+    after = (db_path.read_bytes(), db_path.stat().st_size, db_path.stat().st_mtime_ns)
+    assert payload["ok"] is False
+    assert payload["error"] == "not_found"
+    assert after == before
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
+        ).fetchone()[0] == 0
+    assert not (tmp_path / "backups").exists()
+    assert not (tmp_path / "receipts").exists()
+
+
+def test_playbooks_apply_backs_up_old_schema_before_writer_migration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = _load_playbooks_cli()
+    db_path = tmp_path / "memory.sqlite3"
+    _create_legacy_playbook_db(db_path)
+    legacy_snapshot = _database_snapshot(db_path)
+
+    events: list[str] = []
+    original_backup = cli._backup_db
+    original_ensure_schema = cli.ensure_schema
+
+    def tracked_backup(path: Path) -> str:
+        events.append("backup")
+        return original_backup(path)
+
+    def tracked_ensure_schema(
+        conn: sqlite3.Connection,
+        *,
+        commit: bool = True,
+    ) -> None:
+        events.append("ensure_schema")
+        original_ensure_schema(conn, commit=commit)
+
+    monkeypatch.setattr(cli, "_backup_db", tracked_backup)
+    monkeypatch.setattr(cli, "ensure_schema", tracked_ensure_schema)
+    args = cli.parse_args(
+        [
+            "promote",
+            "--db",
+            str(db_path),
+            "--scope-id",
+            "scope-a",
+            "--id",
+            "pb_old_schema",
+            "--reason",
+            "reviewed migration-order fixture",
+            "--apply",
+        ]
+    )
+
+    payload = cli.build_payload(args)
+
+    assert payload["ok"] is True
+    assert events == ["backup", "ensure_schema"]
+    backup_path = Path(payload["backup_path"])
+    assert _database_snapshot(backup_path) == legacy_snapshot
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as live:
+        assert live.execute("PRAGMA user_version").fetchone()[0] > 0
+        assert live.execute(
+            "SELECT status FROM procedural_playbooks WHERE id='pb_old_schema'"
+        ).fetchone()[0] == "promoted"
+
+
+def test_playbooks_backup_runs_under_writer_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = _load_playbooks_cli()
+    db_path = tmp_path / "memory.sqlite3"
+    _create_legacy_playbook_db(db_path)
+    original_backup = cli._backup_db
+    contender_blocked = False
+
+    def verify_locked_backup(path: Path) -> str:
+        nonlocal contender_blocked
+        contender = sqlite3.connect(path, timeout=0.0)
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                contender.execute(
+                    "UPDATE procedural_playbooks SET title='racing writer' "
+                    "WHERE id='pb_old_schema'"
+                )
+            contender_blocked = True
+        finally:
+            contender.close()
+        return original_backup(path)
+
+    monkeypatch.setattr(cli, "_backup_db", verify_locked_backup)
+    payload = cli.build_payload(_playbook_apply_args(cli, db_path))
+
+    assert payload["ok"] is True
+    assert contender_blocked is True
+
+
+def test_playbooks_apply_rejects_semantically_invalid_persisted_candidate_without_writes(
+    tmp_path: Path,
+) -> None:
+    cli = _load_playbooks_cli()
+    db_path = tmp_path / "memory.sqlite3"
+    _create_legacy_playbook_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE procedural_playbooks SET steps='[]' WHERE id='pb_old_schema'"
+        )
+    before_db = _database_snapshot(db_path)
+    before_artifacts = _operator_artifact_snapshot(tmp_path)
+
+    payload = cli.build_payload(_playbook_apply_args(cli, db_path))
+
+    assert payload["ok"] is False
+    assert payload["error"] == "semantic_validation_failed"
+    assert _database_snapshot(db_path) == before_db
+    assert _operator_artifact_snapshot(tmp_path) == before_artifacts
+
+
+def test_playbooks_apply_migration_failure_rolls_back_schema_and_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = _load_playbooks_cli()
+    db_path = tmp_path / "memory.sqlite3"
+    _create_legacy_playbook_db(db_path)
+    before_db = _database_snapshot(db_path)
+    before_artifacts = _operator_artifact_snapshot(tmp_path)
+    original_ensure_schema = cli.ensure_schema
+
+    def fail_after_migration(
+        conn: sqlite3.Connection,
+        *,
+        commit: bool = True,
+    ) -> None:
+        original_ensure_schema(conn, commit=commit)
+        raise RuntimeError("injected migration failure")
+
+    monkeypatch.setattr(cli, "ensure_schema", fail_after_migration)
+    with pytest.raises(RuntimeError, match="injected migration failure"):
+        cli.build_payload(_playbook_apply_args(cli, db_path))
+
+    assert _database_snapshot(db_path) == before_db
+    assert _operator_artifact_snapshot(tmp_path) == before_artifacts
+
+
+def test_playbooks_apply_receipt_failure_keeps_committed_ledger_and_is_repairable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = _load_playbooks_cli()
+    db_path = tmp_path / "memory.sqlite3"
+    _create_legacy_playbook_db(db_path)
+    original_mirror = cli.mirror_operator_receipt
+
+    def fail_receipt(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise TypeError("injected receipt serialization failure")
+
+    monkeypatch.setattr(cli, "mirror_operator_receipt", fail_receipt)
+    payload = cli.build_payload(_playbook_apply_args(cli, db_path))
+
+    assert payload["ok"] is True
+    assert payload["status"] == "promoted"
+    assert payload["receipt_state"] == "pending"
+    assert payload["receipt_repair_required"] is True
+    assert Path(payload["backup_path"]).exists()
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+        assert conn.execute(
+            "SELECT status FROM procedural_playbooks WHERE id='pb_old_schema'"
+        ).fetchone()[0] == "promoted"
+        ledger = conn.execute(
+            "SELECT status, receipt_state FROM operator_operations WHERE operation_id=?",
+            (payload["operation_id"],),
+        ).fetchone()
+    assert ledger == ("committed", "pending")
+    assert not list((tmp_path / "receipts").glob("*.json"))
+
+    monkeypatch.setattr(cli, "mirror_operator_receipt", original_mirror)
+    repair = cli.build_payload(
+        cli.parse_args(
+            ["receipts", "--db", str(db_path), "--apply", "--include-failed"]
+        )
+    )
+    assert repair["ok"] is True
+    assert repair["repair"]["mirrored"] == 1
+    assert repair["report"]["unresolved"] == 0
+    assert len(list((tmp_path / "receipts").glob("*.json"))) == 1
+
+
+def test_playbooks_apply_receipt_publish_failure_leaves_repairable_debt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = _load_playbooks_cli()
+    db_path = tmp_path / "memory.sqlite3"
+    _create_legacy_playbook_db(db_path)
+    mirror_os = cli.mirror_operator_receipt.__globals__["os"]
+    original_link = mirror_os.link
+
+    def fail_receipt_link(source: Path, destination: Path) -> None:
+        if Path(destination).parent.name == "receipts":
+            raise OSError("injected receipt publish failure")
+        original_link(source, destination)
+
+    monkeypatch.setattr(mirror_os, "link", fail_receipt_link)
+    payload = cli.build_payload(_playbook_apply_args(cli, db_path))
+
+    assert payload["ok"] is True
+    assert payload["status"] == "promoted"
+    assert payload["receipt_state"] == "pending"
+    assert payload["receipt_repair_required"] is True
+    assert not list((tmp_path / "receipts").glob("*.tmp"))
+    assert not list((tmp_path / "receipts").glob("*.json"))
+
+    monkeypatch.setattr(mirror_os, "link", original_link)
+    repair = cli.build_payload(
+        cli.parse_args(["receipts", "--db", str(db_path), "--apply"])
+    )
+    assert repair["ok"] is True
+    assert repair["repair"]["mirrored"] == 1
+    assert repair["report"]["unresolved"] == 0
+    assert len(list((tmp_path / "receipts").glob("*.json"))) == 1
+
+
+def test_playbooks_apply_commit_failure_removes_receipt_and_rolls_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = _load_playbooks_cli()
+    db_path = tmp_path / "memory.sqlite3"
+    _create_legacy_playbook_db(db_path)
+    before_db = _database_snapshot(db_path)
+    before_artifacts = _operator_artifact_snapshot(tmp_path)
+    original_connect = cli._connect
+
+    class CommitFailProxy:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            self._conn = conn
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._conn, name)
+
+        def commit(self) -> None:
+            raise sqlite3.OperationalError("injected apply commit failure")
+
+    def failing_connect(path: Path, *, read_only: bool = False) -> object:
+        conn = original_connect(path, read_only=read_only)
+        return conn if read_only else CommitFailProxy(conn)
+
+    monkeypatch.setattr(cli, "_connect", failing_connect)
+    with pytest.raises(sqlite3.OperationalError, match="injected apply commit failure"):
+        cli.build_payload(_playbook_apply_args(cli, db_path))
+
+    assert _database_snapshot(db_path) == before_db
+    assert _operator_artifact_snapshot(tmp_path) == before_artifacts
+
+
+def test_playbooks_apply_rejects_preview_to_writer_toctou_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = _load_playbooks_cli()
+    db_path = tmp_path / "memory.sqlite3"
+    _create_legacy_playbook_db(db_path)
+    before_artifacts = _operator_artifact_snapshot(tmp_path)
+    original_connect = cli._connect
+    tampered = False
+
+    def tampering_connect(path: Path, *, read_only: bool = False) -> sqlite3.Connection:
+        nonlocal tampered
+        if not read_only and not tampered:
+            with sqlite3.connect(path) as conn:
+                conn.execute(
+                    "UPDATE procedural_playbooks SET title=? WHERE id='pb_old_schema'",
+                    ("Tampered after preview",),
+                )
+            tampered = True
+        return original_connect(path, read_only=read_only)
+
+    monkeypatch.setattr(cli, "_connect", tampering_connect)
+    payload = cli.build_payload(_playbook_apply_args(cli, db_path))
+
+    assert payload["ok"] is False
+    assert payload["error"] == "validation_changed_before_lock"
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+        row = conn.execute(
+            "SELECT title, status FROM procedural_playbooks WHERE id='pb_old_schema'"
+        ).fetchone()
+        version_count = conn.execute(
+            "SELECT COUNT(*) FROM playbook_versions WHERE playbook_id='pb_old_schema'"
+        ).fetchone()[0]
+    assert row == ("Tampered after preview", "candidate")
+    assert version_count == 1
+    assert _operator_artifact_snapshot(tmp_path) == before_artifacts
 
 
 def test_merge_playbooks_rejects_private_shared_owner_mismatch():

@@ -15,6 +15,7 @@ from pathlib import Path
 import lancedb
 import pyarrow as pa
 import pytest
+import yaml
 
 from plugins.memory import load_memory_provider
 
@@ -113,6 +114,83 @@ def test_release_environment_check_reports_interpreter_and_required_modules(monk
     assert report["install_command"] == "python -m pip install -e '.[dev,all]'"
 
 
+def test_temporal_reflection_artifacts_are_release_packaged():
+    release_check = _load_release_check_module("scope_recall_check_release_temporal_reflection")
+
+    for source in [
+        "fact_identity.py",
+        "fact_actions.py",
+        "fact_evidence.py",
+        "evolution_policy.py",
+        "fact_repository.py",
+        "fact_executor.py",
+        "fact_evolution.py",
+        "fact_tooling.py",
+        "temporal_facts.py",
+        "temporal_query.py",
+        "reflection.py",
+        "reflection_llm.py",
+        "reflection_grounding.py",
+        "reflection_tooling.py",
+        "doctor_temporal.py",
+        "benchmarks/memory_evolution_cases.json",
+        "benchmarks/reflection_cases.json",
+        "scripts/benchmark.memory_evolution.py",
+        "scripts/benchmark.reflection.py",
+        "docs/fact-evolution-architecture.md",
+        "docs/configuration.md",
+    ]:
+        assert source in release_check.REQUIRED_SOURCE_FILES
+
+    for wheel_path in [
+        "scope_recall/fact_identity.py",
+        "scope_recall/fact_actions.py",
+        "scope_recall/fact_evidence.py",
+        "scope_recall/evolution_policy.py",
+        "scope_recall/fact_repository.py",
+        "scope_recall/fact_executor.py",
+        "scope_recall/fact_evolution.py",
+        "scope_recall/fact_tooling.py",
+        "scope_recall/temporal_facts.py",
+        "scope_recall/temporal_query.py",
+        "scope_recall/reflection.py",
+        "scope_recall/reflection_llm.py",
+        "scope_recall/reflection_grounding.py",
+        "scope_recall/reflection_tooling.py",
+        "scope_recall/doctor_temporal.py",
+        "scope_recall/benchmarks/memory_evolution_cases.json",
+        "scope_recall/benchmarks/reflection_cases.json",
+        "scope_recall/scripts/benchmark.memory_evolution.py",
+        "scope_recall/scripts/benchmark.reflection.py",
+        "scope_recall/docs/fact-evolution-architecture.md",
+        "scope_recall/docs/configuration.md",
+    ]:
+        assert wheel_path in release_check.REQUIRED_WHEEL
+
+    pyright = release_check.pyright_include_check()
+    assert pyright["ok"] is True
+    for module in [
+        "fact_identity.py",
+        "fact_actions.py",
+        "fact_evidence.py",
+        "evolution_policy.py",
+        "fact_repository.py",
+        "fact_executor.py",
+        "fact_evolution.py",
+        "fact_tooling.py",
+        "temporal_facts.py",
+        "temporal_query.py",
+        "reflection.py",
+        "reflection_llm.py",
+        "reflection_grounding.py",
+        "reflection_tooling.py",
+        "doctor_temporal.py",
+        "scripts/benchmark.memory_evolution.py",
+        "scripts/benchmark.reflection.py",
+    ]:
+        assert module not in pyright["missing_pyright_include"]
+
+
 def test_public_response_contract_files_are_release_packaged():
     release_check = _load_release_check_module("scope_recall_check_release_response_contracts")
 
@@ -120,6 +198,17 @@ def test_public_response_contract_files_are_release_packaged():
     assert "docs/response-contracts.md" in release_check.REQUIRED_SOURCE_FILES
     assert "scope_recall/response_schemas.py" in release_check.REQUIRED_WHEEL
     assert "scope_recall/docs/response-contracts.md" in release_check.REQUIRED_WHEEL
+
+
+def test_memory_governance_modules_are_release_packaged_and_type_checked():
+    release_check = _load_release_check_module("scope_recall_check_release_memory_governance")
+    modules = ["memory_admission.py", "memory_text_merge.py", "entity_quality.py", "tool_validation.py"]
+
+    pyright = release_check.pyright_include_check()
+    for module in modules:
+        assert module in release_check.REQUIRED_SOURCE_FILES
+        assert f"scope_recall/{module}" in release_check.REQUIRED_WHEEL
+        assert module not in pyright["missing_pyright_include"]
 
 
 def test_required_source_modules_are_pyright_covered():
@@ -151,6 +240,172 @@ def test_release_gate_progress_emits_machine_readable_stderr(capsys):
     assert "timestamp" in payload
 
 
+def test_release_invariant_manifest_is_versioned_unique_and_executable():
+    release_check = _load_release_check_module("scope_recall_check_invariant_manifest")
+
+    manifest = release_check.release_invariant_manifest()
+    assert manifest["schema"] == "scope-recall.release-invariants.v1"
+    assert manifest["suite_count"] == 11
+    assert manifest["node_count"] >= 50
+    suites = manifest["suites"]
+    suite_ids = {suite["id"] for suite in suites}
+    assert {
+        "fact-authority-and-temporal-semantics",
+        "journal-fact-closure-atomicity",
+        "memory-mutation-serializability-and-atomicity",
+        "activation-connection-capability-and-compensation",
+        "installer-portability-and-n-minus-one-upgrade",
+        "source-isolation-privacy",
+        "relation-budget-and-schema-integrity",
+        "independent-audit-2026-07-release-blockers",
+        "seventh-independent-audit-2026-07-release-blockers",
+        "sixteenth-independent-audit-performance-liveness-blockers",
+        "seventeenth-independent-audit-security-transaction-liveness-blockers",
+    } == suite_ids
+    nodes = [node for suite in suites for node in suite["nodes"]]
+    assert len(nodes) == len(set(nodes))
+    assert all(node.startswith("tests/") and "::test_" in node for node in nodes)
+    assert all((PLUGIN_ROOT / node.split("::", 1)[0]).is_file() for node in nodes)
+    assert (
+        "tests/test_sixth_audit_regressions.py::test_legacy_update_is_serializable_with_concurrent_fact_claim"
+        in nodes
+    )
+    assert (
+        "tests/test_source_isolation.py::test_historical_isolated_journal_backlog_is_not_consumed"
+        in nodes
+    )
+    assert (
+        "tests/test_seventh_independent_audit_regressions.py::test_complete_fts_second_start_is_bounded_and_write_free"
+        in nodes
+    )
+    assert (
+        "tests/test_relation_queue_liveness.py::test_relation_queue_defers_when_frequency_receipt_cas_loses_cross_connection_race"
+        in nodes
+    )
+    assert (
+        "tests/test_relation_queue_liveness.py::test_expired_relation_leases_dead_letter_and_yield_to_later_work"
+        in nodes
+    )
+    command = release_check.release_invariant_command()
+    assert command[:6] == [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+    ]
+    assert command[6:] == nodes
+    assert "scripts/release.invariants.json" in release_check.REQUIRED_SOURCE_FILES
+    assert "scope_recall/scripts/release.invariants.json" in release_check.REQUIRED_WHEEL
+
+
+def test_windows_lane_remains_a_release_gate():
+    workflow = yaml.safe_load((PLUGIN_ROOT / ".github/workflows/ci.yml").read_text())
+    windows_job = workflow["jobs"]["windows-installer"]
+    assert windows_job["runs-on"] == "windows-latest"
+    assert windows_job["steps"][1]["with"]["python-version"] == "3.12"
+    windows_command = windows_job["steps"][-1]["run"]
+    assert "test_atomic_replace" in windows_command
+    assert "test_confirmed_activation_compensation" in windows_command
+    assert "test_maintenance_lease.py" in windows_command
+
+
+def test_release_identity_requires_version_newer_than_latest_tag():
+    release_check = _load_release_check_module("scope_recall_check_release_identity")
+
+    current = _package_version()
+    eligible = release_check.release_version_identity_check(tags=["v0.1.0"])
+    reused = release_check.release_version_identity_check(tags=[f"v{current}"])
+    namespaced_reused = release_check.release_version_identity_check(
+        tags=[f"scope-recall-v{current}"]
+    )
+    namespaced_previous = release_check.release_version_identity_check(
+        tags=["scope-recall-v0.1.0"]
+    )
+    waived = release_check.release_version_identity_check(
+        tags=[f"v{current}"],
+        development_snapshot=True,
+    )
+    tagged = release_check.release_version_identity_check(
+        tags=[f"v{current}"],
+        head_tags=[f"v{current}"],
+        tagged_release=True,
+    )
+    namespaced_tagged = release_check.release_version_identity_check(
+        tags=[f"scope-recall-v{current}"],
+        head_tags=[f"scope-recall-v{current}"],
+        tagged_release=True,
+    )
+    wrong_head = release_check.release_version_identity_check(
+        tags=[f"v{current}"],
+        head_tags=["v0.1.0"],
+        tagged_release=True,
+    )
+    conflicting_modes = release_check.release_version_identity_check(
+        tags=[f"v{current}"],
+        head_tags=[f"v{current}"],
+        tagged_release=True,
+        development_snapshot=True,
+    )
+
+    assert eligible["ok"] is True
+    assert eligible["release_eligible"] is True
+    assert eligible["latest_release_tag"] == "v0.1.0"
+    assert reused["ok"] is False
+    assert reused["release_eligible"] is False
+    assert reused["current_version"] == current
+    assert reused["latest_release_tag"] == f"v{current}"
+    assert namespaced_reused["ok"] is False
+    assert namespaced_reused["release_eligible"] is False
+    assert namespaced_reused["latest_release_tag"] == f"scope-recall-v{current}"
+    assert namespaced_previous["ok"] is True
+    assert namespaced_previous["release_eligible"] is True
+    assert namespaced_previous["latest_release_tag"] == "scope-recall-v0.1.0"
+    assert waived["ok"] is True
+    assert waived["release_eligible"] is False
+    assert waived["waived_for_development"] is True
+    assert tagged["ok"] is True
+    assert tagged["release_eligible"] is True
+    assert tagged["tagged_head_match"] is True
+    assert namespaced_tagged["ok"] is True
+    assert namespaced_tagged["release_eligible"] is True
+    assert namespaced_tagged["tagged_head_match"] is True
+    assert namespaced_tagged["expected_release_tag"] == f"scope-recall-v{current}"
+    assert wrong_head["ok"] is False
+    assert wrong_head["release_eligible"] is False
+    assert conflicting_modes["ok"] is False
+    assert "mutually exclusive" in conflicting_modes["error"]
+
+
+def test_v180_release_candidate_identity_surfaces_are_consistent():
+    """Bind the new minor release to every authoritative version surface."""
+
+    expected_version = "1.8.0"
+    release_check = _load_release_check_module("scope_recall_check_release_v180_identity")
+    temporal_facts = importlib.import_module(f"{PACKAGE_NAME}.temporal_facts")
+    plugin_manifest = (PLUGIN_ROOT / "plugin.yaml").read_text(encoding="utf-8")
+    changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+    stability = (PLUGIN_ROOT / "docs" / "stability.md").read_text(encoding="utf-8")
+
+    assert _package_version() == expected_version
+    assert f"version: {expected_version}" in plugin_manifest
+    assert release_check.PACKAGE_VERSION == expected_version
+    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.8.0.md"
+    assert (PLUGIN_ROOT / release_check.RELEASE_READINESS_DOC).is_file()
+    assert f"## [{expected_version}]" in changelog
+    assert f"Version `{expected_version}`" in readme
+    assert f"`scope-recall` {expected_version}" in stability
+    assert temporal_facts.FACT_CLAIMS_SCHEMA_VERSION == 10800
+    assert temporal_facts.FACT_CLAIMS_MIGRATION_PLUGIN_VERSION == expected_version
+
+    identity = release_check.release_version_identity_check(tags=["v1.7.2"])
+    assert identity["ok"] is True
+    assert identity["release_eligible"] is True
+    assert identity["expected_release_tag"] == "v1.8.0"
+
+
 def test_productization_artifacts_are_release_gate_listed():
     release_check = _load_release_check_module("scope_recall_check_release_productization_artifacts")
 
@@ -173,6 +428,9 @@ def test_productization_artifacts_are_release_gate_listed():
         "docs/vector-backends.md",
         "examples/external_bridge/postgres_schema.sql",
         "benchmarks/golden_recall_hybrid_cases.json",
+        "benchmarks/curated_recall_quality_cases_v2.json",
+        "truth_connection.py",
+        "sqlite_schema.py",
         "scripts/candidate.review.py",
         "scripts/memory.browser.py",
         "scripts/skill.bridge.py",
@@ -198,6 +456,9 @@ def test_productization_artifacts_are_release_gate_listed():
         "scope_recall/docs/vector-backends.md",
         "scope_recall/examples/external_bridge/postgres_schema.sql",
         "scope_recall/benchmarks/golden_recall_hybrid_cases.json",
+        "scope_recall/benchmarks/curated_recall_quality_cases_v2.json",
+        "scope_recall/truth_connection.py",
+        "scope_recall/sqlite_schema.py",
         "scope_recall/scripts/candidate.review.py",
         "scope_recall/scripts/memory.browser.py",
         "scope_recall/scripts/skill.bridge.py",
@@ -293,14 +554,15 @@ def test_distribution_hygiene_blocks_plan_artifacts():
 def test_changelog_completeness_gate_requires_current_release_terms():
     release_check = _load_release_check_module("scope_recall_check_release_changelog")
 
-    empty_current = "# Changelog\n\n## [1.7.2] - 2026-07-11\n\n## [1.6.3] - 2026-07-07\n"
+    version = release_check.PACKAGE_VERSION
+    empty_current = f"# Changelog\n\n## [{version}] - 2026-07-15\n\n## [1.7.2] - 2026-07-12\n"
     failed = release_check.changelog_completeness_check(empty_current)
     assert failed["ok"] is False
     assert failed["section_found"] is True
-    assert "governance" in failed["missing_terms"]
-    assert "journal recovery" in failed["missing_terms"]
+    assert "Fact Evolution" in failed["missing_terms"]
+    assert "Reflection" in failed["missing_terms"]
 
-    complete = "# Changelog\n\n## [1.7.2] - 2026-07-11\n" + "\n".join(release_check.REQUIRED_CHANGELOG_TERMS)
+    complete = f"# Changelog\n\n## [{version}] - 2026-07-15\n" + "\n".join(release_check.REQUIRED_CHANGELOG_TERMS)
     assert release_check.changelog_completeness_check(complete)["ok"] is True
 
 
@@ -1101,8 +1363,11 @@ def test_release_gate_product_contract_is_clean():
 def test_pypi_workflow_runs_release_gate_before_publish():
     pypi_workflow = (PLUGIN_ROOT / ".github" / "workflows" / "pypi.yml").read_text(encoding="utf-8")
     release_workflow = (PLUGIN_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    ci_workflow = (PLUGIN_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
-    assert "scripts/check.release.py" in pypi_workflow
+    assert "fetch-depth: 0" in ci_workflow
+    assert "scripts/check.release.py --tagged-release" in pypi_workflow
+    assert "fetch-depth: 0" in pypi_workflow
     assert "python -m pip install --upgrade pip build \".[lancedb,dev]\"" in pypi_workflow
     assert pypi_workflow.index("scripts/check.release.py") < pypi_workflow.index("pypa/gh-action-pypi-publish")
     assert "  release:" not in pypi_workflow
@@ -1111,7 +1376,8 @@ def test_pypi_workflow_runs_release_gate_before_publish():
     assert "Verify tag matches package version" in pypi_workflow
     assert "echo \"ref=${{ inputs.tag }}\"" not in pypi_workflow
 
-    assert "scripts/check.release.py" in release_workflow
+    assert "scripts/check.release.py --tagged-release" in release_workflow
+    assert "fetch-depth: 0" in release_workflow
     assert "pypa/gh-action-pypi-publish" in release_workflow
     assert "Upload release distributions" in release_workflow
     assert "Invalid release tag" in release_workflow
@@ -1281,7 +1547,7 @@ def test_sentence_transformers_provider_path_uses_local_vector_dimensions(tmp_pa
 
 
 
-def test_incremental_vector_sync_removes_stale_rows(tmp_path):
+def test_ordinary_vector_startup_defers_stale_sweep_to_explicit_repair(tmp_path):
     _write_local_debug_vector_config(tmp_path)
     plugin = load_memory_provider("scope-recall")
     assert plugin is not None
@@ -1332,7 +1598,12 @@ def test_incremental_vector_sync_removes_stale_rows(tmp_path):
         agent_workspace="hermes",
     )
     try:
+        from scope_recall.vector_runtime import sync_vector_index
+
         assert plugin._vector_store is not None
+        assert plugin._vector_store.count_rows() == 2
+        assert "stale-row" in plugin._vector_store.list_ids()
+        assert sync_vector_index(plugin) == 1
         assert plugin._vector_store.count_rows() == 1
         assert "stale-row" not in plugin._vector_store.list_ids()
     finally:
@@ -1340,7 +1611,7 @@ def test_incremental_vector_sync_removes_stale_rows(tmp_path):
 
 
 
-def test_incremental_vector_sync_refuses_destructive_duplicate_repair(tmp_path):
+def test_ordinary_vector_startup_defers_duplicate_detection_to_explicit_audit(tmp_path):
     _write_local_debug_vector_config(tmp_path)
     plugin = load_memory_provider("scope-recall")
     assert plugin is not None
@@ -1394,12 +1665,14 @@ def test_incremental_vector_sync_refuses_destructive_duplicate_repair(tmp_path):
         agent_workspace="hermes",
     )
     try:
-        assert plugin._vector_store is None
-        assert plugin._vector_status == "degraded"
-        assert "explicit shadow generation" in plugin._vector_message
-        db = lancedb.connect(str(tmp_path / "scope-recall" / "lancedb"))
-        table = db.open_table("memories")
-        assert table.count_rows() == 2
+        from scope_recall.vector_runtime import refresh_vector_audit, sync_vector_index
+
+        assert plugin._vector_store is not None
+        assert plugin._vector_store.count_rows() == 2
+        assert refresh_vector_audit(plugin)["duplicate_rows"] == 1
+        with pytest.raises(RuntimeError, match="duplicate row"):
+            sync_vector_index(plugin)
+        assert plugin._vector_store.count_rows() == 2
     finally:
         plugin.shutdown()
 
@@ -1443,7 +1716,7 @@ def test_vector_upsert_failure_marks_needs_repair_without_losing_sqlite_row(tmp_
             (payload["id"],),
         ).fetchone()
         assert event is not None
-        assert event["status"] == "pending"
+        assert event["status"] == "retry"
         assert event["operation"] == "upsert"
         assert event["generation_id"] == plugin._vector_generation_id
         failed_memory_id = payload["id"]
@@ -1476,7 +1749,7 @@ def test_vector_upsert_failure_marks_needs_repair_without_losing_sqlite_row(tmp_
 
 
 
-def test_default_runtime_rejects_cross_space_fallback_when_api_embedder_is_unavailable(tmp_path, monkeypatch):
+def test_default_runtime_bootstraps_fallback_only_when_no_generation_exists(tmp_path, monkeypatch):
     for name in ("SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_BASE_URL", "OPENAI_BASE_URL"):
         monkeypatch.delenv(name, raising=False)
 
@@ -1492,12 +1765,20 @@ def test_default_runtime_rejects_cross_space_fallback_when_api_embedder_is_unava
     )
     try:
         plugin.flush(timeout=5.0)
-        assert plugin._vector_store is None
+        assert plugin._vector_store is not None
         assert plugin._embedder is not None
-        assert plugin._embedder.provider == "openai-compatible"
-        assert plugin._vector_status == "degraded"
-        assert "different embedding space" in plugin._vector_message
-        assert not (tmp_path / "scope-recall" / "lancedb").exists()
+        assert plugin._embedder.provider == "local-hash"
+        assert plugin._vector_status == "ready"
+        assert "initialized fresh generation with fallback" in plugin._vector_message
+        manifest = plugin._conn.execute(
+            "SELECT * FROM vector_generations WHERE generation_id = ?",
+            (plugin._vector_generation_id,),
+        ).fetchone()
+        assert manifest is not None
+        assert manifest["status"] == "active"
+        assert manifest["provider"] == "local-hash"
+        assert manifest["model"] == "hash-v1"
+        assert manifest["dimensions"] == 256
     finally:
         plugin.shutdown()
 

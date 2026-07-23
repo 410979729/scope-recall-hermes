@@ -20,7 +20,7 @@ Current-turn recall · Journal-first capture · Durable shared memory · Backgro
 
 This repository, `scope-recall-hermes`, is the Hermes implementation. The Python distribution package is `hermes-scope-recall`, the Python import/package spelling is `scope_recall`, and the Hermes plugin ID/provider name remains `scope-recall` for runtime compatibility. The OpenClaw sibling implementation lives at [`scope-recall-openclaw`](https://github.com/410979729/scope-recall-openclaw).
 
-Version `1.7.2` publishes a compatibility-preserving storage and governance hardening patch on the stable V1 release line: ordinary recall now uses one lifecycle policy across journal, nightly, deduplication, and vector paths; vector rebuilds support immutable generations and explicit compare-and-swap activation; metadata and import provenance are sanitized before durable or operator-visible sinks; candidate, freshness, and config mutations fail closed; and folded inline data URLs are removed without losing surrounding prose. It builds on version 1.7.1's runtime-config, candidate-browser, external-bridge, and release-gate fixes. Version 1.7.0 published the productization feature set on the stable V1 release line: event-digest evidence packets, reviewable candidate extraction, read-only memory browsing, candidate governance commands, Experience-to-skill bridge helpers, optional PGVector companion support, external shared-memory bridge contracts, explicit sensitivity governance, release-gate progress output, and same-process peer-provider SQLite lock recovery for `scope_recall_store`. Version 1.6.3 closed issue #25 with conservative SQLite lock recovery and a single safe retry for `scope_recall_store` while keeping non-SQLite business errors non-retryable. Version 1.6.2 added graph-relation backfill/benchmark visibility and hardened Experience review and journal-digest bookkeeping without changing the stable V1 runtime contract. Version 1.6.1 published documentation, packaging, and release-provenance updates without changing the stable V1 runtime contract. The 1.6.0 release packages a compatibility-preserving refactor of the doctor, graph-hygiene, maintenance, digest-result, recall-pipeline, and provider-schema internals while keeping the stable V1 commercial-governance line introduced in 1.5.0. The 1.5 line includes promoted-only profile lifecycle safety, candidate-memory promotion planning, graph-hygiene repair, fail-closed vector-repair fallback handling, governance cleanup, journal recovery, an operator dashboard, repository-owned golden benchmarks, stricter release gates, fail-closed hard-delete safety, packaged benchmark fixtures, Recall Funnel observability, synthetic retrieval-regression benchmarking, and default-safe vector fallback behavior. Runtime Experience packet injection is enabled by default through `experience.prefetch_enabled=true` and can be disabled with `experience.prefetch_enabled=false`; background automatic promotion remains an explicit operator opt-in through `experience.auto_promotion_enabled=true`, and low-risk auto-promotion remains a second explicit opt-in through `experience.auto_promote_low_risk=true`. By default, successful low-risk scans create candidate playbooks, high-risk playbooks stay review-gated, and final-failure or low-signal traces are not promoted. It keeps the `scope_recall_profile` surface added in v1.3.0, compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, inline attachment-marker sanitization, the supported standalone install shape added in v1.1.0, and native-safe LanceDB probing with automatic SQLite vector fallback for non-AVX hosts.
+Version `1.8.0` publishes a compatibility-preserving feature release on the stable V1 release line. It adds opt-in evidence-gated Fact Evolution, bitemporal current/as-of/history queries, bounded citation-grounded Reflection, stable replay identity, and atomic journal action/checkpoint commits while preserving SQLite as the truth source. Durable `user`, `memory`, `project`, and `ops` fact actions resolve to shared durable scope, while `general` remains local scratch on every integration path. Existing ordinary-memory behavior remains the default because the new evolution, temporal-query, and Reflection surfaces are opt-in. The `1.7.2` release published a compatibility-preserving storage and governance hardening patch: ordinary recall uses one lifecycle policy across journal, nightly, deduplication, and vector paths; vector rebuilds support immutable generations and explicit compare-and-swap activation; metadata and import provenance are sanitized before durable or operator-visible sinks; candidate, freshness, and config mutations fail closed; and folded inline data URLs are removed without losing surrounding prose. It builds on version 1.7.1's runtime-config, candidate-browser, external-bridge, and release-gate fixes. Version 1.7.0 published the productization feature set on the stable V1 release line: event-digest evidence packets, reviewable candidate extraction, read-only memory browsing, candidate governance commands, Experience-to-skill bridge helpers, optional PGVector companion support, external shared-memory bridge contracts, explicit sensitivity governance, release-gate progress output, and same-process peer-provider SQLite lock recovery for `scope_recall_store`. Version 1.6.3 closed issue #25 with conservative SQLite lock recovery and a single safe retry for `scope_recall_store` while keeping non-SQLite business errors non-retryable. Version 1.6.2 added graph-relation backfill/benchmark visibility and hardened Experience review and journal-digest bookkeeping without changing the stable V1 runtime contract. Version 1.6.1 published documentation, packaging, and release-provenance updates without changing the stable V1 runtime contract. The 1.6.0 release packages a compatibility-preserving refactor of the doctor, graph-hygiene, maintenance, digest-result, recall-pipeline, and provider-schema internals while keeping the stable V1 commercial-governance line introduced in 1.5.0. The 1.5 line includes promoted-only profile lifecycle safety, candidate-memory promotion planning, graph-hygiene repair, fail-closed vector-repair fallback handling, governance cleanup, journal recovery, an operator dashboard, repository-owned golden benchmarks, stricter release gates, fail-closed hard-delete safety, packaged benchmark fixtures, Recall Funnel observability, synthetic retrieval-regression benchmarking, and default-safe vector fallback behavior. Runtime Experience packet injection is enabled by default through `experience.prefetch_enabled=true` and can be disabled with `experience.prefetch_enabled=false`; background automatic promotion remains an explicit operator opt-in through `experience.auto_promotion_enabled=true`, and low-risk auto-promotion remains a second explicit opt-in through `experience.auto_promote_low_risk=true`. By default, successful low-risk scans create candidate playbooks, high-risk playbooks stay review-gated, and final-failure or low-signal traces are not promoted. It keeps the `scope_recall_profile` surface added in v1.3.0, compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, inline attachment-marker sanitization, the supported standalone install shape added in v1.1.0, and native-safe LanceDB probing with fresh-bootstrap SQLite vector fallback for non-AVX hosts.
 
 It uses a **three-layer design**:
 
@@ -175,7 +175,7 @@ hermes-scope-recall install --activate --hermes-home "${HERMES_HOME:-$HOME/.herm
 hermes-scope-recall verify --runtime --hermes-home "${HERMES_HOME:-$HOME/.hermes}"
 ```
 
-`install --activate` copies the plugin into `$HERMES_HOME/plugins/scope-recall`, sets `memory.provider: scope-recall` in `$HERMES_HOME/config.yaml`, bootstraps `$HERMES_HOME/scope-recall/memory.sqlite3`, and returns JSON verification plus rollback evidence. See [`docs/install.md`](docs/install.md) for the complete install, verify, upgrade, and rollback guide.
+`install --activate` copies the plugin into `$HERMES_HOME/plugins/scope-recall`, sets `memory.provider: scope-recall` in `$HERMES_HOME/config.yaml`, bootstraps `$HERMES_HOME/scope-recall/memory.sqlite3`, and returns JSON verification plus rollback evidence. Before replacing or migrating anything, it captures the plugin/config/provider-config pre-state and uses SQLite's online backup API for an existing truth DB. A config, migration, provider-load, or runtime-verification failure automatically restores every captured surface and returns `ok=false` with an `activation_transaction` receipt. See [`docs/install.md`](docs/install.md) for the complete install, verify, upgrade, and rollback guide.
 
 ### Upgrade and rollback
 
@@ -183,8 +183,11 @@ When replacing an existing plugin copy, use the explicit upgrade verb so the JSO
 
 ```bash
 hermes-scope-recall upgrade --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --dry-run --json
-hermes-scope-recall upgrade --activate --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --json
+# Stop the gateway and all Scope Recall writers before this apply step.
+hermes-scope-recall upgrade --activate --maintenance-mode --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --json
 ```
+
+If the dry-run reports that the active vector manifest is missing while SQLite truth or a configured companion already contains state, leave that companion untouched. From the 1.8.0 candidate source, run `python scripts/migrate.vector_generation.py --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --dry-run --json`, inspect the intended embedding identity, then run the same command with `--apply --activate` under the maintenance boundary before retrying the upgrade. This builds a validated shadow generation; it does not guess the identity of, adopt, or delete a manifestless legacy companion.
 
 If an upgrade needs to be reverted, run the emitted rollback command after a dry-run check:
 
@@ -192,6 +195,8 @@ If an upgrade needs to be reverted, run the emitted rollback command after a dry
 hermes-scope-recall rollback --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --backup-dir /path/to/backup/scope-recall --dry-run --json
 hermes-scope-recall rollback --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --backup-dir /path/to/backup/scope-recall --json
 ```
+
+This standalone rollback command restores the plugin directory only. If `--activate` itself fails, use the structured `activation_transaction` result: automatic compensation has already attempted to restore plugin, Hermes config, provider config, and SQLite pre-state, with per-surface verification recorded in the receipt.
 
 `verify --runtime` is read-only against `$HERMES_HOME/scope-recall/memory.sqlite3`: it loads the installed provider, checks layered install diagnostics, checks the compact tool schemas, and verifies the SQLite schema-migration ledger.
 
@@ -280,6 +285,22 @@ Minimal default shape:
   "tool_schema_extra_tools": [],
   "maintenance_tools_enabled": false,
   "secret_index_tools_enabled": false,
+  "fact_evolution": {
+    "enabled": false,
+    "mode": "preview"
+  },
+  "temporal_queries": {
+    "enabled": false,
+    "timezone": "UTC",
+    "current_limit": 50
+  },
+  "reflection": {
+    "enabled": false,
+    "write_candidates": false,
+    "max_hops": 1,
+    "max_evidence": 24,
+    "max_chars": 12000
+  },
   "retrieval": {
     "mode": "hybrid",
     "lexical_weight": 0.45,
@@ -326,7 +347,7 @@ Minimal default shape:
 Vector backend choices:
 
 - `lancedb` — default ANN companion, best for normal hosts; install with `python -m pip install -e ".[lancedb]"`. Scope Recall probes LanceDB/PyArrow in a child process before importing them in the Hermes process, so SIGILL/illegal-instruction wheels are treated as unavailable instead of crashing the agent.
-- `sqlite-bruteforce` — pure-Python/SQLite companion for non-AVX CPUs or hosts where importing LanceDB/PyArrow is unsafe; install with `python -m pip install -e .` and set `vector.backend` accordingly, or keep the default `vector.fallback_backend: sqlite-bruteforce` to fall back automatically when LanceDB is absent or unsafe.
+- `sqlite-bruteforce` — pure-Python/SQLite companion for non-AVX CPUs or hosts where importing LanceDB/PyArrow is unsafe; install with `python -m pip install -e .` and set `vector.backend` accordingly, or keep the default `vector.fallback_backend: sqlite-bruteforce` so a provably fresh bootstrap can select it when LanceDB is absent or unsafe. An active generation never switches backend during startup.
 - `pgvector` — optional PostgreSQL/pgvector companion for deployments that already operate PostgreSQL; install with `python -m pip install "hermes-scope-recall[pgvector]"` and configure `vector.pgvector.dsn_env` / `vector.pgvector.table_name`. See [`docs/vector-backends.md`](docs/vector-backends.md).
 
 All vector backends are rebuildable caches. `$HERMES_HOME/scope-recall/memory.sqlite3` remains the truth source.
@@ -334,7 +355,8 @@ All vector backends are rebuildable caches. `$HERMES_HOME/scope-recall/memory.sq
 Credential rule:
 
 - put real API keys in your private environment, not in `config.json`
-- if no configured key is available, `scope-recall` falls back to `local-hash`
+- on a fresh setup with no active vector generation, if no primary key is available, `scope-recall` may establish the first generation with the explicitly configured `local-hash` fallback
+- after a generation is active, its backend and embedding identity are pinned by the SQLite manifest; restoring a primary key does not silently switch spaces, and a different-space fallback cannot open an existing primary generation
 
 ### Embedding providers
 
@@ -346,7 +368,7 @@ Currently implemented:
 | `openai` | Direct OpenAI embeddings | Useful when you do not need a custom compatible endpoint |
 | `minimax` | MiniMax `embo-01` embeddings | Uses MiniMax's non-OpenAI-compatible `/v1/embeddings` shape with `texts` and `type`; indexing uses `db`, search queries use `query` |
 | `sentence-transformers` | Local Hugging Face / SentenceTransformers models | Good for local semantic embeddings when installed |
-| `local-hash` | Offline fallback | Deterministic degraded fallback, not a true semantic model |
+| `local-hash` | Offline bootstrap/fallback | Deterministic portable fallback, not a true semantic model; changing to a semantic embedder requires an explicit generation migration |
 | `local-debug` | Tests/debugging | Tiny deterministic test embedder |
 
 Provider aliases `local-model`, `local-embedding`, and `huggingface` resolve to the `sentence-transformers` backend.
@@ -750,6 +772,15 @@ Schema-surface targets after the compact-profile change:
 - standard profile: 20 tools, about 10.6 KB
 - maintenance/secret schema surfaces still require their explicit safety flags
 
+Release `1.8.0` publishes evidence-gated fact evolution and temporal reflection while keeping the stable V1 provider contract compatible:
+
+- Fact Evolution is opt-in and uses a closed `ADD`/`ENRICH`/`SUPERSEDE`/`RETRACT` action contract, deterministic evidence authority, reviewed mutation modes, and idempotent receipts.
+- Bitemporal fact storage and `scope_recall_fact` provide scoped current, as-of, and history views with additive SQLite schema evolution and explicit valid-time/recorded-time semantics.
+- `scope_recall_reflect` is opt-in, bounded, citation-grounded, provenance-root aware, and review-only unless every explicit candidate-write gate passes.
+- Durable fact actions route `user`, `memory`, `project`, and `ops` to shared scope while every legacy and new `general` path remains local scratch.
+- Nightly and journal integrations use stable source identity for replay safety; journal action receipts and source checkpoints commit atomically per candidate.
+- Deterministic memory-evolution and reflection benchmarks, release identity checks, and package-content gates cover the new modules without changing existing ordinary-memory defaults.
+
 Release `1.7.2` publishes compatibility-preserving storage, lifecycle, and governance hardening on the stable V1 line:
 
 - One ordinary-recall lifecycle policy now governs journal/nightly matching, deduplication, retrieval, migration, and all vector mutation or replay paths.
@@ -829,6 +860,9 @@ Release `1.4.5` tightened the audit/observability tools:
 - `memory_type` now informs temporal decay policy: durable facts/preferences/procedures decay less aggressively than episodic or temporary/scratch evidence, and explain exposes the applied policy class/weight.
 - `memory_relations` are surfaced in explain by default; relation-aware reranking remains feature-gated through `retrieval.relation_rerank_enabled` and is conservative by default.
 - `shared_pool` remains read-only unless `shared_pool.write_enabled=true`; explicit shared-pool writes require `scope_mode="shared_pool"` and are limited to configured durable targets.
+- Store scope is target-derived: `general` is local scratch, while `user`, `memory`, `project`, and `ops` are durable shared targets. An explicit `scope_mode` may select the canonical mode or an enabled shared pool, but cannot violate that target contract.
+- Exact duplicate suppression remains automatic. Fuzzy/semantic merge is off by default; `semantic_merge=true` permits only conservative contained-text enrichment, while paraphrases and changed values remain separate for reviewed merge.
+- Tool arguments are validated against the published schemas inside the provider before handlers run. Invalid calls return redacted `invalid_arguments`, `field`, and `constraint` keys without echoing the rejected value.
 
 Operator-only maintenance tools are hidden from the default schema and require `maintenance_tools_enabled=true`:
 
@@ -842,6 +876,7 @@ scope_recall_playbook_review
 scope_recall_experience_promote
 scope_recall_forgetting_report
 scope_recall_forgetting_run
+scope_recall_evolve
 ```
 
 Secret-index tools are also hidden by default and require `secret_index_tools_enabled=true`:
@@ -868,11 +903,40 @@ python scripts/repair.graph_hygiene.py --hermes-home "$HERMES_HOME" --dry-run
 python scripts/repair.graph_hygiene.py --hermes-home "$HERMES_HOME" --apply
 ```
 
+Lexical FTS health is also lifecycle-aware. `doctor` reports total truth rows separately from expected ordinary-recall members and fails on missing, stale, duplicate, or hidden FTS rows. The repair command is read-only by default. Apply only after stopping normal Scope Recall writers; it creates an owner-only SQLite online backup and verifies `quick_check` before rebuilding the companion in one transaction:
+
+```bash
+# read-only report
+python scripts/repair.fts_index.py --hermes-home "$HERMES_HOME" --dry-run
+
+# reviewed maintenance window only
+python scripts/repair.fts_index.py --hermes-home "$HERMES_HOME" \
+  --apply --maintenance-confirmed
+```
+
 Entity graph read surfaces also hide lifecycle-removed memories (`archived`, `superseded`, `obsolete`, `rejected`) and filter common tool-trace entity noise such as `read_file`, `search_files`, `execute_code`, `skill_view`, and `session_search`.
 
 Destructive cleanup is intentionally out-of-band: use the hygiene report first, then require an explicit operator decision before running any separate delete/merge/dedupe action. The shipped hygiene path is dry-run/report-only.
 
 `scope_recall_export` defaults to the current accessible scope set: local scratch scope plus shared durable scope. Passing `scope_only=false` remains an operator maintenance action and fails closed unless `maintenance_tools_enabled=true`.
+
+Temporal facts and reflection are opt-in product surfaces. `temporal_queries.enabled=true` exposes the read-only `scope_recall_fact` current/as-of/history views. `reflection.enabled=true` exposes `scope_recall_reflect`, which gathers a bounded, scope-filtered evidence pack and accepts only strict JSON synthesis whose citations resolve inside that pack. Before any durable review candidate is built, each answer and observation must also match a cited content clause's polarity, argument order, temporal/modal markers, conditionals, and quantifiers; lexical token coverage alone is insufficient. Reflection is read-only by default. A `mental_model` candidate can be stored only when the caller explicitly sets `propose_memory=true`, maintenance tools are enabled, `reflection.write_candidates=true`, and citation/source/confidence thresholds pass; the result remains hidden as `needs_review` rather than becoming active memory automatically.
+
+```text
+scope_recall_fact(action="current", subject="project-alpha", predicate="workplace")
+scope_recall_fact(action="as_of", subject="project-alpha", predicate="workplace", at="2026-01-01T00:00:00Z")
+scope_recall_reflect(query="How did Project Alpha's deployment assumptions change?", include_trace=true)
+scope_recall_reflect(query="Summarize the reviewed architecture model", propose_memory=true)
+```
+
+Run the deterministic temporal/reflection release benchmarks and the read-only runtime dashboard with:
+
+```bash
+python scripts/benchmark.memory_evolution.py --json
+python scripts/benchmark.reflection.py --json
+python scripts/doctor.py --json --hermes-home "$HERMES_HOME"
+```
+Keep `propose_memory` omitted or `false` for ordinary reflection. Enabling candidate writeback is an operator decision and still produces a review queue item, not an active fact.
 
 `scope_recall_stats`, `scope_recall_export`, `scope_recall_explain`, `scope_recall_benchmark`, and Experience Kernel tools still work through direct tool calls, but are no longer part of the compact default schema unless `tool_schema_profile="standard"` or `tool_schema_extra_tools` exposes them.
 
@@ -952,6 +1016,9 @@ Example `scope_recall_stats` shape:
 | `scope_recall_govern` | Operator-only: review tier distribution and decay/archive candidates |
 | `scope_recall_hygiene` | Operator-only, read-only: report memory-quality cleanup/promotion candidates without modifying rows |
 | `scope_recall_repair` | Operator-only: repair/rebuild the configured vector companion from SQLite truth |
+| `scope_recall_fact` | Opt-in, read-only: query scoped current, as-of, or cited fact history views |
+| `scope_recall_reflect` | Opt-in, read-only by default: synthesize bounded cross-memory observations and inferences with evidence-pack citations |
+| `scope_recall_evolve` | Operator-only: preview or request locally authorized fact evolution; defaults to dry-run and cannot elevate configured policy |
 
 ---
 

@@ -41,9 +41,10 @@ DEFAULT_CAPTURE_SKIP_PATTERNS: tuple[str, ...] = (
 SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     # PEM private-key blocks must be redacted as a whole, not just the BEGIN line.
     re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"),
-    # Common assignment forms: api_key=..., api key: ..., token is ..., private-key = ...
+    # Common assignment forms except token-suffixed identifiers, which need the
+    # metric-aware classifier below to avoid rejecting ``*_per_token`` values.
     re.compile(
-        r"(?:api[_ \t-]?key|(?<![a-zA-Z_])token|secret|password|passwd|credential(?:[_ \t-]?[a-z0-9_]+)?|private[_ \t-]?key)"
+        r"(?:api[_ \t-]?key|secret|password|passwd|credential(?:[_ \t-]?[a-z0-9_]+)?|private[_ \t-]?key)"
         r"(?:[ \t]*(?::|=|是)[ \t]*|[ \t]+is[ \t]+)[^\s]+",
         re.IGNORECASE,
     ),
@@ -57,6 +58,12 @@ SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\beyJ[A-Za-z0-9._-]{8,}\b"),
     re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),
     re.compile(r"\b(?:sk|rk)_live_[A-Za-z0-9_*.-]{16,}\b", re.IGNORECASE),
+)
+
+TOKEN_ASSIGNMENT_RE = re.compile(
+    r"(?P<key>(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_-]*[_-])?token)"
+    r"(?:[ \t]*(?::|=|是)[ \t]*|[ \t]+is[ \t]+)[^\s]+",
+    re.IGNORECASE,
 )
 
 PRIVATE_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -81,6 +88,14 @@ SENSITIVE_MAPPING_KEY_RE = re.compile(
     r"password|passwd|private[_\-\s]?key|client[_\-\s]?secret|cookie)(?:$|[_\-\s:=])"
     r"|(?:^|[_\-\s])token(?:$|[\s:=])"
     r")",
+    re.IGNORECASE,
+)
+
+SENSITIVE_KEY_COMPONENT_RE = re.compile(
+    r"(?:^|_)(?:"
+    r"authorization|auth|bearer|cookie|credential|credentials|password|passwd|"
+    r"secret|token|api_key|private_key|client_secret"
+    r")(?:_|$)",
     re.IGNORECASE,
 )
 
@@ -220,8 +235,59 @@ def sanitize_capture_text(text: Any) -> str:
     return re.sub(r"\n{3,}", "\n\n", sanitized)
 
 
+def _normalize_mapping_key(value: Any) -> str:
+    """Normalize field separators for shared secret-key classification."""
+
+    return re.sub(r"[-\s]+", "_", str(value or "").strip().casefold())
+
+
+def _is_safe_token_metric_key(value: Any) -> bool:
+    """Allow token metrics only when their prefix is not credential-shaped.
+
+    A suffix must never override a sensitive prefix: for example,
+    ``api_token_per_token`` is credential-shaped even though
+    ``kv_bytes_per_token`` is a valid public metric.
+    """
+
+    raw = str(value or "")
+    normalized = _normalize_mapping_key(raw)
+    if normalized == "per_token":
+        return True
+    suffix = "_per_token"
+    if not normalized.endswith(suffix):
+        return False
+    metric_prefix = normalized[: -len(suffix)]
+    return not bool(
+        SENSITIVE_MAPPING_KEY_RE.search(metric_prefix)
+        or SENSITIVE_KEY_COMPONENT_RE.search(metric_prefix)
+    )
+
+
+def _is_sensitive_mapping_key(value: Any) -> bool:
+    """Classify credential keys without redacting benign telemetry metadata."""
+
+    if _is_safe_token_metric_key(value):
+        return False
+    raw = str(value or "")
+    normalized = _normalize_mapping_key(raw)
+    if SENSITIVE_MAPPING_KEY_RE.search(raw):
+        return True
+    if normalized == "token" or normalized.endswith("_token"):
+        return True
+    suffix = "_per_token"
+    if normalized.endswith(suffix):
+        metric_prefix = normalized[: -len(suffix)]
+        return bool(SENSITIVE_KEY_COMPONENT_RE.search(metric_prefix))
+    return False
+
+
 def contains_secret_like_text(text: str) -> bool:
-    return any(pattern.search(text) for pattern in SECRET_PATTERNS)
+    if any(pattern.search(text) for pattern in SECRET_PATTERNS):
+        return True
+    return any(
+        not _is_safe_token_metric_key(match.group("key"))
+        for match in TOKEN_ASSIGNMENT_RE.finditer(text)
+    )
 
 
 def redact_secret_like_text(text: Any) -> str:
@@ -231,6 +297,14 @@ def redact_secret_like_text(text: Any) -> str:
     redacted = cleaned
     for pattern in SECRET_PATTERNS:
         redacted = pattern.sub("[REDACTED_SECRET]", redacted)
+    redacted = TOKEN_ASSIGNMENT_RE.sub(
+        lambda match: (
+            match.group(0)
+            if _is_safe_token_metric_key(match.group("key"))
+            else "[REDACTED_SECRET]"
+        ),
+        redacted,
+    )
     return redacted
 
 
@@ -285,7 +359,7 @@ def sanitize_mapping_key(value: Any) -> tuple[str, bool]:
 
     raw = str(value)
     safe = sanitize_report_text(raw)
-    if SENSITIVE_MAPPING_KEY_RE.search(raw):
+    if _is_sensitive_mapping_key(raw):
         safe = "[REDACTED_KEY]"
     if not safe:
         safe = "[REDACTED_KEY]"

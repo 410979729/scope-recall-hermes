@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from scope_recall.candidate_extraction import extract_candidates_from_packet
+import pytest
+
+import scope_recall.candidate_store as candidate_store_module
+from scope_recall.candidate_extraction import ExtractedCandidate, extract_candidates_from_packet
 from scope_recall.candidate_store import store_event_candidates
 from scope_recall.event_digest import MemoryEvent, build_evidence_packet
 from scope_recall.models import RuntimeScope
@@ -82,5 +85,60 @@ def test_store_event_candidates_dry_run_does_not_write_rows(tmp_path):
 
     assert report["inserted"] == 0
     assert report["planned"] == 1
+    assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM governance_audit_events").fetchone()[0] == 0
+
+
+def test_store_event_candidates_rolls_back_the_whole_batch_on_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A failed second candidate must not leave the first candidate committed."""
+
+    conn = sqlite3.connect(tmp_path / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    candidates = [
+        ExtractedCandidate(
+            target="project",
+            content=f"Atomic candidate {index} contains durable project evidence.",
+            memory_type="project",
+            confidence=0.9,
+            evidence_refs=[f"session:atomic:turn:{index}"],
+        )
+        for index in (1, 2)
+    ]
+    scope = RuntimeScope(
+        platform="telegram",
+        user_id="user-a",
+        chat_id="chat-a",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    original_audit = candidate_store_module.record_governance_audit_event
+    calls = {"count": 0}
+
+    def fail_second_audit(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise RuntimeError("injected second-candidate failure")
+        return original_audit(*args, **kwargs)
+
+    monkeypatch.setattr(
+        candidate_store_module,
+        "record_governance_audit_event",
+        fail_second_audit,
+    )
+
+    with pytest.raises(RuntimeError, match="second-candidate failure"):
+        store_event_candidates(
+            conn,
+            candidates=candidates,
+            scope=scope,
+            scope_id="scope-a",
+            session_id="atomic",
+            dry_run=False,
+        )
+
     assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM governance_audit_events").fetchone()[0] == 0

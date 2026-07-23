@@ -20,6 +20,41 @@ def _leaf_keys(value, prefix=""):
     return [prefix]
 
 
+def _leaf_values(value, prefix=""):
+    if isinstance(value, dict):
+        values = {}
+        for key, child in value.items():
+            child_prefix = f"{prefix}.{key}" if prefix else str(key)
+            values.update(_leaf_values(child, child_prefix))
+        return values
+    return {prefix: value}
+
+
+def test_packaged_config_covers_every_code_default_leaf_with_matching_type():
+    from scope_recall.config import DEFAULT_CONFIG
+
+    packaged = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
+    defaults = _leaf_values(DEFAULT_CONFIG)
+    packaged_values = _leaf_values(packaged)
+
+    assert set(defaults) <= set(packaged_values)
+    mismatched_types = {
+        key: (type(defaults[key]).__name__, type(packaged_values[key]).__name__)
+        for key in defaults
+        if key in packaged_values and type(defaults[key]) is not type(packaged_values[key])
+    }
+    assert mismatched_types == {}
+
+
+def test_sensitive_hard_delete_is_fail_closed_by_default():
+    from scope_recall.config import DEFAULT_CONFIG
+
+    packaged = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
+
+    assert DEFAULT_CONFIG["forgetting"]["hard_delete_sensitive"] is False
+    assert packaged["forgetting"]["hard_delete_sensitive"] is False
+
+
 def test_config_registry_covers_packaged_config_leaf_keys():
     from scope_recall.config_schema import build_config_registry
 
@@ -48,8 +83,65 @@ def test_provider_config_schema_uses_registry_for_deep_keys():
     assert "journal.max_entries_per_digest" in by_key
     assert "retrieval.relation_rerank_enabled" in by_key
     assert "vector.embedder.api_key_env" in by_key
+    assert "vector.embedder.connection_retry_delays" in by_key
     assert by_key["vector.embedder.api_key_env"]["risk"] == "high"
+    assert by_key["vector.embedder.connection_retry_delays"]["default"] == [
+        2.0,
+        4.0,
+        8.0,
+    ]
     assert by_key["journal.max_entries_per_digest"]["type"] == "integer"
+
+
+def test_fact_evolution_registry_exposes_persistence_risk_and_reload_semantics():
+    from scope_recall.config_schema import build_config_registry
+
+    by_key = {entry["key"]: entry for entry in build_config_registry()}
+
+    assert by_key["fact_evolution.enabled"]["risk"] == "high"
+    assert by_key["fact_evolution.enabled"]["restart_required"] is True
+
+    for key in (
+        "fact_evolution.mode",
+        "fact_evolution.journal_mode",
+        "fact_evolution.nightly_mode",
+        "fact_evolution.tool_mode",
+        "fact_evolution.maintenance_mode",
+    ):
+        assert by_key[key]["risk"] == "high"
+        expected_choice_risks = {"preview": "medium"}
+        if key != "fact_evolution.maintenance_mode":
+            expected_choice_risks["auto_apply"] = "high"
+        if key in {
+            "fact_evolution.mode",
+            "fact_evolution.tool_mode",
+            "fact_evolution.maintenance_mode",
+        }:
+            expected_choice_risks["reviewed_apply"] = "high"
+        assert by_key[key]["choice_risks"] == expected_choice_risks
+
+    assert by_key["fact_evolution.mode"]["restart_required"] is True
+    assert by_key["fact_evolution.tool_mode"]["restart_required"] is True
+    assert by_key["fact_evolution.maintenance_mode"]["restart_required"] is True
+    assert by_key["fact_evolution.journal_mode"]["restart_required"] is False
+    assert by_key["fact_evolution.nightly_mode"]["restart_required"] is False
+    assert by_key["fact_evolution.journal_mode"]["choices"] == [
+        "preview",
+        "auto_apply",
+    ]
+    assert by_key["fact_evolution.nightly_mode"]["choices"] == [
+        "preview",
+        "auto_apply",
+    ]
+    assert by_key["fact_evolution.tool_mode"]["choices"] == [
+        "preview",
+        "auto_apply",
+        "reviewed_apply",
+    ]
+    assert by_key["fact_evolution.maintenance_mode"]["choices"] == [
+        "preview",
+        "reviewed_apply",
+    ]
 
 
 def test_curated_memory_mode_choices_match_runtime_modes():

@@ -35,13 +35,14 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-PACKAGE_VERSION = "1.7.2"
+PACKAGE_VERSION = "1.8.0"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 RELEASE_READINESS_DOC = f"docs/release-readiness.{PACKAGE_VERSION}.md"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
 LOCAL_ONLY_DIRS = {".hermes"}
 EXTERNAL_TEST_DIRS = {".hermes-agent-src"}
 RELEASE_REQUIRED_MODULES = ("build", "pytest", "ruff", "wheel", "pyright", "yaml", "lancedb", "pyarrow")
+RELEASE_INVARIANT_MANIFEST = ROOT / "scripts" / "release.invariants.json"
 SECRET_PATTERNS = {
     "api_key_assignment": re.compile(
         r"[\"']?\b(?:api[_ -]?key|secret|password|passwd|token)\b[\"']?\s*(?:=|:)\s*[\"']?[A-Za-z0-9._\-+/=]{12,}[\"']?",
@@ -109,9 +110,9 @@ FORBIDDEN_PUBLIC_DOC_MARKERS = {
 FORBIDDEN_DISTRIBUTION_PATH_FRAGMENTS = ("/docs/plans/",)
 FORBIDDEN_DISTRIBUTION_BASENAMES = {
     "hermes-upstream-recommendation-plan.md",
-    "source_isolation.py",
 }
 REQUIRED_SOURCE_FILES = {
+    "activation_transaction.py",
     "README.md",
     "DESIGN.md",
     "CHANGELOG.md",
@@ -122,6 +123,7 @@ REQUIRED_SOURCE_FILES = {
     "pyproject.toml",
     "plugin.yaml",
     "config.json",
+    "scripts/release.invariants.json",
     "cli.py",
     "config_schema.py",
     "candidate_extraction.py",
@@ -136,28 +138,63 @@ REQUIRED_SOURCE_FILES = {
     "postgres_bridge.py",
     "secret_index.py",
     "skill_bridge.py",
+    "operator_ledger.py",
+    "relation_entity_policy.py",
+    "relation_frequency_index.py",
+    "relation_frequency_maintenance.py",
+    "relation_rebuild_queue.py",
+    "relation_scope_state.py",
     "vector_generation.py",
     "vector_generation_preflight.py",
     "vector_migration.py",
+    "vector_mutation_guard.py",
+    "vector_outbox_replay.py",
+    "vector_reconciliation.py",
     "vector_repair.py",
     "vector_runtime.py",
     "vector_store.py",
     "experience_replay_generation.py",
     "digest_quality.py",
+    "digest_pollution.py",
     "digest_run_results.py",
     "doctor_common.py",
     "doctor_experience.py",
     "doctor_journal.py",
     "doctor_source.py",
     "doctor_sqlite.py",
+    "doctor_temporal.py",
     "doctor_vector.py",
+    "evolution_policy.py",
+    "fact_actions.py",
+    "fact_evidence.py",
+    "fact_temporal_semantics.py",
+    "fact_executor.py",
+    "fact_evolution.py",
+    "fact_tooling.py",
+    "fact_identity.py",
+    "temporal_facts.py",
+    "temporal_query.py",
+    "truth_connection.py",
+    "sqlite_schema.py",
+    "reflection.py",
+    "reflection_llm.py",
+    "reflection_grounding.py",
+    "reflection_tooling.py",
+    "fact_repository.py",
     "freshness.py",
     "lifecycle_policy.py",
     "lifecycle_service.py",
+    "memory_admission.py",
+    "memory_mutation.py",
+    "memory_text_merge.py",
+    "entity_quality.py",
+    "tool_validation.py",
+    "source_isolation.py",
     "governance_scheduler.py",
     "graph_relations.py",
     "graph_hygiene.py",
     "maintenance_ops.py",
+    "maintenance_lease.py",
     "memory_quality.py",
     "task_boundary.py",
     "experience_evidence.py",
@@ -186,6 +223,7 @@ REQUIRED_SOURCE_FILES = {
     "docs/governance.cleanup.md",
     "docs/memory-quality-kernel.md",
     "docs/configuration.md",
+    "docs/fact-evolution-architecture.md",
     "docs/event-digest.md",
     "docs/governance-ui.md",
     "docs/install.md",
@@ -196,6 +234,9 @@ REQUIRED_SOURCE_FILES = {
     "docs/response-contracts.md",
     RELEASE_READINESS_DOC,
     "benchmarks/golden_recall_cases.json",
+    "benchmarks/curated_recall_quality_cases_v2.json",
+    "benchmarks/memory_evolution_cases.json",
+    "benchmarks/reflection_cases.json",
     "benchmarks/golden_recall_hybrid_cases.json",
     "benchmarks/experience_replay_cases.json",
     "examples/external_bridge/import.jsonl",
@@ -214,6 +255,9 @@ REQUIRED_SOURCE_FILES = {
     "scripts/doctor.py",
     "scripts/experience-replay.py",
     "scripts/benchmark.golden.py",
+    "scripts/benchmark.memory_evolution.py",
+    "scripts/benchmark.reflection.py",
+    "scripts/benchmark.temporal_scale.py",
     "scripts/benchmark.graph_relations.py",
     "scripts/benchmark.retrieval_regression.py",
     "scripts/backfill.graph_relations.py",
@@ -239,10 +283,12 @@ REQUIRED_SOURCE_FILES = {
     "governance_cleanup.py",
     "journal_recovery.py",
     "installer.py",
+    "installer_yaml.py",
     "py.typed",
 }
 REQUIRED_WHEEL = {
     "scope_recall/__init__.py",
+    "scope_recall/activation_transaction.py",
     "scope_recall/artifacts.py",
     "scope_recall/provider.py",
     "scope_recall/cli.py",
@@ -257,14 +303,24 @@ REQUIRED_WHEEL = {
     "scope_recall/pgvector_store.py",
     "scope_recall/postgres_bridge.py",
     "scope_recall/skill_bridge.py",
+    "scope_recall/operator_ledger.py",
+    "scope_recall/relation_entity_policy.py",
+    "scope_recall/relation_frequency_index.py",
+    "scope_recall/relation_frequency_maintenance.py",
+    "scope_recall/relation_rebuild_queue.py",
+    "scope_recall/relation_scope_state.py",
     "scope_recall/vector_generation.py",
     "scope_recall/vector_generation_preflight.py",
     "scope_recall/vector_migration.py",
+    "scope_recall/vector_mutation_guard.py",
+    "scope_recall/vector_outbox_replay.py",
+    "scope_recall/vector_reconciliation.py",
     "scope_recall/vector_repair.py",
     "scope_recall/vector_runtime.py",
     "scope_recall/vector_store.py",
     "scope_recall/experience_replay_generation.py",
     "scope_recall/installer.py",
+    "scope_recall/installer_yaml.py",
     "scope_recall/capture_llm.py",
     "scope_recall/capture_filters.py",
     "scope_recall/memory_ops.py",
@@ -297,23 +353,50 @@ REQUIRED_WHEEL = {
     "scope_recall/pyproject.toml",
     "scope_recall/plugin.yaml",
     "scope_recall/config.json",
+    "scope_recall/scripts/release.invariants.json",
     "scope_recall/digest_quality.py",
+    "scope_recall/digest_pollution.py",
     "scope_recall/digest_run_results.py",
     "scope_recall/doctor_common.py",
     "scope_recall/doctor_experience.py",
     "scope_recall/doctor_journal.py",
     "scope_recall/doctor_source.py",
     "scope_recall/doctor_sqlite.py",
+    "scope_recall/doctor_temporal.py",
     "scope_recall/doctor_vector.py",
+    "scope_recall/evolution_policy.py",
+    "scope_recall/fact_actions.py",
+    "scope_recall/fact_evidence.py",
+    "scope_recall/fact_temporal_semantics.py",
+    "scope_recall/fact_executor.py",
+    "scope_recall/fact_evolution.py",
+    "scope_recall/fact_tooling.py",
+    "scope_recall/fact_identity.py",
+    "scope_recall/fact_repository.py",
     "scope_recall/freshness.py",
     "scope_recall/lifecycle_policy.py",
     "scope_recall/lifecycle_service.py",
+    "scope_recall/memory_admission.py",
+    "scope_recall/memory_mutation.py",
+    "scope_recall/memory_text_merge.py",
+    "scope_recall/entity_quality.py",
+    "scope_recall/tool_validation.py",
+    "scope_recall/source_isolation.py",
     "scope_recall/governance_scheduler.py",
     "scope_recall/graph_relations.py",
     "scope_recall/graph_hygiene.py",
     "scope_recall/maintenance_ops.py",
+    "scope_recall/maintenance_lease.py",
     "scope_recall/memory_quality.py",
     "scope_recall/task_boundary.py",
+    "scope_recall/temporal_facts.py",
+    "scope_recall/temporal_query.py",
+    "scope_recall/truth_connection.py",
+    "scope_recall/sqlite_schema.py",
+    "scope_recall/reflection.py",
+    "scope_recall/reflection_llm.py",
+    "scope_recall/reflection_grounding.py",
+    "scope_recall/reflection_tooling.py",
     "scope_recall/experience_evidence.py",
     "scope_recall/experience_quality.py",
     "scope_recall/experience_synthesis.py",
@@ -342,6 +425,7 @@ REQUIRED_WHEEL = {
     "scope_recall/docs/governance.cleanup.md",
     "scope_recall/docs/memory-quality-kernel.md",
     "scope_recall/docs/configuration.md",
+    "scope_recall/docs/fact-evolution-architecture.md",
     "scope_recall/docs/event-digest.md",
     "scope_recall/docs/governance-ui.md",
     "scope_recall/docs/install.md",
@@ -352,6 +436,9 @@ REQUIRED_WHEEL = {
     "scope_recall/docs/response-contracts.md",
     f"scope_recall/{RELEASE_READINESS_DOC}",
     "scope_recall/benchmarks/golden_recall_cases.json",
+    "scope_recall/benchmarks/curated_recall_quality_cases_v2.json",
+    "scope_recall/benchmarks/memory_evolution_cases.json",
+    "scope_recall/benchmarks/reflection_cases.json",
     "scope_recall/benchmarks/golden_recall_hybrid_cases.json",
     "scope_recall/benchmarks/experience_replay_cases.json",
     "scope_recall/examples/external_bridge/import.jsonl",
@@ -370,6 +457,9 @@ REQUIRED_WHEEL = {
     "scope_recall/scripts/doctor.py",
     "scope_recall/scripts/experience-replay.py",
     "scope_recall/scripts/benchmark.golden.py",
+    "scope_recall/scripts/benchmark.memory_evolution.py",
+    "scope_recall/scripts/benchmark.reflection.py",
+    "scope_recall/scripts/benchmark.temporal_scale.py",
     "scope_recall/scripts/benchmark.graph_relations.py",
     "scope_recall/scripts/benchmark.retrieval_regression.py",
     "scope_recall/scripts/backfill.graph_relations.py",
@@ -418,6 +508,9 @@ STABLE_TOOL_NAMES = {
     "scope_recall_experience_promote",
     "scope_recall_forgetting_report",
     "scope_recall_forgetting_run",
+    "scope_recall_fact",
+    "scope_recall_evolve",
+    "scope_recall_reflect",
 }
 STABLE_LIFECYCLE_HOOKS = {
     "on_turn_start",
@@ -428,23 +521,26 @@ STABLE_LIFECYCLE_HOOKS = {
 }
 STABLE_PROVIDER_METHODS = STABLE_LIFECYCLE_HOOKS | {"get_config_schema", "get_tool_schemas"}
 REQUIRED_CHANGELOG_TERMS = (
-    "forgetting",
-    "governance",
-    "journal recovery",
-    "dashboard",
-    "experience replay",
-    "installer rollback",
-    "fact freshness",
-    "relation extraction",
-    "golden benchmark",
+    "Fact Evolution",
+    "temporal",
+    "Reflection",
+    "scope routing",
+    "evidence authority",
+    "provenance-root",
+    "idempotency",
+    "journal checkpoint",
+    "release-identity",
 )
 RELEASE_READINESS_LOCAL_STATE_PATTERNS = {
     "embedded_live_snapshot": re.compile(r"current read-only snapshot", re.I),
     "embedded_severity_counter": re.compile(r"\bseverity=(?:ok|degraded|blocked)\b", re.I),
     "embedded_journal_counter": re.compile(r"\bjournal_(?:unprocessed|dead_letter_replay_candidates|llm_quarantine_runs)=", re.I),
     "embedded_dead_letter_counter": re.compile(r"\bdead-letter:[a-z_-]+=", re.I),
-    "embedded_private_path": re.compile(r"(?:^|[\s`'\"])(?:/home/|/Users/|/root/|[A-Za-z]:[\\/](?:Users|Documents)[\\/])"),
+    "embedded_private_path": re.compile(r"(?:^|[\s`'\"])(?:~[/\\]\.hermes-[A-Za-z0-9_.-]+|/home/|/Users/|/root/|[A-Za-z]:[\\/](?:Users|Documents)[\\/])"),
 }
+PRIVATE_TILDE_INSTANCE_HOME_RE = re.compile(
+    r"(?:^|[\s`'\"])~[/\\]\.hermes-[A-Za-z0-9_.-]+"
+)
 
 
 def run(cmd: list[str], *, cwd: pathlib.Path = ROOT, env: dict[str, str] | None = None) -> dict[str, object]:
@@ -455,7 +551,76 @@ def run(cmd: list[str], *, cwd: pathlib.Path = ROOT, env: dict[str, str] | None 
 def fail_if_bad(result: dict[str, object]) -> None:
     if result["returncode"] != 0:
         print(json.dumps(result, ensure_ascii=False, indent=2))
-        raise SystemExit(int(result["returncode"]))
+        returncode = result.get("returncode")
+        raise SystemExit(returncode if isinstance(returncode, int) else 1)
+
+
+def release_invariant_manifest(
+    path: pathlib.Path | None = None,
+) -> dict[str, object]:
+    """Load and fail closed on a malformed invariant-suite manifest."""
+
+    manifest_path = path or RELEASE_INVARIANT_MANIFEST
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or payload.get("schema") != "scope-recall.release-invariants.v1":
+        raise ValueError("release invariant manifest schema is invalid")
+    raw_suites = payload.get("suites")
+    if not isinstance(raw_suites, list) or not raw_suites:
+        raise ValueError("release invariant manifest suites are missing")
+    suite_ids: set[str] = set()
+    seen_nodes: set[str] = set()
+    suites: list[dict[str, object]] = []
+    for raw_suite in raw_suites:
+        if not isinstance(raw_suite, dict):
+            raise ValueError("release invariant suite must be an object")
+        suite_id = str(raw_suite.get("id") or "").strip()
+        if not suite_id or suite_id in suite_ids:
+            raise ValueError("release invariant suite id is empty or duplicated")
+        suite_ids.add(suite_id)
+        raw_nodes = raw_suite.get("nodes")
+        if not isinstance(raw_nodes, list) or not raw_nodes:
+            raise ValueError(f"release invariant suite {suite_id} has no nodes")
+        nodes: list[str] = []
+        for raw_node in raw_nodes:
+            node = str(raw_node or "").strip()
+            if not node.startswith("tests/") or "::test_" not in node:
+                raise ValueError(f"release invariant node is not explicit: {node}")
+            if node in seen_nodes:
+                raise ValueError(f"release invariant node is duplicated: {node}")
+            test_path = ROOT / node.split("::", 1)[0]
+            if not test_path.is_file():
+                raise ValueError(f"release invariant test file is missing: {test_path.name}")
+            seen_nodes.add(node)
+            nodes.append(node)
+        suites.append({"id": suite_id, "nodes": nodes})
+    return {
+        "schema": str(payload["schema"]),
+        "path": str(manifest_path),
+        "suite_count": len(suites),
+        "node_count": len(seen_nodes),
+        "suites": suites,
+    }
+
+
+def release_invariant_command() -> list[str]:
+    manifest = release_invariant_manifest()
+    suites = manifest["suites"]
+    assert isinstance(suites, list)
+    nodes = [
+        str(node)
+        for suite in suites
+        if isinstance(suite, dict)
+        for node in suite.get("nodes", [])
+    ]
+    return [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        *nodes,
+    ]
 
 
 def progress(stage: str) -> None:
@@ -473,6 +638,22 @@ def parse_args() -> argparse.Namespace:
         "--allow-dirty",
         action="store_true",
         help="Allow a dirty/untracked working tree while running development verification. Strict release mode fails dirty trees.",
+    )
+    parser.add_argument(
+        "--development-snapshot",
+        action="store_true",
+        help=(
+            "Allow verification of a development snapshot whose package version is already "
+            "occupied by the latest local release tag. The report remains release_eligible=false."
+        ),
+    )
+    parser.add_argument(
+        "--tagged-release",
+        action="store_true",
+        help=(
+            "Validate an already-created release tag. Requires v<package-version> to point "
+            "at HEAD; intended only for tag-triggered release workflows."
+        ),
     )
     # Accepted for operator compatibility: live doctor checks use this, but the
     # release script intentionally avoids reading the live runtime by default.
@@ -527,6 +708,136 @@ def git_tree_check(*, allow_dirty: bool) -> dict[str, object]:
     }
 
 
+def _release_version_key(value: str) -> tuple[int, int, int] | None:
+    match = re.fullmatch(
+        r"(?:(?:scope-recall-)?v)?"
+        r"(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)",
+        str(value or "").strip(),
+    )
+    if match is None:
+        return None
+    return (
+        int(match.group("major")),
+        int(match.group("minor")),
+        int(match.group("patch")),
+    )
+
+
+def release_version_identity_check(
+    *,
+    development_snapshot: bool = False,
+    tagged_release: bool = False,
+    tags: list[str] | None = None,
+    head_tags: list[str] | None = None,
+) -> dict[str, object]:
+    """Reject reuse of an already tagged release identity.
+
+    The normal path reads local Git tags so CI remains deterministic and offline.
+    Both historical ``vX.Y.Z`` tags and repository-scoped
+    ``scope-recall-vX.Y.Z`` tags occupy the same release identity.
+    Release workflows are expected to fetch tags before invoking this gate.
+    Tests may inject ``tags`` and ``head_tags`` directly.
+    """
+
+    if development_snapshot and tagged_release:
+        return {
+            "ok": False,
+            "release_eligible": False,
+            "error": "development_snapshot and tagged_release are mutually exclusive",
+        }
+
+    try:
+        current_version = str(
+            tomllib.loads(read_text("pyproject.toml"))["project"]["version"]
+        ).strip()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "release_eligible": False,
+            "error": f"unable to read current package version: {exc}",
+        }
+    current_key = _release_version_key(current_version)
+    if current_key is None:
+        return {
+            "ok": False,
+            "release_eligible": False,
+            "current_version": current_version,
+            "error": "current package version is not a strict major.minor.patch release identity",
+        }
+
+    if tags is None:
+        tag_result = run(["git", "tag", "--list"])
+        if tag_result["returncode"] != 0:
+            return {
+                "ok": False,
+                "release_eligible": False,
+                "current_version": current_version,
+                "error": "unable to enumerate local release tags",
+                "tag_result": tag_result,
+            }
+        tag_values = [line.strip() for line in str(tag_result["stdout"]).splitlines()]
+    else:
+        tag_values = [str(tag).strip() for tag in tags]
+
+    parsed_tags = [
+        (key, tag)
+        for tag in tag_values
+        if (key := _release_version_key(tag)) is not None
+    ]
+    latest_key, latest_tag = max(parsed_tags, default=(None, ""))
+    expected_tags = (
+        f"v{current_version}",
+        f"scope-recall-v{current_version}",
+    )
+    expected_tag = expected_tags[0]
+    if tagged_release:
+        if head_tags is None:
+            head_result = run(["git", "tag", "--points-at", "HEAD"])
+            if head_result["returncode"] != 0:
+                return {
+                    "ok": False,
+                    "release_eligible": False,
+                    "current_version": current_version,
+                    "tagged_release": True,
+                    "error": "unable to enumerate tags that point at HEAD",
+                    "head_tag_result": head_result,
+                }
+            head_tag_values = {
+                line.strip()
+                for line in str(head_result["stdout"]).splitlines()
+                if line.strip()
+            }
+        else:
+            head_tag_values = {str(tag).strip() for tag in head_tags if str(tag).strip()}
+        matched_head_tags = [
+            tag
+            for tag in expected_tags
+            if tag in set(tag_values) and tag in head_tag_values
+        ]
+        tagged_head_match = bool(matched_head_tags)
+        if matched_head_tags:
+            expected_tag = matched_head_tags[0]
+        release_eligible = tagged_head_match
+    else:
+        tagged_head_match = False
+        release_eligible = latest_key is None or current_key > latest_key
+    return {
+        "ok": release_eligible or bool(development_snapshot),
+        "release_eligible": release_eligible,
+        "development_snapshot": bool(development_snapshot),
+        "tagged_release": bool(tagged_release),
+        "tagged_head_match": tagged_head_match,
+        "expected_release_tag": expected_tag,
+        "waived_for_development": bool(development_snapshot and not release_eligible),
+        "current_version": current_version,
+        "latest_release_tag": latest_tag,
+        "latest_release_version": (
+            ".".join(str(part) for part in latest_key) if latest_key is not None else ""
+        ),
+        "tag_count": len(parsed_tags),
+    }
+
+
 def _run_golden_benchmark(cases_path: str) -> tuple[dict[str, object], dict[str, object] | None]:
     args = [sys.executable, "scripts/benchmark.golden.py"]
     if cases_path:
@@ -538,6 +849,23 @@ def _run_golden_benchmark(cases_path: str) -> tuple[dict[str, object], dict[str,
         payload = json.loads(str(result["stdout"] or "{}"))
     except json.JSONDecodeError as exc:
         return {"returncode": result.get("returncode"), "error": f"invalid golden benchmark json: {exc}", "result": result}, None
+    return result, payload if isinstance(payload, dict) else None
+
+
+def _run_json_benchmark(
+    script_path: str,
+) -> tuple[dict[str, object], dict[str, object] | None]:
+    result = run([sys.executable, script_path, "--json"])
+    if result["returncode"] != 0:
+        return result, None
+    try:
+        payload = json.loads(str(result["stdout"] or "{}"))
+    except json.JSONDecodeError as exc:
+        return {
+            "returncode": result.get("returncode"),
+            "error": f"invalid benchmark json from {script_path}: {exc}",
+            "result": result,
+        }, None
     return result, payload if isinstance(payload, dict) else None
 
 
@@ -564,7 +892,11 @@ def benchmark_check() -> dict[str, object]:
     for cases_path in ("", "benchmarks/golden_recall_hybrid_cases.json"):
         golden_result, golden_payload = _run_golden_benchmark(cases_path)
         if golden_payload is None:
-            return {"ok": False, "golden_result": golden_result, "cases_path": cases_path or "benchmarks/golden_recall_cases.json"}
+            return {
+                "ok": False,
+                "golden_result": golden_result,
+                "cases_path": cases_path or "benchmarks/curated_recall_quality_cases_v2.json",
+            }
         golden_payloads.append(golden_payload)
 
     graph_result = run([sys.executable, "scripts/benchmark.graph_relations.py"])
@@ -575,9 +907,58 @@ def benchmark_check() -> dict[str, object]:
     except json.JSONDecodeError as exc:
         return {"ok": False, "error": f"invalid graph benchmark json: {exc}", "graph_result": graph_result}
 
-    golden_ok = all(bool(payload.get("passed")) and payload.get("schema_version") == "golden_benchmark_report.v1" for payload in golden_payloads)
+    temporal_result, temporal_payload = _run_json_benchmark(
+        "scripts/benchmark.memory_evolution.py"
+    )
+    if temporal_payload is None:
+        return {"ok": False, "temporal_result": temporal_result}
+    reflection_result, reflection_payload = _run_json_benchmark(
+        "scripts/benchmark.reflection.py"
+    )
+    if reflection_payload is None:
+        return {"ok": False, "reflection_result": reflection_result}
+    scale_result, scale_payload = _run_json_benchmark(
+        "scripts/benchmark.temporal_scale.py"
+    )
+    if scale_payload is None:
+        return {"ok": False, "temporal_scale_result": scale_result}
+
+    expected_golden_profiles = (
+        ("curated_recall_regression_v2", 100),
+        ("recall_smoke_hybrid_vector_v1", 5),
+    )
+    golden_ok = (
+        len(golden_payloads) == len(expected_golden_profiles)
+        and all(
+            bool(payload.get("passed"))
+            and payload.get("schema_version") == "golden_benchmark_report.v1"
+            and payload.get("golden_name") == expected_name
+            and _int_payload_value(payload, "query_count") >= minimum_count
+            for payload, (expected_name, minimum_count) in zip(
+                golden_payloads,
+                expected_golden_profiles,
+                strict=True,
+            )
+        )
+    )
+    temporal_ok = bool(temporal_payload.get("passed")) and temporal_payload.get(
+        "schema_version"
+    ) == "scope-recall.memory-evolution-benchmark.v1"
+    reflection_ok = bool(reflection_payload.get("passed")) and reflection_payload.get(
+        "schema_version"
+    ) == "scope-recall.reflection-benchmark.v3"
+    scale_ok = (
+        bool(scale_payload.get("passed"))
+        and scale_payload.get("schema_version") == "scope-recall.temporal-scale.v2"
+        and scale_payload.get("sizes") == [100_000, 1_000_000]
+        and _int_payload_value(scale_payload, "rounds_per_query") >= 30
+    )
     return {
-        "ok": golden_ok and bool(graph_payload.get("passed")),
+        "ok": golden_ok
+        and bool(graph_payload.get("passed"))
+        and temporal_ok
+        and reflection_ok
+        and scale_ok,
         "schema_version": golden_payloads[0].get("schema_version"),
         "golden_profiles": [
             {
@@ -593,6 +974,9 @@ def benchmark_check() -> dict[str, object]:
         "failures": [failure for payload in golden_payloads for failure in _payload_failures(payload)],
         "graph_name": graph_payload.get("benchmark_name"),
         "graph_metrics": graph_payload.get("metrics"),
+        "temporal_evolution_metrics": temporal_payload.get("metrics"),
+        "reflection_metrics": reflection_payload.get("metrics"),
+        "temporal_scale_metrics": scale_payload,
     }
 
 
@@ -832,17 +1216,27 @@ def schema_constant_tool_names() -> dict[str, str]:
     tree = ast.parse(read_text("schemas.py"), filename="schemas.py")
     names: dict[str, str] = {}
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Dict):
             continue
-        try:
-            value = ast.literal_eval(node.value)
-        except (TypeError, ValueError, SyntaxError):
-            continue
-        if not isinstance(value, dict) or not isinstance(value.get("name"), str):
+        tool_name = ""
+        for key_node, value_node in zip(
+            node.value.keys,
+            node.value.values,
+            strict=False,
+        ):
+            if (
+                isinstance(key_node, ast.Constant)
+                and key_node.value == "name"
+                and isinstance(value_node, ast.Constant)
+                and isinstance(value_node.value, str)
+            ):
+                tool_name = str(value_node.value)
+                break
+        if not tool_name:
             continue
         for target in node.targets:
             if isinstance(target, ast.Name) and target.id.startswith("SCOPE_RECALL_") and target.id.endswith("_SCHEMA"):
-                names[target.id] = str(value["name"])
+                names[target.id] = tool_name
     return names
 
 
@@ -1450,7 +1844,11 @@ def _scan_sensitive_text(rel: pathlib.Path, text: str, *, display_path: str = ""
     private_path_lines = [
         line_no
         for line_no, line in enumerate(lines, 1)
-        if any(marker in line for marker in private_markers) and not _is_synthetic_test_fixture_line(rel, line)
+        if (
+            any(marker in line for marker in private_markers)
+            or PRIVATE_TILDE_INSTANCE_HOME_RE.search(line)
+        )
+        and not _is_synthetic_test_fixture_line(rel, line)
     ]
     if private_path_lines:
         findings["private_paths"].append(f"{label}:{private_path_lines[0]}")
@@ -1847,6 +2245,11 @@ def main() -> int:
     git_tree = git_tree_check(allow_dirty=bool(args.allow_dirty))
     progress("metadata:start")
     metadata = metadata_check()
+    progress("release_identity:start")
+    release_identity = release_version_identity_check(
+        development_snapshot=bool(getattr(args, "development_snapshot", False)),
+        tagged_release=bool(getattr(args, "tagged_release", False)),
+    )
     progress("live_dashboard:start")
     live_dashboard = live_dashboard_file_check(str(args.live_dashboard_json or ""), accept_stale=bool(args.accept_stale_live_waiver))
     # Scan release source before the multi-minute test/build stages. A known
@@ -1860,6 +2263,8 @@ def main() -> int:
         preflight_failures["git_tree"] = git_tree
     if not metadata["ok"]:
         preflight_failures["metadata"] = metadata
+    if not release_identity["ok"]:
+        preflight_failures["release_identity"] = release_identity
     if not live_dashboard["ok"]:
         preflight_failures["live_dashboard"] = live_dashboard
     if blocking_scan:
@@ -1872,6 +2277,7 @@ def main() -> int:
                     "ok": False,
                     "environment": environment,
                     "failures": preflight_failures,
+                    "release_identity": release_identity,
                     "live_dashboard": live_dashboard,
                 },
                 ensure_ascii=False,
@@ -1882,6 +2288,7 @@ def main() -> int:
     for stage, cmd in (
         ("ruff", [sys.executable, "-m", "ruff", "check", "."]),
         ("pyright", [sys.executable, "-m", "pyright"]),
+        ("release_invariants", release_invariant_command()),
         ("pytest", [sys.executable, "-m", "pytest", "-q"]),
         ("compileall", [sys.executable, "-m", "compileall", "-q", "."]),
     ):
@@ -1905,6 +2312,7 @@ def main() -> int:
                 "environment": environment,
                 "git_tree": git_tree,
                 "metadata": metadata,
+                "release_identity": release_identity,
                 "benchmark": benchmark,
                 "wheel": wheel,
                 "scan": scan,

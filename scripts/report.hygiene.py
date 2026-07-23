@@ -31,6 +31,7 @@ if PACKAGE_NAME not in sys.modules:
     spec.loader.exec_module(package)
 
 from scope_recall_hygiene_runtime.hygiene import build_hygiene_report  # noqa: E402
+from scope_recall_hygiene_runtime.truth_connection import connect_truth_database  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -196,8 +197,7 @@ def main() -> int:
         return 1
     backend = normalize_backend(args.vector_backend)
     vector_store, vector_source = resolve_vector_source(db_path, backend=backend, vector_dir=str(args.vector_dir or ""), table_name=str(args.vector_table or "memories"))
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
+    conn = connect_truth_database(db_path, mode="ro")
     try:
         report = build_hygiene_report(conn, vector_store=vector_store, limit=args.limit)
         report["vector_report_source"] = vector_source

@@ -30,19 +30,18 @@ if PACKAGE_NAME not in sys.modules:
 from scope_recall_vector_migration_runtime.capture_filters import sanitize_report_text  # noqa: E402
 from scope_recall_vector_migration_runtime.config import load_runtime_config  # noqa: E402
 from scope_recall_vector_migration_runtime.embedders import build_embedder  # noqa: E402
-from scope_recall_vector_migration_runtime.sql_store import ensure_schema  # noqa: E402
+from scope_recall_vector_migration_runtime.truth_connection import connect_truth_database  # noqa: E402
 from scope_recall_vector_migration_runtime.vector_generation import (  # noqa: E402
     GenerationCompatibilityError,
     GenerationIdentity,
-    bootstrap_legacy_generation,
-    current_generation_id,
     generation_manifest,
+    retire_ready_generation,
 )
 from scope_recall_vector_migration_runtime.vector_migration import (  # noqa: E402
     build_vector_generation,
     plan_vector_generation,
 )
-from scope_recall_vector_migration_runtime.vector_store import build_vector_store, normalize_vector_backend  # noqa: E402
+from scope_recall_vector_migration_runtime.vector_store import normalize_vector_backend  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -65,6 +64,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--activate", action="store_true", help="Activate immediately only when runtime config already identifies this space")
     parser.add_argument("--activate-existing-ready", action="store_true")
+    parser.add_argument(
+        "--retire-existing-ready",
+        action="store_true",
+        help="CAS-retire a non-current READY generation; requires --generation-id and --expected-current",
+    )
+    parser.add_argument(
+        "--retirement-reason",
+        default="operator-retired-ready-generation",
+        help="Audited, sanitized reason stored in generation metadata",
+    )
     parser.add_argument("--json", action="store_true")
     return parser.parse_args()
 
@@ -88,6 +97,75 @@ def _generation_id(identity: GenerationIdentity) -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     model = "".join(char if char.isalnum() else "-" for char in identity.model).strip("-")[:40]
     return f"gen-{stamp}-{model}-{identity.fingerprint[:8]}"
+
+
+
+def _read_generation_manifest(conn: sqlite3.Connection, generation_id: str) -> dict[str, Any] | None:
+    """Read one manifest without initializing or migrating schema."""
+
+    table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vector_generations'"
+    ).fetchone()
+    if table is None:
+        return None
+    row = conn.execute(
+        "SELECT * FROM vector_generations WHERE generation_id = ?",
+        (generation_id,),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+
+def _read_current_generation_id(conn: sqlite3.Connection) -> str:
+    """Read the pointer without initializing or migrating schema."""
+
+    table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vector_generation_state'"
+    ).fetchone()
+    if table is None:
+        return ""
+    row = conn.execute(
+        "SELECT value FROM vector_generation_state WHERE key = 'current_generation'"
+    ).fetchone()
+    return str(row[0] or "") if row else ""
+
+
+
+def _plan_generation_retirement(
+    conn: sqlite3.Connection,
+    *,
+    generation_id: str,
+    expected_current: str,
+) -> dict[str, Any]:
+    actual_current = _read_current_generation_id(conn)
+    if actual_current != expected_current:
+        raise GenerationCompatibilityError(
+            "current generation CAS conflict before retirement: "
+            f"expected {expected_current!r}, actual {actual_current!r}"
+        )
+    if generation_id == actual_current:
+        raise GenerationCompatibilityError("refusing to retire the current generation")
+    manifest = _read_generation_manifest(conn, generation_id)
+    if manifest is None:
+        raise GenerationCompatibilityError(f"generation not found: {generation_id}")
+    status = str(manifest.get("status") or "").strip().lower()
+    if status != "ready":
+        raise GenerationCompatibilityError(
+            f"generation {generation_id} is {status!r}, expected 'ready'"
+        )
+    return {
+        "ok": True,
+        "status": "planned",
+        "dry_run": True,
+        "generation_id": generation_id,
+        "from_status": "ready",
+        "to_status": "retired",
+        "current_generation_id": actual_current,
+        "storage_path": str(manifest.get("storage_path") or ""),
+        "physical_storage_retained": True,
+        "writes": [],
+    }
+
 
 
 def _target_config(config: dict[str, Any], args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -116,55 +194,112 @@ def _target_config(config: dict[str, Any], args: argparse.Namespace) -> tuple[di
     return vector_config, retrieval_config, embedder_config
 
 
-def _bootstrap_current_if_needed(
-    conn: sqlite3.Connection,
-    *,
-    storage_dir: Path,
-    runtime_vector_config: dict[str, Any],
-    runtime_retrieval_config: dict[str, Any],
-) -> str:
-    ensure_schema(conn)
-    current = current_generation_id(conn)
-    if current:
-        return current
-    current_embedder_config = dict(runtime_vector_config.get("embedder") or {})
-    current_embedder = build_embedder(current_embedder_config)
-    identity = _identity(runtime_vector_config, runtime_retrieval_config, current_embedder, current_embedder_config)
-    store = build_vector_store(
-        identity.backend,
-        storage_dir=storage_dir,
-        table_name=identity.table_name,
-        dimensions=identity.dimensions,
-        metric=identity.metric,
-        config=runtime_vector_config,
-    )
-    if not store.is_available():
-        raise RuntimeError(f"cannot inspect legacy vector backend: {identity.backend}")
-    try:
-        store.open()
-        audit = store.audit_counts()
-    finally:
-        store.close()
-    manifest = bootstrap_legacy_generation(
-        conn,
-        identity=identity,
-        storage_path=".",
-        row_count=int(audit.get("physical_rows") or 0),
-        unique_id_count=int(audit.get("unique_ids") or 0),
-        config_hash=identity.fingerprint,
-    )
-    conn.commit()
-    return str(manifest["generation_id"])
-
-
 def main() -> int:
     args = parse_args()
     hermes_home = Path(args.hermes_home).expanduser().resolve()
     storage_dir = hermes_home / "scope-recall"
     db_path = storage_dir / "memory.sqlite3"
     if not db_path.is_file():
-        print(json.dumps({"ok": False, "status": "blocked", "error": f"SQLite truth DB not found: {db_path}"}, ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                {"ok": False, "status": "blocked", "error": f"SQLite truth DB not found: {db_path}"},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return 2
+    if args.retire_existing_ready:
+        generation_id = str(args.generation_id or "").strip()
+        expected_current = str(args.expected_current or "").strip()
+        if not generation_id or not expected_current:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "status": "blocked",
+                        "error": "--retire-existing-ready requires --generation-id and --expected-current",
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 2
+        if args.activate or args.activate_existing_ready:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "status": "blocked",
+                        "generation_id": generation_id,
+                        "error": "retirement cannot be combined with activation",
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 2
+        if args.apply and args.dry_run:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "status": "blocked",
+                        "generation_id": generation_id,
+                        "error": "choose either retirement dry-run or --apply, not both",
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 2
+        conn = connect_truth_database(db_path, mode="rw" if args.apply else "ro")
+        try:
+            plan = _plan_generation_retirement(
+                conn,
+                generation_id=generation_id,
+                expected_current=expected_current,
+            )
+            if not args.apply:
+                print(json.dumps(plan, ensure_ascii=False, indent=2, sort_keys=True))
+                return 0
+            retired = retire_ready_generation(
+                conn,
+                generation_id,
+                expected_current=expected_current,
+                reason=str(args.retirement_reason or ""),
+            )
+            conn.commit()
+            payload = {
+                **plan,
+                "status": "retired",
+                "dry_run": False,
+                "retired_at": str(retired.get("updated_at") or ""),
+                "writes": ["vector_generations.status", "vector_generations.metadata"],
+            }
+            print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+            return 0
+        except Exception as exc:
+            conn.rollback()
+            safe_error = sanitize_report_text(str(exc)) or "vector generation retirement failed"
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "status": "blocked",
+                        "generation_id": generation_id,
+                        "error": safe_error,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 2
+        finally:
+            conn.close()
     config = load_runtime_config(PLUGIN_ROOT, storage_dir)
     runtime_vector_config = dict(config.get("vector") or {})
     runtime_retrieval_config = dict(config.get("retrieval") or {})
@@ -173,8 +308,8 @@ def main() -> int:
     target_identity = _identity(vector_config, retrieval_config, embedder, embedder_config)
     generation_id = str(args.generation_id or _generation_id(target_identity))
 
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    writes_truth = bool(args.apply or args.activate_existing_ready)
+    conn = connect_truth_database(db_path, mode="rw" if writes_truth else "ro")
     try:
         if not args.apply and not args.activate_existing_ready:
             payload = plan_vector_generation(
@@ -188,12 +323,7 @@ def main() -> int:
             print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
             return 0
 
-        current_id = _bootstrap_current_if_needed(
-            conn,
-            storage_dir=storage_dir,
-            runtime_vector_config=runtime_vector_config,
-            runtime_retrieval_config=runtime_retrieval_config,
-        )
+        current_id = _read_current_generation_id(conn)
         expected_current = str(args.expected_current or current_id)
         if args.activate or args.activate_existing_ready:
             runtime_embedder_config = dict(runtime_vector_config.get("embedder") or {})

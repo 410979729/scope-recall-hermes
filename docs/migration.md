@@ -16,6 +16,16 @@ hermes-scope-recall migrate status --hermes-home /path/to/hermes-profile
 
 The status command opens the SQLite truth DB read-only (`mode=ro` + `PRAGMA query_only=ON`) and reports `schema_migrations`, `user_version`, and missing baseline metadata. Use `scripts/doctor.py` or installer runtime verify for the broader health view.
 
+The unreleased 1.8.0 schema adds append-only migration receipts including:
+
+- `0007_relation_frequency_index_v1_8_0` creates incremental relation postings/counts plus resumable backfill and reclassification state. Existing truth is not parsed in the migration transaction; background maintenance advances a bounded cursor.
+- `0008_relation_rebuild_progress_v1_8_0` adds lifetime/pass counters and next-revision handoff. Existing `processed_pairs` is preserved when upgrading the queue.
+- `0009_vector_reconciliation_watermark_v1_8_0` adds a generation-bound `(updated_at, id)` startup reconciliation cursor and cycle upper bound. It creates no vector rows and performs no full vector scan.
+- `0010_relation_rebuild_lease_expiry_budget_v1_8_0` adds bounded relation-rebuild lease expiry and work-budget state.
+- `0011_relation_frequency_failure_queue_v1_8_0` adds per-memory retry/dead-letter evidence so one malformed relation-frequency dirty row cannot block healthy rows in the same maintenance batch.
+
+These companions are rebuildable, but their debt is explicit. Until legacy relation backfill completes, foreground relation synchronization defers to the queue rather than computing an unbounded scope scan. Vector outbox replay always precedes truth-page reconciliation.
+
 ### 0. Legacy raw/general/scratch hygiene inside an existing `scope-recall` SQLite store
 
 Use this when an older pre-journal or experimental `scope-recall` database already contains raw `general` scratch rows or durable rows with incomplete governance metadata.
@@ -151,7 +161,7 @@ The importer is intentionally conservative:
 - uses stable source fingerprints so repeated runs are idempotent
 - enforces a target/category allowlist (`memory`, `ops`, `project`, `user` by default)
 - rejects raw role-prefix transcripts even when they claim a durable target
-- blocks apply when secret-like, path-like, or template-like content/metadata is detected
+- blocks apply when secret-like, path-like, or template-like content/metadata is detected; the authoritative SQLite store/update helpers also reject new plaintext secret-like content as defense in depth
 - stores source metadata only after recursive redaction
 - creates a unique online SQLite backup before applying to an existing target DB
 - can write an import receipt JSON via `--receipt <path>` containing inserted/skipped row ids, fingerprints, backup checksum, lint/rejection details, and graph/vector repair guidance

@@ -21,9 +21,11 @@ from .nightly_digest import (
     MessageRecord,
     ScopeProfile,
     SessionBundle,
+    _existing_context_target_ids,
+    _existing_context_target_ids_by_scope,
+    _parse_llm_candidates_with_status,
     build_prompt,
     existing_memory_context,
-    _parse_llm_candidates_with_status,
     resolve_llm_config,
     session_chunks,
 )
@@ -43,11 +45,20 @@ __all__ = [
 
 
 class JournalCandidateList(list[JournalDigestCandidate]):
-    """List result carrying non-fatal LLM extraction status counts for receipts."""
+    """Candidates plus chunk-level review/checkpoint provenance."""
 
-    def __init__(self, values: list[JournalDigestCandidate], *, extractor_status_counts: Counter[str] | None = None) -> None:
+    def __init__(
+        self,
+        values: list[JournalDigestCandidate],
+        *,
+        extractor_status_counts: Counter[str] | None = None,
+        reviewed_entry_ids: set[int] | None = None,
+        unresolved_entry_ids: set[int] | None = None,
+    ) -> None:
         super().__init__(values)
         self.extractor_status_counts = Counter(extractor_status_counts or {})
+        self.reviewed_entry_ids = set(reviewed_entry_ids or set())
+        self.unresolved_entry_ids = set(unresolved_entry_ids or set())
 
 
 def _parse_entry_timestamp(value: str) -> float:
@@ -135,11 +146,29 @@ def _journal_from_digest_candidate(candidate: Any) -> JournalDigestCandidate:
         reason=str(candidate.reason or "llm journal digest extraction"),
         entry_ids=[int(item) for item in list(candidate.message_ids or [])],
         session_ids=[str(candidate.session_id)] if getattr(candidate, "session_id", "") else [],
+        evolution=getattr(candidate, "evolution", None),
     )
 
 
-def _parse_journal_llm_candidates(raw: str, *, bundle: SessionBundle) -> tuple[list[Any], str]:
-    candidates, status = _parse_llm_candidates_with_status(raw, bundle=bundle)
+def _parse_journal_llm_candidates(
+    raw: str,
+    *,
+    bundle: SessionBundle,
+    scope_id: str = "",
+    shared_scope_id: str = "",
+    allowed_target_ids: set[str] | None = None,
+    allowed_target_ids_by_scope: dict[str, set[str]] | None = None,
+    allowed_message_ids: set[int] | None = None,
+) -> tuple[list[Any], str]:
+    candidates, status = _parse_llm_candidates_with_status(
+        raw,
+        bundle=bundle,
+        scope_id=scope_id,
+        shared_scope_id=shared_scope_id,
+        allowed_target_ids=allowed_target_ids,
+        allowed_target_ids_by_scope=allowed_target_ids_by_scope,
+        allowed_message_ids=allowed_message_ids,
+    )
     if status == "parsed":
         return candidates, status
     if status in {"empty", "explicit_skip", "filtered"}:
@@ -227,41 +256,72 @@ def llm_journal_candidates(
         accessible_scope_ids=accessible_scope_ids(active_scope, runtime_config),
     )
     existing = existing_memory_context(conn, profile)
+    allowed_target_ids = _existing_context_target_ids(existing)
+    allowed_target_ids_by_scope = _existing_context_target_ids_by_scope(conn, profile)
     output: list[JournalDigestCandidate] = []
+    reviewed_entry_ids: set[int] = set()
+    unresolved_entry_ids: set[int] = set()
     max_attempts = _coerce_positive_int(journal_config.get("llm_max_attempts") or journal_config.get("llm_retry_attempts"), 3)
     retry_delay = _coerce_nonnegative_float(journal_config.get("llm_retry_delay"), 1.0)
-    parse_errors: list[JournalDigestLLMError] = []
+    chunk_errors: list[JournalDigestLLMError] = []
     extractor_status_counts: Counter[str] = Counter()
     attempted_chunks = 0
-    for bundle in _journal_session_bundles(entries):
+    bundles = _journal_session_bundles(entries)
+    exposed_entry_ids = {
+        int(message.id)
+        for bundle in bundles
+        for message in bundle.messages
+    }
+    reviewed_entry_ids.update(
+        int(entry.id) for entry in entries if int(entry.id) not in exposed_entry_ids
+    )
+    for bundle in bundles:
         if bundle.source == "journal-tool-only":
             continue
         bundle_candidates: list[Any] = []
         for chunk in session_chunks(bundle, chunk_chars=options.chunk_chars, max_session_chars=options.max_session_chars):
             attempted_chunks += 1
+            chunk_ids = set(chunk.message_ids)
             prompt = build_prompt(bundle, chunk, existing)
-            raw = _call_llm_with_retries(
-                prompt,
-                model=llm_config["model"],
-                base_url=llm_config["base_url"],
-                api_key=llm_config["api_key"],
-                timeout=options.timeout,
-                api_mode=llm_config.get("api_mode", "chat_completions"),
-                endpoint=str(llm_config.get("endpoint") or ""),
-                append_v1=bool(llm_config.get("append_v1", True)),
-                max_attempts=max_attempts,
-                retry_delay=retry_delay,
-            )
             try:
-                parsed_candidates, parser_status = _parse_journal_llm_candidates(raw, bundle=bundle)
+                raw = _call_llm_with_retries(
+                    prompt,
+                    model=llm_config["model"],
+                    base_url=llm_config["base_url"],
+                    api_key=llm_config["api_key"],
+                    timeout=options.timeout,
+                    api_mode=llm_config.get("api_mode", "chat_completions"),
+                    endpoint=str(llm_config.get("endpoint") or ""),
+                    append_v1=bool(llm_config.get("append_v1", True)),
+                    max_attempts=max_attempts,
+                    retry_delay=retry_delay,
+                )
+                parsed_candidates, parser_status = _parse_journal_llm_candidates(
+                    raw,
+                    bundle=bundle,
+                    scope_id=profile.scope_id,
+                    shared_scope_id=profile.shared_scope_id,
+                    allowed_target_ids=allowed_target_ids,
+                    allowed_target_ids_by_scope=allowed_target_ids_by_scope,
+                    allowed_message_ids=chunk_ids,
+                )
                 extractor_status_counts[parser_status] += 1
+                if parser_status == "explicit_skip":
+                    reviewed_entry_ids.update(chunk_ids)
+                elif parser_status in {"empty", "filtered"}:
+                    unresolved_entry_ids.update(chunk_ids)
                 bundle_candidates.extend(parsed_candidates)
             except JournalDigestLLMError as exc:
-                if exc.error_kind != "parse":
-                    raise
-                parse_errors.append(exc)
+                chunk_errors.append(exc)
+                extractor_status_counts[exc.error_kind or "error"] += 1
+                unresolved_entry_ids.update(chunk_ids)
                 continue
         output.extend(_journal_from_digest_candidate(candidate) for candidate in bundle_candidates)
-    if parse_errors and attempted_chunks == len(parse_errors) and not output:
-        raise parse_errors[0]
-    return JournalCandidateList([candidate for candidate in output if candidate.entry_ids], extractor_status_counts=extractor_status_counts)
+    if chunk_errors and attempted_chunks == len(chunk_errors) and not output:
+        raise chunk_errors[0]
+    return JournalCandidateList(
+        [candidate for candidate in output if candidate.entry_ids],
+        extractor_status_counts=extractor_status_counts,
+        reviewed_entry_ids=reviewed_entry_ids,
+        unresolved_entry_ids=unresolved_entry_ids,
+    )

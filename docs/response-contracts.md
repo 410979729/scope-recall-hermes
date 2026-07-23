@@ -41,6 +41,17 @@ These versions are lightweight response-contract identifiers, not full JSON Sche
   - Required top-level keys: `schema_version`, `dry_run`, `batch_id`, `archived`, `deleted`, `review_debt`, `archive_ids`, `delete_ids`
   - Purpose: dry-run/apply result for forgetting maintenance actions.
 
+## Tool argument failures
+
+Direct provider calls and platform-dispatched calls enforce the same declared tool parameter schemas before a handler can coerce, query, or persist input. Validation failures return:
+
+- `error`: a stable field-oriented message that does not include the rejected value;
+- `invalid_arguments: true`;
+- `field`: the dotted field path (or `$` for the root object);
+- `constraint`: the failed JSON Schema keyword such as `required`, `type`, `enum`, `minimum`, `maximum`, `maxLength`, or `maxItems`.
+
+This is an additive error contract. Callers should branch on `invalid_arguments`, `field`, and `constraint` rather than parsing prose.
+
 ## Implementation anchor
 
 The canonical constants live in `response_schemas.py`:

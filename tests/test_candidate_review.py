@@ -11,6 +11,7 @@ from pathlib import Path
 import scope_recall.cli as cli
 from scope_recall.candidate_review import review_candidate
 from scope_recall.sql_store import ensure_schema, store_row
+from scope_recall.vector_generation import GenerationIdentity, bootstrap_legacy_generation
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PLUGIN_ROOT / "scripts" / "candidate.review.py"
@@ -124,6 +125,22 @@ def test_candidate_review_apply_archives_and_writes_audit_event(tmp_path: Path):
         vector.commit()
     finally:
         vector.close()
+    truth = sqlite3.connect(db_path)
+    truth.row_factory = sqlite3.Row
+    try:
+        bootstrap_legacy_generation(
+            truth,
+            identity=GenerationIdentity(
+                backend="sqlite-bruteforce",
+                provider="local-hash",
+                model="hash-v1",
+                dimensions=256,
+            ),
+            row_count=1,
+        )
+        truth.commit()
+    finally:
+        truth.close()
 
     result = _run_review("archive", "--db", str(db_path), "--id", "candidate-1", "--apply", "--json")
 
@@ -133,14 +150,16 @@ def test_candidate_review_apply_archives_and_writes_audit_event(tmp_path: Path):
     assert payload["dry_run"] is False
     assert payload["applied"] is True
     assert payload["vector_cleanup"] == {
-        "status": "ok",
-        "backend": "sqlite-bruteforce",
+        "status": "queued",
+        "executor": "vector_outbox",
         "requested": 1,
-        "deleted": 1,
+        "deleted": 0,
     }
     vector = sqlite3.connect(tmp_path / "vector.sqlite3")
     try:
-        assert vector.execute("SELECT COUNT(*) FROM vector_records WHERE id='candidate-1'").fetchone()[0] == 0
+        # Governance commands must not perform a stale post-commit physical
+        # delete. The causal outbox owns companion mutation and may replay later.
+        assert vector.execute("SELECT COUNT(*) FROM vector_records WHERE id='candidate-1'").fetchone()[0] == 1
     finally:
         vector.close()
     metadata = _metadata(db_path, "candidate-1")
@@ -149,9 +168,13 @@ def test_candidate_review_apply_archives_and_writes_audit_event(tmp_path: Path):
     conn = sqlite3.connect(db_path)
     try:
         audit_count = conn.execute("SELECT COUNT(*) FROM governance_audit_events WHERE event_type = 'memory_candidate_review'").fetchone()[0]
+        outbox = conn.execute(
+            "SELECT operation, status FROM vector_outbox WHERE memory_id='candidate-1' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
     finally:
         conn.close()
     assert audit_count == 1
+    assert outbox == ("delete", "pending")
 
 
 def test_candidate_review_supersede_requires_existing_replacement(tmp_path: Path):

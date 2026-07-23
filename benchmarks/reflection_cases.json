@@ -1,0 +1,169 @@
+{
+  "schema_version": "scope-recall.reflection-benchmark.v3",
+  "thresholds": {
+    "citation_validity_rate": 1.0,
+    "observation_inference_separation_rate": 1.0,
+    "grounded_candidate_rate": 1.0,
+    "max_write_delta": 0,
+    "unknown_reference_rejection_rate": 1.0,
+    "require_unsupported_answer_rejection": true,
+    "require_fenced_json_rejection": true,
+    "minimum_valid_response_count": 8,
+    "semantic_adversarial_rejection_rate": 1.0,
+    "semantic_positive_acceptance_rate": 1.0
+  },
+  "valid_responses": [
+    {
+      "id": "grounded-current",
+      "payload": {
+        "observations": [
+          {
+            "text": "Aurora uses PostgreSQL.",
+            "citations": ["memory:one"]
+          }
+        ],
+        "inferences": [
+          {
+            "text": "The storage and deployment choices belong to one project context.",
+            "citations": ["memory:one", "memory:two"]
+          }
+        ],
+        "uncertainties": [
+          {
+            "text": "No production cutover state is present in this fixture.",
+            "citations": ["memory:two"]
+          }
+        ],
+        "answer": "Aurora uses PostgreSQL and is deployed in eu-west-1.",
+        "citations": ["memory:one", "memory:two"],
+        "followup_queries": []
+      }
+    },
+    {
+      "id": "grounded-followup",
+      "payload": {
+        "observations": [
+          {
+            "text": "The deployment region is eu-west-1.",
+            "citations": ["memory:two"]
+          }
+        ],
+        "inferences": [],
+        "uncertainties": [],
+        "answer": "The available evidence identifies eu-west-1.",
+        "citations": ["memory:two"],
+        "followup_queries": ["Aurora database"]
+      }
+    },
+    {
+      "id": "grounded-role-order",
+      "payload": {
+        "observations": [
+          {
+            "text": "Alice manages Bob.",
+            "citations": ["memory:three"]
+          }
+        ],
+        "inferences": [],
+        "uncertainties": [],
+        "answer": "Alice manages Bob.",
+        "citations": ["memory:three"],
+        "followup_queries": []
+      }
+    },
+    {
+      "id": "grounded-negative-polarity",
+      "payload": {
+        "observations": [
+          {
+            "text": "Project Borealis does not use PostgreSQL.",
+            "citations": ["memory:four"]
+          }
+        ],
+        "inferences": [],
+        "uncertainties": [],
+        "answer": "Project Borealis does not use PostgreSQL.",
+        "citations": ["memory:four"],
+        "followup_queries": []
+      }
+    },
+    {
+      "id": "grounded-temporal-order",
+      "payload": {
+        "observations": [
+          {
+            "text": "Migration Alpha happens before Migration Beta.",
+            "citations": ["memory:five"]
+          }
+        ],
+        "inferences": [],
+        "uncertainties": [],
+        "answer": "Migration Alpha happens before Migration Beta.",
+        "citations": ["memory:five"],
+        "followup_queries": []
+      }
+    },
+    {
+      "id": "grounded-conditional-modal",
+      "payload": {
+        "observations": [
+          {
+            "text": "If canary verification passes, production rollout may begin.",
+            "citations": ["memory:six"]
+          }
+        ],
+        "inferences": [],
+        "uncertainties": [],
+        "answer": "If canary verification passes, production rollout may begin.",
+        "citations": ["memory:six"],
+        "followup_queries": []
+      }
+    },
+    {
+      "id": "grounded-quantifier",
+      "payload": {
+        "observations": [
+          {
+            "text": "Every Aurora deployment uses signed artifacts.",
+            "citations": ["memory:seven"]
+          }
+        ],
+        "inferences": [],
+        "uncertainties": [],
+        "answer": "Every Aurora deployment uses signed artifacts.",
+        "citations": ["memory:seven"],
+        "followup_queries": []
+      }
+    },
+    {
+      "id": "grounded-historical",
+      "payload": {
+        "observations": [
+          {
+            "text": "Project Borealis previously used MySQL.",
+            "citations": ["memory:eight"]
+          }
+        ],
+        "inferences": [],
+        "uncertainties": [],
+        "answer": "Project Borealis previously used MySQL.",
+        "citations": ["memory:eight"],
+        "followup_queries": []
+      }
+    }
+  ],
+  "invalid_responses": [
+    {
+      "id": "unknown-top-level-citation",
+      "mutation": "unknown_top_level"
+    },
+    {
+      "id": "unknown-statement-citation",
+      "mutation": "unknown_statement"
+    },
+    {
+      "id": "markdown-fence",
+      "mutation": "markdown_fence"
+    }
+  ]
+}

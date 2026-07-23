@@ -37,6 +37,9 @@ from scope_recall_graph_backfill_runtime.graph_relations import (  # noqa: E402
     backfill_supersedes_from_metadata,
     graph_relation_stats,
 )
+from scope_recall_graph_backfill_runtime.truth_connection import (  # noqa: E402
+    connect_truth_database,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -60,12 +63,7 @@ def _db_path(args: argparse.Namespace) -> Path:
 
 
 def _connect(path: Path, *, read_only: bool = False) -> sqlite3.Connection:
-    if read_only:
-        conn = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
-    else:
-        conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return connect_truth_database(path, mode="ro" if read_only else "rw")
 
 
 def main() -> int:

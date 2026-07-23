@@ -95,16 +95,17 @@ def test_save_config_bootstraps_empty_sqlite_schema(tmp_path):
 def test_save_config_bootstrap_uses_sqlite_busy_timeout(tmp_path, monkeypatch):
     plugin = load_memory_provider("scope-recall")
     assert plugin is not None
-    import scope_recall.provider as provider_module
+    import scope_recall.truth_connection as truth_connection_module
 
-    real_connect = provider_module.sqlite3.connect
+    real_connect = truth_connection_module.sqlite3.connect
     connect_calls: list[dict[str, object]] = []
 
     def capturing_connect(database, *args, **kwargs):
-        connect_calls.append({"database": Path(database).name, "timeout": kwargs.get("timeout")})
+        database_path = str(database).split("?", 1)[0].removeprefix("file:")
+        connect_calls.append({"database": Path(database_path).name, "timeout": kwargs.get("timeout")})
         return real_connect(database, *args, **kwargs)
 
-    monkeypatch.setattr(provider_module.sqlite3, "connect", capturing_connect)
+    monkeypatch.setattr(truth_connection_module.sqlite3, "connect", capturing_connect)
 
     plugin.save_config({"vector": {"enabled": False}}, str(tmp_path))
 
@@ -118,6 +119,18 @@ def test_initialize_sets_sqlite_busy_timeout(provider):
         timeout_ms = provider._require_conn().execute("PRAGMA busy_timeout").fetchone()[0]
 
     assert timeout_ms >= 10_000
+
+
+def test_provider_initial_and_reconnected_writer_keep_foreign_keys_enabled(provider, monkeypatch):
+    assert int(provider._require_conn().execute("PRAGMA foreign_keys").fetchone()[0]) == 1
+
+    probes = iter((False, True))
+    monkeypatch.setattr(provider, "_sqlite_write_probe", lambda _conn: next(probes))
+    receipt = provider._recover_sqlite_connection_after_error("audit forced reconnect")
+
+    assert receipt["reopened"] is True
+    assert receipt["recovered"] is True
+    assert int(provider._require_conn().execute("PRAGMA foreign_keys").fetchone()[0]) == 1
 
 
 def test_provider_store_rolls_back_open_sqlite_transaction(provider, monkeypatch):
@@ -303,18 +316,36 @@ def test_relation_store_failure_rolls_back_open_sqlite_transaction(provider, mon
 
     monkeypatch.setitem(provider._config, "relation_extraction_enabled", True)
     monkeypatch.setitem(memory_ops_globals, "sync_extracted_relations_for_memory", broken_relation_sync)
+    conn = provider._require_conn()
+    before = {
+        "memories": int(conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]),
+        "fts": int(conn.execute("SELECT COUNT(*) FROM memories_fts").fetchone()[0]),
+        "entities": int(conn.execute("SELECT COUNT(*) FROM memory_entities").fetchone()[0]),
+        "outbox": int(conn.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0]),
+    }
 
-    memory_id, inserted, outcome = provider._store_now(
-        content="rollback regression content for relation store exception",
-        source="tool-store",
-        target="ops",
-        session_id=provider._session_id,
-        allow_duplicate=True,
+    with pytest.raises(RuntimeError, match="synthetic relation-store failure"):
+        provider._store_now(
+            content="rollback regression content for relation store exception",
+            source="tool-store",
+            target="ops",
+            session_id=provider._session_id,
+            allow_duplicate=True,
+        )
+
+    after = {
+        "memories": int(conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]),
+        "fts": int(conn.execute("SELECT COUNT(*) FROM memories_fts").fetchone()[0]),
+        "entities": int(conn.execute("SELECT COUNT(*) FROM memory_entities").fetchone()[0]),
+        "outbox": int(conn.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0]),
+    }
+    assert after == before
+    assert (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='rollback_probe'"
+        ).fetchone()
+        is None
     )
-
-    assert memory_id
-    assert inserted is True
-    assert outcome == "stored"
     assert calls == ["relation-store"]
     _assert_sqlite_writer_released(provider)
 
@@ -333,7 +364,7 @@ def test_relation_update_failure_rolls_back_open_sqlite_transaction(provider, mo
     )
     assert memory_id
     assert inserted is True
-    assert outcome == "stored"
+    assert outcome == "stored_relation_sync_disabled"
 
     def broken_relation_sync(conn, **kwargs):
         del kwargs
@@ -352,10 +383,24 @@ def test_relation_update_failure_rolls_back_open_sqlite_transaction(provider, mo
         "ops",
     )
 
-    assert updated is True
-    assert summary
-    assert updated_at
+    assert updated is False
+    assert "synthetic relation-update failure" in summary
+    assert updated_at == ""
     assert calls == ["relation-update"]
+    with provider._lock:
+        conn = provider._require_conn()
+        row = conn.execute(
+            "SELECT content FROM memories WHERE id = ?",
+            (memory_id,),
+        ).fetchone()
+        probe = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'rollback_probe'"
+        ).fetchone()
+    assert row is not None
+    assert str(row["content"]) == (
+        "rollback regression original content for relation update exception"
+    )
+    assert probe is None
     _assert_sqlite_writer_released(provider)
 
 
@@ -392,6 +437,108 @@ def test_save_config_bootstraps_sqlite_vector_meta_for_install_verification(tmp_
         conn.close()
     assert meta["table_name"] == "memories"
     assert meta["dimensions"] == "8"
+
+
+def test_save_config_bootstraps_primary_generation_when_backend_and_embedder_are_healthy(
+    tmp_path, monkeypatch
+):
+    """Fresh setup must not pin fallback merely because fallback is configured."""
+
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    provider_package = plugin.__class__.__module__.rsplit(".", 1)[0]
+    vector_bootstrap_module = importlib.import_module(
+        f"{provider_package}.vector_bootstrap"
+    )
+    calls = {"embedder": 0, "store": 0}
+
+    class FakeEmbedder:
+        def __init__(self, config):
+            self.provider = str(config.get("provider") or "fake")
+            self.model = str(config.get("model") or "fake-model")
+            self.dimensions = int(config.get("dimensions") or 12)
+
+        @staticmethod
+        def is_available():
+            return True
+
+    class FakeStore:
+        def __init__(self, backend):
+            self.backend = backend
+
+        @staticmethod
+        def is_available():
+            return True
+
+        @staticmethod
+        def open():
+            return None
+
+        @staticmethod
+        def open_existing():
+            return None
+
+        @staticmethod
+        def close():
+            return None
+
+        @staticmethod
+        def audit_counts():
+            return {"physical_rows": 0, "unique_ids": 0, "duplicate_rows": 0}
+
+    def build_fake_embedder(config):
+        calls["embedder"] += 1
+        return FakeEmbedder(config)
+
+    def build_fake_store(backend, **_kwargs):
+        calls["store"] += 1
+        return FakeStore(str(backend))
+
+    monkeypatch.setattr(vector_bootstrap_module, "build_embedder", build_fake_embedder)
+    monkeypatch.setattr(vector_bootstrap_module, "build_vector_store", build_fake_store)
+
+    plugin.save_config(
+        {
+            "vector": {
+                "enabled": True,
+                "backend": "lancedb",
+                "fallback_backend": "sqlite-bruteforce",
+                "table_name": "memories",
+                "embedder": {
+                    "provider": "openai-compatible",
+                    "model": "primary-embedding",
+                    "dimensions": 12,
+                },
+                "fallback_embedder": {
+                    "provider": "local-hash",
+                    "model": "fallback-embedding",
+                    "dimensions": 8,
+                },
+            }
+        },
+        str(tmp_path),
+    )
+    assert calls["embedder"] >= 2
+    assert calls["store"] >= 3
+
+    conn = sqlite3.connect(tmp_path / "scope-recall" / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    try:
+        generation = conn.execute(
+            """
+            SELECT g.*
+            FROM vector_generation_state AS s
+            JOIN vector_generations AS g ON g.generation_id = s.value
+            WHERE s.key = 'current_generation'
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+    assert generation is not None
+    assert generation["backend"] == "lancedb"
+    assert generation["provider"] == "openai-compatible"
+    assert generation["model"] == "primary-embedding"
+    assert generation["dimensions"] == 12
 
 
 def test_tool_journal_content_defaults_to_safe_summary_without_raw_output(provider):
@@ -2423,8 +2570,8 @@ def test_budget_caps_number_of_lines(provider):
 
     provider.on_turn_start(1, "How do we deploy the service and restart the gateway?")
     result = provider.prefetch("How do we deploy the service and restart the gateway?")
-    bullet_lines = [line for line in result.splitlines() if line.startswith("- ")]
-    assert 1 <= len(bullet_lines) <= 3
+    recalled_items = json.loads(result.splitlines()[-1])
+    assert 1 <= len(recalled_items) <= 3
 
 
 def test_search_tool_returns_ranked_results(provider):
@@ -2821,13 +2968,13 @@ def test_recency_aware_ranking_prefers_newer_memory_for_current_queries(tmp_path
         old_payload = json.loads(
             plugin.handle_tool_call(
                 "scope_recall_store",
-                {"content": "Current production deploy uses uv run app.", "target": "memory"},
+                {"content": "Current production deploy command is uv run app.", "target": "memory"},
             )
         )
         new_payload = json.loads(
             plugin.handle_tool_call(
                 "scope_recall_store",
-                {"content": "Production command is uv run service now.", "target": "memory"},
+                {"content": "Current production deploy command is uv run service.", "target": "memory"},
             )
         )
         conn = plugin._require_conn()
@@ -2848,7 +2995,7 @@ def test_recency_aware_ranking_prefers_newer_memory_for_current_queries(tmp_path
                 {"query": "What is the current production deploy command?", "limit": 3},
             )
         )
-        assert payload["results"][0]["content"] == "Production command is uv run service now."
+        assert payload["results"][0]["content"] == "Current production deploy command is uv run service."
     finally:
         plugin.shutdown()
 
@@ -3250,7 +3397,7 @@ def test_smart_extract_turn_creates_preference_and_fact_memories(provider):
     assert any(item["target"] == "ops" and "uv run app" in item["content"] for item in payload["results"])
 
 
-def test_semantic_near_duplicate_store_merges_existing_memory(provider):
+def test_semantic_near_duplicate_store_remains_distinct_by_default(provider):
     first = json.loads(
         provider.handle_tool_call("scope_recall_store", {"content": "Joy prefers concise replies.", "target": "user"})
     )
@@ -3259,13 +3406,15 @@ def test_semantic_near_duplicate_store_merges_existing_memory(provider):
     )
 
     assert first["stored"] is True
-    assert second["stored"] is False
-    assert second["merged"] is True
-    assert second["id"] == first["id"]
+    assert second["stored"] is True
+    assert second["merged"] is False
+    assert second["id"] != first["id"]
 
     payload = json.loads(provider.handle_tool_call("scope_recall_search", {"query": "Joy response style", "limit": 5}))
-    assert payload["count"] == 1
-    assert "brief responses" in payload["results"][0]["content"]
+    assert payload["count"] == 2
+    contents = {item["content"] for item in payload["results"]}
+    assert "Joy prefers concise replies." in contents
+    assert "Joy likes brief responses." in contents
 
 
 def test_semantic_merge_does_not_absorb_confirmed_store_into_candidate(provider):
@@ -3667,3 +3816,84 @@ def test_sync_turn_does_not_capture_assistant_by_default(provider):
     assert rows
     assert all(row["source"] != "turn-assistant" for row in rows)
     assert all("pnpm start" not in row["content"] for row in rows)
+
+
+def test_relation_store_deferred_debt_is_visible_and_audited(provider, monkeypatch):
+    memory_ops_globals = provider._store_now.__globals__["store_memory_now"].__globals__
+
+    def deferred_relation_sync(_conn, **_kwargs):
+        return {
+            "ok": True,
+            "blocked": False,
+            "deferred": True,
+            "candidate_count": 31,
+            "max_candidates": 24,
+            "compared_pair_count": 49,
+            "total_peer_count": 1001,
+            "selected_peer_count": 49,
+            "inserted": 0,
+            "deleted": 0,
+            "deferred_reason": "relation candidate fan-out exceeded cap: 31 > 24",
+        }
+
+    monkeypatch.setitem(provider._config, "relation_extraction_enabled", True)
+    monkeypatch.setitem(memory_ops_globals, "sync_extracted_relations_for_memory", deferred_relation_sync)
+
+    memory_id, inserted, outcome = provider._store_now(
+        content="fanout observability regression content for relation store",
+        source="tool-store",
+        target="ops",
+        session_id=provider._session_id,
+        allow_duplicate=True,
+    )
+
+    assert inserted is True
+    assert outcome == "stored_relation_sync_deferred"
+    with provider._lock:
+        audit = provider._require_conn().execute(
+            """
+            SELECT event_type, action, target_id, after_json, reason
+            FROM governance_audit_events
+            WHERE target_id = ? AND event_type = 'relation_extraction' AND action = 'sync_deferred'
+            """,
+            (memory_id,),
+        ).fetchone()
+    assert audit is not None
+    assert audit["target_id"] == memory_id
+    assert json.loads(audit["after_json"])["candidate_count"] == 31
+    assert "fan-out exceeded cap" in audit["reason"]
+
+    public_result = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_store",
+            {
+                "content": "public relation fanout visibility sentinel with a distinct payload",
+                "target": "project",
+                "memory_type": "project",
+                "allow_duplicate": True,
+            },
+        )
+    )
+    assert public_result["stored"] is True
+    assert public_result["relation_sync_status"] == "deferred"
+    assert public_result["receipt"]["relation_sync_status"] == "deferred"
+
+
+def test_relation_store_disabled_is_visible_in_public_receipt(provider, monkeypatch):
+    monkeypatch.setitem(provider._config, "relation_extraction_enabled", False)
+
+    public_result = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_store",
+            {
+                "content": "relation extraction disabled receipt sentinel",
+                "target": "project",
+                "memory_type": "project",
+                "allow_duplicate": True,
+            },
+        )
+    )
+
+    assert public_result["stored"] is True
+    assert public_result["relation_sync_status"] == "disabled"
+    assert public_result["receipt"]["relation_sync_status"] == "disabled"

@@ -5,6 +5,7 @@ Configuration is merged from defaults and Hermes-home state; callers should use 
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 from pathlib import Path
@@ -15,6 +16,7 @@ _CONFIG_LOAD_ERRORS_KEY = "_config_load_errors"
 DEFAULT_CONFIG: dict[str, Any] = {
     "auto_recall": True,
     "auto_capture": True,
+    "memory_isolated_chat_ids": [],
     "auto_recall_min_length": 15,
     "auto_recall_min_repeated": 8,
     "auto_recall_max_items": 3,
@@ -58,7 +60,19 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "llm_max_session_chars": 16000,
         "llm_retry_delay": 1.0,
         "llm_timeout": 60.0,
-        "tool_trace_skip_names": ["todo", "skill_view", "skills_list", "session_messages"],
+        "tool_trace_skip_names": [
+            "todo",
+            "skill_view",
+            "skills_list",
+            "session_messages",
+            "read_file",
+            "search_files",
+            "scope_recall_search",
+            "scope_recall_context",
+            "scope_recall_profile",
+            "session_search",
+            "clarify",
+        ],
         "tool_trace_hard_max_chars": 4000,
         "tool_trace_max_chars": 1800,
         "tool_trace_include_output_preview": False,
@@ -67,11 +81,51 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "per_turn_extraction": {
         "enabled": False,
     },
+    "relation_extraction_enabled": True,
+    "relation_extraction_max_pairs": 1000,
+    "relation_sync_neighbor_limit": 32,
+    "relation_rebuild_chunk_pairs": 250,
     "event_digest": {
         "enabled": True,
         "write_candidates": False,
         "dry_run_log": True,
         "max_events_per_turn": 3,
+    },
+    "fact_evolution": {
+        "enabled": False,
+        "mode": "preview",
+        "nightly_mode": "preview",
+        "journal_mode": "preview",
+        "tool_mode": "preview",
+        "maintenance_mode": "preview",
+    },
+    "temporal_queries": {
+        "enabled": False,
+        "timezone": "UTC",
+        "current_limit": 50,
+    },
+    "reflection": {
+        "enabled": False,
+        "write_candidates": False,
+        "provider": "",
+        "model": "",
+        "base_url": "",
+        "endpoint": "",
+        "append_v1": True,
+        "api_key_env": "SCOPE_RECALL_REFLECTION_API_KEY",
+        "api_mode": "chat_completions",
+        "timeout": 30.0,
+        "max_attempts": 1,
+        "retry_delay": 0.0,
+        "max_hops": 1,
+        "max_evidence": 24,
+        "max_chars": 12000,
+        "max_item_chars": 2000,
+        "recall_limit": 24,
+        "fact_limit": 24,
+        "candidate_min_citations": 2,
+        "candidate_min_sources": 2,
+        "candidate_min_confidence": 0.8,
     },
     "capture_hard_max_chars": 2500,
     "capture_skip_patterns": [
@@ -114,7 +168,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "archive_very_short": True,
         "archive_assistant_scratch": True,
         "archive_duplicates": True,
-        "hard_delete_sensitive": True,
+        "hard_delete_sensitive": False,
     },
     "curated_memory": {
         "mode": "single-user",
@@ -186,7 +240,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "workflow",
         ],
         "temporal_policy_episodic_types": ["episodic", "summary"],
-        "temporal_policy_temporary_types": ["scratch", "temporary", "temporary_state", "tool_trace"],
+        "temporal_policy_temporary_types": [
+            "scratch",
+            "temporary",
+            "temporary_state",
+            "tool_trace",
+        ],
     },
     "vector": {
         "enabled": True,
@@ -196,10 +255,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "pgvector": {
             "dsn_env": "SCOPE_RECALL_PGVECTOR_DSN",
             "table_name": "scope_recall_vectors",
+            "connect_timeout_seconds": 10,
+            "statement_timeout_ms": 30000,
+            "lock_timeout_ms": 5000,
         },
         "top_k": 8,
         "sync_mode": "incremental",
         "index_general": False,
+        "startup_reconcile_page_size": 200,
+        "startup_outbox_limit": 200,
+        "write_outbox_replay_limit": 20,
+        "startup_reconcile_interval_seconds": 86400,
         "embedder": {
             "provider": "openai-compatible",
             "dimensions": 3072,
@@ -210,6 +276,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "document_prefix": "",
             "query_prefix": "",
             "prompt_profile": "default-v1",
+            "connection_retry_delays": [2.0, 4.0, 8.0],
         },
         "fallback_embedder": {
             "provider": "local-hash",
@@ -240,6 +307,11 @@ CONFIG_SCHEMA_EXTRAS: dict[str, Any] = {
 }
 CONFIG_OPEN_MAP_PATHS = frozenset({"identity.user_aliases"})
 CONFIG_BOOL_OR_OBJECT_PATHS = frozenset({"curated_memory"})
+CONFIG_BOUNDED_INTEGER_PATHS: dict[str, tuple[int, int]] = {
+    "relation_extraction_max_pairs": (1, 5000),
+    "relation_sync_neighbor_limit": (1, 256),
+    "relation_rebuild_chunk_pairs": (1, 1000),
+}
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -250,7 +322,6 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
         else:
             merged[key] = value
     return merged
-
 
 
 def _expand_dotted_keys(values: dict[str, Any]) -> dict[str, Any]:
@@ -274,7 +345,6 @@ def _expand_dotted_keys(values: dict[str, Any]) -> dict[str, Any]:
             cursor = child
         cursor[parts[-1]] = value
     return expanded
-
 
 
 def _config_load_error(path: Path, *, kind: str, message: str) -> dict[str, str]:
@@ -302,7 +372,16 @@ def _config_value_matches_template(value: Any, expected: Any) -> bool:
         if isinstance(value, bool):
             return True
         if isinstance(value, str):
-            return value.strip().lower() in {"1", "0", "true", "false", "yes", "no", "on", "off"}
+            return value.strip().lower() in {
+                "1",
+                "0",
+                "true",
+                "false",
+                "yes",
+                "no",
+                "on",
+                "off",
+            }
         return False
     if isinstance(expected, int) and not isinstance(expected, bool):
         return isinstance(value, int) and not isinstance(value, bool)
@@ -315,6 +394,39 @@ def _config_value_matches_template(value: Any, expected: Any) -> bool:
     if expected is None:
         return value is None
     return isinstance(value, type(expected))
+
+
+def _config_value_error(dotted: str, value: Any) -> str:
+    """Validate bounded leaf values whose array shape alone is insufficient."""
+
+    integer_bounds = CONFIG_BOUNDED_INTEGER_PATHS.get(dotted)
+    if integer_bounds is not None:
+        minimum, maximum = integer_bounds
+        assert isinstance(value, int) and not isinstance(value, bool)
+        if not minimum <= value <= maximum:
+            return (
+                f"invalid value for {dotted}: expected an integer "
+                f"between {minimum} and {maximum}"
+            )
+        return ""
+    if dotted != "vector.embedder.connection_retry_delays":
+        return ""
+    assert isinstance(value, list)
+    if len(value) > 8:
+        return "vector.embedder.connection_retry_delays supports at most 8 entries"
+    for index, item in enumerate(value):
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            return (
+                "invalid value for vector.embedder.connection_retry_delays"
+                f"[{index}]: expected a finite number between 0 and 300"
+            )
+        delay = float(item)
+        if not math.isfinite(delay) or not 0.0 <= delay <= 300.0:
+            return (
+                "invalid value for vector.embedder.connection_retry_delays"
+                f"[{index}]: expected a finite number between 0 and 300"
+            )
+    return ""
 
 
 def validate_config_override(
@@ -337,7 +449,11 @@ def validate_config_override(
     for key, value in expanded.items():
         dotted = f"{prefix}.{key}" if prefix else str(key)
         if key not in template:
-            errors.append(_config_load_error(path, kind="unknown_key", message=f"unknown config key: {dotted}"))
+            errors.append(
+                _config_load_error(
+                    path, kind="unknown_key", message=f"unknown config key: {dotted}"
+                )
+            )
             continue
         expected = template[key]
         if dotted in CONFIG_BOOL_OR_OBJECT_PATHS and isinstance(value, bool):
@@ -347,7 +463,9 @@ def validate_config_override(
             if dotted in CONFIG_OPEN_MAP_PATHS:
                 cleaned[key] = dict(value)
                 continue
-            child, child_errors = validate_config_override(value, expected, path=path, prefix=dotted)
+            child, child_errors = validate_config_override(
+                value, expected, path=path, prefix=dotted
+            )
             if child:
                 cleaned[key] = child
             errors.extend(child_errors)
@@ -364,7 +482,23 @@ def validate_config_override(
                 )
             )
             continue
-        cleaned[key] = value
+        value_error = _config_value_error(dotted, value)
+        if value_error:
+            errors.append(
+                _config_load_error(
+                    path,
+                    kind="invalid_value",
+                    message=value_error,
+                )
+            )
+            continue
+        if isinstance(expected, bool) and isinstance(value, str):
+            # Boolean string aliases are part of the public config contract.
+            # Normalize them here so callers never receive truthy strings such
+            # as "false" or "0".
+            cleaned[key] = value.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            cleaned[key] = value
     return cleaned, errors
 
 
@@ -392,7 +526,11 @@ def _without_internal_config_keys(config: dict[str, Any]) -> dict[str, Any]:
 
     def clean(value: Any) -> Any:
         if isinstance(value, dict):
-            return {str(key): clean(item) for key, item in value.items() if not str(key).startswith("_")}
+            return {
+                str(key): clean(item)
+                for key, item in value.items()
+                if not str(key).startswith("_")
+            }
         if isinstance(value, list):
             return [clean(item) for item in value]
         return value
@@ -400,16 +538,83 @@ def _without_internal_config_keys(config: dict[str, Any]) -> dict[str, Any]:
     return clean(config)
 
 
+def _packaged_runtime_config(plugin_dir: Path) -> dict[str, Any]:
+    """Load the packaged defaults without applying a user overlay."""
+
+    config: dict[str, Any] = json.loads(json.dumps(DEFAULT_CONFIG))
+    path = plugin_dir / "config.json"
+    if not path.exists():
+        return config
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ValueError(f"packaged runtime config is unreadable: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError("packaged runtime config must be a JSON object")
+    return _deep_merge(config, raw)
+
+
+def _minimal_config_overlay(
+    overlay: dict[str, Any], packaged: dict[str, Any]
+) -> dict[str, Any]:
+    """Drop overlay leaves equal to current packaged defaults."""
+
+    minimal: dict[str, Any] = {}
+    for key, value in overlay.items():
+        if key not in packaged:
+            minimal[key] = value
+            continue
+        default = packaged[key]
+        if isinstance(value, dict) and isinstance(default, dict):
+            child = _minimal_config_overlay(value, default)
+            if child:
+                minimal[key] = child
+            continue
+        if value != default:
+            minimal[key] = value
+    return minimal
+
+
+def _load_validated_user_overlay(
+    path: Path, validation_template: dict[str, Any]
+) -> dict[str, Any]:
+    """Read an existing overlay without silently discarding invalid content."""
+
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ValueError(f"existing runtime config is unreadable: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError("existing runtime config must be a JSON object")
+    cleaned = _without_internal_config_keys(raw)
+    validated, errors = validate_config_override(
+        cleaned, validation_template, path=path
+    )
+    if errors:
+        messages = "; ".join(
+            str(item.get("message") or item.get("kind") or "invalid config")
+            for item in errors
+        )
+        raise ValueError(f"existing runtime config is invalid: {messages}")
+    return validated
+
+
 def load_runtime_config(plugin_dir: Path, storage_dir: Path) -> dict[str, Any]:
     config: dict[str, Any] = json.loads(json.dumps(DEFAULT_CONFIG))
     errors: list[dict[str, str]] = []
-    for index, path in enumerate((plugin_dir / "config.json", storage_dir / "config.json")):
+    for index, path in enumerate(
+        (plugin_dir / "config.json", storage_dir / "config.json")
+    ):
         if not path.exists():
             continue
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
-            errors.append(_config_load_error(path, kind="json_decode", message=str(exc)))
+            errors.append(
+                _config_load_error(path, kind="json_decode", message=str(exc))
+            )
             continue
         except OSError as exc:
             errors.append(_config_load_error(path, kind="read_error", message=str(exc)))
@@ -421,15 +626,22 @@ def load_runtime_config(plugin_dir: Path, storage_dir: Path) -> dict[str, Any]:
                 config = _deep_merge(config, raw)
             else:
                 validation_template = _deep_merge(CONFIG_SCHEMA_EXTRAS, config)
-                override, validation_errors = validate_config_override(raw, validation_template, path=path)
+                override, validation_errors = validate_config_override(
+                    raw, validation_template, path=path
+                )
                 errors.extend(validation_errors)
                 config = _deep_merge(config, override)
         else:
-            errors.append(_config_load_error(path, kind="non_dict_payload", message="config payload must be a JSON object"))
+            errors.append(
+                _config_load_error(
+                    path,
+                    kind="non_dict_payload",
+                    message="config payload must be a JSON object",
+                )
+            )
     if errors:
         config[_CONFIG_LOAD_ERRORS_KEY] = errors
     return config
-
 
 
 def save_runtime_config(values: dict[str, Any], hermes_home: str) -> None:
@@ -442,17 +654,26 @@ def save_runtime_config(values: dict[str, Any], hermes_home: str) -> None:
 
     path = Path(hermes_home) / "scope-recall" / "config.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    existing = load_runtime_config(Path(__file__).resolve().parent, path.parent)
+    packaged = _packaged_runtime_config(Path(__file__).resolve().parent)
+    validation_template = _deep_merge(CONFIG_SCHEMA_EXTRAS, packaged)
+    existing = _load_validated_user_overlay(path, validation_template)
     expanded = _without_internal_config_keys(_expand_dotted_keys(values or {}))
-    validation_template = _deep_merge(CONFIG_SCHEMA_EXTRAS, _without_internal_config_keys(existing))
-    validated, errors = validate_config_override(expanded, validation_template, path=path)
+    validated, errors = validate_config_override(
+        expanded, validation_template, path=path
+    )
     if errors:
-        messages = "; ".join(str(item.get("message") or item.get("kind") or "invalid config") for item in errors)
+        messages = "; ".join(
+            str(item.get("message") or item.get("kind") or "invalid config")
+            for item in errors
+        )
         raise ValueError(f"runtime config update rejected: {messages}")
 
-    merged = _deep_merge(_without_internal_config_keys(existing), validated)
+    merged = _deep_merge(existing, validated)
+    merged = _minimal_config_overlay(merged, packaged)
     payload = json.dumps(merged, indent=2, ensure_ascii=False) + "\n"
-    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
     temporary_path = Path(temporary_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -461,7 +682,9 @@ def save_runtime_config(values: dict[str, Any], hermes_home: str) -> None:
             os.fsync(handle.fileno())
         os.replace(temporary_path, path)
         try:
-            directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            directory_fd = os.open(
+                path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            )
         except OSError:
             directory_fd = -1
         if directory_fd >= 0:

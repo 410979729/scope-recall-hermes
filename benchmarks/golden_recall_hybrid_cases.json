@@ -1,6 +1,6 @@
 {
-  "name": "commercial_recall_quality_default_hybrid_vector_v1",
-  "description": "Default hybrid/vector smoke cases for commercial scope-recall readiness. This fixture uses the built-in local-hash embedder and sqlite-bruteforce vector companion so release gates exercise the default hybrid retrieval path without external embedding services.",
+  "name": "recall_smoke_hybrid_vector_v1",
+  "description": "Fast hybrid/vector smoke cases using the built-in local-hash embedder and sqlite-bruteforce companion. This fixture exercises vector plumbing but is not the commercial-quality evidence set.",
   "config": {
     "maintenance_tools_enabled": true,
     "fact_freshness_enabled": true,

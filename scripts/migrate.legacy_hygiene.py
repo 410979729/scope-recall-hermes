@@ -37,6 +37,7 @@ from scope_recall_legacy_hygiene_runtime.gating import compact_text  # noqa: E40
 from scope_recall_legacy_hygiene_runtime.governance import classify_memory  # noqa: E402
 from scope_recall_legacy_hygiene_runtime.lifecycle_service import transition_memory_lifecycle  # noqa: E402
 from scope_recall_legacy_hygiene_runtime.sql_store import ensure_schema  # noqa: E402
+from scope_recall_legacy_hygiene_runtime.truth_connection import connect_truth_database  # noqa: E402
 
 SCRATCH_SOURCES = {"raw", "scratch", "legacy-raw", "legacy-scratch", "turn-user", "turn-assistant"}
 SCRATCH_TYPES = {"raw", "scratch", "general"}
@@ -207,8 +208,11 @@ def main() -> int:
         print(json.dumps({"ok": False, "error": f"SQLite truth DB not found: {db_path}"}, ensure_ascii=False))
         return 1
     migrated_at = datetime.now(timezone.utc).isoformat()
-    conn = sqlite3.connect(db_path, timeout=30)
-    conn.row_factory = sqlite3.Row
+    conn = connect_truth_database(
+        db_path,
+        mode="rw" if args.apply else "ro",
+        timeout=30,
+    )
     conn.execute("pragma busy_timeout=30000")
     try:
         rows = conn.execute("SELECT id, source, target, content, metadata FROM memories ORDER BY updated_at ASC, id ASC").fetchall()

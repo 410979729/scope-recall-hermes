@@ -11,6 +11,7 @@ from typing import Any
 
 from .gating import compact_text, dedup_key
 from .graph import clamp_float, extract_entities, normalize_entity
+from .memory_text_merge import combine_reviewed_memory_text
 from .scoring import semantic_similarity
 
 _SENTENCE_RE = re.compile(r"(?<=[.!?。！？])\s+")
@@ -24,6 +25,10 @@ _DEPLOY_RE = re.compile(
 )
 _IDENTITY_RE = re.compile(r"\b(?P<subject>[A-Z][\w-]*)\s+is\s+(?P<object>[^.!?。！？]+)", re.IGNORECASE)
 _NEGATION_RE = re.compile(r"\b(no longer|not|never|不再|不要|不是|取消|avoid|stop)\b", re.IGNORECASE)
+_TEMPORARY_MARKER_RE = re.compile(
+    r"(?:\b(?:temporary|temp|one[-\s]?off|scratch)\b|临时|一次性)",
+    re.IGNORECASE,
+)
 _CLAIM_RE = re.compile(
     r"^\s*(?P<subject>.+?)\s+"
     r"(?P<predicate>(?:does\s+not\s+|do\s+not\s+|doesn't\s+|don't\s+|no\s+longer\s+)?"
@@ -65,6 +70,7 @@ _MEMORY_TYPES = {
     "tool_trace",
     "project",
     "summary",
+    "mental_model",
     "pitfall",
     "decision",
     "episodic",
@@ -224,7 +230,7 @@ def classify_memory(text: str, target: str = "memory", source: str = "") -> dict
         confidence = 0.72
         importance = 0.68
 
-    if any(word in lowered for word in ("temporary", "temp", "one-off", "scratch", "临时", "一次性")):
+    if _TEMPORARY_MARKER_RE.search(lowered):
         tier = "working"
         if normalized_target == "general":
             kind = "raw_observation"
@@ -329,9 +335,9 @@ def merge_metadata(metadata_payload: dict[str, Any], raw_metadata: Any) -> dict[
                 metadata_payload["scope_mode"] = incoming
         elif meta_key == "lifecycle":
             incoming = str(value or "").strip().lower()
-            raw_digest_quality = user_metadata.get("digest_quality")
-            digest_quality = raw_digest_quality if isinstance(raw_digest_quality, dict) else {}
-            if incoming == "candidate" and str(digest_quality.get("recommended_action") or "").strip().lower() == "candidate":
+            # A new row may always opt into the stricter provisional state.
+            # Terminal states still require the audited lifecycle service.
+            if incoming == "candidate":
                 metadata_payload["lifecycle"] = "candidate"
         elif meta_key in {"kind", "authority", "confidence", "expires_at", "category", "tier"}:
             continue
@@ -449,16 +455,10 @@ def is_conflicting(existing: str, candidate: str) -> bool:
 
 
 def merge_memory_text(existing: str, candidate: str) -> str:
-    existing = (existing or "").strip()
-    candidate = (candidate or "").strip()
-    if not existing:
-        return candidate
-    if not candidate:
-        return existing
-    if dedup_key(existing) == dedup_key(candidate):
-        return existing
-    if candidate.lower() in existing.lower():
-        return existing
-    if existing.lower() in candidate.lower():
-        return candidate
-    return compact_text(f"{existing.rstrip('.。')} / {candidate.rstrip('.。')}.", 900)
+    """Combine assertions only after an explicit merge decision.
+
+    Automatic digest paths do not call this for merely similar text.  The
+    compatibility wrapper uses visible boundaries instead of slash chains.
+    """
+
+    return combine_reviewed_memory_text(existing, candidate)

@@ -40,7 +40,7 @@ Default config in the current source candidate:
     "archive_very_short": true,
     "archive_assistant_scratch": true,
     "archive_duplicates": true,
-    "hard_delete_sensitive": true
+    "hard_delete_sensitive": false
   }
 }
 ```
@@ -51,6 +51,7 @@ Important defaults:
 - `experience.prefetch_enabled=true`: matching promoted playbooks may append a bounded advisory runtime packet to normal recall. Set `false` to keep runtime injection silent while retaining read-only tools.
 - `experience.auto_promotion_enabled=false`: successful background/session-end journal digest runs do not launch automatic promotion unless explicitly enabled. Set `true` to allow conservative evidence-gated automatic promotion; manual `scope_recall_experience_promote` remains available.
 - `experience.auto_promote_low_risk=false`: even when automatic promotion scans are enabled, low-risk verified handbooks are created as candidates by default. Set `true` only when the deployment is ready to promote low-risk verified playbooks automatically; high-risk, under-verified, or final-failure handbooks remain gated by review/status.
+- `forgetting.hard_delete_sensitive=false`: sensitive forgetting remains soft/archive-first unless an operator explicitly enables the destructive path and invokes reviewed maintenance.
 - `allow_risky_direct_reuse=false`: playbooks with `service_control`, `network_or_remote`, `cross_instance`, `credential_adjacent`, or `destructive_or_irreversible` steps are downgraded to guided reuse unless explicitly allowed.
 - `forgetting.soft_archive_default=true`: forgetting defaults to metadata archive/hide rather than physical deletion.
 - `scope_recall_playbook_create` and `scope_recall_playbook_review` require `maintenance_tools_enabled=true`.
@@ -153,6 +154,15 @@ python scripts/playbooks.py supersede \
 ```
 
 `supersede` routes through the same `review_playbook()` governance path as maintenance-tool review: it scope-checks the canonical playbook, writes a `playbook_versions` row, and removes the duplicate from doctor/dashboard duplicate-group counts without deleting the historical row.
+
+Applied lifecycle changes record an authoritative `operator_operations` row in the same SQLite transaction as the playbook mutation. The JSON receipt is a post-commit mirror keyed by `operation_id`; a crash after file rename is repaired idempotently without creating a second receipt. Inspect debt read-only, then retry explicitly:
+
+```bash
+python scripts/playbooks.py receipts --hermes-home "$HERMES_HOME" --json
+python scripts/playbooks.py receipts --hermes-home "$HERMES_HOME" --apply --include-failed --json
+```
+
+A receipt-mirror failure does not roll back or conceal an already committed playbook change. The command returns `receipt_state: pending|failed` plus `receipt_repair_required: true`, while doctor/stats expose the same SQLite debt.
 
 ## Doctor output
 

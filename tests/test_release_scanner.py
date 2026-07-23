@@ -64,6 +64,23 @@ def test_release_scanner_uses_runtime_home_for_private_paths(tmp_path, monkeypat
     assert findings["private_paths"] == ["notes.md:1"]
 
 
+def test_release_scanner_rejects_tilde_instance_home_paths(tmp_path):
+    module = _load_release_check_module()
+    (tmp_path / "README.md").write_text(
+        'python scripts/doctor.py --hermes-home "~/.hermes-' + 'yuheng"\n',
+        encoding="utf-8",
+    )
+
+    original_root = getattr(module, "ROOT")
+    setattr(module, "ROOT", tmp_path)
+    try:
+        findings = module.scan_tree()
+    finally:
+        setattr(module, "ROOT", original_root)
+
+    assert findings["private_paths"] == ["README.md:1"]
+
+
 def test_release_scanner_limits_reserved_synthetic_identifier_to_marked_test_fixtures(tmp_path):
     module = _load_release_check_module()
     private_like_id = "8123" + "456789"
@@ -383,14 +400,14 @@ def test_release_scanner_scans_wheel_and_sdist_text_payloads(tmp_path):
         assert positive_chat_id not in joined
 
 
-def test_public_distribution_rejects_private_source_isolation_overlay():
+def test_public_distribution_allows_generic_source_isolation_policy():
     module = _load_release_check_module()
     entries = {
         "scope_recall/provider.py",
         "scope_recall/source_isolation.py",
     }
 
-    assert module.forbidden_distribution_entries(entries) == ["scope_recall/source_isolation.py"]
+    assert module.forbidden_distribution_entries(entries) == []
 
 
 @pytest.mark.parametrize("filename,leak_template", POSITIVE_IDENTIFIER_CONTEXTS)

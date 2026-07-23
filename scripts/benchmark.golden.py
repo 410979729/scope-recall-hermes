@@ -36,7 +36,7 @@ try:  # package import path when installed or pytest aliases scope_recall
 except ImportError:  # pragma: no cover - direct source checkout execution fallback
     from response_schemas import GOLDEN_BENCHMARK_RESPONSE_SCHEMA_VERSION
 
-DEFAULT_CASES = ROOT / "benchmarks" / "golden_recall_cases.json"
+DEFAULT_CASES = ROOT / "benchmarks" / "curated_recall_quality_cases_v2.json"
 COPY_IGNORE_PATTERNS = (
     ".git",
     ".hermes",
@@ -188,29 +188,32 @@ def _resolve_case_labels(case: dict[str, Any], label_to_id: dict[str, str]) -> d
 
 
 def _mark_lifecycle(plugin: Any, memory_id: str, lifecycle: str) -> None:
-    conn = plugin._require_conn()
-    row = conn.execute("SELECT updated_at FROM memories WHERE id = ?", (memory_id,)).fetchone()
-    if row is None:
-        raise RuntimeError(f"stored memory not found for lifecycle marker: {memory_id}")
     normalized = str(lifecycle or "").strip().lower()
     package = plugin.__class__.__module__.rsplit(".", 1)[0]
     lifecycle_service = importlib.import_module(f"{package}.lifecycle_service")
-    try:
-        lifecycle_service.transition_memory_lifecycle(
-            conn,
-            memory_id=memory_id,
-            lifecycle=normalized,
-            metadata_updates={f"{normalized}_by": "golden-benchmark-fixture"},
-            expected_updated_at=str(row["updated_at"] or ""),
-            actor="golden-benchmark-fixture",
-            reason="isolated golden benchmark lifecycle marker",
-            event_type="benchmark_fixture_lifecycle",
-            action="mark_fixture_lifecycle",
-        )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
+    with plugin._lock:
+        conn = plugin._require_conn()
+        row = conn.execute(
+            "SELECT updated_at FROM memories WHERE id = ?", (memory_id,)
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(f"stored memory not found for lifecycle marker: {memory_id}")
+        try:
+            lifecycle_service.transition_memory_lifecycle(
+                conn,
+                memory_id=memory_id,
+                lifecycle=normalized,
+                metadata_updates={f"{normalized}_by": "golden-benchmark-fixture"},
+                expected_updated_at=str(row["updated_at"] or ""),
+                actor="golden-benchmark-fixture",
+                reason="isolated golden benchmark lifecycle marker",
+                event_type="benchmark_fixture_lifecycle",
+                action="mark_fixture_lifecycle",
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def _playbook_payload(item: dict[str, Any]) -> dict[str, Any]:

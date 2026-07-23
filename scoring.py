@@ -4,6 +4,7 @@ Scoring must stay explainable so benchmarks and operator traces can justify why 
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any
 
 from .aliases import canonicalize_alias
@@ -59,14 +60,15 @@ TARGET_PRIORITY_BONUS = {
 }
 
 
-def _canonical_tokens(text: str) -> set[str]:
+@lru_cache(maxsize=4096)
+def _canonical_tokens(text: str) -> frozenset[str]:
     canonical: set[str] = set()
     for token in normalized_token_set(query_tokens(text)):
         normalized = canonicalize_alias(token)
         if not normalized:
             continue
         canonical.add(normalized)
-    return canonical
+    return frozenset(canonical)
 
 
 

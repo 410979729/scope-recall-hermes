@@ -36,7 +36,7 @@ def classify_rejection_reason(reason: str) -> str:
 def _prefix_clause(reason_prefixes: Sequence[str]) -> tuple[str, list[str]]:
     prefixes = [str(item).strip() for item in reason_prefixes if str(item).strip()]
     if not prefixes:
-        prefixes = ["retry-exhausted:"]
+        prefixes = ["retry-exhausted:", "dead-letter:"]
     clauses = " OR ".join("r.reason LIKE ?" for _ in prefixes)
     return f"({clauses})", [f"{prefix}%" for prefix in prefixes]
 
@@ -44,7 +44,7 @@ def _prefix_clause(reason_prefixes: Sequence[str]) -> tuple[str, list[str]]:
 def find_replay_candidates(
     conn: sqlite3.Connection,
     *,
-    reason_prefixes: Sequence[str] = ("retry-exhausted:",),
+    reason_prefixes: Sequence[str] = ("retry-exhausted:", "dead-letter:"),
     limit: int = 500,
 ) -> list[dict[str, Any]]:
     """Find processed journal entries that are safe to replay after digest failure.
@@ -120,7 +120,7 @@ def find_replay_candidates(
 def recovery_report(
     conn: sqlite3.Connection,
     *,
-    reason_prefixes: Sequence[str] = ("retry-exhausted:",),
+    reason_prefixes: Sequence[str] = ("retry-exhausted:", "dead-letter:"),
     limit: int = 500,
 ) -> dict[str, Any]:
     candidates = find_replay_candidates(conn, reason_prefixes=reason_prefixes, limit=limit)
@@ -146,7 +146,7 @@ def recovery_report(
 def schedule_replay(
     conn: sqlite3.Connection,
     *,
-    reason_prefixes: Sequence[str] = ("retry-exhausted:",),
+    reason_prefixes: Sequence[str] = ("retry-exhausted:", "dead-letter:"),
     limit: int = 500,
     dry_run: bool = True,
     batch_id: str | None = None,
@@ -231,7 +231,7 @@ def schedule_replay(
 def classify_recovery_candidates(
     conn: sqlite3.Connection,
     *,
-    reason_prefixes: Sequence[str] = ("retry-exhausted:",),
+    reason_prefixes: Sequence[str] = ("retry-exhausted:", "dead-letter:"),
     limit: int = 500,
     dry_run: bool = True,
     batch_id: str | None = None,

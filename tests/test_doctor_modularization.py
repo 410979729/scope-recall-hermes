@@ -8,8 +8,11 @@ import ast
 import importlib
 from pathlib import Path
 
+from scope_recall.response_schemas import DOCTOR_REQUIRED_CHECK_NAMES
+
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 DOCTOR_SCRIPT = PLUGIN_ROOT / "scripts" / "doctor.py"
+INSTALLER_MODULE = PLUGIN_ROOT / "installer.py"
 
 
 def test_doctor_cli_is_thin_wrapper():
@@ -53,3 +56,13 @@ def test_doctor_modules_importable_from_source_checkout():
         module = importlib.import_module(f"scope_recall.{module_name}")
         for function_name in function_names:
             assert callable(getattr(module, function_name))
+
+
+def test_doctor_required_check_registry_is_single_source_of_truth():
+    assert DOCTOR_REQUIRED_CHECK_NAMES == tuple(sorted(set(DOCTOR_REQUIRED_CHECK_NAMES)))
+
+    doctor_source = DOCTOR_SCRIPT.read_text(encoding="utf-8")
+    installer_source = INSTALLER_MODULE.read_text(encoding="utf-8")
+    assert "set(DOCTOR_REQUIRED_CHECK_NAMES)" in doctor_source
+    assert "for name in DOCTOR_REQUIRED_CHECK_NAMES" in installer_source
+    assert "REQUIRED_POSTDEPLOY_DOCTOR_CHECKS = (" not in installer_source

@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from scope_recall.models import RuntimeScope
+from scope_recall.nightly_digest import SessionChunk
 import scope_recall.journal as journal_module
 import scope_recall.nightly_llm as nightly_llm
 from scope_recall.forgetting import build_forgetting_report
@@ -239,13 +240,13 @@ def test_journal_digest_does_not_update_archived_memory_matches(tmp_path):
 
 
 @pytest.mark.parametrize("lifecycle", ["candidate", "in_progress"])
-def test_journal_digest_does_not_consume_provisional_memory_matches(tmp_path, lifecycle):
+def test_journal_digest_deduplicates_against_provisional_memory_without_promoting_it(tmp_path, lifecycle):
     conn = _open_memory_db(tmp_path / "memory.sqlite3")
     scope = _scope()
     shared_scope_id = build_shared_scope_id(scope)
     content = (
-        "Journal promotion must create a recall-visible durable memory instead of consuming evidence into "
-        "a provisional row that is still under review."
+        "Automatic journal extraction must not scatter duplicate provisional rows or silently promote "
+        "evidence that is still under review."
     )
     entry_id = append_journal_entry(
         conn,
@@ -287,12 +288,14 @@ def test_journal_digest_does_not_consume_provisional_memory_matches(tmp_path, li
         candidates=[JournalDigestCandidate(content=content, target="memory", entry_ids=[entry_id])],
     )
 
-    assert result["counts"]["inserted"] == 1
-    assert result["counts"].get("skipped", 0) == 0
+    assert result["counts"]["skipped"] == 1
+    assert result["counts"].get("inserted", 0) == 0
     assert result["counts"].get("updated", 0) == 0
+    assert result["actions"][0]["action"] == "skip"
+    assert result["actions"][0]["reason"] == "existing memory covers candidate"
     provisional = conn.execute("SELECT metadata FROM memories WHERE id = 'provisional-memory'").fetchone()
     assert json.loads(provisional["metadata"])["lifecycle"] == lifecycle
-    assert conn.execute("SELECT COUNT(*) FROM memories WHERE id != 'provisional-memory'").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 1
 
 
 def test_journal_digest_rejects_ephemeral_release_issue_state_candidates(tmp_path):
@@ -323,10 +326,12 @@ def test_journal_digest_rejects_ephemeral_release_issue_state_candidates(tmp_pat
 
     result = apply_journal_candidates(conn, None, scope, run_id="release-state-filter", candidates=[candidate])
 
-    assert result["counts"]["skipped"] == 1
+    assert result["counts"]["quarantined"] == 1
     assert result["processed_entry_ids"] == [entry_id]
+    assert result["actions"][0]["action"] == "quarantine"
     rejection = conn.execute("SELECT reason FROM journal_rejections WHERE journal_entry_id = ?", (entry_id,)).fetchone()
-    assert rejection["reason"] == "low-value-ephemeral-release-or-issue-state"
+    assert rejection["reason"].startswith("digest pollution:")
+    assert "repository_audit_snapshot" in rejection["reason"]
     assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
 
 
@@ -539,9 +544,17 @@ def test_feedback_and_governance_previews_redact_secret_like_text(tmp_path):
         session_id="preview-session",
         source="turn-assistant",
         target="general",
-        content=("assistant scratch api_key=" + secret + " wrote /home/a/private/output.log ") * 160,
+        content="Legacy sensitive fixture placeholder before raw import simulation.",
         allow_duplicate=True,
     )
+    legacy_content = (
+        "assistant scratch api_key=" + secret + " wrote /home/a/private/output.log "
+    ) * 160
+    conn.execute(
+        "UPDATE memories SET content=?, summary=? WHERE id='m-secret-preview'",
+        (legacy_content, legacy_content[:220]),
+    )
+    conn.commit()
 
     class FakeProvider:
         _accessible_scope_ids = [scope_id]
@@ -798,7 +811,7 @@ def test_journal_digest_groups_related_turns_and_writes_evidence_links(tmp_path)
     assert conn.execute("SELECT COUNT(*) FROM memory_journal_sources WHERE memory_id = ?", (memory["id"],)).fetchone()[0] == 0
 
 
-def test_journal_digest_merge_upserts_same_topic_instead_of_scattering_rows(tmp_path):
+def test_journal_digest_similar_topic_stays_provisional_without_rewriting_existing_row(tmp_path):
     hermes_home = tmp_path / "hermes"
     storage = hermes_home / "scope-recall"
     storage.mkdir(parents=True)
@@ -814,14 +827,25 @@ def test_journal_digest_merge_upserts_same_topic_instead_of_scattering_rows(tmp_
 
     append_journal_entry(conn, scope=scope, scope_id=scope_id, shared_scope_id=shared_scope_id, session_id="s1", turn_number=3, role="user", content="同一个任务还要加 merge/upsert，别把同任务拆成很多条记忆。")
     append_journal_entry(conn, scope=scope, scope_id=scope_id, shared_scope_id=shared_scope_id, session_id="s1", turn_number=4, role="assistant", content="同一主题会更新已有 journal-digest 记忆，并追加 evidence。")
+    original = conn.execute(
+        "SELECT id, content, updated_at FROM memories ORDER BY created_at LIMIT 1"
+    ).fetchone()
     second = run_journal_digest(hermes_home=hermes_home, extractor="heuristic", scope=scope, interval_label="test", limit_entries=50)
 
     assert first["inserted"] == 1
-    assert second["updated"] == 1
-    assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 1
-    content = conn.execute("SELECT content FROM memories").fetchone()[0]
-    assert "journal-first" in content
-    assert "merge" in content.lower() or "合并" in content or "upsert" in content.lower()
+    assert second["inserted"] == 1
+    assert second["updated"] == 0
+    rows = conn.execute(
+        "SELECT id, content, updated_at, metadata FROM memories ORDER BY created_at"
+    ).fetchall()
+    assert len(rows) == 2
+    assert rows[0]["id"] == original["id"]
+    assert rows[0]["content"] == original["content"]
+    assert rows[0]["updated_at"] == original["updated_at"]
+    assert all(json.loads(row["metadata"])["lifecycle"] == "candidate" for row in rows)
+    assert all(" / " not in row["content"] for row in rows)
+    assert any("journal-first" in row["content"] for row in rows)
+    assert any("merge" in row["content"].lower() or "合并" in row["content"] or "upsert" in row["content"].lower() for row in rows)
     assert conn.execute("SELECT COUNT(*) FROM memory_journal_sources").fetchone()[0] == 4
 
 
@@ -1084,7 +1108,7 @@ def test_journal_digest_llm_extractor_uses_llm_candidates_and_records_actual_ext
     (hermes_home / ".env").write_text("SCOPE_RECALL_DIGEST_API_KEY=test-key\n", encoding="utf-8")
     conn = _open_memory_db(storage / "memory.sqlite3")
     scope = _scope()
-    append_journal_entry(
+    entry_id = append_journal_entry(
         conn,
         scope=scope,
         scope_id=build_scope_id(scope),
@@ -1103,6 +1127,7 @@ def test_journal_digest_llm_extractor_uses_llm_candidates_and_records_actual_ext
         return json.dumps([
             {
                 "action": "insert",
+                "evidence_message_ids": [entry_id],
                 "content": "scope-recall journal digest must use LLM extraction for hidden lessons and keep heuristic only as explicit fallback.",
                 "target": "memory",
                 "memory_type": "procedure",
@@ -1134,7 +1159,7 @@ def test_journal_digest_default_extractor_is_llm_not_heuristic(tmp_path, monkeyp
     (hermes_home / ".env").write_text("SCOPE_RECALL_DIGEST_API_KEY=test-key\n", encoding="utf-8")
     conn = _open_memory_db(storage / "memory.sqlite3")
     scope = _scope()
-    append_journal_entry(
+    entry_id = append_journal_entry(
         conn,
         scope=scope,
         scope_id=build_scope_id(scope),
@@ -1153,6 +1178,7 @@ def test_journal_digest_default_extractor_is_llm_not_heuristic(tmp_path, monkeyp
         return json.dumps([
             {
                 "action": "insert",
+                "evidence_message_ids": [entry_id],
                 "content": "journal digest default extractor is LLM-first, not heuristic.",
                 "target": "memory",
                 "memory_type": "decision",
@@ -1236,7 +1262,7 @@ def test_mixed_journal_digest_does_not_send_tool_content_to_llm(tmp_path, monkey
     (storage / "config.json").write_text(json.dumps({"vector": {"enabled": False}, "journal": {"extractor": "llm"}}), encoding="utf-8")
     conn = _open_memory_db(storage / "memory.sqlite3")
     scope = _scope()
-    append_journal_entry(
+    user_entry_id = append_journal_entry(
         conn,
         scope=scope,
         scope_id=build_scope_id(scope),
@@ -1246,7 +1272,7 @@ def test_mixed_journal_digest_does_not_send_tool_content_to_llm(tmp_path, monkey
         role="user",
         content="scope-recall mixed journal digest should preserve user intent.",
     )
-    append_journal_entry(
+    tool_entry_id = append_journal_entry(
         conn,
         scope=scope,
         scope_id=build_scope_id(scope),
@@ -1269,8 +1295,18 @@ def test_mixed_journal_digest_does_not_send_tool_content_to_llm(tmp_path, monkey
 
     result = run_journal_digest(hermes_home=hermes_home, extractor="llm", scope=scope, interval_label="test", limit_entries=50)
 
-    total_entries = conn.execute("SELECT COUNT(*) FROM journal_entries").fetchone()[0]
-    assert result["processed_entries"] == total_entries
+    user_row = conn.execute(
+        "SELECT processed_run_id FROM journal_entries WHERE id = ?",
+        (user_entry_id,),
+    ).fetchone()
+    tool_rows = conn.execute(
+        "SELECT id, processed_run_id FROM journal_entries WHERE role = 'tool' ORDER BY id"
+    ).fetchall()
+    assert user_row["processed_run_id"] in {None, ""}
+    assert tool_rows
+    assert tool_rows[0]["id"] == tool_entry_id
+    assert all(row["processed_run_id"] == result["run_id"] for row in tool_rows)
+    assert result["processed_entries"] == len(tool_rows)
     assert result["candidates"] == 0
 
 
@@ -1342,7 +1378,7 @@ def test_journal_digest_marks_reviewed_entries_without_candidates_processed(tmp_
     assert rejection["reason"] == "no durable memory candidate"
 
 
-def test_llm_digest_filtered_output_marks_reviewed_without_dead_letter(tmp_path, monkeypatch):
+def test_llm_digest_filtered_output_remains_pending_without_dead_letter(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     storage = hermes_home / "scope-recall"
     storage.mkdir(parents=True)
@@ -1383,15 +1419,14 @@ def test_llm_digest_filtered_output_marks_reviewed_without_dead_letter(tmp_path,
 
     assert result["ok"] is True
     assert result["extractor_used"] == "llm"
-    assert result["processed_entries"] == 1
+    assert result["processed_entries"] == 0
     assert result["candidates"] == 0
     assert result["inserted"] == 0
-    assert result["skipped"] == 1
+    assert result["skipped"] == 0
     row = conn.execute("SELECT processed_run_id FROM journal_entries WHERE id = ?", (entry_id,)).fetchone()
-    assert row["processed_run_id"] == result["run_id"]
+    assert row["processed_run_id"] in {None, ""}
     rejection = conn.execute("SELECT reason, candidate FROM journal_rejections WHERE journal_entry_id = ?", (entry_id,)).fetchone()
-    assert rejection["reason"] == "no durable memory candidate"
-    assert rejection["reason"] != "dead-letter:filtered"
+    assert rejection is None
     run = conn.execute("SELECT extractor, metadata FROM journal_digest_runs WHERE id = ?", (result["run_id"],)).fetchone()
     assert run["extractor"] == "llm"
     metadata = json.loads(run["metadata"])
@@ -1404,7 +1439,12 @@ def test_llm_digest_filtered_output_marks_reviewed_without_dead_letter(tmp_path,
     assert "no_productive_write" in result["health_flags"]
 
 
-def test_llm_digest_skips_one_bad_json_chunk_without_quarantining_whole_batch(tmp_path, monkeypatch):
+@pytest.mark.parametrize("failure_mode", ["parse", "filtered"])
+def test_llm_digest_keeps_failed_chunk_pending_when_another_chunk_succeeds(
+    tmp_path,
+    monkeypatch,
+    failure_mode,
+):
     hermes_home = tmp_path / "hermes"
     storage = hermes_home / "scope-recall"
     storage.mkdir(parents=True)
@@ -1415,32 +1455,66 @@ def test_llm_digest_skips_one_bad_json_chunk_without_quarantining_whole_batch(tm
     (hermes_home / ".env").write_text("SCOPE_RECALL_DIGEST_API_KEY=test-key\n", encoding="utf-8")
     conn = _open_memory_db(storage / "memory.sqlite3")
     scope = _scope()
+    entry_ids: list[int] = []
     for idx in range(2):
-        append_journal_entry(
-            conn,
-            scope=scope,
-            scope_id=build_scope_id(scope),
-            shared_scope_id=build_shared_scope_id(scope),
-            session_id="llm-partial-parse-session",
-            turn_number=idx + 1,
-            role="user" if idx == 0 else "assistant",
-            content=f"Scope Recall journal digest chunk {idx} should keep processing other chunks when one JSON payload is malformed.",
+        entry_ids.append(
+            append_journal_entry(
+                conn,
+                scope=scope,
+                scope_id=build_scope_id(scope),
+                shared_scope_id=build_shared_scope_id(scope),
+                session_id="llm-partial-parse-session",
+                turn_number=idx + 1,
+                role="user" if idx == 0 else "assistant",
+                content=f"Scope Recall journal digest chunk {idx} should keep processing other chunks when one JSON payload is malformed.",
+            )
         )
 
     import scope_recall.journal as journal_module
     import scope_recall.journal_extractors as journal_extractors
 
-    monkeypatch.setattr(journal_extractors, "session_chunks", lambda *args, **kwargs: ["bad chunk", "good chunk"])
+    monkeypatch.setattr(
+        journal_extractors,
+        "session_chunks",
+        lambda *args, **kwargs: [
+            SessionChunk(
+                text=f"[message_id={entry_ids[0]} role=user] bad chunk",
+                message_ids=(entry_ids[0],),
+                input_chars=50,
+                exposed_chars=50,
+                truncated=False,
+            ),
+            SessionChunk(
+                text=f"[message_id={entry_ids[1]} role=assistant] good chunk",
+                message_ids=(entry_ids[1],),
+                input_chars=55,
+                exposed_chars=55,
+                truncated=False,
+            ),
+        ],
+    )
     calls = {"count": 0}
 
     def flaky_json_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float, api_mode: str = "chat_completions", endpoint: str = "", append_v1: bool = True) -> str:
         calls["count"] += 1
         if calls["count"] == 1:
-            return "```json\n[{\"action\": \"insert\", \"content\": \"unterminated"
+            if failure_mode == "parse":
+                return "```json\n[{\"action\": \"insert\", \"content\": \"unterminated"
+            return json.dumps(
+                [
+                    {
+                        "action": "insert",
+                        "evidence_message_ids": [entry_ids[0]],
+                        "content": "too short",
+                        "target": "memory",
+                    }
+                ]
+            )
         return json.dumps(
             [
                 {
                     "action": "insert",
+                    "evidence_message_ids": [entry_ids[1]],
                     "content": "Scope Recall journal digest skips one malformed JSON chunk while preserving valid candidates from later chunks.",
                     "target": "ops",
                     "memory_type": "pitfall",
@@ -1461,7 +1535,14 @@ def test_llm_digest_skips_one_bad_json_chunk_without_quarantining_whole_batch(tm
     assert result["ok"] is True
     assert result["extractor_used"] == "llm"
     assert result["inserted"] == 1
-    assert result["processed_entries"] == 2
+    assert result["processed_entries"] == 1
+    rows = conn.execute(
+        "SELECT id, processed_run_id FROM journal_entries ORDER BY id"
+    ).fetchall()
+    assert rows[0]["id"] == entry_ids[0]
+    assert rows[0]["processed_run_id"] in {None, ""}
+    assert rows[1]["id"] == entry_ids[1]
+    assert rows[1]["processed_run_id"] == result["run_id"]
     assert result.get("quarantine_counts") in ({}, None)
     assert conn.execute("SELECT COUNT(*) FROM journal_rejections WHERE reason LIKE 'dead-letter:%'").fetchone()[0] == 0
 
@@ -1477,7 +1558,7 @@ def test_llm_digest_transient_failure_retries_before_quarantine(tmp_path, monkey
     (hermes_home / ".env").write_text("SCOPE_RECALL_DIGEST_API_KEY=test-key\n", encoding="utf-8")
     conn = _open_memory_db(storage / "memory.sqlite3")
     scope = _scope()
-    append_journal_entry(
+    entry_id = append_journal_entry(
         conn,
         scope=scope,
         scope_id=build_scope_id(scope),
@@ -1500,6 +1581,7 @@ def test_llm_digest_transient_failure_retries_before_quarantine(tmp_path, monkey
             [
                 {
                     "action": "insert",
+                    "evidence_message_ids": [entry_id],
                     "content": "Scope Recall journal digest retries transient LLM timeout before quarantine, preserving valuable entries after recovery.",
                     "target": "project",
                     "memory_type": "procedure",
@@ -1523,7 +1605,7 @@ def test_llm_digest_transient_failure_retries_before_quarantine(tmp_path, monkey
     assert conn.execute("SELECT COUNT(*) FROM journal_rejections").fetchone()[0] == 0
 
 
-def test_llm_digest_failure_retries_then_quarantines_without_fallback_memory(tmp_path, monkeypatch):
+def test_llm_digest_timeout_leaves_source_pending_and_records_error(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     storage = hermes_home / "scope-recall"
     storage.mkdir(parents=True)
@@ -1542,7 +1624,7 @@ def test_llm_digest_failure_retries_then_quarantines_without_fallback_memory(tmp
         session_id="llm-failure-session",
         turn_number=1,
         role="user",
-        content="LLM digest 持续超时时不得静默降级 heuristic 写长期记忆，但重试耗尽后可以 quarantine 避免 backlog 卡住。",
+        content="LLM digest 持续超时时不得静默降级 heuristic，也不得把基础设施失败当成数据终态。",
     )
 
     import scope_recall.journal as journal_module
@@ -1558,29 +1640,28 @@ def test_llm_digest_failure_retries_then_quarantines_without_fallback_memory(tmp
     result = run_journal_digest(hermes_home=hermes_home, scope=scope, interval_label="test", limit_entries=50)
 
     assert attempts["count"] == 2
-    assert result["ok"] is True
-    assert result["processed_entries"] == 1
+    assert result["ok"] is False
+    assert result["status"] == "error"
+    assert result["processed_entries"] == 0
     assert result["inserted"] == 0
     assert result["updated"] == 0
-    assert result["skipped"] == 1
-    assert result["extractor_used"] == "llm-quarantine"
+    assert result["skipped"] == 0
+    assert result["extractor_used"] == "llm-error"
     row = conn.execute("SELECT processed_run_id FROM journal_entries WHERE id = ?", (entry_id,)).fetchone()
-    assert row["processed_run_id"] == result["run_id"]
+    assert row["processed_run_id"] == ""
     assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
-    rejection = conn.execute("SELECT reason, candidate FROM journal_rejections WHERE journal_entry_id = ?", (entry_id,)).fetchone()
-    assert rejection["reason"] == "retry-exhausted:timeout"
-    assert "timeout after 2 attempt" in rejection["candidate"]
+    assert conn.execute("SELECT COUNT(*) FROM journal_rejections WHERE journal_entry_id = ?", (entry_id,)).fetchone()[0] == 0
     run = conn.execute("SELECT status, extractor, error, metadata FROM journal_digest_runs WHERE id = ?", (result["run_id"],)).fetchone()
-    assert run["status"] == "ok"
-    assert run["extractor"] == "llm-quarantine"
-    assert run["error"] is None
+    assert run["status"] == "error"
+    assert run["extractor"] == "llm-error"
+    assert "timeout" in run["error"]
     metadata = json.loads(run["metadata"])
-    assert metadata["quarantine_counts"] == {"retry_exhausted": 1}
+    assert metadata["quarantine_counts"] == {}
     assert metadata["extractor_errors"][0]["kind"] == "timeout"
     assert metadata["extractor_errors"][0]["retryable"] is True
 
 
-def test_llm_digest_malformed_json_quarantines_as_parse_dead_letter(tmp_path, monkeypatch):
+def test_llm_digest_malformed_json_leaves_source_pending(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     storage = hermes_home / "scope-recall"
     storage.mkdir(parents=True)
@@ -1625,30 +1706,28 @@ def test_llm_digest_malformed_json_quarantines_as_parse_dead_letter(tmp_path, mo
     result = run_journal_digest(hermes_home=hermes_home, scope=scope, interval_label="test", limit_entries=50)
 
     assert attempts["count"] == 1
-    assert result["ok"] is True
-    assert result["processed_entries"] == 1
+    assert result["ok"] is False
+    assert result["status"] == "error"
+    assert result["processed_entries"] == 0
     assert result["inserted"] == 0
     assert result["updated"] == 0
-    assert result["skipped"] == 1
-    assert result["extractor_used"] == "llm-quarantine"
+    assert result["skipped"] == 0
+    assert result["extractor_used"] == "llm-error"
     row = conn.execute("SELECT processed_run_id FROM journal_entries WHERE id = ?", (entry_id,)).fetchone()
-    assert row["processed_run_id"] == result["run_id"]
+    assert row["processed_run_id"] == ""
     assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
-    rejection = conn.execute("SELECT reason, candidate FROM journal_rejections WHERE journal_entry_id = ?", (entry_id,)).fetchone()
-    assert rejection["reason"] == "dead-letter:parse"
-    assert rejection["reason"] != "no durable memory candidate"
-    assert "parse after 1 attempt" in rejection["candidate"]
+    assert conn.execute("SELECT COUNT(*) FROM journal_rejections WHERE journal_entry_id = ?", (entry_id,)).fetchone()[0] == 0
     run = conn.execute("SELECT status, extractor, error, metadata FROM journal_digest_runs WHERE id = ?", (result["run_id"],)).fetchone()
-    assert run["status"] == "ok"
-    assert run["extractor"] == "llm-quarantine"
-    assert run["error"] is None
+    assert run["status"] == "error"
+    assert run["extractor"] == "llm-error"
+    assert "parse" in run["error"]
     metadata = json.loads(run["metadata"])
-    assert metadata["quarantine_counts"] == {"dead_letter": 1}
+    assert metadata["quarantine_counts"] == {}
     assert metadata["extractor_errors"][0]["kind"] == "parse"
     assert metadata["extractor_errors"][0]["retryable"] is False
 
 
-def test_llm_digest_auth_failure_quarantines_without_retrying(tmp_path, monkeypatch):
+def test_llm_digest_auth_failure_leaves_source_pending_without_retrying(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     storage = hermes_home / "scope-recall"
     storage.mkdir(parents=True)
@@ -1667,13 +1746,12 @@ def test_llm_digest_auth_failure_quarantines_without_retrying(tmp_path, monkeypa
         session_id="llm-auth-failure-session",
         turn_number=1,
         role="user",
-        content="LLM digest 遇到 403 权限错误时不应盲目重试三次，应分类后隔离并保留审计信息。",
+        content="LLM digest 遇到 403 权限错误时不应盲目重试，也不得推进源journal水位。",
     )
 
     import scope_recall.journal as journal_module
 
     attempts = {"count": 0}
-
     raw_key = "sk-" + "a" * 30
 
     def forbidden_call_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float, api_mode: str = "chat_completions", endpoint: str = "", append_v1: bool = True) -> str:
@@ -1685,21 +1763,20 @@ def test_llm_digest_auth_failure_quarantines_without_retrying(tmp_path, monkeypa
     result = run_journal_digest(hermes_home=hermes_home, scope=scope, interval_label="test", limit_entries=50)
 
     assert attempts["count"] == 1
-    assert result["extractor_used"] == "llm-quarantine"
+    assert result["ok"] is False
+    assert result["status"] == "error"
+    assert result["extractor_used"] == "llm-error"
     row = conn.execute("SELECT processed_run_id FROM journal_entries WHERE id = ?", (entry_id,)).fetchone()
-    assert row["processed_run_id"] == result["run_id"]
-    rejection = conn.execute("SELECT reason, candidate FROM journal_rejections WHERE journal_entry_id = ?", (entry_id,)).fetchone()
-    assert rejection["reason"] == "dead-letter:auth"
-    assert "auth after 1 attempt" in rejection["candidate"]
-    assert raw_key not in rejection["candidate"]
-    assert "[REDACTED_SECRET]" in rejection["candidate"]
-    run = conn.execute("SELECT metadata FROM journal_digest_runs WHERE id = ?", (result["run_id"],)).fetchone()
+    assert row["processed_run_id"] == ""
+    assert conn.execute("SELECT COUNT(*) FROM journal_rejections WHERE journal_entry_id = ?", (entry_id,)).fetchone()[0] == 0
+    run = conn.execute("SELECT error, metadata FROM journal_digest_runs WHERE id = ?", (result["run_id"],)).fetchone()
     metadata = json.loads(run["metadata"])
-    assert metadata["quarantine_counts"] == {"dead_letter": 1}
+    assert metadata["quarantine_counts"] == {}
     assert metadata["extractor_errors"][0]["kind"] == "auth"
     assert metadata["extractor_errors"][0]["retryable"] is False
     assert raw_key not in metadata["extractor_errors"][0]["message"]
     assert "[REDACTED_SECRET]" in metadata["extractor_errors"][0]["message"]
+    assert raw_key not in run["error"]
 
 
 def test_journal_digest_dynamic_limit_scales_up_when_backlog_is_large(tmp_path, monkeypatch):

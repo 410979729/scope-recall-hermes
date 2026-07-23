@@ -12,7 +12,6 @@ import argparse
 import importlib.util
 import json
 import os
-import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
@@ -32,6 +31,7 @@ if PACKAGE_NAME not in sys.modules:
     spec.loader.exec_module(package)
 
 from scope_recall_migrate_status_runtime.sql_store import schema_migration_status  # noqa: E402
+from scope_recall_migrate_status_runtime.truth_connection import connect_truth_database  # noqa: E402
 
 REPORT_SCHEMA_VERSION = "migration_status_report.v1"
 
@@ -61,10 +61,8 @@ def build_payload(db_path: Path) -> dict[str, Any]:
             "error": f"SQLite truth DB not found: {db_path}",
         }
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
+        conn = connect_truth_database(db_path, mode="ro")
         try:
-            conn.execute("PRAGMA query_only=ON")
             status = schema_migration_status(conn)
         finally:
             conn.close()

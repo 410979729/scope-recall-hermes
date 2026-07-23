@@ -143,6 +143,114 @@ def test_openai_compatible_embedder_rejects_response_count_and_dimension_mismatc
         embedder.embed_texts(["alpha"])
 
 
+def test_openai_compatible_embedder_retries_only_typed_connection_failures(monkeypatch):
+    fake_client = _FakeOpenAIClient()
+    real_create = fake_client.embeddings.create
+    attempts = 0
+    sleeps: list[float] = []
+
+    def flaky_create(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise ConnectionRefusedError("synthetic endpoint startup")
+        return real_create(**kwargs)
+
+    monkeypatch.setattr(fake_client.embeddings, "create", flaky_create)
+    monkeypatch.setattr(
+        OpenAICompatibleEmbedder,
+        "_client_or_raise",
+        lambda self: fake_client,
+    )
+    monkeypatch.setattr("scope_recall.embedders.time.sleep", sleeps.append)
+    embedder = OpenAICompatibleEmbedder(
+        model="gemini-embedding-001",
+        api_key="pk-test",
+        dimensions=3,
+        connection_retry_delays=[0.25, 0.5],
+    )
+
+    assert embedder.embed_texts(["alpha"]) == [[0.1, 0.2, 0.3]]
+    assert attempts == 3
+    assert sleeps == [0.25, 0.5]
+    assert embedder.describe()["connection_retry_delays"] == [0.25, 0.5]
+
+
+def test_openai_compatible_embedder_preserves_default_retry_schedule():
+    embedder = OpenAICompatibleEmbedder(
+        model="gemini-embedding-001",
+        api_key="pk-test",
+        dimensions=3,
+    )
+
+    assert embedder.describe()["connection_retry_delays"] == [2.0, 4.0, 8.0]
+
+
+def test_openai_compatible_embedder_does_not_guess_connection_errors_from_text(monkeypatch):
+    class PolicyAPI:
+        calls = 0
+
+        def create(self, **_kwargs):
+            self.calls += 1
+            raise RuntimeError("connection refused by request policy")
+
+    class PolicyClient:
+        def __init__(self):
+            self.embeddings = PolicyAPI()
+
+    client = PolicyClient()
+    sleeps: list[float] = []
+    monkeypatch.setattr(OpenAICompatibleEmbedder, "_client_or_raise", lambda self: client)
+    monkeypatch.setattr("scope_recall.embedders.time.sleep", sleeps.append)
+    embedder = OpenAICompatibleEmbedder(
+        model="gemini-embedding-001",
+        api_key="pk-test",
+        dimensions=3,
+        connection_retry_delays=[1.0, 2.0],
+    )
+
+    with pytest.raises(RuntimeError, match="request policy"):
+        embedder.embed_texts(["alpha"])
+
+    assert client.embeddings.calls == 1
+    assert sleeps == []
+
+
+@pytest.mark.parametrize(
+    "delays",
+    (
+        "1,2",
+        [-1],
+        [float("inf")],
+        [True],
+        [0.0] * 9,
+    ),
+)
+def test_openai_compatible_embedder_rejects_unsafe_retry_delays(delays):
+    with pytest.raises(ValueError, match="connection_retry_delays"):
+        OpenAICompatibleEmbedder(
+            model="gemini-embedding-001",
+            api_key="pk-test",
+            dimensions=3,
+            connection_retry_delays=delays,
+        )
+
+
+def test_build_embedder_threads_connection_retry_configuration():
+    embedder = build_embedder(
+        {
+            "provider": "openai-compatible",
+            "model": "gemini-embedding-001",
+            "api_key": "pk-test",
+            "dimensions": 3,
+            "connection_retry_delays": [0.1],
+        }
+    )
+
+    assert isinstance(embedder, OpenAICompatibleEmbedder)
+    assert embedder.describe()["connection_retry_delays"] == [0.1]
+
+
 # ---------------------------------------------------------------------------
 # MiniMax (embo-01) embedder tests
 # ---------------------------------------------------------------------------

@@ -4,33 +4,36 @@ Vector failures should mark repair-needed state and never silently delete or rew
 
 from __future__ import annotations
 
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager
 from dataclasses import replace
 import hashlib
 import logging
 from pathlib import Path
-import sqlite3
-from typing import Any, Sequence, cast
-import uuid
+from typing import Any, Sequence
 
 from .capture_filters import sanitize_report_text
 from .embedders import build_embedder
 from .gating import config_bool
 from .graph import load_metadata
 from .lifecycle_policy import ordinary_recall_lifecycle_visible, ordinary_recall_lifecycle_visible_sql
+from .vector_bootstrap import bootstrap_fresh_vector_companion
 from .vector_generation import (
     GenerationCompatibilityError,
     GenerationIdentity,
-    bootstrap_legacy_generation,
-    claim_vector_events,
-    complete_vector_event,
     current_generation,
     enqueue_vector_event,
     ensure_vector_generation_schema,
-    fail_vector_event,
     resolve_generation_storage_root,
+    update_generation_cardinality,
     validate_generation_compatibility,
 )
+from .vector_outbox_replay import replay_committed_vector_events
+from .vector_reconciliation import (
+    prepare_vector_reconciliation_page,
+    vector_outbox_backlog_status,
+    vector_reconciliation_state,
+)
+from .vector_mutation_guard import vector_mutation_guard
 from .vector_store import (
     LanceVectorStore,
     VectorStoreCompatibilityError,
@@ -42,20 +45,77 @@ from .vector_store import (
 logger = logging.getLogger(__name__)
 
 
-def _vector_mutation_lock(provider: Any) -> AbstractContextManager[Any]:
-    """Return the provider-level vector companion mutation lock.
+def queued_vector_outbox_receipt(memory_ids: Sequence[str]) -> dict[str, Any]:
+    """Return a stable receipt for committed causal companion intents."""
 
-    Older tests and ad-hoc repair runtimes may not define `_vector_lock`; fall
-    back to the provider lock, then to a no-op context manager for compatibility.
-    """
-    lock = getattr(provider, "_vector_lock", None) or getattr(provider, "_lock", None)
-    if hasattr(lock, "__enter__") and hasattr(lock, "__exit__"):
-        return cast(AbstractContextManager[Any], lock)
-    return nullcontext()
+    ids = sorted({str(memory_id) for memory_id in memory_ids if str(memory_id)})
+    return {
+        "status": "queued" if ids else "not_needed",
+        "executor": "vector_outbox",
+        "requested": len(ids),
+        "deleted": 0,
+    }
+
+
+def _vector_mutation_lock(provider: Any) -> AbstractContextManager[Any]:
+    """Serialize physical mutations across provider threads and processes."""
+
+    storage_dir = getattr(provider, "_storage_dir", None)
+    if storage_dir is None:
+        db_path = getattr(provider, "_db_path", None)
+        storage_dir = Path(db_path).parent if db_path else None
+    # A path guard already serializes both threads and processes.  Retain the
+    # legacy provider lock only for ad-hoc runtimes that do not expose storage.
+    thread_lock = (
+        None
+        if storage_dir is not None
+        else getattr(provider, "_vector_lock", None)
+        or getattr(provider, "_lock", None)
+    )
+    return vector_mutation_guard(thread_lock=thread_lock, storage_dir=storage_dir)
 
 
 _VECTOR_STATUS_MESSAGE_LIMIT = 300
 _NATIVE_DEPENDENCY_DETAIL_LIMIT = 160
+_DEFAULT_STARTUP_RECONCILE_PAGE_SIZE = 200
+_DEFAULT_STARTUP_RECONCILE_INTERVAL_SECONDS = 86_400
+
+
+def _bounded_config_int(
+    config: dict[str, Any],
+    key: str,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    """Read one bounded integer without letting malformed config break startup."""
+
+    try:
+        value = int(config.get(key, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def vector_write_replay_limit(provider: Any) -> int:
+    """Return the bounded batch drained after each committed vector intent.
+
+    Replaying one event per write can preserve an old backlog forever because
+    each write also enqueues one event.  A small default batch lets ordinary
+    traffic converge while retaining a strict upper bound.
+    """
+
+    config = getattr(provider, "_vector_config", {})
+    if not isinstance(config, dict):
+        config = {}
+    return _bounded_config_int(
+        config,
+        "write_outbox_replay_limit",
+        default=20,
+        minimum=1,
+        maximum=2000,
+    )
 
 
 def _sanitize_vector_message(value: Exception | str, *, limit: int = _VECTOR_STATUS_MESSAGE_LIMIT) -> str:
@@ -98,245 +158,6 @@ def _native_dependency_detail(status: dict[str, Any]) -> str:
         str(status.get("stderr") or "not installed"),
         limit=_NATIVE_DEPENDENCY_DETAIL_LIMIT,
     )
-
-
-def _delete_persisted_sqlite_vector_ids(vector_path: Path, ids: list[str]) -> dict[str, Any]:
-    """Delete IDs without opening the dimension-sensitive SQLite wrapper."""
-
-    try:
-        conn = sqlite3.connect(vector_path, timeout=30.0)
-        try:
-            placeholders = ",".join("?" for _ in ids)
-            cursor = conn.execute(f"DELETE FROM vector_records WHERE id IN ({placeholders})", ids)
-            conn.commit()
-            return {
-                "status": "ok",
-                "backend": "sqlite-bruteforce",
-                "requested": len(ids),
-                "deleted": max(0, int(cursor.rowcount)),
-            }
-        finally:
-            conn.close()
-    except Exception as exc:
-        return {
-            "status": "needs_repair",
-            "backend": "sqlite-bruteforce",
-            "requested": len(ids),
-            "deleted": 0,
-            "error": sanitize_report_text(str(exc))[:300],
-        }
-
-
-def _current_generation_manifest_read_only(storage_dir: Path) -> dict[str, Any] | None:
-    """Read the active generation manifest without initializing schema."""
-
-    db_path = Path(storage_dir) / "memory.sqlite3"
-    if not db_path.exists():
-        return None
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    try:
-        tables = {
-            str(row[0])
-            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
-        }
-        if not {"vector_generation_state", "vector_generations"} <= tables:
-            return None
-        row = conn.execute(
-            """
-            SELECT g.*
-            FROM vector_generation_state AS s
-            JOIN vector_generations AS g ON g.generation_id = s.value
-            WHERE s.key = 'current_generation'
-            """
-        ).fetchone()
-        return dict(row) if row is not None else None
-    finally:
-        conn.close()
-
-
-def _cleanup_persisted_vector_root(
-    storage_dir: Path,
-    *,
-    ids: list[str],
-    vector_config: dict[str, Any],
-    retrieval_config: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Delete IDs from one physical vector storage root."""
-
-    backend = normalize_vector_backend(vector_config.get("backend") or "lancedb")
-    local_results: list[dict[str, Any]] = []
-    vector_path = storage_dir / "vector.sqlite3"
-    if vector_path.exists():
-        sqlite_result = _delete_persisted_sqlite_vector_ids(vector_path, ids)
-        if sqlite_result.get("status") != "ok":
-            return sqlite_result
-        local_results.append(sqlite_result)
-        if backend == "sqlite-bruteforce":
-            return sqlite_result
-
-    if not config_bool(vector_config, "enabled", False):
-        return local_results[0] if local_results else {
-            "status": "disabled",
-            "requested": len(ids),
-            "deleted": 0,
-        }
-    if backend == "sqlite-bruteforce":
-        return {"status": "absent", "backend": backend, "requested": len(ids), "deleted": 0}
-    if backend == "lancedb" and not (storage_dir / "lancedb").exists():
-        return local_results[0] if local_results else {
-            "status": "absent",
-            "backend": backend,
-            "requested": len(ids),
-            "deleted": 0,
-        }
-
-    embedder_config = dict(vector_config.get("embedder") or {})
-    dimensions = int(embedder_config.get("dimensions") or 256)
-    metric = str((retrieval_config or {}).get("metric") or "cosine")
-    table_name = str(vector_config.get("table_name") or "memories")
-    store = None
-    try:
-        store = build_vector_store(
-            backend,
-            storage_dir=storage_dir,
-            table_name=table_name,
-            dimensions=dimensions,
-            metric=metric,
-            config=vector_config,
-        )
-        if not store.is_available():
-            raise RuntimeError(f"vector backend unavailable: {backend}")
-        store.open()
-        primary_deleted = int(store.delete(ids))
-        if not local_results:
-            return {"status": "ok", "backend": backend, "requested": len(ids), "deleted": primary_deleted}
-        primary_result = {
-            "status": "ok",
-            "backend": backend,
-            "requested": len(ids),
-            "deleted": primary_deleted,
-        }
-        return {
-            "status": "ok",
-            "backend": "multiple",
-            "requested": len(ids),
-            "deleted": primary_deleted + sum(int(item.get("deleted") or 0) for item in local_results),
-            "companions": [*local_results, primary_result],
-        }
-    except Exception as exc:
-        result = {
-            "status": "needs_repair",
-            "backend": backend,
-            "requested": len(ids),
-            "deleted": sum(int(item.get("deleted") or 0) for item in local_results),
-            "error": sanitize_report_text(str(exc))[:300],
-        }
-        if local_results:
-            result["companions_cleaned"] = local_results
-        return result
-    finally:
-        if store is not None:
-            try:
-                store.close()
-            except Exception:
-                pass
-
-
-def cleanup_persisted_vector_companions(
-    storage_dir: Path,
-    *,
-    memory_ids: Sequence[str],
-    vector_config: dict[str, Any],
-    retrieval_config: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Delete hidden truth IDs from active-generation and legacy companions.
-
-    Truth must already be committed before this helper runs. The manifest is
-    authoritative for the active physical root; legacy root companions are also
-    inspected so an upgrade cannot strand sensitive hidden rows.
-    """
-
-    ids = list(dict.fromkeys(str(item) for item in memory_ids if str(item)))
-    if not ids:
-        return {"status": "not_needed", "requested": 0, "deleted": 0}
-    storage_dir = Path(storage_dir).expanduser().resolve()
-    targets: list[tuple[Path, dict[str, Any], dict[str, Any] | None, str]] = []
-    manifest_error = ""
-    try:
-        manifest = _current_generation_manifest_read_only(storage_dir)
-        if manifest is not None:
-            generation_root = resolve_generation_storage_root(
-                storage_dir,
-                manifest.get("storage_path"),
-            )
-            generation_config = dict(vector_config)
-            generation_config.update(
-                {
-                    "enabled": True,
-                    "backend": str(manifest.get("backend") or vector_config.get("backend") or "lancedb"),
-                    "table_name": str(manifest.get("table_name") or vector_config.get("table_name") or "memories"),
-                    "embedder": {
-                        **dict(vector_config.get("embedder") or {}),
-                        "dimensions": int(manifest.get("dimensions") or 0),
-                    },
-                }
-            )
-            generation_retrieval = {
-                **dict(retrieval_config or {}),
-                "metric": str(manifest.get("metric") or (retrieval_config or {}).get("metric") or "cosine"),
-            }
-            targets.append((generation_root, generation_config, generation_retrieval, "active_generation"))
-    except Exception as exc:
-        manifest_error = sanitize_report_text(str(exc))[:300]
-
-    # Keep scanning the pre-generation root. It may hold a fallback or retired
-    # local companion even after the active pointer moved to a shadow directory.
-    targets.append((storage_dir, dict(vector_config), dict(retrieval_config or {}), "legacy_root"))
-    results: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str]] = set()
-    for root, config, retrieval, source in targets:
-        key = (
-            str(root.resolve()),
-            normalize_vector_backend(config.get("backend") or "lancedb"),
-            str(config.get("table_name") or "memories"),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        item = _cleanup_persisted_vector_root(
-            root,
-            ids=ids,
-            vector_config=config,
-            retrieval_config=retrieval,
-        )
-        if source != "legacy_root" or len(targets) > 1:
-            item["storage_root"] = str(root)
-            item["source"] = source
-        results.append(item)
-
-    if manifest_error:
-        results.append(
-            {
-                "status": "needs_repair",
-                "source": "active_generation_manifest",
-                "requested": len(ids),
-                "deleted": 0,
-                "error": manifest_error,
-            }
-        )
-    failed = [item for item in results if item.get("status") == "needs_repair"]
-    deleted = sum(int(item.get("deleted") or 0) for item in results)
-    successful = [item for item in results if item.get("status") == "ok"]
-    if len(results) == 1:
-        return results[0]
-    return {
-        "status": "needs_repair" if failed else "ok" if successful else "absent",
-        "backend": "multiple",
-        "requested": len(ids),
-        "deleted": deleted,
-        "companions": results,
-    }
 
 
 def _configured_generation_identity(
@@ -409,32 +230,6 @@ def _select_generation_storage(provider: Any, identity: GenerationIdentity) -> d
     return manifest
 
 
-def _register_open_legacy_generation(provider: Any, identity: GenerationIdentity) -> dict[str, Any]:
-    """Adopt a compatible legacy companion in place after it opened safely."""
-
-    conn = provider._require_conn()
-    counts = provider._vector_store.audit_counts() if provider._vector_store is not None else {}
-    manifest = bootstrap_legacy_generation(
-        conn,
-        identity=identity,
-        storage_path=".",
-        row_count=int(counts.get("physical_rows") or 0),
-        unique_id_count=int(counts.get("unique_ids") or 0),
-    )
-    conn.commit()
-    provider._vector_generation_id = str(manifest["generation_id"])
-    provider._vector_storage_dir = provider._storage_dir
-    return manifest
-
-
-def _same_embedding_space(left: GenerationIdentity, right: GenerationIdentity) -> bool:
-    try:
-        validate_generation_compatibility(left.canonical(), right)
-    except GenerationCompatibilityError:
-        return False
-    return True
-
-
 def _open_sqlite_vector_store(provider: Any, *, table_name: str, dimensions: int, metric: str) -> None:
     storage_root = Path(getattr(provider, "_vector_storage_dir", None) or provider._storage_dir)
     temp_store = build_vector_store(
@@ -444,12 +239,18 @@ def _open_sqlite_vector_store(provider: Any, *, table_name: str, dimensions: int
         dimensions=dimensions,
         metric=metric,
     )
-    temp_store.open()
+    temp_store.open_existing_for_update()
     provider._vector_store = temp_store
     provider._vector_backend = "sqlite-bruteforce"
 
 
-def _open_vector_store(provider: Any, *, dimensions: int, allow_backend_fallback: bool = True) -> None:
+def _open_vector_store(provider: Any, *, dimensions: int) -> None:
+    """Open only the physical store named by the active generation.
+
+    Backend fallback is a fresh-bootstrap decision. Once a manifest is active,
+    switching backend here would cross an embedding-space boundary and is
+    therefore forbidden.
+    """
     if provider._storage_dir is None:
         raise RuntimeError("storage not initialized")
     storage_root = Path(getattr(provider, "_vector_storage_dir", None) or provider._storage_dir)
@@ -467,8 +268,6 @@ def _open_vector_store(provider: Any, *, dimensions: int, allow_backend_fallback
         _open_sqlite_vector_store(provider, table_name=table_name, dimensions=dimensions, metric=metric)
         return
 
-    fallback_backend = _normalize_vector_backend((provider._vector_config or {}).get("fallback_backend") or "")
-
     if backend == "pgvector":
         temp_store = build_vector_store(
             backend,
@@ -479,14 +278,8 @@ def _open_vector_store(provider: Any, *, dimensions: int, allow_backend_fallback
             config=provider._vector_config or {},
         )
         if not temp_store.is_available():
-            if allow_backend_fallback and fallback_backend == "sqlite-bruteforce":
-                message = "pgvector unavailable or not configured; using sqlite-bruteforce fallback"
-                message = _append_vector_message(provider, message)
-                logger.warning("Scope Recall vector backend fallback: %s", message)
-                _open_sqlite_vector_store(provider, table_name=table_name, dimensions=dimensions, metric=metric)
-                return
             raise RuntimeError("pgvector dependencies or DSN are not configured")
-        temp_store.open()
+        temp_store.open_existing_for_update()
         provider._vector_backend = "pgvector"
         provider._vector_store = temp_store
         return
@@ -497,19 +290,11 @@ def _open_vector_store(provider: Any, *, dimensions: int, allow_backend_fallback
     vector_dir = storage_root / "lancedb"
     temp_store = LanceVectorStore(vector_dir, table_name=table_name, dimensions=dimensions, metric=metric)
     if not temp_store.is_available():
-        if allow_backend_fallback and fallback_backend == "sqlite-bruteforce":
-            status = native_vector_dependency_status()
-            detail = _native_dependency_detail(status)
-            message = f"lancedb unavailable or unsafe ({detail}); using sqlite-bruteforce fallback"
-            message = _append_vector_message(provider, message)
-            logger.warning("Scope Recall vector backend fallback: %s", message)
-            _open_sqlite_vector_store(provider, table_name=table_name, dimensions=dimensions, metric=metric)
-            return
         status = native_vector_dependency_status()
         detail = _native_dependency_detail(status)
         raise RuntimeError(f"lancedb/pyarrow is not installed or unsafe ({detail})")
     try:
-        temp_store.open()
+        temp_store.open_existing_for_update()
     except VectorStoreCompatibilityError:
         temp_store.close()
         raise
@@ -539,6 +324,7 @@ def setup_vector_layer(provider: Any) -> None:
     provider._embedder = None
     provider._vector_store = None
     provider._vector_generation_id = ""
+    provider._vector_reconciliation = None
     provider._vector_storage_dir = provider._storage_dir
     if not provider._vector_enabled:
         return
@@ -547,29 +333,98 @@ def setup_vector_layer(provider: Any) -> None:
         provider._vector_message = "storage not initialized"
         return
 
+    conn = provider._require_conn()
+    try:
+        manifest_hint = current_generation(conn)
+    except Exception as exc:
+        _mark_vector_startup_degraded(provider, exc)
+        return
+    if manifest_hint is None:
+        runtime_config = getattr(provider, "_config", None)
+        if not isinstance(runtime_config, dict):
+            runtime_config = {
+                "vector": dict(provider._vector_config or {}),
+                "retrieval": dict(provider._retrieval_config or {}),
+            }
+        try:
+            bootstrap_receipt = bootstrap_fresh_vector_companion(
+                Path(provider._storage_dir),
+                runtime_config,
+                truth_conn=conn,
+            )
+        except Exception as exc:
+            _mark_vector_startup_degraded(provider, exc)
+            return
+        bootstrap_status = str(bootstrap_receipt.get("status") or "")
+        if bootstrap_status not in {"ready", "existing"}:
+            reason = str(bootstrap_receipt.get("reason") or "bootstrap unavailable")
+            _mark_vector_startup_degraded(
+                provider,
+                f"vector generation bootstrap unavailable: {reason}",
+            )
+            return
+        if bootstrap_status == "ready":
+            selection = str(bootstrap_receipt.get("selection") or "primary")
+            _append_vector_message(
+                provider,
+                f"initialized fresh generation with {selection}",
+            )
+        manifest_hint = current_generation(conn)
+        if manifest_hint is None:
+            _mark_vector_startup_degraded(
+                provider,
+                "vector bootstrap returned ready without an active generation manifest",
+            )
+            return
+
     embedder_cfg = dict((provider._vector_config or {}).get("embedder") or {})
     fallback_cfg = dict((provider._vector_config or {}).get("fallback_embedder") or {})
 
     primary_embedder = build_embedder(embedder_cfg)
     primary_identity = _configured_generation_identity(provider, primary_embedder, embedder_cfg)
-    provider._embedder = primary_embedder
+    fallback_embedder = build_embedder(fallback_cfg) if fallback_cfg else None
+    fallback_identity = (
+        _configured_generation_identity(provider, fallback_embedder, fallback_cfg)
+        if fallback_embedder is not None
+        else None
+    )
+
+    selected_embedder = primary_embedder
+    selected_identity = primary_identity
+    manifest_backend = _normalize_vector_backend(
+        manifest_hint.get("backend") or ""
+    )
+    candidates = [(primary_embedder, primary_identity)]
+    if fallback_embedder is not None and fallback_identity is not None:
+        candidates.append((fallback_embedder, fallback_identity))
+    matched = False
+    for candidate_embedder, candidate_identity in candidates:
+        if not candidate_embedder.is_available():
+            continue
+        try:
+            validate_generation_compatibility(
+                manifest_hint,
+                replace(candidate_identity, backend=manifest_backend),
+            )
+        except GenerationCompatibilityError:
+            continue
+        selected_embedder = candidate_embedder
+        selected_identity = candidate_identity
+        matched = True
+        break
+    if not matched and fallback_embedder is not None and fallback_embedder.is_available():
+        provider._vector_message = (
+            f"primary embedder {primary_identity.model} unavailable; "
+            f"fallback {fallback_identity.model if fallback_identity else 'configured fallback'} "
+            "is a different embedding space and was not allowed to access the current generation"
+        )
+
+    provider._embedder = selected_embedder
     try:
-        existing_manifest = _select_generation_storage(provider, primary_identity)
+        existing_manifest = _select_generation_storage(provider, selected_identity)
     except Exception as exc:
         _mark_vector_startup_degraded(provider, exc)
         return
-
-    if not primary_embedder.is_available() and fallback_cfg:
-        fallback_embedder = build_embedder(fallback_cfg)
-        fallback_identity = _configured_generation_identity(provider, fallback_embedder, fallback_cfg)
-        if fallback_embedder.is_available() and _same_embedding_space(primary_identity, fallback_identity):
-            provider._embedder = fallback_embedder
-            provider._vector_message = "primary embedder unavailable; using an explicitly compatible endpoint for the same embedding space"
-        elif fallback_embedder.is_available():
-            provider._vector_message = (
-                f"primary embedder {primary_identity.model} unavailable; fallback {fallback_identity.model} "
-                "is a different embedding space and was not allowed to access the current generation"
-            )
 
     if not provider._embedder.is_available():
         provider._vector_status = "degraded"
@@ -584,28 +439,44 @@ def setup_vector_layer(provider: Any) -> None:
             provider._vector_store = None
             return
 
+    if existing_manifest is None:
+        _mark_vector_startup_degraded(
+            provider,
+            "active vector generation disappeared before physical open",
+        )
+        return
+
     try:
         _open_vector_store(
             provider,
             dimensions=provider._embedder.dimensions,
-            allow_backend_fallback=existing_manifest is None,
         )
         opened_identity = replace(
-            primary_identity,
+            selected_identity,
             backend=_normalize_vector_backend(provider._vector_backend),
         )
-        if existing_manifest is None:
-            _register_open_legacy_generation(provider, opened_identity)
-        else:
-            validate_generation_compatibility(existing_manifest, opened_identity)
-        # Startup sync may reconcile missing/stale rows inside the already
-        # compatible generation, but it must never rebuild its schema or
-        # embedding space.
-        provider._vector_row_count = sync_vector_index(provider)
-        refresh_vector_audit(provider)
-        replay_result = replay_vector_outbox(provider)
-        if replay_result["completed"]:
-            provider._vector_message = f"replayed {replay_result['completed']} durable vector event(s)"
+        validate_generation_compatibility(existing_manifest, opened_identity)
+        provider._vector_row_count = int(existing_manifest.get("row_count") or 0)
+        provider._vector_unique_id_count = int(
+            existing_manifest.get("unique_id_count") or 0
+        )
+        provider._vector_duplicate_row_count = 0
+        _refresh_vector_row_count_only(provider)
+        # Ordinary startup is outbox-first and strictly bounded.  Full stale-row
+        # sweeps remain explicit repair/doctor work; they are never hidden here.
+        reconciliation = run_bounded_vector_reconciliation(provider)
+        provider._vector_reconciliation = reconciliation
+        if int(reconciliation.get("failed") or 0) > 0:
+            raise RuntimeError("bounded vector outbox replay failed during startup")
+        if int(reconciliation.get("dead_letter") or 0) > 0:
+            raise RuntimeError("vector outbox contains dead-lettered startup debt")
+        replayed = int(reconciliation.get("completed") or 0)
+        planned = int(reconciliation.get("planned") or 0)
+        if replayed or planned:
+            _append_vector_message(
+                provider,
+                f"bounded vector startup planned {planned} and replayed {replayed} event(s)",
+            )
     except Exception as exc:
         _mark_vector_startup_degraded(provider, exc)
         if provider._vector_store is not None:
@@ -665,16 +536,43 @@ def vector_delete_intent_required(provider: Any) -> bool:
     return status not in {"disabled", "degraded"}
 
 
+def _persist_vector_cardinality(
+    provider: Any,
+    *,
+    physical_rows: int,
+    unique_ids: int,
+) -> None:
+    generation_id = str(getattr(provider, "_vector_generation_id", "") or "")
+    if not generation_id:
+        return
+    conn = provider._require_conn()
+    with provider._lock:
+        owns_transaction = not bool(getattr(conn, "in_transaction", False))
+        changed = update_generation_cardinality(
+            conn,
+            generation_id=generation_id,
+            row_count=physical_rows,
+            unique_id_count=unique_ids,
+        )
+        if changed and owns_transaction:
+            conn.commit()
+
+
 def refresh_vector_audit(provider: Any) -> dict[str, int]:
     with _vector_mutation_lock(provider):
         if not provider._vector_store:
             counts = {"physical_rows": 0, "unique_ids": 0, "duplicate_rows": 0, "duplicate_ids": 0}
         else:
             counts = provider._vector_store.audit_counts()
-        provider._vector_row_count = int(counts.get("physical_rows") or 0)
-        provider._vector_unique_id_count = int(counts.get("unique_ids") or 0)
-        provider._vector_duplicate_row_count = int(counts.get("duplicate_rows") or 0)
-        return counts
+    provider._vector_row_count = int(counts.get("physical_rows") or 0)
+    provider._vector_unique_id_count = int(counts.get("unique_ids") or 0)
+    provider._vector_duplicate_row_count = int(counts.get("duplicate_rows") or 0)
+    _persist_vector_cardinality(
+        provider,
+        physical_rows=provider._vector_row_count,
+        unique_ids=provider._vector_unique_id_count,
+    )
+    return counts
 
 
 
@@ -691,6 +589,159 @@ def _should_index_row(provider: Any, target: str, metadata: dict[str, Any] | str
         lifecycle=lifecycle,
         target=str(target),
     )
+
+
+def _refresh_vector_row_count_only(provider: Any) -> None:
+    """Refresh only the backend's bounded physical-row counter.
+
+    Unlike ``refresh_vector_audit`` this never enumerates ids or records and does
+    not attempt duplicate discovery.  It keeps status counters accurate after a
+    bounded outbox replay without reintroducing cardinality-bound startup work.
+    """
+
+    store = getattr(provider, "_vector_store", None)
+    counter = getattr(store, "count_rows", None) if store is not None else None
+    if not callable(counter):
+        return
+    with _vector_mutation_lock(provider):
+        value = counter()
+    if isinstance(value, (int, str)):
+        provider._vector_row_count = int(value)
+        duplicate_rows = max(0, int(getattr(provider, "_vector_duplicate_row_count", 0) or 0))
+        provider._vector_unique_id_count = max(0, provider._vector_row_count - duplicate_rows)
+        _persist_vector_cardinality(
+            provider,
+            physical_rows=provider._vector_row_count,
+            unique_ids=provider._vector_unique_id_count,
+        )
+
+
+def run_bounded_vector_reconciliation(provider: Any) -> dict[str, Any]:
+    """Serialize the complete bounded truth/outbox/physical reconciliation."""
+
+    generation_id = str(getattr(provider, "_vector_generation_id", "") or "")
+    if not generation_id or not provider._vector_store or not provider._embedder:
+        return {
+            "status": "unavailable",
+            "claimed": 0,
+            "completed": 0,
+            "failed": 0,
+            "planned": 0,
+            "replayable": 0,
+            "dead_letter": 0,
+        }
+    with _vector_mutation_lock(provider):
+        return _run_bounded_vector_reconciliation_guarded(provider)
+
+
+def _run_bounded_vector_reconciliation_guarded(provider: Any) -> dict[str, Any]:
+    """Replay debt first, then plan and replay at most one truth page.
+
+    The startup/background contract is intentionally independent of total truth
+    or physical-vector cardinality.  A full stale-row/duplicate sweep remains an
+    explicit operator repair action via :func:`sync_vector_index` and doctor.
+    """
+
+    generation_id = str(getattr(provider, "_vector_generation_id", "") or "")
+    if not generation_id or not provider._vector_store or not provider._embedder:
+        return {
+            "status": "unavailable",
+            "claimed": 0,
+            "completed": 0,
+            "failed": 0,
+            "planned": 0,
+            "replayable": 0,
+            "dead_letter": 0,
+        }
+    config = dict(provider._vector_config or {})
+    page_size = _bounded_config_int(
+        config,
+        "startup_reconcile_page_size",
+        default=_DEFAULT_STARTUP_RECONCILE_PAGE_SIZE,
+        minimum=1,
+        maximum=2000,
+    )
+    outbox_limit = _bounded_config_int(
+        config,
+        "startup_outbox_limit",
+        default=page_size,
+        minimum=1,
+        maximum=2000,
+    )
+    interval_seconds = _bounded_config_int(
+        config,
+        "startup_reconcile_interval_seconds",
+        default=_DEFAULT_STARTUP_RECONCILE_INTERVAL_SECONDS,
+        minimum=60,
+        maximum=31_536_000,
+    )
+    first = replay_vector_outbox(
+        provider,
+        limit=outbox_limit,
+        refresh_audit_after=False,
+    )
+    if int(first.get("completed") or 0) > 0:
+        _refresh_vector_row_count_only(provider)
+    conn = provider._require_conn()
+    with provider._lock:
+        backlog = vector_outbox_backlog_status(
+            conn,
+            generation_id=generation_id,
+        )
+    result: dict[str, Any] = {
+        "status": "outbox_pending" if backlog["replayable"] else "ready",
+        "claimed": int(first["claimed"]),
+        "completed": int(first["completed"]),
+        "failed": int(first["failed"]),
+        "planned": 0,
+        **backlog,
+    }
+    if result["failed"] or backlog["dead_letter"] or backlog["replayable"]:
+        result["watermark"] = vector_reconciliation_state(
+            conn,
+            generation_id=generation_id,
+        )
+        return result
+
+    with provider._lock:
+        page = prepare_vector_reconciliation_page(
+            conn,
+            generation_id=generation_id,
+            should_index_row=lambda target, metadata: _should_index_row(
+                provider, target, metadata
+            ),
+            page_size=page_size,
+            interval_seconds=interval_seconds,
+        )
+    result["planned"] = int(page.get("planned") or 0)
+    result["page_status"] = str(page.get("status") or "")
+    if result["planned"]:
+        second = replay_vector_outbox(
+            provider,
+            limit=min(outbox_limit, result["planned"]),
+            refresh_audit_after=False,
+        )
+        result["claimed"] += int(second["claimed"])
+        result["completed"] += int(second["completed"])
+        result["failed"] += int(second["failed"])
+        if int(second.get("completed") or 0) > 0:
+            _refresh_vector_row_count_only(provider)
+    with provider._lock:
+        remaining = vector_outbox_backlog_status(
+            conn,
+            generation_id=generation_id,
+        )
+        result.update(remaining)
+        result["watermark"] = vector_reconciliation_state(
+            conn,
+            generation_id=generation_id,
+        )
+    result["status"] = (
+        "failed"
+        if result["failed"] or result["dead_letter"]
+        else ("outbox_pending" if result["replayable"] else str(page.get("status") or "ready"))
+    )
+    return result
 
 
 def sync_vector_index(provider: Any) -> int:
@@ -766,13 +817,15 @@ def sync_vector_index(provider: Any) -> int:
 
 
 
-def _enqueue_vector_repair_event(
+def enqueue_vector_repair_event(
     provider: Any,
     *,
     memory_id: str,
     operation: str,
     updated_at: str,
     reason: str,
+    commit: bool = True,
+    raise_on_error: bool = False,
 ) -> bool:
     """Persist idempotent replay intent without copying memory content into the outbox."""
 
@@ -792,94 +845,75 @@ def _enqueue_vector_repair_event(
                 operation=operation,
                 payload={"updated_at": str(updated_at or ""), "reason": sanitize_report_text(reason)[:500]},
             )
-            conn.commit()
+            if commit:
+                conn.commit()
         return True
     except Exception as exc:
+        if raise_on_error:
+            raise
         logger.warning("Scope Recall could not persist vector replay event for %s: %s", memory_id, exc)
         return False
 
 
-def replay_vector_outbox(provider: Any, *, limit: int = 200) -> dict[str, int]:
-    """Replay durable events one-by-one into the current compatible generation.
-
-    Claiming a single event at a time prevents a failed first mutation from
-    stranding an entire claimed batch in ``processing`` until its lease expires.
-    """
+def replay_vector_outbox(
+    provider: Any,
+    *,
+    limit: int = 200,
+    refresh_audit_after: bool = True,
+) -> dict[str, int]:
+    """Serialize truth outbox claims, schema bookkeeping, and physical replay."""
 
     generation_id = str(getattr(provider, "_vector_generation_id", "") or "")
     if not generation_id or not provider._vector_store or not provider._embedder:
         return {"claimed": 0, "completed": 0, "failed": 0}
-    conn = provider._require_conn()
-    worker_id = f"runtime-{uuid.uuid4().hex}"
-    max_events = max(1, int(limit))
-    claimed = 0
-    completed = 0
-    failed = 0
-    while claimed < max_events:
-        with provider._lock:
-            events = claim_vector_events(
-                conn,
-                generation_id=generation_id,
-                worker_id=worker_id,
-                limit=1,
-            )
-            conn.commit()
-        if not events:
-            break
-        event = events[0]
-        claimed += 1
-        try:
-            with provider._lock:
-                row = conn.execute(
-                    "SELECT id, scope_id, source, target, content, summary, updated_at, metadata FROM memories WHERE id = ?",
-                    (event["memory_id"],),
-                ).fetchone()
-            should_delete = str(event["operation"] or "") == "delete" or row is None
-            if row is not None:
-                should_delete = should_delete or not _should_index_row(
-                    provider,
-                    str(row["target"] or ""),
-                    row["metadata"],
-                )
-            with _vector_mutation_lock(provider):
-                if should_delete:
-                    provider._vector_store.delete_by_ids([str(event["memory_id"])])
-                else:
-                    assert row is not None
-                    vector = provider._embedder.embed(provider._vector_text(row["summary"], row["content"]))
-                    provider._vector_store.upsert_records(
-                        [
-                            {
-                                "id": str(row["id"]),
-                                "scope_id": str(row["scope_id"] or provider._scope_id),
-                                "source": str(row["source"] or ""),
-                                "target": str(row["target"] or ""),
-                                "content": str(row["content"] or ""),
-                                "summary": str(row["summary"] or ""),
-                                "updated_at": str(row["updated_at"] or ""),
-                                "vector": vector,
-                            }
-                        ]
-                    )
-            with provider._lock:
-                complete_vector_event(conn, int(event["id"]), worker_id=worker_id)
-                conn.commit()
-            completed += 1
-        except Exception as exc:
-            safe_error = sanitize_report_text(str(exc))
-            with provider._lock:
-                try:
-                    fail_vector_event(conn, int(event["id"]), worker_id=worker_id, error=safe_error)
-                    conn.commit()
-                except Exception:
-                    conn.rollback()
-            failed += 1
-            mark_vector_needs_repair(provider, safe_error)
-            logger.warning("Scope Recall vector replay failed for %s: %s", event["memory_id"], safe_error)
-            break
-    if provider._vector_store is not None:
-        refresh_vector_audit(provider)
-    return {"claimed": claimed, "completed": completed, "failed": failed}
+    with _vector_mutation_lock(provider):
+        return _replay_vector_outbox_guarded(
+            provider,
+            limit=limit,
+            refresh_audit_after=refresh_audit_after,
+        )
+
+
+def _replay_vector_outbox_guarded(
+    provider: Any,
+    *,
+    limit: int = 200,
+    refresh_audit_after: bool = True,
+) -> dict[str, int]:
+    """Replay committed intent through the shared single-writer executor."""
+
+    generation_id = str(getattr(provider, "_vector_generation_id", "") or "")
+    if not generation_id or not provider._vector_store or not provider._embedder:
+        return {"claimed": 0, "completed": 0, "failed": 0}
+
+    def on_failure(error: str) -> None:
+        mark_vector_needs_repair(provider, error)
+        logger.warning("Scope Recall vector replay failed: %s", error)
+
+    return replay_committed_vector_events(
+        provider._require_conn(),
+        generation_id=generation_id,
+        vector_store=provider._vector_store,
+        embedder=provider._embedder,
+        vector_text=getattr(
+            provider,
+            "_vector_text",
+            lambda summary, content: f"{summary}\n{content}".strip(),
+        ),
+        should_index_row=lambda target, metadata: _should_index_row(
+            provider, target, metadata
+        ),
+        default_scope_id=str(getattr(provider, "_scope_id", "") or ""),
+        db_lock=getattr(provider, "_lock", None),
+        mutation_context=lambda: _vector_mutation_lock(provider),
+        limit=limit,
+        on_failure=on_failure,
+        after_replay=(
+            (lambda: refresh_vector_audit(provider))
+            if refresh_audit_after
+            else None
+        ),
+    )
 
 
 def upsert_vector_record(
@@ -894,67 +928,43 @@ def upsert_vector_record(
     scope_id: str | None = None,
     metadata: dict[str, Any] | str | None = None,
 ) -> None:
-    """Upsert one vector companion record for a SQLite memory row.
+    """Compatibility trigger that enqueues and replays committed truth intent.
 
-    Failures mark vector repair-needed status so callers do not mistake a companion write failure for durable storage success."""
+    The payload arguments are retained for callers compiled against older
+    versions, but physical companion content is always re-read from SQLite by
+    the shared outbox executor.  This function must never write the backend
+    directly.
+    """
+
+    del source, content, summary, scope_id
     resolved_metadata = metadata
     if resolved_metadata is None:
         try:
-            row = provider._require_conn().execute("SELECT metadata FROM memories WHERE id = ?", (id,)).fetchone()
+            row = provider._require_conn().execute(
+                "SELECT metadata FROM memories WHERE id = ?", (id,)
+            ).fetchone()
             if row is not None:
                 resolved_metadata = row["metadata"]
         except Exception:
             resolved_metadata = None
-    operation = "upsert" if _should_index_row(provider, target, resolved_metadata) else "delete"
-    with _vector_mutation_lock(provider):
-        if not provider._vector_ready or not provider._vector_store or not provider._embedder:
-            _enqueue_vector_repair_event(
-                provider,
-                memory_id=id,
-                operation=operation,
-                updated_at=updated_at,
-                reason=str(getattr(provider, "_vector_message", "") or "vector companion unavailable"),
-            )
-            return
-        if operation == "delete":
-            try:
-                provider._vector_store.delete_by_ids([id])
-                refresh_vector_audit(provider)
-            except Exception as exc:
-                _enqueue_vector_repair_event(
-                    provider,
-                    memory_id=id,
-                    operation="delete",
-                    updated_at=updated_at,
-                    reason=str(exc),
-                )
-                mark_vector_needs_repair(provider, exc)
-                logger.warning("Scope Recall vector lifecycle cleanup failed; SQLite truth row preserved and replay was queued: %s", exc)
-            return
-        try:
-            vector = provider._embedder.embed(provider._vector_text(summary, content))
-            provider._vector_store.upsert_records(
-                [
-                    {
-                        "id": id,
-                        "scope_id": scope_id or provider._scope_id,
-                        "source": source,
-                        "target": target,
-                        "content": content,
-                        "summary": summary,
-                        "updated_at": updated_at,
-                        "vector": vector,
-                    }
-                ]
-            )
-            refresh_vector_audit(provider)
-        except Exception as exc:
-            _enqueue_vector_repair_event(
-                provider,
-                memory_id=id,
-                operation="upsert",
-                updated_at=updated_at,
-                reason=str(exc),
-            )
-            mark_vector_needs_repair(provider, exc)
-            logger.warning("Scope Recall vector upsert failed; SQLite truth row preserved and replay was queued: %s", exc)
+    operation = (
+        "upsert"
+        if _should_index_row(provider, target, resolved_metadata)
+        else "delete"
+    )
+    queued = enqueue_vector_repair_event(
+        provider,
+        memory_id=id,
+        operation=operation,
+        updated_at=updated_at,
+        reason="compatibility trigger for committed SQLite truth",
+        commit=True,
+    )
+    if not queued:
+        mark_vector_needs_repair(
+            provider,
+            "vector intent could not be persisted to the current generation outbox",
+        )
+        return
+    if provider._vector_ready and provider._vector_store and provider._embedder:
+        replay_vector_outbox(provider, limit=vector_write_replay_limit(provider))

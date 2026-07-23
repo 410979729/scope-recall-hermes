@@ -17,6 +17,7 @@ import pytest
 from scope_recall.candidate_promotion import candidate_debt_report, candidate_rows, classify_candidate_row
 from scope_recall.governance_cleanup import governance_audit_coverage_report
 from scope_recall.sql_store import ensure_schema, store_row
+from scope_recall.vector_generation import GenerationIdentity, bootstrap_legacy_generation
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PLUGIN_ROOT / "scripts" / "promote.memory_candidates.py"
@@ -523,7 +524,7 @@ def test_promote_memory_candidates_cli_dry_run_wins_and_sanitizes_reviewed_summa
         _insert_memory(
             conn,
             "risky-secret",
-            summary="token=ghp_abcdefghijklmnopqrstuvwxyz123456 at /home/a/private/file.txt",
+            summary="token=" + "gh" + "p_abcdefghijklmnopqrstuvwxyz123456" + " at /home/a/private/file.txt",
             content="Do not promote this credential-like candidate.",
             metadata={"memory_type": "workflow", "confidence": 0.9, "importance": 0.9},
         )
@@ -725,7 +726,9 @@ def test_candidate_promotion_archive_counts_as_governance_audited_archive(tmp_pa
 
 
 @pytest.mark.parametrize("configured_backend", ["sqlite-bruteforce", "lancedb"])
-def test_bulk_archive_deletes_existing_sqlite_vector_companion(tmp_path, configured_backend):
+def test_bulk_archive_queues_causal_delete_without_direct_vector_mutation(
+    tmp_path, configured_backend
+):
     hermes_home = tmp_path / "hermes"
     storage_dir = hermes_home / "scope-recall"
     storage_dir.mkdir(parents=True)
@@ -744,6 +747,17 @@ def test_bulk_archive_deletes_existing_sqlite_vector_companion(tmp_path, configu
     truth = _conn(storage_dir / "memory.sqlite3")
     try:
         _insert_memory(truth, "archive-vector")
+        bootstrap_legacy_generation(
+            truth,
+            identity=GenerationIdentity(
+                backend="sqlite-bruteforce",
+                provider="local-hash",
+                model="hash-v1",
+                dimensions=256,
+            ),
+            row_count=1,
+        )
+        truth.commit()
     finally:
         truth.close()
     vector = sqlite3.connect(storage_dir / "vector.sqlite3")
@@ -770,9 +784,17 @@ def test_bulk_archive_deletes_existing_sqlite_vector_companion(tmp_path, configu
     finally:
         vector.close()
     assert applied["vector_cleanup"] == {
-        "status": "ok",
-        "backend": "sqlite-bruteforce",
+        "status": "queued",
+        "executor": "vector_outbox",
         "requested": 1,
-        "deleted": 1,
+        "deleted": 0,
     }
-    assert remaining == 0
+    assert remaining == 1
+    truth = sqlite3.connect(storage_dir / "memory.sqlite3")
+    try:
+        outbox = truth.execute(
+            "SELECT operation, status FROM vector_outbox WHERE memory_id='archive-vector' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        truth.close()
+    assert outbox == ("delete", "pending")

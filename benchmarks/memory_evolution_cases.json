@@ -1,0 +1,129 @@
+{
+  "schema_version": "scope-recall.memory-evolution-benchmark.v1",
+  "thresholds": {
+    "case_pass_rate": 1.0,
+    "max_stale_current_leakage": 0,
+    "max_ambiguous_auto_apply": 0,
+    "max_scope_leakage": 0,
+    "require_idempotent_replay": true,
+    "require_evidence_authority_gate": true,
+    "require_evidence_polarity_gate": true,
+    "require_evidence_subject_binding_gate": true,
+    "require_adversarial_evidence_zero_write": true,
+    "require_chunk_provenance_gate": true,
+    "require_session_char_budget_gate": true,
+    "require_journal_atomic_checkpoint": true,
+    "require_durable_scope_route": true,
+    "require_legacy_general_scope_route": true
+  },
+  "cases": [
+    {
+      "id": "moving-city",
+      "kind": "transition",
+      "subject": "Asha",
+      "predicate": "lives in",
+      "before": "Paris",
+      "after": "Berlin",
+      "valid_before": "2024-01-01T00:00:00+00:00",
+      "valid_after": "2025-01-01T00:00:00+00:00",
+      "recorded_before": "2024-01-02T00:00:00+00:00",
+      "recorded_after": "2025-01-02T00:00:00+00:00"
+    },
+    {
+      "id": "job-change",
+      "kind": "transition",
+      "subject": "Asha",
+      "predicate": "job title",
+      "before": "Analyst",
+      "after": "Manager",
+      "valid_before": "2024-02-01T00:00:00+00:00",
+      "valid_after": "2025-02-01T00:00:00+00:00",
+      "recorded_before": "2024-02-02T00:00:00+00:00",
+      "recorded_after": "2025-02-02T00:00:00+00:00"
+    },
+    {
+      "id": "preference-change",
+      "kind": "transition",
+      "subject": "Asha",
+      "predicate": "preferred drink",
+      "before": "Tea",
+      "after": "Coffee",
+      "valid_before": "2024-03-01T00:00:00+00:00",
+      "valid_after": "2025-03-01T00:00:00+00:00",
+      "recorded_before": "2024-03-02T00:00:00+00:00",
+      "recorded_after": "2025-03-02T00:00:00+00:00"
+    },
+    {
+      "id": "wrong-date-correction",
+      "kind": "transition",
+      "subject": "Project Aurora",
+      "predicate": "launch date",
+      "before": "2025-05-03",
+      "after": "2025-05-04",
+      "valid_before": "2025-01-01T00:00:00+00:00",
+      "valid_after": "2025-04-01T00:00:00+00:00",
+      "recorded_before": "2025-01-02T00:00:00+00:00",
+      "recorded_after": "2025-04-02T00:00:00+00:00"
+    },
+    {
+      "id": "multi-value-skills",
+      "kind": "multi",
+      "subject": "Asha",
+      "predicate": "skill",
+      "values": ["Python", "Rust"],
+      "valid_from": "2024-01-01T00:00:00+00:00",
+      "recorded_at": "2024-01-02T00:00:00+00:00"
+    },
+    {
+      "id": "retraction",
+      "kind": "retract",
+      "subject": "Asha",
+      "predicate": "subscribed to",
+      "value": "Old Newsletter",
+      "valid_from": "2024-01-01T00:00:00+00:00",
+      "valid_to": "2025-01-01T00:00:00+00:00",
+      "recorded_at": "2024-01-02T00:00:00+00:00",
+      "retired_at": "2025-01-02T00:00:00+00:00"
+    },
+    {
+      "id": "delayed-ingestion",
+      "kind": "delayed",
+      "subject": "Asha",
+      "predicate": "office",
+      "before": "New York",
+      "after": "San Francisco",
+      "valid_before": "2024-01-01T00:00:00+00:00",
+      "valid_after": "2025-06-01T00:00:00+00:00",
+      "recorded_before": "2024-01-02T00:00:00+00:00",
+      "recorded_after": "2025-08-01T00:00:00+00:00",
+      "query_at": "2025-07-01T00:00:00+00:00",
+      "known_before": "2025-07-15T00:00:00+00:00",
+      "known_after": "2025-09-01T00:00:00+00:00"
+    },
+    {
+      "id": "ambiguous-time",
+      "kind": "policy-review",
+      "reason": "ambiguous_time",
+      "subject": "Asha",
+      "predicate": "office",
+      "value": "London"
+    },
+    {
+      "id": "conflicting-source",
+      "kind": "policy-review",
+      "reason": "conflicting_sources",
+      "subject": "Project Aurora",
+      "predicate": "database",
+      "value": "PostgreSQL"
+    },
+    {
+      "id": "cross-project-isolation",
+      "kind": "scope-isolation",
+      "subject": "deployment",
+      "predicate": "region",
+      "scope_a_value": "eu-west-1",
+      "scope_b_value": "us-east-1",
+      "recorded_at": "2025-01-01T00:00:00+00:00"
+    }
+  ]
+}

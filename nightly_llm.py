@@ -351,12 +351,13 @@ def call_chat_completions_llm(
     timeout: float,
     endpoint: str = "",
     append_v1: bool = True,
+    system_prompt: str = "You extract durable memory as strict JSON.",
 ) -> str:
     endpoint_url = chat_completions_endpoint(base_url, endpoint=endpoint, append_v1=append_v1)
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": "You extract durable memory as strict JSON."},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ],
         "temperature": 0,
@@ -383,10 +384,18 @@ def call_chat_completions_llm(
     return str(message.get("content") or "")
 
 
-def call_codex_responses_llm(prompt: str, *, model: str, base_url: str, api_key: str, timeout: float) -> str:
+def call_codex_responses_llm(
+    prompt: str,
+    *,
+    model: str,
+    base_url: str,
+    api_key: str,
+    timeout: float,
+    system_prompt: str = "You extract durable memory as strict JSON.",
+) -> str:
     payload = {
         "model": model,
-        "instructions": "You extract durable memory as strict JSON.",
+        "instructions": system_prompt,
         "input": [
             {
                 "role": "user",
@@ -439,11 +448,12 @@ def call_anthropic_messages_llm(
     api_key: str,
     timeout: float,
     endpoint: str = "",
+    system_prompt: str = "You extract durable memory as strict JSON.",
 ) -> str:
     endpoint_url = anthropic_messages_endpoint(base_url, endpoint=endpoint)
     payload = {
         "model": model,
-        "system": "You extract durable memory as strict JSON.",
+        "system": system_prompt,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0,
         "max_tokens": 4096,
@@ -477,12 +487,20 @@ def call_llm(
     api_mode: str = "chat_completions",
     endpoint: str = "",
     append_v1: bool = True,
+    system_prompt: str = "You extract durable memory as strict JSON.",
 ) -> str:
     if not api_key:
         raise RuntimeError("API key not found for nightly digest")
     mode = normalize_digest_api_mode(api_mode, provider="", base_url=base_url)
     if mode == "codex_responses":
-        return call_codex_responses_llm(prompt, model=model, base_url=base_url, api_key=api_key, timeout=timeout)
+        return call_codex_responses_llm(
+            prompt,
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            timeout=timeout,
+            system_prompt=system_prompt,
+        )
     if mode == "anthropic_messages":
         return call_anthropic_messages_llm(
             prompt,
@@ -491,6 +509,7 @@ def call_llm(
             api_key=api_key,
             timeout=timeout,
             endpoint=endpoint,
+            system_prompt=system_prompt,
         )
     if mode != "chat_completions":
         raise RuntimeError(f"Unsupported digest api_mode: {api_mode}")
@@ -502,6 +521,7 @@ def call_llm(
         timeout=timeout,
         endpoint=endpoint,
         append_v1=append_v1,
+        system_prompt=system_prompt,
     )
 
 
@@ -536,6 +556,7 @@ def call_llm_with_retries(
     append_v1: bool = True,
     max_attempts: int = 1,
     retry_delay: float = 0.0,
+    system_prompt: str = "You extract durable memory as strict JSON.",
 ) -> str:
     last_error: Exception | None = None
     last_kind = "unknown"
@@ -553,6 +574,7 @@ def call_llm_with_retries(
                 api_mode=api_mode,
                 endpoint=endpoint,
                 append_v1=append_v1,
+                system_prompt=system_prompt,
             )
         except Exception as exc:
             last_error = exc

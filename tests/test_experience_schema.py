@@ -9,7 +9,27 @@ import sqlite3
 import pytest
 
 from scope_recall.experience_models import ExperienceValidationError, validate_procedural_playbook
-from scope_recall.sql_store import BASELINE_MIGRATION_ID, SCHEMA_VERSION, ensure_schema, schema_migration_status
+from scope_recall.operator_ledger import OPERATOR_LEDGER_MIGRATION_ID
+from scope_recall.relation_frequency_index import (
+    RELATION_FREQUENCY_FAILURE_MIGRATION_ID,
+    RELATION_FREQUENCY_INDEX_MIGRATION_ID,
+)
+from scope_recall.relation_rebuild_queue import (
+    RELATION_REBUILD_EXPIRY_MIGRATION_ID,
+    RELATION_REBUILD_LEASE_MIGRATION_ID,
+    RELATION_REBUILD_MIGRATION_ID,
+    RELATION_REBUILD_PROGRESS_MIGRATION_ID,
+)
+from scope_recall.relation_scope_state import RELATION_SCOPE_RECEIPT_MIGRATION_ID
+from scope_recall.sql_store import (
+    BASELINE_MIGRATION_ID,
+    SCHEMA_VERSION,
+    UnsupportedSchemaVersionError,
+    ensure_schema,
+    schema_migration_status,
+)
+from scope_recall.temporal_facts import FACT_CLAIMS_MIGRATION_ID
+from scope_recall.vector_reconciliation import VECTOR_RECONCILIATION_MIGRATION_ID
 
 
 def _conn() -> sqlite3.Connection:
@@ -49,7 +69,19 @@ def test_ensure_schema_creates_experience_tables_idempotently():
     assert status["schema_version"] == SCHEMA_VERSION
     assert status["user_version"] == SCHEMA_VERSION
     assert status["missing_migrations"] == []
-    assert [row["id"] for row in status["applied_migrations"]] == [BASELINE_MIGRATION_ID]
+    assert [row["id"] for row in status["applied_migrations"]] == [
+        BASELINE_MIGRATION_ID,
+        FACT_CLAIMS_MIGRATION_ID,
+        RELATION_REBUILD_MIGRATION_ID,
+        OPERATOR_LEDGER_MIGRATION_ID,
+        RELATION_REBUILD_LEASE_MIGRATION_ID,
+        RELATION_SCOPE_RECEIPT_MIGRATION_ID,
+        RELATION_FREQUENCY_INDEX_MIGRATION_ID,
+        RELATION_REBUILD_PROGRESS_MIGRATION_ID,
+        VECTOR_RECONCILIATION_MIGRATION_ID,
+        RELATION_REBUILD_EXPIRY_MIGRATION_ID,
+        RELATION_FREQUENCY_FAILURE_MIGRATION_ID,
+    ]
     migration = status["applied_migrations"][0]
     assert migration["plugin_version"] == "1.6.0"
     assert migration["status"] == "applied"
@@ -99,17 +131,31 @@ def test_schema_migration_status_is_read_only(tmp_path):
     assert status["missing_migrations"] == []
 
 
-def test_ensure_schema_migrations_never_downgrades_newer_user_version():
+def test_ensure_schema_fails_closed_for_newer_user_version():
     conn = _conn()
-    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+    future_version = SCHEMA_VERSION + 1
+    conn.execute(f"PRAGMA user_version = {future_version}")
 
-    ensure_schema(conn)
+    with pytest.raises(UnsupportedSchemaVersionError, match="newer than supported"):
+        ensure_schema(conn)
     status = schema_migration_status(conn)
 
-    assert status["user_version"] == SCHEMA_VERSION + 1
+    assert status["user_version"] == future_version
     assert status["newer_schema"] is True
     assert status["current"] is False
-    assert status["missing_migrations"] == []
+    assert status["missing_migrations"] == [
+        BASELINE_MIGRATION_ID,
+        FACT_CLAIMS_MIGRATION_ID,
+        RELATION_REBUILD_MIGRATION_ID,
+        OPERATOR_LEDGER_MIGRATION_ID,
+        RELATION_REBUILD_LEASE_MIGRATION_ID,
+        RELATION_SCOPE_RECEIPT_MIGRATION_ID,
+        RELATION_FREQUENCY_INDEX_MIGRATION_ID,
+        RELATION_REBUILD_PROGRESS_MIGRATION_ID,
+        VECTOR_RECONCILIATION_MIGRATION_ID,
+        RELATION_REBUILD_EXPIRY_MIGRATION_ID,
+        RELATION_FREQUENCY_FAILURE_MIGRATION_ID,
+    ]
 
 
 def test_schema_migration_status_rejects_corrupt_baseline_metadata():

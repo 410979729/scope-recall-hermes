@@ -43,6 +43,8 @@ jobs:
     steps:
       - name: Check out scope-recall
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -63,3 +65,44 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/.hermes-agent-src:${{ github.workspace }}
         run: ${{ matrix.command }}
+
+  windows-installer:
+    name: windows-installer-py312
+    runs-on: windows-latest
+    steps:
+      - name: Check out scope-recall
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install Hermes runtime and focused dependencies
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/NousResearch/hermes-agent.git .hermes-agent-src
+          python -m pip install --upgrade pip
+          python -m pip install -e .hermes-agent-src
+          python -m pip install -e ".[dev]"
+
+      - name: Run Windows installer and activation contracts
+        shell: pwsh
+        env:
+          PYTHONPATH: ${{ github.workspace }}\.hermes-agent-src;${{ github.workspace }}
+        run: >-
+          python -m pytest -q
+          tests/test_installer.py::test_installer_windows_default_matches_hermes_platform_default
+          tests/test_installer.py::test_install_activate_sets_memory_provider_and_bootstraps_schema
+          tests/test_installer.py::test_atomic_config_replace_keeps_original_on_replace_failure
+          tests/test_installer.py::test_atomic_config_replace_rejects_concurrent_content_change
+          tests/test_installer.py::test_atomic_replace_treats_unsupported_parent_fsync_as_success_after_replace
+          tests/test_installer.py::test_existing_truth_activation_requires_explicit_maintenance_confirmation
+          tests/test_installer.py::test_maintenance_activation_refuses_an_active_sqlite_writer_before_replacement
+          tests/test_installer.py::test_confirmed_activation_compensation_refuses_post_snapshot_truth_drift
+          tests/test_installer.py::test_activation_guard_precedes_online_backup_and_backup_is_guard_free
+          tests/test_installer.py::test_activation_epoch_registrar_cannot_mask_raw_post_snapshot_write
+          tests/test_installer.py::test_activation_guard_blocks_unregistered_writer_at_each_failure_stage
+          tests/test_maintenance_lease.py

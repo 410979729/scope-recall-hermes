@@ -1,6 +1,6 @@
 {
-  "name": "commercial_recall_quality_v1",
-  "description": "Golden recall cases for commercial scope-recall readiness: durable procedure retrieval, low-value exclusion, archived old-fact exclusion, stale/current fact freshness, candidate/progress non-dominance, topic isolation, and Experience playbook selection.",
+  "name": "recall_smoke_lexical_v1",
+  "description": "Fast lexical smoke cases for major recall surfaces. This fixture is not the curated regression evidence set; use curated_recall_quality_cases_v2.json for release acceptance.",
   "config": {
     "maintenance_tools_enabled": true,
     "fact_freshness_enabled": true,

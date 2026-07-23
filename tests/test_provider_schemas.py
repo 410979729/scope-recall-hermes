@@ -96,6 +96,18 @@ def test_release_stable_tool_names_cover_schema_profiles():
     assert maintenance_names <= stable_names
 
 
+def test_fact_and_evolve_tools_align_schema_dispatch_and_release_contracts():
+    release_check = _load_release_check_module()
+    surfaces = release_check.provider_tool_schema_names_by_surface()
+    dispatch_names = release_check.tool_dispatcher_names()
+    stable_names = set(release_check.STABLE_TOOL_NAMES)
+
+    for tool_name in ("scope_recall_fact", "scope_recall_evolve"):
+        assert tool_name in surfaces["all_referenced"]
+        assert tool_name in dispatch_names
+        assert tool_name in stable_names
+
+
 def test_maintenance_secret_and_extra_tools_are_opt_in_without_duplicates():
     names = _names(
         build_tool_schemas(
@@ -113,3 +125,44 @@ def test_maintenance_secret_and_extra_tools_are_opt_in_without_duplicates():
     assert "scope_recall_store_secret_index" in names
     assert "scope_recall_benchmark" in names
     assert names.count("scope_recall_store_secret_index") == 1
+
+
+def test_temporal_fact_read_tool_is_feature_gated_in_both_profiles():
+    assert "scope_recall_fact" not in _names(build_tool_schemas({}))
+
+    compact = _names(
+        build_tool_schemas({"temporal_queries": {"enabled": True}})
+    )
+    standard = _names(
+        build_tool_schemas(
+            {
+                "tool_schema_profile": "standard",
+                "temporal_queries": {"enabled": True},
+            }
+        )
+    )
+
+    assert compact.count("scope_recall_fact") == 1
+    assert standard.count("scope_recall_fact") == 1
+    assert "scope_recall_evolve" not in compact
+    assert "scope_recall_evolve" not in standard
+
+
+def test_evolve_tool_requires_maintenance_and_extra_tools_cannot_bypass_gates():
+    bypass = _names(
+        build_tool_schemas(
+            {
+                "tool_schema_extra_tools": (
+                    "scope_recall_fact,scope_recall_evolve"
+                )
+            }
+        )
+    )
+    maintenance = _names(
+        build_tool_schemas({"maintenance_tools_enabled": True})
+    )
+
+    assert "scope_recall_fact" not in bypass
+    assert "scope_recall_evolve" not in bypass
+    assert maintenance.count("scope_recall_evolve") == 1
+    assert "scope_recall_fact" not in maintenance

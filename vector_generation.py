@@ -6,8 +6,10 @@ Changing model, dimensions, metric, prompt profile, or schema therefore
 requires a new generation; ordinary runtime setup never replaces the active
 one.
 
-The helpers intentionally do not commit.  Callers may compose manifest,
-lifecycle, audit, and outbox writes in one SQLite transaction.
+Most helpers intentionally do not commit, so callers may compose manifest,
+lifecycle, audit, and outbox writes in one SQLite transaction. First-generation
+bootstrap is the exception when it creates its own transaction: it commits or
+rolls back that transaction so startup cannot leak a writer lock or residue.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -25,6 +28,7 @@ from .capture_filters import sanitize_report_text, sanitize_structured_value
 
 VECTOR_GENERATION_SCHEMA_VERSION = 1
 CURRENT_GENERATION_KEY = "current_generation"
+_BOOTSTRAP_LOCK_KEY = "__bootstrap_lock__"
 _VALID_GENERATION_STATUSES = {"building", "ready", "active", "failed", "retired"}
 _VALID_OUTBOX_OPERATIONS = {"upsert", "delete"}
 
@@ -80,6 +84,69 @@ def now_iso() -> str:
 def canonical_json_hash(value: Any) -> str:
     raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def enqueue_current_vector_event(
+    conn: sqlite3.Connection,
+    *,
+    memory_id: str,
+    operation: str,
+    updated_at: str,
+    reason: str,
+) -> str:
+    """Atomically enqueue companion intent for the SQLite current generation.
+
+    Truth repositories call this before their commit, without needing a runtime
+    provider object.  A database without vector-generation schema has no vector
+    contract and returns an empty key.  Once a current generation is declared,
+    a missing or failing outbox is a hard transaction error.
+    """
+
+    try:
+        row = conn.execute(
+            "SELECT value FROM vector_generation_state WHERE key = ?",
+            (CURRENT_GENERATION_KEY,),
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).casefold():
+            return ""
+        raise
+    if row is None:
+        return ""
+    try:
+        raw_generation_id = row["value"]
+    except (IndexError, TypeError):
+        raw_generation_id = row[0]
+    generation_id = str(raw_generation_id or "").strip()
+    if not generation_id:
+        return ""
+    # ``updated_at`` is caller-owned and may legitimately be reused when truth
+    # is restored from an export or deterministic fixture.  Bind every durable
+    # intent to a fresh identity so it cannot collide with an older completed
+    # event and disappear behind ``INSERT OR IGNORE``.
+    intent_id = uuid.uuid4().hex
+    material = "\x1f".join(
+        (
+            generation_id,
+            str(memory_id),
+            str(operation),
+            str(updated_at or ""),
+            intent_id,
+        )
+    )
+    event_key = hashlib.sha256(material.encode("utf-8")).hexdigest()
+    enqueue_vector_event(
+        conn,
+        event_key=event_key,
+        generation_id=generation_id,
+        memory_id=str(memory_id),
+        operation=str(operation),
+        payload={
+            "updated_at": str(updated_at or ""),
+            "reason": sanitize_report_text(reason)[:500],
+        },
+    )
+    return event_key
 
 
 def validate_generation_storage_path(storage_path: Any) -> str:
@@ -282,6 +349,40 @@ def current_generation(conn: sqlite3.Connection) -> dict[str, Any] | None:
     return generation_manifest(conn, generation_id) if generation_id else None
 
 
+def update_generation_cardinality(
+    conn: sqlite3.Connection,
+    *,
+    generation_id: str,
+    row_count: int,
+    unique_id_count: int,
+    timestamp: str = "",
+) -> bool:
+    """CAS-free cardinality refresh for an already selected generation.
+
+    The physical store remains rebuildable, but its active manifest must not
+    keep stale counts after an audited or uniqueness-preserving replay.
+    Transaction ownership stays with the caller.
+    """
+
+    generation_id = str(generation_id or "").strip()
+    if not generation_id:
+        return False
+    cursor = conn.execute(
+        """
+        UPDATE vector_generations
+        SET row_count = ?, unique_id_count = ?, updated_at = ?
+        WHERE generation_id = ? AND status IN ('active', 'ready')
+        """,
+        (
+            max(0, int(row_count)),
+            max(0, int(unique_id_count)),
+            timestamp or now_iso(),
+            generation_id,
+        ),
+    )
+    return cursor.rowcount == 1
+
+
 def register_generation(
     conn: sqlite3.Connection,
     *,
@@ -377,6 +478,128 @@ def register_generation(
     return manifest
 
 
+def _bootstrap_generation(
+    conn: sqlite3.Connection,
+    *,
+    generation_id: str,
+    identity: GenerationIdentity,
+    storage_path: str,
+    row_count: int,
+    unique_id_count: int,
+    source_hash: str,
+    config_hash: str,
+    metadata: Mapping[str, Any],
+    timestamp: str,
+    require_empty_truth: bool,
+) -> dict[str, Any]:
+    """Atomically publish the first generation and its current pointer.
+
+    ``BEGIN IMMEDIATE`` serializes independent SQLite connections before they
+    inspect bootstrap state.  A savepoint keeps the operation composable when a
+    caller already owns a transaction, while a transaction created here is
+    committed or rolled back here so no startup lock or losing manifest leaks
+    into a later unrelated commit.
+    """
+
+    ensure_vector_generation_schema(conn)
+    owns_transaction = not conn.in_transaction
+    if owns_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    savepoint = "vector_generation_bootstrap"
+    savepoint_active = False
+    try:
+        conn.execute(f"SAVEPOINT {savepoint}")
+        savepoint_active = True
+        # A real write acquires SQLite's database-wide writer reservation when
+        # this helper is nested in a caller-owned deferred transaction.
+        conn.execute(
+            """
+            INSERT INTO vector_generation_state(key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value=excluded.value,
+                updated_at=excluded.updated_at
+            """,
+            (_BOOTSTRAP_LOCK_KEY, generation_id, timestamp),
+        )
+        if current_generation_id(conn):
+            raise GenerationCompatibilityError(
+                "a current vector generation already exists"
+            )
+        active = conn.execute(
+            "SELECT generation_id FROM vector_generations "
+            "WHERE status='active' ORDER BY generation_id"
+        ).fetchall()
+        if active:
+            raise GenerationCompatibilityError(
+                "active vector generation exists without a current pointer; repair required"
+            )
+        if require_empty_truth:
+            truth_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories'"
+            ).fetchone()
+            if truth_table is not None and conn.execute(
+                "SELECT 1 FROM memories LIMIT 1"
+            ).fetchone() is not None:
+                raise GenerationCompatibilityError(
+                    "truth store changed during fresh vector bootstrap"
+                )
+
+        manifest = register_generation(
+            conn,
+            generation_id=generation_id,
+            identity=identity,
+            storage_path=storage_path,
+            status="active",
+            row_count=row_count,
+            unique_id_count=unique_id_count,
+            source_hash=source_hash,
+            config_hash=config_hash,
+            metadata=metadata,
+            timestamp=timestamp,
+        )
+        pointer = conn.execute(
+            "INSERT INTO vector_generation_state(key, value, updated_at) "
+            "VALUES (?, ?, ?)",
+            (CURRENT_GENERATION_KEY, generation_id, timestamp),
+        )
+        if pointer.rowcount != 1:
+            raise GenerationCompatibilityError(
+                "current generation changed during bootstrap"
+            )
+        active_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM vector_generations WHERE status='active'"
+            ).fetchone()[0]
+        )
+        if active_count != 1:
+            raise GenerationCompatibilityError(
+                "bootstrap did not produce exactly one active vector generation"
+            )
+        conn.execute(
+            "DELETE FROM vector_generation_state WHERE key=?",
+            (_BOOTSTRAP_LOCK_KEY,),
+        )
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        savepoint_active = False
+        if owns_transaction:
+            try:
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return manifest
+    except Exception:
+        try:
+            if savepoint_active:
+                conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        finally:
+            if owns_transaction:
+                conn.rollback()
+        raise
+
+
 def bootstrap_legacy_generation(
     conn: sqlite3.Connection,
     *,
@@ -386,30 +609,64 @@ def bootstrap_legacy_generation(
     storage_path: str = ".",
     source_hash: str = "",
     config_hash: str = "",
+    metadata: Mapping[str, Any] | None = None,
     timestamp: str = "",
 ) -> dict[str, Any]:
-    """Register an existing pre-generation store without moving or rewriting it."""
+    """Register an externally verified pre-generation store.
+
+    Normal setup uses :func:`bootstrap_fresh_generation`; this low-level
+    compatibility primitive cannot prove the embedding identity of legacy
+    vectors by itself.
+    """
 
     at = timestamp or now_iso()
     generation_id = f"legacy-{identity.fingerprint[:16]}"
-    manifest = register_generation(
+    manifest_metadata: dict[str, Any] = {
+        "provenance": "legacy-config-inference"
+    }
+    manifest_metadata.update(dict(metadata or {}))
+    return _bootstrap_generation(
         conn,
         generation_id=generation_id,
         identity=identity,
         storage_path=storage_path,
-        status="active",
         row_count=row_count,
         unique_id_count=row_count if unique_id_count is None else unique_id_count,
         source_hash=source_hash,
         config_hash=config_hash,
-        metadata={"provenance": "legacy-config-inference"},
+        metadata=manifest_metadata,
         timestamp=at,
+        require_empty_truth=False,
     )
-    conn.execute(
-        "INSERT OR IGNORE INTO vector_generation_state(key, value, updated_at) VALUES (?, ?, ?)",
-        (CURRENT_GENERATION_KEY, generation_id, at),
+
+
+def bootstrap_fresh_generation(
+    conn: sqlite3.Connection,
+    *,
+    identity: GenerationIdentity,
+    storage_path: str = ".",
+    metadata: Mapping[str, Any] | None = None,
+    timestamp: str = "",
+) -> dict[str, Any]:
+    """Register the first proven-empty companion as the active generation."""
+
+    at = timestamp or now_iso()
+    generation_id = f"initial-{identity.fingerprint[:16]}"
+    manifest_metadata = dict(metadata or {})
+    manifest_metadata["provenance"] = "fresh-setup-bootstrap"
+    return _bootstrap_generation(
+        conn,
+        generation_id=generation_id,
+        identity=identity,
+        storage_path=storage_path,
+        row_count=0,
+        unique_id_count=0,
+        source_hash="",
+        config_hash=identity.fingerprint,
+        metadata=manifest_metadata,
+        timestamp=at,
+        require_empty_truth=True,
     )
-    return manifest
 
 
 def validate_generation_compatibility(manifest: Mapping[str, Any], identity: GenerationIdentity) -> None:
@@ -524,6 +781,100 @@ def activate_generation(
     return activated
 
 
+
+def retire_ready_generation(
+    conn: sqlite3.Connection,
+    generation_id: str,
+    *,
+    expected_current: str,
+    reason: str,
+    timestamp: str = "",
+) -> dict[str, Any]:
+    """CAS-retire one non-current READY generation without deleting storage.
+
+    Retirement is an explicit operator action for a generation that must no
+    longer participate in release/activation preflights. The current pointer
+    is checked while holding the SQLite writer transaction, the physical
+    companion is retained for audit or manual recovery, and this helper never
+    commits the caller's transaction.
+    """
+
+    ensure_vector_generation_schema(conn)
+    generation_id = str(generation_id or "").strip()
+    expected_current = str(expected_current or "").strip()
+    if not generation_id:
+        raise ValueError("generation_id is required")
+    if not expected_current:
+        raise ValueError("expected_current is required for retirement CAS")
+
+    owns_transaction = not conn.in_transaction
+    savepoint = "vector_generation_retirement"
+    if owns_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    else:
+        conn.execute(f"SAVEPOINT {savepoint}")
+    try:
+        actual_current = current_generation_id(conn)
+        if actual_current != expected_current:
+            raise GenerationCompatibilityError(
+                "current generation CAS conflict before retirement: "
+                f"expected {expected_current!r}, actual {actual_current!r}"
+            )
+        if generation_id == actual_current:
+            raise GenerationCompatibilityError("refusing to retire the current generation")
+
+        manifest = generation_manifest(conn, generation_id)
+        if manifest is None:
+            raise GenerationCompatibilityError(f"generation not found: {generation_id}")
+        status = str(manifest.get("status") or "").strip().lower()
+        if status != "ready":
+            raise GenerationCompatibilityError(
+                f"generation {generation_id} is {status!r}, expected 'ready'"
+            )
+
+        raw_metadata = manifest.get("metadata")
+        try:
+            metadata = json.loads(str(raw_metadata or "{}"))
+        except (TypeError, ValueError):
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        at = timestamp or now_iso()
+        metadata["retirement"] = {
+            "at": at,
+            "previous_status": "ready",
+            "reason": sanitize_report_text(
+                str(reason or "operator-retired-ready-generation")
+            )[:500],
+        }
+        cursor = conn.execute(
+            """
+            UPDATE vector_generations
+            SET status = 'retired', updated_at = ?, metadata = ?
+            WHERE generation_id = ? AND status = 'ready'
+            """,
+            (at, _json_dumps(_sanitize_mapping_payload(metadata)), generation_id),
+        )
+        if cursor.rowcount != 1:
+            raise GenerationCompatibilityError("generation changed during retirement")
+        if current_generation_id(conn) != expected_current:
+            raise GenerationCompatibilityError("current generation changed during retirement")
+        retired = generation_manifest(conn, generation_id)
+        assert retired is not None
+    except Exception:
+        if owns_transaction:
+            if conn.in_transaction:
+                conn.rollback()
+        else:
+            conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        raise
+    if not owns_transaction:
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+    return retired
+
+
+
 def enqueue_vector_event(
     conn: sqlite3.Connection,
     *,
@@ -535,7 +886,12 @@ def enqueue_vector_event(
     available_at: str = "",
     timestamp: str = "",
 ) -> dict[str, Any]:
-    """Insert one idempotent replay event without committing the caller transaction."""
+    """Insert one idempotent replay event without committing the caller transaction.
+
+    A newer pending/retry operation for the same generation and memory supersedes
+    the opposite operation before insertion, so replay cannot resurrect a row
+    after a durable delete (or delete a subsequently recreated row).
+    """
 
     ensure_vector_generation_schema(conn)
     operation = str(operation or "").strip().lower()
@@ -544,6 +900,13 @@ def enqueue_vector_event(
     if not event_key or not generation_id or not memory_id:
         raise ValueError("event_key, generation_id, and memory_id are required")
     at = timestamp or now_iso()
+    opposite_operation = "delete" if operation == "upsert" else "upsert"
+    conn.execute(
+        "DELETE FROM vector_outbox "
+        "WHERE generation_id = ? AND memory_id = ? AND operation = ? "
+        "AND status IN ('pending', 'retry')",
+        (str(generation_id), str(memory_id), opposite_operation),
+    )
     conn.execute(
         """
         INSERT OR IGNORE INTO vector_outbox(

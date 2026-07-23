@@ -12,6 +12,20 @@ callers branch safely when report fields evolve.
 """
 
 DOCTOR_RESPONSE_SCHEMA_VERSION = "doctor_report.v1"
+DOCTOR_REQUIRED_CHECK_NAMES = (
+    "config_load",
+    "event_digest",
+    "experience_kernel",
+    "journal_provenance",
+    "memory_candidate_debt",
+    "memory_quality_lint",
+    "memory_secret_scan",
+    "nightly_digest",
+    "source_metadata",
+    "sqlite_truth",
+    "temporal_evolution",
+    "vector_companion",
+)
 DASHBOARD_RESPONSE_SCHEMA_VERSION = "dashboard_report.v1"
 GOLDEN_BENCHMARK_RESPONSE_SCHEMA_VERSION = "golden_benchmark_report.v1"
 EXPERIENCE_REPLAY_RESPONSE_SCHEMA_VERSION = "experience_replay_report.v1"

@@ -2,20 +2,26 @@
 
 from __future__ import annotations
 
-import sqlite3
+import json
 import shutil
+import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from scope_recall.embedders import LocalHashEmbedder
 from scope_recall.sql_store import ensure_schema, store_row
+from scope_recall.sqlite_vector_store import SQLiteBruteForceVectorStore
 from scope_recall.vector_generation import (
     GenerationCompatibilityError,
     GenerationIdentity,
     bootstrap_legacy_generation,
     current_generation,
+    enqueue_vector_event,
     generation_manifest,
+    register_generation,
 )
 from scope_recall.vector_migration import (
     _validate_shadow_records,
@@ -27,6 +33,7 @@ from scope_recall.vector_generation_preflight import (
     physical_records_sha256,
     validate_generation_physical_store,
 )
+from scope_recall.vector_reconciliation import vector_reconciliation_state
 from scope_recall.vector_store import LanceVectorStore
 
 
@@ -340,12 +347,21 @@ def test_generation_physical_preflight_is_read_only_for_existing_sqlite_store(tm
     conn.close()
 
 
-def test_doctor_fails_closed_when_ready_generation_storage_is_missing(tmp_path):
+def test_doctor_reports_invalid_inactive_ready_generation_without_failing_active_health(tmp_path):
     from scope_recall.doctor_vector import vector_generation_report
 
     storage, conn, identity, old = _sqlite_fixture(tmp_path)
     target = _build_sqlite_ready(storage, conn, identity, old, "gen-doctor-missing")
     shutil.rmtree(target)
+    enqueue_vector_event(
+        conn,
+        event_key="inactive-ready-debt",
+        generation_id="gen-doctor-missing",
+        memory_id="memory-0",
+        operation="upsert",
+        payload={"reason": "inactive fixture debt"},
+    )
+    conn.commit()
     conn.close()
 
     payload, check, recommendations = vector_generation_report(
@@ -363,10 +379,12 @@ def test_doctor_fails_closed_when_ready_generation_storage_is_missing(tmp_path):
         },
         backend=identity.backend,
     )
-    assert check["ok"] is False
+    assert check["ok"] is True
+    assert payload["status"] == "ready"
     assert payload["ready_generation_preflight_failures"]
-    assert any("physical" in item or "storage" in item for item in check["failures"])
-    assert any("rebuild" in item.lower() for item in recommendations)
+    assert payload["outbox_backlog"] == 0
+    assert payload["inactive_outbox_status_counts"]["pending"] == 1
+    assert any("cannot be activated" in item.lower() for item in recommendations)
 
 
 def _state(conn: sqlite3.Connection, storage: Path):
@@ -442,6 +460,13 @@ def test_shadow_build_is_ready_without_activation_then_can_activate(tmp_path):
     )
     assert activated["status"] == "activated"
     assert current_generation(conn)["generation_id"] == "gen-ready"
+    watermark = vector_reconciliation_state(conn, generation_id="gen-ready")
+    assert watermark is not None
+    assert watermark["status"] == "idle"
+    assert watermark["cursor_updated_at"] == watermark["upper_updated_at"]
+    assert watermark["cursor_memory_id"] == watermark["upper_memory_id"]
+    assert watermark["processed_rows"] == 3
+    assert watermark["enqueued_events"] == 0
     conn.close()
 
 
@@ -613,3 +638,182 @@ def test_half_build_failure_keeps_current_and_records_failed_receipt(tmp_path):
     assert receipt["rows_built"] == 2
     assert "injected" in receipt["error"]
     conn.close()
+
+
+
+def test_migration_cli_does_not_register_manifestless_legacy_companion(tmp_path):
+    """Explicit migration builds a shadow without guessing legacy embedding identity."""
+
+    home = tmp_path / "hermes-home"
+    storage = home / "scope-recall"
+    storage.mkdir(parents=True)
+    db_path = storage / "memory.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    store_row(
+        conn,
+        memory_id="truth-memory",
+        scope_id="scope-a",
+        platform="test",
+        user_id="joy",
+        chat_id="dm",
+        thread_id="",
+        gateway_session_key="",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+        session_id="session",
+        source="fixture",
+        target="memory",
+        content="manifestless legacy migration truth",
+        allow_duplicate=True,
+    )
+    conn.commit()
+    conn.close()
+
+    (storage / "config.json").write_text(
+        json.dumps(
+            {
+                "vector": {
+                    "enabled": True,
+                    "backend": "sqlite-bruteforce",
+                    "table_name": "memories",
+                    "embedder": {
+                        "provider": "local-hash",
+                        "model": "hash-v1",
+                        "dimensions": 16,
+                    },
+                },
+                "retrieval": {"metric": "cosine"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    legacy = SQLiteBruteForceVectorStore(
+        storage / "vector.sqlite3",
+        table_name="memories",
+        dimensions=16,
+    )
+    legacy.open()
+    legacy.upsert_records(
+        [
+            {
+                "id": "truth-memory",
+                "scope_id": "scope-a",
+                "source": "fixture",
+                "target": "memory",
+                "content": "manifestless legacy migration truth",
+                "summary": "",
+                "updated_at": "",
+                "vector": [0.25] * 16,
+            }
+        ]
+    )
+    legacy.close()
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "migrate.vector_generation.py"
+    applied = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--hermes-home",
+            str(home),
+            "--generation-id",
+            "gen-shadow-safe",
+            "--apply",
+            "--activate",
+            "--json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    receipt = json.loads(applied.stdout)
+    assert receipt["status"] == "activated"
+
+    check = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    check.row_factory = sqlite3.Row
+    generations = check.execute(
+        "SELECT generation_id, status, metadata FROM vector_generations ORDER BY generation_id"
+    ).fetchall()
+    assert [(row["generation_id"], row["status"]) for row in generations] == [
+        ("gen-shadow-safe", "active")
+    ]
+    assert all(
+        json.loads(str(row["metadata"] or "{}")).get("provenance")
+        != "legacy-config-inference"
+        for row in generations
+    )
+    check.close()
+
+
+def test_retire_existing_ready_cli_dry_run_then_apply(tmp_path):
+    home = tmp_path / "hermes-home"
+    storage = home / "scope-recall"
+    storage.mkdir(parents=True)
+    db_path = storage / "memory.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    identity = GenerationIdentity(
+        backend="sqlite-bruteforce",
+        provider="local-hash",
+        model="hash-v1",
+        dimensions=16,
+        table_name="memories",
+    )
+    active = bootstrap_legacy_generation(conn, identity=identity, row_count=0)
+    register_generation(
+        conn,
+        generation_id="gen-stale-ready",
+        identity=identity,
+        storage_path="vector-generations/gen-stale-ready",
+        status="ready",
+    )
+    conn.commit()
+    conn.close()
+    script = Path(__file__).resolve().parents[1] / "scripts" / "migrate.vector_generation.py"
+    common = [
+        sys.executable,
+        str(script),
+        "--hermes-home",
+        str(home),
+        "--generation-id",
+        "gen-stale-ready",
+        "--expected-current",
+        str(active["generation_id"]),
+        "--retire-existing-ready",
+        "--json",
+    ]
+
+    planned = subprocess.run([*common, "--dry-run"], check=True, capture_output=True, text=True)
+    plan = json.loads(planned.stdout)
+    assert plan["status"] == "planned"
+    assert plan["writes"] == []
+    readonly = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    assert (
+        readonly.execute(
+            "SELECT status FROM vector_generations WHERE generation_id = ?",
+            ("gen-stale-ready",),
+        ).fetchone()[0]
+        == "ready"
+    )
+    readonly.close()
+
+    applied = subprocess.run(
+        [*common, "--apply", "--retirement-reason", "stale source cohort"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    receipt = json.loads(applied.stdout)
+    assert receipt["status"] == "retired"
+    assert receipt["physical_storage_retained"] is True
+    check = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    row = check.execute(
+        "SELECT status, metadata FROM vector_generations WHERE generation_id = ?",
+        ("gen-stale-ready",),
+    ).fetchone()
+    assert row[0] == "retired"
+    assert json.loads(row[1])["retirement"]["reason"] == "stale source cohort"
+    check.close()

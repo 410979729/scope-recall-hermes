@@ -4,6 +4,8 @@ They preserve expected search behavior while recall internals evolve."""
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from scope_recall.models import RecallItem
 from scope_recall.recall import RecallService
 from scope_recall.scoring import bm25_to_score
@@ -82,20 +84,71 @@ def test_hybrid_final_score_uses_normalized_bm25_not_only_candidate_pool():
     assert results[0].metadata["base_score"] > results[1].metadata["base_score"]
 
 
+def test_hybrid_mode_falls_back_to_lexical_strength_without_vector_signal():
+    provider = DummyProvider(
+        {
+            "mode": "hybrid",
+            "lexical_weight": 0.40,
+            "bm25_weight": 0.25,
+            "vector_weight": 0.35,
+            "include_general": "same-scope",
+            "min_score": 0.18,
+        }
+    )
+
+    score = RecallService(provider).final_score(
+        {"lexical_score": 0.42, "bm25_score": 0.91, "vector_score": 0.0}
+    )
+
+    assert score == 0.91
+
+
+def test_recall_egress_redacts_secret_like_legacy_rows():
+    secret = "sk-" + "R" * 24
+    legacy = RecallItem(
+        id="legacy-secret",
+        content=f"Legacy imported credential api_key={secret}",
+        summary=f"api_key={secret}",
+        source="legacy-import",
+        target="memory",
+        score=0.9,
+        updated_at="2026-07-22T10:00:00+00:00",
+        metadata={"importance": 0.9, "lexical_score": 0.9},
+    )
+    provider = DummyProvider(
+        {
+            "mode": "lexical",
+            "include_general": "same-scope",
+            "min_score": 0.0,
+        },
+        db_items=[legacy],
+    )
+
+    results = RecallService(provider).search_memories("credential", limit=1)
+
+    assert len(results) == 1
+    assert secret not in results[0].content
+    assert secret not in results[0].summary
+    assert "[REDACTED_SECRET]" in results[0].content
+
+
 def test_temporal_decay_curve_can_downrank_stale_memories_without_query_freshness_hint():
+    now = datetime.now(timezone.utc)
+    old_timestamp = (now - timedelta(days=3650)).isoformat()
+    fresh_timestamp = (now - timedelta(days=10)).isoformat()
     old = _item(
         "old-stale",
         bm25=0.0,
         lexical=0.58,
-        created_at="2020-01-01T00:00:00+00:00",
-        updated_at="2020-01-01T00:00:00+00:00",
+        created_at=old_timestamp,
+        updated_at=old_timestamp,
     )
     fresh = _item(
         "fresh-slightly-lower",
         bm25=0.0,
         lexical=0.56,
-        created_at="2026-06-01T00:00:00+00:00",
-        updated_at="2026-06-01T00:00:00+00:00",
+        created_at=fresh_timestamp,
+        updated_at=fresh_timestamp,
     )
     provider = DummyProvider(
         {

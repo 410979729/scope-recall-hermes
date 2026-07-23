@@ -22,7 +22,7 @@ The release verification covers these public product areas for the documentation
 - fact freshness scaffolding and dashboard coverage reporting;
 - relation extraction, conflict-safe relation edges, and graph hygiene;
 - forgetting default soft archive, rollback receipts, and hard-delete guardrails;
-- golden benchmark release gate and commercial recall-quality fixtures.
+- golden benchmark release gate and curated recall-regression fixtures.
 - public documentation and release provenance for the `v1.6.1` patch.
 
 ## Runtime evidence policy

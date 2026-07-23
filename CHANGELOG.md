@@ -4,6 +4,85 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Added a durable, cursor-based relation rebuild queue with bounded foreground synchronization, monotonic lifetime/pass progress, next-revision handoff, background draining, read-only debt reporting, and backup-first repair tooling.
+- Added a transactionally maintained relation-frequency companion with per-memory postings, per-scope/entity document counts, bounded peer lookup, resumable legacy backfill, and scope reclassification debt.
+- Added outbox-first vector startup reconciliation with bounded truth pages, a durable compound watermark, atomic page planning, and resumable background continuation.
+- Added an authoritative SQLite operator ledger for playbook lifecycle changes, with deterministic post-commit receipt mirroring and idempotent repair for interrupted mirrors.
+- Added clean-install regressions that load an installed plugin from outside the source tree and verify nested-clone wheels in a fresh virtual environment despite a polluted parent path.
+
+### Fixed
+- Made journal LLM transport, authentication, and parse failures return an error without advancing source checkpoints or misclassifying infrastructure failure as data rejection; retained-row pruning now stays below SQLite variable limits.
+- Made event-candidate batches atomic, verified semantic-merge update receipts, and made repeated identical lifecycle transitions true no-ops without timestamp, audit, or vector-outbox churn.
+- Closed writer shutdown enqueue races, made dead writer queues fail closed, and made current-turn recall prefetch fail soft without destabilizing the host turn.
+- Aligned PGVector repair with the SQLite cleanup contract, corrected lexical fallback when no vector signal exists, and made relation-frequency poison rows use per-row savepoints with bounded retry/dead-letter evidence (`0011_relation_frequency_failure_queue_v1_8_0`).
+- Rejected new plaintext secret-like content at the authoritative SQLite store/update boundary and redacted legacy sensitive rows from recall, prompt, and memory-inspection egress.
+- Compensated activation leases and SQLite guards when installation fails after snapshot but before activation handoff, and included both retry-exhausted and dead-letter journal entries in default recovery inspection.
+- Enforced public tool JSON Schemas at the in-process dispatch boundary, with redacted structured errors for required fields, types, enums, lengths, list sizes, and numeric bounds.
+- Made fuzzy store merging explicit and conservative: exact duplicates remain automatic, while opt-in semantic merge accepts only contained additive assertions and preserves changed values as separate memories.
+- Enforced target-derived write scopes so `general` remains local and durable targets cannot be redirected into chat-local storage; explicit shared-pool writes retain their existing policy gates.
+- Changed sensitive forgetting to fail closed by default, reduced generic graph-entity noise, and stopped normative references to current state from being classified as concrete runtime snapshots.
+- Made background journal-digest shutdown quiescent and fail closed: new digest work is blocked once shutdown begins, synchronous and asynchronous work are both tracked, and shared SQLite/vector resources remain open when a worker cannot acknowledge the bounded stop request.
+- Serialized complete vector outbox replay and bounded reconciliation per storage path so concurrent session providers cannot overlap SQLite schema/outbox maintenance or stall each other during foreground writes.
+- Made lexical FTS integrity lifecycle-aware so only ordinary-recall-visible rows are expected, inserted, or rebuilt; `doctor` now fails on hidden legacy membership drift, and a dry-run-by-default maintenance CLI requires explicit writer-stop confirmation plus a verified owner-only online backup before apply.
+- Rendered recalled memory snippets as single-line escaped JSON under an explicit untrusted-data boundary, preventing stored Markdown/XML-like text from manufacturing prompt sections or acquiring instruction authority.
+- Created and reopened mutable SQLite vector companions with owner-only file permissions, including active sidecars, and rejected symlink-following mutation paths.
+- Restricted temporary-memory markers to lexical boundaries, so durable words such as `template` are no longer demoted by the substring `temp`.
+- Completed isolated-chat coverage by suppressing Hermes' parallel built-in curated-memory surface in addition to Scope Recall prompt, tool, capture, journal, and digest paths.
+- Removed full-truth and full-vector enumeration from ordinary vector startup; durable outbox debt is replayed before one bounded truth page, and the page watermark advances atomically with its outbox events.
+- Removed journal and nightly vector companion bypasses in favor of committed outbox replay, made LanceDB upserts idempotent across concurrent table handles and processes, and made duplicate physical IDs a blocking doctor condition.
+- Made foreground relation synchronization use an independently bounded neighborhood, with cached deterministic tokenization and trigger patterns; exhaustive work continues through the durable rebuild queue.
+- Made deterministic operator-receipt publication refuse concurrent conflicting evidence instead of overwriting it between validation and atomic publication.
+- Prevented large relation scopes from rolling back otherwise valid store, update, or merge operations merely because an exhaustive pair scan exceeded the foreground budget.
+- Replaced foreground relation-frequency truth scans with transactionally maintained per-scope/entity counts; blocked-entity reads and synchronous peer selection now use the companion index, while legacy backfill and threshold reclassification run as bounded recoverable maintenance.
+- Made relation-frequency receipt refresh fail closed when its corpus-revision compare-and-swap loses a cross-connection race, so rebuild workers defer instead of binding stale blocked-entity policy.
+- Made manifestless non-empty vector state fail closed consistently across setup, runtime startup, N-1 upgrade preflight, and the explicit migration CLI; migration now builds a validated shadow generation and can CAS-activate it without first fabricating a legacy current manifest.
+- Split vector-store opening into read-only inspection and existing-only runtime mutation contracts, so an active generation can be updated without allowing startup to create missing storage or switch to a different backend.
+- Preserved the original `2/4/8s` OpenAI-compatible connection-retry behavior from #27 while keeping the hardened bounded schedule configurable and allowing an explicit empty array to disable it.
+- Refined the token-assignment boundary issue reported by @df-5c in #28: `per_token` and `*_per_token` metric assignments no longer trip plaintext-secret filtering, while compound credential keys such as `access_token`, `session_token`, and `super_token` remain blocked and redacted across text and structured-key surfaces.
+
+## [1.8.0] - 2026-07-15
+
+### Added
+- Added opt-in structured Fact Evolution with temporal current/as-of/history queries, reviewed mutation receipts, and deterministic release benchmarks for scope routing, evidence authority, replay safety, and journal checkpoint atomicity.
+- Added bounded Reflection synthesis with strict citation allowlists, citation-grounded candidate material, provenance-root source diversity, and explicit review-only mental-model candidates.
+- Added public runtime-configured chat source isolation across prompt recall, tools, capture, journal, and digest backlog processing; deployment identifiers remain outside the package.
+- Added read-only N-1 upgrade compatibility checks for runtime configuration and READY vector-generation physical receipts before any backup or replacement.
+
+### Changed
+- Accepted the vector-only threshold and configurable OpenAI-compatible embedding retry contribution from @df-5c in #27, preserving contributor authorship; the 1.8.0 follow-up adds strict transport-exception classification, bounded runtime validation, operator documentation, and regression coverage.
+- Centralized target-to-scope routing so durable `user`, `memory`, `project`, and `ops` facts use the shared scope while `general` remains local scratch.
+- Made Fact Evolution idempotency derive from stable source identity rather than scheduler run IDs, and made journal fact actions and source checkpoints atomic per candidate.
+- Expanded configuration diagnostics with per-mode persistence risk, legal choices, and resident-versus-scheduled reload semantics.
+- Replaced audit-number-specific release commands with a versioned manifest of transaction, temporal, activation, privacy, and N-1 upgrade invariants.
+- Expanded the Reflection benchmark from two to eight valid responses and added explicit polarity, role-order, temporal-order, conditional, quantifier, and historical proposition matrices; memory-evolution release metrics now include evidence polarity/subject binding, chunk provenance, global exposure budgets, and adversarial zero-write behavior; the release aggregate also runs fixed 100k/1M temporal-ledger p50/p95/p99 and scan-cap profiles.
+
+### Fixed
+- Prevented unrelated user quotes from authorizing claims merely because assistant or model text in the same batch mentioned the proposed value.
+- Bound first-person fact evidence to a trusted runtime speaker subject, rejected contraction and CJK negation for positive claims, and kept adversarial `auto_apply` attempts at zero durable writes.
+- Rendered real message IDs in nightly/journal prompts, restricted citations to the current chunk, checkpointed only exact cited IDs, kept parse/filtered chunks pending, removed the 80-message provenance cap, and enforced `max_session_chars` as a global exposure budget.
+- Made `install --activate` failure-atomic across plugin, Hermes config, provider config, and SQLite state by capturing pre-state and a verified SQLite online backup before replacement, including both link identity and dereferenced target bytes/mode for symlinked config paths, then compensating and read-back verifying config, migration, provider-load, and runtime-verification failures.
+- Bound fact evidence to token/entity boundaries and ordered subject-predicate-value roles, made public tool-lane evidence non-authoritative without a runtime registry, and required RETRACT evidence to match the ledger-owned target claim with explicit correction semantics.
+- Rejected future-effective successors and future/finite ADD intervals that the static lifecycle cannot safely represent; RETRACT now defaults its valid-time boundary to the transaction timestamp, supports an explicit trusted past boundary, and rejects future closure.
+- Required confirmed maintenance mode and a SQLite writer-lock preflight before activating an existing truth DB; unconfirmed compensation cannot overwrite post-snapshot truth, and changed vector companions are discarded with rebuild receipts.
+- Made Hermes YAML activation duplicate-aware, inline-map and quoted-key compatible, lossless for supported documents, fail-closed for malformed or unsupported constructs, and crash-safe through same-directory `fsync` plus atomic replace.
+- Included old-memory vector delete events and successor upserts in Fact Evolution receipts, and added named fourth- and fifth-audit blocker stages to the release gate.
+- Made every legacy update, archive, merge, and hard-delete path fail closed for fact-owned memories; structured fact changes now require the Fact Executor authority, while `sql_store.update_row()` remains transaction-neutral.
+- Committed structured, quarantined, and legacy journal candidates as atomic connected closures derived from the same or overlapping source entries; later candidate failures now roll the whole closure back, source checkpoints advance only after every outcome is terminal, and legacy vector upserts are deferred until commit.
+- Replaced broad lexical relation-family authorization with argument-preserving predicate frames, including prepositions and conservative CJK entity boundaries; ambiguous relation evidence is review-only with zero durable writes.
+- Added a cross-process activation maintenance lease, cached-statement invalidation, pre-backup per-table SQLite DML guard triggers for raw/legacy writers, guard-free offline rollback snapshots, activation-owned epochs, and logical compensation preflight fingerprints; post-snapshot truth drift now stops compensation before any vector/plugin/config/database restore, retains every current surface, and returns a manual-recovery receipt. Successful commit removes guards before releasing the lease. Windows atomic config replacement no longer reports failure after replacement has already succeeded when directory `fsync` is unsupported.
+- Made truncated relation scans fail before graph mutation, validated the full definition of the current-single-slot unique partial index, added a focused Windows Python 3.12 installer lane, and included all new adversarial cases in the blocking release gate.
+- Rejected Reflection role swaps, polarity reversal, temporal-order reversal, dropped conditions/modality, quantifier drift, and historical-to-current drift even when lexical token coverage is complete.
+- Forced memory-filtered current temporal queries to use the dedicated memory index, removing ledger-size-linear scans exposed by the 1M-row release benchmark.
+- Prevented unsupported Reflection answers and observations from becoming durable review candidates, and prevented multiple memories derived from one provenance root from satisfying source-diversity gates.
+- Added a release-identity gate that rejects reuse of an already published package version unless an explicit development-snapshot waiver is used for non-release verification.
+- Made public durable update and merge operations acquire one `BEGIN IMMEDIATE` owner transaction before ownership reads; truth, FTS, relations, governance, and vector outbox intent now commit or roll back together.
+- Made every SQLite truth insert/update atomically enqueue current-generation vector outbox intent from SQLite generation state rather than cached runtime state; capture replay runs only after commit while optional freshness remains observable and savepoint-isolated.
+- Restricted durable fact authority to explicit current-state evidence; past, future, seasonal/historical, finite-range, fixed-duration, contract, transition-event, temporary, conditional, and uncertain clauses are review-only, including dotted month abbreviations and hyphenated duration quantifiers.
+- Replaced process-global and ambient context activation authorization with an explicit token passed only to the installer-owned bootstrap connection; sibling threads, same-context ordinary connections, and ordinary providers cannot inherit write permission.
+- Normalized copied staging directories to owner-readable/writable/executable modes so installation from immutable or read-only source trees can still complete atomic replacement and cleanup.
+- Made runtime verification surface configuration load errors and made upgrades fail before backup/replacement when an existing READY vector generation lacks a bound physical preflight receipt.
+
 ## [1.7.2] - 2026-07-12
 
 ### Added
@@ -112,7 +191,7 @@ All notable changes to `scope-recall` will be documented in this file.
 - Added Experience Kernel productization: playbook bootstrap/search/inspect/feedback/review/promote tools, conservative auto-promotion quality gates, duplicate playbook reporting, supersede CLI review routing, and experience replay benchmarks.
 - Added fact freshness scaffolding for durable factual memories, with dashboard coverage/staleness reporting and freshness-aware recall policy hooks.
 - Added relation extraction and graph hygiene support for owned-by/affects/depends-on/supersedes/same-topic style edges, contradiction-safe edge generation, and repair/counting scripts.
-- Added golden benchmark fixtures and release-gate execution for commercial recall quality, including low-value scratch exclusion, archived-old-fact exclusion, and entity/project isolation cases.
+- Added golden benchmark fixtures and release-gate execution for curated recall regression, including low-value scratch exclusion, archived-old-fact exclusion, and entity/project isolation cases.
 
 ### Changed
 - Changed `scope_recall_forget` to soft archive by default with governance audit receipts and explicit rollback commands; hard delete is limited to maintenance flows.

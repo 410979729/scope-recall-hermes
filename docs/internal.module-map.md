@@ -1,26 +1,39 @@
 # Scope Recall Internal Module Map
 
-Updated: `2026-07-08` for `scope-recall` 1.7.0 productization release.
+Updated: `2026-07-20` after the fifteenth-review relation-queue remediation.
 
 ## Quick rules
 
 - `provider.py`: Hermes lifecycle/hook thin wiring only; do not add policy logic.
 - `tooling.py`: tool argument normalization and dispatch only; complex behavior goes to focused modules.
 - `schemas.py` / `provider_schemas.py` / `response_schemas.py`: schemas/contracts only.
-- `sql_store.py`: schema and row helpers only; business flows belong elsewhere.
+- `sql_store.py`: schema registration and row helpers only; business flows belong elsewhere.
+- `vector_generation.py` owns generation manifests, current-generation CAS, and durable vector outbox state; no second vector queue or claim lease may be introduced.
+- `vector_outbox_replay.py` owns backend-neutral execution of already-committed outbox events; provider, journal, and nightly callers may trigger it but must not bypass it with direct companion writes.
+- `vector_reconciliation.py` owns generation-bound startup/background truth-page watermarks and atomic outbox planning; it never embeds or mutates a physical vector backend.
+- `vector_store.py` owns physical LanceDB mutation semantics; one logical upsert must be one physical idempotent mutation, never delete-then-add.
+- `relation_entity_policy.py` owns shared normalization/distinctiveness rules. `relation_frequency_index.py` owns transactional per-memory postings/counts and bounded snapshots/peer lookup. `relation_frequency_maintenance.py` owns paged backfill, dirty-row drain, threshold reclassification, and debt reports.
+- `relation_rebuild_queue.py` owns durable deferred relation passes, monotonic lifetime/pass progress, claim leases, next-revision handoff, and atomic per-focus chunk publication. `relation_scope_state.py` owns relation-relevant scope revisions and receipt integrity. `relation_extraction.py` remains the candidate policy owner.
+- `operator_ledger.py` owns durable operator-operation state and post-commit JSON receipt mirroring; CLI scripts must not publish a success receipt before truth commit.
+- `doctor_vector.py` owns vector duplicate/truth consistency plus reconciliation-watermark health. `doctor_sqlite.py` owns relation-frequency/rebuild and operator-ledger debt summaries; doctor paths remain read-only.
+- Fact evolution work follows `docs/fact-evolution-architecture.md`: pure identity/action contracts, an owned temporal ledger, one atomic executor, thin orchestration, and read-only reflection.
+- `reflection.py` owns read-only evidence packs; `reflection_llm.py` owns strict cited synthesis; `reflection_tooling.py` owns runtime gates and hidden reviewed candidates. The first two must never import or call the mutation executor.
+- `doctor_temporal.py` owns read-only Fact Evolution/reflection debt metrics; `scripts/benchmark.memory_evolution.py` and `scripts/benchmark.reflection.py` own deterministic release thresholds.
 - New productization work should prefer small modules: `event_digest.py`, `candidate_extraction.py`, `skill_bridge.py`, `external_bridge.py`, `pgvector_store.py`, CLI/browser modules.
 - Any live DB mutation requires backup + dry-run + explicit operator approval.
 
 ## Largest modules
 
-- `memory_ops.py` — 1579 lines; capabilities: install/rollout, provider hooks/runtime, candidate/governance/forgetting, vector/embedding, recall/ranking, graph/relations, external bridge/shared, security/secrets, doctor/dashboard/observability
-- `nightly_digest.py` — 1399 lines; capabilities: install/rollout, provider hooks/runtime, journal/digest, candidate/governance/forgetting, vector/embedding, recall/ranking, schema/tooling, graph/relations, external bridge/shared, security/secrets, doctor/dashboard/observability
-- `experience_store.py` — 1265 lines; capabilities: candidate/governance/forgetting, experience/playbooks, schema/tooling, external bridge/shared, security/secrets, doctor/dashboard/observability
-- `provider.py` — 1069 lines; capabilities: install/rollout, provider hooks/runtime, journal/digest, candidate/governance/forgetting, experience/playbooks, vector/embedding, recall/ranking, schema/tooling, graph/relations, external bridge/shared, security/secrets, doctor/dashboard/observability
-- `journal.py` — 1026 lines; capabilities: install/rollout, journal/digest, candidate/governance/forgetting, experience/playbooks, vector/embedding, recall/ranking, schema/tooling, graph/relations, external bridge/shared, security/secrets, doctor/dashboard/observability
-- `sql_store.py` — 966 lines; capabilities: journal/digest, candidate/governance/forgetting, experience/playbooks, vector/embedding, recall/ranking, schema/tooling, graph/relations, external bridge/shared, security/secrets, doctor/dashboard/observability
-- `tooling.py` — 916 lines; capabilities: install/rollout, provider hooks/runtime, candidate/governance/forgetting, experience/playbooks, vector/embedding, recall/ranking, schema/tooling, graph/relations, external bridge/shared, security/secrets, doctor/dashboard/observability
-- `recall.py` — 808 lines; capabilities: install/rollout, provider hooks/runtime, candidate/governance/forgetting, vector/embedding, recall/ranking, graph/relations, external bridge/shared
+Final inventory: 120 top-level Python modules and 151 test modules. Detailed per-module inventory below remains advisory; this summary is the current post-remediation count.
+
+- `memory_ops.py` — 2303 lines; public memory mutation, stats, recall and governance orchestration.
+- `nightly_digest.py` — 2043 lines; digest lifecycle, batching and committed companion replay.
+- `journal.py` — 1838 lines; journal extraction, transactional candidate application and replay.
+- `installer.py` — 1535 lines; install, activation, verification, rollback and compatibility checks.
+- `experience_store.py` — 1490 lines; playbook/episode/pitfall storage and review state.
+- `fact_repository.py` — 1446 lines; temporal fact ledger persistence and queries.
+- `tooling.py` — 1322 lines; public tool normalization and dispatch.
+- `provider.py` — 1306 lines; Hermes lifecycle and provider wiring.
 
 ## Capability ownership
 
@@ -490,10 +503,11 @@ Updated: `2026-07-08` for `scope-recall` 1.7.0 productization release.
 - Related tests: `tests/test_memory_candidate_promotion.py`, `tests/test_memory_quality_kernel.py`, `tests/test_memory_quality_lint.py`
 
 ### `capture.py`
-- Lines: 171
+- Lines: 311
 - Capabilities: install/rollout, provider hooks/runtime, vector/embedding, recall/ranking, graph/relations, external bridge/shared, doctor/dashboard/observability
-- Top functions: start_writer, writer_loop, flush_writer, shutdown_writer, enqueue_store, store_now
-- Related tests: `tests/test_audit_regressions.py`, `tests/test_capture_filters.py`, `tests/test_capture_llm_manual.py`, `tests/test_doctor_experience.py`, `tests/test_doctor_sqlite_readonly.py`, `tests/test_embedders.py`, `tests/test_entity_graph_hygiene.py`, `tests/test_experience_replay.py`, `tests/test_golden_benchmark.py`, `tests/test_governance_contract_regressions.py`, `tests/test_governance_scheduler.py`, `tests/test_graph_relation_backfill.py`
+- Responsibility: background store queue and bounded maintenance execution; shutdown first blocks new maintenance, then flushes and joins fail-closed before resources may close.
+- Top functions: _drain_relation_rebuild_debt, start_writer, writer_loop, flush_writer, shutdown_writer, enqueue_store, store_now
+- Related tests: `tests/test_capture_shutdown.py`, `tests/test_provider.py`, `tests/test_vector_startup_reconciliation.py`
 
 ### `capture_filters.py`
 - Lines: 259
@@ -570,11 +584,17 @@ Updated: `2026-07-08` for `scope-recall` 1.7.0 productization release.
 - Top functions: sqlite_report, memory_candidate_debt_report, memory_quality_lint_report, memory_secret_report
 - Related tests: `tests/test_doctor_journal_health.py`, `tests/test_doctor_modularization.py`, `tests/test_doctor_sqlite_readonly.py`, `tests/test_memory_quality_lint.py`
 
+### `doctor_temporal.py`
+
+- Capabilities: read-only claim coverage, interval/provenance integrity, evolution review debt, recent receipts, and mental-model candidate debt
+- Related tests: `tests/test_doctor_temporal.py`
+
 ### `doctor_vector.py`
-- Lines: 361
+- Lines: 898
 - Capabilities: candidate/governance/forgetting, vector/embedding, recall/ranking, schema/tooling, doctor/dashboard/observability
+- Responsibility: read-only health of the durable current generation; inactive READY rollback inventory and inactive outbox debt are reported separately and cannot falsify active health.
 - Top functions: lancedb_table_names, lancedb_vector_ids, vector_dimensions, run_vector_search_smoke, sqlite_truth_db_exists, sqlite_indexable_memory_ids, sqlite_indexable_memory_count, apply_vector_truth_consistency, lancedb_vector_report, sqlite_vector_search_smoke, sqlite_vector_report, vector_report, disabled_vector_report
-- Related tests: `tests/test_doctor_journal_health.py`, `tests/test_doctor_modularization.py`, `tests/test_optional_vector_deps.py`, `tests/test_release.py`
+- Related tests: `tests/test_doctor_journal_health.py`, `tests/test_optional_vector_deps.py`, `tests/test_vector_generation_migration.py`
 
 ### `embedders.py`
 - Lines: 549
@@ -659,17 +679,24 @@ Updated: `2026-07-08` for `scope-recall` 1.7.0 productization release.
 - Top functions: normalize_validator_kind, _parse_iso, normalize_freshness_status, _row_payload, _table_exists, memory_freshness_map, freshness_penalty, attach_freshness_metadata, _scope_filter_sql, fact_freshness_report
 - Related tests: `tests/test_dashboard.py`, `tests/test_experience_schema.py`, `tests/test_fact_freshness.py`, `tests/test_forgetting.py`, `tests/test_governance_scheduler.py`, `tests/test_memory_quality_kernel.py`, `tests/test_provider.py`, `tests/test_roadmap_retrieval.py`, `tests/test_scoring.py`
 
+### `entity_quality.py`
+- Lines: 65
+- Capabilities: graph/relations, candidate/governance/forgetting
+- Responsibility: conservative, backend-neutral rejection of sentence fragments, generic CJK phrases, generic English helper terms, and mixed name-plus-generic suffix noise before entity indexing. It does not extract entities or mutate graph tables.
+- Top functions: entity_is_indexable
+- Related tests: `tests/test_entity_quality.py`, `tests/test_entity_graph_hygiene.py`, `tests/test_graph_hygiene.py`
+
 ### `gating.py`
 - Lines: 191
 - Capabilities: recall/ranking, security/secrets, doctor/dashboard/observability
 - Top functions: stringify_content, clean_text, compact_text, is_trivial, normalize_query, should_skip_retrieval, query_tokens, stem_token, normalized_token_set, build_fts_query, like_terms, fts_escape, dedup_key, should_skip_capture, config_bool
 
 ### `governance.py`
-- Lines: 458
+- Lines: 460
 - Capabilities: install/rollout, journal/digest, candidate/governance/forgetting, experience/playbooks, recall/ranking, graph/relations, external bridge/shared, security/secrets
 - Classes: ExtractionCandidate
 - Top functions: split_sentences, _unique_strings, _authority_for_source, _source_trust_for_authority, normalize_memory_type, classify_memory, merge_metadata, extract_candidates, _conflict_tokens, _claim_slot_and_value, _overlap_ratio, is_conflicting, merge_memory_text
-- Related tests: `tests/test_conflict_governance.py`, `tests/test_doctor_journal_health.py`, `tests/test_experience_replay_generation.py`, `tests/test_forgetting.py`, `tests/test_governance_cleanup.py`, `tests/test_governance_contract_regressions.py`, `tests/test_governance_scheduler.py`, `tests/test_installer.py`, `tests/test_journal_digest.py`, `tests/test_journal_recovery.py`, `tests/test_memory_candidate_promotion.py`, `tests/test_memory_classification.py`
+- Related tests: `tests/test_conflict_governance.py`, `tests/test_doctor_journal_health.py`, `tests/test_evolution_characterization.py`, `tests/test_experience_replay_generation.py`, `tests/test_forgetting.py`, `tests/test_governance_cleanup.py`, `tests/test_governance_contract_regressions.py`, `tests/test_governance_scheduler.py`, `tests/test_installer.py`, `tests/test_journal_digest.py`, `tests/test_journal_recovery.py`, `tests/test_memory_candidate_promotion.py`, `tests/test_memory_classification.py`, `tests/test_memory_text_merge.py`
 
 ### `governance_cleanup.py`
 - Lines: 539
@@ -684,9 +711,9 @@ Updated: `2026-07-08` for `scope-recall` 1.7.0 productization release.
 - Related tests: `tests/test_experience_replay_generation.py`, `tests/test_governance_scheduler.py`, `tests/test_release.py`
 
 ### `graph.py`
-- Lines: 467
+- Lines: 479
 - Capabilities: candidate/governance/forgetting, recall/ranking, schema/tooling, graph/relations
-- Top functions: lifecycle_value, lifecycle_is_hidden, lifecycle_visible_sql, _hinted_cjk_entities, _jieba_entities, clamp_float, _is_tool_trace_entity, normalize_entity, _unique, extract_entities, metadata_entities, load_metadata, ensure_graph_schema, sync_memory_entities, backfill_memory_entities, query_entities, entity_overlap_bonus, entity_distance_scores
+- Top functions: lifecycle_value, lifecycle_is_hidden, lifecycle_visible_sql, _hinted_cjk_entities, _jieba_entities, clamp_float, _is_tool_trace_entity, normalize_entity, _unique, extract_entities, metadata_entities, load_metadata, ensure_graph_schema, sync_memory_entities, backfill_memory_entities, query_entities, entity_overlap_bonus, entity_distance_scores. Ordinary graph visibility delegates to `lifecycle_policy.py`; entity specificity delegates to `entity_quality.py`.
 - Related tests: `tests/test_doctor_journal_health.py`, `tests/test_doctor_modularization.py`, `tests/test_entity_graph_hygiene.py`, `tests/test_fact_freshness.py`, `tests/test_forgetting.py`, `tests/test_graph_hygiene.py`, `tests/test_graph_relation_backfill.py`, `tests/test_graph_relation_benchmark.py`, `tests/test_openclaw_import.py`, `tests/test_provider.py`, `tests/test_relation_aware_recall.py`, `tests/test_relation_extraction.py`
 
 ### `graph_hygiene.py`
@@ -720,13 +747,13 @@ Updated: `2026-07-08` for `scope-recall` 1.7.0 productization release.
 - Related tests: `tests/test_doctor_sqlite_readonly.py`, `tests/test_installer.py`, `tests/test_rollout_profiles.py`
 
 ### `journal.py`
-- Lines: 1026
+- Lines: 1802
 - Capabilities: install/rollout, journal/digest, candidate/governance/forgetting, experience/playbooks, vector/embedding, recall/ranking, schema/tooling, graph/relations, external bridge/shared, security/secrets, doctor/dashboard/observability
 - Top functions: _has_high_value_durable_signal, _low_value_promotion_reason, _workflow_continuation_tokens, _is_workflow_continuation, _metadata_entities, _find_match, _memory_scope_id, _record_journal_sources, _record_journal_rejection, _quarantine_journal_entries, _merge_metadata, _candidate_rejection_reason, _candidate_allowed, _cross_platform_metadata, apply_journal_candidates, _collect_journal_candidates, _scope_from_row, _infer_scope_from_journal
 - Related tests: `tests/test_capture_filters.py`, `tests/test_config_schema.py`, `tests/test_dashboard.py`, `tests/test_digest_run_results.py`, `tests/test_doctor_experience.py`, `tests/test_doctor_journal_health.py`, `tests/test_doctor_modularization.py`, `tests/test_experience_evidence.py`, `tests/test_experience_promotion.py`, `tests/test_experience_replay.py`, `tests/test_experience_store.py`, `tests/test_experience_synthesis.py`
 
 ### `journal_candidates.py`
-- Lines: 288
+- Lines: 302
 - Capabilities: journal/digest, candidate/governance/forgetting, vector/embedding, recall/ranking, graph/relations, security/secrets
 - Classes: JournalDigestCandidate
 - Top functions: _unique, _entry_entities, _topic_entities, _topic_tags, _topic_label, _topic_signature, _segment_session_entries, _classify_target_and_type, _looks_like_historical_template_noise, _digest_role_summary, _heuristic_candidate_content, heuristic_journal_candidates, candidate_metadata
@@ -766,17 +793,32 @@ Updated: `2026-07-08` for `scope-recall` 1.7.0 productization release.
 - Related tests: `tests/test_maintenance_ops.py`
 
 ### `memory_ops.py`
-- Lines: 1579
+- Lines: 2334
 - Capabilities: install/rollout, provider hooks/runtime, candidate/governance/forgetting, vector/embedding, recall/ranking, graph/relations, external bridge/shared, security/secrets, doctor/dashboard/observability
 - Top functions: _scope_params, _scope_placeholders, _accessible_scope_params, _writable_scope_params, _normalized_scope_mode, _payload_entities, _rollback_provider_conn_after_error, store_memory_now, _conflict_peer_ids, _sync_conflict_metadata, _sync_conflict_metadata_for_ids, _mark_conflicts_for_memory, find_semantic_merge_candidate, _expected_scope_id_for_mode, _row_scope_mode, _target_scope_mode_for_existing, update_memory, merge_memories
-- Related tests: `tests/test_governance_cleanup.py`, `tests/test_journal_digest.py`, `tests/test_provider.py`, `tests/test_v1015_audit_regressions.py`
+- Related tests: `tests/test_governance_cleanup.py`, `tests/test_journal_digest.py`, `tests/test_provider.py`, `tests/test_store_contracts.py`, `tests/test_v1015_audit_regressions.py`
+
+### `memory_admission.py`
+- Lines: 120
+- Capabilities: journal/digest, candidate/governance/forgetting, freshness
+- Responsibility: source-aware admission metadata for automatic digest output. It separates extraction from trust, marks volatile state snapshots `needs_live_check`, and routes procedures to Experience review. It does not write SQLite.
+- Classes: AutomaticAdmission
+- Top functions: is_time_sensitive_snapshot, automatic_admission_metadata
+- Related tests: `tests/test_memory_admission.py`, `tests/test_journal_digest.py`, `tests/test_nightly_digest.py`, `tests/test_memory_quality_kernel.py`
 
 ### `memory_quality.py`
-- Lines: 469
+- Lines: 536
 - Capabilities: journal/digest, candidate/governance/forgetting, experience/playbooks, recall/ranking, schema/tooling, external bridge/shared, security/secrets, doctor/dashboard/observability
 - Classes: MemoryQualityDecision
 - Top functions: _load_metadata, load_quality_metadata, _row_value, _float_meta, _lifecycle, _memory_type, _metadata_ref_values, _metadata_refs, _is_archived, _is_active_profile_memory, _has_any, quality_decision_for_memory, quality_decision_summary, _looks_like_transcript, lint_memory_row, memory_quality_report
 - Related tests: `tests/test_dashboard.py`, `tests/test_governance_cleanup.py`, `tests/test_memory_quality_kernel.py`, `tests/test_memory_quality_lint.py`, `tests/test_release.py`
+
+### `memory_text_merge.py`
+- Lines: 67
+- Capabilities: candidate/governance/forgetting, recall/ranking
+- Responsibility: exact/containment segment deduplication for reviewed/manual merges plus a conservative contained-text safety predicate for explicit automatic merge. Similarity alone is not authorization.
+- Top functions: automatic_merge_is_safe, split_memory_segments, deduplicate_memory_text, combine_reviewed_memory_text
+- Related tests: `tests/test_memory_text_merge.py`, `tests/test_evolution_characterization.py`, `tests/test_provider.py`, `tests/test_store_contracts.py`
 
 ### `migration.py`
 - Lines: 47
@@ -791,14 +833,14 @@ Updated: `2026-07-08` for `scope-recall` 1.7.0 productization release.
 - Related tests: `tests/test_openclaw_import.py`
 
 ### `models.py`
-- Lines: 132
+- Lines: 184
 - Capabilities: provider hooks/runtime, journal/digest, vector/embedding, recall/ranking, graph/relations, external bridge/shared
 - Classes: RecallItem, RuntimeScope, ImportedMemoryRow, VectorIndexRecord
-- Top functions: recall_scope_mode, json_dumps_stable, normalize_import_timestamp, normalize_import_fingerprint_timestamp, build_import_fingerprint
+- Top functions: recall_scope_mode, allowed_store_scope_modes, resolve_store_scope_mode, json_dumps_stable, normalize_import_timestamp, normalize_import_fingerprint_timestamp, build_import_fingerprint
 - Related tests: `tests/test_doctor_experience.py`, `tests/test_experience_promotion.py`, `tests/test_experience_schema.py`, `tests/test_experience_store.py`, `tests/test_experience_synthesis.py`, `tests/test_fact_freshness.py`, `tests/test_governance_contract_regressions.py`, `tests/test_governance_scheduler.py`, `tests/test_journal_digest.py`, `tests/test_journal_extractors.py`, `tests/test_journal_store.py`, `tests/test_legacy_hygiene_migration.py`
 
 ### `nightly_digest.py`
-- Lines: 1399
+- Lines: 2017
 - Capabilities: install/rollout, provider hooks/runtime, journal/digest, candidate/governance/forgetting, vector/embedding, recall/ranking, schema/tooling, graph/relations, external bridge/shared, security/secrets, doctor/dashboard/observability
 - Classes: MessageRecord, SessionBundle, DigestCandidate, ScopeProfile, DigestOptions, DigestVectorRuntime
 - Top functions: _profile_writable_scope_ids, _memory_scope_id, redact_sensitive, _redact_match, parse_date, local_day_bounds, resolve_session_db, _column_names, _read_session_meta, _table_names, load_session_bundles, parse_tool_calls, summarize_command, safe_command_hints, unique_strings, session_chunks, bundle_artifact_anchor_block, heuristic_candidates
@@ -816,9 +858,10 @@ Updated: `2026-07-08` for `scope-recall` 1.7.0 productization release.
 - Top functions: render_current_turn_recall, _should_attempt_recall, _drop_recently_recalled, _select_recall_items, _fit_summary
 
 ### `provider.py`
-- Lines: 1069
+- Lines: 1303
 - Capabilities: install/rollout, provider hooks/runtime, journal/digest, candidate/governance/forgetting, experience/playbooks, vector/embedding, recall/ranking, schema/tooling, graph/relations, external bridge/shared, security/secrets, doctor/dashboard/observability
 - Classes: ScopeRecallMemoryProvider
+- Responsibility: runtime composition and hooks only; owns stop/maintenance events and closes DB/vector resources only after capture writer shutdown succeeds.
 - Top functions: register
 - Related tests: `tests/test_audit_regressions.py`, `tests/test_benchmark_regression_cases.py`, `tests/test_capture_filters.py`, `tests/test_capture_llm_manual.py`, `tests/test_config_schema.py`, `tests/test_conflict_governance.py`, `tests/test_dashboard.py`, `tests/test_digest_run_results.py`, `tests/test_doctor_experience.py`, `tests/test_doctor_journal_health.py`, `tests/test_doctor_sqlite_readonly.py`, `tests/test_embedders.py`
 
@@ -907,6 +950,14 @@ Updated: `2026-07-08` for `scope-recall` 1.7.0 productization release.
 - Top functions: _entry_value, entry_text, tail_text, goal_signal_key, is_low_signal_goal, has_failure_signal, has_uncertain_signal, contains_any, extract_final_evidence, classify_task_closure
 - Related tests: `tests/test_experience_replay_generation.py`, `tests/test_release.py`, `tests/test_task_boundary.py`
 
+### `tool_validation.py`
+- Lines: 156
+- Capabilities: provider hooks/runtime, schema/tooling, security/secrets
+- Classes: ToolArgumentIssue
+- Responsibility: executes declared public JSON Schemas before handlers run and renders field-oriented validation errors without echoing rejected values.
+- Top functions: validate_tool_arguments
+- Related tests: `tests/test_tool_argument_validation.py`, `tests/test_experience_tools.py`, `tests/test_temporal_tools.py`
+
 ### `tooling.py`
 - Lines: 916
 - Capabilities: install/rollout, provider hooks/runtime, candidate/governance/forgetting, experience/playbooks, vector/embedding, recall/ranking, schema/tooling, graph/relations, external bridge/shared, security/secrets, doctor/dashboard/observability
@@ -914,11 +965,32 @@ Updated: `2026-07-08` for `scope-recall` 1.7.0 productization release.
 - Top functions: _now_iso
 - Related tests: `tests/test_tool_hygiene.py`
 
+### `vector_generation.py`
+- Lines: 1138
+- Capabilities: vector/embedding, schema/tooling, install/rollout, doctor/dashboard/observability
+- Responsibility: durable generation registry, activation CAS, outbox schema/leases, migration receipts, and active-generation cardinality accounting.
+- Top functions: current_generation, update_generation_cardinality, register_generation, activate_generation, enqueue_vector_event, claim_vector_events, complete_vector_event, fail_vector_event
+- Related tests: `tests/test_vector_generation.py`, `tests/test_vector_startup_reconciliation.py`, `tests/test_vector_migration.py`
+
+### `vector_migration.py`
+- Lines: 622
+- Capabilities: vector/embedding, install/rollout, schema/tooling, doctor/dashboard/observability
+- Responsibility: immutable shadow generation build, physical/source preflight, receipt binding, explicit activation CAS, and activation-time reconciliation watermark seeding.
+- Top functions: build_vector_generation, _activate_existing_ready, _retire_existing_ready, validate_shadow_record, physical_record_digest
+- Related tests: `tests/test_vector_generation_migration.py`, `tests/test_independent_review_regressions.py`, `tests/test_upgrade_compatibility.py`
+
+### `vector_reconciliation.py`
+- Lines: 559
+- Capabilities: vector/embedding, schema/tooling, doctor/dashboard/observability
+- Responsibility: bounded truth-page watermark and outbox planning; complete shadow activation can seed an idle, fully reconciled watermark without redundant startup embeddings.
+- Top functions: ensure_vector_reconciliation_schema, prepare_vector_reconciliation_page, mark_generation_snapshot_reconciled, vector_reconciliation_state
+- Related tests: `tests/test_vector_startup_reconciliation.py`, `tests/test_vector_generation_migration.py`
+
 ### `vector_runtime.py`
-- Lines: 337
+- Lines: 933
 - Capabilities: install/rollout, provider hooks/runtime, vector/embedding, recall/ranking, schema/tooling, graph/relations, security/secrets, doctor/dashboard/observability
-- Top functions: _vector_mutation_lock, mark_vector_needs_repair, _normalize_vector_backend, _append_vector_message, _open_sqlite_vector_store, _open_vector_store, setup_vector_layer, refresh_vector_audit, _should_index_target, sync_vector_index, upsert_vector_record
-- Related tests: `tests/test_nightly_digest.py`, `tests/test_optional_vector_deps.py`, `tests/test_sqlite_vector_store.py`, `tests/test_vector_policy.py`
+- Top functions: _vector_mutation_lock, vector_write_replay_limit, mark_vector_needs_repair, setup_vector_layer, refresh_vector_audit, run_bounded_vector_reconciliation, sync_vector_index, replay_vector_outbox, upsert_vector_record
+- Related tests: `tests/test_nightly_digest.py`, `tests/test_optional_vector_deps.py`, `tests/test_sqlite_vector_store.py`, `tests/test_vector_policy.py`, `tests/test_vector_startup_reconciliation.py`, `tests/test_vector_write_replay.py`
 
 ### `vector_store.py`
 - Lines: 314

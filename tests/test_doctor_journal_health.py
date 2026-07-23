@@ -476,6 +476,7 @@ def test_doctor_sqlite_report_surfaces_governance_audit_coverage(tmp_path):
     conn = _conn(tmp_path)
     _store_memory(conn, memory_id="legacy-archived", content="Legacy archived memory should be visible in coverage report.", lifecycle="archived")
     conn.execute("DELETE FROM memory_entities WHERE memory_id = 'legacy-archived'")
+    conn.execute("DELETE FROM memories_fts WHERE memory_id = 'legacy-archived'")
     conn.execute("DELETE FROM memory_relations WHERE source_memory_id = 'legacy-archived' OR target_memory_id = 'legacy-archived'")
     conn.commit()
     conn.close()

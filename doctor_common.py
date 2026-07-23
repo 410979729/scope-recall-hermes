@@ -4,16 +4,15 @@ Doctor modules must sanitize public output and avoid mutating runtime state whil
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from pathlib import Path
 from typing import Any
 
 try:
-    from .config import CONFIG_SCHEMA_EXTRAS, validate_config_override
+    from .config import load_runtime_config as _canonical_load_runtime_config
 except ImportError:  # pragma: no cover - standalone doctor execution
-    from config import CONFIG_SCHEMA_EXTRAS, validate_config_override
+    from config import load_runtime_config as _canonical_load_runtime_config
 
 try:
     from .capture_filters import contains_secret_like_text as _contains_secret_like_text
@@ -78,16 +77,6 @@ def plugin_yaml_version(text: str) -> str:
     return match.group(1).strip() if match else ""
 
 
-def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(base)
-    for key, value in (override or {}).items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = deep_merge(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
-
-
 def load_profile_dotenv(hermes_home: Path) -> set[str]:
     env_path = hermes_home / ".env"
     loaded: set[str] = set()
@@ -106,39 +95,19 @@ def load_profile_dotenv(hermes_home: Path) -> set[str]:
     return loaded
 
 
-def _config_load_error(path: Path, *, kind: str, message: str) -> dict[str, str]:
-    return {"path": str(path), "kind": kind, "message": message}
-
-
 def load_runtime_config(source_root: Path, hermes_home: Path) -> dict[str, Any]:
+    """Load the exact runtime contract, then add doctor-only env visibility.
+
+    Keeping validation and merge authority in ``config.load_runtime_config``
+    prevents doctor from rejecting an override that the running plugin accepts.
+    Doctor never reads secret values from the profile dotenv; it records names
+    only so availability checks can reason about configured providers.
+    """
+
+    config = _canonical_load_runtime_config(source_root, hermes_home / "scope-recall")
     profile_env_keys = load_profile_dotenv(hermes_home)
-    config: dict[str, Any] = {}
-    errors: list[dict[str, str]] = []
-    for index, path in enumerate((source_root / "config.json", hermes_home / "scope-recall" / "config.json")):
-        if not path.exists():
-            continue
-        try:
-            raw = json.loads(read_text(path))
-        except json.JSONDecodeError as exc:
-            errors.append(_config_load_error(path, kind="json_decode", message=str(exc)))
-            continue
-        except OSError as exc:
-            errors.append(_config_load_error(path, kind="read_error", message=str(exc)))
-            continue
-        if isinstance(raw, dict):
-            if index == 0:
-                config = deep_merge(config, raw)
-            else:
-                validation_template = deep_merge(CONFIG_SCHEMA_EXTRAS, config)
-                override, validation_errors = validate_config_override(raw, validation_template, path=path)
-                errors.extend(validation_errors)
-                config = deep_merge(config, override)
-        else:
-            errors.append(_config_load_error(path, kind="non_dict_payload", message="config payload must be a JSON object"))
     if profile_env_keys:
         config["_profile_env_keys"] = sorted(profile_env_keys)
-    if errors:
-        config["_config_load_errors"] = errors
     return config
 
 
@@ -217,6 +186,21 @@ def expected_embedder_from_config(config: dict[str, Any]) -> dict[str, Any]:
     )
     raw_retrieval = config.get("retrieval")
     retrieval: dict[str, Any] = raw_retrieval if isinstance(raw_retrieval, dict) else {}
+    fallback_summary = (
+        {
+            "provider": str(fallback.get("provider") or ""),
+            "model": str(fallback.get("model") or ""),
+            "dimensions": int(fallback.get("dimensions") or 0),
+            "metric": str(retrieval.get("metric") or "cosine"),
+            "prompt_profile": str(fallback.get("prompt_profile") or "default-v1"),
+            "document_prefix": str(fallback.get("document_prefix") or ""),
+            "query_prefix": str(fallback.get("query_prefix") or ""),
+            "request_dimensions": bool(fallback.get("request_dimensions", False)),
+            "available": bool(fallback_available),
+        }
+        if fallback
+        else {}
+    )
     return {
         "source": "embedder",
         "provider": str(selected.get("provider") or ""),
@@ -230,6 +214,7 @@ def expected_embedder_from_config(config: dict[str, Any]) -> dict[str, Any]:
         "available": bool(primary_available),
         "fallback_available": bool(fallback_available),
         "fallback_compatible": bool(fallback_compatible),
+        "fallback": fallback_summary,
     }
 
 

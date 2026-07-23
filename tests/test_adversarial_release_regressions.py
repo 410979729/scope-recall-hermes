@@ -22,6 +22,17 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PLUGIN_ROOT / "scripts" / "promote.memory_candidates.py"
 
 
+def _disable_unrelated_vector_runtime(hermes_home: Path) -> None:
+    """Keep metadata-boundary tests independent of optional native runtimes."""
+
+    config_path = hermes_home / "scope-recall" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps({"vector": {"enabled": False}}) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _load_script(name: str):
     spec = importlib.util.spec_from_file_location(name, SCRIPT_PATH)
     assert spec is not None and spec.loader is not None
@@ -282,6 +293,7 @@ def test_governance_redaction_sanitizes_mapping_keys() -> None:
 
 
 def test_public_store_scrubs_data_url_before_sqlite_truth(tmp_path: Path) -> None:
+    _disable_unrelated_vector_runtime(tmp_path)
     plugin = load_memory_provider('scope-recall')
     assert plugin is not None
     plugin.initialize(
@@ -329,6 +341,7 @@ def test_public_store_scrubs_data_url_before_sqlite_truth(tmp_path: Path) -> Non
 
 
 def test_public_store_and_compact_inspect_do_not_round_trip_secret_like_metadata_keys(tmp_path: Path) -> None:
+    _disable_unrelated_vector_runtime(tmp_path)
     plugin = load_memory_provider('scope-recall')
     assert plugin is not None
     plugin.initialize(
@@ -369,6 +382,7 @@ def test_public_store_and_compact_inspect_do_not_round_trip_secret_like_metadata
 
 
 def test_public_store_does_not_persist_secret_like_validator_keys(tmp_path: Path) -> None:
+    _disable_unrelated_vector_runtime(tmp_path)
     plugin = load_memory_provider('scope-recall')
     assert plugin is not None
     plugin.initialize(
@@ -446,6 +460,7 @@ def test_freshness_validator_spec_sanitizes_mapping_keys() -> None:
 
 
 def test_public_store_sanitizes_secret_like_tags_and_entities(tmp_path: Path) -> None:
+    _disable_unrelated_vector_runtime(tmp_path)
     plugin = load_memory_provider('scope-recall')
     assert plugin is not None
     plugin.initialize(

@@ -20,6 +20,11 @@ from typing import Any, Iterable
 
 from .capture_filters import sanitize_report_text
 from .doctor_vector import lancedb_table_names, lancedb_vector_ids, sqlite_truth_vector_categories
+from .maintenance_lease import (
+    assert_activation_write_allowed,
+    install_activation_lease_authorizer,
+)
+from .truth_connection import connect_truth_database
 
 
 def _json_safe(value: Any) -> Any:
@@ -52,8 +57,7 @@ def sqlite_truth_hash(db_path: Path) -> str:
     """Return a stable logical hash of every SQLite truth-row field."""
 
     db_path = Path(db_path)
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
+    conn = connect_truth_database(db_path, mode="ro")
     try:
         return _sqlite_truth_hash_connection(conn)
     finally:
@@ -72,8 +76,7 @@ def _safe_generation_root(storage_dir: Path, raw_path: Any) -> Path:
 
 
 def _generation_manifests(truth_path: Path) -> list[dict[str, Any]]:
-    conn = sqlite3.connect(f"file:{truth_path}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
+    conn = connect_truth_database(truth_path, mode="ro")
     try:
         exists = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vector_generations'"
@@ -88,7 +91,7 @@ def _generation_manifests(truth_path: Path) -> list[dict[str, Any]]:
 def _current_generation_id(truth_path: Path) -> str:
     """Read the selected generation pointer without creating or migrating schema."""
 
-    conn = sqlite3.connect(f"file:{truth_path}?mode=ro", uri=True)
+    conn = connect_truth_database(truth_path, mode="ro")
     try:
         exists = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vector_generation_state'"
@@ -435,6 +438,7 @@ def _chunks(values: Iterable[str], size: int = 200) -> Iterable[list[str]]:
 
 def _delete_sqlite_ids(path: Path, ids: list[str]) -> int:
     conn = sqlite3.connect(path, timeout=30.0)
+    install_activation_lease_authorizer(conn, path)
     try:
         conn.execute("BEGIN IMMEDIATE")
         existing: set[str] = set()
@@ -583,8 +587,9 @@ def repair_hidden_vector_companions(
         backup_root = str(root)
 
     truth_path = Path(str(plan["truth_path"]))
-    truth_guard = sqlite3.connect(truth_path, timeout=30.0)
-    truth_guard.row_factory = sqlite3.Row
+    assert_activation_write_allowed(truth_path)
+    truth_guard = connect_truth_database(truth_path, mode="rw", timeout=30.0)
+    install_activation_lease_authorizer(truth_guard, truth_path)
     try:
         # A reserved transaction prevents truth writers from racing between the
         # post-backup drift check and external companion deletion. Apply already

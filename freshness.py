@@ -12,13 +12,41 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Sequence
 
 from .capture_filters import sanitize_report_text, sanitize_structured_value
-from .lifecycle_policy import durable_lifecycle_visible_sql, ordinary_recall_lifecycle_visible_sql
+from .lifecycle_policy import (
+    durable_lifecycle_visible_sql,
+    ordinary_recall_lifecycle_visible_sql,
+)
 
 CURRENT_STATUSES = {"current", "fresh", "valid", "verified", "ok"}
-NEEDS_CHECK_STATUSES = {"needs_live_check", "needs-live-check", "unknown", "unchecked", "expired"}
+NEEDS_CHECK_STATUSES = {
+    "needs_live_check",
+    "needs-live-check",
+    "unknown",
+    "unchecked",
+    "expired",
+}
 STALE_STATUSES = {"stale", "invalid", "superseded", "outdated"}
 VALIDATOR_KINDS = {"file_exists", "command", "http", "manual", "none"}
 FACTUAL_MEMORY_TYPES = {"environment_fact", "fact", "factual", "project_fact"}
+_OPERATIONAL_STATUS_MEMORY_TYPES = {"decision", "episodic", "project", "summary"}
+_CURRENT_STATE_MARKER_RE = re.compile(
+    r"(?:当前|目前|现在|现状|截至|状态快照|current(?:ly)?|as\s+of|live[-\s]?check)",
+    re.IGNORECASE,
+)
+_OPERATIONAL_STATUS_SUBJECT_RE = re.compile(
+    r"(?:版本|version|journal\s+backlog|backlog|积压|vector(?:\s+status)?|向量(?:状态)?|运行状态|runtime\s+status|service\s+status|状态)",
+    re.IGNORECASE,
+)
+_OPERATIONAL_STATUS_VALUE_RE = re.compile(
+    r"(?:"
+    r"(?:版本|version)[^。；;\n]{0,24}?v?\d+\.\d+(?:\.\d+)?"
+    r"|(?:journal\s+backlog|backlog|积压)[^。；;\n]{0,24}?\d+"
+    r"|(?:vector(?:\s+status)?|向量(?:状态)?|运行状态|runtime\s+status|service\s+status|状态)"
+    r"[^。；;\n]{0,32}?(?:ready|needs_repair|degraded|running|active|inactive|failed|error|ok|正常|异常|故障)"
+    r")",
+    re.IGNORECASE,
+)
+_OPERATIONAL_STATUS_MIN_PENALTY = 0.55
 _VALIDATOR_KIND_ALIASES = {
     "": "none",
     "none": "none",
@@ -85,7 +113,9 @@ def _parse_iso(raw: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-def normalize_freshness_status(status: Any, *, valid_until: Any = None, now: datetime | None = None) -> str:
+def normalize_freshness_status(
+    status: Any, *, valid_until: Any = None, now: datetime | None = None
+) -> str:
     normalized = str(status or "unknown").strip().lower().replace(" ", "_")
     if normalized == "needs-live-check":
         normalized = "needs_live_check"
@@ -114,7 +144,9 @@ def _safe_validator_spec(value: Any) -> dict[str, Any]:
 
     def clean(item: Any) -> Any:
         if isinstance(item, dict):
-            return {str(key)[:80]: clean(child) for key, child in list(item.items())[:50]}
+            return {
+                str(key)[:80]: clean(child) for key, child in list(item.items())[:50]
+            }
         if isinstance(item, list):
             return [clean(child) for child in item[:50]]
         if isinstance(item, (bool, int, float)) or item is None:
@@ -124,44 +156,105 @@ def _safe_validator_spec(value: Any) -> dict[str, Any]:
     return clean(sanitized)
 
 
+def _looks_like_operational_status_snapshot(content: str, memory_type: str) -> bool:
+    """Conservatively detect volatile status assertions outside factual rows."""
+
+    if memory_type not in _OPERATIONAL_STATUS_MEMORY_TYPES:
+        return False
+    for sentence in re.split(r"[。；;\n]+", str(content or "")):
+        if not _CURRENT_STATE_MARKER_RE.search(sentence):
+            continue
+        if not _OPERATIONAL_STATUS_SUBJECT_RE.search(sentence):
+            continue
+        if _OPERATIONAL_STATUS_VALUE_RE.search(sentence):
+            return True
+    return False
+
+
 def _freshness_spec_from_metadata(
     metadata: dict[str, Any] | None,
     *,
+    content: str = "",
     now: datetime | None = None,
 ) -> dict[str, Any] | None:
     payload = dict(metadata or {})
-    memory_type = str(payload.get("memory_type") or payload.get("category") or "").strip().lower()
+    memory_type = (
+        str(payload.get("memory_type") or payload.get("category") or "").strip().lower()
+    )
     raw_freshness = payload.get("freshness")
     explicit = dict(raw_freshness) if isinstance(raw_freshness, dict) else {}
-    if memory_type not in FACTUAL_MEMORY_TYPES and not explicit:
+    operational_status = not explicit and _looks_like_operational_status_snapshot(
+        content, memory_type
+    )
+    if (
+        memory_type not in FACTUAL_MEMORY_TYPES
+        and not explicit
+        and not operational_status
+    ):
         return None
 
     now_dt = now or datetime.now(timezone.utc)
-    valid_until_dt = _parse_iso(explicit.get("valid_until") or payload.get("valid_until"))
-    requested_status = explicit.get("status") or payload.get("freshness_status") or payload.get("fact_freshness_status")
-    status = normalize_freshness_status(requested_status or "needs_live_check", valid_until=valid_until_dt, now=now_dt)
-    validator_kind = normalize_validator_kind(explicit.get("validator_kind") or payload.get("validator_kind") or "manual")
+    valid_until_dt = _parse_iso(
+        explicit.get("valid_until") or payload.get("valid_until")
+    )
+    requested_status = (
+        explicit.get("status")
+        or payload.get("freshness_status")
+        or payload.get("fact_freshness_status")
+    )
+    status = normalize_freshness_status(
+        requested_status or "needs_live_check", valid_until=valid_until_dt, now=now_dt
+    )
+    validator_kind = normalize_validator_kind(
+        explicit.get("validator_kind") or payload.get("validator_kind") or "manual"
+    )
     try:
-        ttl_days = max(0, int(explicit.get("ttl_days") or payload.get("ttl_days") or 0))
+        default_ttl_days = 1 if operational_status else 0
+        ttl_days = max(
+            0,
+            int(
+                explicit.get("ttl_days") or payload.get("ttl_days") or default_ttl_days
+            ),
+        )
     except (TypeError, ValueError):
-        ttl_days = 0
-    checked_dt = _parse_iso(explicit.get("last_checked_at") or payload.get("last_checked_at"))
+        ttl_days = 1 if operational_status else 0
+    checked_dt = _parse_iso(
+        explicit.get("last_checked_at") or payload.get("last_checked_at")
+    )
     if status in CURRENT_STATUSES and checked_dt is None:
         checked_dt = now_dt
     if status in CURRENT_STATUSES and ttl_days > 0 and valid_until_dt is None:
         valid_until_dt = (checked_dt or now_dt) + timedelta(days=ttl_days)
 
+    default_fact_key = (
+        "operational_status_snapshot" if operational_status else "memory_fact"
+    )
+    default_truth_type = (
+        "operational_status" if operational_status else memory_type or "factual"
+    )
     return {
-        "fact_key": _normalized_fact_key(explicit.get("fact_key") or payload.get("fact_key")),
-        "truth_type": str(explicit.get("truth_type") or payload.get("truth_type") or memory_type or "factual")[:80],
+        "fact_key": _normalized_fact_key(
+            explicit.get("fact_key") or payload.get("fact_key") or default_fact_key
+        ),
+        "truth_type": str(
+            explicit.get("truth_type")
+            or payload.get("truth_type")
+            or default_truth_type
+        )[:80],
         "validator_kind": validator_kind,
-        "validator_spec": _safe_validator_spec(explicit.get("validator_spec") or payload.get("validator_spec")),
+        "validator_spec": _safe_validator_spec(
+            explicit.get("validator_spec") or payload.get("validator_spec")
+        ),
         "ttl_days": ttl_days,
         "last_checked_at": checked_dt.isoformat() if checked_dt is not None else "",
         "valid_until": valid_until_dt.isoformat() if valid_until_dt is not None else "",
         "status": status,
-        "stale_reason": sanitize_report_text(explicit.get("stale_reason") or payload.get("stale_reason") or "")[:500],
-        "superseded_by": str(explicit.get("superseded_by") or payload.get("superseded_by") or "")[:120],
+        "stale_reason": sanitize_report_text(
+            explicit.get("stale_reason") or payload.get("stale_reason") or ""
+        )[:500],
+        "superseded_by": str(
+            explicit.get("superseded_by") or payload.get("superseded_by") or ""
+        )[:120],
     }
 
 
@@ -170,6 +263,7 @@ def upsert_memory_freshness(
     *,
     memory_id: str,
     metadata: dict[str, Any] | None,
+    content: str = "",
     now: datetime | None = None,
     commit: bool = True,
 ) -> str:
@@ -179,7 +273,7 @@ def upsert_memory_freshness(
     never invents a current status.
     """
 
-    spec = _freshness_spec_from_metadata(metadata, now=now)
+    spec = _freshness_spec_from_metadata(metadata, content=content, now=now)
     if spec is None or not memory_id or not _table_exists(conn, "fact_freshness"):
         return ""
     now_iso = (now or datetime.now(timezone.utc)).isoformat()
@@ -193,11 +287,17 @@ def upsert_memory_freshness(
         """,
         (str(memory_id), spec["fact_key"]),
     ).fetchone()
-    freshness_id = str(existing["id"]) if existing is not None else uuid.uuid5(
-        uuid.NAMESPACE_URL,
-        f"scope-recall:memory:{memory_id}:{spec['fact_key']}",
-    ).hex
-    created_at = str(existing["created_at"] or now_iso) if existing is not None else now_iso
+    freshness_id = (
+        str(existing["id"])
+        if existing is not None
+        else uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"scope-recall:memory:{memory_id}:{spec['fact_key']}",
+        ).hex
+    )
+    created_at = (
+        str(existing["created_at"] or now_iso) if existing is not None else now_iso
+    )
     conn.execute(
         """
         INSERT INTO fact_freshness(
@@ -240,7 +340,9 @@ def upsert_memory_freshness(
 
 
 def _row_payload(row: sqlite3.Row, *, now: datetime | None = None) -> dict[str, Any]:
-    status = normalize_freshness_status(row["status"], valid_until=row["valid_until"], now=now)
+    status = normalize_freshness_status(
+        row["status"], valid_until=row["valid_until"], now=now
+    )
     needs_live_check = status in NEEDS_CHECK_STATUSES or status in STALE_STATUSES
     return {
         "id": str(row["id"]),
@@ -260,10 +362,17 @@ def _row_payload(row: sqlite3.Row, *, now: datetime | None = None) -> dict[str, 
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    return conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone() is not None
+    return (
+        conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        ).fetchone()
+        is not None
+    )
 
 
-def memory_freshness_map(conn: sqlite3.Connection, memory_ids: Iterable[str], *, now: datetime | None = None) -> dict[str, dict[str, Any]]:
+def memory_freshness_map(
+    conn: sqlite3.Connection, memory_ids: Iterable[str], *, now: datetime | None = None
+) -> dict[str, dict[str, Any]]:
     ids = sorted({str(memory_id) for memory_id in memory_ids if str(memory_id)})
     if not ids or not _table_exists(conn, "fact_freshness"):
         return {}
@@ -287,29 +396,45 @@ def memory_freshness_map(conn: sqlite3.Connection, memory_ids: Iterable[str], *,
         payload = _row_payload(row, now=now)
         subject_id = str(payload["subject_id"])
         existing = result.get(subject_id)
-        if existing is None or int(payload.get("severity") or 0) > int(existing.get("severity") or 0):
+        if existing is None or int(payload.get("severity") or 0) > int(
+            existing.get("severity") or 0
+        ):
             result[subject_id] = payload
     return result
 
 
-def freshness_penalty(freshness: dict[str, Any] | None, config: dict[str, Any] | None = None) -> float:
+def freshness_penalty(
+    freshness: dict[str, Any] | None, config: dict[str, Any] | None = None
+) -> float:
     if not freshness:
         return 0.0
     cfg = config or {}
     status = str(freshness.get("status") or "").strip().lower()
+    truth_type = str(freshness.get("truth_type") or "").strip().lower()
     try:
         if status in STALE_STATUSES:
-            return max(0.0, min(0.9, float(cfg.get("fact_freshness_stale_penalty") or 0.35)))
-        if status == "expired":
-            return max(0.0, min(0.9, float(cfg.get("fact_freshness_expired_penalty") or 0.28)))
-        if status in NEEDS_CHECK_STATUSES:
-            return max(0.0, min(0.9, float(cfg.get("fact_freshness_needs_live_check_penalty") or 0.18)))
+            penalty = float(cfg.get("fact_freshness_stale_penalty") or 0.35)
+        elif status == "expired":
+            penalty = float(cfg.get("fact_freshness_expired_penalty") or 0.28)
+        elif status in NEEDS_CHECK_STATUSES:
+            penalty = float(cfg.get("fact_freshness_needs_live_check_penalty") or 0.18)
+        else:
+            return 0.0
     except (TypeError, ValueError):
         return 0.0
-    return 0.0
+    if truth_type == "operational_status":
+        # Unverified snapshots must not outrank stable policy merely because an
+        # old version number or status token is a strong lexical match.
+        penalty = max(penalty, _OPERATIONAL_STATUS_MIN_PENALTY)
+    return max(0.0, min(0.9, penalty))
 
 
-def attach_freshness_metadata(metadata: dict[str, Any], freshness: dict[str, Any] | None, *, config: dict[str, Any] | None = None) -> float:
+def attach_freshness_metadata(
+    metadata: dict[str, Any],
+    freshness: dict[str, Any] | None,
+    *,
+    config: dict[str, Any] | None = None,
+) -> float:
     penalty = freshness_penalty(freshness, config)
     if not freshness:
         metadata.setdefault("fact_freshness_status", "untracked")
@@ -347,13 +472,12 @@ def backfill_untracked_memory_freshness(
     apply: bool = False,
     limit: int = 500,
 ) -> dict[str, Any]:
-    """Plan or apply a bounded freshness backfill for visible factual rows."""
+    """Plan or apply a bounded freshness backfill for facts and status snapshots."""
 
     if not _table_exists(conn, "fact_freshness") or not _table_exists(conn, "memories"):
         return {"apply": bool(apply), "eligible": 0, "inserted": 0, "ids": []}
     clauses = [
         ordinary_recall_lifecycle_visible_sql("m"),
-        f"{_metadata_memory_type_sql('m')} IN ('factual','fact','project_fact','environment_fact')",
         "NOT EXISTS (SELECT 1 FROM fact_freshness f WHERE f.subject_type = 'memory' AND f.subject_id = m.id)",
     ]
     params: list[Any] = []
@@ -364,29 +488,52 @@ def backfill_untracked_memory_freshness(
         clauses.append(f"m.scope_id IN ({','.join('?' for _ in scopes)})")
         params.extend(scopes)
     bounded_limit = max(1, min(int(limit or 500), 5000))
-    rows = conn.execute(
-        f"SELECT m.id, m.metadata FROM memories m WHERE {' AND '.join(clauses)} ORDER BY m.updated_at DESC, m.id ASC LIMIT ?",
-        [*params, bounded_limit],
+    scan_limit = min(5000, max(bounded_limit, bounded_limit * 20))
+    candidate_rows = conn.execute(
+        f"SELECT m.id, m.content, m.metadata FROM memories m WHERE {' AND '.join(clauses)} "
+        "ORDER BY m.updated_at DESC, m.id ASC LIMIT ?",
+        [*params, scan_limit],
     ).fetchall()
-    ids = [str(row["id"]) for row in rows]
+    rows: list[tuple[sqlite3.Row, dict[str, Any]]] = []
+    for row in candidate_rows:
+        try:
+            metadata = json.loads(str(row["metadata"] or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        if (
+            _freshness_spec_from_metadata(metadata, content=str(row["content"] or ""))
+            is None
+        ):
+            continue
+        rows.append((row, metadata))
+        if len(rows) >= bounded_limit:
+            break
+    ids = [str(row["id"]) for row, _metadata in rows]
     inserted = 0
     if apply and rows:
         try:
             conn.execute("BEGIN")
-            for row in rows:
-                try:
-                    metadata = json.loads(str(row["metadata"] or "{}"))
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    metadata = {}
-                if not isinstance(metadata, dict):
-                    metadata = {}
-                if upsert_memory_freshness(conn, memory_id=str(row["id"]), metadata=metadata, commit=False):
+            for row, metadata in rows:
+                if upsert_memory_freshness(
+                    conn,
+                    memory_id=str(row["id"]),
+                    metadata=metadata,
+                    content=str(row["content"] or ""),
+                    commit=False,
+                ):
                     inserted += 1
             conn.commit()
         except Exception:
             conn.rollback()
             raise
-    return {"apply": bool(apply), "eligible": len(rows), "inserted": inserted, "ids": ids}
+    return {
+        "apply": bool(apply),
+        "eligible": len(rows),
+        "inserted": inserted,
+        "ids": ids,
+    }
 
 
 def _scope_filter_sql(scope_ids: Sequence[str] | None) -> tuple[str, list[str]] | None:
@@ -399,7 +546,9 @@ def _scope_filter_sql(scope_ids: Sequence[str] | None) -> tuple[str, list[str]] 
     return f" AND m.scope_id IN ({placeholders})", scopes
 
 
-def fact_freshness_report(conn: sqlite3.Connection, *, scope_ids: Sequence[str] | None = None) -> dict[str, Any]:
+def fact_freshness_report(
+    conn: sqlite3.Connection, *, scope_ids: Sequence[str] | None = None
+) -> dict[str, Any]:
     """Summarize freshness coverage and stale durable facts.
 
     Freshness reports guide review and ranking policy without rewriting the underlying factual memory. When a scope allowlist is provided, only memory-scoped freshness rows for those scopes are counted.
@@ -412,7 +561,11 @@ def fact_freshness_report(conn: sqlite3.Connection, *, scope_ids: Sequence[str] 
             "needs_live_check": 0,
             "stale_facts": 0,
             "by_validator_kind": {},
-            "coverage": {"factual_memories": 0, "tracked_memory_facts": 0, "coverage_percent": 0.0},
+            "coverage": {
+                "factual_memories": 0,
+                "tracked_memory_facts": 0,
+                "coverage_percent": 0.0,
+            },
         }
     scope_filter = _scope_filter_sql(scope_ids)
     lifecycle_sql = ordinary_recall_lifecycle_visible_sql("m")
@@ -454,7 +607,8 @@ def fact_freshness_report(conn: sqlite3.Connection, *, scope_ids: Sequence[str] 
         {
             str(row["subject_id"])
             for row in rows
-            if str(row["subject_type"] or "") == "memory" and bool(row["cohort_factual"])
+            if str(row["subject_type"] or "") == "memory"
+            and bool(row["cohort_factual"])
         }
     )
     if _table_exists(conn, "memories"):
@@ -474,7 +628,11 @@ def fact_freshness_report(conn: sqlite3.Connection, *, scope_ids: Sequence[str] 
                     scope_params,
                 ).fetchone()[0]
             )
-    coverage_percent = round((tracked_memory_facts / factual_memories) * 100.0, 3) if factual_memories else 0.0
+    coverage_percent = (
+        round((tracked_memory_facts / factual_memories) * 100.0, 3)
+        if factual_memories
+        else 0.0
+    )
     coverage_incomplete = tracked_memory_facts < factual_memories
     status = "needs_review" if needs_live_check or coverage_incomplete else "ready"
     return {

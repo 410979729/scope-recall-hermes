@@ -14,7 +14,8 @@ import threading
 import time
 import uuid
 from collections import Counter
-from dataclasses import dataclass, field
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -23,15 +24,24 @@ from zoneinfo import ZoneInfo
 from .artifacts import artifact_anchor_block, extract_artifacts
 from .capture_filters import sanitize_report_text, sanitize_structured_value, should_capture_text
 from .config import load_runtime_config
+from .digest_pollution import assess_digest_batch
 from .digest_quality import score_digest_candidate
 from .digest_run_results import nightly_digest_metadata, nightly_digest_result, nightly_status_payload
+from .fact_actions import EvolutionAction, EvolutionProposal, parse_evolution_proposal
+from .fact_evolution import (
+    execute_pipeline_proposal,
+    fact_evolution_enabled,
+    memory_type_uses_fact_evolution,
+)
 from .gating import clean_text, compact_text, dedup_key
-from .governance import is_conflicting, merge_memory_text, normalize_memory_type, semantic_similarity
+from .governance import normalize_memory_type, semantic_similarity
 from .graph import clamp_float, load_metadata, normalize_entity, sync_memory_entities
 from .http_utils import redact_sensitive as _shared_redact_sensitive
 from .lifecycle_service import hard_delete_memories
-from .lifecycle_policy import ordinary_recall_lifecycle_visible_sql
-from .models import RuntimeScope
+from .lifecycle_policy import durable_lifecycle_visible_sql, ordinary_recall_lifecycle_visible_sql
+from .maintenance_lease import install_activation_lease_authorizer
+from .memory_admission import automatic_admission_metadata
+from .models import RuntimeScope, recall_scope_id_for_target
 from .nightly_llm import (
     call_anthropic_messages_llm as _call_anthropic_messages_llm,
     call_codex_responses_llm as _call_codex_responses_llm,
@@ -48,13 +58,15 @@ from .nightly_llm import (
     urllib,
 )
 from .scope import accessible_scope_ids, build_scope_id, build_shared_scope_id, canonical_user_id, normalize_scope_identity, writable_scope_ids
-from .sql_store import ensure_schema, exact_duplicate_groups, store_row, update_row
+from .sql_store import ensure_schema, exact_duplicate_groups, store_row
+from .sqlite_schema import execute_script_transaction_neutral
+from .truth_connection import connect_truth_database
 from .vector_runtime import (
-    _vector_mutation_lock,
     mark_vector_needs_repair,
+    replay_vector_outbox,
     setup_vector_layer,
-    upsert_vector_record,
     vector_delete_intent_required,
+    vector_write_replay_limit,
 )
 
 __all__ = [
@@ -63,6 +75,7 @@ __all__ = [
     "MessageRecord",
     "ScopeProfile",
     "SessionBundle",
+    "SessionChunk",
     "_call_llm_with_retries",
     "_call_anthropic_messages_llm",
     "_call_codex_responses_llm",
@@ -85,7 +98,7 @@ __all__ = [
 ]
 
 ROLE_INCLUDE = {"user", "assistant", "tool"}
-TARGETS = {"user", "memory", "project", "ops"}
+TARGETS = {"user", "memory", "project", "ops", "general"}
 TASK_HINT_RE = re.compile(
     r"(bug|fix|debug|deploy|release|verify|test|pytest|gateway|sqlite|scope-recall|plugin|"
     r"架构|计划|实现|修复|验证|测试|插件|记忆|工具|任务|问题|报错|配置|部署|重启)",
@@ -130,6 +143,17 @@ class SessionBundle:
         return [message.id for message in self.messages if message.role in {"user", "assistant"}]
 
 
+@dataclass(frozen=True, slots=True)
+class SessionChunk:
+    """One exact LLM exposure unit with auditable source-message provenance."""
+
+    text: str
+    message_ids: tuple[int, ...]
+    input_chars: int
+    exposed_chars: int
+    truncated: bool
+
+
 @dataclass
 class DigestCandidate:
     content: str
@@ -145,6 +169,7 @@ class DigestCandidate:
     tools_used: list[str] = field(default_factory=list)
     commands: list[str] = field(default_factory=list)
     verification: list[str] = field(default_factory=list)
+    evolution: EvolutionProposal | None = None
 
 
 @dataclass
@@ -499,36 +524,113 @@ def unique_strings(values: list[str], *, limit: int) -> list[str]:
     return output
 
 
-def session_chunks(bundle: SessionBundle, *, chunk_chars: int, max_session_chars: int) -> list[str]:
-    lines = [f"Session: {bundle.id}", f"Title: {bundle.title or '(untitled)'}", f"Type: {'task' if bundle.is_task else 'normal'}"]
+def session_chunks(
+    bundle: SessionBundle,
+    *,
+    chunk_chars: int,
+    max_session_chars: int,
+) -> list[SessionChunk]:
+    """Build bounded chunks whose text and source IDs are inseparable.
+
+    The global budget includes repeated headers as well as message text. Long
+    messages may span chunks, but every exposed segment repeats its real source
+    ID so a model citation can be validated against that exact call.
+    """
+
+    chunk_limit = max(1, int(chunk_chars))
+    global_limit = max(1, int(max_session_chars))
+    lines = [
+        f"Session: {bundle.id}",
+        f"Title: {bundle.title or '(untitled)'}",
+        f"Type: {'task' if bundle.is_task else 'normal'}",
+    ]
     if bundle.tool_names:
         lines.append("Tools used: " + ", ".join(bundle.tool_names[:16]))
     safe_commands = safe_command_hints(bundle.command_hints, limit=8)
     if safe_commands:
         lines.append("Command categories: " + "; ".join(safe_commands[:8]))
-    header = "\n".join(lines) + "\n"
-    body_lines: list[str] = []
+    full_header = "\n".join(lines) + "\n"
+    header = full_header
+    # Tiny configured chunks must still expose a message ID and some content;
+    # decorative title/tool metadata cannot consume the whole call budget.
+    header_budget = max(1, chunk_limit - min(64, max(1, chunk_limit // 2)))
+    header_compacted = len(header) > header_budget
+    if header_compacted:
+        header = f"Session: {compact_text(bundle.id, max(1, header_budget - 10))}\n"
+        header = header[:header_budget]
+
+    pending: list[list[Any]] = []
+    input_chars = len(full_header)
+    source_truncated = False
     for message in bundle.messages:
         if message.role not in {"user", "assistant"}:
             continue
-        if not message.content or not should_capture_text(message.content).allowed:
+        cleaned = sanitize_report_text(
+            redact_sensitive(clean_text(str(message.content or "")))
+        )
+        if not cleaned or not should_capture_text(cleaned).allowed:
             continue
-        body_lines.append(f"{message.role}: {compact_text(message.content, 1800)}")
-    text = header + "\n".join(body_lines)
-    if len(text) > max_session_chars:
-        text = text[:max_session_chars]
-    if len(text) <= chunk_chars:
-        return [text]
-    chunks: list[str] = []
-    current = header
-    for line in body_lines:
-        if len(current) + len(line) + 1 > chunk_chars and current.strip() != header.strip():
-            chunks.append(current.rstrip())
-            current = header
-        current += line + "\n"
-    if current.strip():
-        chunks.append(current.rstrip())
-    return chunks
+        content = compact_text(cleaned, 1800)
+        source_truncated = source_truncated or len(content) < len(cleaned)
+        prefix = f"[message_id={message.id} role={message.role}] "
+        input_chars += len(prefix) + len(cleaned) + 1
+        pending.append([int(message.id), str(message.role), content, False])
+
+    if not pending:
+        return []
+
+    chunks: list[SessionChunk] = []
+    remaining_budget = global_limit
+    while remaining_budget > 0 and pending:
+        call_limit = min(chunk_limit, remaining_budget)
+        if call_limit <= 0:
+            break
+        current = header[:call_limit]
+        included_ids: list[int] = []
+        made_progress = False
+        while pending:
+            message_id, role, content, continuation = pending[0]
+            prefix = (
+                f"[message_id={message_id} role={role} continuation=true] "
+                if continuation
+                else f"[message_id={message_id} role={role}] "
+            )
+            separator = "" if current.endswith("\n") else "\n"
+            available = call_limit - len(current) - len(separator)
+            if available <= len(prefix):
+                break
+            take = min(len(content), available - len(prefix))
+            if take <= 0:
+                break
+            current += separator + prefix + content[:take]
+            if message_id not in included_ids:
+                included_ids.append(message_id)
+            made_progress = True
+            if take == len(content):
+                pending.pop(0)
+            else:
+                pending[0] = [message_id, role, content[take:], True]
+                break
+        if not made_progress:
+            break
+        text = current[:call_limit]
+        if not text:
+            break
+        chunks.append(
+            SessionChunk(
+                text=text,
+                message_ids=tuple(included_ids),
+                input_chars=input_chars,
+                exposed_chars=len(text),
+                truncated=False,
+            )
+        )
+        remaining_budget -= len(text)
+        if not pending:
+            break
+
+    truncated = bool(pending) or source_truncated or header_compacted
+    return [replace(chunk, truncated=truncated) for chunk in chunks]
 
 
 def bundle_artifact_anchor_block(bundle: SessionBundle) -> str:
@@ -546,14 +648,11 @@ def heuristic_candidates(bundle: SessionBundle) -> list[DigestCandidate]:
     assistant_tail = [sanitize_report_text(message.content) for message in bundle.messages if message.role == "assistant" and message.content][-3:]
     if bundle.is_task and bundle.tool_names:
         title = sanitize_report_text(bundle.title or compact_text(user_texts[0] if user_texts else bundle.id, 80))
-        result = compact_text(" ".join(assistant_tail), 260)
         tools = ", ".join(unique_strings([sanitize_report_text(tool) for tool in bundle.tool_names[:10]], limit=10))
         safe_commands = safe_command_hints(bundle.command_hints, limit=6)
         parts = [f"{title} 的可复用任务流程：使用工具链 {tools}。"]
         if safe_commands:
             parts.append(f"关键检查类别包括 {', '.join(safe_commands)}。")
-        if result:
-            parts.append(f"结果摘要：{result}")
         if artifact_block:
             parts.append(artifact_block)
         candidates.append(
@@ -597,30 +696,45 @@ def heuristic_candidates(bundle: SessionBundle) -> list[DigestCandidate]:
 
 
 def extract_verification_hints(texts: list[str]) -> list[str]:
-    hints: list[str] = []
+    """Record that verification evidence existed without persisting run counters/status."""
+
     for text in texts:
-        for pattern in (r"\d+\s+passed(?:,\s*\d+\s+warning)?", r"release gate ok", r"验证通过", r"未发现 bug"):
-            for match in re.finditer(pattern, text, flags=re.IGNORECASE):
-                hints.append(match.group(0))
-    return unique_strings(hints, limit=8)
+        for pattern in (
+            r"\d+\s+passed(?:,\s*\d+\s+warning)?",
+            r"release gate ok",
+            r"验证通过",
+            r"未发现 bug",
+        ):
+            if re.search(pattern, text, flags=re.IGNORECASE):
+                return ["verification-evidence"]
+    return []
 
 
-def build_prompt(bundle: SessionBundle, chunk: str, existing_context: list[str]) -> str:
+def build_prompt(
+    bundle: SessionBundle,
+    chunk: SessionChunk | str,
+    existing_context: list[str],
+) -> str:
     existing = "\n".join(f"- {item}" for item in existing_context[:40]) or "- (none)"
     mode = "任务型对话" if bundle.is_task else "普通对话"
+    chunk_text = chunk.text if isinstance(chunk, SessionChunk) else str(chunk)
     return (
         "你是 scope-recall 的夜间记忆整理器。阅读当天对话片段，只提取稳定、可复用、下周仍有价值的记忆。\n"
         "硬规则：不要保存 system/tool 原文、不要保存 token/API key/password/cookie/private key、不要保存流水账。\n"
         "不要把一次性任务状态保存成长期记忆：包括 session id、commit SHA、branch/tag/HEAD 状态、issue/PR/release 编号、测试通过数量、发布候选/当前进度、临时路径和下一步清单。\n"
-        "只有在它表达稳定偏好、长期约束、环境事实、根因、可复用坑或通用工作流时才输出候选；否则输出 action=skip。\n"
+        "只有在它表达稳定偏好、长期约束、环境事实、根因、可复用坑或通用工作流时才输出候选；否则输出 action=NOOP。\n"
         "任务型对话可提取通用 workflow/tool-chain，但必须去掉具体会话、版本、issue、commit、路径、日期和一次性验收数字，只写脱敏的可复用步骤/踩坑。\n"
-        "如果已有记忆已经完整覆盖，请输出 action=skip；不要因为措辞更完整、表达更漂亮或用户重复提醒而 update；只有出现新约束、纠正旧事实或已有记忆缺少关键细节时才输出 action=update 并给 existing_hint。\n"
-        "输出只能是 JSON 数组，每项字段：action, content, target, memory_type, importance, confidence, entities, tags, reason, existing_hint。\n"
+        "action 只能是 NOOP、ADD、ENRICH、SUPERSEDE、RETRACT、REVIEW：已有事实完整覆盖用 NOOP；全新事实用 ADD；同一事实补充不冲突细节用 ENRICH；明确纠正旧值用 SUPERSEDE；明确撤回且不提供新值用 RETRACT；证据不足、目标不确定或冲突时用 REVIEW。\n"
+        "RETRACT 只表示关闭事实有效期，绝不表示 hard delete；不要输出 delete/update/create/skip 等旧动作。\n"
+        "输出只能是 JSON 数组。每项字段：action, content, claim, target_ids, evidence_message_ids, target, memory_type, importance, confidence, entities, tags, reason, existing_hint。\n"
+        "claim 必须是对象，字段为 subject, predicate, value, cardinality, valid_from, valid_to；不要输出 scope_id，作用域由可信运行时注入。\n"
+        "对第一人称用户陈述，claim.subject 必须写成字面量 user；不要从文本猜姓名或把第一人称绑定到任意第三方。\n"
+        "ENRICH/SUPERSEDE/RETRACT 的 target_ids 只能复制已有记忆摘要中的 id；evidence_message_ids 只能引用当前片段实际显示的 [message_id=... role=...]。不得猜测、跨 chunk 引用或省略；没有可引用 ID 时只能输出 NOOP。\n"
         "每条 content 必须是可独立理解的一到三句完整长期记忆，尽量不少于 40 个中文字符；同一用户的相关格式/语言偏好要合并成一条，不要拆成多个过短碎片。\n"
         "target 只能是 user/memory/project/ops；memory_type 可为 preference/factual/project/procedure/workflow/summary/pitfall/decision/resource/constraint。\n"
         f"\n会话类型：{mode}\n"
         f"已有相关记忆摘要：\n{existing}\n\n"
-        f"对话片段：\n---\n{chunk}\n---\n"
+        f"对话片段：\n---\n{chunk_text}\n---\n"
     )
 
 
@@ -666,10 +780,122 @@ def _extract_json_payload(text: str) -> str:
     return stripped
 
 
-def _parse_llm_candidates_with_status(raw: str, *, bundle: SessionBundle) -> tuple[list[DigestCandidate], str]:
+def _trusted_message_ids(
+    item: dict[str, Any],
+    bundle: SessionBundle,
+    *,
+    allowed_message_ids: set[int] | None = None,
+) -> list[int]:
+    """Return only cited IDs that were exposed in this exact model call."""
+
+    allowed = (
+        {str(message_id) for message_id in allowed_message_ids}
+        if allowed_message_ids is not None
+        else {str(message_id) for message_id in bundle.message_ids}
+    )
+    messages = {
+        str(message.id): message
+        for message in bundle.messages
+        if message.role in {"user", "assistant"}
+        and str(message.id) in allowed
+    }
+    raw_ids = item.get("evidence_message_ids")
+    cited = raw_ids if isinstance(raw_ids, list) else []
+    output: list[int] = []
+    seen: set[str] = set()
+    for raw_id in cited:
+        message_id = str(raw_id)
+        message = messages.get(message_id)
+        if message is None or message_id in seen:
+            continue
+        quote = compact_text(
+            sanitize_report_text(redact_sensitive(clean_text(message.content))),
+            500,
+        )
+        if not quote:
+            continue
+        seen.add(message_id)
+        output.append(int(message.id))
+        if len(output) >= 32:
+            break
+    return output
+
+
+def _trusted_message_evidence(
+    item: dict[str, Any],
+    bundle: SessionBundle,
+    *,
+    allowed_message_ids: set[int] | None = None,
+) -> list[dict[str, str]]:
+    """Bind current-chunk citations to trusted roles and redacted source text."""
+
+    cited_ids = _trusted_message_ids(
+        item,
+        bundle,
+        allowed_message_ids=allowed_message_ids,
+    )
+    messages = {message.id: message for message in bundle.messages}
+    output: list[dict[str, str]] = []
+    for message_id in cited_ids:
+        message = messages[message_id]
+        quote = compact_text(
+            sanitize_report_text(redact_sensitive(clean_text(message.content))),
+            500,
+        )
+        if not quote:
+            continue
+        source_type = "user_message" if message.role == "user" else "model_inference"
+        output.append(
+            {
+                "source_type": source_type,
+                "source_id": str(message_id),
+                "quote": quote,
+            }
+        )
+    return output
+
+
+def _digest_evolution_payload(
+    item: dict[str, Any],
+    bundle: SessionBundle,
+    *,
+    allowed_message_ids: set[int] | None = None,
+) -> dict[str, Any]:
+    """Build the allowlisted action payload; trusted scope is injected separately."""
+
+    return {
+        "action": item.get("action"),
+        "claim": item.get("claim"),
+        "target_ids": item.get("target_ids"),
+        "evidence": _trusted_message_evidence(
+            item,
+            bundle,
+            allowed_message_ids=allowed_message_ids,
+        ),
+        "confidence": item.get("confidence"),
+        "reason": item.get("reason"),
+        "existing_hint": item.get("existing_hint"),
+        "source": "nightly-digest",
+    }
+
+
+def _parse_llm_candidates_with_status(
+    raw: str,
+    *,
+    bundle: SessionBundle,
+    scope_id: str = "",
+    shared_scope_id: str = "",
+    allowed_target_ids: set[str] | None = None,
+    allowed_target_ids_by_scope: Mapping[str, set[str]] | None = None,
+    allowed_message_ids: set[int] | None = None,
+) -> tuple[list[DigestCandidate], str]:
     """Parse LLM digest output into candidates plus explicit status metadata.
 
-    Malformed or low-quality model output should become a classified failure, not silent durable memory."""
+    Model-provided scope IDs and evidence text are never trusted. Structured
+    actions retain their normalized proposal envelope, while malformed or
+    ambiguous actions fail closed to REVIEW.
+    """
+
     text = raw.strip()
     if not text:
         return [], "empty"
@@ -694,13 +920,59 @@ def _parse_llm_candidates_with_status(raw: str, *, bundle: SessionBundle) -> tup
             filtered += 1
             continue
         dict_items += 1
-        if str(item.get("action") or "").strip().lower() == "skip":
+        raw_action = str(item.get("action") or "").strip().lower()
+        if raw_action in {"skip", "noop"}:
             skipped += 1
             continue
-        content = sanitize_report_text(redact_sensitive(clean_text(str(item.get("content") or ""))))
+        message_ids = _trusted_message_ids(
+            item,
+            bundle,
+            allowed_message_ids=allowed_message_ids,
+        )
+        if not message_ids:
+            filtered += 1
+            continue
         target = str(item.get("target") or "memory").strip().lower()
         if target not in TARGETS:
             target = "memory"
+        trusted_scope_id = ""
+        if scope_id or shared_scope_id:
+            trusted_scope_id = recall_scope_id_for_target(
+                target,
+                local_scope_id=scope_id or shared_scope_id,
+                shared_scope_id=shared_scope_id or scope_id,
+                source="nightly-digest",
+            )
+        scoped_allowed_target_ids = allowed_target_ids
+        if allowed_target_ids_by_scope is not None:
+            scoped_allowed_target_ids = allowed_target_ids_by_scope.get(
+                trusted_scope_id,
+                set(),
+            )
+        proposal = parse_evolution_proposal(
+            _digest_evolution_payload(
+                item,
+                bundle,
+                allowed_message_ids=allowed_message_ids,
+            ),
+            trusted_scope_id=trusted_scope_id,
+            allowed_target_ids=scoped_allowed_target_ids,
+            trusted_speaker_subjects={
+                str(message.id): "user"
+                for message in bundle.messages
+                if message.role == "user" and message.id in message_ids
+            },
+        )
+        raw_claim = item.get("claim")
+        content_value = item.get("content")
+        if not content_value and isinstance(raw_claim, dict):
+            content_value = " ".join(
+                str(raw_claim.get(key) or "")
+                for key in ("subject", "predicate", "value")
+            )
+        content = sanitize_report_text(
+            redact_sensitive(clean_text(str(content_value or "")))
+        )
         entities_value = item.get("entities")
         tags_value = item.get("tags")
         entities_raw: list[Any] = entities_value if isinstance(entities_value, list) else []
@@ -711,14 +983,22 @@ def _parse_llm_candidates_with_status(raw: str, *, bundle: SessionBundle) -> tup
             memory_type=normalize_memory_type(item.get("memory_type"), "summary"),
             importance=clamp_float(item.get("importance"), default=0.55),
             confidence=clamp_float(item.get("confidence"), default=0.65),
-            entities=[entity for entity in (normalize_entity(value) for value in entities_raw) if entity],
-            tags=unique_strings([str(value).strip().lower() for value in tags_raw], limit=12),
-            reason=compact_text(str(item.get("reason") or ""), 240),
+            entities=[
+                entity
+                for entity in (normalize_entity(value) for value in entities_raw)
+                if entity
+            ],
+            tags=unique_strings(
+                [str(value).strip().lower() for value in tags_raw],
+                limit=12,
+            ),
+            reason=proposal.reason or compact_text(str(item.get("reason") or ""), 240),
             session_id=bundle.id,
-            message_ids=bundle.message_ids[:80],
+            message_ids=message_ids,
             tools_used=bundle.tool_names[:16],
             commands=safe_command_hints(bundle.command_hints, limit=10),
             verification=extract_verification_hints([content]),
+            evolution=proposal,
         )
         if candidate_is_allowed(candidate):
             candidates.append(candidate)
@@ -731,9 +1011,21 @@ def _parse_llm_candidates_with_status(raw: str, *, bundle: SessionBundle) -> tup
     return [], "filtered"
 
 
-def parse_llm_candidates(raw: str, *, bundle: SessionBundle) -> list[DigestCandidate]:
-    candidates, _status = _parse_llm_candidates_with_status(raw, bundle=bundle)
+def parse_llm_candidates(
+    raw: str,
+    *,
+    bundle: SessionBundle,
+    scope_id: str = "",
+    allowed_target_ids: set[str] | None = None,
+) -> list[DigestCandidate]:
+    candidates, _status = _parse_llm_candidates_with_status(
+        raw,
+        bundle=bundle,
+        scope_id=scope_id,
+        allowed_target_ids=allowed_target_ids,
+    )
     return candidates
+
 
 
 def candidate_is_allowed(candidate: DigestCandidate) -> bool:
@@ -812,7 +1104,8 @@ def infer_scope(
 
 
 def ensure_digest_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(
+    execute_script_transaction_neutral(
+        conn,
         """
         CREATE TABLE IF NOT EXISTS nightly_digest_runs (
             id TEXT PRIMARY KEY,
@@ -844,6 +1137,18 @@ def ensure_digest_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_scope_recall_digest_memory
             ON memory_digest_sources(memory_id, created_at DESC);
+        CREATE TABLE IF NOT EXISTS nightly_digest_quarantine (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            candidate_hash TEXT NOT NULL,
+            reason_codes TEXT NOT NULL,
+            metadata TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            UNIQUE(run_id, candidate_hash)
+        );
+        CREATE INDEX IF NOT EXISTS idx_scope_recall_digest_quarantine_run
+            ON nightly_digest_quarantine(run_id, created_at DESC);
         """
     )
     conn.commit()
@@ -853,7 +1158,7 @@ def existing_memory_context(conn: sqlite3.Connection, scope: ScopeProfile, *, li
     placeholders = ",".join("?" for _ in scope.accessible_scope_ids)
     rows = conn.execute(
         f"""
-        SELECT m.target, m.summary, m.content
+        SELECT m.id, m.target, m.summary, m.content
         FROM memories AS m
         WHERE m.scope_id IN ({placeholders})
           AND m.target IN ('user','memory','project','ops')
@@ -863,7 +1168,53 @@ def existing_memory_context(conn: sqlite3.Connection, scope: ScopeProfile, *, li
         """,
         [*scope.accessible_scope_ids, limit],
     ).fetchall()
-    return [f"[{row['target']}] {compact_text(str(row['summary'] or row['content']), 180)}" for row in rows]
+    return [
+        f"[id={row['id']} target={row['target']}] "
+        f"{compact_text(str(row['summary'] or row['content']), 180)}"
+        for row in rows
+    ]
+
+
+def _existing_context_target_ids(existing_context: list[str]) -> set[str]:
+    """Extract the scope-filtered memory IDs exposed to the model prompt."""
+
+    output: set[str] = set()
+    for item in existing_context:
+        match = re.match(r"\[id=([^\s\]]+)\s+target=", str(item))
+        if match:
+            output.add(match.group(1))
+    return output
+
+
+def _existing_context_target_ids_by_scope(
+    conn: sqlite3.Connection,
+    scope: ScopeProfile,
+    *,
+    limit: int = 80,
+) -> dict[str, set[str]]:
+    """Return prompt-exposed target IDs grouped by their exact storage scope."""
+
+    placeholders = ",".join("?" for _ in scope.accessible_scope_ids)
+    rows = conn.execute(
+        f"""
+        SELECT m.id, m.scope_id
+        FROM memories AS m
+        WHERE m.scope_id IN ({placeholders})
+          AND m.target IN ('user','memory','project','ops')
+          AND {ordinary_recall_lifecycle_visible_sql('m')}
+        ORDER BY m.updated_at DESC
+        LIMIT ?
+        """,
+        [*scope.accessible_scope_ids, limit],
+    ).fetchall()
+    writable = set(_profile_writable_scope_ids(scope))
+    output: dict[str, set[str]] = {}
+    for row in rows:
+        scope_id = str(row["scope_id"] or "")
+        if scope_id not in writable:
+            continue
+        output.setdefault(scope_id, set()).add(str(row["id"]))
+    return output
 
 
 def candidate_metadata(candidate: DigestCandidate, run_id: str) -> dict[str, Any]:
@@ -886,27 +1237,38 @@ def candidate_metadata(candidate: DigestCandidate, run_id: str) -> dict[str, Any
         metadata["commands"] = safe_commands
     if candidate.verification:
         metadata["verification"] = candidate.verification
-    if quality.recommended_action == "candidate":
-        metadata.setdefault("lifecycle", "candidate")
-        metadata.setdefault("candidate_status", "needs_review")
-        metadata.setdefault("candidate_reason", "digest_quality_candidate")
+    if candidate.evolution is not None:
+        metadata["fact_evolution"] = candidate.evolution.as_dict()
+    metadata.update(
+        automatic_admission_metadata(
+            content=candidate.content,
+            memory_type=candidate.memory_type,
+            source="nightly-digest",
+            recommended_action=quality.recommended_action,
+            structured_evolution=candidate.evolution is not None,
+        )
+    )
     safe_metadata, _ = sanitize_structured_value(metadata)
     return safe_metadata if isinstance(safe_metadata, dict) else {}
 
 
-def find_match(conn: sqlite3.Connection, scope: ScopeProfile, candidate: DigestCandidate) -> tuple[str, str, float]:
-    placeholders = ",".join("?" for _ in scope.accessible_scope_ids)
+def find_match(
+    conn: sqlite3.Connection,
+    scope_ids: list[str],
+    candidate: DigestCandidate,
+) -> tuple[str, str, float]:
+    placeholders = ",".join("?" for _ in scope_ids)
     rows = conn.execute(
         f"""
         SELECT m.id, m.content
         FROM memories AS m
         WHERE m.scope_id IN ({placeholders})
           AND m.target = ?
-          AND {ordinary_recall_lifecycle_visible_sql('m')}
+          AND {durable_lifecycle_visible_sql('m')}
         ORDER BY m.updated_at DESC
         LIMIT 250
         """,
-        [*scope.accessible_scope_ids, candidate.target],
+        [*scope_ids, candidate.target],
     ).fetchall()
     best_id = ""
     best_content = ""
@@ -922,21 +1284,6 @@ def find_match(conn: sqlite3.Connection, scope: ScopeProfile, candidate: DigestC
             best_content = content
             best_score = score
     return best_id, best_content, best_score
-
-
-def _ordinary_match_still_visible(conn: sqlite3.Connection, memory_id: str) -> bool:
-    if not memory_id:
-        return False
-    row = conn.execute(
-        f"""
-        SELECT 1
-        FROM memories AS m
-        WHERE m.id = ?
-          AND {ordinary_recall_lifecycle_visible_sql('m')}
-        """,
-        (memory_id,),
-    ).fetchone()
-    return row is not None
 
 
 def record_digest_source(conn: sqlite3.Connection, *, memory_id: str, run_id: str, candidate: DigestCandidate) -> None:
@@ -992,6 +1339,151 @@ def _cross_platform_metadata(scope: RuntimeScope, config: dict[str, Any] | None 
     return metadata
 
 
+def _candidate_uses_fact_evolution(
+    candidate: DigestCandidate,
+    runtime_config: Mapping[str, Any] | None,
+) -> bool:
+    """Route factual slots only after the explicit feature gate is enabled."""
+
+    return (
+        fact_evolution_enabled(runtime_config)
+        and candidate.evolution is not None
+        and memory_type_uses_fact_evolution(candidate.memory_type)
+    )
+
+
+def _apply_structured_fact_candidate(
+    conn: sqlite3.Connection,
+    *,
+    scope: ScopeProfile,
+    run_id: str,
+    candidate: DigestCandidate,
+    dry_run: bool,
+    runtime_config: dict[str, Any] | None,
+) -> tuple[str, dict[str, Any]]:
+    """Route one factual candidate through the shared deterministic core."""
+
+    proposal = candidate.evolution
+    if proposal is None:
+        raise ValueError("structured fact candidate requires an evolution proposal")
+    metadata = candidate_metadata(candidate, run_id)
+    # Evidence belongs in the evidence ledger, not duplicated as raw quote text
+    # inside the ordinary memory metadata JSON.
+    metadata.pop("fact_evolution", None)
+    metadata["fact_evolution_action"] = proposal.action.value
+    source_key = ":".join(
+        [
+            candidate.session_id or "session-unknown",
+            ",".join(str(item) for item in candidate.message_ids[:120]),
+            hashlib.sha256(candidate.content.encode("utf-8")).hexdigest(),
+        ]
+    )
+    result = execute_pipeline_proposal(
+        conn,
+        proposal=proposal,
+        lane="nightly",
+        run_id=run_id,
+        source_key=source_key,
+        trusted_scope_id=recall_scope_id_for_target(
+            candidate.target,
+            local_scope_id=scope.scope_id,
+            shared_scope_id=scope.shared_scope_id,
+            source="nightly-digest",
+        ),
+        writable_scope_ids=_profile_writable_scope_ids(scope),
+        actor="scope-recall-nightly-digest",
+        source="nightly-digest",
+        target=candidate.target,
+        content=candidate.content,
+        metadata={**_cross_platform_metadata(scope.scope, runtime_config), **metadata},
+        runtime_config=runtime_config,
+        dry_run=dry_run,
+        session_id=candidate.session_id,
+        platform=scope.scope.platform,
+        user_id=scope.scope.user_id,
+        chat_id=scope.scope.chat_id,
+        thread_id=scope.scope.thread_id,
+        gateway_session_key=scope.scope.gateway_session_key,
+        agent_identity=scope.scope.agent_identity,
+        agent_workspace=scope.scope.agent_workspace,
+    )
+    action: dict[str, Any] = {
+        "evolution_action": result.action.value,
+        "status": result.status,
+        "action_id": result.action_id,
+    }
+    receipt = result.receipt if isinstance(result.receipt, dict) else {}
+    for key in ("memory_ids", "claim_ids", "reason_codes"):
+        if receipt.get(key):
+            action[key] = receipt[key]
+    if result.status == "preview":
+        action["action"] = "preview"
+        return "previewed", action
+    if result.status == "review":
+        action["action"] = "review"
+        return "review", action
+    if result.status == "blocked":
+        action["action"] = "blocked"
+        return "blocked", action
+    if result.status == "noop":
+        action["action"] = "skip"
+        return "skipped", action
+    if result.status == "replayed":
+        action["action"] = "replay"
+        return "replayed", action
+    action["action"] = "evolve"
+    counter_key = {
+        EvolutionAction.ADD: "inserted",
+        EvolutionAction.ENRICH: "enriched",
+        EvolutionAction.SUPERSEDE: "superseded",
+        EvolutionAction.RETRACT: "retracted",
+    }.get(result.action, "applied")
+    return counter_key, action
+
+
+def _record_pollution_quarantine(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    candidate: DigestCandidate,
+    reason_codes: Sequence[str],
+) -> str:
+    """Persist bounded quarantine evidence outside ordinary recall surfaces."""
+
+    candidate_hash = hashlib.sha256(candidate.content.encode("utf-8")).hexdigest()
+    quarantine_id = hashlib.sha256(
+        f"{run_id}:{candidate.session_id}:{candidate_hash}".encode("utf-8")
+    ).hexdigest()
+    metadata, _ = sanitize_structured_value(
+        {
+            "target": candidate.target,
+            "memory_type": candidate.memory_type,
+            "evolution_action": (
+                candidate.evolution.action.value
+                if candidate.evolution is not None
+                else ""
+            ),
+        }
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO nightly_digest_quarantine(
+            id, run_id, session_id, candidate_hash, reason_codes, metadata, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            quarantine_id,
+            run_id,
+            candidate.session_id,
+            candidate_hash,
+            json.dumps(list(reason_codes), ensure_ascii=False),
+            json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    return candidate_hash
+
+
 def apply_candidates(
     conn: sqlite3.Connection,
     vector_runtime: DigestVectorRuntime | None,
@@ -1001,6 +1493,7 @@ def apply_candidates(
     candidates: list[DigestCandidate],
     dry_run: bool,
     runtime_config: dict[str, Any] | None = None,
+    batch_evidence: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
     """Apply vetted digest candidates to memory storage and record per-candidate outcomes.
 
@@ -1009,9 +1502,51 @@ def apply_candidates(
     actions: list[dict[str, Any]] = []
     counts = Counter()
     quality_counts = Counter()
+    pollution_counts = Counter()
     if not dry_run:
         ensure_digest_schema(conn)
-    for candidate in candidates:
+    pollution_assessments = assess_digest_batch(
+        candidates,
+        batch_evidence=batch_evidence,
+    )
+    for candidate, pollution in zip(candidates, pollution_assessments, strict=True):
+        if pollution.quarantined:
+            counts["quarantined"] += 1
+            pollution_counts.update(pollution.reason_codes)
+            candidate_hash = hashlib.sha256(
+                candidate.content.encode("utf-8")
+            ).hexdigest()
+            if not dry_run:
+                candidate_hash = _record_pollution_quarantine(
+                    conn,
+                    run_id=run_id,
+                    candidate=candidate,
+                    reason_codes=pollution.reason_codes,
+                )
+                conn.commit()
+            actions.append(
+                {
+                    "action": "quarantine",
+                    "session_id": candidate.session_id,
+                    "candidate_hash": candidate_hash,
+                    "reason_codes": list(pollution.reason_codes),
+                }
+            )
+            continue
+        if _candidate_uses_fact_evolution(candidate, runtime_config):
+            counter_key, action = _apply_structured_fact_candidate(
+                conn,
+                scope=scope,
+                run_id=run_id,
+                candidate=candidate,
+                dry_run=dry_run,
+                runtime_config=runtime_config,
+            )
+            counts[counter_key] += 1
+            actions.append(action)
+            continue
+        if candidate.evolution is not None:
+            candidate = replace(candidate, evolution=None)
         quality = score_digest_candidate(candidate)
         quality_counts[quality.recommended_action] += 1
         if not candidate_is_allowed(candidate):
@@ -1025,6 +1560,12 @@ def apply_candidates(
                 }
             )
             continue
+        candidate_scope_id = recall_scope_id_for_target(
+            candidate.target,
+            local_scope_id=scope.scope_id,
+            shared_scope_id=scope.shared_scope_id,
+            source="nightly-digest",
+        )
         key = f"{candidate.target}:{dedup_key(candidate.content)}"
         if key in seen_candidate_keys:
             counts["skipped"] += 1
@@ -1032,57 +1573,36 @@ def apply_candidates(
             continue
         seen_candidate_keys.add(key)
 
-        match_id, match_content, score = find_match(conn, scope, candidate)
-        if match_id and not _ordinary_match_still_visible(conn, match_id):
-            match_id, match_content, score = "", "", 0.0
+        match_id, _match_content, score = find_match(
+            conn,
+            [candidate_scope_id],
+            candidate,
+        )
         match_scope_id = _memory_scope_id(conn, match_id) if match_id else ""
-        match_is_writable = bool(match_scope_id and match_scope_id in set(_profile_writable_scope_ids(scope)))
+        match_is_writable = bool(match_scope_id == candidate_scope_id)
         if match_id and score >= 0.88:
             counts["skipped"] += 1
             actions.append({"action": "skip", "reason": "existing memory covers candidate", "id": match_id, "score": round(score, 4)})
             continue
-        if match_id and match_is_writable and score >= 0.55 and not is_conflicting(match_content, candidate.content):
-            merged = merge_memory_text(match_content, candidate.content)
-            if merged == match_content:
-                counts["skipped"] += 1
-                actions.append({"action": "skip", "reason": "merge produced no change", "id": match_id, "score": round(score, 4)})
-                continue
-            counts["updated"] += 1
-            actions.append({"action": "update", "id": match_id, "score": round(score, 4), "target": candidate.target})
-            if not dry_run:
-                updated, summary, updated_at = update_row(
-                    conn,
-                    memory_id=match_id,
-                    content=merged,
-                    target=candidate.target,
-                    scope_ids=_profile_writable_scope_ids(scope),
-                )
-                if updated:
-                    merge_candidate_metadata(conn, memory_id=match_id, candidate=candidate, run_id=run_id)
-                    record_digest_source(conn, memory_id=match_id, run_id=run_id, candidate=candidate)
-                    conn.commit()
-                    if vector_runtime is not None:
-                        row_scope = conn.execute("SELECT scope_id FROM memories WHERE id = ?", (match_id,)).fetchone()
-                        upsert_vector_record(
-                            vector_runtime,
-                            id=match_id,
-                            source="nightly-digest",
-                            target=candidate.target,
-                            content=merged,
-                            summary=summary,
-                            updated_at=updated_at,
-                            scope_id=str(row_scope["scope_id"] if row_scope is not None else scope.shared_scope_id),
-                        )
-            continue
+        if match_id and match_is_writable and score >= 0.55:
+            actions.append(
+                {
+                    "action": "merge_review",
+                    "reason": "similar automatic candidate requires review",
+                    "id": match_id,
+                    "score": round(score, 4),
+                    "target": candidate.target,
+                }
+            )
 
         counts["inserted"] += 1
         memory_id = uuid.uuid4().hex
         actions.append({"action": "insert", "id": memory_id, "target": candidate.target})
         if not dry_run:
-            stored_id, summary, updated_at, inserted = store_row(
+            stored_id, _summary, _updated_at, inserted = store_row(
                 conn,
                 memory_id=memory_id,
-                scope_id=scope.shared_scope_id,
+                scope_id=candidate_scope_id,
                 platform=scope.scope.platform,
                 user_id=scope.scope.user_id,
                 chat_id=scope.scope.chat_id,
@@ -1100,22 +1620,18 @@ def apply_candidates(
                 record_digest_source(conn, memory_id=stored_id, run_id=run_id, candidate=candidate)
                 conn.commit()
                 if vector_runtime is not None:
-                    upsert_vector_record(
-                        vector_runtime,
-                        id=stored_id,
-                        source="nightly-digest",
-                        target=candidate.target,
-                        content=candidate.content,
-                        summary=summary,
-                        updated_at=updated_at,
-                        scope_id=scope.shared_scope_id,
-                    )
+                    replay_vector_outbox(vector_runtime, limit=vector_write_replay_limit(vector_runtime))
             else:
                 counts["inserted"] -= 1
                 counts["skipped"] += 1
     deleted = 0 if dry_run else cleanup_exact_duplicates(conn, scope, vector_runtime)
     counts["deleted"] += deleted
-    return {"counts": dict(counts), "quality_counts": dict(quality_counts), "actions": actions}
+    return {
+        "counts": dict(counts),
+        "quality_counts": dict(quality_counts),
+        "pollution_counts": dict(pollution_counts),
+        "actions": actions,
+    }
 
 
 def cleanup_exact_duplicates(conn: sqlite3.Connection, scope: ScopeProfile, vector_runtime: DigestVectorRuntime | None) -> int:
@@ -1130,33 +1646,31 @@ def cleanup_exact_duplicates(conn: sqlite3.Connection, scope: ScopeProfile, vect
         if vector_runtime is not None
         else vector_store is not None
     )
-    vector_attempted = False
-
-    def vector_delete(memory_ids: list[str]) -> None:
-        nonlocal vector_attempted
-        vector_attempted = True
-        if vector_runtime is None or vector_store is None:
-            raise RuntimeError("vector store unavailable before duplicate cleanup")
-        with _vector_mutation_lock(vector_runtime):
-            vector_store.delete_by_ids(memory_ids)
-
     try:
         result = hard_delete_memories(
             conn,
             memory_ids=delete_ids,
             scope_ids=writable_scopes,
-            vector_delete=vector_delete if vector_store is not None else None,
+            vector_delete=None,
             require_vector_delete=require_vector_delete,
             actor="scope-recall-nightly-digest",
             reason="exact duplicate cleanup",
             event_type="nightly_duplicate_hard_delete",
             batch_id=f"nightly_dedupe_{uuid.uuid4().hex}",
         )
-        if result.get("vector_error") and vector_runtime is not None:
-            mark_vector_needs_repair(vector_runtime, result["vector_error"])
+        if vector_runtime is not None and require_vector_delete:
+            replay_result = replay_vector_outbox(
+                vector_runtime,
+                limit=max(1, int(result.get("outbox_enqueued") or 1)),
+            )
+            if int(replay_result.get("failed") or 0) > 0:
+                mark_vector_needs_repair(
+                    vector_runtime,
+                    "nightly duplicate vector outbox replay failed",
+                )
         return int(result["deleted"])
     except Exception as exc:
-        if vector_runtime is not None and (vector_attempted or (vector_store is None and require_vector_delete)):
+        if vector_runtime is not None and require_vector_delete:
             mark_vector_needs_repair(vector_runtime, exc)
         raise RuntimeError("nightly duplicate hard delete did not commit safely") from exc
 
@@ -1167,6 +1681,10 @@ def collect_candidates(
     options: DigestOptions,
     llm_config: dict[str, Any],
     existing_context: list[str],
+    scope_id: str = "",
+    shared_scope_id: str = "",
+    allowed_target_ids: set[str] | None = None,
+    allowed_target_ids_by_scope: Mapping[str, set[str]] | None = None,
     fallback_events: list[dict[str, Any]] | None = None,
 ) -> list[DigestCandidate]:
     """Collect digest candidates from session bundles using configured extractor strategy.
@@ -1204,7 +1722,15 @@ def collect_candidates(
                 bundle_candidates.extend(heuristic_candidates(bundle))
                 llm_failed = True
                 break
-            parsed, parse_status = _parse_llm_candidates_with_status(raw, bundle=bundle)
+            parsed, parse_status = _parse_llm_candidates_with_status(
+                raw,
+                bundle=bundle,
+                scope_id=scope_id,
+                shared_scope_id=shared_scope_id,
+                allowed_target_ids=allowed_target_ids,
+                allowed_target_ids_by_scope=allowed_target_ids_by_scope,
+                allowed_message_ids=set(chunk.message_ids),
+            )
             llm_reviewed = True
             if parsed:
                 bundle_candidates.extend(parsed)
@@ -1264,13 +1790,13 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
         storage_dir.mkdir(parents=True, exist_ok=True)
     memory_db = storage_dir / "memory.sqlite3"
     if options.dry_run and memory_db.exists():
-        conn = sqlite3.connect(f"file:{memory_db}?mode=ro", uri=True, timeout=30)
+        conn = connect_truth_database(memory_db, mode="ro", timeout=30)
     elif options.dry_run:
-        conn = sqlite3.connect(":memory:")
+        conn = connect_truth_database(":memory:", mode="rwc")
     else:
         storage_dir.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(memory_db, timeout=30)
-    conn.row_factory = sqlite3.Row
+        conn = connect_truth_database(memory_db, mode="rwc", timeout=30)
+        install_activation_lease_authorizer(conn, memory_db)
     if not options.dry_run:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
@@ -1291,10 +1817,41 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
         vector_runtime = None if options.dry_run else DigestVectorRuntime(hermes_home=hermes_home, conn=conn, scope=scope)
         existing = existing_memory_context(conn, scope)
         fallback_events: list[dict[str, Any]] = []
-        candidates = collect_candidates(bundles, options=options, llm_config=llm_config, existing_context=existing, fallback_events=fallback_events)
-        applied = apply_candidates(conn, vector_runtime, scope, run_id=run_id, candidates=candidates, dry_run=options.dry_run, runtime_config=runtime_config)
+        candidates = collect_candidates(
+            bundles,
+            options=options,
+            llm_config=llm_config,
+            existing_context=existing,
+            scope_id=scope.scope_id,
+            shared_scope_id=scope.shared_scope_id,
+            allowed_target_ids=_existing_context_target_ids(existing),
+            allowed_target_ids_by_scope=_existing_context_target_ids_by_scope(
+                conn,
+                scope,
+            ),
+            fallback_events=fallback_events,
+        )
+        batch_evidence = {
+            bundle.id: [
+                message.content
+                for message in bundle.messages
+                if message.role in {"user", "assistant"} and message.content
+            ]
+            for bundle in bundles
+        }
+        applied = apply_candidates(
+            conn,
+            vector_runtime,
+            scope,
+            run_id=run_id,
+            candidates=candidates,
+            dry_run=options.dry_run,
+            runtime_config=runtime_config,
+            batch_evidence=batch_evidence,
+        )
         counts = Counter(applied["counts"])
         quality_counts = Counter(applied.get("quality_counts", {}))
+        pollution_counts = Counter(applied.get("pollution_counts", {}))
         skipped_heuristic_events = [
             event for event in fallback_events if str(event.get("kind") or "").endswith("_skipped")
         ]
@@ -1315,6 +1872,7 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
             task_sessions=sum(1 for bundle in bundles if bundle.is_task),
             candidate_count=len(candidates),
             quality_counts=quality_counts,
+            pollution_counts=pollution_counts,
             counts=counts,
             requested_extractor=options.extractor,
             extractor_used=extractor_used,
@@ -1352,6 +1910,7 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
                             extractor_used=extractor_used,
                             fallback_events=fallback_events,
                             quality_counts=quality_counts,
+                            pollution_counts=pollution_counts,
                         ),
                         ensure_ascii=False,
                     ),

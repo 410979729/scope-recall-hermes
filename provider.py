@@ -26,7 +26,11 @@ from .capture_llm import extract_capture_candidates
 from .config import load_runtime_config, save_runtime_config
 from .event_digest import MemoryEvent, build_evidence_packet
 from .journal import append_journal_entry, ensure_journal_schema, run_journal_digest
-from .embedders import BaseEmbedder, build_embedder
+from .maintenance_lease import (
+    ensure_activation_guard_triggers,
+    install_activation_lease_authorizer,
+)
+from .embedders import BaseEmbedder
 from .gating import clean_text, compact_text, config_bool, dedup_key, normalize_query, should_skip_retrieval
 from .governance import extract_candidates
 from .memory_ops import (
@@ -39,6 +43,7 @@ from .memory_ops import (
     explain_query,
     export_memories,
     feedback_memory,
+    fact_owned_memory_ids,
     find_semantic_merge_candidate,
     govern_memories,
     hygiene_report,
@@ -57,10 +62,13 @@ from .recall import RecallService
 from .prompting import render_current_turn_recall
 from .provider_schemas import build_config_schema, build_tool_schemas
 from .scope import accessible_scope_ids, build_scope_id, build_shared_pool_scope_id, build_shared_scope_id, normalize_scope_identity, writable_scope_ids
+from .source_isolation import scope_is_memory_isolated
 from .sql_store import ensure_schema
-from .sqlite_vector_store import SQLiteBruteForceVectorStore
+
 from .storage_views import search_curated_memories, search_db_memories, search_vector_memories
 from .tooling import ScopeRecallToolService
+from .truth_connection import connect_truth_database
+from .vector_bootstrap import bootstrap_fresh_vector_companion
 from .vector_runtime import setup_vector_layer
 from .experience_preflight import experience_preflight
 from .experience_promotion import promote_experiences
@@ -98,6 +106,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._freshness_write_failures = 0
         self._freshness_last_error_type = ""
         self._stop = threading.Event()
+        self._maintenance_stop = threading.Event()
         self._session_id = ""
         self._current_turn = 0
         self._scope = RuntimeScope()
@@ -128,6 +137,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._migration_info: dict[str, Any] = {"migrated": False}
         self._recall_service = RecallService(self)
         self._tool_service = ScopeRecallToolService(self)
+        self._shutdown_requested = threading.Event()
+        self._writer_lifecycle_lock = threading.RLock()
         self._journal_digest_thread: threading.Thread | None = None
         self._journal_digest_lock = threading.RLock()
         self._last_journal_digest_started = 0.0
@@ -155,11 +166,25 @@ class ScopeRecallMemoryProvider(MemoryProvider):
     def get_config_schema(self) -> List[Dict[str, Any]]:
         return build_config_schema()
 
-    def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
+    def save_config(
+        self,
+        values: Dict[str, Any],
+        hermes_home: str,
+        *,
+        activation_lease_token: str = "",
+    ) -> None:
         save_runtime_config(values or {}, hermes_home)
-        self._bootstrap_storage(hermes_home)
+        self._bootstrap_storage(
+            hermes_home,
+            activation_lease_token=activation_lease_token,
+        )
 
-    def _bootstrap_storage(self, hermes_home: str | os.PathLike[str]) -> None:
+    def _bootstrap_storage(
+        self,
+        hermes_home: str | os.PathLike[str],
+        *,
+        activation_lease_token: str = "",
+    ) -> None:
         """Create the empty SQLite truth/journal schema during `hermes memory setup`.
 
         Gateway sessions can lazily construct agents only after the first user
@@ -169,46 +194,58 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         storage_dir = Path(hermes_home).expanduser() / "scope-recall"
         storage_dir.mkdir(parents=True, exist_ok=True)
         db_path = storage_dir / "memory.sqlite3"
-        conn = sqlite3.connect(db_path, check_same_thread=False, timeout=SQLITE_BUSY_TIMEOUT_SECONDS)
+        conn = connect_truth_database(
+            db_path,
+            mode="rwc",
+            check_same_thread=False,
+            timeout=SQLITE_BUSY_TIMEOUT_SECONDS,
+        )
         try:
+            install_activation_lease_authorizer(
+                conn,
+                db_path,
+                lease_token=activation_lease_token,
+            )
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
-            ensure_schema(conn)
-            ensure_journal_schema(conn)
+            ensure_schema(conn, commit=False)
+            ensure_journal_schema(conn, commit=False)
+            ensure_activation_guard_triggers(
+                conn,
+                db_path,
+                lease_token=activation_lease_token,
+            )
+            conn.commit()
+            runtime_config = load_runtime_config(self._plugin_dir, storage_dir)
+            self._bootstrap_vector_companion(
+                storage_dir,
+                runtime_config,
+                truth_conn=conn,
+            )
+            conn.commit()
         finally:
             conn.close()
-        runtime_config = load_runtime_config(self._plugin_dir, storage_dir)
-        self._bootstrap_sqlite_vector_companion(storage_dir, runtime_config)
 
-    def _bootstrap_sqlite_vector_companion(self, storage_dir: Path, runtime_config: dict[str, Any]) -> None:
-        """Create sqlite-bruteforce vector metadata when setup can do so safely."""
-        vector_config = dict((runtime_config or {}).get("vector") or {})
-        if not config_bool(vector_config, "enabled", False):
-            return
-        backend = str(vector_config.get("backend") or "lancedb").strip().lower()
-        fallback_backend = str(vector_config.get("fallback_backend") or "").strip().lower()
-        if "sqlite-bruteforce" not in {backend, fallback_backend}:
-            return
+    def _bootstrap_vector_companion(
+        self,
+        storage_dir: Path,
+        runtime_config: dict[str, Any],
+        *,
+        truth_conn: sqlite3.Connection,
+    ) -> dict[str, Any]:
+        """Delegate fresh primary/fallback selection to the bootstrap policy."""
 
-        embedder_config = dict(vector_config.get("embedder") or {})
-        fallback_config = dict(vector_config.get("fallback_embedder") or {})
-        embedder = build_embedder(embedder_config)
-        if not embedder.is_available() and fallback_config:
-            fallback_embedder = build_embedder(fallback_config)
-            if fallback_embedder.is_available():
-                embedder = fallback_embedder
-        dimensions = int(getattr(embedder, "dimensions", 0) or fallback_config.get("dimensions") or embedder_config.get("dimensions") or 256)
-        table_name = str(vector_config.get("table_name") or "memories")
-        retrieval_config = dict((runtime_config or {}).get("retrieval") or {})
-        metric = str(retrieval_config.get("metric") or "cosine")
-        store = SQLiteBruteForceVectorStore(storage_dir / "vector.sqlite3", table_name=table_name, dimensions=dimensions, metric=metric)
-        try:
-            store.open()
-        finally:
-            store.close()
+        result = bootstrap_fresh_vector_companion(
+            storage_dir,
+            runtime_config,
+            truth_conn=truth_conn,
+        )
+        self._last_vector_bootstrap = result
+        return result
 
     def initialize(self, session_id: str, **kwargs) -> None:
+        self._shutdown_requested.clear()
         hermes_home = Path(kwargs.get("hermes_home") or "~/.hermes").expanduser()
         self._hermes_home = hermes_home
         self._storage_dir = hermes_home / "scope-recall"
@@ -248,17 +285,27 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._current_turn = 0
         self._last_recall_turns = {}
 
-        self._conn = sqlite3.connect(self._db_path, check_same_thread=False, timeout=SQLITE_BUSY_TIMEOUT_SECONDS)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        ensure_schema(self._conn)
+        conn = connect_truth_database(
+            self._db_path,
+            mode="rwc",
+            check_same_thread=False,
+            timeout=SQLITE_BUSY_TIMEOUT_SECONDS,
+        )
+        self._conn = conn
+        install_activation_lease_authorizer(conn, self._db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        ensure_schema(conn, commit=False)
+        ensure_activation_guard_triggers(conn, self._db_path)
+        conn.commit()
         try:
-            backfill_skill_anchors(self._conn)
+            backfill_skill_anchors(conn)
         except Exception:
             self._rollback_conn_after_error("skill-anchor backfill")
             logger.exception("Scope Recall skill-anchor backfill failed")
-        ensure_journal_schema(self._conn)
+        ensure_journal_schema(conn, commit=False)
+        ensure_activation_guard_triggers(conn, self._db_path)
+        conn.commit()
         setup_vector_layer(self)
         start_writer(self)
         self._register_provider_instance()
@@ -272,7 +319,18 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         with _PROVIDER_REGISTRY_LOCK:
             _PROVIDER_REGISTRY.discard(self)
 
+    def _memory_isolated_for_scope(self) -> bool:
+        """Return whether this chat is excluded from every memory surface."""
+
+        return scope_is_memory_isolated(getattr(self, "_scope", None), self._config)
+
     def system_prompt_block(self) -> str:
+        if self._memory_isolated_for_scope():
+            return (
+                "# Scope Recall Memory\n"
+                "Disabled for this chat by explicit source-isolation policy. "
+                "Do not read, infer, or store durable user preferences or memories from this chat."
+            )
         suffix = ""
         if self._vector_enabled and self._vector_ready:
             suffix = f" Hybrid lexical+vector recall is enabled with a local {self._vector_backend} companion index."
@@ -289,6 +347,11 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             + suffix
         )
 
+    def suppress_builtin_memory(self) -> bool:
+        """Hide Hermes' parallel curated-memory surface for isolated chats."""
+
+        return self._memory_isolated_for_scope()
+
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         del message, kwargs
         self._current_turn = int(turn_number or 0)
@@ -299,7 +362,14 @@ class ScopeRecallMemoryProvider(MemoryProvider):
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         del session_id
-        recall_block = render_current_turn_recall(self, query)
+        if self._memory_isolated_for_scope():
+            return ""
+        try:
+            recall_block = render_current_turn_recall(self, query)
+        except Exception:
+            self._rollback_conn_after_error("current-turn recall prefetch")
+            logger.exception("Scope Recall current-turn recall prefetch failed")
+            recall_block = ""
         raw_experience_config = self._config.get("experience")
         experience_config = raw_experience_config if isinstance(raw_experience_config, dict) else {}
         if not config_bool(experience_config, "enabled", True):
@@ -329,6 +399,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
 
         This method is on the hot path, so it avoids heavyweight repair work and records failures as sanitized diagnostics instead of blocking the main agent loop."""
         del session_id
+        if self._memory_isolated_for_scope():
+            return
         if messages:
             self._append_session_tool_journal(messages)
         if not config_bool(self._config, "auto_capture", True):
@@ -554,7 +626,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         """Provide recall context before Hermes compresses the conversation.
 
         The hook should be compact and safe because it is injected into compression prompts, not treated as new user truth."""
-        if not messages or not config_bool(self._config, "auto_capture", True):
+        if self._memory_isolated_for_scope() or not messages or not config_bool(self._config, "auto_capture", True):
             return ""
         if self._scope.agent_context != "primary":
             return ""
@@ -633,6 +705,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         return
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+        if self._memory_isolated_for_scope():
+            return
         self._append_session_tool_journal(messages)
         flush_writer(self, timeout=3.0)
         self._run_session_end_journal_digest()
@@ -642,7 +716,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         return raw_journal if isinstance(raw_journal, dict) else {}
 
     def _append_session_tool_journal(self, messages: List[Dict[str, Any]]) -> None:
-        if not messages or self._scope.agent_context != "primary":
+        if self._memory_isolated_for_scope() or not messages or self._scope.agent_context != "primary":
             return
         journal_config = self._journal_config()
         if not config_bool(journal_config, "enabled", True):
@@ -756,7 +830,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         )
 
     def _maybe_start_background_journal_digest(self) -> None:
-        if self._hermes_home is None or self._scope.agent_context != "primary":
+        if self._shutdown_requested.is_set():
+            return
+        if self._memory_isolated_for_scope() or self._hermes_home is None or self._scope.agent_context != "primary":
             return
         journal_config = self._journal_config()
         if not config_bool(journal_config, "enabled", True):
@@ -768,6 +844,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             return
         now = time.time()
         with self._journal_digest_lock:
+            if self._shutdown_requested.is_set():
+                return
             if self._journal_digest_thread is not None and self._journal_digest_thread.is_alive():
                 return
             if self._last_journal_digest_started and now - self._last_journal_digest_started < interval_hours * 3600:
@@ -776,7 +854,13 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             self._last_journal_digest_status = "running"
             self._last_journal_digest_error = ""
             if config_bool(journal_config, "background_digest_synchronous", False):
-                self._run_background_journal_digest(journal_config)
+                current_thread = threading.current_thread()
+                self._journal_digest_thread = current_thread
+                try:
+                    self._run_background_journal_digest(journal_config)
+                finally:
+                    if self._journal_digest_thread is current_thread:
+                        self._journal_digest_thread = None
                 return
             thread = threading.Thread(
                 target=self._run_background_journal_digest,
@@ -788,6 +872,18 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             thread.start()
 
     def _run_background_journal_digest(self, journal_config: dict[str, Any]) -> None:
+        if self._shutdown_requested.is_set():
+            with self._journal_digest_lock:
+                self._last_journal_digest_status = "skipped"
+                self._last_journal_digest_error = "shutdown requested"
+                self._last_journal_digest_finished = time.time()
+            return
+        if self._memory_isolated_for_scope():
+            with self._journal_digest_lock:
+                self._last_journal_digest_status = "skipped"
+                self._last_journal_digest_error = "source-isolated chat"
+                self._last_journal_digest_finished = time.time()
+            return
         if self._hermes_home is None:
             with self._journal_digest_lock:
                 self._last_journal_digest_status = "skipped"
@@ -812,7 +908,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 self._last_journal_digest_status = status
                 self._last_journal_digest_error = error
                 self._journal_digest_consecutive_failures = 0 if ok else self._journal_digest_consecutive_failures + 1
-            if ok:
+            if ok and not self._shutdown_requested.is_set():
                 self._maybe_run_auto_experience_promotion(trigger="background-journal-digest")
         except Exception as exc:
             self._rollback_conn_after_error("background journal digest")
@@ -824,7 +920,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             logger.exception("Scope Recall background journal digest failed")
 
     def _run_session_end_journal_digest(self) -> None:
-        if self._hermes_home is None or self._scope.agent_context != "primary":
+        if self._shutdown_requested.is_set():
+            return
+        if self._memory_isolated_for_scope() or self._hermes_home is None or self._scope.agent_context != "primary":
             return
         journal_config = self._journal_config()
         if not config_bool(journal_config, "enabled", True):
@@ -855,7 +953,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             logger.exception("Scope Recall session-end journal digest failed")
 
     def _maybe_run_auto_experience_promotion(self, *, trigger: str) -> None:
-        if self._scope.agent_context != "primary":
+        if self._shutdown_requested.is_set():
+            return
+        if self._memory_isolated_for_scope() or self._scope.agent_context != "primary":
             return
         raw_experience_config = self._config.get("experience")
         experience_config = raw_experience_config if isinstance(raw_experience_config, dict) else {}
@@ -909,10 +1009,16 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         return config
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
+        if self._memory_isolated_for_scope():
+            return []
         return build_tool_schemas(self._schema_config(), agent_context=self._scope.agent_context)
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         del kwargs
+        if self._memory_isolated_for_scope():
+            from tools.registry import tool_error
+
+            return tool_error("scope-recall memory is disabled for this chat")
         if not config_bool(self._schema_config(), "enable_tools", True):
             from tools.registry import tool_error
 
@@ -923,18 +1029,48 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             return tool_error("scope-recall tools are only available in the primary agent context")
         return self._tool_service.handle(tool_name, args)
 
-    def shutdown(self) -> None:
-        self._unregister_provider_instance()
-        shutdown_writer(self, timeout=3.0)
+    def shutdown(self, *, timeout: float = 3.0) -> None:
+        """Quiesce workers before closing shared SQLite/vector resources.
+
+        A timed-out worker remains visible and resources stay open so a caller
+        can retry safely. Closing underneath a live digest can otherwise turn a
+        slow shutdown into partial writes or use-after-close failures.
+        """
+
+        wait_timeout = max(0.0, float(timeout))
+        with self._writer_lifecycle_lock:
+            self._shutdown_requested.set()
+            self._maintenance_stop.set()
+        writer_error: Exception | None = None
+        try:
+            shutdown_writer(self, timeout=wait_timeout)
+        except Exception as exc:
+            writer_error = exc
+
         thread = self._journal_digest_thread
         if thread is not None and thread.is_alive():
-            thread.join(timeout=3.0)
+            if thread is threading.current_thread():
+                raise RuntimeError(
+                    "Scope Recall journal digest cannot shut down its own provider"
+                )
+            thread.join(timeout=wait_timeout)
+        if thread is not None and thread.is_alive():
+            raise RuntimeError(
+                "Scope Recall journal digest did not acknowledge shutdown before timeout"
+            ) from writer_error
+        if writer_error is not None:
+            raise writer_error
+
+        with self._journal_digest_lock:
+            self._journal_digest_thread = None
         with self._lock:
             if self._conn is not None:
                 self._conn.close()
                 self._conn = None
         if self._vector_store is not None:
             self._vector_store.close()
+            self._vector_store = None
+        self._unregister_provider_instance()
 
     def flush(self, timeout: float = 2.0) -> bool:
         return flush_writer(self, timeout=timeout)
@@ -951,7 +1087,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         session_id: str,
         metadata: Optional[Dict[str, Any]] = None,
         allow_duplicate: bool = False,
-        semantic_merge: bool = True,
+        semantic_merge: bool = False,
         scope_mode: str | None = None,
     ) -> tuple[str, bool, str]:
         try:
@@ -970,7 +1106,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             self._rollback_conn_after_error("store_now")
             raise
 
-    def _find_semantic_merge_candidate(self, content: str, target: str) -> tuple[str, str]:
+    def _find_semantic_merge_candidate(
+        self, content: str, target: str
+    ) -> tuple[str, str, str]:
         return find_semantic_merge_candidate(self, content, target)
 
     def _update_memory(self, memory_id: str, content: str, target: str | None = None) -> tuple[bool, str, str]:
@@ -987,6 +1125,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
 
     def _archive_memories(self, ids: list[str], *, reason: str = "scope_recall_forget", actor: str = "scope_recall_forget", batch_id: str = "") -> dict[str, Any]:
         return archive_memories(self, ids, reason=reason, actor=actor, batch_id=batch_id)
+
+    def _fact_owned_memory_ids(self, ids: list[str]) -> list[str]:
+        return fact_owned_memory_ids(self, ids)
 
     def _delete_memories(self, ids: list[str]) -> int:
         return delete_memories(self, ids)
@@ -1162,12 +1303,19 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             except Exception:
                 logger.exception("Scope Recall SQLite close failed during recovery after %s", context)
             try:
-                reopened = sqlite3.connect(self._db_path, check_same_thread=False, timeout=SQLITE_BUSY_TIMEOUT_SECONDS)
-                reopened.row_factory = sqlite3.Row
+                reopened = connect_truth_database(
+                    self._db_path,
+                    mode="rwc",
+                    check_same_thread=False,
+                    timeout=SQLITE_BUSY_TIMEOUT_SECONDS,
+                )
+                install_activation_lease_authorizer(reopened, self._db_path)
                 reopened.execute("PRAGMA journal_mode=WAL")
                 reopened.execute("PRAGMA synchronous=NORMAL")
-                ensure_schema(reopened)
-                ensure_journal_schema(reopened)
+                ensure_schema(reopened, commit=False)
+                ensure_journal_schema(reopened, commit=False)
+                ensure_activation_guard_triggers(reopened, self._db_path)
+                reopened.commit()
                 self._conn = reopened
                 payload["reopened"] = True
                 payload["write_probe"] = self._sqlite_write_probe(reopened)

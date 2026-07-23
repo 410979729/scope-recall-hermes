@@ -11,6 +11,7 @@ include py.typed
 recursive-include docs *.md
 prune docs/plans
 recursive-include scripts *.py
+recursive-include scripts *.json
 recursive-include benchmarks *.json
 recursive-include examples *.jsonl
 recursive-include .github/workflows *.yml

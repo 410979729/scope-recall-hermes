@@ -40,6 +40,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ steps.ref.outputs.ref }}
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Verify tag matches package version
@@ -77,7 +78,7 @@ jobs:
       - name: Run release readiness gate
         env:
           PYTHONPATH: ${{ github.workspace }}/.hermes-agent-src:${{ github.workspace }}
-        run: python scripts/check.release.py
+        run: python scripts/check.release.py --tagged-release
 
       - name: Build sdist and wheel
         run: python -m build --sdist --wheel

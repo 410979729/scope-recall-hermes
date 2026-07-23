@@ -39,6 +39,25 @@ hermes-scope-recall install --hermes-home "$HERMES_HOME" --dry-run
 hermes-scope-recall install --hermes-home "$HERMES_HOME" --json
 ```
 
+Activation against an existing truth DB is a maintenance-window operation:
+
+1. Run `upgrade --dry-run` and retain the proposed backup/rollback paths.
+2. Stop the Hermes gateway and every process that can write `$HERMES_HOME/scope-recall/memory.sqlite3`.
+3. Run the activation with explicit confirmation:
+
+```bash
+hermes-scope-recall upgrade \
+  --hermes-home "$HERMES_HOME" \
+  --activate \
+  --maintenance-mode \
+  --json
+```
+
+4. Require `activation_transaction.status=committed`, `maintenance_lease.released=true`, `sqlite.guards_removed=true`, `sqlite.writer_lock_verified=true`, and runtime verification `ok=true`.
+5. Start the gateway, then rerun `verify --runtime` and `doctor` before reopening writes.
+
+Do not use `--maintenance-mode` to bypass an active writer. The installer creates `.activation-maintenance.json`, probes `BEGIN IMMEDIATE`, invalidates cached statements, and installs temporary DML guard triggers before snapshotting; lease-aware and raw/legacy writers then remain blocked through commit or compensation. If a failure reports `sqlite.manual_recovery_required=true`, do **not** run the offline SQLite restore command or delete the retained lease blindly. First identify and stop every writer, preserve the live DB/WAL/SHM and snapshot, compare the receipt fingerprints, and decide whether to keep the newer truth or restore the snapshot. Remove a stale lease only after confirming no activation process owns it and recording that manual decision. If a failed activation receipt marks a vector companion `rebuild_required`, run the emitted vector repair command only after SQLite truth is stable.
+
 For source-tree validation before a copy/install upgrade, pin the interpreter first. A release gate run is only reproducible when the active interpreter has the dev and vector extras (`pytest`, `ruff`, `pyright`, `wheel`, `lancedb`, and `pyarrow`). Do not compare results from a stale sibling venv such as `.venv` with the Hermes runtime venv unless both have been installed the same way.
 
 ```bash
@@ -135,6 +154,8 @@ hermes-scope-recall journal digest \
   --limit-entries 500
 ```
 
+LLM extraction failures are not data rejections. Timeout, authentication, quota, and malformed-output failures return `status=error`, retain the source journal rows as pending, and record a sanitized digest-run error. Fix the model/provider cause before retrying; do not manually mark those rows processed. Retention cleanup is internally batched below SQLite's variable limit.
+
 After drain:
 
 ```bash
@@ -167,6 +188,8 @@ hermes-scope-recall candidates apply \
 
 High candidate debt means Scope Recall is collecting useful possibilities but not promoting/rejecting them fast enough. Prefer small review batches over bulk promotion.
 
+Relation-frequency maintenance isolates each dirty memory in a savepoint. A failed row is retried twice and becomes visible as `relation_frequency_failures.status=dead_letter` on the third failure while healthy rows continue. Repair the underlying row, trigger or schedule it again, and confirm doctor/schema status before removing failure evidence.
+
 ## playbook review
 
 可复用经验手册（playbook）review should distinguish verified reusable procedures from one-off progress logs.
@@ -181,6 +204,7 @@ hermes-scope-recall playbooks review --hermes-home "$HERMES_HOME" --id <playbook
 hermes-scope-recall playbooks promote --hermes-home "$HERMES_HOME" --id <playbook-id> --reason "verified successful reuse"
 hermes-scope-recall playbooks quarantine --hermes-home "$HERMES_HOME" --id <playbook-id> --reason "stale or misleading"
 hermes-scope-recall playbooks supersede --hermes-home "$HERMES_HOME" --id <duplicate-id> --superseded-by <canonical-id> --reason "duplicate group closeout"
+hermes-scope-recall playbooks receipts --hermes-home "$HERMES_HOME"
 hermes-scope-recall benchmark experience --case-file /path/to/experience-cases.json
 ```
 
@@ -192,7 +216,9 @@ When using provider tools, keep these lifecycle boundaries:
 
 For duplicate groups, prefer `playbooks dedupe` first, then `playbooks supersede` for the weaker/newer duplicate when a promoted canonical playbook already exists. Supersede keeps the row and writes `playbook_versions`; it does not delete evidence.
 
-The raw command names are also useful for automation receipts: `playbooks list`, `playbooks review`, `playbooks dedupe`, `playbooks promote`, `playbooks quarantine`, and `playbooks supersede`.
+The raw command names are also useful for automation receipts: `playbooks list`, `playbooks review`, `playbooks dedupe`, `playbooks promote`, `playbooks quarantine`, `playbooks supersede`, and `playbooks receipts`.
+
+Applied playbook changes commit an authoritative SQLite operator-ledger row with the business mutation. The filesystem JSON is a post-commit audit mirror, not the source of truth. `playbooks receipts` reports pending/failed mirror debt read-only; use `playbooks receipts --apply` to retry pending rows, and add `--include-failed` only after reviewing failed samples. A mirror failure never means the playbook mutation rolled back—check `operation_id`, `receipt_state`, doctor, and SQLite before retrying or compensating.
 
 ## migration and imports
 
@@ -276,6 +302,23 @@ Restore sequence:
 4. Run `hermes-scope-recall vector repair --hermes-home "$HERMES_HOME" --dry-run`.
 5. Apply vector repair if the dry-run reports drift.
 6. Run doctor and dashboard.
+
+## orphan fact repair (explicit, never automatic)
+
+`doctor.temporal.foreign_key_integrity` reports the current connection's FK state, the exact number of `PRAGMA foreign_key_check` violations, and a bounded sample. Any violation makes doctor fail closed. Scope Recall never deletes an orphan merely because doctor found it.
+
+Repair procedure:
+
+1. Pause the profile writer and acquire the normal maintenance/activation lease.
+2. Create an SQLite online backup and record its absolute path, SHA-256, size, and source DB fingerprint.
+3. Export the complete `PRAGMA foreign_key_check` result to an operator-owned evidence file. Do not rely only on the bounded doctor sample.
+4. Classify every row by table, rowid, missing parent, and intended data owner.
+5. Choose one explicit action per row:
+   - restore/reconstruct the missing parent from a trusted backup or source record; or
+   - quarantine the complete orphan row and its evidence/receipt graph, then delete it in one reviewed maintenance transaction.
+6. Record an audit receipt containing the backup hash, pre-repair violation, chosen action, affected identifiers, actor/reason, transaction outcome, and post-repair checks. Do not put secrets or raw private chat text in the receipt.
+7. Re-run doctor and require both `foreign_keys.enabled=true` and `violation_count=0`; then run the focused FK/cascade tests before resuming the writer.
+8. On any mismatch or partial failure, rollback the transaction and restore the recorded backup. Never continue with a partially repaired graph.
 
 ## release checklist
 

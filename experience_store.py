@@ -4,6 +4,7 @@ This module owns durable playbook state; callers should prefer its transaction-a
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -620,6 +621,96 @@ def _semantic_mismatch_payload(source: sqlite3.Row, target: sqlite3.Row) -> dict
     }
 
 
+_PLAYBOOK_VALIDATION_JSON_FIELDS = (
+    "preconditions",
+    "steps",
+    "pitfalls",
+    "verification",
+    "cleanup",
+    "reuse_policy",
+)
+
+
+def _validation_payload_from_row(
+    row: sqlite3.Row,
+    *,
+    status: str,
+) -> dict[str, Any]:
+    """Rebuild the generic validator payload from authoritative SQLite data."""
+
+    payload: dict[str, Any] = {
+        "schema_version": "procedural_playbook.v1",
+        "task_class": str(row["task_class"]),
+        "title": str(row["title"]),
+        "trigger": str(row["trigger"]),
+        "goal": str(row["goal"]),
+        "status": status,
+        "confidence": float(row["confidence"]),
+    }
+    for field in _PLAYBOOK_VALIDATION_JSON_FIELDS:
+        try:
+            payload[field] = json.loads(str(row[field]))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ExperienceValidationError(
+                f"persisted playbook {field} must contain valid JSON"
+            ) from exc
+    return payload
+
+
+def _review_validation_token(
+    conn: sqlite3.Connection,
+    *,
+    source_row: sqlite3.Row,
+    canonical_row: sqlite3.Row | None,
+    status: str,
+    target_superseded_by: str,
+    reason: str,
+    force_cross_class: bool,
+) -> str:
+    """Bind one review plan to every authoritative input used by apply."""
+
+    row_fields = (
+        "id",
+        "scope_id",
+        "shared_scope_id",
+        "task_class",
+        "title",
+        "trigger",
+        "goal",
+        "preconditions",
+        "steps",
+        "pitfalls",
+        "verification",
+        "cleanup",
+        "evidence_anchors",
+        "related_skills",
+        "environment_constraints",
+        "reuse_policy",
+        "status",
+        "confidence",
+        "superseded_by",
+        "updated_at",
+        "metadata",
+    )
+
+    def row_payload(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {field: row[field] for field in row_fields}
+
+    token_payload = {
+        "source": row_payload(source_row),
+        "canonical": row_payload(canonical_row),
+        "requested_status": status,
+        "requested_superseded_by": target_superseded_by,
+        "reason": reason,
+        "force_cross_class": bool(force_cross_class),
+        "next_version": _next_version(conn, str(source_row["id"])),
+    }
+    encoded = _json_dumps(token_payload).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _insert_playbook_version(conn: sqlite3.Connection, *, row: sqlite3.Row, change_type: str, reason: str, created_at: str) -> int:
     version = _next_version(conn, str(row["id"]))
     conn.execute(
@@ -778,10 +869,16 @@ def review_playbook(
     superseded_by: str = "",
     dry_run: bool = False,
     force_cross_class: bool = False,
+    validated_payload: Mapping[str, Any] | None = None,
+    commit: bool = True,
 ) -> dict[str, Any]:
     """Apply an operator review decision to an Experience playbook.
 
-    Review updates lifecycle and rationale fields so promotion automation can distinguish approved, rejected, and needs-work states."""
+    ``validated_payload`` binds mutation to a prior dry-run over the same rows.
+    ``commit=False`` lets operator flows include schema migration, review writes,
+    and receipt finalization in one caller-owned transaction.
+    """
+
     _reject_secret_like_value(playbook_id, path="review.playbook_id")
     action_to_status = {
         "review": "reviewed",
@@ -801,20 +898,56 @@ def review_playbook(
     _reject_secret_like_value(superseded_by, path="review.superseded_by")
     safe_reason = sanitize_report_text(reason)
     safe_superseded_by = sanitize_report_text(superseded_by)
-    source_row = _fetch_accessible_playbook(conn, playbook_id, accessible_scope_ids)
+    source_row = _fetch_accessible_playbook(
+        conn, playbook_id, accessible_scope_ids
+    )
     if source_row is None:
-        return {"reviewed": False, "dry_run": bool(dry_run), "changed": False, "id": playbook_id, "error": "not_found"}
+        return {
+            "reviewed": False,
+            "dry_run": bool(dry_run),
+            "changed": False,
+            "id": playbook_id,
+            "error": "not_found",
+        }
     canonical_row: sqlite3.Row | None = None
     if status == "superseded":
         if not safe_superseded_by:
-            return {"reviewed": False, "dry_run": bool(dry_run), "changed": False, "id": playbook_id, "error": "superseded_by_required"}
+            return {
+                "reviewed": False,
+                "dry_run": bool(dry_run),
+                "changed": False,
+                "id": playbook_id,
+                "error": "superseded_by_required",
+            }
         if safe_superseded_by == playbook_id:
-            return {"reviewed": False, "dry_run": bool(dry_run), "changed": False, "id": playbook_id, "error": "self_supersede"}
-        canonical_row = _fetch_accessible_playbook(conn, safe_superseded_by, accessible_scope_ids)
+            return {
+                "reviewed": False,
+                "dry_run": bool(dry_run),
+                "changed": False,
+                "id": playbook_id,
+                "error": "self_supersede",
+            }
+        canonical_row = _fetch_accessible_playbook(
+            conn, safe_superseded_by, accessible_scope_ids
+        )
         if canonical_row is None:
-            return {"reviewed": False, "dry_run": bool(dry_run), "changed": False, "id": playbook_id, "error": "superseded_by_not_found", "superseded_by": safe_superseded_by}
+            return {
+                "reviewed": False,
+                "dry_run": bool(dry_run),
+                "changed": False,
+                "id": playbook_id,
+                "error": "superseded_by_not_found",
+                "superseded_by": safe_superseded_by,
+            }
         if not _same_owner_scope(source_row, canonical_row):
-            return {"reviewed": False, "dry_run": bool(dry_run), "changed": False, "id": playbook_id, "error": "superseded_by_scope_mismatch", "superseded_by": safe_superseded_by}
+            return {
+                "reviewed": False,
+                "dry_run": bool(dry_run),
+                "changed": False,
+                "id": playbook_id,
+                "error": "superseded_by_scope_mismatch",
+                "superseded_by": safe_superseded_by,
+            }
         if not _same_playbook_semantics(source_row, canonical_row):
             mismatch = _semantic_mismatch_payload(source_row, canonical_row)
             if not force_cross_class:
@@ -838,7 +971,44 @@ def review_playbook(
                     "mismatch": mismatch,
                 }
     target_superseded_by = safe_superseded_by if status == "superseded" else ""
-    if str(source_row["status"]) == status and str(source_row["superseded_by"] or "") == target_superseded_by:
+    if status == "promoted":
+        promotion_payload = _validation_payload_from_row(source_row, status=status)
+        _reject_secret_like_value(promotion_payload, path="review.promote")
+        validate_procedural_playbook(promotion_payload)
+    validation_token = _review_validation_token(
+        conn,
+        source_row=source_row,
+        canonical_row=canonical_row,
+        status=status,
+        target_superseded_by=target_superseded_by,
+        reason=safe_reason,
+        force_cross_class=force_cross_class,
+    )
+    if validated_payload is not None:
+        expected_token = str(validated_payload.get("validation_token") or "")
+        expected_status = str(validated_payload.get("status") or "")
+        expected_id = str(validated_payload.get("id") or "")
+        expected_superseded_by = str(
+            validated_payload.get("superseded_by") or ""
+        )
+        if (
+            not expected_token
+            or expected_token != validation_token
+            or expected_status != status
+            or expected_id != playbook_id
+            or expected_superseded_by != target_superseded_by
+        ):
+            return {
+                "reviewed": False,
+                "dry_run": False,
+                "changed": False,
+                "id": playbook_id,
+                "error": "stale_validation",
+            }
+    if (
+        str(source_row["status"]) == status
+        and str(source_row["superseded_by"] or "") == target_superseded_by
+    ):
         current_version = _next_version(conn, playbook_id) - 1
         result = {
             "reviewed": True,
@@ -848,6 +1018,7 @@ def review_playbook(
             "id": playbook_id,
             "status": status,
             "version": current_version,
+            "validation_token": validation_token,
         }
         if status == "superseded":
             result["superseded_by"] = safe_superseded_by
@@ -860,29 +1031,78 @@ def review_playbook(
             "id": playbook_id,
             "current_status": str(source_row["status"]),
             "status": status,
+            "validation_token": validation_token,
         }
         if status == "superseded":
-            result["current_superseded_by"] = str(source_row["superseded_by"] or "")
+            result["current_superseded_by"] = str(
+                source_row["superseded_by"] or ""
+            )
             result["superseded_by"] = safe_superseded_by
         return result
-    now = _now_iso()
-    version = _next_version(conn, playbook_id)
-    conn.execute(
-        "UPDATE procedural_playbooks SET status = ?, superseded_by = ?, updated_at = ? WHERE id = ?",
-        (status, target_superseded_by, now, playbook_id),
-    )
-    updated = conn.execute("SELECT * FROM procedural_playbooks WHERE id = ?", (playbook_id,)).fetchone()
-    if status == "promoted":
-        _sync_skill_anchors_for_playbook(conn, updated, reason=safe_reason or "playbook promoted")
-    conn.execute(
-        """
-        INSERT INTO playbook_versions(id, playbook_id, version, change_type, change_reason, snapshot, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (f"pbv_{uuid.uuid4().hex}", playbook_id, version, status, safe_reason, _json_dumps(_serialize_row(updated)), now),
-    )
-    conn.commit()
-    result = {"reviewed": True, "dry_run": False, "changed": True, "id": playbook_id, "status": status, "version": version}
+
+    started_transaction = False
+    if not conn.in_transaction:
+        if not commit:
+            raise ExperienceValidationError(
+                "review_playbook(commit=False) requires an active caller-owned transaction"
+            )
+        conn.execute("BEGIN")
+        started_transaction = True
+
+    savepoint = f"review_playbook_{uuid.uuid4().hex}"
+    conn.execute(f"SAVEPOINT {savepoint}")
+    try:
+        now = _now_iso()
+        version = _next_version(conn, playbook_id)
+        conn.execute(
+            "UPDATE procedural_playbooks SET status = ?, superseded_by = ?, updated_at = ? WHERE id = ?",
+            (status, target_superseded_by, now, playbook_id),
+        )
+        updated = conn.execute(
+            "SELECT * FROM procedural_playbooks WHERE id = ?", (playbook_id,)
+        ).fetchone()
+        if status == "promoted":
+            _sync_skill_anchors_for_playbook(
+                conn, updated, reason=safe_reason or "playbook promoted"
+            )
+        conn.execute(
+            """
+            INSERT INTO playbook_versions(id, playbook_id, version, change_type, change_reason, snapshot, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"pbv_{uuid.uuid4().hex}",
+                playbook_id,
+                version,
+                status,
+                safe_reason,
+                _json_dumps(_serialize_row(updated)),
+                now,
+            ),
+        )
+    except BaseException:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        if started_transaction and conn.in_transaction:
+            conn.rollback()
+        raise
+    conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+    if commit:
+        try:
+            conn.commit()
+        except BaseException:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+    result = {
+        "reviewed": True,
+        "dry_run": False,
+        "changed": True,
+        "id": playbook_id,
+        "status": status,
+        "version": version,
+        "validation_token": validation_token,
+    }
     if status == "superseded":
         result["superseded_by"] = safe_superseded_by
     return result

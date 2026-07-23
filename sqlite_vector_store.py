@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sqlite3
+import stat
 import threading
 from collections import Counter
 from pathlib import Path
@@ -51,57 +53,175 @@ class SQLiteBruteForceVectorStore:
     def is_available(self) -> bool:
         return True
 
+    def _sidecar_paths(self) -> tuple[Path, Path]:
+        return (
+            self._db_path.with_name(f"{self._db_path.name}-wal"),
+            self._db_path.with_name(f"{self._db_path.name}-shm"),
+        )
+
+    def _existing_sidecars(self) -> list[str]:
+        wal_path, shm_path = self._sidecar_paths()
+        return [
+            suffix
+            for suffix, path in (("-wal", wal_path), ("-shm", shm_path))
+            if path.exists() or path.is_symlink()
+        ]
+
+    def _prepare_mutable_storage(self, *, create: bool) -> None:
+        """Create or harden mutable SQLite files without following symlinks."""
+
+        self._db_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        if create:
+            flags |= os.O_CREAT
+        try:
+            descriptor = os.open(self._db_path, flags, 0o600)
+        except FileNotFoundError:
+            raise FileNotFoundError(
+                "sqlite-bruteforce physical storage is missing"
+            ) from None
+        except OSError as exc:
+            raise VectorStoreCompatibilityError(
+                "sqlite-bruteforce mutable storage is unsafe or inaccessible"
+            ) from exc
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise VectorStoreCompatibilityError(
+                    "sqlite-bruteforce mutable storage is not a regular file"
+                )
+            os.fchmod(descriptor, 0o600)
+        finally:
+            os.close(descriptor)
+
+    def _harden_mutable_sidecars(self) -> None:
+        """Apply owner-only mode to SQLite WAL/SHM files created during open."""
+
+        for path in self._sidecar_paths():
+            if not path.exists() and not path.is_symlink():
+                continue
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                descriptor = os.open(path, flags)
+            except OSError as exc:
+                raise VectorStoreCompatibilityError(
+                    "sqlite-bruteforce mutable sidecar is unsafe or inaccessible"
+                ) from exc
+            try:
+                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                    raise VectorStoreCompatibilityError(
+                        "sqlite-bruteforce mutable sidecar is not a regular file"
+                    )
+                os.fchmod(descriptor, 0o600)
+            finally:
+                os.close(descriptor)
+
+    def _reject_existing_sidecars(self) -> None:
+        sidecars = self._existing_sidecars()
+        if sidecars:
+            raise VectorStoreCompatibilityError(
+                "sqlite-bruteforce immutable storage has mutable sidecars: "
+                + ", ".join(sorted(sidecars))
+            )
+
     def open(self) -> None:
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._prepare_mutable_storage(create=True)
         with self._lock:
             self._conn = sqlite3.connect(self._db_path, check_same_thread=False, timeout=30.0)
-            self._conn.row_factory = sqlite3.Row
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA synchronous=NORMAL")
-            self._ensure_schema()
-            stored_dimensions = self._get_meta_int("dimensions")
-            stored_table = self._get_meta_text("table_name")
-            if (stored_dimensions and stored_dimensions != self._dimensions) or (stored_table and stored_table != self._table_name):
-                requested = f"dimensions={self._dimensions}, table_name={self._table_name!r}"
-                existing = f"dimensions={stored_dimensions}, table_name={stored_table!r}"
-                self._conn.rollback()
+            try:
+                self._conn.row_factory = sqlite3.Row
+                self._conn.execute("PRAGMA journal_mode=WAL")
+                self._conn.execute("PRAGMA synchronous=NORMAL")
+                self._ensure_schema()
+                stored_dimensions = self._get_meta_int("dimensions")
+                stored_table = self._get_meta_text("table_name")
+                if (stored_dimensions and stored_dimensions != self._dimensions) or (stored_table and stored_table != self._table_name):
+                    requested = f"dimensions={self._dimensions}, table_name={self._table_name!r}"
+                    existing = f"dimensions={stored_dimensions}, table_name={stored_table!r}"
+                    self._conn.rollback()
+                    raise VectorStoreCompatibilityError(
+                        "existing sqlite-bruteforce generation is incompatible: "
+                        f"{existing}; requested {requested}; build and activate a shadow generation explicitly"
+                    )
+                self._set_meta("dimensions", str(self._dimensions))
+                self._set_meta("table_name", self._table_name)
+                self._conn.commit()
+                self._harden_mutable_sidecars()
+            except Exception:
                 self._conn.close()
                 self._conn = None
-                raise VectorStoreCompatibilityError(
-                    "existing sqlite-bruteforce generation is incompatible: "
-                    f"{existing}; requested {requested}; build and activate a shadow generation explicitly"
-                )
-            self._set_meta("dimensions", str(self._dimensions))
-            self._set_meta("table_name", self._table_name)
-            self._conn.commit()
+                raise
 
     def open_existing(self) -> None:
         """Open an existing companion read-only; never create files, schema, or metadata."""
 
-        if not self._db_path.is_file():
-            raise FileNotFoundError("sqlite-bruteforce physical storage is missing")
-        uri = f"file:{self._db_path.resolve()}?mode=ro"
+        # READY generations are immutable snapshots. ``mode=ro`` alone can
+        # still create WAL shared-memory sidecars when the database journal
+        # mode is WAL; ``immutable=1`` prevents those writes but also ignores
+        # WAL contents. Reject sidecars before and after opening so preflight
+        # cannot silently validate only the main database while private or
+        # receipt-unbound state remains in ``-wal``/``-shm``.
+        uri = f"file:{self._db_path.resolve()}?mode=ro&immutable=1"
         with self._lock:
+            self._reject_existing_sidecars()
+            if not self._db_path.is_file():
+                raise FileNotFoundError("sqlite-bruteforce physical storage is missing")
             self._conn = sqlite3.connect(uri, uri=True, check_same_thread=False, timeout=30.0)
             self._conn.row_factory = sqlite3.Row
-            tables = {
-                str(row[0])
-                for row in self._conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
-            }
-            required = {"vector_records", "vector_meta"}
-            if not required <= tables:
-                self.close()
-                raise VectorStoreCompatibilityError(
-                    "sqlite-bruteforce physical storage is corrupt or incomplete: missing required tables"
-                )
-            stored_dimensions = self._get_meta_int("dimensions")
-            stored_table = self._get_meta_text("table_name")
-            if stored_dimensions != self._dimensions or stored_table != self._table_name:
-                self.close()
-                raise VectorStoreCompatibilityError(
-                    "sqlite-bruteforce physical identity mismatch: "
-                    f"dimensions={stored_dimensions}, table_name={stored_table!r}"
-                )
+            try:
+                self._reject_existing_sidecars()
+                self._validate_existing_identity()
+                self._reject_existing_sidecars()
+            except Exception:
+                self._conn.close()
+                self._conn = None
+                raise
+
+    def open_existing_for_update(self) -> None:
+        """Open existing mutable storage without creating files, tables, or metadata."""
+
+        if not self._db_path.is_file():
+            raise FileNotFoundError("sqlite-bruteforce physical storage is missing")
+        self._prepare_mutable_storage(create=False)
+        uri = f"file:{self._db_path.resolve()}?mode=rw"
+        with self._lock:
+            self._conn = sqlite3.connect(
+                uri,
+                uri=True,
+                check_same_thread=False,
+                timeout=30.0,
+            )
+            self._conn.row_factory = sqlite3.Row
+            try:
+                self._conn.execute("PRAGMA journal_mode=WAL")
+                self._conn.execute("PRAGMA synchronous=NORMAL")
+                self._validate_existing_identity()
+                self._harden_mutable_sidecars()
+            except Exception:
+                self._conn.close()
+                self._conn = None
+                raise
+
+    def _validate_existing_identity(self) -> None:
+        """Validate the physical schema and identity without mutating either."""
+
+        tables = {
+            str(row[0])
+            for row in self._require_conn()
+            .execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            .fetchall()
+        }
+        required = {"vector_records", "vector_meta"}
+        if not required <= tables:
+            raise VectorStoreCompatibilityError(
+                "sqlite-bruteforce physical storage is corrupt or incomplete: missing required tables"
+            )
+        stored_dimensions = self._get_meta_int("dimensions")
+        stored_table = self._get_meta_text("table_name")
+        if stored_dimensions != self._dimensions or stored_table != self._table_name:
+            raise VectorStoreCompatibilityError(
+                "sqlite-bruteforce physical identity mismatch: "
+                f"dimensions={stored_dimensions}, table_name={stored_table!r}"
+            )
 
     def _ensure_schema(self) -> None:
         conn = self._require_conn()
@@ -284,6 +404,79 @@ class SQLiteBruteForceVectorStore:
     def count_rows(self) -> int:
         with self._lock:
             return int(self._require_conn().execute("SELECT COUNT(*) FROM vector_records").fetchone()[0])
+
+    def seal(self) -> dict[str, int]:
+        """Checkpoint and close a writable generation before READY publication.
+
+        ``Connection.close()`` alone may leave a fully checkpointed WAL pinned
+        by another reader. A successful seal therefore requires a successful
+        TRUNCATE checkpoint *and* physical absence of both SQLite sidecars.
+        """
+
+        checkpoint: dict[str, int] | None = None
+        checkpoint_error: Exception | None = None
+        close_error: Exception | None = None
+        with self._lock:
+            conn = self._require_conn()
+            try:
+                if conn.in_transaction:
+                    raise VectorStoreCompatibilityError(
+                        "sqlite-bruteforce READY seal refused an open transaction"
+                    )
+                # Do not wait on a pinned reader: READY publication must fail
+                # closed and can be retried after the reader releases its pin.
+                conn.execute("PRAGMA busy_timeout=0")
+                row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                if row is None or len(row) != 3:
+                    raise VectorStoreCompatibilityError(
+                        "sqlite-bruteforce READY seal returned an invalid checkpoint result"
+                    )
+                busy, log, checkpointed = (int(value) for value in row)
+                checkpoint = {
+                    "busy": busy,
+                    "log": log,
+                    "checkpointed": checkpointed,
+                }
+            except Exception as exc:
+                checkpoint_error = exc
+            finally:
+                try:
+                    conn.close()
+                except Exception as exc:  # pragma: no cover - defensive close failure
+                    close_error = exc
+                self._conn = None
+
+            sidecars = self._existing_sidecars()
+
+        if checkpoint_error is not None:
+            if isinstance(checkpoint_error, VectorStoreCompatibilityError):
+                raise checkpoint_error
+            raise VectorStoreCompatibilityError(
+                "sqlite-bruteforce READY seal checkpoint execution failed"
+            ) from checkpoint_error
+        if close_error is not None:
+            raise VectorStoreCompatibilityError(
+                "sqlite-bruteforce READY seal could not close the checkpointed database"
+            ) from close_error
+        if checkpoint is None:  # pragma: no cover - guarded above
+            raise VectorStoreCompatibilityError(
+                "sqlite-bruteforce READY seal did not return checkpoint evidence"
+            )
+
+        busy = checkpoint["busy"]
+        log = checkpoint["log"]
+        checkpointed = checkpoint["checkpointed"]
+        checkpoint_summary = f"busy={busy}, log={log}, checkpointed={checkpointed}"
+        if busy != 0 or log != 0 or checkpointed != 0:
+            raise VectorStoreCompatibilityError(
+                "sqlite-bruteforce READY seal checkpoint was incomplete: " + checkpoint_summary
+            )
+        if sidecars:
+            raise VectorStoreCompatibilityError(
+                "sqlite-bruteforce READY seal left mutable sidecars after checkpoint "
+                f"({checkpoint_summary}): {', '.join(sorted(sidecars))}"
+            )
+        return checkpoint
 
     def close(self) -> None:
         with self._lock:

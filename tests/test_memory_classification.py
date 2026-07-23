@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
+from scope_recall.governance import classify_memory
 from scope_recall.sql_store import ensure_schema, store_row
 
 
@@ -80,6 +81,32 @@ def test_general_rows_are_classified_as_local_scratch_raw_observations():
     assert metadata["scope_mode"] == "local"
     assert metadata["confidence"] <= 0.62
     assert "target:general" in metadata["tags"]
+
+
+def test_temporary_markers_use_lexical_boundaries() -> None:
+    durable = classify_memory(
+        "The report template is a durable project resource.",
+        target="memory",
+        source="tool-store",
+    )
+    explicit_temp = classify_memory(
+        "Use this temp file for the one-off migration.",
+        target="memory",
+        source="tool-store",
+    )
+    chinese_temp = classify_memory(
+        "这是一次性的临时迁移记录。",
+        target="memory",
+        source="tool-store",
+    )
+
+    assert durable["kind"] == "environment_fact"
+    assert durable["lifecycle"] == "promoted"
+    assert durable["expires_at"] is None
+    for classified in (explicit_temp, chinese_temp):
+        assert classified["kind"] == "temporary_state"
+        assert classified["lifecycle"] == "candidate"
+        assert classified["expires_at"] == "stale-review"
 
 
 def test_invalid_metadata_is_preserved_without_losing_classification():

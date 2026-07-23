@@ -34,11 +34,10 @@ _ensure_source_import()
 from scope_recall.candidate_promotion import candidate_debt_report, candidate_rows, classify_candidate_row, load_metadata, now_iso  # noqa: E402
 from scope_recall.candidate_review import transition_candidate_metadata  # noqa: E402
 from scope_recall.capture_filters import sanitize_report_text  # noqa: E402
-from scope_recall.config import load_runtime_config  # noqa: E402
 from scope_recall.lifecycle_service import LifecycleConflictError, transition_memory_lifecycle  # noqa: E402
 from scope_recall.maintenance_ops import connect_memory_db, effective_apply, memory_db_path  # noqa: E402
 from scope_recall.sql_store import ensure_governance_schema  # noqa: E402
-from scope_recall.vector_runtime import cleanup_persisted_vector_companions  # noqa: E402
+from scope_recall.vector_runtime import queued_vector_outbox_receipt  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -67,19 +66,6 @@ def parse_args() -> argparse.Namespace:
 
 def _db_path(hermes_home: Path) -> Path:
     return memory_db_path(hermes_home)
-
-
-def _cleanup_vector_companions(hermes_home: Path, memory_ids: list[str]) -> dict[str, Any]:
-    """Load profile config and clean persisted companions after truth commit."""
-
-    storage_dir = hermes_home / "scope-recall"
-    config = load_runtime_config(Path(__file__).resolve().parents[1], storage_dir)
-    return cleanup_persisted_vector_companions(
-        storage_dir,
-        memory_ids=memory_ids,
-        vector_config=dict(config.get("vector") or {}),
-        retrieval_config=dict(config.get("retrieval") or {}),
-    )
 
 
 def _metadata_after(metadata: dict[str, Any], *, action: str, reason: str, batch_id: str, at: str) -> dict[str, Any]:
@@ -254,7 +240,7 @@ def promote_memory_candidates(
             before_metadata = load_metadata(row["metadata"])
             after_metadata = _metadata_after(before_metadata, action=effective_action, reason=effective_reason, batch_id=batch, at=at)
             try:
-                transition_memory_lifecycle(
+                transition = transition_memory_lifecycle(
                     conn,
                     memory_id=row_id,
                     lifecycle=str(after_metadata["lifecycle"]),
@@ -275,14 +261,15 @@ def promote_memory_candidates(
                 mutations["skipped"] += 1
                 continue
             if effective_action == "archive":
-                archived_memory_ids.append(row_id)
+                if bool(transition.get("outbox_enqueued")):
+                    archived_memory_ids.append(row_id)
             if effective_action == "promote":
                 mutations["promoted"] += 1
             else:
                 mutations["archived"] += 1
         if apply:
             conn.commit()
-            vector_cleanup = _cleanup_vector_companions(hermes_home, archived_memory_ids)
+            vector_cleanup = queued_vector_outbox_receipt(archived_memory_ids)
         after = candidate_debt_report(conn, scope_ids=candidate_scope_ids, limit=limit)
     finally:
         conn.close()

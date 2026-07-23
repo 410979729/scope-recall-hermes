@@ -12,7 +12,9 @@ from scope_recall.capture_filters import (
     redact_private_paths,
     redact_secret_like_text,
     sanitize_capture_text,
+    sanitize_mapping_key,
     sanitize_report_text,
+    sanitize_structured_value,
     should_capture_text,
 )
 
@@ -62,6 +64,73 @@ def test_secret_assignment_with_is_is_rejected():
 
     assert result.allowed is False
     assert result.reason == "plaintext_secret_rejected"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "access_token = synthetic-credential-value must not be stored.",
+        "session_token: synthetic-session-value must not be stored.",
+        "super_token is synthetic-super-value and must not be stored.",
+    ],
+)
+def test_compound_token_credential_assignments_remain_rejected(text):
+    result = should_capture_text(text)
+
+    assert result.allowed is False
+    assert result.reason == "plaintext_secret_rejected"
+    assert "[REDACTED_SECRET]" in redact_secret_like_text(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "KV_bytes_per_token = 2 * head_dim controls benchmark memory sizing.",
+        "per_token = 42 is a harmless benchmark rate coefficient.",
+        "price-per-token: 0.25 is a public cost metric for this comparison.",
+    ],
+)
+def test_per_token_metric_assignments_are_not_secret_false_positives(text):
+    result = should_capture_text(text)
+
+    assert result.allowed is True
+    assert result.reason == ""
+    assert redact_secret_like_text(text) == text
+
+
+def test_structured_token_keys_distinguish_metrics_from_credentials():
+    assert sanitize_mapping_key("KV_bytes_per_token") == (
+        "KV_bytes_per_token",
+        False,
+    )
+    assert sanitize_mapping_key("access_token") == ("[REDACTED_KEY]", True)
+
+
+def test_sensitive_token_prefix_cannot_be_whitelisted_by_metric_suffix():
+    """Credential-shaped keys stay unsafe even when they end in ``per_token``."""
+
+    raw_value = "SYNTHETIC_NON_SECRET_TEST_VALUE"
+    for key in (
+        "api_token_per_token",
+        "apikey_per_token",
+        "clientsecret_per_token",
+        "authorization_per_token",
+        "token_per_token",
+    ):
+        text = f"{key}={raw_value}"
+
+        result = should_capture_text(text)
+        redacted = redact_secret_like_text(text)
+        safe_key, key_changed = sanitize_mapping_key(key)
+        structured, structured_changed = sanitize_structured_value({key: raw_value})
+
+        assert result.allowed is False
+        assert result.reason == "plaintext_secret_rejected"
+        assert redacted == "[REDACTED_SECRET]"
+        assert (safe_key, key_changed) == ("[REDACTED_KEY]", True)
+        assert structured_changed is True
+        assert key not in structured
+        assert structured == {"[REDACTED_KEY]": raw_value}
 
 
 def test_private_key_redaction_removes_entire_pem_block():

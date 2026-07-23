@@ -14,7 +14,9 @@ from .candidate_promotion import candidate_debt_report
 from .freshness import fact_freshness_report
 from .governance_cleanup import apply_cleanup
 from .forgetting import build_forgetting_report
+from .maintenance_lease import install_activation_lease_authorizer
 from .sql_store import ensure_schema
+from .truth_connection import connect_truth_database
 
 GOVERNANCE_SCHEDULER_SCHEMA_VERSION = "governance_scheduler.v1"
 
@@ -311,11 +313,10 @@ def run_governance_cycle_for_home(
     db_path = home / "scope-recall" / "memory.sqlite3"
     if not db_path.exists():
         return {"schema_version": GOVERNANCE_SCHEDULER_SCHEMA_VERSION, "ok": False, "dry_run": dry_run, "apply_safe": apply_safe, "error": f"SQLite truth DB not found: {db_path}"}
-    if dry_run:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    else:
-        conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    mode = "ro" if dry_run else "rw"
+    conn = connect_truth_database(db_path, mode=mode)
+    if not dry_run:
+        install_activation_lease_authorizer(conn, db_path)
     try:
         return run_governance_cycle(conn, scope_ids=scope_ids, accessible_scope_ids=accessible_scope_ids, dry_run=dry_run, apply_safe=apply_safe, limit=limit)
     finally:

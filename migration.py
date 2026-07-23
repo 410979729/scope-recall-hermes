@@ -5,9 +5,10 @@ Migration copies old storage into the current layout without treating legacy fil
 from __future__ import annotations
 
 import shutil
-import sqlite3
 from pathlib import Path
 from typing import Any
+
+from .truth_connection import connect_truth_database
 
 
 def migrate_legacy_scope_recall_storage(hermes_home: Path | None, storage_dir: Path | None) -> dict[str, Any]:
@@ -22,9 +23,9 @@ def migrate_legacy_scope_recall_storage(hermes_home: Path | None, storage_dir: P
     new_db = storage_dir / "memory.sqlite3"
     legacy_db = legacy_dir / "memory.sqlite3"
     if not new_db.exists() and legacy_db.exists():
-        src = sqlite3.connect(f"file:{legacy_db}?mode=ro", uri=True)
+        src = connect_truth_database(legacy_db, mode="ro")
         try:
-            dst = sqlite3.connect(new_db)
+            dst = connect_truth_database(new_db, mode="rwc")
             try:
                 src.backup(dst)
             finally:

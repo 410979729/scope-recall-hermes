@@ -10,16 +10,34 @@ import sqlite3
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
 from plugins.memory import load_memory_provider
 
-from scope_recall.freshness import _parse_iso, backfill_untracked_memory_freshness, fact_freshness_report, normalize_validator_kind
+from scope_recall.freshness import (
+    _parse_iso,
+    backfill_untracked_memory_freshness,
+    fact_freshness_report,
+    freshness_penalty,
+    normalize_validator_kind,
+)
 from scope_recall.graph import ensure_graph_schema
 from scope_recall.models import RecallItem
 from scope_recall.recall import RecallService
 from scope_recall.sql_store import ensure_schema, now_iso
+
+
+def _disable_unrelated_vector_runtime(hermes_home: Path) -> None:
+    """Keep freshness tests independent of optional native vector runtimes."""
+
+    config_path = hermes_home / "scope-recall" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps({"vector": {"enabled": False}}) + "\n",
+        encoding="utf-8",
+    )
 
 
 class DummyProvider:
@@ -367,6 +385,7 @@ def test_fact_freshness_stale_memory_is_marked_and_downgraded_below_current_fact
 
 
 def test_public_store_tracks_unverified_factual_memory_as_needs_live_check(tmp_path):
+    _disable_unrelated_vector_runtime(tmp_path)
     plugin = load_memory_provider("scope-recall")
     assert plugin is not None
     plugin.initialize(
@@ -422,6 +441,7 @@ def test_public_store_tracks_unverified_factual_memory_as_needs_live_check(tmp_p
 
 
 def test_public_store_honors_explicit_current_freshness_with_ttl(tmp_path):
+    _disable_unrelated_vector_runtime(tmp_path)
     plugin = load_memory_provider("scope-recall")
     assert plugin is not None
     plugin.initialize(
@@ -475,6 +495,7 @@ def test_public_store_honors_explicit_current_freshness_with_ttl(tmp_path):
 
 
 def test_factual_freshness_backfill_is_dry_run_bounded_and_idempotent(tmp_path):
+    _disable_unrelated_vector_runtime(tmp_path)
     plugin = load_memory_provider("scope-recall")
     assert plugin is not None
     plugin.initialize(
@@ -521,6 +542,7 @@ def test_factual_freshness_backfill_is_dry_run_bounded_and_idempotent(tmp_path):
 
 
 def test_profile_marks_stale_operational_fact_as_needing_live_check(tmp_path):
+    _disable_unrelated_vector_runtime(tmp_path)
     plugin = load_memory_provider("scope-recall")
     assert plugin is not None
     plugin.initialize(
@@ -565,6 +587,7 @@ def test_profile_marks_stale_operational_fact_as_needing_live_check(tmp_path):
 
 
 def test_context_marks_stale_operational_fact_as_needing_live_check_without_db_writes(tmp_path):
+    _disable_unrelated_vector_runtime(tmp_path)
     plugin = load_memory_provider("scope-recall")
     assert plugin is not None
     plugin.initialize(
@@ -649,3 +672,109 @@ def test_doctor_experience_reports_fact_freshness_coverage(tmp_path):
     assert payload["fact_freshness"]["by_status"] == {"stale": 1}
     assert payload["fact_freshness"]["needs_live_check"] == 1
     assert any("Fact freshness" in item for item in recommendations)
+
+
+def test_public_store_tracks_nonfactual_operational_status_snapshot_as_needs_live_check(tmp_path):
+    _disable_unrelated_vector_runtime(tmp_path)
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    plugin.initialize(
+        "session-freshness-operational-status",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="primary-user",
+        agent_context="primary",
+        agent_identity="primary-agent",
+        agent_workspace="hermes",
+    )
+    try:
+        stored = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_store",
+                {
+                    "content": "当前 Scope Recall 版本为 1.2.3，vector 状态仍显示 needs_repair，journal backlog 为 1091。",
+                    "target": "project",
+                    "memory_type": "summary",
+                    "allow_duplicate": True,
+                },
+            )
+        )
+        procedure = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_store",
+                {
+                    "content": "发布检查流程必须读取当前版本、vector 状态和 journal backlog，不得相信旧快照。",
+                    "target": "ops",
+                    "memory_type": "procedure",
+                    "allow_duplicate": True,
+                },
+            )
+        )
+        with plugin._lock:
+            status_row = plugin._require_conn().execute(
+                "SELECT fact_key, truth_type, validator_kind, ttl_days, status FROM fact_freshness WHERE subject_id = ?",
+                (stored["id"],),
+            ).fetchone()
+            procedure_row = plugin._require_conn().execute(
+                "SELECT id FROM fact_freshness WHERE subject_id = ?",
+                (procedure["id"],),
+            ).fetchone()
+
+        assert dict(status_row) == {
+            "fact_key": "operational_status_snapshot",
+            "truth_type": "operational_status",
+            "validator_kind": "manual",
+            "ttl_days": 1,
+            "status": "needs_live_check",
+        }
+        assert procedure_row is None
+        assert freshness_penalty(
+            {"status": "needs_live_check", "truth_type": "operational_status"}
+        ) == pytest.approx(0.55)
+    finally:
+        plugin.shutdown()
+
+
+def test_backfill_finds_untracked_nonfactual_operational_status_snapshot(tmp_path):
+    _disable_unrelated_vector_runtime(tmp_path)
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    plugin.initialize(
+        "session-freshness-operational-backfill",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="primary-user",
+        agent_context="primary",
+        agent_identity="primary-agent",
+        agent_workspace="hermes",
+    )
+    try:
+        stored = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_store",
+                {
+                    "content": "截至 live check，Scope Recall version 为 9.9.9，vector status 为 degraded。",
+                    "target": "project",
+                    "memory_type": "summary",
+                    "allow_duplicate": True,
+                },
+            )
+        )
+        with plugin._lock:
+            conn = plugin._require_conn()
+            conn.execute("DELETE FROM fact_freshness WHERE subject_id = ?", (stored["id"],))
+            conn.commit()
+            dry_run = backfill_untracked_memory_freshness(conn, apply=False, limit=10)
+            applied = backfill_untracked_memory_freshness(conn, apply=True, limit=10)
+            repeated = backfill_untracked_memory_freshness(conn, apply=True, limit=10)
+            row = conn.execute(
+                "SELECT truth_type, status FROM fact_freshness WHERE subject_id = ?",
+                (stored["id"],),
+            ).fetchone()
+
+        assert dry_run["ids"] == [stored["id"]]
+        assert applied["inserted"] == 1
+        assert repeated["inserted"] == 0
+        assert dict(row) == {"truth_type": "operational_status", "status": "needs_live_check"}
+    finally:
+        plugin.shutdown()
