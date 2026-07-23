@@ -102,6 +102,10 @@ def _generation_connection(storage):
     return conn
 
 
+@pytest.mark.skipif(
+    not hasattr(os, "fchmod"),
+    reason="Windows ACL inheritance has no POSIX descriptor-mode equivalent",
+)
 def test_mutable_sqlite_vector_store_enforces_owner_only_file_mode(tmp_path):
     db_path = tmp_path / "vector.sqlite3"
     previous_umask = os.umask(0)
@@ -134,6 +138,26 @@ def test_mutable_sqlite_vector_store_enforces_owner_only_file_mode(tmp_path):
     updater.close()
 
     assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
+
+
+def test_mutable_sqlite_vector_store_opens_without_posix_fchmod(monkeypatch, tmp_path):
+    """The dependency-free fallback must remain usable on Windows CPython."""
+
+    monkeypatch.delattr(sqlite_vector_store_module.os, "fchmod", raising=False)
+    db_path = tmp_path / "vector.sqlite3"
+    store = SQLiteBruteForceVectorStore(
+        db_path,
+        table_name="memories",
+        dimensions=2,
+        metric="cosine",
+    )
+
+    try:
+        store.open()
+        assert store.is_available() is True
+        assert db_path.is_file()
+    finally:
+        store.close()
 
 
 def test_sqlite_bruteforce_store_upsert_search_repair(tmp_path):

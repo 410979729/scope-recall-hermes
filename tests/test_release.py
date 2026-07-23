@@ -378,11 +378,11 @@ def test_release_identity_requires_version_newer_than_latest_tag():
     assert "mutually exclusive" in conflicting_modes["error"]
 
 
-def test_v180_release_candidate_identity_surfaces_are_consistent():
-    """Bind the new minor release to every authoritative version surface."""
+def test_v181_release_candidate_identity_surfaces_are_consistent():
+    """Bind the patch release to every authoritative version surface."""
 
-    expected_version = "1.8.0"
-    release_check = _load_release_check_module("scope_recall_check_release_v180_identity")
+    expected_version = "1.8.1"
+    release_check = _load_release_check_module("scope_recall_check_release_v181_identity")
     temporal_facts = importlib.import_module(f"{PACKAGE_NAME}.temporal_facts")
     plugin_manifest = (PLUGIN_ROOT / "plugin.yaml").read_text(encoding="utf-8")
     changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -392,18 +392,18 @@ def test_v180_release_candidate_identity_surfaces_are_consistent():
     assert _package_version() == expected_version
     assert f"version: {expected_version}" in plugin_manifest
     assert release_check.PACKAGE_VERSION == expected_version
-    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.8.0.md"
+    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.8.1.md"
     assert (PLUGIN_ROOT / release_check.RELEASE_READINESS_DOC).is_file()
     assert f"## [{expected_version}]" in changelog
     assert f"Version `{expected_version}`" in readme
     assert f"`scope-recall` {expected_version}" in stability
     assert temporal_facts.FACT_CLAIMS_SCHEMA_VERSION == 10800
-    assert temporal_facts.FACT_CLAIMS_MIGRATION_PLUGIN_VERSION == expected_version
+    assert temporal_facts.FACT_CLAIMS_MIGRATION_PLUGIN_VERSION == "1.8.0"
 
-    identity = release_check.release_version_identity_check(tags=["v1.7.2"])
+    identity = release_check.release_version_identity_check(tags=["v1.8.0"])
     assert identity["ok"] is True
     assert identity["release_eligible"] is True
-    assert identity["expected_release_tag"] == "v1.8.0"
+    assert identity["expected_release_tag"] == "v1.8.1"
 
 
 def test_productization_artifacts_are_release_gate_listed():
