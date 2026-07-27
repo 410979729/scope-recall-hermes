@@ -172,22 +172,6 @@ SCOPE_RECALL_STORE_SCHEMA = {
                 "description": "Category; general stays local.",
                 "enum": ["user", "memory", "project", "ops", "general"],
             },
-            "scope_mode": {
-                "type": "string",
-                "description": (
-                    "Optional write scope selection. It cannot override target policy: "
-                    "general is local; durable targets are shared or explicitly shared_pool."
-                ),
-                "enum": ["shared", "local", "shared_pool"],
-            },
-            "semantic_merge": {
-                "type": "boolean",
-                "default": False,
-                "description": (
-                    "Opt in to conservative contained-text merge. Similar paraphrases and "
-                    "changed values remain separate; exact duplicates are always suppressed."
-                ),
-            },
             "memory_type": {
                 "type": "string",
                 "description": "Semantic type for governance/ranking.",
@@ -212,28 +196,6 @@ SCOPE_RECALL_STORE_SCHEMA = {
                 "maximum": 1,
                 "description": "Optional 0..1 importance hint.",
             },
-            "freshness": {
-                "type": "object",
-                "description": "Optional factual freshness evidence. Unspecified factual memories default to needs_live_check.",
-                "properties": {
-                    "fact_key": {"type": "string"},
-                    "truth_type": {"type": "string"},
-                    "validator_kind": {
-                        "type": "string",
-                        "enum": ["manual", "none", "file_exists", "command", "http"],
-                    },
-                    "validator_spec": {"type": "object"},
-                    "ttl_days": {"type": "integer", "minimum": 0},
-                    "last_checked_at": {"type": "string"},
-                    "valid_until": {"type": "string"},
-                    "status": {
-                        "type": "string",
-                        "enum": ["current", "needs_live_check", "stale", "expired"],
-                    },
-                    "stale_reason": {"type": "string"},
-                    "superseded_by": {"type": "string"},
-                },
-            },
             "entities": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -244,8 +206,6 @@ SCOPE_RECALL_STORE_SCHEMA = {
                 "items": {"type": "string"},
                 "description": "Tags for filtering/audit.",
             },
-            "claim": FACT_CLAIM_HINT_SCHEMA,
-            "evolution": FACT_EVOLUTION_HINT_SCHEMA,
         },
         "required": ["content"],
     },
@@ -319,13 +279,6 @@ SCOPE_RECALL_MEMORY_SCHEMA = {
             "target": {"type": "string", "enum": ["user", "memory", "project", "ops", "general"], "description": "Optional target."},
             "target_id": {"type": "string", "description": "Merge target id."},
             "source_ids": {"type": "array", "items": {"type": "string"}, "description": "Merge source ids."},
-            "source_candidate_id": {"type": "string", "description": "Optional merge audit candidate id."},
-            "memory_type": {
-                "type": "string",
-                "description": "Optional semantic type for a structured update.",
-            },
-            "claim": FACT_CLAIM_HINT_SCHEMA,
-            "evolution": FACT_EVOLUTION_HINT_SCHEMA,
         },
         "required": ["action"],
     },
@@ -372,12 +325,6 @@ SCOPE_RECALL_UPDATE_SCHEMA = {
                 "description": "Optional replacement category.",
                 "enum": ["user", "memory", "project", "ops", "general"],
             },
-            "memory_type": {
-                "type": "string",
-                "description": "Optional semantic type for a structured factual update.",
-            },
-            "claim": FACT_CLAIM_HINT_SCHEMA,
-            "evolution": FACT_EVOLUTION_HINT_SCHEMA,
         },
         "required": ["id", "content"],
     },
@@ -712,11 +659,6 @@ SCOPE_RECALL_PROFILE_SCHEMA = {
         "properties": {
             "query": {"type": "string", "description": "Optional current task/query used to select project/ops/context rows."},
             "entity": {"type": "string", "description": "Optional entity/person/project to focus project/ops/context rows."},
-            "targets": {
-                "type": "array",
-                "items": {"type": "string", "enum": ["user", "memory", "project", "ops", "general"]},
-                "description": "Optional target sections to include. Defaults to user/memory/project/ops; general requires include_general=true or explicit target.",
-            },
             "include_general": {"type": "boolean", "description": "Include current local general scratch/session rows; default false."},
             "include_candidates": {"type": "boolean", "description": "Include non-hidden candidate SQLite rows in addition to promoted profile rows; default false."},
             "include_curated": {"type": "boolean", "description": "Include live Hermes USER.md/MEMORY.md entries when curated-memory policy allows it; default true."},
