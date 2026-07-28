@@ -15,6 +15,7 @@ All notable changes to `scope-recall` will be documented in this file.
 - Added configurable `light`, `balanced`, and `full` semantic retention profiles for immediate and journal LLM extraction; sanitized turn text remains in the journal instead of being duplicated into durable recall memory.
 
 ### Fixed
+- Made the Ruff lint contract explicit (`E4`, `E7`, `E9`, `F`) and excluded CI's temporary Hermes source copy so toolchain default changes cannot silently redefine the release gate.
 - Preserved the 1.8.0 Fact Evolution, temporal, Reflection, scope routing, evidence authority, provenance-root, idempotency, journal checkpoint, and release-identity contracts unchanged.
 - Enforced the no-transcript-duplication contract with a deterministic source-overlap gate shared by per-turn, journal, and nightly LLM extraction; long exact or near-verbatim copies are rejected before durable recall writes while short quotations remain allowed.
 - Made private-key redaction fail closed when a PEM block extends beyond the bounded capture scan, and made fresh vector bootstrap remove only a newly created, proven-empty local companion when manifest publication fails so dynamic-dimension retries remain automatic. SQLite main, WAL, SHM, and rollback-journal files now share one presence and cleanup ownership boundary, preventing compensation from deleting pre-existing sidecars.

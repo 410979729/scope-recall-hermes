@@ -9,6 +9,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import tomllib
 import types
 from pathlib import Path
 
@@ -438,6 +439,16 @@ def test_v182_release_candidate_identity_surfaces_are_consistent():
     assert identity["ok"] is True
     assert identity["release_eligible"] is True
     assert identity["expected_release_tag"] == "v1.8.2"
+
+
+def test_ruff_lint_contract_is_explicit_across_toolchain_upgrades():
+    pyproject = tomllib.loads(
+        (PLUGIN_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    ruff = pyproject["tool"]["ruff"]
+
+    assert ruff["lint"]["select"] == ["E4", "E7", "E9", "F"]
+    assert ruff["extend-exclude"] == [".hermes-agent-src"]
 
 
 def test_productization_artifacts_are_release_gate_listed():
