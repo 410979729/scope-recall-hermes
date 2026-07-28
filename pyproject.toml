@@ -83,6 +83,13 @@ package-dir = {"scope_recall" = "."}
   "examples/external_bridge/*.sql",
 ]
 
+[tool.ruff]
+extend-exclude = [".hermes-agent-src"]
+
+[tool.ruff.lint]
+# Preserve Ruff <=0.15's explicit default contract across the 0.16 default-rule expansion.
+select = ["E4", "E7", "E9", "F"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 
