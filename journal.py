@@ -965,6 +965,38 @@ def _apply_mixed_journal_component_atomically(
         raise
 
 
+def _journal_candidate_source_evidence(
+    conn: sqlite3.Connection,
+    candidates: list[JournalDigestCandidate],
+) -> dict[str, list[str]]:
+    """Load only referenced journal text for deterministic admission checks."""
+
+    entry_ids = sorted(
+        {
+            int(entry_id)
+            for candidate in candidates
+            for entry_id in candidate.entry_ids
+        }
+    )
+    evidence: dict[str, list[str]] = {}
+    for offset in range(0, len(entry_ids), 500):
+        chunk = entry_ids[offset : offset + 500]
+        placeholders = ",".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"SELECT session_id, content FROM journal_entries WHERE id IN ({placeholders})",
+            chunk,
+        ).fetchall()
+        for session_id, content in rows:
+            clean_session_id = str(session_id or "")
+            clean_content = str(content or "")
+            if clean_content:
+                evidence.setdefault(clean_session_id, []).append(clean_content)
+    return {
+        session_id: list(dict.fromkeys(items))
+        for session_id, items in evidence.items()
+    }
+
+
 def apply_journal_candidates(
     conn: sqlite3.Connection,
     vector_runtime: Any,
@@ -989,7 +1021,10 @@ def apply_journal_candidates(
     pollution_counts = Counter()
     actions: list[dict[str, Any]] = []
     processed_entry_ids: set[int] = set()
-    pollution_assessments = assess_digest_batch(candidates)
+    pollution_assessments = assess_digest_batch(
+        candidates,
+        batch_evidence=_journal_candidate_source_evidence(conn, candidates),
+    )
     if _skip_components:
         candidate_components: dict[int, tuple[int, ...]] = {}
         candidate_component_members: dict[int, int] = {}

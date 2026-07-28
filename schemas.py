@@ -8,7 +8,14 @@ FACT_CLAIM_HINT_SCHEMA = {
     "properties": {
         "subject": {"type": "string", "maxLength": 200},
         "predicate": {"type": "string", "maxLength": 120},
-        "value": {"type": "string", "maxLength": 2000},
+        "value": {
+            "type": "string",
+            "description": (
+                "Fact value. The runtime enforces its bounded fact-value limit; "
+                "maxLength is intentionally omitted because llama.cpp expands "
+                "nested long-string limits into an unparseable grammar."
+            ),
+        },
         "cardinality": {
             "type": "string",
             "enum": ["single", "multi", "multiple", "many"],
@@ -62,7 +69,13 @@ FACT_EVOLUTION_PROPOSAL_SCHEMA = {
     "properties": {
         **FACT_EVOLUTION_HINT_SCHEMA["properties"],
         "claim": FACT_CLAIM_HINT_SCHEMA,
-        "content": {"type": "string", "maxLength": 8000},
+        "content": {
+            "type": "string",
+            "description": (
+                "Optional memory text. Runtime fact tooling enforces the content "
+                "limit; maxLength is omitted for llama.cpp grammar compatibility."
+            ),
+        },
         "target": {
             "type": "string",
             "enum": ["user", "memory", "project", "ops"],
@@ -222,7 +235,10 @@ SCOPE_RECALL_STORE_SCHEMA = {
                         "type": "string",
                         "enum": ["manual", "none", "file_exists", "command", "http"],
                     },
-                    "validator_spec": {"type": "object"},
+                    "validator_spec": {
+                        "type": "object",
+                        "additionalProperties": True,
+                    },
                     "ttl_days": {"type": "integer", "minimum": 0},
                     "last_checked_at": {"type": "string"},
                     "valid_until": {"type": "string"},
@@ -449,13 +465,21 @@ SCOPE_RECALL_GOVERN_SCHEMA = {
 SCOPE_RECALL_REPAIR_SCHEMA = {
     "name": "scope_recall_repair",
     "description": "Repair/rebuild the configured vector companion from SQLite truth. Operator-only: requires maintenance_tools_enabled=true.",
-    "parameters": {"type": "object", "properties": {}},
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": True,
+    },
 }
 
 SCOPE_RECALL_STATS_SCHEMA = {
     "name": "scope_recall_stats",
     "description": "Show Scope Recall storage, retrieval, and scope statistics.",
-    "parameters": {"type": "object", "properties": {}},
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": True,
+    },
 }
 
 SCOPE_RECALL_INSPECT_SCHEMA = {
@@ -536,14 +560,21 @@ SCOPE_RECALL_PLAYBOOK_CREATE_SCHEMA = {
         "type": "object",
         "properties": {
             "id": {"type": "string", "description": "Optional stable playbook id."},
-            "payload": {"type": "object", "description": "procedural_playbook.v1 payload."},
+            "payload": {
+                "type": "object",
+                "additionalProperties": True,
+                "description": "procedural_playbook.v1 payload.",
+            },
             "status": {"type": "string", "enum": ["candidate"], "description": "Optional; create only accepts candidate."},
             "confidence": {"type": "number", "description": "Initial confidence 0..1."},
             "created_from_episode_id": {"type": "string"},
             "evidence_anchors": {"type": "array", "items": {}},
             "related_skills": {"type": "array", "items": {"type": "string"}},
-            "environment_constraints": {"type": "object"},
-            "metadata": {"type": "object"},
+            "environment_constraints": {
+                "type": "object",
+                "additionalProperties": True,
+            },
+            "metadata": {"type": "object", "additionalProperties": True},
         },
         "required": ["payload"],
     },
@@ -648,7 +679,11 @@ SCOPE_RECALL_PLAYBOOK_REVIEW_SCHEMA = {
 SCOPE_RECALL_EXPERIENCE_STATS_SCHEMA = {
     "name": "scope_recall_experience_stats",
     "description": "Show Experience Kernel playbook/run counts for accessible scopes.",
-    "parameters": {"type": "object", "properties": {}},
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": True,
+    },
 }
 
 SCOPE_RECALL_EXPERIENCE_PROMOTE_SCHEMA = {

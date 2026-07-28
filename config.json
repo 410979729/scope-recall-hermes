@@ -36,6 +36,7 @@
     "extractor": "llm",
     "digest_interval_hours": 2,
     "retention_days": 0,
+    "retention_profile": "balanced",
     "max_entries_per_digest": 500,
     "dynamic_max_entries_enabled": true,
     "dynamic_backlog_threshold": 2000,
@@ -52,7 +53,14 @@
       "todo",
       "skill_view",
       "skills_list",
-      "session_messages"
+      "session_messages",
+      "read_file",
+      "search_files",
+      "scope_recall_search",
+      "scope_recall_context",
+      "scope_recall_profile",
+      "session_search",
+      "clarify"
     ],
     "tool_trace_hard_max_chars": 4000,
     "tool_trace_max_chars": 1800,

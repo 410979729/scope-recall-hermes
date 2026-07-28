@@ -165,6 +165,25 @@ def test_overlong_claim_and_target_overflow_fail_closed():
     assert "target_ids_truncated" in proposal.parser_reasons
 
 
+def test_fact_value_runtime_boundary_accepts_2000_and_rejects_2001():
+    accepted_payload = _valid_payload("add")
+    accepted_payload["target_ids"] = []
+    accepted_payload["claim"]["value"] = "v" * 2000
+    rejected_payload = _valid_payload("add")
+    rejected_payload["target_ids"] = []
+    rejected_payload["claim"]["value"] = "v" * 2001
+
+    accepted = parse_evolution_proposal(accepted_payload)
+    rejected = parse_evolution_proposal(rejected_payload)
+
+    assert accepted.action is EvolutionAction.ADD
+    assert accepted.claim is not None
+    assert len(accepted.claim.value) == 2000
+    assert rejected.action is EvolutionAction.REVIEW
+    assert rejected.claim is None
+    assert "invalid_claim" in rejected.parser_reasons
+
+
 def test_evidence_overflow_is_bounded_and_fails_closed():
     payload = _valid_payload("add")
     payload["target_ids"] = []

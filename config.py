@@ -48,6 +48,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "extractor": "llm",
         "digest_interval_hours": 2,
         "retention_days": 0,
+        "retention_profile": "balanced",
         "max_entries_per_digest": 500,
         "dynamic_max_entries_enabled": True,
         "dynamic_backlog_threshold": 2000,

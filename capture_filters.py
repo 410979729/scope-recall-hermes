@@ -9,7 +9,10 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
-from .gating import clean_text, is_trivial
+try:  # Support package imports and the repository's direct manual scripts.
+    from .gating import clean_text, is_trivial
+except ImportError:  # pragma: no cover - exercised by manual script import style
+    from gating import clean_text, is_trivial
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,11 @@ SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\beyJ[A-Za-z0-9._-]{8,}\b"),
     re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),
     re.compile(r"\b(?:sk|rk)_live_[A-Za-z0-9_*.-]{16,}\b", re.IGNORECASE),
+)
+
+PEM_PRIVATE_KEY_BEGIN_RE = re.compile(
+    r"-----BEGIN (?P<label>(?:[A-Z0-9-]+[ ]+)*PRIVATE KEY(?:[ ]+BLOCK)?)-----",
+    re.IGNORECASE,
 )
 
 TOKEN_ASSIGNMENT_RE = re.compile(
@@ -281,7 +289,27 @@ def _is_sensitive_mapping_key(value: Any) -> bool:
     return False
 
 
+def _redact_private_key_blocks(text: str) -> str:
+    """Redact complete or truncated PEM private-key blocks fail closed."""
+
+    output: list[str] = []
+    cursor = 0
+    lowered = text.casefold()
+    while match := PEM_PRIVATE_KEY_BEGIN_RE.search(text, cursor):
+        output.append(text[cursor : match.start()])
+        output.append("[REDACTED_SECRET]")
+        end_marker = f"-----END {match.group('label')}-----".casefold()
+        end_start = lowered.find(end_marker, match.end())
+        if end_start < 0:
+            return "".join(output)
+        cursor = end_start + len(end_marker)
+    output.append(text[cursor:])
+    return "".join(output)
+
+
 def contains_secret_like_text(text: str) -> bool:
+    if PEM_PRIVATE_KEY_BEGIN_RE.search(text):
+        return True
     if any(pattern.search(text) for pattern in SECRET_PATTERNS):
         return True
     return any(
@@ -294,7 +322,7 @@ def redact_secret_like_text(text: Any) -> str:
     cleaned = clean_text(text)
     if not cleaned:
         return ""
-    redacted = cleaned
+    redacted = _redact_private_key_blocks(cleaned)
     for pattern in SECRET_PATTERNS:
         redacted = pattern.sub("[REDACTED_SECRET]", redacted)
     redacted = TOKEN_ASSIGNMENT_RE.sub(

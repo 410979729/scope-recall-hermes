@@ -379,45 +379,118 @@ def setup_vector_layer(provider: Any) -> None:
 
     embedder_cfg = dict((provider._vector_config or {}).get("embedder") or {})
     fallback_cfg = dict((provider._vector_config or {}).get("fallback_embedder") or {})
+    manifest_backend = _normalize_vector_backend(manifest_hint.get("backend") or "")
+    candidate_specs = [("primary", embedder_cfg)]
+    if fallback_cfg:
+        candidate_specs.append(("fallback", fallback_cfg))
 
-    primary_embedder = build_embedder(embedder_cfg)
-    primary_identity = _configured_generation_identity(provider, primary_embedder, embedder_cfg)
-    fallback_embedder = build_embedder(fallback_cfg) if fallback_cfg else None
-    fallback_identity = (
-        _configured_generation_identity(provider, fallback_embedder, fallback_cfg)
-        if fallback_embedder is not None
-        else None
-    )
-
-    selected_embedder = primary_embedder
-    selected_identity = primary_identity
-    manifest_backend = _normalize_vector_backend(
-        manifest_hint.get("backend") or ""
-    )
-    candidates = [(primary_embedder, primary_identity)]
-    if fallback_embedder is not None and fallback_identity is not None:
-        candidates.append((fallback_embedder, fallback_identity))
-    matched = False
-    for candidate_embedder, candidate_identity in candidates:
-        if not candidate_embedder.is_available():
+    selected_embedder: Any | None = None
+    selected_identity: GenerationIdentity | None = None
+    candidate_failures: list[str] = []
+    fallback_incompatible = False
+    for label, candidate_config in candidate_specs:
+        try:
+            candidate_embedder = build_embedder(candidate_config)
+        except Exception as exc:
+            candidate_failures.append(
+                f"{label}_embedder_build_failed:{_sanitize_vector_message(exc)}"
+            )
+            continue
+        try:
+            available = bool(candidate_embedder.is_available())
+        except Exception as exc:
+            candidate_failures.append(
+                f"{label}_embedder_probe_failed:{_sanitize_vector_message(exc)}"
+            )
+            continue
+        if not available:
+            candidate_failures.append(f"{label}_embedder_unavailable")
+            continue
+        try:
+            provisional_identity = _configured_generation_identity(
+                provider,
+                candidate_embedder,
+                candidate_config,
+            )
+        except Exception as exc:
+            candidate_failures.append(
+                f"{label}_embedder_identity_failed:{_sanitize_vector_message(exc)}"
+            )
+            continue
+        # Readiness can discover a different dimension, but provider/model and
+        # prompt-space fields are stable configuration.  Skip an obviously
+        # different space before loading or downloading an unused model.
+        manifest_dimensions = int(
+            manifest_hint.get("dimensions") or provisional_identity.dimensions
+        )
+        try:
+            validate_generation_compatibility(
+                manifest_hint,
+                replace(
+                    provisional_identity,
+                    backend=manifest_backend,
+                    dimensions=manifest_dimensions,
+                ),
+            )
+        except GenerationCompatibilityError as exc:
+            candidate_failures.append(
+                f"{label}_embedding_space_incompatible:"
+                f"{_sanitize_vector_message(exc)}"
+            )
+            fallback_incompatible = fallback_incompatible or label == "fallback"
+            continue
+        try:
+            candidate_embedder.probe_readiness()
+        except Exception as exc:
+            candidate_failures.append(
+                f"{label}_embedder_readiness_failed:{_sanitize_vector_message(exc)}"
+            )
+            continue
+        try:
+            candidate_identity = _configured_generation_identity(
+                provider,
+                candidate_embedder,
+                candidate_config,
+            )
+        except Exception as exc:
+            candidate_failures.append(
+                f"{label}_embedder_identity_failed:{_sanitize_vector_message(exc)}"
+            )
             continue
         try:
             validate_generation_compatibility(
                 manifest_hint,
                 replace(candidate_identity, backend=manifest_backend),
             )
-        except GenerationCompatibilityError:
+        except GenerationCompatibilityError as exc:
+            candidate_failures.append(
+                f"{label}_embedding_space_incompatible:"
+                f"{_sanitize_vector_message(exc)}"
+            )
+            fallback_incompatible = fallback_incompatible or label == "fallback"
             continue
         selected_embedder = candidate_embedder
         selected_identity = candidate_identity
-        matched = True
+        if label == "fallback" and candidate_failures:
+            _append_vector_message(
+                provider,
+                "primary embedder unavailable or incompatible; "
+                "using compatible fallback embedder",
+            )
         break
-    if not matched and fallback_embedder is not None and fallback_embedder.is_available():
-        provider._vector_message = (
-            f"primary embedder {primary_identity.model} unavailable; "
-            f"fallback {fallback_identity.model if fallback_identity else 'configured fallback'} "
-            "is a different embedding space and was not allowed to access the current generation"
-        )
+
+    if selected_embedder is None or selected_identity is None:
+        if fallback_incompatible:
+            reason = (
+                "configured fallback is a different embedding space and was not "
+                "allowed to access the current generation"
+            )
+        else:
+            reason = "no ready configured embedder matches the active vector generation"
+        if candidate_failures:
+            reason = f"{reason}: {';'.join(candidate_failures)}"
+        _mark_vector_startup_degraded(provider, reason)
+        return
 
     provider._embedder = selected_embedder
     try:
@@ -425,19 +498,6 @@ def setup_vector_layer(provider: Any) -> None:
     except Exception as exc:
         _mark_vector_startup_degraded(provider, exc)
         return
-
-    if not provider._embedder.is_available():
-        provider._vector_status = "degraded"
-        provider._vector_message = provider._vector_message or f"embedder {provider._embedder.provider} unavailable"
-        return
-    model_or_raise = getattr(provider._embedder, "_model_or_raise", None)
-    if provider._embedder.provider == "sentence-transformers" and callable(model_or_raise):
-        try:
-            model_or_raise()
-        except Exception as exc:
-            _mark_vector_startup_degraded(provider, exc)
-            provider._vector_store = None
-            return
 
     if existing_manifest is None:
         _mark_vector_startup_degraded(

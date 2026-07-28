@@ -377,3 +377,189 @@ def test_journal_apply_uses_same_pollution_gate_and_rejection_receipt():
     assert rejection["run_id"] == "journal-pollution"
     assert "digest pollution" in rejection["reason"]
     conn.close()
+
+
+def _long_source_transcript() -> str:
+    return " ".join(
+        f"source sentence {index} preserves conversational detail and chronology."
+        for index in range(90)
+    )
+
+
+def test_long_source_copy_is_quarantined_but_short_quote_remains_allowed():
+    transcript = _long_source_transcript()
+    copied = DigestCandidate(
+        content=transcript,
+        target="memory",
+        memory_type="summary",
+        session_id="source-copy-session",
+    )
+    short_quote = DigestCandidate(
+        content="A short necessary quotation from the source remains bounded.",
+        target="memory",
+        memory_type="summary",
+        session_id="short-quote-session",
+    )
+
+    copied_assessment, quote_assessment = assess_digest_batch(
+        [copied, short_quote],
+        batch_evidence={
+            "source-copy-session": [transcript],
+            "short-quote-session": [short_quote.content],
+        },
+    )
+
+    assert copied_assessment.quarantined is True
+    assert "source_transcript_overlap" in copied_assessment.reason_codes
+    assert quote_assessment.quarantined is False
+
+
+def test_source_copy_gate_catches_near_verbatim_and_unsegmented_cjk_text():
+    english_source = _long_source_transcript()
+    english_candidate = DigestCandidate(
+        content=f"Durable context follows: {english_source} End of copied context.",
+        target="memory",
+        memory_type="summary",
+        session_id="near-copy-session",
+    )
+    lightly_edited_candidate = DigestCandidate(
+        content=english_source.replace("chronology", "timeline"),
+        target="memory",
+        memory_type="summary",
+        session_id="edited-copy-session",
+    )
+    cjk_source = "这是一段用于测试的连续中文会话证据，包含背景、推理、步骤和结果。" * 40
+    cjk_candidate = DigestCandidate(
+        content=f"摘要前缀：{cjk_source}摘要后缀。",
+        target="memory",
+        memory_type="summary",
+        session_id="cjk-copy-session",
+    )
+    independent_summary = DigestCandidate(
+        content=" ".join(
+            f"independent durable finding {index} explains a distinct reusable policy."
+            for index in range(90)
+        ),
+        target="memory",
+        memory_type="summary",
+        session_id="independent-session",
+    )
+
+    assessments = assess_digest_batch(
+        [
+            english_candidate,
+            lightly_edited_candidate,
+            cjk_candidate,
+            independent_summary,
+        ],
+        batch_evidence={
+            "near-copy-session": [english_source],
+            "edited-copy-session": [english_source],
+            "cjk-copy-session": [cjk_source],
+            "independent-session": [english_source],
+        },
+    )
+
+    assert all(item.quarantined for item in assessments[:3])
+    assert all(
+        "source_transcript_overlap" in item.reason_codes
+        for item in assessments[:3]
+    )
+    assert assessments[3].quarantined is False
+
+
+def test_source_copy_after_candidate_comparison_cap_fails_closed():
+    transcript = _long_source_transcript()
+    candidate = DigestCandidate(
+        content=("unrelated bounded-prefix content. " * 700) + transcript,
+        target="memory",
+        memory_type="summary",
+        session_id="over-limit-copy-session",
+    )
+
+    assessment = assess_digest_batch(
+        [candidate],
+        batch_evidence={"over-limit-copy-session": [transcript]},
+    )[0]
+
+    assert assessment.quarantined is True
+    assert "source_transcript_overlap" in assessment.reason_codes
+
+
+def test_nightly_apply_quarantines_verbatim_transcript_before_memory_write():
+    conn = _connection()
+    transcript = _long_source_transcript()
+    candidate = DigestCandidate(
+        content=transcript,
+        target="memory",
+        memory_type="summary",
+        session_id="nightly-source-copy",
+    )
+
+    result = apply_candidates(
+        conn,
+        None,
+        _scope(),
+        run_id="nightly-source-copy-run",
+        candidates=[candidate],
+        dry_run=False,
+        runtime_config={},
+        batch_evidence={"nightly-source-copy": [transcript]},
+    )
+
+    assert result["counts"]["quarantined"] == 1
+    assert result["actions"][0]["reason_codes"] == [
+        "source_transcript_overlap"
+    ]
+    assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+    conn.close()
+
+
+def test_journal_apply_quarantines_verbatim_entry_copy_before_memory_write():
+    conn = _connection()
+    transcript = _long_source_transcript()
+    content_hash = __import__("hashlib").sha256(transcript.encode("utf-8")).hexdigest()
+    cursor = conn.execute(
+        """
+        INSERT INTO journal_entries(
+            scope_id, shared_scope_id, session_id, turn_number, role, content,
+            content_hash, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "scope-local",
+            "scope-shared",
+            "journal-source-copy",
+            1,
+            "user",
+            transcript,
+            content_hash,
+            "2026-01-01T00:00:00+00:00",
+        ),
+    )
+    assert cursor.lastrowid is not None
+    entry_id = int(cursor.lastrowid)
+    candidate = JournalDigestCandidate(
+        content=transcript,
+        target="memory",
+        memory_type="summary",
+        entry_ids=[entry_id],
+        session_ids=["journal-source-copy"],
+    )
+
+    result = apply_journal_candidates(
+        conn,
+        None,
+        _scope().scope,
+        run_id="journal-source-copy-run",
+        candidates=[candidate],
+        dry_run=False,
+        runtime_config={},
+    )
+
+    assert result["counts"]["quarantined"] == 1
+    assert result["actions"][0]["reason_codes"] == [
+        "source_transcript_overlap"
+    ]
+    assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+    conn.close()

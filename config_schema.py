@@ -13,6 +13,7 @@ _DESCRIPTION_OVERRIDES = {
     "auto_capture": "Capture eligible conversation turns into Scope Recall.",
     "memory_isolated_chat_ids": "Runtime-only chat identifiers excluded from prompt recall, tools, capture, journal, and digest surfaces.",
     "journal.max_entries_per_digest": "Maximum journal entries a digest run may review before dynamic backlog expansion.",
+    "journal.retention_profile": "Semantic digest detail: light keeps only minimal durable facts, balanced preserves useful rationale and steps, and full preserves detailed durable context while raw transcript evidence remains in the journal.",
     "journal.backlog_fail_entries": "Doctor failure threshold for unprocessed journal backlog.",
     "journal.no_insert_fail_streak": "Doctor failure threshold for recent digest runs that processed entries but produced no durable writes for provider/schema/quality-risk reasons.",
     "relation_extraction_enabled": "Enable bounded extraction and maintenance of relation edges during memory mutations and background repair.",
@@ -105,6 +106,7 @@ _CHOICES = {
     "vector.embedder.provider": ["openai-compatible", "openai", "sentence-transformers", "local-hash"],
     "vector.sync_mode": ["incremental", "rebuild"],
     "journal.extractor": ["llm", "heuristic"],
+    "journal.retention_profile": ["light", "balanced", "full"],
     "reflection.api_mode": [
         "chat_completions",
         "codex_responses",

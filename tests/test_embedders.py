@@ -5,16 +5,157 @@ They isolate provider quirks such as OpenAI-compatible float vector responses.""
 from __future__ import annotations
 
 import json
+import threading
+import time
+import traceback
+from concurrent.futures import ThreadPoolExecutor
 from urllib import error as urllib_error
 
 import pytest
 
+import scope_recall.embedders as embedders_module
 from scope_recall.embedders import (
     MiniMaxEmbedder,
     OpenAICompatibleEmbedder,
+    SentenceTransformersEmbedder,
     _KNOWN_EMBEDDING_DIMS,
     build_embedder,
 )
+
+
+def test_sentence_transformer_readiness_records_model_load_failure(monkeypatch):
+    """Package importability alone must not certify an unloadable local model."""
+
+    embedders_module._SENTENCE_TRANSFORMER_CACHE.clear()
+
+    class BrokenSentenceTransformer:
+        def __init__(self, _model: str, **_kwargs) -> None:
+            raise RuntimeError(
+                "synthetic model artifact unavailable api_key=not-a-real-secret at "
+                r"C:\Users\Administrator\.cache\broken-model"
+            )
+
+    monkeypatch.setattr(
+        embedders_module,
+        "SentenceTransformer",
+        BrokenSentenceTransformer,
+    )
+    embedder = SentenceTransformersEmbedder(
+        model="sentence-transformers/all-mpnet-base-v2",
+    )
+
+    assert embedder.is_available() is True
+    with pytest.raises(RuntimeError, match="synthetic model artifact unavailable") as caught:
+        embedder.probe_readiness()
+
+    assert embedder.is_available() is False
+    load_error = embedder.describe()["load_error"]
+    assert "synthetic model artifact unavailable" in load_error
+    assert "[REDACTED_SECRET]" in load_error
+    assert "[REDACTED_PATH]" in load_error
+    assert "Administrator" not in load_error
+    rendered_traceback = "".join(
+        traceback.format_exception(caught.type, caught.value, caught.tb)
+    )
+    assert "not-a-real-secret" not in rendered_traceback
+    assert "Administrator" not in rendered_traceback
+
+
+def test_sentence_transformer_model_cache_is_single_flight_per_key(monkeypatch):
+    """Concurrent instances must share one expensive model construction."""
+
+    embedders_module._SENTENCE_TRANSFORMER_CACHE.clear()
+    constructor_calls = 0
+    constructor_lock = threading.Lock()
+
+    class SlowSentenceTransformer:
+        def __init__(self, _model: str, **_kwargs) -> None:
+            nonlocal constructor_calls
+            with constructor_lock:
+                constructor_calls += 1
+            time.sleep(0.1)
+
+        @staticmethod
+        def get_embedding_dimension() -> int:
+            return 5
+
+    monkeypatch.setattr(
+        embedders_module,
+        "SentenceTransformer",
+        SlowSentenceTransformer,
+    )
+    embedders = [
+        SentenceTransformersEmbedder(model="synthetic-single-flight-model")
+        for _ in range(2)
+    ]
+    start = threading.Barrier(3)
+
+    def load_model(embedder: SentenceTransformersEmbedder) -> None:
+        start.wait(timeout=5)
+        embedder.probe_readiness()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(load_model, embedder) for embedder in embedders]
+        start.wait(timeout=5)
+        for future in futures:
+            future.result(timeout=5)
+
+    assert constructor_calls == 1
+    assert [embedder.dimensions for embedder in embedders] == [5, 5]
+
+
+def test_sentence_transformer_failed_load_is_shared_by_waiting_cohort_then_retried(
+    monkeypatch,
+):
+    """Overlapping callers share one safe failure; a later caller may retry."""
+
+    embedders_module._SENTENCE_TRANSFORMER_CACHE.clear()
+    in_flight = getattr(embedders_module, "_SENTENCE_TRANSFORMER_LOAD_FLIGHTS", None)
+    if isinstance(in_flight, dict):
+        in_flight.clear()
+    constructor_calls = 0
+    constructor_lock = threading.Lock()
+
+    class SlowBrokenSentenceTransformer:
+        def __init__(self, _model: str, **_kwargs) -> None:
+            nonlocal constructor_calls
+            with constructor_lock:
+                constructor_calls += 1
+            time.sleep(0.1)
+            raise RuntimeError("synthetic load failed api_key=not-a-real-secret")
+
+    monkeypatch.setattr(
+        embedders_module,
+        "SentenceTransformer",
+        SlowBrokenSentenceTransformer,
+    )
+    embedders = [
+        SentenceTransformersEmbedder(model="synthetic-failed-flight-model")
+        for _ in range(2)
+    ]
+    start = threading.Barrier(3)
+
+    def load_model(embedder: SentenceTransformersEmbedder) -> str:
+        start.wait(timeout=5)
+        with pytest.raises(RuntimeError) as caught:
+            embedder.probe_readiness()
+        return "".join(
+            traceback.format_exception(caught.type, caught.value, caught.tb)
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(load_model, embedder) for embedder in embedders]
+        start.wait(timeout=5)
+        rendered = [future.result(timeout=5) for future in futures]
+
+    assert constructor_calls == 1
+    assert all("not-a-real-secret" not in item for item in rendered)
+    assert all("[REDACTED_SECRET]" in item for item in rendered)
+
+    later = SentenceTransformersEmbedder(model="synthetic-failed-flight-model")
+    with pytest.raises(RuntimeError):
+        later.probe_readiness()
+    assert constructor_calls == 2
 
 
 class _FakeEmbeddingsAPI:

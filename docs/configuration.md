@@ -137,11 +137,12 @@ This file is generated from the packaged `config.json` registry. It lists every 
 - `journal.max_entries_per_digest_ceiling` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.max_entries_per_digest_ceiling` in the `journal` group. Default: `1200`
 - `journal.no_insert_fail_streak` (integer; risk: `medium`; restart_required: `yes`) — Doctor failure threshold for recent digest runs that processed entries but produced no durable writes for provider/schema/quality-risk reasons. Default: `3`
 - `journal.retention_days` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.retention_days` in the `journal` group. Default: `0`
+- `journal.retention_profile` (string; risk: `medium`; restart_required: `yes`; choices: `light, balanced, full`) — Semantic digest detail: light keeps only minimal durable facts, balanced preserves useful rationale and steps, and full preserves detailed durable context while raw transcript evidence remains in the journal. Default: `"balanced"`
 - `journal.tool_trace_hard_max_chars` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.tool_trace_hard_max_chars` in the `journal` group. Default: `4000`
 - `journal.tool_trace_include_output_preview` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.tool_trace_include_output_preview` in the `journal` group. Default: `false`
 - `journal.tool_trace_max_chars` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.tool_trace_max_chars` in the `journal` group. Default: `1800`
 - `journal.tool_trace_preview_max_chars` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.tool_trace_preview_max_chars` in the `journal` group. Default: `500`
-- `journal.tool_trace_skip_names` (array; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.tool_trace_skip_names` in the `journal` group. Default: `["todo", "skill_view", "skills_list", "session_messages"]`
+- `journal.tool_trace_skip_names` (array; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.tool_trace_skip_names` in the `journal` group. Default: `["todo", "skill_view", "skills_list", "session_messages", "read_file", "search_files", "scope_recall_search", "scope_recall_context", "scope_recall_profile", "session_search", "clarify"]`
 
 ## `maintenance_tools_enabled`
 
