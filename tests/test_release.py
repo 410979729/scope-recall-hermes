@@ -98,6 +98,38 @@ def _load_release_check_module(module_name: str = "scope_recall_check_release_co
     return release_check
 
 
+def test_transcript_guard_is_required_in_source_wheel_sdist_and_pyright():
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_transcript_guard"
+    )
+    version = _package_version()
+
+    assert "transcript_overlap.py" in release_check.REQUIRED_SOURCE_FILES
+    assert "scope_recall/transcript_overlap.py" in release_check.REQUIRED_WHEEL
+    assert (
+        f"hermes_scope_recall-{version}/transcript_overlap.py"
+        in release_check.REQUIRED_SDIST
+    )
+    assert release_check.missing_sdist_members(
+        set(release_check.REQUIRED_SDIST)
+    ) == []
+    assert release_check.missing_sdist_members(set()) == sorted(
+        release_check.REQUIRED_SDIST
+    )
+    assert release_check.pyright_include_check()["ok"] is True
+
+
+def test_packaged_tool_trace_skip_names_preserve_default_safety_set():
+    config_module = importlib.import_module(f"{PACKAGE_NAME}.config")
+    packaged = json.loads((PLUGIN_ROOT / "config.json").read_text(encoding="utf-8"))
+    source_names = set(
+        config_module.DEFAULT_CONFIG["journal"]["tool_trace_skip_names"]
+    )
+    packaged_names = set(packaged["journal"]["tool_trace_skip_names"])
+
+    assert source_names <= packaged_names
+
+
 
 def test_release_environment_check_reports_interpreter_and_required_modules(monkeypatch):
     release_check = _load_release_check_module("scope_recall_check_release_environment")
@@ -378,11 +410,11 @@ def test_release_identity_requires_version_newer_than_latest_tag():
     assert "mutually exclusive" in conflicting_modes["error"]
 
 
-def test_v181_release_candidate_identity_surfaces_are_consistent():
+def test_v182_release_candidate_identity_surfaces_are_consistent():
     """Bind the patch release to every authoritative version surface."""
 
-    expected_version = "1.8.1"
-    release_check = _load_release_check_module("scope_recall_check_release_v181_identity")
+    expected_version = "1.8.2"
+    release_check = _load_release_check_module("scope_recall_check_release_v182_identity")
     temporal_facts = importlib.import_module(f"{PACKAGE_NAME}.temporal_facts")
     plugin_manifest = (PLUGIN_ROOT / "plugin.yaml").read_text(encoding="utf-8")
     changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -392,7 +424,7 @@ def test_v181_release_candidate_identity_surfaces_are_consistent():
     assert _package_version() == expected_version
     assert f"version: {expected_version}" in plugin_manifest
     assert release_check.PACKAGE_VERSION == expected_version
-    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.8.1.md"
+    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.8.2.md"
     assert (PLUGIN_ROOT / release_check.RELEASE_READINESS_DOC).is_file()
     assert f"## [{expected_version}]" in changelog
     assert f"Version `{expected_version}`" in readme
@@ -400,10 +432,12 @@ def test_v181_release_candidate_identity_surfaces_are_consistent():
     assert temporal_facts.FACT_CLAIMS_SCHEMA_VERSION == 10800
     assert temporal_facts.FACT_CLAIMS_MIGRATION_PLUGIN_VERSION == "1.8.0"
 
-    identity = release_check.release_version_identity_check(tags=["v1.8.0"])
+    identity = release_check.release_version_identity_check(
+        tags=["v1.8.0", "v1.8.1"]
+    )
     assert identity["ok"] is True
     assert identity["release_eligible"] is True
-    assert identity["expected_release_tag"] == "v1.8.1"
+    assert identity["expected_release_tag"] == "v1.8.2"
 
 
 def test_productization_artifacts_are_release_gate_listed():
@@ -1770,6 +1804,9 @@ def test_default_runtime_bootstraps_fallback_only_when_no_generation_exists(tmp_
         assert plugin._embedder.provider == "local-hash"
         assert plugin._vector_status == "ready"
         assert "initialized fresh generation with fallback" in plugin._vector_message
+        stats = json.loads(plugin.handle_tool_call("scope_recall_stats", {}))
+        assert stats["vector"]["status"] == "ready"
+        assert "initialized fresh generation with fallback" in stats["vector"]["message"]
         manifest = plugin._conn.execute(
             "SELECT * FROM vector_generations WHERE generation_id = ?",
             (plugin._vector_generation_id,),

@@ -7,6 +7,7 @@ must reopen that exact manifest or require an explicit migration.
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from .vector_generation import (
     bootstrap_fresh_generation,
     current_generation,
 )
+from .vector_mutation_guard import vector_mutation_guard
 from .vector_store import build_vector_store, normalize_vector_backend
 
 
@@ -69,6 +71,18 @@ class _CandidateProbe:
         return int(self.counts.get("physical_rows") or 0)
 
 
+def _sqlite_companion_paths(storage_dir: Path) -> tuple[Path, ...]:
+    """Return the SQLite main file and sidecars that share one ownership boundary."""
+
+    base = storage_dir / "vector.sqlite3"
+    return (
+        base,
+        Path(f"{base}-wal"),
+        Path(f"{base}-shm"),
+        Path(f"{base}-journal"),
+    )
+
+
 def vector_companion_presence(backend: str, storage_dir: Path) -> bool | None:
     """Return local physical presence, or ``None`` for remote/unknown stores."""
 
@@ -77,8 +91,10 @@ def vector_companion_presence(backend: str, storage_dir: Path) -> bool | None:
         path = storage_dir / "lancedb"
         return path.exists() or path.is_symlink()
     if normalized == "sqlite-bruteforce":
-        path = storage_dir / "vector.sqlite3"
-        return path.exists() or path.is_symlink()
+        return any(
+            path.exists() or path.is_symlink()
+            for path in _sqlite_companion_paths(storage_dir)
+        )
     return None
 
 
@@ -91,8 +107,13 @@ def _probe_candidate(
     vector_config: dict[str, Any],
     table_name: str,
     metric: str,
+    probe_readiness: bool = True,
 ) -> _CandidateProbe:
-    """Inspect an existing companion without creating physical state."""
+    """Inspect one companion and optionally verify its embedder readiness.
+
+    ``probe_readiness=False`` is the state-discovery phase: it may open existing
+    storage read-only but must not load or download the configured model.
+    """
 
     normalized_backend = normalize_vector_backend(backend) if backend else ""
     configured = bool(normalized_backend and embedder_config)
@@ -101,15 +122,37 @@ def _probe_candidate(
             label, "", False, None, _zero_counts(), False, False, True,
             f"{label}_backend_not_configured",
         )
+    presence = vector_companion_presence(normalized_backend, storage_dir)
     if not embedder_config:
         return _CandidateProbe(
-            label, normalized_backend, False, None, _zero_counts(), False, False,
-            True, f"{label}_embedder_not_configured",
+            label,
+            normalized_backend,
+            False,
+            None,
+            _zero_counts(),
+            False,
+            presence is not False,
+            presence is False,
+            f"{label}_embedder_not_configured",
         )
 
-    presence = vector_companion_presence(normalized_backend, storage_dir)
     try:
         embedder = build_embedder(embedder_config)
+    except Exception as exc:
+        detail = sanitize_report_text(str(exc))[:180]
+        return _CandidateProbe(
+            label,
+            normalized_backend,
+            configured,
+            None,
+            _zero_counts(),
+            False,
+            presence is not False,
+            presence is False,
+            f"{label}_embedder_build_failed:{detail}",
+        )
+
+    try:
         identity = _generation_identity(
             backend=normalized_backend,
             embedder=embedder,
@@ -128,30 +171,59 @@ def _probe_candidate(
             False,
             presence is not False,
             presence is False,
-            f"{label}_embedder_build_failed:{detail}",
+            f"{label}_embedder_identity_failed:{detail}",
         )
 
+    embedder_available = False
+    embedder_reason = f"{label}_embedder_unavailable"
     try:
         embedder_available = bool(embedder.is_available())
     except Exception as exc:
         detail = sanitize_report_text(str(exc))[:180]
-        return _CandidateProbe(
-            label,
-            normalized_backend,
-            configured,
-            identity,
-            _zero_counts(),
-            False,
-            presence is not False,
-            presence is False,
-            f"{label}_embedder_probe_failed:{detail}",
-        )
+        embedder_reason = f"{label}_embedder_probe_failed:{detail}"
+    else:
+        if embedder_available:
+            embedder_reason = "available"
+            readiness_probe = getattr(embedder, "probe_readiness", None)
+            if probe_readiness and callable(readiness_probe):
+                try:
+                    readiness_probe()
+                except Exception as exc:
+                    detail = sanitize_report_text(str(exc))[:180]
+                    embedder_available = False
+                    embedder_reason = (
+                        f"{label}_embedder_readiness_failed:{detail}"
+                    )
+                else:
+                    try:
+                        identity = _generation_identity(
+                            backend=normalized_backend,
+                            embedder=embedder,
+                            embedder_config=embedder_config,
+                            table_name=table_name,
+                            metric=metric,
+                        )
+                    except Exception as exc:
+                        detail = sanitize_report_text(str(exc))[:180]
+                        return _CandidateProbe(
+                            label,
+                            normalized_backend,
+                            configured,
+                            None,
+                            _zero_counts(),
+                            False,
+                            presence is not False,
+                            presence is False,
+                            f"{label}_embedder_identity_failed:{detail}",
+                        )
+        else:
+            embedder_reason = f"{label}_embedder_unavailable"
     try:
         store = build_vector_store(
             normalized_backend,
             storage_dir=storage_dir,
             table_name=table_name,
-            dimensions=int(embedder.dimensions),
+            dimensions=int(identity.dimensions),
             metric=metric,
             config=vector_config,
         )
@@ -195,7 +267,7 @@ def _probe_candidate(
                     embedder_available,
                     False,
                     True,
-                    "missing",
+                    "missing" if embedder_available else embedder_reason,
                 )
             return _CandidateProbe(
                 label,
@@ -211,6 +283,18 @@ def _probe_candidate(
         try:
             open_existing()
         except FileNotFoundError:
+            if presence is True:
+                return _CandidateProbe(
+                    label,
+                    normalized_backend,
+                    configured,
+                    identity,
+                    _zero_counts(),
+                    False,
+                    True,
+                    False,
+                    f"{label}_existing_companion_table_missing",
+                )
             return _CandidateProbe(
                 label,
                 normalized_backend,
@@ -220,7 +304,7 @@ def _probe_candidate(
                 embedder_available,
                 False,
                 True,
-                "missing",
+                "missing" if embedder_available else embedder_reason,
             )
         raw_counts = store.audit_counts()
         counts = {
@@ -237,7 +321,7 @@ def _probe_candidate(
             embedder_available,
             True,
             True,
-            "available" if embedder_available else f"{label}_embedder_unavailable",
+            "available" if embedder_available else embedder_reason,
         )
     except Exception as exc:
         detail = sanitize_report_text(str(exc))[:180]
@@ -304,12 +388,56 @@ def _create_selected_empty_candidate(
                 pass
 
 
+def _compensate_new_empty_companion(
+    probe: _CandidateProbe,
+    *,
+    storage_dir: Path,
+    counts: dict[str, int],
+) -> bool:
+    """Remove only a local empty companion proven to be created by this attempt."""
+
+    if probe.existing or int(counts.get("physical_rows") or 0) != 0:
+        return True
+    backend = normalize_vector_backend(probe.backend)
+    if backend == "lancedb":
+        paths = [storage_dir / "lancedb"]
+    elif backend == "sqlite-bruteforce":
+        paths = list(_sqlite_companion_paths(storage_dir))
+    else:
+        return False
+    try:
+        for path in paths:
+            if path.is_symlink() or path.is_file():
+                path.unlink(missing_ok=True)
+            elif path.is_dir():
+                shutil.rmtree(path)
+    except OSError:
+        return False
+    return not any(path.exists() or path.is_symlink() for path in paths)
+
+
 def _truth_row_count(truth_conn: Any) -> int:
     row = truth_conn.execute("SELECT COUNT(*) FROM memories").fetchone()
     return int(row[0] if row else 0)
 
 
 def bootstrap_fresh_vector_companion(
+    storage_dir: Path,
+    runtime_config: dict[str, Any],
+    *,
+    truth_conn: Any,
+) -> dict[str, Any]:
+    """Serialize and run one fail-closed fresh-generation bootstrap."""
+
+    with vector_mutation_guard(storage_dir=storage_dir):
+        return _bootstrap_fresh_vector_companion_guarded(
+            storage_dir,
+            runtime_config,
+            truth_conn=truth_conn,
+        )
+
+
+def _bootstrap_fresh_vector_companion_guarded(
     storage_dir: Path,
     runtime_config: dict[str, Any],
     *,
@@ -371,6 +499,7 @@ def bootstrap_fresh_vector_companion(
             vector_config=vector_config,
             table_name=table_name,
             metric=metric,
+            probe_readiness=False,
         ),
         _probe_candidate(
             label="fallback",
@@ -380,12 +509,11 @@ def bootstrap_fresh_vector_companion(
             vector_config=vector_config,
             table_name=table_name,
             metric=metric,
+            probe_readiness=False,
         ),
     ]
     configured = [probe for probe in probes if probe.configured]
-    uninspectable = [
-        probe for probe in configured if probe.existing and not probe.inspected
-    ]
+    uninspectable = [probe for probe in probes if probe.existing and not probe.inspected]
     if uninspectable:
         return {
             "status": "unavailable",
@@ -417,24 +545,51 @@ def bootstrap_fresh_vector_companion(
                 f"truth_rows={truth_rows};explicit_migration_required"
             ),
         }
-    selected = next(
-        (
-            probe
-            for label in ("primary", "fallback")
-            for probe in configured
-            if probe.label == label
-            and probe.usable
-            and probe.inspected
-            and probe.identity is not None
-        ),
-        None,
-    )
+    # Model readiness may download or load large artifacts. Delay it until all
+    # state is proven fresh, then stop after the first fully usable candidate.
+    # The read-only probes above still inspect every configured companion so an
+    # unused fallback cannot hide manifestless rows.
+    attempted = {probe.label: probe for probe in probes}
+    selected: _CandidateProbe | None = None
+    candidate_inputs = {
+        "primary": (primary_backend, primary_embedder),
+        "fallback": (fallback_backend, fallback_embedder),
+    }
+    for label in ("primary", "fallback"):
+        static_probe = attempted[label]
+        if not (
+            static_probe.configured
+            and static_probe.usable
+            and static_probe.inspected
+            and static_probe.identity is not None
+        ):
+            continue
+        backend, embedder_config = candidate_inputs[label]
+        readiness_probe = _probe_candidate(
+            label=label,
+            backend=backend,
+            embedder_config=embedder_config,
+            storage_dir=storage_dir,
+            vector_config=vector_config,
+            table_name=table_name,
+            metric=metric,
+            probe_readiness=True,
+        )
+        attempted[label] = readiness_probe
+        if (
+            readiness_probe.usable
+            and readiness_probe.inspected
+            and readiness_probe.identity is not None
+        ):
+            selected = readiness_probe
+            break
     if selected is None:
         return {
             "status": "unavailable",
             "selection": "none",
             "reason": ";".join(
-                f"{probe.label}={probe.reason}" for probe in probes
+                f"{label}={attempted[label].reason}"
+                for label in ("primary", "fallback")
             ),
         }
     counts, create_reason = _create_selected_empty_candidate(
@@ -454,7 +609,10 @@ def bootstrap_fresh_vector_companion(
     selection_reason = (
         "primary_backend_and_embedder_available"
         if selected.label == "primary"
-        else f"{probes[0].reason};fallback_backend_and_embedder_available"
+        else (
+            f"{attempted['primary'].reason};"
+            "fallback_backend_and_embedder_available"
+        )
     )
     metadata: dict[str, Any] = {
         "provenance": "fresh-setup-bootstrap",
@@ -474,20 +632,48 @@ def bootstrap_fresh_vector_companion(
             "reason": "concurrent_generation_became_authoritative",
         }
     if _truth_row_count(truth_conn) != 0:
+        cleaned = _compensate_new_empty_companion(
+            selected,
+            storage_dir=storage_dir,
+            counts=counts,
+        )
         return {
             "status": "unavailable",
             "selection": "none",
-            "reason": "truth_became_nonempty_during_fresh_bootstrap",
+            "reason": (
+                "truth_became_nonempty_during_fresh_bootstrap"
+                if cleaned
+                else "truth_became_nonempty_during_fresh_bootstrap;companion_cleanup_failed"
+            ),
         }
 
     identity = selected.identity
     assert identity is not None
-    manifest = bootstrap_fresh_generation(
-        truth_conn,
-        identity=identity,
-        storage_path=".",
-        metadata=metadata,
-    )
+    try:
+        manifest = bootstrap_fresh_generation(
+            truth_conn,
+            identity=identity,
+            storage_path=".",
+            metadata=metadata,
+        )
+    except Exception:
+        try:
+            authoritative = current_generation(truth_conn)
+        except Exception:
+            raise RuntimeError(
+                "fresh vector manifest publish failed and manifest state is unreadable; "
+                "empty companion retained for explicit recovery"
+            ) from None
+        cleaned = authoritative is not None or _compensate_new_empty_companion(
+            selected,
+            storage_dir=storage_dir,
+            counts=counts,
+        )
+        if not cleaned:
+            raise RuntimeError(
+                "fresh vector manifest publish failed and empty companion cleanup failed; recovery required"
+            ) from None
+        raise
     return {
         "status": "ready",
         "selection": selection,

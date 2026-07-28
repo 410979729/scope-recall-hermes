@@ -282,7 +282,12 @@ def llm_journal_candidates(
         for chunk in session_chunks(bundle, chunk_chars=options.chunk_chars, max_session_chars=options.max_session_chars):
             attempted_chunks += 1
             chunk_ids = set(chunk.message_ids)
-            prompt = build_prompt(bundle, chunk, existing)
+            prompt = build_prompt(
+                bundle,
+                chunk,
+                existing,
+                retention_profile=str(journal_config.get("retention_profile") or "balanced"),
+            )
             try:
                 raw = _call_llm_with_retries(
                     prompt,

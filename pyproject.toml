@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-scope-recall"
-version = "1.8.1"
+version = "1.8.2"
 description = "Hermes scoped memory provider with journal-first capture, SQLite truth, vector companions, and hybrid RRF retrieval."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -179,6 +179,7 @@ include = [
   "provider.py",
   "recall.py",
   "recall_pipeline.py",
+  "retention_profiles.py",
   "relation_entity_policy.py",
   "relation_extraction.py",
   "relation_frequency_index.py",
@@ -186,6 +187,7 @@ include = [
   "relation_rebuild_queue.py",
   "relation_scope_state.py",
   "response_schemas.py",
+  "schema_compat.py",
   "schemas.py",
   "scoring.py",
   "scope.py",
@@ -200,6 +202,7 @@ include = [
   "task_boundary.py",
   "temporal_facts.py",
   "temporal_query.py",
+  "transcript_overlap.py",
   "truth_connection.py",
   "reflection.py",
   "reflection_llm.py",

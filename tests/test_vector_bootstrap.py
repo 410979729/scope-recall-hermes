@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -21,11 +22,18 @@ class _FakeEmbedder:
         self.dimensions = int(str(raw_dimensions or 8))
         self._available = bool(config.get("available", True))
         self._raise_probe = bool(config.get("raise_probe", False))
+        self._raise_readiness = bool(config.get("raise_readiness", False))
 
     def is_available(self) -> bool:
         if self._raise_probe:
             raise RuntimeError("embedder probe failed")
         return self._available
+
+    def probe_readiness(self) -> None:
+        if self._raise_readiness:
+            raise RuntimeError("embedder model load failed")
+        if not self.is_available():
+            raise RuntimeError("embedder unavailable")
 
 
 class _FakeStore:
@@ -475,3 +483,155 @@ def test_primary_embedder_probe_exception_uses_fallback_when_store_is_missing(
     assert receipt["status"] == "ready"
     assert receipt["selection"] == "fallback"
     assert receipt["backend"] == "sqlite-bruteforce"
+
+
+def test_primary_embedder_readiness_failure_uses_fallback_before_manifest_creation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An unloadable local model must not become the immutable generation identity."""
+
+    monkeypatch.setattr(
+        vector_bootstrap,
+        "build_embedder",
+        lambda config: _FakeEmbedder(dict(config)),
+    )
+    monkeypatch.setattr(
+        vector_bootstrap,
+        "build_vector_store",
+        lambda backend, **_kwargs: _FakeStore(str(backend), True),
+    )
+    config = _legacy_matrix_config()
+    vector_config = config["vector"]
+    assert isinstance(vector_config, dict)
+    embedder_config = vector_config["embedder"]
+    assert isinstance(embedder_config, dict)
+    embedder_config["raise_readiness"] = True
+    conn = _truth()
+    try:
+        receipt = vector_bootstrap.bootstrap_fresh_vector_companion(
+            tmp_path,
+            config,
+            truth_conn=conn,
+        )
+        manifest = current_generation(conn)
+    finally:
+        conn.close()
+
+    assert receipt["status"] == "ready"
+    assert receipt["selection"] == "fallback"
+    assert str(receipt["reason"]).startswith(
+        "primary_embedder_readiness_failed"
+    )
+    assert manifest is not None
+    assert manifest["provider"] == "local-hash"
+
+
+def test_primary_readiness_success_does_not_load_fallback_embedder(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Read-only companion inspection must not eagerly load an unused fallback model."""
+
+    readiness_calls: list[str] = []
+
+    class TrackingEmbedder(_FakeEmbedder):
+        def probe_readiness(self) -> None:
+            readiness_calls.append(self.model)
+            super().probe_readiness()
+
+    monkeypatch.setattr(
+        vector_bootstrap,
+        "build_embedder",
+        lambda config: TrackingEmbedder(dict(config)),
+    )
+    monkeypatch.setattr(
+        vector_bootstrap,
+        "build_vector_store",
+        lambda backend, **_kwargs: _FakeStore(str(backend), True),
+    )
+    conn = _truth()
+    try:
+        receipt = vector_bootstrap.bootstrap_fresh_vector_companion(
+            tmp_path,
+            _legacy_matrix_config(),
+            truth_conn=conn,
+        )
+    finally:
+        conn.close()
+
+    assert receipt["status"] == "ready"
+    assert receipt["selection"] == "primary"
+    assert readiness_calls == ["primary-embedding"]
+
+
+def test_fresh_bootstrap_guard_spans_physical_creation_and_manifest_commit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The path guard must cover both irreversible halves of fresh bootstrap."""
+
+    held = False
+    observed: list[str] = []
+
+    @contextmanager
+    def fake_guard(*, storage_dir, **_kwargs):
+        nonlocal held
+        assert Path(storage_dir) == tmp_path
+        held = True
+        try:
+            yield
+        finally:
+            held = False
+
+    class GuardedStore(_FakeStore):
+        def open(self) -> None:
+            assert held is True
+            observed.append("physical_create")
+
+    original_bootstrap = vector_bootstrap.bootstrap_fresh_generation
+
+    def guarded_manifest_commit(*args, **kwargs):
+        assert held is True
+        observed.append("manifest_commit")
+        return original_bootstrap(*args, **kwargs)
+
+    monkeypatch.setattr(
+        vector_bootstrap,
+        "vector_mutation_guard",
+        fake_guard,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        vector_bootstrap,
+        "build_embedder",
+        lambda config: _FakeEmbedder(dict(config)),
+    )
+    monkeypatch.setattr(
+        vector_bootstrap,
+        "build_vector_store",
+        lambda backend, **_kwargs: GuardedStore(str(backend), True),
+    )
+    monkeypatch.setattr(
+        vector_bootstrap,
+        "bootstrap_fresh_generation",
+        guarded_manifest_commit,
+    )
+    config = _legacy_matrix_config()
+    vector_config = config["vector"]
+    assert isinstance(vector_config, dict)
+    vector_config["fallback_backend"] = ""
+    vector_config["fallback_embedder"] = {}
+    conn = _truth()
+    try:
+        receipt = vector_bootstrap.bootstrap_fresh_vector_companion(
+            tmp_path,
+            config,
+            truth_conn=conn,
+        )
+    finally:
+        conn.close()
+
+    assert receipt["status"] == "ready"
+    assert observed == ["physical_create", "manifest_commit"]
+    assert held is False

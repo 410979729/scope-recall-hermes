@@ -18,9 +18,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 try:  # Support both package imports and direct manual test imports.
+    from .capture_filters import sanitize_report_text
     from .http_utils import chat_completions_endpoint, redact_sensitive
+    from .retention_profiles import retention_profile_instruction
+    from .transcript_overlap import is_source_transcript_copy
 except ImportError:  # pragma: no cover - exercised by manual script import style
+    from capture_filters import sanitize_report_text
     from http_utils import chat_completions_endpoint, redact_sensitive
+    from retention_profiles import retention_profile_instruction
+    from transcript_overlap import is_source_transcript_copy
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +73,8 @@ _VALID_MEMORY_TYPES: frozenset[str] = frozenset({
     "resource", "constraint", "workflow", "tool_trace", "summary",
     "pitfall", "decision",
 })
+_CAPTURE_PROMPT_MAX_CHARS = 2500
+_CAPTURE_SANITIZE_LOOKAHEAD_CHARS = 1024
 
 
 def _truthy(value: Any) -> bool:
@@ -89,6 +97,19 @@ class Candidate:
     entities: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     confidence: float = 0.8
+
+
+def _capture_prompt_block(value: Any) -> str:
+    """Return one bounded, redacted turn block for an external capture LLM.
+
+    A small lookahead lets secret/path patterns crossing the eventual send
+    boundary be recognized without applying regular expressions to unbounded
+    direct-caller input.
+    """
+
+    scan_limit = _CAPTURE_PROMPT_MAX_CHARS + _CAPTURE_SANITIZE_LOOKAHEAD_CHARS
+    bounded = str(value or "")[:scan_limit]
+    return sanitize_report_text(bounded)[:_CAPTURE_PROMPT_MAX_CHARS] or "(empty)"
 
 
 def extract_capture_candidates(
@@ -123,12 +144,22 @@ def extract_capture_candidates(
         )
         return []
 
-    # Truncate inputs to keep token cost bounded
-    user_block = user_content[:2500] if user_content else "(empty)"
-    assistant_block = assistant_content[:2500] if assistant_content else "(empty)"
+    # Sanitize at the network boundary even when a caller already filtered the
+    # turn.  This function is also used directly by tests and manual tooling,
+    # and capture providers may cross a different trust boundary than the main
+    # agent model.  Redact before truncating so a cutoff cannot split a secret
+    # token into a form the detector would miss.
+    user_block = _capture_prompt_block(user_content)
+    assistant_block = _capture_prompt_block(assistant_content)
+    raw_journal_config = config.get("journal")
+    journal_config = raw_journal_config if isinstance(raw_journal_config, dict) else {}
+    system_prompt = (
+        f"{EXTRACT_SYSTEM_PROMPT.rstrip()}\n\n"
+        f"{retention_profile_instruction(journal_config.get('retention_profile'))}\n"
+    )
 
     messages: list[dict[str, str]] = [
-        {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {
             "role": "user",
             "content": f"USER MESSAGE:\n{user_block}\n\nASSISTANT RESPONSE:\n{assistant_block}",
@@ -141,7 +172,22 @@ def extract_capture_candidates(
         logger.warning(f"scope-recall capture_llm: API call failed: {redact_sensitive(exc)}")
         return []
 
-    return _parse_response(raw)
+    candidates = _parse_response(raw)
+    accepted = [
+        candidate
+        for candidate in candidates
+        if not is_source_transcript_copy(
+            candidate.content,
+            (user_content, assistant_content),
+        )
+    ]
+    rejected_count = len(candidates) - len(accepted)
+    if rejected_count:
+        logger.warning(
+            "scope-recall capture_llm: rejected %d source-overlap candidate(s)",
+            rejected_count,
+        )
+    return accepted
 
 
 # ── helpers ──────────────────────────────────────────────────────────

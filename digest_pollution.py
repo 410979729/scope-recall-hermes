@@ -19,6 +19,7 @@ from .fact_evidence import (
     AUTHORITATIVE_EVIDENCE_SOURCE_TYPES,
     evidence_supports_claim,
 )
+from .transcript_overlap import is_source_transcript_copy
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,8 +108,17 @@ def _candidate_evidence(
     candidate: Any,
     batch_evidence: Mapping[str, Sequence[str]],
 ) -> list[str]:
-    session_id = str(getattr(candidate, "session_id", "") or "")
-    output = [str(item) for item in batch_evidence.get(session_id, ()) if str(item)]
+    session_ids = [str(getattr(candidate, "session_id", "") or "")]
+    raw_session_ids = getattr(candidate, "session_ids", ())
+    if isinstance(raw_session_ids, Sequence) and not isinstance(
+        raw_session_ids, (str, bytes)
+    ):
+        session_ids.extend(str(item or "") for item in raw_session_ids)
+    output: list[str] = []
+    for session_id in dict.fromkeys(session_ids):
+        output.extend(
+            str(item) for item in batch_evidence.get(session_id, ()) if str(item)
+        )
     proposal = _proposal(candidate)
     if proposal is not None:
         output.extend(reference.quote for reference in proposal.evidence_refs if reference.quote)
@@ -131,11 +141,14 @@ def _text_reasons(text: str, *, memory_type: str) -> list[str]:
 def _evidence_reasons(candidate: Any, evidence: Sequence[str]) -> list[str]:
     if not evidence:
         return []
+    content = str(getattr(candidate, "content", "") or "")
+    reasons: list[str] = []
+    if is_source_transcript_copy(content, evidence):
+        reasons.append("source_transcript_overlap")
     proposal = _proposal(candidate)
     if proposal is None:
-        return []
+        return reasons
     combined = _normalized_text("\n".join(evidence))
-    reasons: list[str] = []
     claim = proposal.claim
     memory_type = str(getattr(candidate, "memory_type", "") or "").strip().lower()
     if (
@@ -163,7 +176,6 @@ def _evidence_reasons(candidate: Any, evidence: Sequence[str]) -> list[str]:
         if _normalized_text(claim.display_value) not in combined:
             reasons.append("claim_value_not_in_batch_evidence")
 
-    content = str(getattr(candidate, "content", "") or "")
     content_success = bool(_SUCCESS_RE.search(content))
     content_failure = bool(_FAILURE_RE.search(content))
     evidence_success = bool(_SUCCESS_RE.search(combined))

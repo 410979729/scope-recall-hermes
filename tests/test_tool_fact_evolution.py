@@ -9,7 +9,7 @@ import pytest
 from plugins.memory import load_memory_provider
 
 from scope_recall.fact_repository import insert_claim
-from scope_recall.fact_tooling import _scope_id_for_mode
+from scope_recall.fact_tooling import MAX_FACT_CONTENT_CHARS, _scope_id_for_mode
 from scope_recall.schemas import (
     SCOPE_RECALL_EVOLVE_SCHEMA,
     SCOPE_RECALL_MEMORY_SCHEMA,
@@ -120,10 +120,43 @@ def test_store_update_and_compact_memory_schemas_add_optional_fact_envelopes_onl
         assert "reviewed_apply" not in evolution["properties"]
 
     proposal = SCOPE_RECALL_EVOLVE_SCHEMA["parameters"]["properties"]["proposal"]
-    assert proposal["properties"]["content"]["maxLength"] == 8000
+    assert "maxLength" not in proposal["properties"]["content"]
+    assert MAX_FACT_CONTENT_CHARS == 8000
     assert proposal["properties"]["target_ids"]["maxItems"] == 32
     assert proposal["properties"]["evidence"]["maxItems"] == 32
     assert proposal["properties"]["idempotency_key"]["maxLength"] == 200
+
+
+def test_runtime_rejects_overlong_fact_value_after_schema_limit_is_omitted(provider):
+    args = _fact_args(value="v" * 2001, idempotency_key="overlong-value")
+    args["content"] = "Joy supplied an overlong structured fact value."
+    args["evolution"]["evidence"][0]["quote"] = "Direct user statement."
+
+    payload = json.loads(provider.handle_tool_call("scope_recall_store", args))
+
+    assert payload["stored"] is False
+    assert payload["applied"] is False
+    assert payload["evolution"]["action"] == "review"
+    assert "proposal_requires_review" in payload["evolution"]["receipt"][
+        "reason_codes"
+    ]
+    assert _count(provider, "memories") == 0
+    assert _count(provider, "fact_claims") == 0
+    assert _count(provider, "fact_action_receipts") == 0
+
+
+def test_runtime_rejects_overlong_fact_content_after_schema_limit_is_omitted(provider):
+    args = _fact_args(value="Paris", idempotency_key="overlong-content")
+    args["content"] = "c" * 8001
+
+    payload = json.loads(provider.handle_tool_call("scope_recall_store", args))
+
+    assert payload["stored"] is False
+    assert payload["skipped"] is True
+    assert payload["skip_reason"] == "too-long"
+    assert _count(provider, "memories") == 0
+    assert _count(provider, "fact_claims") == 0
+    assert _count(provider, "fact_action_receipts") == 0
 
 
 def _seed_current_fact(

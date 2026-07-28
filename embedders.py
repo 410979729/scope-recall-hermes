@@ -7,11 +7,14 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import threading
 import time
+from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Any, Iterable
 
 from .aliases import canonicalize_alias
+from .capture_filters import sanitize_report_text
 from .gating import clean_text, query_tokens
 
 try:
@@ -62,6 +65,14 @@ _KNOWN_EMBEDDING_DIMS = {
 
 
 _SENTENCE_TRANSFORMER_CACHE: dict[tuple[str, str | None], Any] = {}
+_SENTENCE_TRANSFORMER_CACHE_GUARD = threading.Lock()
+_SENTENCE_TRANSFORMER_LOAD_FLIGHTS: dict[
+    tuple[str, str | None], Future[Any]
+] = {}
+
+
+class _SanitizedModelLoadError(RuntimeError):
+    """A cohort-safe model-load error with no raw exception cause."""
 
 _CONNECTION_EXCEPTION_NAMES = frozenset(
     {
@@ -209,6 +220,18 @@ class BaseEmbedder:
 
     def is_available(self) -> bool:
         return True
+
+    def probe_readiness(self) -> None:
+        """Validate local prerequisites without probing a remote provider.
+
+        Hosted adapters deliberately stop at local package/config validation so
+        startup does not spend tokens or depend on network reachability. Local
+        adapters may override this hook to load their model before an immutable
+        vector-generation identity is recorded.
+        """
+
+        if not self.is_available():
+            raise RuntimeError(f"{self.provider} embedder is unavailable")
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -455,16 +478,44 @@ class SentenceTransformersEmbedder(BaseEmbedder):
 
     def _load_model(self, model: str):
         key = (model, self._device)
-        cached = _SENTENCE_TRANSFORMER_CACHE.get(key)
-        if cached is not None:
-            return cached
-        if SentenceTransformer is None:
-            raise RuntimeError("sentence-transformers is not installed")
-        kwargs: dict[str, Any] = {}
-        if self._device:
-            kwargs["device"] = self._device
-        instance = SentenceTransformer(model, **kwargs)
-        _SENTENCE_TRANSFORMER_CACHE[key] = instance
+        with _SENTENCE_TRANSFORMER_CACHE_GUARD:
+            cached = _SENTENCE_TRANSFORMER_CACHE.get(key)
+            if cached is not None:
+                return cached
+            flight = _SENTENCE_TRANSFORMER_LOAD_FLIGHTS.get(key)
+            leader = flight is None
+            if flight is None:
+                flight = Future()
+                _SENTENCE_TRANSFORMER_LOAD_FLIGHTS[key] = flight
+        if not leader:
+            return flight.result()
+
+        try:
+            if SentenceTransformer is None:
+                raise RuntimeError("sentence-transformers is not installed")
+            kwargs: dict[str, Any] = {}
+            if self._device:
+                kwargs["device"] = self._device
+            instance = SentenceTransformer(model, **kwargs)
+        except Exception as exc:
+            detail = " ".join(sanitize_report_text(exc).split())[:300]
+            safe_message = (
+                f"{type(exc).__name__}: {detail}"
+                if detail
+                else f"{type(exc).__name__}: model load failed"
+            )
+            safe_error = _SanitizedModelLoadError(safe_message)
+            flight.set_exception(safe_error)
+            with _SENTENCE_TRANSFORMER_CACHE_GUARD:
+                if _SENTENCE_TRANSFORMER_LOAD_FLIGHTS.get(key) is flight:
+                    del _SENTENCE_TRANSFORMER_LOAD_FLIGHTS[key]
+            raise safe_error from None
+
+        with _SENTENCE_TRANSFORMER_CACHE_GUARD:
+            _SENTENCE_TRANSFORMER_CACHE[key] = instance
+            if _SENTENCE_TRANSFORMER_LOAD_FLIGHTS.get(key) is flight:
+                del _SENTENCE_TRANSFORMER_LOAD_FLIGHTS[key]
+        flight.set_result(instance)
         return instance
 
     def is_available(self) -> bool:
@@ -483,7 +534,22 @@ class SentenceTransformersEmbedder(BaseEmbedder):
         if self._model_obj is None:
             if self._load_error:
                 raise RuntimeError(self._load_error)
-            self._model_obj = self._load_model(self.model)
+            try:
+                self._model_obj = self._load_model(self.model)
+            except Exception as exc:
+                if isinstance(exc, _SanitizedModelLoadError):
+                    self._load_error = str(exc)
+                else:
+                    detail = " ".join(sanitize_report_text(exc).split())[:300]
+                    self._load_error = (
+                        f"{type(exc).__name__}: {detail}"
+                        if detail
+                        else f"{type(exc).__name__}: model load failed"
+                    )
+                # The wrapper is safe for diagnostics; the original exception
+                # can contain private cache paths or credential-bearing model
+                # URLs, so do not retain it as a traceback cause.
+                raise RuntimeError(self._load_error) from None
             try:
                 if hasattr(self._model_obj, "get_embedding_dimension"):
                     dims = int(self._model_obj.get_embedding_dimension() or 0)
@@ -496,6 +562,11 @@ class SentenceTransformersEmbedder(BaseEmbedder):
             except Exception:
                 pass
         return self._model_obj
+
+    def probe_readiness(self) -> None:
+        """Load the local model so bootstrap records its real usable identity."""
+
+        self._model_or_raise()
 
     def embed_texts(self, texts: Iterable[str]) -> list[list[float]]:
         items = [clean_text(text) or " " for text in texts]

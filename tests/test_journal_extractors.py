@@ -162,3 +162,61 @@ def test_journal_collect_candidates_preserves_journal_llm_journal_candidates_mon
     assert extractor_used == "llm"
     assert error == ""
     assert dict(status_counts) == {}
+
+
+def test_llm_journal_candidates_passes_retention_profile_to_prompt(monkeypatch, tmp_path):
+    captured: dict[str, str] = {}
+
+    monkeypatch.setattr(journal_extractors, "_runtime_config", lambda _home: {})
+    monkeypatch.setattr(
+        journal_extractors,
+        "resolve_llm_config",
+        lambda _home, _options: {
+            "model": "test-model",
+            "base_url": "https://example.invalid",
+            "api_key": "test-only",
+            "api_mode": "chat_completions",
+            "endpoint": "",
+            "append_v1": True,
+        },
+    )
+    monkeypatch.setattr(journal_extractors, "existing_memory_context", lambda _conn, _profile: [])
+    monkeypatch.setattr(journal_extractors, "_existing_context_target_ids_by_scope", lambda _conn, _profile: {})
+
+    def fake_build_prompt(_bundle, _chunk, _existing, *, retention_profile):
+        captured["profile"] = retention_profile
+        return "test prompt"
+
+    monkeypatch.setattr(journal_extractors, "build_prompt", fake_build_prompt)
+    monkeypatch.setattr(journal_extractors, "_call_llm_with_retries", lambda *_args, **_kwargs: "[]")
+    monkeypatch.setattr(
+        journal_extractors,
+        "_parse_journal_llm_candidates",
+        lambda *_args, **_kwargs: ([], "explicit_skip"),
+    )
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        result = journal_extractors.llm_journal_candidates(
+            conn,
+            entries=[
+                JournalEntry(
+                    1,
+                    "scope",
+                    "shared",
+                    "session-a",
+                    1,
+                    "user",
+                    "Preserve this durable rationale for future sessions.",
+                    "2026-06-01T00:00:00+00:00",
+                )
+            ],
+            hermes_home=tmp_path,
+            scope=_scope(),
+            journal_config={"retention_profile": "full"},
+        )
+    finally:
+        conn.close()
+
+    assert result == []
+    assert captured["profile"] == "full"

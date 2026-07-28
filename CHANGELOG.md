@@ -4,19 +4,26 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.8.2] - 2026-07-28
+
 ### Added
 - Added a durable, cursor-based relation rebuild queue with bounded foreground synchronization, monotonic lifetime/pass progress, next-revision handoff, background draining, read-only debt reporting, and backup-first repair tooling.
 - Added a transactionally maintained relation-frequency companion with per-memory postings, per-scope/entity document counts, bounded peer lookup, resumable legacy backfill, and scope reclassification debt.
 - Added outbox-first vector startup reconciliation with bounded truth pages, a durable compound watermark, atomic page planning, and resumable background continuation.
 - Added an authoritative SQLite operator ledger for playbook lifecycle changes, with deterministic post-commit receipt mirroring and idempotent repair for interrupted mirrors.
 - Added clean-install regressions that load an installed plugin from outside the source tree and verify nested-clone wheels in a fresh virtual environment despite a polluted parent path.
+- Added configurable `light`, `balanced`, and `full` semantic retention profiles for immediate and journal LLM extraction; sanitized turn text remains in the journal instead of being duplicated into durable recall memory.
 
 ### Fixed
+- Preserved the 1.8.0 Fact Evolution, temporal, Reflection, scope routing, evidence authority, provenance-root, idempotency, journal checkpoint, and release-identity contracts unchanged.
+- Enforced the no-transcript-duplication contract with a deterministic source-overlap gate shared by per-turn, journal, and nightly LLM extraction; long exact or near-verbatim copies are rejected before durable recall writes while short quotations remain allowed.
+- Made private-key redaction fail closed when a PEM block extends beyond the bounded capture scan, and made fresh vector bootstrap remove only a newly created, proven-empty local companion when manifest publication fails so dynamic-dimension retries remain automatic. SQLite main, WAL, SHM, and rollback-journal files now share one presence and cleanup ownership boundary, preventing compensation from deleting pre-existing sidecars.
 - Made journal LLM transport, authentication, and parse failures return an error without advancing source checkpoints or misclassifying infrastructure failure as data rejection; retained-row pruning now stays below SQLite variable limits.
 - Made event-candidate batches atomic, verified semantic-merge update receipts, and made repeated identical lifecycle transitions true no-ops without timestamp, audit, or vector-outbox churn.
 - Closed writer shutdown enqueue races, made dead writer queues fail closed, and made current-turn recall prefetch fail soft without destabilizing the host turn.
 - Aligned PGVector repair with the SQLite cleanup contract, corrected lexical fallback when no vector signal exists, and made relation-frequency poison rows use per-row savepoints with bounded retry/dead-letter evidence (`0011_relation_frequency_failure_queue_v1_8_0`).
 - Rejected new plaintext secret-like content at the authoritative SQLite store/update boundary and redacted legacy sensitive rows from recall, prompt, and memory-inspection egress.
+- Sanitized secrets and private filesystem paths again at the optional per-turn extraction network boundary, so direct callers cannot send unsanitized turn text to a separately configured capture LLM.
 - Compensated activation leases and SQLite guards when installation fails after snapshot but before activation handoff, and included both retry-exhausted and dead-letter journal entries in default recovery inspection.
 - Enforced public tool JSON Schemas at the in-process dispatch boundary, with redacted structured errors for required fields, types, enums, lengths, list sizes, and numeric bounds.
 - Made fuzzy store merging explicit and conservative: exact duplicates remain automatic, while opt-in semantic merge accepts only contained additive assertions and preserves changed values as separate memories.
@@ -40,6 +47,8 @@ All notable changes to `scope-recall` will be documented in this file.
 - Split vector-store opening into read-only inspection and existing-only runtime mutation contracts, so an active generation can be updated without allowing startup to create missing storage or switch to a different backend.
 - Preserved the original `2/4/8s` OpenAI-compatible connection-retry behavior from #27 while keeping the hardened bounded schedule configurable and allowing an explicit empty array to disable it.
 - Refined the token-assignment boundary issue reported by @df-5c in #28: `per_token` and `*_per_token` metric assignments no longer trip plaintext-secret filtering, while compound credential keys such as `access_token`, `session_token`, and `super_token` remain blocked and redacted across text and structured-key surfaces.
+- Made local SentenceTransformers readiness load the configured model before creating a vector generation, suppress private exception causes, match active generations against post-load dimensions, and try an equivalent fallback after a device-specific failure. Fresh bootstrap now serializes physical creation with manifest publication, loads fallback models only when needed, inventories named companions even when their embedder block is missing, and shares both success and sanitized failure within each concurrent model-load cohort.
+- Fixed the LM Studio/llama.cpp tool-grammar failure reported by @lost-in-thoughts in #31 and explored in #30 by removing only unsafe nested long-string grammar bounds; structured freshness, claim, and evolution capabilities remain available, with a static release guard and validation against the upstream C++ converter/parser.
 
 ## [1.8.1] - 2026-07-23
 

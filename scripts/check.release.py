@@ -35,7 +35,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-PACKAGE_VERSION = "1.8.1"
+PACKAGE_VERSION = "1.8.2"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 RELEASE_READINESS_DOC = f"docs/release-readiness.{PACKAGE_VERSION}.md"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
@@ -209,7 +209,10 @@ REQUIRED_SOURCE_FILES = {
     "provider_schemas.py",
     "recall_pipeline.py",
     "relation_extraction.py",
+    "retention_profiles.py",
+    "transcript_overlap.py",
     "response_schemas.py",
+    "schema_compat.py",
     ".env.example",
     "docs/migration.md",
     "docs/differences-from-memory-lancedb-pro.md",
@@ -286,6 +289,17 @@ REQUIRED_SOURCE_FILES = {
     "installer_yaml.py",
     "py.typed",
 }
+REQUIRED_SDIST = {
+    f"{WHEEL_DIST_PREFIX}/{source_path}" for source_path in REQUIRED_SOURCE_FILES
+}
+
+
+def missing_sdist_members(names: set[str]) -> list[str]:
+    """Return required source-distribution members absent from an archive."""
+
+    return sorted(REQUIRED_SDIST - set(names))
+
+
 REQUIRED_WHEEL = {
     "scope_recall/__init__.py",
     "scope_recall/activation_transaction.py",
@@ -404,7 +418,10 @@ REQUIRED_WHEEL = {
     "scope_recall/provider_schemas.py",
     "scope_recall/recall_pipeline.py",
     "scope_recall/relation_extraction.py",
+    "scope_recall/retention_profiles.py",
+    "scope_recall/transcript_overlap.py",
     "scope_recall/response_schemas.py",
+    "scope_recall/schema_compat.py",
     "scope_recall/README.md",
     "scope_recall/DESIGN.md",
     "scope_recall/CHANGELOG.md",
@@ -2127,6 +2144,7 @@ def wheel_check() -> dict[str, object]:
         with tarfile.open(sdists[0], "r:gz") as tf:
             sdist_names = set(tf.getnames())
         sdist_scan = scan_distribution_artifact(sdists[0])
+        sdist_missing = missing_sdist_members(sdist_names)
         sdist_forbidden = forbidden_distribution_entries(sdist_names)
         artifact_scan = {
             "wheel": wheel_scan,
@@ -2137,10 +2155,11 @@ def wheel_check() -> dict[str, object]:
             for artifact_type, scan in artifact_scan.items()
             if any(scan.values())
         }
-        if sdist_forbidden or blocking_artifact_scan:
+        if sdist_missing or sdist_forbidden or blocking_artifact_scan:
             raise SystemExit(
                 json.dumps(
                     {
+                        "sdist_missing": sdist_missing,
                         "sdist_forbidden": sdist_forbidden,
                         "artifact_scan": blocking_artifact_scan,
                     },

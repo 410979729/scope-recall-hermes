@@ -57,6 +57,7 @@ from .nightly_llm import (
     responses_endpoint as _responses_endpoint,
     urllib,
 )
+from .retention_profiles import normalize_retention_profile, retention_profile_instruction
 from .scope import accessible_scope_ids, build_scope_id, build_shared_scope_id, canonical_user_id, normalize_scope_identity, writable_scope_ids
 from .sql_store import ensure_schema, exact_duplicate_groups, store_row
 from .sqlite_schema import execute_script_transaction_neutral
@@ -714,13 +715,18 @@ def build_prompt(
     bundle: SessionBundle,
     chunk: SessionChunk | str,
     existing_context: list[str],
+    *,
+    retention_profile: str = "balanced",
 ) -> str:
     existing = "\n".join(f"- {item}" for item in existing_context[:40]) or "- (none)"
     mode = "任务型对话" if bundle.is_task else "普通对话"
     chunk_text = chunk.text if isinstance(chunk, SessionChunk) else str(chunk)
+    profile = normalize_retention_profile(retention_profile)
+    profile_instruction = retention_profile_instruction(profile)
     return (
         "你是 scope-recall 的夜间记忆整理器。阅读当天对话片段，只提取稳定、可复用、下周仍有价值的记忆。\n"
         "硬规则：不要保存 system/tool 原文、不要保存 token/API key/password/cookie/private key、不要保存流水账。\n"
+        f"{profile_instruction}\n"
         "不要把一次性任务状态保存成长期记忆：包括 session id、commit SHA、branch/tag/HEAD 状态、issue/PR/release 编号、测试通过数量、发布候选/当前进度、临时路径和下一步清单。\n"
         "只有在它表达稳定偏好、长期约束、环境事实、根因、可复用坑或通用工作流时才输出候选；否则输出 action=NOOP。\n"
         "任务型对话可提取通用 workflow/tool-chain，但必须去掉具体会话、版本、issue、commit、路径、日期和一次性验收数字，只写脱敏的可复用步骤/踩坑。\n"

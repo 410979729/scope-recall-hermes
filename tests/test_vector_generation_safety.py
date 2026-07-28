@@ -1164,6 +1164,252 @@ def test_active_fallback_generation_remains_authoritative_when_primary_returns(
     conn.close()
 
 
+def _runtime_identity_provider(
+    conn: sqlite3.Connection,
+    storage_dir,
+    *,
+    embedder_config: dict[str, Any],
+    fallback_embedder_config: dict[str, Any] | None = None,
+) -> SimpleNamespace:
+    vector_config = {
+        "enabled": True,
+        "backend": "sqlite-bruteforce",
+        "fallback_backend": "sqlite-bruteforce",
+        "table_name": "memories",
+        "embedder": dict(embedder_config),
+        "fallback_embedder": dict(fallback_embedder_config or {}),
+    }
+    return SimpleNamespace(
+        _storage_dir=storage_dir,
+        _vector_config=vector_config,
+        _retrieval_config={"metric": "cosine"},
+        _config={"vector": vector_config, "retrieval": {"metric": "cosine"}},
+        _lock=threading.RLock(),
+        _vector_lock=threading.RLock(),
+        _scope_id="scope-a",
+        _vector_store=None,
+        _require_conn=lambda: conn,
+        _vector_text=lambda summary, content: summary or content,
+    )
+
+
+def _register_empty_runtime_generation(
+    conn: sqlite3.Connection,
+    storage_dir,
+    *,
+    model: str,
+    dimensions: int,
+) -> None:
+    store = SQLiteBruteForceVectorStore(
+        storage_dir / "vector.sqlite3",
+        table_name="memories",
+        dimensions=dimensions,
+    )
+    store.open()
+    store.close()
+    bootstrap_legacy_generation(
+        conn,
+        identity=GenerationIdentity(
+            backend="sqlite-bruteforce",
+            provider="audit",
+            model=model,
+            dimensions=dimensions,
+            metric="cosine",
+            table_name="memories",
+        ),
+        row_count=0,
+        storage_path=".",
+    )
+    conn.commit()
+
+
+def test_runtime_probes_readiness_before_matching_actual_embedding_dimensions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Runtime must match the manifest against dimensions learned during model load."""
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    _register_empty_runtime_generation(
+        conn,
+        tmp_path,
+        model="dynamic-model",
+        dimensions=7,
+    )
+
+    class DynamicDimensionsEmbedder:
+        provider = "audit"
+        model = "dynamic-model"
+
+        def __init__(self) -> None:
+            self.dimensions = 3
+
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+        def probe_readiness(self) -> None:
+            self.dimensions = 7
+
+    monkeypatch.setattr(
+        vector_runtime_module,
+        "build_embedder",
+        lambda _config: DynamicDimensionsEmbedder(),
+    )
+    provider = _runtime_identity_provider(
+        conn,
+        tmp_path,
+        embedder_config={
+            "provider": "audit",
+            "model": "dynamic-model",
+            "dimensions": 3,
+        },
+    )
+
+    setup_vector_layer(provider)
+
+    try:
+        assert provider._vector_status == "ready"
+        assert provider._embedder.dimensions == 7
+    finally:
+        if provider._vector_store is not None:
+            provider._vector_store.close()
+        conn.close()
+
+
+def test_runtime_skips_readiness_for_provisionally_different_space_primary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """A provider/model mismatch must not load an unused primary model."""
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    _register_empty_runtime_generation(
+        conn,
+        tmp_path,
+        model="active-model",
+        dimensions=7,
+    )
+    readiness_calls: list[str] = []
+
+    class ModelEmbedder:
+        provider = "audit"
+        dimensions = 7
+
+        def __init__(self, model: str) -> None:
+            self.model = model
+
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+        def probe_readiness(self) -> None:
+            readiness_calls.append(self.model)
+
+    monkeypatch.setattr(
+        vector_runtime_module,
+        "build_embedder",
+        lambda config: ModelEmbedder(str(config.get("model") or "")),
+    )
+    provider = _runtime_identity_provider(
+        conn,
+        tmp_path,
+        embedder_config={
+            "provider": "audit",
+            "model": "unused-primary-model",
+            "dimensions": 7,
+        },
+        fallback_embedder_config={
+            "provider": "audit",
+            "model": "active-model",
+            "dimensions": 7,
+        },
+    )
+
+    setup_vector_layer(provider)
+
+    try:
+        assert provider._vector_status == "ready"
+        assert provider._embedder.model == "active-model"
+        assert readiness_calls == ["active-model"]
+    finally:
+        if provider._vector_store is not None:
+            provider._vector_store.close()
+        conn.close()
+
+
+def test_runtime_tries_same_identity_fallback_after_primary_readiness_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Device-specific primary failure must not hide a usable equivalent fallback."""
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    _register_empty_runtime_generation(
+        conn,
+        tmp_path,
+        model="shared-model",
+        dimensions=7,
+    )
+    readiness_calls: list[str] = []
+
+    class EquivalentEmbedder:
+        provider = "audit"
+        model = "shared-model"
+        dimensions = 7
+
+        def __init__(self, device: str) -> None:
+            self.device = device
+
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+        def probe_readiness(self) -> None:
+            readiness_calls.append(self.device)
+            if self.device == "broken-device":
+                raise RuntimeError("synthetic device initialization failure")
+
+    monkeypatch.setattr(
+        vector_runtime_module,
+        "build_embedder",
+        lambda config: EquivalentEmbedder(str(config.get("device") or "")),
+    )
+    provider = _runtime_identity_provider(
+        conn,
+        tmp_path,
+        embedder_config={
+            "provider": "audit",
+            "model": "shared-model",
+            "dimensions": 7,
+            "device": "broken-device",
+        },
+        fallback_embedder_config={
+            "provider": "audit",
+            "model": "shared-model",
+            "dimensions": 7,
+            "device": "working-device",
+        },
+    )
+
+    setup_vector_layer(provider)
+
+    try:
+        assert provider._vector_status == "ready"
+        assert provider._embedder.device == "working-device"
+        assert readiness_calls == ["broken-device", "working-device"]
+    finally:
+        if provider._vector_store is not None:
+            provider._vector_store.close()
+        conn.close()
+
+
 def test_setup_never_uses_different_space_fallback_for_active_generation(monkeypatch, tmp_path):
     monkeypatch.delenv("SCOPE_RECALL_TEST_MISSING_EMBED_KEY", raising=False)
     vector_dir = tmp_path / "lancedb"
