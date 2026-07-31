@@ -22,6 +22,10 @@ from .experience_models import (
 )
 
 
+class _StalePlaybookValidation(RuntimeError):
+    """Internal signal that authoritative playbook rows changed before apply."""
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -520,9 +524,17 @@ def find_duplicate_playbooks(
     conn: sqlite3.Connection,
     *,
     accessible_scope_ids: Sequence[str],
+    owner_scope_aliases: Sequence[str] = (),
     status: str = "",
     limit: int = 50,
 ) -> list[dict[str, Any]]:
+    accessible_scopes = _normalized_owner_scope_aliases(accessible_scope_ids)
+    owner_aliases = _normalized_owner_scope_aliases(owner_scope_aliases)
+    if (
+        any(_is_shared_pool_scope_id(value) for value in owner_aliases)
+        or not owner_aliases.issubset(accessible_scopes)
+    ):
+        owner_aliases = set()
     scope_sql, scope_params = _scope_predicate(accessible_scope_ids)
     where = [scope_sql]
     params: list[Any] = list(scope_params)
@@ -551,7 +563,10 @@ def find_duplicate_playbooks(
                 changed = False
                 rest: list[sqlite3.Row] = []
                 for row in remaining:
-                    if any(_same_owner_scope(row, existing) for existing in component):
+                    if any(
+                        _same_owner_scope(row, existing, tuple(owner_aliases))
+                        for existing in component
+                    ):
                         component.append(row)
                         changed = True
                     else:
@@ -579,22 +594,59 @@ def _fetch_accessible_playbook(conn: sqlite3.Connection, playbook_id: str, acces
     return conn.execute(f"SELECT * FROM procedural_playbooks WHERE id = ? AND {scope_sql}", [playbook_id, *scope_params]).fetchone()
 
 
+def _is_shared_pool_scope_id(value: Any) -> bool:
+    """Return whether ``value`` is a structured cross-agent shared-pool scope.
+
+    Shared-pool ids are readable collaboration scopes, not authenticated owner
+    aliases.  They must never collapse two agent-owned playbook lineages.
+    """
+
+    return str(value or "").strip().startswith("pool:")
+
+
 def _owner_scope_values(row: sqlite3.Row) -> set[str]:
-    """Return the owner/private and shared scope ids that define a playbook lineage boundary."""
+    """Return non-pool scopes that may identify a playbook owner lineage.
 
-    return {value for value in (str(row["scope_id"] or ""), str(row["shared_scope_id"] or "")) if value}
+    Legacy session playbooks can carry their durable owner in
+    ``shared_scope_id``.  New shared-pool playbooks also use that column, but a
+    pool grants visibility only and cannot prove owner equivalence.
+    """
+
+    return {
+        value
+        for value in (
+            str(row["scope_id"] or "").strip(),
+            str(row["shared_scope_id"] or "").strip(),
+        )
+        if value and not _is_shared_pool_scope_id(value)
+    }
 
 
-def _same_owner_scope(left: sqlite3.Row, right: sqlite3.Row) -> bool:
+def _normalized_owner_scope_aliases(values: Sequence[str]) -> set[str]:
+    return {str(value).strip() for value in values if str(value).strip()}
+
+
+def _same_owner_scope(
+    left: sqlite3.Row,
+    right: sqlite3.Row,
+    owner_scope_aliases: Sequence[str] = (),
+) -> bool:
     """Whether two playbooks may be reviewed/merged as the same owner lineage.
 
     Some bootstrap/core playbooks store the user-level scope in ``scope_id`` while
     auto-generated session playbooks store that same value in ``shared_scope_id``.
     Treating either field intersection as the owner boundary avoids false
-    cross-scope mismatches while still blocking unrelated/private scopes.
+    cross-scope mismatches while still blocking unrelated/private scopes.  A
+    trusted runtime may additionally provide its authenticated canonical/legacy
+    alias group; direct callers remain exact-scope by default.
     """
 
-    return bool(_owner_scope_values(left) & _owner_scope_values(right))
+    left_values = _owner_scope_values(left)
+    right_values = _owner_scope_values(right)
+    if left_values & right_values:
+        return True
+    aliases = _normalized_owner_scope_aliases(owner_scope_aliases)
+    return bool(left_values & aliases) and bool(right_values & aliases)
 
 
 def _normalize_semantic_key(value: Any) -> str:
@@ -629,6 +681,42 @@ _PLAYBOOK_VALIDATION_JSON_FIELDS = (
     "cleanup",
     "reuse_policy",
 )
+
+_PLAYBOOK_VALIDATION_TOKEN_ROW_FIELDS = (
+    "id",
+    "scope_id",
+    "shared_scope_id",
+    "task_class",
+    "title",
+    "trigger",
+    "goal",
+    "preconditions",
+    "steps",
+    "pitfalls",
+    "verification",
+    "cleanup",
+    "evidence_anchors",
+    "related_skills",
+    "environment_constraints",
+    "reuse_policy",
+    "status",
+    "confidence",
+    "superseded_by",
+    "updated_at",
+    "metadata",
+)
+
+
+def _validation_token_row_payload(
+    row: sqlite3.Row | None,
+) -> dict[str, Any] | None:
+    """Return every authoritative row field that can affect lifecycle apply."""
+
+    if row is None:
+        return None
+    return {
+        field: row[field] for field in _PLAYBOOK_VALIDATION_TOKEN_ROW_FIELDS
+    }
 
 
 def _validation_payload_from_row(
@@ -666,52 +754,64 @@ def _review_validation_token(
     target_superseded_by: str,
     reason: str,
     force_cross_class: bool,
+    owner_scope_aliases: Sequence[str],
 ) -> str:
     """Bind one review plan to every authoritative input used by apply."""
 
-    row_fields = (
-        "id",
-        "scope_id",
-        "shared_scope_id",
-        "task_class",
-        "title",
-        "trigger",
-        "goal",
-        "preconditions",
-        "steps",
-        "pitfalls",
-        "verification",
-        "cleanup",
-        "evidence_anchors",
-        "related_skills",
-        "environment_constraints",
-        "reuse_policy",
-        "status",
-        "confidence",
-        "superseded_by",
-        "updated_at",
-        "metadata",
-    )
-
-    def row_payload(row: sqlite3.Row | None) -> dict[str, Any] | None:
-        if row is None:
-            return None
-        return {field: row[field] for field in row_fields}
-
     token_payload = {
-        "source": row_payload(source_row),
-        "canonical": row_payload(canonical_row),
+        "source": _validation_token_row_payload(source_row),
+        "canonical": _validation_token_row_payload(canonical_row),
         "requested_status": status,
         "requested_superseded_by": target_superseded_by,
         "reason": reason,
         "force_cross_class": bool(force_cross_class),
+        "owner_scope_aliases": sorted(
+            _normalized_owner_scope_aliases(owner_scope_aliases)
+        ),
         "next_version": _next_version(conn, str(source_row["id"])),
     }
     encoded = _json_dumps(token_payload).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _insert_playbook_version(conn: sqlite3.Connection, *, row: sqlite3.Row, change_type: str, reason: str, created_at: str) -> int:
+def _merge_validation_token(
+    conn: sqlite3.Connection,
+    *,
+    target_row: sqlite3.Row,
+    source_rows: Sequence[sqlite3.Row],
+    reason: str,
+    force_cross_class: bool,
+    owner_scope_aliases: Sequence[str],
+) -> str:
+    """Bind one merge apply to the rows and authorization inputs it validated."""
+
+    rows = [target_row, *source_rows]
+    token_payload = {
+        "target": _validation_token_row_payload(target_row),
+        "sources": [
+            _validation_token_row_payload(row) for row in source_rows
+        ],
+        "reason": reason,
+        "force_cross_class": bool(force_cross_class),
+        "owner_scope_aliases": sorted(
+            _normalized_owner_scope_aliases(owner_scope_aliases)
+        ),
+        "next_versions": {
+            str(row["id"]): _next_version(conn, str(row["id"])) for row in rows
+        },
+    }
+    encoded = _json_dumps(token_payload).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _insert_playbook_version(
+    conn: sqlite3.Connection,
+    *,
+    row: sqlite3.Row,
+    change_type: str,
+    reason: str,
+    created_at: str,
+) -> int:
     version = _next_version(conn, str(row["id"]))
     conn.execute(
         """
@@ -729,19 +829,40 @@ def merge_playbooks(
     target_id: str,
     source_ids: Sequence[str],
     accessible_scope_ids: Sequence[str],
+    owner_scope_aliases: Sequence[str] = (),
     reason: str = "",
     dry_run: bool = True,
     force_cross_class: bool = False,
+    validated_payload: Mapping[str, Any] | None = None,
+    commit: bool = True,
 ) -> dict[str, Any]:
-    """Merge duplicate or superseded Experience playbooks while preserving audit metadata.
+    """Merge duplicate or superseded Experience playbooks with audit history.
 
-    Merging should make the surviving playbook clear and leave enough history to understand why others were superseded."""
+    The apply path revalidates authoritative rows under a write transaction.
+    ``validated_payload`` can additionally bind apply to a prior dry-run token.
+    """
     _reject_secret_like_value(target_id, path="merge.target_id")
     _reject_secret_like_value(list(source_ids), path="merge.source_ids")
     _reject_secret_like_value(reason, path="merge.reason")
     safe_target_id = sanitize_report_text(str(target_id or "").strip())
     safe_reason = sanitize_report_text(reason or "")
     normalized_sources = list(dict.fromkeys(sanitize_report_text(str(item or "").strip()) for item in source_ids if str(item or "").strip()))
+    accessible_scopes = _normalized_owner_scope_aliases(accessible_scope_ids)
+    owner_aliases = _normalized_owner_scope_aliases(owner_scope_aliases)
+    if any(_is_shared_pool_scope_id(value) for value in owner_aliases):
+        return {
+            "merged": False,
+            "dry_run": bool(dry_run),
+            "target_id": safe_target_id,
+            "error": "owner_scope_alias_is_shared_pool",
+        }
+    if not owner_aliases.issubset(accessible_scopes):
+        return {
+            "merged": False,
+            "dry_run": bool(dry_run),
+            "target_id": safe_target_id,
+            "error": "owner_scope_alias_not_accessible",
+        }
     if not safe_target_id:
         return {"merged": False, "dry_run": bool(dry_run), "target_id": "", "error": "target_required"}
     if not normalized_sources:
@@ -763,7 +884,11 @@ def merge_playbooks(
         return {"merged": False, "dry_run": bool(dry_run), "target_id": safe_target_id, "error": "source_not_found", "missing_source_ids": missing}
     already_superseded_rows = [row for row in source_rows if str(row["status"]) == "superseded" and str(row["superseded_by"] or "") == safe_target_id]
     needs_change_rows = [row for row in source_rows if row not in already_superseded_rows]
-    owner_mismatches = [str(row["id"]) for row in needs_change_rows if not _same_owner_scope(row, target)]
+    owner_mismatches = [
+        str(row["id"])
+        for row in needs_change_rows
+        if not _same_owner_scope(row, target, tuple(owner_aliases))
+    ]
     if owner_mismatches:
         return {
             "merged": False,
@@ -789,6 +914,23 @@ def merge_playbooks(
             "error": "force_reason_required",
             "mismatches": [_semantic_mismatch_payload(row, target) for row in semantic_mismatches],
         }
+    validation_token = _merge_validation_token(
+        conn,
+        target_row=target,
+        source_rows=source_rows,
+        reason=safe_reason,
+        force_cross_class=force_cross_class,
+        owner_scope_aliases=tuple(owner_aliases),
+    )
+    if validated_payload is not None and str(
+        validated_payload.get("validation_token") or ""
+    ) != validation_token:
+        return {
+            "merged": False,
+            "dry_run": bool(dry_run),
+            "target_id": safe_target_id,
+            "error": "stale_validation",
+        }
     payload = {
         "merged": False,
         "dry_run": bool(dry_run),
@@ -801,6 +943,7 @@ def merge_playbooks(
         "reason": safe_reason,
         "target": _serialize_row(target),
         "sources": [_serialize_row(row) for row in source_rows],
+        "validation_token": validation_token,
     }
     if dry_run:
         return payload
@@ -810,17 +953,153 @@ def merge_playbooks(
         payload["idempotent"] = True
         payload["versions"] = []
         return payload
-    now = _now_iso()
-    versions: list[dict[str, Any]] = []
-    conn.execute("UPDATE procedural_playbooks SET updated_at = ? WHERE id = ?", (now, safe_target_id))
-    updated_target = conn.execute("SELECT * FROM procedural_playbooks WHERE id = ?", (safe_target_id,)).fetchone()
-    versions.append({"playbook_id": safe_target_id, "version": _insert_playbook_version(conn, row=updated_target, change_type="merge", reason=safe_reason, created_at=now)})
-    for row in needs_change_rows:
-        source_id = str(row["id"])
-        conn.execute("UPDATE procedural_playbooks SET status = 'superseded', superseded_by = ?, updated_at = ? WHERE id = ?", (safe_target_id, now, source_id))
-        updated_source = conn.execute("SELECT * FROM procedural_playbooks WHERE id = ?", (source_id,)).fetchone()
-        versions.append({"playbook_id": source_id, "version": _insert_playbook_version(conn, row=updated_source, change_type="superseded", reason=safe_reason, created_at=now)})
-    conn.commit()
+
+    started_transaction = False
+    savepoint_started = False
+    try:
+        if not conn.in_transaction:
+            if not commit:
+                raise ExperienceValidationError(
+                    "merge_playbooks(commit=False) requires an active caller-owned transaction"
+                )
+            conn.execute("BEGIN IMMEDIATE")
+            started_transaction = True
+        conn.execute("SAVEPOINT scope_recall_merge_playbook")
+        savepoint_started = True
+
+        locked_target = _fetch_accessible_playbook(
+            conn, safe_target_id, accessible_scope_ids
+        )
+        locked_sources = [
+            _fetch_accessible_playbook(conn, source_id, accessible_scope_ids)
+            for source_id in normalized_sources
+        ]
+        if locked_target is None or any(row is None for row in locked_sources):
+            raise _StalePlaybookValidation
+        authoritative_sources = [
+            row for row in locked_sources if row is not None
+        ]
+        locked_token = _merge_validation_token(
+            conn,
+            target_row=locked_target,
+            source_rows=authoritative_sources,
+            reason=safe_reason,
+            force_cross_class=force_cross_class,
+            owner_scope_aliases=tuple(owner_aliases),
+        )
+        if locked_token != validation_token:
+            raise _StalePlaybookValidation
+
+        target = locked_target
+        source_rows = authoritative_sources
+        needs_change_rows = [
+            row
+            for row in source_rows
+            if not (
+                str(row["status"]) == "superseded"
+                and str(row["superseded_by"] or "") == safe_target_id
+            )
+        ]
+        now = _now_iso()
+        versions: list[dict[str, Any]] = []
+        target_update = conn.execute(
+            """
+            UPDATE procedural_playbooks
+            SET updated_at = ?
+            WHERE id = ? AND scope_id = ? AND shared_scope_id = ?
+              AND status = ? AND superseded_by = ? AND updated_at = ?
+            """,
+            (
+                now,
+                safe_target_id,
+                str(target["scope_id"]),
+                str(target["shared_scope_id"] or ""),
+                str(target["status"]),
+                str(target["superseded_by"] or ""),
+                str(target["updated_at"]),
+            ),
+        )
+        if target_update.rowcount != 1:
+            raise _StalePlaybookValidation
+        updated_target = conn.execute(
+            "SELECT * FROM procedural_playbooks WHERE id = ?", (safe_target_id,)
+        ).fetchone()
+        if updated_target is None:
+            raise _StalePlaybookValidation
+        versions.append(
+            {
+                "playbook_id": safe_target_id,
+                "version": _insert_playbook_version(
+                    conn,
+                    row=updated_target,
+                    change_type="merge",
+                    reason=safe_reason,
+                    created_at=now,
+                ),
+            }
+        )
+        for row in needs_change_rows:
+            source_id = str(row["id"])
+            source_update = conn.execute(
+                """
+                UPDATE procedural_playbooks
+                SET status = 'superseded', superseded_by = ?, updated_at = ?
+                WHERE id = ? AND scope_id = ? AND shared_scope_id = ?
+                  AND status = ? AND superseded_by = ? AND updated_at = ?
+                """,
+                (
+                    safe_target_id,
+                    now,
+                    source_id,
+                    str(row["scope_id"]),
+                    str(row["shared_scope_id"] or ""),
+                    str(row["status"]),
+                    str(row["superseded_by"] or ""),
+                    str(row["updated_at"]),
+                ),
+            )
+            if source_update.rowcount != 1:
+                raise _StalePlaybookValidation
+            updated_source = conn.execute(
+                "SELECT * FROM procedural_playbooks WHERE id = ?", (source_id,)
+            ).fetchone()
+            if updated_source is None:
+                raise _StalePlaybookValidation
+            versions.append(
+                {
+                    "playbook_id": source_id,
+                    "version": _insert_playbook_version(
+                        conn,
+                        row=updated_source,
+                        change_type="superseded",
+                        reason=safe_reason,
+                        created_at=now,
+                    ),
+                }
+            )
+        conn.execute("RELEASE SAVEPOINT scope_recall_merge_playbook")
+        savepoint_started = False
+        if commit:
+            conn.commit()
+    except _StalePlaybookValidation:
+        if savepoint_started:
+            conn.execute("ROLLBACK TO SAVEPOINT scope_recall_merge_playbook")
+            conn.execute("RELEASE SAVEPOINT scope_recall_merge_playbook")
+        if started_transaction:
+            conn.rollback()
+        payload["merged"] = False
+        payload["changed"] = False
+        payload["error"] = "stale_validation"
+        payload.pop("validation_token", None)
+        return payload
+    except BaseException:
+        if savepoint_started:
+            conn.execute("ROLLBACK TO SAVEPOINT scope_recall_merge_playbook")
+            conn.execute("RELEASE SAVEPOINT scope_recall_merge_playbook")
+        if started_transaction:
+            conn.rollback()
+        raise
+
     payload["merged"] = True
     payload["versions"] = versions
     return payload
@@ -864,6 +1143,7 @@ def review_playbook(
     *,
     playbook_id: str,
     accessible_scope_ids: Sequence[str],
+    owner_scope_aliases: Sequence[str] = (),
     action: str,
     reason: str = "",
     superseded_by: str = "",
@@ -898,6 +1178,24 @@ def review_playbook(
     _reject_secret_like_value(superseded_by, path="review.superseded_by")
     safe_reason = sanitize_report_text(reason)
     safe_superseded_by = sanitize_report_text(superseded_by)
+    accessible_scopes = _normalized_owner_scope_aliases(accessible_scope_ids)
+    owner_aliases = _normalized_owner_scope_aliases(owner_scope_aliases)
+    if any(_is_shared_pool_scope_id(value) for value in owner_aliases):
+        return {
+            "reviewed": False,
+            "dry_run": bool(dry_run),
+            "changed": False,
+            "id": playbook_id,
+            "error": "owner_scope_alias_is_shared_pool",
+        }
+    if not owner_aliases.issubset(accessible_scopes):
+        return {
+            "reviewed": False,
+            "dry_run": bool(dry_run),
+            "changed": False,
+            "id": playbook_id,
+            "error": "owner_scope_alias_not_accessible",
+        }
     source_row = _fetch_accessible_playbook(
         conn, playbook_id, accessible_scope_ids
     )
@@ -939,7 +1237,7 @@ def review_playbook(
                 "error": "superseded_by_not_found",
                 "superseded_by": safe_superseded_by,
             }
-        if not _same_owner_scope(source_row, canonical_row):
+        if not _same_owner_scope(source_row, canonical_row, tuple(owner_aliases)):
             return {
                 "reviewed": False,
                 "dry_run": bool(dry_run),
@@ -983,6 +1281,7 @@ def review_playbook(
         target_superseded_by=target_superseded_by,
         reason=safe_reason,
         force_cross_class=force_cross_class,
+        owner_scope_aliases=tuple(owner_aliases),
     )
     if validated_payload is not None:
         expected_token = str(validated_payload.get("validation_token") or "")
@@ -1046,21 +1345,68 @@ def review_playbook(
             raise ExperienceValidationError(
                 "review_playbook(commit=False) requires an active caller-owned transaction"
             )
-        conn.execute("BEGIN")
+        conn.execute("BEGIN IMMEDIATE")
         started_transaction = True
 
     savepoint = f"review_playbook_{uuid.uuid4().hex}"
     conn.execute(f"SAVEPOINT {savepoint}")
     try:
+        authoritative_source = _fetch_accessible_playbook(
+            conn, playbook_id, accessible_scope_ids
+        )
+        authoritative_canonical = (
+            _fetch_accessible_playbook(
+                conn, safe_superseded_by, accessible_scope_ids
+            )
+            if status == "superseded"
+            else None
+        )
+        if authoritative_source is None or (
+            status == "superseded" and authoritative_canonical is None
+        ):
+            raise _StalePlaybookValidation
+        locked_token = _review_validation_token(
+            conn,
+            source_row=authoritative_source,
+            canonical_row=authoritative_canonical,
+            status=status,
+            target_superseded_by=target_superseded_by,
+            reason=safe_reason,
+            force_cross_class=force_cross_class,
+            owner_scope_aliases=tuple(owner_aliases),
+        )
+        if locked_token != validation_token:
+            raise _StalePlaybookValidation
+
+        source_row = authoritative_source
         now = _now_iso()
         version = _next_version(conn, playbook_id)
-        conn.execute(
-            "UPDATE procedural_playbooks SET status = ?, superseded_by = ?, updated_at = ? WHERE id = ?",
-            (status, target_superseded_by, now, playbook_id),
+        update = conn.execute(
+            """
+            UPDATE procedural_playbooks
+            SET status = ?, superseded_by = ?, updated_at = ?
+            WHERE id = ? AND scope_id = ? AND shared_scope_id = ?
+              AND status = ? AND superseded_by = ? AND updated_at = ?
+            """,
+            (
+                status,
+                target_superseded_by,
+                now,
+                playbook_id,
+                str(source_row["scope_id"]),
+                str(source_row["shared_scope_id"] or ""),
+                str(source_row["status"]),
+                str(source_row["superseded_by"] or ""),
+                str(source_row["updated_at"]),
+            ),
         )
+        if update.rowcount != 1:
+            raise _StalePlaybookValidation
         updated = conn.execute(
             "SELECT * FROM procedural_playbooks WHERE id = ?", (playbook_id,)
         ).fetchone()
+        if updated is None:
+            raise _StalePlaybookValidation
         if status == "promoted":
             _sync_skill_anchors_for_playbook(
                 conn, updated, reason=safe_reason or "playbook promoted"
@@ -1080,6 +1426,18 @@ def review_playbook(
                 now,
             ),
         )
+    except _StalePlaybookValidation:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        if started_transaction and conn.in_transaction:
+            conn.rollback()
+        return {
+            "reviewed": False,
+            "dry_run": False,
+            "changed": False,
+            "id": playbook_id,
+            "error": "stale_validation",
+        }
     except BaseException:
         conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
         conn.execute(f"RELEASE SAVEPOINT {savepoint}")

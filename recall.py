@@ -11,7 +11,12 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .capture_filters import redact_secret_like_text, sanitize_structured_value
-from .gating import query_tokens
+from .gating import (
+    matched_query_intent_terms,
+    query_intent_terms,
+    query_requests_current_state,
+    query_tokens,
+)
 from .freshness import attach_freshness_metadata, memory_freshness_map
 from .graph import apply_quality_weight, entity_distance_scores, entity_overlap_bonus, metadata_entities, normalize_entity, query_entities as graph_query_entities
 from .lifecycle_policy import ORDINARY_RECALL_HIDDEN_LIFECYCLE_VALUES, ordinary_recall_lifecycle_visible_sql
@@ -35,6 +40,11 @@ _FRESHNESS_HINTS = {
     "recently",
     "today",
     "updated",
+    "当前",
+    "目前",
+    "现在",
+    "如今",
+    "最新",
 }
 
 _FRESHNESS_BASE_WEIGHT = 0.03
@@ -125,6 +135,12 @@ _ENTITY_SCOPE_STOPWORDS = {
     "use",
 }
 
+_CJK_SCOPE_QUERY_SUBJECT_RE = re.compile(
+    r"(?<![\u4e00-\u9fff])([\u4e00-\u9fff]{2,8})"
+    r"(?=(?:现在|目前|当前|最近|在哪里|在哪|哪儿|何处|的|是什么|怎么|如何|是否|有没有))"
+)
+_CJK_SCOPE_PRONOUNS = {"我们", "你们", "他们", "她们", "它们", "大家", "自己"}
+
 
 class RecallService:
     """Read-side retrieval service for current-turn recall.
@@ -157,6 +173,8 @@ class RecallService:
             plan=plan,
             accessible_scope_count=len(getattr(self.provider, "_accessible_scope_ids", []) or []),
         )
+        intent_terms = query_intent_terms(query)
+        current_state_requested = query_requests_current_state(query)
 
         stage_start = time.perf_counter()
         raw_lexical_candidates = self.provider._search_db_memories(query, limit=candidate_pool)
@@ -280,12 +298,25 @@ class RecallService:
         # substantially higher bar than the broad vector candidate threshold.
         # This keeps the semantic companion useful for strong hits while
         # preventing mid-confidence neighbor drift from injecting stale topics.
-        vector_only_min_score = float(retrieval_cfg.get("vector_only_min_score") or 0.30)
+        vector_only_min_score = float(retrieval_cfg.get("vector_only_min_score") or 0.70)
         filtered: list[RecallItem] = []
         rejected: list[RecallItem] = []
         self.last_rejected_candidates = []
         for item in results:
             meta = dict(item.metadata or {})
+            raw_bm25_score = float(meta.get("bm25_score") or 0.0)
+            matched_intent_terms = matched_query_intent_terms(
+                query,
+                f"{item.summary}\n{item.content}",
+            )
+            intent_matched = bool(matched_intent_terms)
+            if intent_terms and raw_bm25_score > 0.0 and not intent_matched:
+                meta["bm25_pre_intent_score"] = raw_bm25_score
+                meta["bm25_score"] = raw_bm25_score * 0.25
+            meta["intent_terms"] = list(intent_terms)
+            meta["intent_matched"] = intent_matched
+            meta["matched_intent_terms"] = matched_intent_terms
+            meta["current_state_requested"] = current_state_requested
             pre_quality_score = self.final_score(meta)
             metadata_weight = float(retrieval_cfg.get("metadata_weight") or 0.08)
             quality_adjusted_score = apply_quality_weight(
@@ -303,6 +334,12 @@ class RecallService:
             base_score = max(0.0, min(1.0, quality_adjusted_score + entity_overlap + entity_distance_bonus + relation_rerank_bonus))
             freshness_payload = freshness_evidence.get(item.id)
             fact_freshness_penalty = attach_freshness_metadata(meta, freshness_payload, config=retrieval_cfg)
+            meta["current_state_rank"] = self._current_state_rank(
+                item,
+                meta,
+                requested=current_state_requested,
+                intent_matched=intent_matched,
+            )
             if fact_freshness_penalty > 0.0:
                 base_score *= max(0.0, 1.0 - fact_freshness_penalty)
             decay_multiplier = self._temporal_decay_multiplier(meta, item.updated_at)
@@ -528,17 +565,6 @@ class RecallService:
             output.add(normalized)
         return output
 
-    def _query_scope_entities(self, query: str) -> set[str]:
-        raw = str(query or "")
-        values = list(graph_query_entities(raw))
-        # Prefer explicit-looking names from the query. Plain lowercase nouns are
-        # too noisy for isolation (e.g. "style", "prod", "run") and are filtered
-        # through `_ENTITY_SCOPE_STOPWORDS` before becoming hard mismatch signals.
-        values.extend(match.group(1) for match in re.finditer(r"`([^`\n]{2,80})`", raw))
-        values.extend(match.group(0) for match in re.finditer(r"\b[A-Z][A-Za-z0-9_.:/#-]{2,63}\b", raw))
-        values.extend(match.group(0) for match in re.finditer(r"[\u4e00-\u9fff]{2,12}", raw))
-        return self._scope_entities(values)
-
     def _explicit_query_scope_entities(self, query: str) -> set[str]:
         raw = str(query or "")
         values = [
@@ -546,9 +572,13 @@ class RecallService:
             for match in re.finditer(r"\b[A-Z][A-Za-z0-9_.:/#-]{2,63}\b", raw)
         ]
         values.extend(
-            token
-            for token in query_tokens(raw)
-            if re.fullmatch(r"[\u4e00-\u9fff]{2,24}", token)
+            match.group(1)
+            for match in re.finditer(r"`([\u4e00-\u9fff]{2,12})`", raw)
+        )
+        values.extend(
+            subject
+            for subject in _CJK_SCOPE_QUERY_SUBJECT_RE.findall(raw)
+            if subject not in _CJK_SCOPE_PRONOUNS
         )
         return self._scope_entities(values)
 
@@ -593,18 +623,49 @@ class RecallService:
             explicit_query_entities = self._explicit_query_scope_entities(query)
             if explicit_query_entities:
                 return not bool(explicit_query_entities & explicit_item_entities)
+        explicit_query_entities = self._explicit_query_scope_entities(query)
         item_scope_entities = self._scope_entities(metadata_entities(meta, item.content, item.target))
         if not item_scope_entities:
             return False
-        query_scope_entities = self._query_scope_entities(query)
         query_lower = str(query or "").lower()
         for entity in item_scope_entities:
             minimum_length = 2 if re.search(r"[\u4e00-\u9fff]", entity) else 3
             if len(entity) >= minimum_length and entity in query_lower:
-                query_scope_entities.add(entity)
-        if not query_scope_entities:
+                explicit_query_entities.add(entity)
+        if not explicit_query_entities:
             return False
-        return not bool(query_scope_entities & item_scope_entities)
+        return not bool(explicit_query_entities & item_scope_entities)
+
+    @staticmethod
+    def _current_state_rank(
+        item: RecallItem,
+        meta: dict[str, Any],
+        *,
+        requested: bool,
+        intent_matched: bool,
+    ) -> int:
+        """Rank relevant present-state evidence above plans and old decisions.
+
+        This is a read-side authority tie-break, not a substitute for Fact
+        Evolution.  Structured current claims remain strongest; curated profile
+        facts can bridge legacy rows that have not yet acquired claims; plan and
+        procedure memories stay available but cannot impersonate current state.
+        """
+
+        if not requested or not intent_matched:
+            return 0
+        if bool(meta.get("temporal_fact_current") or meta.get("temporal_authoritative")):
+            return 4
+        freshness = meta.get("freshness")
+        status = str(freshness.get("status") or "").strip().lower() if isinstance(freshness, dict) else ""
+        if status == "current":
+            return 4
+        if item.source == "builtin-curated" and item.target in {"user", "memory"}:
+            return 3
+        # Untracked legacy rows, including decisions and procedures, remain
+        # searchable but do not gain present-state authority merely because
+        # they contain an answer-shaped word.
+        return 1
 
     def _config_bool(self, value: Any, default: bool = False) -> bool:
         if value is None:
@@ -992,6 +1053,8 @@ class RecallService:
         hints = {str(token).strip().lower() for token in configured_hints if str(token).strip()}
         query_token_set = set(query_tokens(query or ""))
         hint_hits = len(query_token_set & hints)
+        if hint_hits <= 0 and query_requests_current_state(query):
+            hint_hits = 1
         if hint_hits <= 0:
             return 0.0
         base_weight = float(retrieval_cfg.get("freshness_base_weight") or _FRESHNESS_BASE_WEIGHT)

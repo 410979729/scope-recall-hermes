@@ -72,7 +72,7 @@ def test_lifecycle_and_hard_delete_writes_have_narrow_domain_boundaries() -> Non
     delete_rows_calls: set[tuple[str, str]] = set()
 
     for path in _python_sources():
-        relative = str(path.relative_to(ROOT))
+        relative = path.relative_to(ROOT).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=relative)
         parents = _parents(tree)
         for node in ast.walk(tree):

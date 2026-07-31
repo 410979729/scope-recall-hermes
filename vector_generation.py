@@ -1005,6 +1005,99 @@ def complete_vector_event(conn: sqlite3.Connection, event_id: int, *, worker_id:
         raise GenerationCompatibilityError(f"vector outbox completion CAS conflict for event {event_id}")
 
 
+def prune_completed_vector_outbox(
+    conn: sqlite3.Connection,
+    *,
+    retention_days: int = 30,
+    keep_per_generation: int = 5000,
+    timestamp: str = "",
+) -> dict[str, Any]:
+    """Delete only old completed events while preserving a recent per-generation floor.
+
+    The caller owns the transaction.  Pending, retry, processing, dead-letter,
+    and terminal rows without a parseable completion/update timestamp are never
+    selected by this retention pass.
+    """
+
+    ensure_vector_generation_schema(conn)
+    days = max(0, int(retention_days))
+    keep = max(0, int(keep_per_generation))
+    completed_before = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM vector_outbox WHERE status = 'completed'"
+        ).fetchone()[0]
+    )
+    if days == 0:
+        return {
+            "enabled": False,
+            "retention_days": 0,
+            "keep_per_generation": keep,
+            "generations_scanned": 0,
+            "deleted": 0,
+            "completed_remaining": completed_before,
+        }
+
+    at = timestamp or now_iso()
+    try:
+        current = datetime.fromisoformat(str(at).replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("vector outbox retention timestamp must be ISO-8601") from exc
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    cutoff = (current.astimezone(timezone.utc) - timedelta(days=days)).isoformat()
+
+    generation_ids = [
+        str(row[0])
+        for row in conn.execute(
+            """
+            SELECT DISTINCT generation_id
+            FROM vector_outbox
+            WHERE status = 'completed'
+            ORDER BY generation_id ASC
+            """
+        ).fetchall()
+    ]
+    deleted = 0
+    for generation_id in generation_ids:
+        minimum_retained_id = 0
+        if keep:
+            retained_boundary = conn.execute(
+                """
+                SELECT id
+                FROM vector_outbox
+                WHERE generation_id = ? AND status = 'completed'
+                ORDER BY id DESC
+                LIMIT 1 OFFSET ?
+                """,
+                (generation_id, keep - 1),
+            ).fetchone()
+            if retained_boundary is None:
+                continue
+            minimum_retained_id = int(retained_boundary[0])
+        cursor = conn.execute(
+            """
+            DELETE FROM vector_outbox
+            WHERE generation_id = ?
+              AND status = 'completed'
+              AND (? = 0 OR id < ?)
+              AND julianday(
+                    COALESCE(NULLIF(completed_at, ''), updated_at, created_at)
+                  ) < julianday(?)
+            """,
+            (generation_id, minimum_retained_id, minimum_retained_id, cutoff),
+        )
+        deleted += max(0, int(cursor.rowcount))
+
+    return {
+        "enabled": True,
+        "retention_days": days,
+        "keep_per_generation": keep,
+        "generations_scanned": len(generation_ids),
+        "deleted": deleted,
+        "completed_remaining": completed_before - deleted,
+    }
+
+
 def fail_vector_event(
     conn: sqlite3.Connection,
     event_id: int,

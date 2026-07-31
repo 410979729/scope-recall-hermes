@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
 import uuid
@@ -394,7 +395,91 @@ def plan_hidden_vector_companion_repair(
 def _backup_name(path: Path, backend: str) -> str:
     digest = hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()[:10]
     suffix = ".sqlite3" if backend == "sqlite-bruteforce" else ""
-    return f"{backend}.{path.name}.{digest}{suffix}"
+    prefix = "sqlite" if backend == "sqlite-bruteforce" else "lance"
+    return f"{prefix}-{digest}{suffix}"
+
+
+def _extended_windows_path(path: Path) -> str:
+    """Return a Win32 extended-length path while preserving normal paths elsewhere."""
+
+    resolved = str(path.resolve(strict=False))
+    if os.name != "nt" or resolved.startswith("\\\\?\\"):
+        return resolved
+    if resolved.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + resolved.lstrip("\\")
+    return "\\\\?\\" + resolved
+
+
+def _tree_manifest(root: Path) -> dict[str, Any]:
+    """Hash one companion tree without depending on ``Path.rglob`` long-path support."""
+
+    root_path = _extended_windows_path(root)
+    digest = hashlib.sha256()
+    entries = 0
+    files = 0
+    total_bytes = 0
+    for current, directories, filenames in os.walk(root_path):
+        directories.sort()
+        filenames.sort()
+        relative_dir = os.path.relpath(current, root_path)
+        relative_dir = "" if relative_dir == "." else relative_dir.replace("\\", "/")
+        for directory in directories:
+            relative = "/".join(part for part in (relative_dir, directory) if part)
+            digest.update(f"D\0{relative}\n".encode("utf-8", errors="surrogateescape"))
+            entries += 1
+        for filename in filenames:
+            full_path = os.path.join(current, filename)
+            relative = "/".join(part for part in (relative_dir, filename) if part)
+            file_digest = hashlib.sha256()
+            size = 0
+            with open(full_path, "rb") as handle:
+                while True:
+                    block = handle.read(1024 * 1024)
+                    if not block:
+                        break
+                    file_digest.update(block)
+                    size += len(block)
+            digest.update(
+                f"F\0{relative}\0{size}\0{file_digest.hexdigest()}\n".encode(
+                    "utf-8", errors="surrogateescape"
+                )
+            )
+            entries += 1
+            files += 1
+            total_bytes += size
+    return {
+        "entries": entries,
+        "files": files,
+        "bytes": total_bytes,
+        "sha256": digest.hexdigest(),
+    }
+
+
+def _remove_tree(path: Path, *, ignore_errors: bool = False) -> None:
+    extended = _extended_windows_path(path)
+    if os.path.exists(extended):
+        shutil.rmtree(extended, ignore_errors=ignore_errors)
+
+
+def _sqlite_manifest(path: Path) -> dict[str, Any]:
+    """Return a logical SQLite backup manifest independent of page layout."""
+
+    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        quick_check = str(connection.execute("PRAGMA quick_check").fetchone()[0])
+        digest = hashlib.sha256()
+        line_count = 0
+        for line in connection.iterdump():
+            digest.update(line.encode("utf-8"))
+            digest.update(b"\n")
+            line_count += 1
+        return {
+            "quick_check": quick_check,
+            "dump_lines": line_count,
+            "sha256": digest.hexdigest(),
+        }
+    finally:
+        connection.close()
 
 
 def _backup_sqlite(source_path: Path, destination: Path) -> None:
@@ -413,15 +498,34 @@ def _backup_companion(item: dict[str, Any], backup_root: Path) -> dict[str, Any]
     backend = str(item["backend"])
     destination = backup_root / _backup_name(path, backend)
     if backend == "sqlite-bruteforce":
+        source_manifest = _sqlite_manifest(path)
         _backup_sqlite(path, destination)
+        backup_manifest = _sqlite_manifest(destination)
     elif backend == "lancedb":
-        shutil.copytree(path, destination)
+        source_manifest = _tree_manifest(path)
+        try:
+            shutil.copytree(
+                _extended_windows_path(path),
+                _extended_windows_path(destination),
+            )
+        except Exception:
+            _remove_tree(destination, ignore_errors=True)
+            raise
+        backup_manifest = _tree_manifest(destination)
     else:
         raise RuntimeError(f"unsupported backup backend: {backend}")
+    if source_manifest != backup_manifest:
+        if destination.is_dir():
+            _remove_tree(destination, ignore_errors=True)
+        else:
+            destination.unlink(missing_ok=True)
+        raise RuntimeError(f"{backend} backup manifest verification failed")
     return {
         "backend": backend,
         "source": str(path),
         "backup": str(destination),
+        "source_manifest": source_manifest,
+        "backup_manifest": backup_manifest,
     }
 
 
@@ -577,12 +681,12 @@ def repair_hidden_vector_companions(
     backups: list[dict[str, Any]] = []
     if affected:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        root = storage_dir / "backups" / f"hidden-vector-repair.{stamp}.{uuid.uuid4().hex[:8]}"
+        root = storage_dir / "backups" / f"vr-{stamp}-{uuid.uuid4().hex[:6]}"
         root.mkdir(parents=True, exist_ok=False)
         try:
             backups = [_backup_companion(item, root) for item in affected]
         except Exception:
-            shutil.rmtree(root, ignore_errors=True)
+            _remove_tree(root, ignore_errors=True)
             raise
         backup_root = str(root)
 

@@ -130,7 +130,7 @@ def test_distribution_metadata_exposes_official_standalone_install_shape():
     pyproject = tomllib.loads((PLUGIN_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert pyproject["project"]["name"] == "hermes-scope-recall"
-    assert pyproject["project"]["version"] == "1.8.2"
+    assert pyproject["project"]["version"] == "1.8.3"
     assert pyproject["project"]["scripts"] == {
         "hermes-scope-recall": "scope_recall.cli:main"
     }
@@ -762,7 +762,10 @@ def test_atomic_config_replace_preserves_symlink_identity_and_target_mode(tmp_pa
     assert receipt["config_updated"] is True
     assert config_path.is_symlink()
     assert os.readlink(config_path) == "../external.yaml"
-    assert external.stat().st_mode & 0o777 == 0o640
+    if os.name == "nt":
+        assert external.is_file()
+    else:
+        assert external.stat().st_mode & 0o777 == 0o640
     assert yaml.safe_load(external.read_text(encoding="utf-8"))["memory"] == {
         "provider": "scope-recall",
         "max_items": 42,
@@ -1415,7 +1418,7 @@ def test_activation_failure_discards_changed_vector_companion_with_rebuild_recei
     from scope_recall.sql_store import ensure_schema
     from scope_recall.vector_generation import GenerationIdentity, bootstrap_legacy_generation
 
-    with sqlite3.connect(storage / "memory.sqlite3") as conn:
+    with closing(sqlite3.connect(storage / "memory.sqlite3")) as conn:
         conn.row_factory = sqlite3.Row
         ensure_schema(conn)
         identity = GenerationIdentity(
@@ -1464,6 +1467,81 @@ def test_activation_failure_discards_changed_vector_companion_with_rebuild_recei
     assert receipt["rebuild_required"] is True
     assert not companion.exists()
     assert any("vector repair apply" in command for command in transaction["restore_commands"])
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing violation contract")
+def test_locked_vector_rollback_fails_closed_and_physically_retains_lease(
+    tmp_path, monkeypatch
+):
+    import scope_recall.installer as installer
+
+    plugin_dir = tmp_path / "plugins" / PLUGIN_NAME
+    _write_installed_plugin(plugin_dir, version="1.7.2", marker="stable-old")
+    _write_installer_state(tmp_path)
+    storage = tmp_path / "scope-recall"
+    companion = storage / "vector.sqlite3"
+
+    from scope_recall.sql_store import ensure_schema
+    from scope_recall.vector_generation import GenerationIdentity, bootstrap_legacy_generation
+
+    with closing(sqlite3.connect(storage / "memory.sqlite3")) as conn:
+        conn.row_factory = sqlite3.Row
+        ensure_schema(conn)
+        bootstrap_legacy_generation(
+            conn,
+            identity=GenerationIdentity(
+                backend="sqlite-bruteforce",
+                provider="local-hash",
+                model="hash-v1",
+                dimensions=256,
+                metric="cosine",
+                table_name="memories",
+            ),
+            storage_path=".",
+            row_count=0,
+            unique_id_count=0,
+        )
+        conn.commit()
+
+    vector_lock = sqlite3.connect(companion)
+    vector_lock.execute("CREATE TABLE locked_marker(value TEXT NOT NULL)")
+    vector_lock.commit()
+
+    def injected_activation(
+        _home: Path,
+        _installed_plugin: Path,
+        _activation_snapshot: dict[str, object],
+    ):
+        vector_lock.execute("INSERT INTO locked_marker(value) VALUES ('changed')")
+        vector_lock.commit()
+        raise RuntimeError("injected failure with externally locked vector")
+
+    monkeypatch.setattr(installer, "_activation_payload", injected_activation)
+    try:
+        result = installer.install(
+            tmp_path,
+            activate=True,
+            maintenance_mode=True,
+        )
+        transaction = result["activation_transaction"]
+        lease = transaction["maintenance_lease"]
+
+        assert transaction["status"] == "rollback_failed"
+        assert transaction["automatic_rollback"] is False
+        assert lease["retained"] is True
+        assert lease["present"] is True
+        assert lease["token_matches"] is True
+        assert Path(lease["path"]).is_file()
+        assert any(
+            "companion discard failed" in failure and "WinError 32" in failure
+            for failure in transaction["failures"]
+        )
+        assert any(
+            command.startswith("powershell.exe ")
+            for command in transaction["restore_commands"]
+        )
+    finally:
+        vector_lock.close()
 
 
 def test_install_activate_failure_compensates_fresh_install(tmp_path, monkeypatch):
@@ -1654,14 +1732,14 @@ def test_installer_upgrade_backs_up_existing_plugin_and_reports_versions(tmp_pat
     assert result["installed"] is True
     assert result["previous_plugin_existed"] is True
     assert result["previous_version"] == "0.9.0"
-    assert result["manifest_version"] == "1.8.2"
-    assert result["new_version"] == "1.8.2"
+    assert result["manifest_version"] == "1.8.3"
+    assert result["new_version"] == "1.8.3"
     backup_path = Path(result["backup_path"])
     assert backup_path.is_dir()
     assert tmp_path in backup_path.parents
     assert "version: 0.9.0" in (backup_path / "plugin.yaml").read_text(encoding="utf-8")
     assert "previous plugin" in (backup_path / "__init__.py").read_text(encoding="utf-8")
-    assert "version: 1.8.2" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.8.3" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
     assert any("restart" in step.lower() for step in result["next_steps"])
     assert any("doctor" in step for step in result["next_steps"])
     assert result["rollback_command"].endswith(str(backup_path))
@@ -1673,7 +1751,7 @@ def test_installer_rollback_restores_backup_and_backs_up_current_plugin(tmp_path
     plugin_dir = tmp_path / "plugins" / PLUGIN_NAME
     _write_installed_plugin(plugin_dir, version="0.9.0", marker="previous plugin")
     upgrade = installer.install(hermes_home=tmp_path)
-    assert "version: 1.8.2" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.8.3" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
 
     rollback = installer.rollback(hermes_home=tmp_path, backup_dir=upgrade["backup_path"])
 
@@ -1681,10 +1759,10 @@ def test_installer_rollback_restores_backup_and_backs_up_current_plugin(tmp_path
     assert rollback["dry_run"] is False
     assert rollback["restored"] is True
     assert rollback["restored_version"] == "0.9.0"
-    assert rollback["replaced_version"] == "1.8.2"
+    assert rollback["replaced_version"] == "1.8.3"
     current_backup = Path(rollback["current_backup_path"])
     assert current_backup.is_dir()
-    assert "version: 1.8.2" in (current_backup / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.8.3" in (current_backup / "plugin.yaml").read_text(encoding="utf-8")
     assert "version: 0.9.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
     assert "previous plugin" in (plugin_dir / "__init__.py").read_text(encoding="utf-8")
 
@@ -1717,7 +1795,7 @@ def test_installer_cli_upgrade_dry_run_and_rollback_are_routed_by_product_cli(tm
 
     upgrade = installer.install(hermes_home=tmp_path)
     assert cli.main(["rollback", "--hermes-home", str(tmp_path), "--backup-dir", upgrade["backup_path"], "--dry-run", "--json"]) == 0
-    assert "version: 1.8.2" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.8.3" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
 
 
 def test_installer_runtime_verify_reports_missing_memory_setup(tmp_path):

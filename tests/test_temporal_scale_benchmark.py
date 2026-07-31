@@ -31,7 +31,7 @@ def test_temporal_scale_benchmark_small_smoke() -> None:
     assert result.returncode == 0, result.stderr or result.stdout
     payload = json.loads(result.stdout)
     assert payload["schema_version"] == "scope-recall.temporal-scale.v2"
-    assert payload["candidate_version"] == "1.8.2"
+    assert payload["candidate_version"] == "1.8.3"
     assert payload["sizes"] == [2000, 5000]
     assert payload["rounds_per_query"] == 2
     assert payload["live_database_used"] is False

@@ -32,6 +32,7 @@ from scope_recall.vector_generation import (
     finish_migration_receipt,
     generation_health_report,
     generation_manifest,
+    prune_completed_vector_outbox,
     register_generation,
     retire_ready_generation,
     start_migration_receipt,
@@ -817,6 +818,126 @@ def test_vector_generation_mapping_helpers_redact_nested_keys_and_values_at_stor
     assert secret not in rendered
     assert private_path not in rendered
     assert "[REDACTED" in rendered
+
+
+def _insert_outbox_row(
+    conn: sqlite3.Connection,
+    *,
+    event_key: str,
+    generation_id: str,
+    status: str,
+    completed_at: str,
+) -> None:
+    timestamp = completed_at or "2026-01-01T00:00:00+00:00"
+    conn.execute(
+        """
+        INSERT INTO vector_outbox(
+            event_key, generation_id, memory_id, operation, payload, status,
+            available_at, created_at, updated_at, completed_at
+        ) VALUES (?, ?, ?, 'upsert', '{}', ?, ?, ?, ?, ?)
+        """,
+        (
+            event_key,
+            generation_id,
+            f"memory-{event_key}",
+            status,
+            timestamp,
+            timestamp,
+            timestamp,
+            completed_at,
+        ),
+    )
+
+
+def test_completed_vector_outbox_pruning_is_bounded_terminal_only_and_caller_owned():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_vector_generation_schema(conn)
+    for index in range(5):
+        _insert_outbox_row(
+            conn,
+            event_key=f"gen-a-completed-{index}",
+            generation_id="gen-a",
+            status="completed",
+            completed_at=f"2026-01-0{index + 1}T00:00:00+00:00",
+        )
+    for index in range(2):
+        _insert_outbox_row(
+            conn,
+            event_key=f"gen-b-completed-{index}",
+            generation_id="gen-b",
+            status="completed",
+            completed_at=f"2026-01-0{index + 1}T00:00:00+00:00",
+        )
+    _insert_outbox_row(
+        conn,
+        event_key="gen-a-retry",
+        generation_id="gen-a",
+        status="retry",
+        completed_at="",
+    )
+    _insert_outbox_row(
+        conn,
+        event_key="gen-a-dead-letter",
+        generation_id="gen-a",
+        status="dead_letter",
+        completed_at="2026-01-01T00:00:00+00:00",
+    )
+    conn.commit()
+
+    receipt = prune_completed_vector_outbox(
+        conn,
+        retention_days=30,
+        keep_per_generation=2,
+        timestamp="2026-03-01T00:00:00+00:00",
+    )
+
+    assert receipt == {
+        "enabled": True,
+        "retention_days": 30,
+        "keep_per_generation": 2,
+        "generations_scanned": 2,
+        "deleted": 3,
+        "completed_remaining": 4,
+    }
+    assert conn.in_transaction is True
+    assert conn.execute(
+        "SELECT COUNT(*) FROM vector_outbox WHERE status = 'retry'"
+    ).fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM vector_outbox WHERE status = 'dead_letter'"
+    ).fetchone()[0] == 1
+
+    conn.rollback()
+    assert conn.execute(
+        "SELECT COUNT(*) FROM vector_outbox WHERE status = 'completed'"
+    ).fetchone()[0] == 7
+
+
+def test_completed_vector_outbox_pruning_can_be_disabled_without_mutation():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_vector_generation_schema(conn)
+    _insert_outbox_row(
+        conn,
+        event_key="disabled-old-completed",
+        generation_id="gen-a",
+        status="completed",
+        completed_at="2020-01-01T00:00:00+00:00",
+    )
+    conn.commit()
+
+    receipt = prune_completed_vector_outbox(
+        conn,
+        retention_days=0,
+        keep_per_generation=0,
+        timestamp="2026-03-01T00:00:00+00:00",
+    )
+
+    assert receipt["enabled"] is False
+    assert receipt["deleted"] == 0
+    assert conn.in_transaction is False
+    assert conn.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0] == 1
 
 
 def test_vector_outbox_payload_is_allowlisted_and_redacted_at_storage_boundary():

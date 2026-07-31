@@ -6,21 +6,29 @@ from __future__ import annotations
 
 import sqlite3
 
+from scope_recall.config import DEFAULT_CONFIG
 from scope_recall.models import RecallItem
 from scope_recall.recall import RecallService
+from scope_recall.recall_pipeline import rank_recall_items
+from scope_recall.gating import (
+    matched_query_intent_terms,
+    query_requests_current_state,
+    semantic_query_tokens,
+)
 from scope_recall.scoring import lexical_score
 from scope_recall.sql_store import ensure_schema
 from scope_recall.storage_views import search_vector_memories
 
 
 class DummyProvider:
-    def __init__(self, retrieval_config, *, db_items=None, vector_items=None):
+    def __init__(self, retrieval_config, *, db_items=None, vector_items=None, curated_items=None):
         self._retrieval_config = dict(retrieval_config)
         self._scope_id = "local-scope"
         self._shared_scope_id = "shared-scope"
         self._accessible_scope_ids = [self._scope_id, self._shared_scope_id]
         self._db_items = db_items
         self._vector_items = list(vector_items or [])
+        self._curated_items = list(curated_items or [])
 
     def _search_db_memories(self, query, *, limit):
         if self._db_items is not None:
@@ -52,7 +60,7 @@ class DummyProvider:
         return self._vector_items[:limit]
 
     def _search_curated_memories(self, query):
-        return []
+        return self._curated_items
 
     def _dedup_key(self, content):
         return str(content).lower()
@@ -223,6 +231,349 @@ def test_entity_mismatch_filters_named_entities_without_project_prefix():
     assert [item.id for item in results] == ["northstar-api"]
 
 
+def test_generic_chinese_system_question_keeps_strong_semantic_hit():
+    current_host = RecallItem(
+        id="current-windows-host",
+        content="玉衡当前运行在原生 Windows 11 本机。",
+        summary="玉衡当前运行环境",
+        source="tool-store",
+        target="memory",
+        score=0.82,
+        updated_at="2026-07-30T00:00:00+00:00",
+        metadata={
+            "lexical_score": 0.0,
+            "vector_score": 0.82,
+            "scope_id": "shared-scope",
+            "entities": ["玉衡", "windows"],
+        },
+    )
+    provider = DummyProvider(
+        {
+            "mode": "hybrid",
+            "include_general": "same-scope",
+            "entity_scope_filter_enabled": True,
+            "min_score": 0.18,
+            "vector_only_min_score": 0.30,
+        },
+        db_items=[],
+        vector_items=[current_host],
+    )
+    service = RecallService(provider)
+
+    results = service.search_memories("你现在跑什么系统", limit=5)
+
+    assert [item.id for item in results] == ["current-windows-host"]
+    assert service.last_funnel_trace["filters"]["entity_scope_mismatch"] == 0
+
+
+def test_chinese_location_question_drops_interrogative_fragments():
+    assert semantic_query_tokens("玉衡在哪") == ["玉衡"]
+    assert semantic_query_tokens("开阳星在哪") == ["开阳星"]
+    assert semantic_query_tokens("北斗玉衡在哪") == ["北斗玉衡"]
+
+
+def test_historical_location_question_does_not_request_current_state():
+    assert query_requests_current_state("玉衡在哪") is True
+    assert query_requests_current_state("玉衡以前在哪") is False
+    assert query_requests_current_state("where is Yuheng now") is True
+    assert query_requests_current_state("where was Yuheng previously") is False
+
+
+def test_chinese_location_intent_ranks_current_host_above_operator_noise():
+    query = "玉衡在哪"
+    operator_noise = RecallItem(
+        id="release-noise",
+        content="Scope Recall 玉衡在 release 收口阶段必须复查测试门禁。",
+        summary="玉衡在 release 收口阶段的测试门禁",
+        source="journal-digest",
+        target="memory",
+        score=1.0,
+        updated_at="2026-07-20T00:00:00+00:00",
+        metadata={
+            "lexical_score": lexical_score(
+                query=query,
+                content="Scope Recall 玉衡在 release 收口阶段必须复查测试门禁。",
+                summary="玉衡在 release 收口阶段的测试门禁",
+                source="journal-digest",
+                target="memory",
+            ),
+            "vector_score": 0.0,
+            "bm25_score": 1.0,
+            "scope_id": "shared-scope",
+            "entities": ["玉衡", "scope-recall"],
+        },
+    )
+    current_host = RecallItem(
+        id="current-windows-host",
+        content="玉衡在新家 Windows 本机，live 根位于 E:/Agents/runtime/windows/hermes-yuheng。",
+        summary="玉衡当前所在主机和 live 根",
+        source="builtin-curated",
+        target="user",
+        score=0.0,
+        updated_at="2026-07-30T00:00:00+00:00",
+        metadata={
+            "lexical_score": lexical_score(
+                query=query,
+                content="玉衡在新家 Windows 本机，live 根位于 E:/Agents/runtime/windows/hermes-yuheng。",
+                summary="玉衡当前所在主机和 live 根",
+                source="builtin-curated",
+                target="user",
+            ),
+            "vector_score": 0.0,
+            "scope_id": "shared-scope",
+            "entities": ["玉衡", "windows"],
+        },
+    )
+    provider = DummyProvider(
+        {
+            "mode": "hybrid",
+            "include_general": "same-scope",
+            "entity_scope_filter_enabled": True,
+            "min_score": 0.18,
+        },
+        db_items=[operator_noise],
+        curated_items=[current_host],
+    )
+
+    results = RecallService(provider).search_memories(query, limit=5)
+
+    assert [item.id for item in results][:2] == ["current-windows-host", "release-noise"]
+
+
+def test_intent_match_breaks_equal_score_tie_before_recency():
+    identity = RecallItem(
+        id="identity",
+        content="玉衡是北斗第五星。",
+        summary="玉衡身份",
+        source="builtin-curated",
+        target="user",
+        score=1.0,
+        updated_at="2026-07-31T00:00:00+00:00",
+        metadata={"base_score": 1.0, "intent_matched": False},
+    )
+    current_host = RecallItem(
+        id="current-host",
+        content="玉衡在 Windows 本机。",
+        summary="玉衡当前主机",
+        source="builtin-curated",
+        target="user",
+        score=1.0,
+        updated_at="2026-07-30T00:00:00+00:00",
+        metadata={"base_score": 1.0, "intent_matched": True},
+    )
+
+    ranked = rank_recall_items([identity, current_host])
+
+    assert [item.id for item in ranked] == ["current-host", "identity"]
+
+
+def test_current_os_query_prefers_current_state_over_stale_decision_and_weak_local_hits():
+    query = "你现在跑什么系统"
+    stale_decision = RecallItem(
+        id="stale-wsl-decision",
+        content="Agent 部署决策：推荐 Windows 11 宿主机加 Linux 虚拟机或 WSL2。",
+        summary="旧部署决策",
+        source="journal-digest",
+        target="project",
+        score=1.0,
+        updated_at="2026-06-22T00:00:00+00:00",
+        metadata={
+            "lexical_score": lexical_score(
+                query=query,
+                content="Agent 部署决策：推荐 Windows 11 宿主机加 Linux 虚拟机或 WSL2。",
+                summary="旧部署决策",
+                source="journal-digest",
+                target="project",
+            ),
+            "bm25_score": 1.0,
+            "vector_score": 0.0,
+            "scope_id": "shared-scope",
+            "memory_type": "decision",
+        },
+    )
+    weak_local_hit = RecallItem(
+        id="local-task-preference",
+        content="默认明确且可回滚的本机任务可以自主推进。",
+        summary="本机任务操作偏好",
+        source="builtin-curated",
+        target="user",
+        score=0.0,
+        updated_at="2026-07-30T00:00:00+00:00",
+        metadata={
+            "lexical_score": lexical_score(
+                query=query,
+                content="默认明确且可回滚的本机任务可以自主推进。",
+                summary="本机任务操作偏好",
+                source="builtin-curated",
+                target="user",
+            ),
+            "vector_score": 0.0,
+            "scope_id": "shared-scope",
+            "memory_type": "preference",
+        },
+    )
+    current_host = RecallItem(
+        id="current-windows-host",
+        content="玉衡在新家 Windows 本机，拒绝 WSL2。",
+        summary="玉衡当前所在系统",
+        source="builtin-curated",
+        target="user",
+        score=0.0,
+        updated_at="2026-07-30T00:00:00+00:00",
+        metadata={
+            "lexical_score": lexical_score(
+                query=query,
+                content="玉衡在新家 Windows 本机，拒绝 WSL2。",
+                summary="玉衡当前所在系统",
+                source="builtin-curated",
+                target="user",
+            ),
+            "vector_score": 0.0,
+            "scope_id": "shared-scope",
+            "memory_type": "preference",
+        },
+    )
+    provider = DummyProvider(
+        {
+            "mode": "hybrid",
+            "include_general": "same-scope",
+            "entity_scope_filter_enabled": True,
+            "min_score": 0.18,
+        },
+        db_items=[stale_decision],
+        curated_items=[weak_local_hit, current_host],
+    )
+
+    results = RecallService(provider).search_memories(query, limit=5)
+
+    assert [item.id for item in results][:3] == [
+        "current-windows-host",
+        "stale-wsl-decision",
+        "local-task-preference",
+    ]
+    by_id = {item.id: item for item in results}
+    assert by_id["current-windows-host"].metadata["intent_matched"] is True
+    assert by_id["local-task-preference"].metadata["intent_matched"] is False
+
+
+def test_current_os_query_does_not_rank_linux_manual_above_debian_answer():
+    query = "你现在跑什么系统"
+    current_answer = RecallItem(
+        id="real-debian-current",
+        content="玉衡当前使用 Debian 12 系统。",
+        summary="玉衡当前操作系统",
+        source="tool-store",
+        target="memory",
+        score=0.945,
+        updated_at="2026-07-31T00:00:00+00:00",
+        metadata={
+            "lexical_score": 0.945,
+            "vector_score": 0.0,
+            "base_score": 0.945,
+            "scope_id": "shared-scope",
+            "memory_type": "factual",
+        },
+    )
+    linux_manual = RecallItem(
+        id="unrelated-linux-manual",
+        content="本机资料库保存了一份 Linux 安装手册。",
+        summary="Linux 安装资料",
+        source="builtin-curated",
+        target="user",
+        score=0.25,
+        updated_at="2026-07-30T00:00:00+00:00",
+        metadata={
+            "lexical_score": 0.25,
+            "vector_score": 0.0,
+            "base_score": 0.25,
+            "scope_id": "shared-scope",
+            "memory_type": "resource",
+        },
+    )
+    provider = DummyProvider(
+        {
+            "mode": "hybrid",
+            "include_general": "same-scope",
+            "entity_scope_filter_enabled": True,
+            "min_score": 0.0,
+        },
+        db_items=[current_answer],
+        curated_items=[linux_manual],
+    )
+
+    results = RecallService(provider).search_memories(query, limit=5)
+
+    assert [item.id for item in results][:2] == [
+        "real-debian-current",
+        "unrelated-linux-manual",
+    ]
+    by_id = {item.id: item for item in results}
+    assert by_id["real-debian-current"].metadata["intent_matched"] is True
+    assert by_id["unrelated-linux-manual"].metadata["intent_matched"] is False
+
+
+def test_current_os_query_requires_answer_evidence_for_platform_documents():
+    query = "你现在跑什么系统"
+    cases = [
+        ("Ubuntu 24.04", "资料库保存了一份 Ubuntu 安装文档。"),
+        ("Rocky Linux 9", "资料库保存了一份 Rocky Linux 迁移指南。"),
+        ("Windows 11", "资料库保存了一份 Windows 安装检查表。"),
+    ]
+
+    for index, (platform_name, document) in enumerate(cases):
+        answer = RecallItem(
+            id=f"answer-{index}",
+            content=f"玉衡当前运行在 {platform_name} 系统上。",
+            summary="玉衡当前操作系统",
+            source="tool-store",
+            target="memory",
+            score=0.9,
+            updated_at="2026-07-31T00:00:00+00:00",
+            metadata={
+                "lexical_score": 0.9,
+                "vector_score": 0.0,
+                "base_score": 0.9,
+                "scope_id": "shared-scope",
+                "memory_type": "factual",
+            },
+        )
+        reference = RecallItem(
+            id=f"reference-{index}",
+            content=document,
+            summary="平台参考文档",
+            source="builtin-curated",
+            target="user",
+            score=0.3,
+            updated_at="2026-07-30T00:00:00+00:00",
+            metadata={
+                "lexical_score": 0.3,
+                "vector_score": 0.0,
+                "base_score": 0.3,
+                "scope_id": "shared-scope",
+                "memory_type": "resource",
+            },
+        )
+        service = RecallService(
+            DummyProvider(
+                {
+                    "mode": "hybrid",
+                    "include_general": "same-scope",
+                    "entity_scope_filter_enabled": True,
+                    "min_score": 0.0,
+                },
+                db_items=[answer],
+                curated_items=[reference],
+            )
+        )
+
+        results = service.search_memories(query, limit=5)
+        by_id = {item.id: item for item in results}
+
+        assert [item.id for item in results][:2] == [answer.id, reference.id]
+        assert by_id[answer.id].metadata["intent_matched"] is True
+        assert by_id[reference.id].metadata["intent_matched"] is False
+
+
 def test_archived_duplicate_does_not_suppress_active_duplicate():
     archived = RecallItem(
         id="archived-newer",
@@ -260,6 +611,70 @@ def test_include_general_always_allows_general_debug_mode():
     results = RecallService(provider).search_memories("deploy command", limit=5)
 
     assert {item.target for item in results} == {"memory", "general"}
+
+def test_timezone_preference_answer_outranks_generic_timezone_documents():
+    query = "工作电脑应该使用哪个时区"
+    preference = RecallItem(
+        id="timezone-preference",
+        source="builtin-curated",
+        target="user",
+        content="时区偏好：工作电脑使用美国东部时区 America/New_York。",
+        summary="工作电脑使用 America/New_York。",
+        score=0.47,
+        updated_at="2026-07-01T00:00:00+00:00",
+        metadata={"memory_type": "preference", "importance": 0.8, "lexical_score": 0.47, "vector_score": 0.0},
+    )
+    generic_rollout = RecallItem(
+        id="generic-rollout",
+        source="journal-digest",
+        target="memory",
+        content="模型 rollout 可能受账号批次和时区问题影响。",
+        summary="模型 rollout 与时区问题。",
+        score=1.0,
+        updated_at="2026-07-01T00:00:00+00:00",
+        metadata={"memory_type": "workflow", "importance": 0.8, "lexical_score": 1.0, "vector_score": 0.0},
+    )
+    utc_parser = RecallItem(
+        id="generic-utc-parser",
+        source="journal-digest",
+        target="project",
+        content="naive datetime 必须按 UTC 解析，不能使用本地 timezone。",
+        summary="时间戳按 UTC 解析。",
+        score=0.68,
+        updated_at="2026-07-01T00:00:00+00:00",
+        metadata={"memory_type": "constraint", "importance": 1.0, "lexical_score": 0.68, "vector_score": 0.0},
+    )
+    provider = DummyProvider(
+        {
+            "mode": "hybrid",
+            "lexical_weight": 1.0,
+            "vector_weight": 0.0,
+            "min_score": 0.0,
+            "top_k": 3,
+            "candidate_pool": 3,
+            "fusion_strategy": "weighted",
+            "freshness_base_weight": 0.0,
+            "freshness_step_weight": 0.0,
+            "freshness_max_weight": 0.0,
+        },
+        db_items=[generic_rollout, utc_parser],
+        curated_items=[preference],
+    )
+
+    results = RecallService(provider).search_memories(query, limit=3)
+
+    assert results[0].id == "timezone-preference"
+    assert results[0].metadata["intent_matched"] is True
+    assert all(
+        item.metadata["intent_matched"] is False
+        for item in results
+        if item.id != "timezone-preference"
+    )
+    assert "america/new_york" in matched_query_intent_terms(
+        "Which timezone should this workstation use?",
+        "This workstation uses America/New_York.",
+    )
+
 
 def test_hybrid_vector_only_match_suppresses_low_confidence_unrelated_ops_row():
     vector_item = RecallItem(
@@ -303,6 +718,59 @@ def test_hybrid_vector_only_match_keeps_high_confidence_semantic_hit():
     results = RecallService(provider).search_memories("memory architecture database storage", limit=5)
 
     assert [item.id for item in results] == ["memory-scope-recall"]
+
+
+def test_vector_only_filter_uses_packaged_default_threshold_without_override():
+    threshold = float(DEFAULT_CONFIG["retrieval"]["vector_only_min_score"])
+    below = RecallItem(
+        id="below-default",
+        content="Vector-only candidate immediately below the packaged default.",
+        summary="below default",
+        source="tool-store",
+        target="memory",
+        score=threshold - 0.001,
+        updated_at="2026-05-01T00:00:00+00:00",
+        metadata={
+            "lexical_score": 0.0,
+            "vector_score": threshold - 0.001,
+            "scope_id": "shared-scope",
+        },
+    )
+    at_default = RecallItem(
+        id="at-default",
+        content="Vector-only candidate exactly at the packaged default.",
+        summary="at default",
+        source="tool-store",
+        target="memory",
+        score=threshold,
+        updated_at="2026-05-01T00:00:00+00:00",
+        metadata={
+            "lexical_score": 0.0,
+            "vector_score": threshold,
+            "scope_id": "shared-scope",
+        },
+    )
+    config = {
+        "mode": "hybrid",
+        "include_general": "same-scope",
+        "min_score": 0.0,
+    }
+
+    below_service = RecallService(
+        DummyProvider(config, db_items=[], vector_items=[below])
+    )
+    at_service = RecallService(
+        DummyProvider(config, db_items=[], vector_items=[at_default])
+    )
+
+    assert below_service.search_memories("semantic-only query", limit=5) == []
+    assert [item.id for item in at_service.search_memories("semantic-only query", limit=5)] == [
+        "at-default"
+    ]
+    assert (
+        below_service.last_funnel_trace["filters"]["vector_only_below_min_score"]
+        == 1
+    )
 
 
 class NoopLock:

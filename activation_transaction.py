@@ -8,12 +8,13 @@ after config, migration, provider-load, or runtime-verification failures.
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import os
-import shlex
 import shutil
 import sqlite3
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,12 @@ from .maintenance_lease import (
     ensure_activation_guard_triggers,
     read_activation_lease,
     remove_activation_guard_triggers,
+)
+from .recovery_commands import (
+    quote_argument,
+    restore_file_command,
+    restore_symlink_command,
+    restore_tree_command,
 )
 from .truth_connection import connect_truth_database
 
@@ -68,6 +75,7 @@ def _acquire_activation_lease(database_path: Path) -> dict[str, Any]:
         "path": path,
         "database_path": database_path,
         "token": token,
+        "payload": payload,
         "acquired": True,
         "released": False,
         "filename": ACTIVATION_LEASE_FILENAME,
@@ -92,11 +100,63 @@ def _release_activation_lease(lease: dict[str, Any]) -> bool:
     return True
 
 
-def _remove_path(path: Path) -> None:
-    if path.is_symlink() or path.is_file():
+def _ensure_activation_lease_retained(lease: dict[str, Any]) -> bool:
+    """Keep a failed-compensation lease physically present with the same token."""
+
+    path = Path(lease["path"])
+    database_path = Path(
+        str(lease.get("database_path") or path.parent / "memory.sqlite3")
+    )
+    if path.exists():
+        try:
+            payload = read_activation_lease(database_path)
+        except Exception:
+            return False
+        return bool(payload) and str(payload.get("token") or "") == str(
+            lease.get("token") or ""
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw_payload = lease.get("payload")
+    payload = dict(raw_payload) if isinstance(raw_payload, dict) else {
+        "kind": "scope-recall-activation-maintenance",
+        "token": str(lease.get("token") or ""),
+        "pid": os.getpid(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "database_path": str(database_path),
+    }
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    try:
+        descriptor = os.open(path, flags, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    except FileExistsError:
+        return _ensure_activation_lease_retained(lease)
+    except Exception:
         path.unlink(missing_ok=True)
-    elif path.exists():
-        shutil.rmtree(path)
+        return False
+    lease["released"] = False
+    return True
+
+
+def _remove_path(path: Path) -> None:
+    for attempt in range(4):
+        try:
+            if path.is_symlink() or path.is_file():
+                path.unlink(missing_ok=True)
+            elif path.exists():
+                shutil.rmtree(path)
+            return
+        except OSError as exc:
+            sharing_violation = os.name == "nt" and getattr(exc, "winerror", None) in {
+                32,
+                33,
+            }
+            if not sharing_violation or attempt == 3:
+                raise
+            gc.collect()
+            time.sleep(0.05 * (2**attempt))
 
 
 def _generation_state(path: Path) -> dict[str, Any]:
@@ -444,6 +504,20 @@ def _sqlite_state_fingerprint(path: Path) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _sqlite_logical_fingerprint(path: Path) -> str:
+    """Hash schema and rows without depending on SQLite page layout."""
+
+    connection = connect_truth_database(path, mode="ro", timeout=30)
+    try:
+        digest = hashlib.sha256()
+        for line in connection.iterdump():
+            digest.update(line.encode("utf-8"))
+            digest.update(b"\n")
+        return digest.hexdigest()
+    finally:
+        connection.close()
+
+
 def refresh_activation_sqlite_epoch(snapshot: dict[str, Any]) -> str:
     """Register activation-owned SQLite writes before any later failure point."""
 
@@ -514,8 +588,8 @@ def _sqlite_restore_drift_reason(snapshot: dict[str, Any]) -> str:
 
 def _restore_sqlite(snapshot: dict[str, Any]) -> None:
     path = Path(snapshot["path"])
-    _remove_sqlite_files(path)
     if not bool(snapshot.get("preexisting")):
+        _remove_sqlite_files(path)
         return
     backup_path = Path(snapshot["backup_path"])
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -532,6 +606,12 @@ def _restore_sqlite(snapshot: dict[str, Any]) -> None:
     finally:
         destination.close()
         source.close()
+    expected = _sqlite_logical_fingerprint(backup_path)
+    actual = _sqlite_logical_fingerprint(path)
+    if actual != expected:
+        raise ActivationSnapshotError(
+            "restored SQLite truth DB fingerprint does not match the activation snapshot"
+        )
     mode = snapshot.get("mode")
     if isinstance(mode, int):
         path.chmod(mode)
@@ -633,11 +713,32 @@ def capture_activation_state(
 
 
 def _maintenance_lease_receipt(lease: dict[str, Any]) -> dict[str, Any]:
+    path = Path(str(lease.get("path") or "")) if lease else Path()
+    present = bool(lease) and path.is_file()
+    token_matches = False
+    if present:
+        try:
+            payload = read_activation_lease(
+                Path(
+                    str(
+                        lease.get("database_path")
+                        or path.parent / "memory.sqlite3"
+                    )
+                )
+            )
+            token_matches = bool(payload) and str(payload.get("token") or "") == str(
+                lease.get("token") or ""
+            )
+        except Exception:
+            token_matches = False
+    released = bool(lease.get("released")) and not present
     return {
         "path": str(lease.get("path") or ""),
         "acquired": bool(lease.get("acquired")),
-        "released": bool(lease.get("released")),
-        "retained": bool(lease.get("acquired")) and not bool(lease.get("released")),
+        "released": released,
+        "retained": bool(lease.get("acquired")) and token_matches and not released,
+        "present": present,
+        "token_matches": token_matches,
     }
 
 
@@ -681,27 +782,19 @@ def _restore_command(snapshot: dict[str, Any]) -> str:
     path = Path(snapshot["path"])
     kind = str(snapshot.get("kind") or "absent")
     if kind == "symlink":
-        target_path = Path(snapshot["target_path"])
         target_backup = snapshot.get("target_backup_path")
-        if target_backup:
-            target_restore = (
-                f"cp {shlex.quote(str(target_backup))} "
-                f"{shlex.quote(str(target_path))}"
-            )
-        else:
-            target_restore = f"rm -f {shlex.quote(str(target_path))}"
-        link_restore = (
-            f"rm -f {shlex.quote(str(path))} && "
-            f"ln -s {shlex.quote(str(snapshot.get('link_target') or ''))} "
-            f"{shlex.quote(str(path))}"
+        return restore_symlink_command(
+            path,
+            link_target=str(snapshot.get("link_target") or ""),
+            target_path=Path(snapshot["target_path"]),
+            target_backup_path=Path(target_backup) if target_backup else None,
         )
-        return f"{target_restore} && {link_restore}"
     backup = snapshot.get("backup_path")
-    if backup:
-        return f"cp {shlex.quote(str(backup))} {shlex.quote(str(path))}"
-    if not bool(snapshot.get("preexisting")):
-        return f"rm -f {shlex.quote(str(path))}"
-    return ""
+    return restore_file_command(
+        path,
+        backup_path=Path(backup) if backup else None,
+        preexisting=bool(snapshot.get("preexisting")),
+    )
 
 
 def _plugin_restore_command(
@@ -710,15 +803,11 @@ def _plugin_restore_command(
     previous_plugin_existed: bool,
     plugin_backup_path: str,
 ) -> str:
-    quoted_target = shlex.quote(str(plugin_dir))
-    if previous_plugin_existed and plugin_backup_path:
-        return (
-            f"rm -rf {quoted_target} && "
-            f"cp -a {shlex.quote(plugin_backup_path)} {quoted_target}"
-        )
-    if not previous_plugin_existed:
-        return f"rm -rf {quoted_target}"
-    return ""
+    return restore_tree_command(
+        plugin_dir,
+        backup_path=Path(plugin_backup_path) if plugin_backup_path else None,
+        preexisting=previous_plugin_existed,
+    )
 
 
 def committed_activation_receipt(
@@ -840,7 +929,7 @@ def compensate_activation_failure(
         if any(bool(item.get("changed")) for item in vector_receipts):
             commands.append(
                 "hermes-scope-recall vector repair apply --hermes-home "
-                f"{shlex.quote(str(storage_dir.parent))}"
+                f"{quote_argument(storage_dir.parent)}"
             )
         lease = dict(snapshot.get("maintenance_lease") or {})
         return {
@@ -973,9 +1062,13 @@ def compensate_activation_failure(
     if any(bool(item.get("rebuild_required")) for item in vector_receipts):
         commands.append(
             "hermes-scope-recall vector repair apply --hermes-home "
-            f"{shlex.quote(str(storage_dir.parent))}"
+            f"{quote_argument(storage_dir.parent)}"
         )
     lease = dict(snapshot.get("maintenance_lease") or {})
+    if failures and lease and not _ensure_activation_lease_retained(lease):
+        failures.append(
+            "activation maintenance lease could not be retained after rollback failure"
+        )
     if not failures and lease and not _release_activation_lease(lease):
         failures.append("activation maintenance lease release failed")
     if lease:

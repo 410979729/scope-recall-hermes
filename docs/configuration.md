@@ -112,6 +112,12 @@ This file is generated from the packaged `config.json` registry. It lists every 
 - `identity.cli_user_id_fallback` (string; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `identity.cli_user_id_fallback` in the `identity` group. Default: `"local"`
 - `identity.cross_platform_shared_scope` (boolean; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `identity.cross_platform_shared_scope` in the `identity` group. Default: `false`
 
+`identity.user_aliases` and `identity.chat_aliases` are optional open maps that are intentionally absent from packaged defaults.
+Account aliases map an exact `platform:user_id` to a canonical user.
+Chat aliases map an exact `platform:chat_id` to a canonical user and therefore grant every participant in that chat the same durable identity.
+They take precedence over account aliases and are ignored unless `identity.cross_platform_shared_scope` is enabled.
+Treat chat aliases as explicit operator access-control grants.
+
 ## `journal`
 
 - `journal.allow_heuristic_fallback` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.allow_heuristic_fallback` in the `journal` group. Default: `false`
@@ -260,7 +266,7 @@ This file is generated from the packaged `config.json` registry. It lists every 
 - `retrieval.temporal_policy_weights.temporary` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.temporal_policy_weights.temporary` in the `retrieval` group. Default: `1.0`
 - `retrieval.top_k` (integer; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.top_k` in the `retrieval` group. Default: `5`
 - `retrieval.vector_min_score` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.vector_min_score` in the `retrieval` group. Default: `0.12`
-- `retrieval.vector_only_min_score` (number; risk: `medium`; restart_required: `no`) — Minimum score for vector-only candidates to survive recall filtering. Default: `0.3`
+- `retrieval.vector_only_min_score` (number; risk: `medium`; restart_required: `no`) — Minimum score for vector-only candidates to survive recall filtering. Default: `0.7`
 - `retrieval.vector_weight` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.vector_weight` in the `retrieval` group. Default: `0.55`
 
 ## `secret_index_tools_enabled`
@@ -307,15 +313,17 @@ This file is generated from the packaged `config.json` registry. It lists every 
 - `vector.fallback_embedder.model` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.fallback_embedder.model` in the `vector` group. Default: `"hash-v1"`
 - `vector.fallback_embedder.provider` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.fallback_embedder.provider` in the `vector` group. Default: `"local-hash"`
 - `vector.index_general` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.index_general` in the `vector` group. Default: `false`
+- `vector.outbox_completed_keep_per_generation` (integer; risk: `medium`; restart_required: `yes`) — Minimum number of the newest completed vector outbox events retained for each generation even after the age cutoff. Default: `5000`
+- `vector.outbox_completed_retention_days` (integer; risk: `medium`; restart_required: `yes`) — Delete completed vector outbox events older than this many days after a clean startup reconciliation pass; 0 disables pruning. Nonterminal events are never pruned. Default: `30`
 - `vector.pgvector.connect_timeout_seconds` (integer; risk: `medium`; restart_required: `yes`) — Maximum time allowed to establish a PGVector connection. Values are clamped to 1–300 seconds. Default: `10`
 - `vector.pgvector.dsn_env` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.pgvector.dsn_env` in the `vector` group. Default: `"SCOPE_RECALL_PGVECTOR_DSN"`
 - `vector.pgvector.lock_timeout_ms` (integer; risk: `medium`; restart_required: `yes`) — Maximum PostgreSQL lock wait for PGVector statements. Values are clamped to 100–600000 milliseconds. Default: `5000`
 - `vector.pgvector.statement_timeout_ms` (integer; risk: `medium`; restart_required: `yes`) — Maximum execution time for each PGVector SQL statement. Values are clamped to 100–600000 milliseconds. Default: `30000`
 - `vector.pgvector.table_name` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.pgvector.table_name` in the `vector` group. Default: `"scope_recall_vectors"`
 - `vector.startup_outbox_limit` (integer; risk: `medium`; restart_required: `yes`) — Maximum durable vector outbox events replayed in one startup or background maintenance phase. Default: `200`
-- `vector.write_outbox_replay_limit` (integer; risk: `medium`; restart_required: `yes`) — Maximum durable vector outbox events replayed after one committed memory write so transient backlog converges during normal traffic. Default: `20`
 - `vector.startup_reconcile_interval_seconds` (integer; risk: `medium`; restart_required: `yes`) — Minimum delay between completed vector reconciliation cycles; interrupted cycles resume immediately from their durable watermark. Default: `86400`
 - `vector.startup_reconcile_page_size` (integer; risk: `medium`; restart_required: `yes`) — Maximum truth rows planned into durable vector outbox events by one startup or background maintenance tick. Default: `200`
 - `vector.sync_mode` (string; risk: `medium`; restart_required: `yes`; choices: `incremental, rebuild`) — Scope Recall configuration key `vector.sync_mode` in the `vector` group. Default: `"incremental"`
 - `vector.table_name` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.table_name` in the `vector` group. Default: `"memories"`
 - `vector.top_k` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.top_k` in the `vector` group. Default: `8`
+- `vector.write_outbox_replay_limit` (integer; risk: `medium`; restart_required: `yes`) — Maximum durable vector outbox events replayed after one committed memory write so transient backlog converges during normal traffic. Default: `20`

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import stat
 from pathlib import Path
@@ -100,8 +101,15 @@ def test_fts_repair_apply_backs_up_then_reconciles(tmp_path):
 
     backup_path = Path(payload["backup_path"])
     assert backup_path.is_file()
-    assert stat.S_IMODE(backup_path.stat().st_mode) == 0o600
-    assert stat.S_IMODE(backup_path.parent.stat().st_mode) == 0o700
+    assert not backup_path.is_symlink()
+    assert backup_path.parent.is_dir()
+    assert not backup_path.parent.is_symlink()
+    if os.name == "nt":
+        assert payload["backup_permission_model"] == "windows_acl_inherited"
+    else:
+        assert payload["backup_permission_model"] == "posix_owner_only"
+        assert stat.S_IMODE(backup_path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(backup_path.parent.stat().st_mode) == 0o700
 
     backup = sqlite3.connect(f"file:{backup_path}?mode=ro", uri=True)
     backup.row_factory = sqlite3.Row

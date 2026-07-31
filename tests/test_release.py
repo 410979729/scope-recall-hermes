@@ -67,21 +67,26 @@ class _FakeSentenceTransformer:
 
 
 def _install_fake_sentence_transformer(monkeypatch):
-    try:
-        import sentence_transformers as sentence_transformers_pkg
-
-        monkeypatch.setattr(sentence_transformers_pkg, "SentenceTransformer", _FakeSentenceTransformer, raising=False)
-    except Exception:
-        pass
+    fake_module = types.ModuleType("sentence_transformers")
+    fake_module.__spec__ = importlib.util.spec_from_loader(
+        "sentence_transformers", loader=None
+    )
+    fake_module.SentenceTransformer = _FakeSentenceTransformer
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_module)
     monkeypatch.setattr(embedders_module, "SentenceTransformer", _FakeSentenceTransformer)
     embedders_module._SENTENCE_TRANSFORMER_CACHE.clear()
     for module in list(sys.modules.values()):
-        if getattr(module, "__file__", "") and str(getattr(module, "__file__", "")).endswith("/embedders.py"):
-            monkeypatch.setattr(module, "SentenceTransformer", _FakeSentenceTransformer, raising=False)
+        module_file = str(getattr(module, "__file__", "") or "")
+        if module_file and Path(module_file).name == "embedders.py":
+            monkeypatch.setattr(
+                module,
+                "SentenceTransformer",
+                _FakeSentenceTransformer,
+                raising=False,
+            )
             cache = getattr(module, "_SENTENCE_TRANSFORMER_CACHE", None)
             if isinstance(cache, dict):
                 cache.clear()
-
 
 
 def _package_version() -> str:
@@ -411,11 +416,11 @@ def test_release_identity_requires_version_newer_than_latest_tag():
     assert "mutually exclusive" in conflicting_modes["error"]
 
 
-def test_v182_release_candidate_identity_surfaces_are_consistent():
+def test_v183_release_candidate_identity_surfaces_are_consistent():
     """Bind the patch release to every authoritative version surface."""
 
-    expected_version = "1.8.2"
-    release_check = _load_release_check_module("scope_recall_check_release_v182_identity")
+    expected_version = "1.8.3"
+    release_check = _load_release_check_module("scope_recall_check_release_v183_identity")
     temporal_facts = importlib.import_module(f"{PACKAGE_NAME}.temporal_facts")
     plugin_manifest = (PLUGIN_ROOT / "plugin.yaml").read_text(encoding="utf-8")
     changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -425,7 +430,7 @@ def test_v182_release_candidate_identity_surfaces_are_consistent():
     assert _package_version() == expected_version
     assert f"version: {expected_version}" in plugin_manifest
     assert release_check.PACKAGE_VERSION == expected_version
-    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.8.2.md"
+    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.8.3.md"
     assert (PLUGIN_ROOT / release_check.RELEASE_READINESS_DOC).is_file()
     assert f"## [{expected_version}]" in changelog
     assert f"Version `{expected_version}`" in readme
@@ -434,11 +439,11 @@ def test_v182_release_candidate_identity_surfaces_are_consistent():
     assert temporal_facts.FACT_CLAIMS_MIGRATION_PLUGIN_VERSION == "1.8.0"
 
     identity = release_check.release_version_identity_check(
-        tags=["v1.8.0", "v1.8.1"]
+        tags=["v1.8.0", "v1.8.1", "v1.8.2"]
     )
     assert identity["ok"] is True
     assert identity["release_eligible"] is True
-    assert identity["expected_release_tag"] == "v1.8.2"
+    assert identity["expected_release_tag"] == "v1.8.3"
 
 
 def test_ruff_lint_contract_is_explicit_across_toolchain_upgrades():
@@ -1296,7 +1301,7 @@ def test_repair_vector_index_rebuilds_sqlite_bruteforce_backend(tmp_path):
     payload = json.loads(result.stdout)
     assert payload["dry_run"] is False
     assert payload["vector_backend"] == "sqlite-bruteforce"
-    assert payload["vector_path"].endswith("scope-recall/vector.sqlite3")
+    assert Path(payload["vector_path"]).parts[-2:] == ("scope-recall", "vector.sqlite3")
     assert payload["rows"] == 1
     assert payload["audit"] == {"physical_rows": 1, "unique_ids": 1, "duplicate_rows": 0, "duplicate_ids": 0}
 
@@ -1460,6 +1465,22 @@ def test_release_cleanup_preserves_repo_local_venv(monkeypatch, tmp_path):
 
     assert sentinel.is_file()
     assert not pycache.exists()
+
+
+def test_release_cleanup_removes_current_sdist_staging_root(monkeypatch, tmp_path):
+    release_check = _load_release_check_module("scope_recall_check_release_sdist_cleanup")
+    monkeypatch.setattr(release_check, "ROOT", tmp_path)
+    sdist_staging = tmp_path / f"hermes_scope_recall-{release_check.PACKAGE_VERSION}"
+    sdist_staging.mkdir()
+    (sdist_staging / "memory_quality.py").write_text("generated\n", encoding="utf-8")
+    unrelated = tmp_path / "hermes_scope_recall-not-a-version"
+    unrelated.mkdir()
+    (unrelated / "keep.txt").write_text("keep\n", encoding="utf-8")
+
+    release_check.cleanup_generated()
+
+    assert not sdist_staging.exists()
+    assert (unrelated / "keep.txt").is_file()
 
 
 def test_ci_installs_release_gate_lint_dependency():

@@ -202,8 +202,10 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
             recent_status_counts: dict[str, int] = {}
             recent_extractor_counts: dict[str, int] = {}
             recent_no_insert_risk_runs = 0
+            recent_no_insert_risk_streak = 0
             recent_no_insert_explicit_skip_runs = 0
             recent_no_insert_reasons: dict[str, int] = {}
+            streak_open = True
             for row in recent_runs:
                 recent_status_counts[str(row.get("status") or "unknown")] = recent_status_counts.get(str(row.get("status") or "unknown"), 0) + 1
                 recent_extractor_counts[str(row.get("extractor") or "unknown")] = recent_extractor_counts.get(str(row.get("extractor") or "unknown"), 0) + 1
@@ -218,6 +220,7 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
                 row["productive_writes"] = productive_writes
                 row["no_insert_reason"] = no_insert_reason
                 row["health_flags"] = health_flags
+                is_risk_run = False
                 if int(row.get("processed_entries") or 0) > 0 and productive_writes == 0 and no_insert_reason:
                     is_resolved_quarantine = str(row.get("extractor") or "") == "llm-quarantine" and str(row.get("id") or "") not in unresolved_quarantine_run_ids
                     operator_classification = str(row.get("operator_classification") or metadata.get("operator_classification") or "").strip()
@@ -225,8 +228,14 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
                     if no_insert_reason == "explicit_skip" or is_resolved_quarantine or is_operator_no_durable:
                         recent_no_insert_explicit_skip_runs += 1
                     else:
+                        is_risk_run = True
                         recent_no_insert_risk_runs += 1
                         recent_no_insert_reasons[no_insert_reason] = recent_no_insert_reasons.get(no_insert_reason, 0) + 1
+                if streak_open:
+                    if is_risk_run:
+                        recent_no_insert_risk_streak += 1
+                    else:
+                        streak_open = False
             recent_no_insert_reasons = dict(sorted(recent_no_insert_reasons.items()))
             rejection_reason_counts = {
                 str(row["reason"] or ""): int(row["count"])
@@ -377,15 +386,15 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
         digest_health_status = "degraded"
         digest_health_reasons.append("recent_heuristic_fallback")
         recommendations.append("Journal digest recently used heuristic fallback; verify LLM extractor health and quality flags.")
-    if recent_no_insert_risk_runs:
+    if recent_no_insert_risk_streak:
         digest_health_status = "degraded"
         digest_health_reasons.append("recent_no_productive_write_risk")
         recommendations.append(
-            f"Journal digest has {recent_no_insert_risk_runs} recent run(s) with no productive writes for provider/schema/quality reasons; inspect no_insert_reason before relying on automated summaries."
+            f"Journal digest has a current streak of {recent_no_insert_risk_streak} run(s) with no productive writes for provider/schema/quality reasons; inspect no_insert_reason before relying on automated summaries."
         )
-    if no_insert_fail_streak and recent_no_insert_risk_runs >= no_insert_fail_streak:
+    if no_insert_fail_streak and recent_no_insert_risk_streak >= no_insert_fail_streak:
         failures.append(
-            f"journal digest has {recent_no_insert_risk_runs} recent no productive writes run(s), at or above fail streak {no_insert_fail_streak}"
+            f"journal digest has a consecutive streak of {recent_no_insert_risk_streak} no productive writes run(s), at or above fail streak {no_insert_fail_streak}"
         )
     if quarantine_runs:
         digest_health_reasons.append("historical_llm_quarantine")
@@ -457,6 +466,7 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
             "recent_status_counts": recent_status_counts,
             "recent_extractor_counts": recent_extractor_counts,
             "recent_no_insert_risk_runs": recent_no_insert_risk_runs,
+            "recent_no_insert_risk_streak": recent_no_insert_risk_streak,
             "recent_no_insert_explicit_skip_runs": recent_no_insert_explicit_skip_runs,
             "recent_no_insert_reasons": recent_no_insert_reasons,
             "no_insert_fail_streak": no_insert_fail_streak,

@@ -23,6 +23,7 @@ from .vector_generation import (
     current_generation,
     enqueue_vector_event,
     ensure_vector_generation_schema,
+    prune_completed_vector_outbox,
     resolve_generation_storage_root,
     update_generation_cardinality,
     validate_generation_compatibility,
@@ -116,6 +117,41 @@ def vector_write_replay_limit(provider: Any) -> int:
         minimum=1,
         maximum=2000,
     )
+
+
+def _prune_completed_outbox(
+    provider: Any,
+    conn: Any,
+    *,
+    retention_days: int,
+    keep_per_generation: int,
+) -> dict[str, Any]:
+    """Run one isolated terminal-event retention transaction."""
+
+    with provider._lock:
+        conn.execute("SAVEPOINT scope_recall_vector_outbox_retention")
+        try:
+            receipt = prune_completed_vector_outbox(
+                conn,
+                retention_days=retention_days,
+                keep_per_generation=keep_per_generation,
+            )
+            conn.execute("RELEASE SAVEPOINT scope_recall_vector_outbox_retention")
+        except Exception as exc:
+            conn.execute("ROLLBACK TO SAVEPOINT scope_recall_vector_outbox_retention")
+            conn.execute("RELEASE SAVEPOINT scope_recall_vector_outbox_retention")
+            safe_error = _sanitize_vector_message(exc)
+            logger.warning("Scope Recall vector outbox retention failed: %s", safe_error)
+            return {
+                "status": "failed",
+                "enabled": retention_days > 0,
+                "deleted": 0,
+                "error": safe_error,
+            }
+    return {
+        "status": "pruned" if int(receipt.get("deleted") or 0) else "unchanged",
+        **receipt,
+    }
 
 
 def _sanitize_vector_message(value: Exception | str, *, limit: int = _VECTOR_STATUS_MESSAGE_LIMIT) -> str:
@@ -735,6 +771,20 @@ def _run_bounded_vector_reconciliation_guarded(provider: Any) -> dict[str, Any]:
         minimum=60,
         maximum=31_536_000,
     )
+    retention_days = _bounded_config_int(
+        config,
+        "outbox_completed_retention_days",
+        default=30,
+        minimum=0,
+        maximum=3650,
+    )
+    keep_per_generation = _bounded_config_int(
+        config,
+        "outbox_completed_keep_per_generation",
+        default=5000,
+        minimum=0,
+        maximum=1_000_000,
+    )
     first = replay_vector_outbox(
         provider,
         limit=outbox_limit,
@@ -761,6 +811,11 @@ def _run_bounded_vector_reconciliation_guarded(provider: Any) -> dict[str, Any]:
             conn,
             generation_id=generation_id,
         )
+        result["outbox_retention"] = {
+            "status": "deferred",
+            "reason": "nonterminal_backlog",
+            "deleted": 0,
+        }
         return result
 
     with provider._lock:
@@ -801,6 +856,19 @@ def _run_bounded_vector_reconciliation_guarded(provider: Any) -> dict[str, Any]:
         if result["failed"] or result["dead_letter"]
         else ("outbox_pending" if result["replayable"] else str(page.get("status") or "ready"))
     )
+    if result["failed"] or result["dead_letter"] or result["replayable"]:
+        result["outbox_retention"] = {
+            "status": "deferred",
+            "reason": "nonterminal_backlog",
+            "deleted": 0,
+        }
+    else:
+        result["outbox_retention"] = _prune_completed_outbox(
+            provider,
+            conn,
+            retention_days=retention_days,
+            keep_per_generation=keep_per_generation,
+        )
     return result
 
 

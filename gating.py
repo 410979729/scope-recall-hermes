@@ -19,11 +19,19 @@ TRIVIAL_RE = re.compile(
 )
 WORD_RE = re.compile(r"[a-zA-Z0-9]{2,}|[\u4e00-\u9fff]{2,}")
 _CJK_TOKEN_RE = re.compile(r"^[\u4e00-\u9fff]+$")
+_DIRECT_CJK_LOCATION_QUERY_RE = re.compile(
+    r"^(?:请问)?(?P<subject>[\u4e00-\u9fff]{2,12}?)(?:现在|目前|当前)?"
+    r"(?P<predicate>住|居住|位于|运行|部署|工作|生活|存放)?"
+    r"(?:在哪里|在哪儿|在哪|身处何地|位于何处|在何处)[?？!！。]?$"
+)
 _CJK_QUERY_STOPWORDS = {
     "一个",
     "什么",
     "哪个",
     "哪里",
+    "哪",
+    "哪儿",
+    "何处",
     "为什么",
     "以及",
     "当前",
@@ -74,6 +82,78 @@ _SEMANTIC_QUERY_STOPWORDS = _CJK_QUERY_STOPWORDS | {
     "which",
     "who",
 }
+_LOCATION_QUERY_RE = re.compile(r"(?:在哪里|在哪|哪儿|何处|什么位置)")
+_OPERATING_SYSTEM_QUERY_RE = re.compile(
+    r"(?:(?:跑|用|使用|运行).{0,4}(?:什么|哪个|哪种)(?:操作)?系统|"
+    r"(?:什么|哪个|哪种)(?:操作)?系统)"
+)
+_TIMEZONE_QUERY_RE = re.compile(r"(?:\btime\s*zone\b|\btimezone\b|时区)", re.IGNORECASE)
+_LOCATION_INTENT_TERMS = ("位置", "地址", "路径", "目录", "主机", "本机", "运行环境")
+_OPERATING_SYSTEM_INTENT_TERMS = (
+    "操作系统",
+    "运行环境",
+    "主机",
+    "本机",
+    "windows",
+    "linux",
+    "macos",
+)
+_TIMEZONE_INTENT_TERMS = ("时区", "timezone", "time zone", "utc", "gmt")
+_TIMEZONE_SUBJECT_TERMS = ("工作电脑", "workstation", "电脑", "本机", "主机", "server")
+_TIMEZONE_VALUE_RE = re.compile(
+    r"(?:[a-z]+/[a-z0-9_+\-]+|\b(?:utc|gmt)(?:[+\-]\d{1,2}(?::?\d{2})?)?\b|"
+    r"美国东部时区|美国西部时区|东部时区|西部时区|北京时间)",
+    re.IGNORECASE,
+)
+_TIMEZONE_ANSWER_RELATION_RE = re.compile(
+    r"(?:时区(?:偏好)?\s*[:：]?|使用|采用|设置(?:为|成)?|"
+    r"timezone\s*(?:is|:)|uses?)"
+    r"[\s\S]{0,48}"
+    r"(?:[a-z]+/[a-z0-9_+\-]+|\b(?:utc|gmt)(?:[+\-]\d{1,2}(?::?\d{2})?)?\b|"
+    r"美国东部时区|美国西部时区|东部时区|西部时区|北京时间)",
+    re.IGNORECASE,
+)
+_LOCATION_INTENT_EVIDENCE_TERMS = ("位置", "地址", "路径", "目录", "主机", "本机", "运行环境", "live root", "live根")
+_OPERATING_SYSTEM_INTENT_EVIDENCE_TERMS = (
+    "操作系统",
+    "运行环境",
+    "windows",
+    "linux",
+    "macos",
+    "debian",
+    "ubuntu",
+    "rocky linux",
+    "rocky",
+    "red hat",
+    "rhel",
+    "centos",
+    "fedora",
+    "alpine",
+    "arch linux",
+    "nixos",
+    "freebsd",
+    "wsl2",
+    "wsl",
+)
+_OPERATING_SYSTEM_ANSWER_RELATION_RE = re.compile(
+    r"(?:"
+    r"(?:运行(?:在|于|的是)?|使用(?:的是)?|采用|基于|"
+    r"操作系统\s*(?:是|为|:|：)|系统\s*(?:是|为|:|：)|"
+    r"runs?\s+on|is\s+running|operating\s+system\s+is)"
+    r"[\s\S]{0,24}"
+    r")"
+    r"(?:windows|linux|macos|debian|ubuntu|rocky(?:\s+linux)?|"
+    r"red\s+hat|rhel|centos|fedora|alpine|arch\s+linux|nixos|freebsd|wsl2?|"
+    r"[\u4e00-\u9fff]{2,8}(?:操作)?系统)\b",
+    re.IGNORECASE,
+)
+_CURRENT_STATE_QUERY_RE = re.compile(
+    r"(?:\b(?:current|currently|latest|newest|now|today)\b|当前|目前|现在|如今|最新)"
+)
+_HISTORICAL_STATE_QUERY_RE = re.compile(
+    r"(?:\b(?:previously|before|history|historical|formerly|used\s+to|as\s+of)\b|"
+    r"之前|以前|过去|当时|曾经|历史|原来)"
+)
 MEMORY_CONTEXT_RE = re.compile(
     r"<memory-context>[\s\S]*?</memory-context>\s*", re.IGNORECASE
 )
@@ -230,6 +310,16 @@ def query_tokens(text: str) -> List[str]:
 def semantic_query_tokens(text: str) -> List[str]:
     """Return relevance-bearing tokens shared by recall candidate and scoring paths."""
 
+    direct_location = _DIRECT_CJK_LOCATION_QUERY_RE.fullmatch(clean_text(text))
+    if direct_location is not None:
+        tokens = [direct_location.group("subject")]
+        predicate = str(direct_location.group("predicate") or "")
+        if predicate:
+            normalized_predicate = "住在" if predicate in {"住", "居住"} else predicate
+            if normalized_predicate not in tokens:
+                tokens.append(normalized_predicate)
+        return tokens
+
     raw_tokens = query_tokens(text)
     output: list[str] = []
     for token in raw_tokens:
@@ -251,6 +341,89 @@ def semantic_query_tokens(text: str) -> List[str]:
         if normalized not in output:
             output.append(normalized)
     return output
+
+
+def query_intent_terms(text: str) -> List[str]:
+    """Return bounded answer-shape terms for explicit Chinese question intents.
+
+    These terms are optional retrieval hints, not hard entity or scope signals.
+    Keeping the mapping narrow prevents generic Chinese nouns from becoming
+    cross-project isolation keys while still connecting location and operating-
+    system questions to factual profile wording.
+    """
+
+    normalized = clean_text(text).casefold()
+    output: list[str] = []
+    if _LOCATION_QUERY_RE.search(normalized):
+        output.extend(_LOCATION_INTENT_TERMS)
+    if _OPERATING_SYSTEM_QUERY_RE.search(normalized):
+        output.extend(_OPERATING_SYSTEM_INTENT_TERMS)
+    if _TIMEZONE_QUERY_RE.search(normalized):
+        output.extend(_TIMEZONE_INTENT_TERMS)
+    return list(dict.fromkeys(output))
+
+
+def matched_query_intent_terms(query: str, document: str) -> List[str]:
+    """Return strong answer-shape evidence found in one candidate document.
+
+    Retrieval expansions intentionally include weak context words such as
+    ``本机``.  Ranking must not treat those words as proof that a document
+    answers an operating-system question, otherwise generic local-task or
+    timezone preferences outrank actual runtime-state facts.
+    """
+
+    normalized_query = clean_text(query).casefold()
+    normalized_document = clean_text(document).casefold()
+    terms: list[str] = []
+    if _LOCATION_QUERY_RE.search(normalized_query):
+        terms.extend(_LOCATION_INTENT_EVIDENCE_TERMS)
+    if _OPERATING_SYSTEM_QUERY_RE.search(normalized_query):
+        operating_system_terms = [
+            term
+            for term in _OPERATING_SYSTEM_INTENT_EVIDENCE_TERMS
+            if term in normalized_document
+        ]
+        if operating_system_terms and (
+            _CURRENT_STATE_QUERY_RE.search(normalized_document)
+            or _OPERATING_SYSTEM_ANSWER_RELATION_RE.search(normalized_document)
+        ):
+            terms.extend(operating_system_terms)
+    if _TIMEZONE_QUERY_RE.search(normalized_query):
+        subject_terms = [
+            term for term in _TIMEZONE_SUBJECT_TERMS if term in normalized_query
+        ]
+        subject_matches = not subject_terms or any(
+            term in normalized_document for term in subject_terms
+        )
+        timezone_value = _TIMEZONE_VALUE_RE.search(normalized_document)
+        if (
+            subject_matches
+            and timezone_value is not None
+            and _TIMEZONE_ANSWER_RELATION_RE.search(normalized_document)
+        ):
+            terms.extend(_TIMEZONE_INTENT_TERMS)
+            terms.append(timezone_value.group(0).casefold())
+    return [term for term in dict.fromkeys(terms) if term in normalized_document]
+
+
+def query_requests_current_state(text: str) -> bool:
+    """Return whether a question asks for present state rather than history."""
+
+    normalized = clean_text(text).casefold()
+    if not normalized or _HISTORICAL_STATE_QUERY_RE.search(normalized):
+        return False
+    return bool(
+        _CURRENT_STATE_QUERY_RE.search(normalized)
+        or _LOCATION_QUERY_RE.search(normalized)
+        or _OPERATING_SYSTEM_QUERY_RE.search(normalized)
+        or _TIMEZONE_QUERY_RE.search(normalized)
+    )
+
+
+def retrieval_query_tokens(text: str) -> List[str]:
+    """Return semantic query tokens plus bounded optional intent expansions."""
+
+    return list(dict.fromkeys([*semantic_query_tokens(text), *query_intent_terms(text)]))
 
 
 def stem_token(token: str) -> str:

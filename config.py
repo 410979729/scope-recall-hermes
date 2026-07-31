@@ -189,7 +189,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "top_k": 5,
         "min_score": 0.18,
         "vector_min_score": 0.12,
-        "vector_only_min_score": 0.30,
+        "vector_only_min_score": 0.70,
         "include_general": "same-scope",
         "general_weight": 0.35,
         "general_min_importance": 0.2,
@@ -267,6 +267,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "startup_outbox_limit": 200,
         "write_outbox_replay_limit": 20,
         "startup_reconcile_interval_seconds": 86400,
+        "outbox_completed_retention_days": 30,
+        "outbox_completed_keep_per_generation": 5000,
         "embedder": {
             "provider": "openai-compatible",
             "dimensions": 3072,
@@ -306,12 +308,16 @@ CONFIG_SCHEMA_EXTRAS: dict[str, Any] = {
         "timeout": 60.0,
     }
 }
-CONFIG_OPEN_MAP_PATHS = frozenset({"identity.user_aliases"})
+CONFIG_OPEN_MAP_PATHS = frozenset(
+    {"identity.chat_aliases", "identity.user_aliases"}
+)
 CONFIG_BOOL_OR_OBJECT_PATHS = frozenset({"curated_memory"})
 CONFIG_BOUNDED_INTEGER_PATHS: dict[str, tuple[int, int]] = {
     "relation_extraction_max_pairs": (1, 5000),
     "relation_sync_neighbor_limit": (1, 256),
     "relation_rebuild_chunk_pairs": (1, 1000),
+    "vector.outbox_completed_retention_days": (0, 3650),
+    "vector.outbox_completed_keep_per_generation": (0, 1_000_000),
 }
 
 
@@ -430,6 +436,50 @@ def _config_value_error(dotted: str, value: Any) -> str:
     return ""
 
 
+def _validate_identity_alias_map(
+    value: dict[Any, Any], *, dotted: str, path: Path
+) -> tuple[dict[str, str], list[dict[str, str]]]:
+    """Validate an operator identity map without echoing account ids or values."""
+
+    cleaned: dict[str, str] = {}
+    errors: list[dict[str, str]] = []
+    for key, canonical in value.items():
+        raw_key = key if isinstance(key, str) else ""
+        platform, separator, identity_id = raw_key.partition(":")
+        safe_platform = platform.strip().lower()
+        safe_identity_id = identity_id.strip()
+        safe_canonical = canonical.strip() if isinstance(canonical, str) else ""
+        if (
+            separator != ":"
+            or not safe_platform
+            or not safe_identity_id
+            or not safe_canonical
+        ):
+            errors.append(
+                _config_load_error(
+                    path,
+                    kind="invalid_value",
+                    message=(
+                        f"invalid identity alias entry for {dotted}: expected "
+                        "<nonempty-platform>:<nonempty-id> mapped to a nonempty string"
+                    ),
+                )
+            )
+            continue
+        normalized_key = f"{safe_platform}:{safe_identity_id}"
+        if normalized_key in cleaned and cleaned[normalized_key] != safe_canonical:
+            errors.append(
+                _config_load_error(
+                    path,
+                    kind="invalid_value",
+                    message=f"invalid identity alias entry for {dotted}: duplicate normalized key",
+                )
+            )
+            continue
+        cleaned[normalized_key] = safe_canonical
+    return cleaned, errors
+
+
 def validate_config_override(
     values: dict[str, Any],
     template: dict[str, Any],
@@ -462,7 +512,11 @@ def validate_config_override(
             continue
         if isinstance(expected, dict) and isinstance(value, dict):
             if dotted in CONFIG_OPEN_MAP_PATHS:
-                cleaned[key] = dict(value)
+                alias_map, alias_errors = _validate_identity_alias_map(
+                    value, dotted=dotted, path=path
+                )
+                cleaned[key] = alias_map
+                errors.extend(alias_errors)
                 continue
             child, child_errors = validate_config_override(
                 value, expected, path=path, prefix=dotted

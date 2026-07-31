@@ -5,6 +5,7 @@ Keep provider quirks isolated here so vector stores and repair scripts only see 
 from __future__ import annotations
 
 import hashlib
+import importlib
 import math
 import os
 import threading
@@ -69,6 +70,22 @@ _SENTENCE_TRANSFORMER_CACHE_GUARD = threading.Lock()
 _SENTENCE_TRANSFORMER_LOAD_FLIGHTS: dict[
     tuple[str, str | None], Future[Any]
 ] = {}
+
+
+def _resolve_sentence_transformer() -> Any:
+    """Resolve the optional local embedder even when installed after module import."""
+
+    global SentenceTransformer
+    if SentenceTransformer is not None:
+        return SentenceTransformer
+    try:
+        module = importlib.import_module("sentence_transformers")
+    except Exception:
+        return None
+    candidate = getattr(module, "SentenceTransformer", None)
+    if candidate is not None:
+        SentenceTransformer = candidate
+    return candidate
 
 
 class _SanitizedModelLoadError(RuntimeError):
@@ -491,12 +508,13 @@ class SentenceTransformersEmbedder(BaseEmbedder):
             return flight.result()
 
         try:
-            if SentenceTransformer is None:
+            transformer_class = _resolve_sentence_transformer()
+            if transformer_class is None:
                 raise RuntimeError("sentence-transformers is not installed")
             kwargs: dict[str, Any] = {}
             if self._device:
                 kwargs["device"] = self._device
-            instance = SentenceTransformer(model, **kwargs)
+            instance = transformer_class(model, **kwargs)
         except Exception as exc:
             detail = " ".join(sanitize_report_text(exc).split())[:300]
             safe_message = (
@@ -519,7 +537,7 @@ class SentenceTransformersEmbedder(BaseEmbedder):
         return instance
 
     def is_available(self) -> bool:
-        return SentenceTransformer is not None and not self._load_error
+        return _resolve_sentence_transformer() is not None and not self._load_error
 
     def describe(self) -> dict[str, Any]:
         payload = super().describe()

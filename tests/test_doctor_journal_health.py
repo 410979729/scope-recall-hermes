@@ -174,6 +174,47 @@ def test_journal_report_fails_when_provider_risk_no_insert_streak_exceeds_thresh
     assert any("no productive writes" in item for item in recommendations)
 
 
+def test_journal_risk_streak_resets_after_productive_run(tmp_path):
+    conn = _conn(tmp_path)
+    risk_metadata = json.dumps(
+        {
+            "productive_writes": 0,
+            "no_insert_reason": "provider_or_schema_risk",
+            "health_flags": ["no_productive_write", "extractor_error"],
+        },
+        sort_keys=True,
+    )
+    productive_metadata = json.dumps(
+        {"productive_writes": 1, "no_insert_reason": ""}, sort_keys=True
+    )
+    conn.executemany(
+        """
+        INSERT INTO journal_digest_runs(
+            id, started_at, finished_at, status, extractor,
+            processed_entries, inserted, updated, skipped, error, metadata
+        ) VALUES (?, ?, ?, 'ok', 'llm', 10, ?, 0, ?, NULL, ?)
+        """,
+        [
+            ("risk-old-1", "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:01+00:00", 0, 10, risk_metadata),
+            ("risk-old-2", "2026-01-02T00:00:00+00:00", "2026-01-02T00:00:01+00:00", 0, 10, risk_metadata),
+            ("success-reset", "2026-01-03T00:00:00+00:00", "2026-01-03T00:00:01+00:00", 1, 9, productive_metadata),
+            ("risk-latest", "2026-01-04T00:00:00+00:00", "2026-01-04T00:00:01+00:00", 0, 10, risk_metadata),
+        ],
+    )
+    conn.commit()
+    conn.close()
+    doctor = _doctor_module()
+
+    payload, check, recommendations = doctor.journal_report(
+        tmp_path, journal_config={"no_insert_fail_streak": 3}
+    )
+
+    health = payload["digest_health"]
+    assert health["recent_no_insert_risk_runs"] == 3
+    assert health["recent_no_insert_risk_streak"] == 1
+    assert check["ok"] is True
+
+
 def test_journal_report_does_not_degrade_for_operator_classified_quarantine_and_sourced_retry(tmp_path):
     conn = _conn(tmp_path)
     _store_memory(conn, memory_id="memory-from-retry", content="Retry-exhausted entry already produced durable memory.")

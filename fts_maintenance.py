@@ -18,6 +18,12 @@ from .maintenance_ops import connect_memory_db, memory_db_path
 from .sql_store import fts_integrity_report, reconcile_fts_index
 
 
+def _backup_permission_model() -> str:
+    """Describe the permission primitive recorded in operator receipts."""
+
+    return "windows_acl_inherited" if os.name == "nt" else "posix_owner_only"
+
+
 def _secure_online_backup(conn: sqlite3.Connection, db_path: Path) -> Path:
     """Create and quick-check an owner-only SQLite online backup."""
 
@@ -31,16 +37,21 @@ def _secure_online_backup(conn: sqlite3.Connection, db_path: Path) -> Path:
         f"memory.sqlite3.pre-fts-reconcile.{stamp}.{uuid.uuid4().hex[:8]}.sqlite3"
     )
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(destination, flags, 0o600)
+    flags |= int(getattr(os, "O_NOFOLLOW", 0))
     try:
-        mode = os.fstat(descriptor).st_mode
-        if not stat.S_ISREG(mode):
-            raise RuntimeError("FTS backup destination must be a regular file")
-        os.fchmod(descriptor, 0o600)
-    finally:
-        os.close(descriptor)
+        descriptor = os.open(destination, flags, 0o600)
+        try:
+            mode = os.fstat(descriptor).st_mode
+            if not stat.S_ISREG(mode):
+                raise RuntimeError("FTS backup destination must be a regular file")
+            descriptor_chmod = getattr(os, "fchmod", None)
+            if descriptor_chmod is not None:
+                descriptor_chmod(descriptor, 0o600)
+        finally:
+            os.close(descriptor)
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
 
     target: sqlite3.Connection | None = None
     try:
@@ -186,6 +197,7 @@ def repair_fts_index(
         "dry_run": False,
         "path": str(db_path),
         "backup_path": str(backup_path) if backup_path else "",
+        "backup_permission_model": _backup_permission_model(),
         "before": before,
         "after": after,
         "repair": repair_receipt,

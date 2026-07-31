@@ -28,13 +28,18 @@ _DESCRIPTION_OVERRIDES = {
     "vector.startup_reconcile_page_size": "Maximum truth rows planned into durable vector outbox events by one startup or background maintenance tick.",
     "vector.startup_outbox_limit": "Maximum durable vector outbox events replayed in one startup or background maintenance phase.",
     "vector.write_outbox_replay_limit": "Maximum durable vector outbox events replayed after one committed memory write so transient backlog converges during normal traffic.",
+    "vector.outbox_completed_retention_days": "Delete completed vector outbox events older than this many days after a clean startup reconciliation pass; 0 disables pruning. Nonterminal events are never pruned.",
+    "vector.outbox_completed_keep_per_generation": "Minimum number of the newest completed vector outbox events retained for each generation even after the age cutoff.",
     "vector.startup_reconcile_interval_seconds": "Minimum delay between completed vector reconciliation cycles; interrupted cycles resume immediately from their durable watermark.",
     "vector.embedder.api_key_env": "Environment variable names that may hold the embedding API key.",
     "vector.embedder.request_dimensions": "Send the configured output dimension to providers that support explicit dimensionality.",
     "vector.embedder.document_prefix": "Optional instruction prefix applied only when embedding indexed documents.",
     "vector.embedder.query_prefix": "Optional instruction prefix applied only when embedding retrieval queries.",
     "vector.embedder.prompt_profile": "Versioned identifier for the query/document instruction profile; changing it requires a new vector generation.",
-    "vector.embedder.connection_retry_delays": "Optional bounded delays in seconds for retrying transport-level embedding connection failures (maximum 8 entries, each 0 to 300 seconds). HTTP/API errors are not retried by this schedule.",
+    "vector.embedder.connection_retry_delays": "Optional bounded delays in seconds for retrying transport-level embedding connection failures (maximum 8 entries, each 0 to 300 seconds). HTTP/API errors are not retried by this schedule; set an explicit empty array to disable retries.",
+    "vector.pgvector.connect_timeout_seconds": "Maximum time allowed to establish a PGVector connection. Values are clamped to 1–300 seconds.",
+    "vector.pgvector.lock_timeout_ms": "Maximum PostgreSQL lock wait for PGVector statements. Values are clamped to 100–600000 milliseconds.",
+    "vector.pgvector.statement_timeout_ms": "Maximum execution time for each PGVector SQL statement. Values are clamped to 100–600000 milliseconds.",
     "experience.enabled": "Enable reusable Experience playbook surfaces.",
     "reflection.enabled": "Expose bounded citation-grounded reflection tooling.",
     "reflection.write_candidates": "Allow explicit maintenance-mode reflection calls to store hidden needs_review mental-model candidates.",
@@ -46,6 +51,17 @@ _DESCRIPTION_OVERRIDES = {
     "fact_evolution.maintenance_mode": "Explicit maintenance-lane mode. reviewed_apply permits maintenance-gated operator corrections and is high risk; provider reload is required.",
     "forgetting.hard_delete_sensitive": "Allow sensitive-data cleanup paths to hard-delete when explicitly invoked.",
 }
+
+_GROUP_NOTES = {
+    "identity": [
+        "`identity.user_aliases` and `identity.chat_aliases` are optional open maps that are intentionally absent from packaged defaults.",
+        "Account aliases map an exact `platform:user_id` to a canonical user.",
+        "Chat aliases map an exact `platform:chat_id` to a canonical user and therefore grant every participant in that chat the same durable identity.",
+        "They take precedence over account aliases and are ignored unless `identity.cross_platform_shared_scope` is enabled.",
+        "Treat chat aliases as explicit operator access-control grants.",
+    ]
+}
+
 
 _HIGH_RISK_PREFIXES = (
     "vector.embedder.api_key_env",
@@ -235,6 +251,8 @@ def render_configuration_markdown(registry: list[dict[str, Any]] | None = None) 
         key = str(entry["key"])
         group = key.split(".", 1)[0]
         if group != current_group:
+            if current_group in _GROUP_NOTES:
+                lines.extend(["", *_GROUP_NOTES[current_group]])
             current_group = group
             lines.extend(["", f"## `{group}`", ""])
         default = json.dumps(entry.get("default"), ensure_ascii=False, sort_keys=True)
@@ -253,5 +271,7 @@ def render_configuration_markdown(registry: list[dict[str, Any]] | None = None) 
         )
         restart = "yes" if entry.get("restart_required") else "no"
         lines.append(f"- `{key}` ({entry.get('type')}; risk: `{entry.get('risk')}`; restart_required: `{restart}`{choices_text}{choice_risks_text}) — {entry.get('description')} Default: `{default}`")
+    if current_group in _GROUP_NOTES:
+        lines.extend(["", *_GROUP_NOTES[current_group]])
     lines.append("")
     return "\n".join(lines)

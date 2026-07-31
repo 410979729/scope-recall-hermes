@@ -21,6 +21,7 @@ from .capture_filters import (
 from .gating import config_bool
 from .graph import clamp_float
 from .models import resolve_store_scope_mode
+from .scope import accessible_scope_ids as runtime_accessible_scope_ids
 from .tool_validation import validate_tool_arguments
 from .experience_preflight import experience_preflight
 from .experience_promotion import promote_experiences
@@ -919,6 +920,15 @@ class ScopeRecallToolService:
     def _playbook_shared_scope_id(self) -> str:
         return str(getattr(self.provider, "_shared_pool_scope_id", "") or "")
 
+    def _playbook_owner_scope_aliases(self) -> list[str]:
+        """Return authenticated canonical and legacy owner scopes, excluding pools."""
+
+        scope = getattr(self.provider, "_scope", None)
+        if scope is None:
+            return []
+        config = self.provider._config if isinstance(self.provider._config, dict) else {}
+        return runtime_accessible_scope_ids(scope, config)
+
     def _experience_enabled(self) -> bool:
         raw_config = (
             self.provider._config.get("experience")
@@ -1093,6 +1103,7 @@ class ScopeRecallToolService:
                 groups = find_duplicate_playbooks(
                     self.provider._require_conn(),
                     accessible_scope_ids=self.provider._accessible_scope_ids,
+                    owner_scope_aliases=self._playbook_owner_scope_aliases(),
                     status=str(args.get("status") or ""),
                     limit=self._limit(args),
                 )
@@ -1102,6 +1113,9 @@ class ScopeRecallToolService:
         playbook_id = str(args.get("id") or args.get("target_id") or "").strip()
         if not playbook_id:
             return tool_error("id is required")
+        validated_payload = args.get("validated_payload")
+        if not isinstance(validated_payload, dict):
+            validated_payload = None
         if action == "merge":
             raw_source_ids = args.get("source_ids") or []
             source_ids = (
@@ -1115,9 +1129,11 @@ class ScopeRecallToolService:
                     target_id=playbook_id,
                     source_ids=source_ids,
                     accessible_scope_ids=self.provider._accessible_scope_ids,
+                    owner_scope_aliases=self._playbook_owner_scope_aliases(),
                     reason=self.provider._clean_text(str(args.get("reason") or "")),
                     dry_run=self._bool_arg(args, "dry_run", True),
                     force_cross_class=self._bool_arg(args, "force_cross_class", False),
+                    validated_payload=validated_payload,
                 )
             return self._json(payload)
         with self.provider._lock:
@@ -1125,11 +1141,13 @@ class ScopeRecallToolService:
                 self.provider._require_conn(),
                 playbook_id=playbook_id,
                 accessible_scope_ids=self.provider._accessible_scope_ids,
+                owner_scope_aliases=self._playbook_owner_scope_aliases(),
                 action=action,
                 reason=self.provider._clean_text(str(args.get("reason") or "")),
                 superseded_by=str(args.get("superseded_by") or ""),
                 dry_run=self._bool_arg(args, "dry_run", True),
                 force_cross_class=self._bool_arg(args, "force_cross_class", False),
+                validated_payload=validated_payload,
             )
         return self._json(payload)
 

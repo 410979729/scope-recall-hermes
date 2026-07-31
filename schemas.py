@@ -671,6 +671,11 @@ SCOPE_RECALL_PLAYBOOK_REVIEW_SCHEMA = {
             "limit": {"type": "integer", "description": "Maximum duplicate groups to return."},
             "dry_run": {"type": "boolean", "description": "Inspect only for write actions by default; set false to apply promote/quarantine/supersede/merge changes."},
             "force_cross_class": {"type": "boolean", "description": "Allow supersede/merge across mismatched task_class/title only when a non-empty reason documents the operator decision."},
+            "validated_payload": {
+                "type": "object",
+                "additionalProperties": True,
+                "description": "Optional prior dry-run result; apply fails with stale_validation if the bound plan or rows changed.",
+            },
         },
         "required": ["action"],
     },

@@ -1,0 +1,1290 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "gemini-embedding-001-vector-only-threshold-v1",
+  "text_policy": "Public synthetic query/answer pairs only; no live memories or credentials.",
+  "provider": "openai-compatible",
+  "model": "gemini-embedding-001",
+  "dimensions": 3072,
+  "selection_rule": {
+    "false_positive_cost": 2,
+    "minimum_recall": 0.8,
+    "tie_breakers": [
+      "highest_f1",
+      "highest_threshold"
+    ]
+  },
+  "recommended_default": 0.7,
+  "recommended_metrics": {
+    "threshold": 0.7,
+    "tp": 20,
+    "fp": 6,
+    "tn": 42,
+    "fn": 4,
+    "precision": 0.769231,
+    "recall": 0.833333,
+    "f1": 0.8,
+    "weighted_error": 16
+  },
+  "baseline_065_metrics": {
+    "threshold": 0.65,
+    "tp": 23,
+    "fp": 14,
+    "tn": 34,
+    "fn": 1,
+    "precision": 0.621622,
+    "recall": 0.958333,
+    "f1": 0.754098,
+    "weighted_error": 29
+  },
+  "records": [
+    {
+      "case_id": "current-os",
+      "query": "你现在跑什么系统",
+      "candidate": "Aria 当前运行在 Debian 12 操作系统上。",
+      "kind": "positive",
+      "label": 1,
+      "score": 0.704171
+    },
+    {
+      "case_id": "current-os",
+      "query": "你现在跑什么系统",
+      "candidate": "资料库保存了一份 Linux 安装手册。",
+      "kind": "hard_negative",
+      "label": 0,
+      "score": 0.603289
+    },
+    {
+      "case_id": "current-os",
+      "query": "你现在跑什么系统",
+      "candidate": "今晚的番茄汤需要小火炖煮。",
+      "kind": "easy_negative",
+      "label": 0,
+      "score": 0.548274
+    },
+    {
+      "case_id": "current-host",
+      "query": "玉衡现在运行在哪台机器",
+      "candidate": "玉衡当前运行在家里的 Windows 11 主机。",
+      "kind": "positive",
+      "label": 1,
+      "score": 0.877709
+    },
+    {
+      "case_id": "current-host",
+      "query": "玉衡现在运行在哪台机器",
+      "candidate": "搬迁清单列出了几台候选 Windows 电脑。",
+      "kind": "hard_negative",
+      "label": 0,
+      "score": 0.613784
+    },
+    {
+      "case_id": "current-host",
+      "query": "玉衡现在运行在哪台机器",
+      "candidate": "花园的自动喷灌器每周运行两次。",
+      "kind": "easy_negative",
+      "label": 0,
+      "score": 0.593062
+    },
+    {
+      "case_id": "timezone",
+      "query": "工作电脑应该使用哪个时区",
+      "candidate": "工作电脑统一使用 America/New_York 并自动处理夏令时。",
+      "kind": "positive",
+      "label": 1,
+      "score": 0.863208
+    },
+    {
+      "case_id": "timezone",
+      "query": "工作电脑应该使用哪个时区",
+      "candidate": "这篇游记比较了纽约和东京的时差。",
+      "kind": "hard_negative",
+      "label": 0,
+      "score": 0.662348
+    },
+    {
+      "case_id": "timezone",
+      "query": "工作电脑应该使用哪个时区",
+      "candidate": "库存清单里还有三盒彩笔。",
+      "kind": "easy_negative",
+      "label": 0,
+      "score": 0.47659
+    },
+    {
+      "case_id": "backup-path",
+      "query": "配置备份放在哪里",
+      "candidate": "配置备份保存在 workspace/backups/config 目录。",
+      "kind": "positive",
+      "label": 1,
+      "score": 0.885851
+    },
+    {
+      "case_id": "backup-path",
+      "query": "配置备份放在哪里",
+      "candidate": "备份策略文档讨论了为什么需要异地副本。",
+      "kind": "hard_negative",
+      "label": 0,
+      "score": 0.684265
+    },
+    {
+      "case_id": "backup-path",
+      "query": "配置备份放在哪里",
+      "candidate": "会议室在大楼东侧。",
+      "kind": "easy_negative",
+      "label": 0,
+      "score": 0.588498
+    },
+    {
+      "case_id": "rollback-atlas",
+      "query": "How do I roll back Project Atlas?",
+      "candidate": "Stop Atlas, restore the verified snapshot, then run the health probe before resuming traffic.",
+      "kind": "positive",
+      "label": 1,
+      "score": 0.696634
+    },
+    {
+      "case_id": "rollback-atlas",
+      "query": "How do I roll back Project Atlas?",
+      "candidate": "The Atlas incident retrospective says a rollback happened last Tuesday.",
+      "kind": "hard_negative",
+      "label": 0,
+      "score": 0.795314
+    },
+    {
+      "case_id": "rollback-atlas",
+      "query": "How do I roll back Project Atlas?",
+      "candidate": "The cafeteria closes at seven.",
+      "kind": "easy_negative",
+      "label": 0,
+      "score": 0.501284
+    },
+    {
+      "case_id": "github-auth",
+      "query": "How should the operator authenticate GitHub?",
+      "candidate": "Run gh auth login, choose HTTPS, and verify with gh auth status.",
+      "kind": "positive",
+      "label": 1,
+      "score": 0.710112
+    },
+    {
+      "case_id": "github-auth",
+      "query": "How should the operator authenticate GitHub?",
+      "candidate": "The team announced a new GitHub organization account.",
+      "kind": "hard_negative",
+      "label": 0,
+      "score": 0.629865
+    },
+    {
+      "case_id": "github-auth",
+      "query": "How should the operator authenticate GitHub?",
+      "candidate": "Use a wooden spoon for the sauce.",
+      "kind": "easy_negative",
+      "label": 0,
+      "score": 0.488515
+    },
+    {
+      "case_id": "service-failure",
+      "query": "服务启动失败先查什么",
+      "candidate": "先查启动日志、监听端口和健康探针，再决定是否重启。",
+      "kind": "positive",
+      "label": 1,
+      "score": 0.78465
+    },
+    {
+      "case_id": "service-failure",
+      "query": "服务启动失败先查什么",
+      "candidate": "本月发布说明提到服务启动速度提高了。",
+      "kind": "hard_negative",
+      "label": 0,
+      "score": 0.749324
+    },
+    {
+      "case_id": "service-failure",
+      "query": "服务启动失败先查什么",
+      "candidate": "火车票已经放进钱包。",
+      "kind": "easy_negative",
+      "label": 0,
+      "score": 0.518749
+    },
+    {
+      "case_id": "memory-architecture",
+      "query": "Where is durable memory truth stored?",
+      "candidate": "SQLite is the durable truth store; LanceDB is only a rebuildable vector companion.",
+      "kind": "positive",
+      "label": 1,
+      "score": 0.671791
+    },
+    {
+      "case_id": "memory-architecture",
+      "query": "Where is durable memory truth stored?",
+      "candidate": "A tutorial compares SQLite syntax with PostgreSQL syntax.",
+      "kind": "hard_negative",
+      "label": 0,
+      "score": 0.495248
+    },
+    {
+      "case_id": "memory-architecture",
+      "query": "Where is durable memory truth stored?",
+      "candidate": "The camera battery is fully charged.",
+      "kind": "easy_negative",
+      "label": 0,
+      "score": 0.5441
+    },
+    {
+      "case_id": "journal-retention",
+      "query": "journal retention 为 0 代表什么",
+      "candidate": "retention_days=0 表示保留原始 journal 证据，不自动删除。",
+      "kind": "positive",
+      "label": 1,
+      "score": 0.885105
+    },
+    {
+      "case_id": "journal-retention",
+      "query": "journal retention 为 0 代表什么",
+      "candidate": "一篇合规文章讨论企业数据保留法律。",
+      "kind": "hard_negative",
+      "label": 0,
+      "score": 0.626126
+    },
+    {
+      "case_id": "journal-retention",
+      "query": "journal retention 为 0 代表什么",
+      "candidate": "咖啡豆应当避光保存。",
+      "kind": "easy_negative",
+      "label": 0,
+      "score": 0.530416
+    },
+    {
+      "case_id": "response-style",
+      "query": "用户喜欢怎样的回复风格",
+      "candidate": "回复应直接、坦诚、窄问窄答，少工程腔。",
+      "kind": "positive",
+      "label": 1,
+      "score": 0.761801
+    },
+    {
+      "case_id": "response-style",
+      "query": "用户喜欢怎样的回复风格",
+      "candidate": "广告文案课程建议多用情绪化表达。",
+      "kind": "hard_negative",
+      "label": 0,
+      "score": 0.634192
+    },
+    {
+      "case_id": "response-style",
+      "query": "用户喜欢怎样的回复风格",
+      "candidate": "窗帘是深蓝色。",
+      "kind": "easy_negative",
+      "label": 0,
+      "score": 0.554971
+    },
+    {
+      "case_id": "current-provider",
+      "query": "Which model provider is active now?",
+      "candidate": "The current runtime provider is OpenAI Codex.",
+      "kind": "positive",
+      "label": 1,
+      "score": 0.679534
+    },
+    {
+      "case_id": "current-provider",
+      "query": "Which model provider is active now?",
+      "candidate": "A benchmark compares several model providers for next quarter.",
+      "kind": "hard_negative",
+      "label": 0,
+      "score": 0.731618
+    },
+    {
+      "case_id": "current-provider",
+      "query": "Which model provider is active now?",
+      "candidate": "The parcel arrives tomorrow.",
+      "kind": "easy_negative",
+      "label": 0,
+      "score": 0.572635
+    },
+    {
+      "case_id": "release-ready",
+      "query": "Is version 1.8.3 ready to release?",
+      "candidate": "Version 1.8.3 is blocked until Windows rollback and identity tests pass.",
+      "kind": "positive",
+      "label": 1,
+      "score": 0.804211
+    },
+    {
+      "case_id": "release-ready",
+      "query": "Is version 1.8.3 ready to release?",
+      "candidate": "The marketing draft calls version 1.8.3 an exciting release.",
+      "kind": "hard_negative",
+      "label": 0,
+      "score": 0.858302
+    },
+    {
+      "case_id": "release-ready",
+      "query": "Is version 1.8.3 ready to release?",
+      "candidate": "The office plants need water.",
+      "kind": "easy_negative",
+      "label": 0,
+      "score": 0.521412
+    },
+    {
+      "case_id": "api-key",
+      "query": "How is the embedding API key supplied?",
+      "candidate": "The embedding key is read from the SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY environment variable.",
+      "kind": "positive",
+      "label": 1,
+      "score": 0.791846
+    },
+    {
+      "case_id": "api-key",
+      "query": "How is the embedding API key supplied?",
+      "candidate": "A security article explains why API keys should rotate.",
+      "kind": "hard_negative",
+      "label": 0,
+      "score": 0.661641
+    },
+    {
+      "case_id": "api-key",
+      "query": "How is the embedding API key supplied?",
+      "candidate": "The hiking trail is twelve kilometers.",
+      "kind": "easy_negative",
+      "label": 0,
+      "score": 0.468249
+    },
+    {
+      "case_id": "windows-recovery",
+      "query": "Windows 上如何执行恢复命令",
+      "candidate": "Use the PowerShell Copy-Item and Remove-Item commands printed in the recovery receipt.",
+      "kind": "positive",
+      "label": 1,
+      "score": 0.718759
+    },
+    {
+      "case_id": "windows-recovery",
+      "query": "Windows 上如何执行恢复命令",
+      "candidate": "The Linux guide uses rm and cp for file recovery.",
+      "kind": "hard_negative",
+      "label": 0,
+      "score": 0.687428
+    },
+    {
+      "case_id": "windows-recovery",
+      "query": "Windows 上如何执行恢复命令",
+      "candidate": "The printer uses A4 paper.",
+      "kind": "easy_negative",
+      "label": 0,
+      "score": 0.530423
+    },
+    {
+      "case_id": "current-branch",
+      "query": "Which git branch is the candidate based on?",
+      "candidate": "The candidate is based on the main branch at the audited baseline.",
+      "kind": "positive",
+      "label": 1,
+      "score": 0.840369
+    },
+    {
+      "case_id": "current-branch",
+      "query": "Which git branch is the candidate based on?",
+      "candidate": "The contribution guide describes branch naming conventions.",
+      "kind": "hard_negative",
+      "label": 0,
+      "score": 0.701894
+    },
+    {
+      "case_id": "current-branch",
+      "query": "Which git branch is the candidate based on?",
+      "candidate": "The soup contains carrots.",
+      "kind": "easy_negative",
+      "label": 0,
+      "score": 0.535882
+    },
+    {
+      "case_id": "digest-schedule",
+      "query": "When does the daily digest run?",
+      "candidate": "The daily digest runs at 09:00 America/New_York.",
+      "kind": "positive",
+      "label": 1,
+      "score": 0.860389
+    },
+    {
+      "case_id": "digest-schedule",
+      "query": "When does the daily digest run?",
+      "candidate": "A productivity blog recommends reviewing notes every morning.",
+      "kind": "hard_negative",
+      "label": 0,
+      "score": 0.597048
+    },
+    {
+      "case_id": "digest-schedule",
+      "query": "When does the daily digest run?",
+      "candidate": "The museum opens on weekends.",
+      "kind": "easy_negative",
+      "label": 0,
+      "score": 0.548884
+    },
+    {
+      "case_id": "project-owner",
+      "query": "Who owns Project Zephyr?",
+      "candidate": "Alice owns Project Zephyr and approves its production changes.",
+      "kind": "positive",
+      "label": 1,
+      "score": 0.787543
+    },
+    {
+      "case_id": "project-owner",
+      "query": "Who owns Project Zephyr?",
+      "candidate": "Alice spoke about project management at a conference.",
+      "kind": "hard_negative",
+      "label": 0,
+      "score": 0.533366
+    },
+    {
+      "case_id": "project-owner",
+      "query": "Who owns Project Zephyr?",
+      "candidate": "The bicycle has new tires.",
+      "kind": "easy_negative",
+      "label": 0,
+      "score": 0.520009
+    },
+    {
+      "case_id": "python-version",
+      "query": "What Python version does the plugin require?",
+      "candidate": "The plugin requires Python 3.11 or newer.",
+      "kind": "positive",
+      "label": 1,
+      "score": 0.845317
+    },
+    {
+      "case_id": "python-version",
+      "query": "What Python version does the plugin require?",
+      "candidate": "The migration guide explains differences between Python versions.",
+      "kind": "hard_negative",
+      "label": 0,
+      "score": 0.663016
+    },
+    {
+      "case_id": "python-version",
+      "query": "What Python version does the plugin require?",
+      "candidate": "A blue whale can hold its breath.",
+      "kind": "easy_negative",
+      "label": 0,
+      "score": 0.473521
+    },
+    {
+      "case_id": "migration-status",
+      "query": "数据库迁移现在完成了吗",
+      "candidate": "数据库迁移已完成并通过 quick_check。",
+      "kind": "positive",
+      "label": 1,
+      "score": 0.82949
+    },
+    {
+      "case_id": "migration-status",
+      "query": "数据库迁移现在完成了吗",
+      "candidate": "迁移计划列出了下周要执行的数据库步骤。",
+      "kind": "hard_negative",
+      "label": 0,
+      "score": 0.766564
+    },
+    {
+      "case_id": "migration-status",
+      "query": "数据库迁移现在完成了吗",
+      "candidate": "书架上有一本地图册。",
+      "kind": "easy_negative",
+      "label": 0,
+      "score": 0.55033
+    },
+    {
+      "case_id": "lock-root-cause",
+      "query": "What caused the rollback failure?",
+      "candidate": "A live SQLite handle kept the database file locked during filesystem replacement.",
+      "kind": "positive",
+      "label": 1,
+      "score": 0.606337
+    },
+    {
+      "case_id": "lock-root-cause",
+      "query": "What caused the rollback failure?",
+      "candidate": "SQLite documentation describes locking modes in general.",
+      "kind": "hard_negative",
+      "label": 0,
+      "score": 0.518602
+    },
+    {
+      "case_id": "lock-root-cause",
+      "query": "What caused the rollback failure?",
+      "candidate": "The forecast predicts light rain.",
+      "kind": "easy_negative",
+      "label": 0,
+      "score": 0.499911
+    },
+    {
+      "case_id": "deploy-target",
+      "query": "Where should this build be deployed?",
+      "candidate": "Deploy this build to staging only; production remains frozen.",
+      "kind": "positive",
+      "label": 1,
+      "score": 0.78656
+    },
+    {
+      "case_id": "deploy-target",
+      "query": "Where should this build be deployed?",
+      "candidate": "The staging checklist lists generic deployment requirements.",
+      "kind": "hard_negative",
+      "label": 0,
+      "score": 0.690632
+    },
+    {
+      "case_id": "deploy-target",
+      "query": "Where should this build be deployed?",
+      "candidate": "The piano was tuned yesterday.",
+      "kind": "easy_negative",
+      "label": 0,
+      "score": 0.514744
+    },
+    {
+      "case_id": "output-language",
+      "query": "报告应该用什么语言",
+      "candidate": "报告使用简体中文，命令和标识符保持原样。",
+      "kind": "positive",
+      "label": 1,
+      "score": 0.780119
+    },
+    {
+      "case_id": "output-language",
+      "query": "报告应该用什么语言",
+      "candidate": "语言学习软件提供中文和日文课程。",
+      "kind": "hard_negative",
+      "label": 0,
+      "score": 0.66085
+    },
+    {
+      "case_id": "output-language",
+      "query": "报告应该用什么语言",
+      "candidate": "客厅灯泡是暖白色。",
+      "kind": "easy_negative",
+      "label": 0,
+      "score": 0.568707
+    },
+    {
+      "case_id": "identity-boundary",
+      "query": "What makes a chat alias safe?",
+      "candidate": "A chat alias must match an exact nonempty platform and chat id before granting canonical scope.",
+      "kind": "positive",
+      "label": 1,
+      "score": 0.748145
+    },
+    {
+      "case_id": "identity-boundary",
+      "query": "What makes a chat alias safe?",
+      "candidate": "An identity architecture document explains aliases and accounts.",
+      "kind": "hard_negative",
+      "label": 0,
+      "score": 0.681404
+    },
+    {
+      "case_id": "identity-boundary",
+      "query": "What makes a chat alias safe?",
+      "candidate": "The river flows south.",
+      "kind": "easy_negative",
+      "label": 0,
+      "score": 0.484292
+    },
+    {
+      "case_id": "freshness",
+      "query": "How should current facts be verified?",
+      "candidate": "Current facts must be checked against live files, process state, or an authoritative API in this run.",
+      "kind": "positive",
+      "label": 1,
+      "score": 0.762978
+    },
+    {
+      "case_id": "freshness",
+      "query": "How should current facts be verified?",
+      "candidate": "A research essay discusses the philosophy of truth and evidence.",
+      "kind": "hard_negative",
+      "label": 0,
+      "score": 0.649494
+    },
+    {
+      "case_id": "freshness",
+      "query": "How should current facts be verified?",
+      "candidate": "The notebook cover is green.",
+      "kind": "easy_negative",
+      "label": 0,
+      "score": 0.558247
+    }
+  ],
+  "sweep": [
+    {
+      "threshold": 0.3,
+      "tp": 24,
+      "fp": 48,
+      "tn": 0,
+      "fn": 0,
+      "precision": 0.333333,
+      "recall": 1.0,
+      "f1": 0.5,
+      "weighted_error": 96
+    },
+    {
+      "threshold": 0.31,
+      "tp": 24,
+      "fp": 48,
+      "tn": 0,
+      "fn": 0,
+      "precision": 0.333333,
+      "recall": 1.0,
+      "f1": 0.5,
+      "weighted_error": 96
+    },
+    {
+      "threshold": 0.32,
+      "tp": 24,
+      "fp": 48,
+      "tn": 0,
+      "fn": 0,
+      "precision": 0.333333,
+      "recall": 1.0,
+      "f1": 0.5,
+      "weighted_error": 96
+    },
+    {
+      "threshold": 0.33,
+      "tp": 24,
+      "fp": 48,
+      "tn": 0,
+      "fn": 0,
+      "precision": 0.333333,
+      "recall": 1.0,
+      "f1": 0.5,
+      "weighted_error": 96
+    },
+    {
+      "threshold": 0.34,
+      "tp": 24,
+      "fp": 48,
+      "tn": 0,
+      "fn": 0,
+      "precision": 0.333333,
+      "recall": 1.0,
+      "f1": 0.5,
+      "weighted_error": 96
+    },
+    {
+      "threshold": 0.35,
+      "tp": 24,
+      "fp": 48,
+      "tn": 0,
+      "fn": 0,
+      "precision": 0.333333,
+      "recall": 1.0,
+      "f1": 0.5,
+      "weighted_error": 96
+    },
+    {
+      "threshold": 0.36,
+      "tp": 24,
+      "fp": 48,
+      "tn": 0,
+      "fn": 0,
+      "precision": 0.333333,
+      "recall": 1.0,
+      "f1": 0.5,
+      "weighted_error": 96
+    },
+    {
+      "threshold": 0.37,
+      "tp": 24,
+      "fp": 48,
+      "tn": 0,
+      "fn": 0,
+      "precision": 0.333333,
+      "recall": 1.0,
+      "f1": 0.5,
+      "weighted_error": 96
+    },
+    {
+      "threshold": 0.38,
+      "tp": 24,
+      "fp": 48,
+      "tn": 0,
+      "fn": 0,
+      "precision": 0.333333,
+      "recall": 1.0,
+      "f1": 0.5,
+      "weighted_error": 96
+    },
+    {
+      "threshold": 0.39,
+      "tp": 24,
+      "fp": 48,
+      "tn": 0,
+      "fn": 0,
+      "precision": 0.333333,
+      "recall": 1.0,
+      "f1": 0.5,
+      "weighted_error": 96
+    },
+    {
+      "threshold": 0.4,
+      "tp": 24,
+      "fp": 48,
+      "tn": 0,
+      "fn": 0,
+      "precision": 0.333333,
+      "recall": 1.0,
+      "f1": 0.5,
+      "weighted_error": 96
+    },
+    {
+      "threshold": 0.41,
+      "tp": 24,
+      "fp": 48,
+      "tn": 0,
+      "fn": 0,
+      "precision": 0.333333,
+      "recall": 1.0,
+      "f1": 0.5,
+      "weighted_error": 96
+    },
+    {
+      "threshold": 0.42,
+      "tp": 24,
+      "fp": 48,
+      "tn": 0,
+      "fn": 0,
+      "precision": 0.333333,
+      "recall": 1.0,
+      "f1": 0.5,
+      "weighted_error": 96
+    },
+    {
+      "threshold": 0.43,
+      "tp": 24,
+      "fp": 48,
+      "tn": 0,
+      "fn": 0,
+      "precision": 0.333333,
+      "recall": 1.0,
+      "f1": 0.5,
+      "weighted_error": 96
+    },
+    {
+      "threshold": 0.44,
+      "tp": 24,
+      "fp": 48,
+      "tn": 0,
+      "fn": 0,
+      "precision": 0.333333,
+      "recall": 1.0,
+      "f1": 0.5,
+      "weighted_error": 96
+    },
+    {
+      "threshold": 0.45,
+      "tp": 24,
+      "fp": 48,
+      "tn": 0,
+      "fn": 0,
+      "precision": 0.333333,
+      "recall": 1.0,
+      "f1": 0.5,
+      "weighted_error": 96
+    },
+    {
+      "threshold": 0.46,
+      "tp": 24,
+      "fp": 48,
+      "tn": 0,
+      "fn": 0,
+      "precision": 0.333333,
+      "recall": 1.0,
+      "f1": 0.5,
+      "weighted_error": 96
+    },
+    {
+      "threshold": 0.47,
+      "tp": 24,
+      "fp": 47,
+      "tn": 1,
+      "fn": 0,
+      "precision": 0.338028,
+      "recall": 1.0,
+      "f1": 0.505263,
+      "weighted_error": 94
+    },
+    {
+      "threshold": 0.48,
+      "tp": 24,
+      "fp": 45,
+      "tn": 3,
+      "fn": 0,
+      "precision": 0.347826,
+      "recall": 1.0,
+      "f1": 0.516129,
+      "weighted_error": 90
+    },
+    {
+      "threshold": 0.49,
+      "tp": 24,
+      "fp": 43,
+      "tn": 5,
+      "fn": 0,
+      "precision": 0.358209,
+      "recall": 1.0,
+      "f1": 0.527473,
+      "weighted_error": 86
+    },
+    {
+      "threshold": 0.5,
+      "tp": 24,
+      "fp": 41,
+      "tn": 7,
+      "fn": 0,
+      "precision": 0.369231,
+      "recall": 1.0,
+      "f1": 0.539326,
+      "weighted_error": 82
+    },
+    {
+      "threshold": 0.51,
+      "tp": 24,
+      "fp": 40,
+      "tn": 8,
+      "fn": 0,
+      "precision": 0.375,
+      "recall": 1.0,
+      "f1": 0.545455,
+      "weighted_error": 80
+    },
+    {
+      "threshold": 0.52,
+      "tp": 24,
+      "fp": 37,
+      "tn": 11,
+      "fn": 0,
+      "precision": 0.393443,
+      "recall": 1.0,
+      "f1": 0.564706,
+      "weighted_error": 74
+    },
+    {
+      "threshold": 0.53,
+      "tp": 24,
+      "fp": 35,
+      "tn": 13,
+      "fn": 0,
+      "precision": 0.40678,
+      "recall": 1.0,
+      "f1": 0.578313,
+      "weighted_error": 70
+    },
+    {
+      "threshold": 0.54,
+      "tp": 24,
+      "fp": 31,
+      "tn": 17,
+      "fn": 0,
+      "precision": 0.436364,
+      "recall": 1.0,
+      "f1": 0.607595,
+      "weighted_error": 62
+    },
+    {
+      "threshold": 0.55,
+      "tp": 24,
+      "fp": 28,
+      "tn": 20,
+      "fn": 0,
+      "precision": 0.461538,
+      "recall": 1.0,
+      "f1": 0.631579,
+      "weighted_error": 56
+    },
+    {
+      "threshold": 0.56,
+      "tp": 24,
+      "fp": 25,
+      "tn": 23,
+      "fn": 0,
+      "precision": 0.489796,
+      "recall": 1.0,
+      "f1": 0.657534,
+      "weighted_error": 50
+    },
+    {
+      "threshold": 0.57,
+      "tp": 24,
+      "fp": 24,
+      "tn": 24,
+      "fn": 0,
+      "precision": 0.5,
+      "recall": 1.0,
+      "f1": 0.666667,
+      "weighted_error": 48
+    },
+    {
+      "threshold": 0.58,
+      "tp": 24,
+      "fp": 23,
+      "tn": 25,
+      "fn": 0,
+      "precision": 0.510638,
+      "recall": 1.0,
+      "f1": 0.676056,
+      "weighted_error": 46
+    },
+    {
+      "threshold": 0.59,
+      "tp": 24,
+      "fp": 22,
+      "tn": 26,
+      "fn": 0,
+      "precision": 0.521739,
+      "recall": 1.0,
+      "f1": 0.685714,
+      "weighted_error": 44
+    },
+    {
+      "threshold": 0.6,
+      "tp": 24,
+      "fp": 20,
+      "tn": 28,
+      "fn": 0,
+      "precision": 0.545455,
+      "recall": 1.0,
+      "f1": 0.705882,
+      "weighted_error": 40
+    },
+    {
+      "threshold": 0.61,
+      "tp": 23,
+      "fp": 19,
+      "tn": 29,
+      "fn": 1,
+      "precision": 0.547619,
+      "recall": 0.958333,
+      "f1": 0.69697,
+      "weighted_error": 39
+    },
+    {
+      "threshold": 0.62,
+      "tp": 23,
+      "fp": 18,
+      "tn": 30,
+      "fn": 1,
+      "precision": 0.560976,
+      "recall": 0.958333,
+      "f1": 0.707692,
+      "weighted_error": 37
+    },
+    {
+      "threshold": 0.63,
+      "tp": 23,
+      "fp": 16,
+      "tn": 32,
+      "fn": 1,
+      "precision": 0.589744,
+      "recall": 0.958333,
+      "f1": 0.730159,
+      "weighted_error": 33
+    },
+    {
+      "threshold": 0.64,
+      "tp": 23,
+      "fp": 15,
+      "tn": 33,
+      "fn": 1,
+      "precision": 0.605263,
+      "recall": 0.958333,
+      "f1": 0.741935,
+      "weighted_error": 31
+    },
+    {
+      "threshold": 0.65,
+      "tp": 23,
+      "fp": 14,
+      "tn": 34,
+      "fn": 1,
+      "precision": 0.621622,
+      "recall": 0.958333,
+      "f1": 0.754098,
+      "weighted_error": 29
+    },
+    {
+      "threshold": 0.66,
+      "tp": 23,
+      "fp": 14,
+      "tn": 34,
+      "fn": 1,
+      "precision": 0.621622,
+      "recall": 0.958333,
+      "f1": 0.754098,
+      "weighted_error": 29
+    },
+    {
+      "threshold": 0.67,
+      "tp": 23,
+      "fp": 10,
+      "tn": 38,
+      "fn": 1,
+      "precision": 0.69697,
+      "recall": 0.958333,
+      "f1": 0.807018,
+      "weighted_error": 21
+    },
+    {
+      "threshold": 0.68,
+      "tp": 21,
+      "fp": 10,
+      "tn": 38,
+      "fn": 3,
+      "precision": 0.677419,
+      "recall": 0.875,
+      "f1": 0.763636,
+      "weighted_error": 23
+    },
+    {
+      "threshold": 0.69,
+      "tp": 21,
+      "fp": 7,
+      "tn": 41,
+      "fn": 3,
+      "precision": 0.75,
+      "recall": 0.875,
+      "f1": 0.807692,
+      "weighted_error": 17
+    },
+    {
+      "threshold": 0.7,
+      "tp": 20,
+      "fp": 6,
+      "tn": 42,
+      "fn": 4,
+      "precision": 0.769231,
+      "recall": 0.833333,
+      "f1": 0.8,
+      "weighted_error": 16
+    },
+    {
+      "threshold": 0.71,
+      "tp": 19,
+      "fp": 5,
+      "tn": 43,
+      "fn": 5,
+      "precision": 0.791667,
+      "recall": 0.791667,
+      "f1": 0.791667,
+      "weighted_error": 15
+    },
+    {
+      "threshold": 0.72,
+      "tp": 17,
+      "fp": 5,
+      "tn": 43,
+      "fn": 7,
+      "precision": 0.772727,
+      "recall": 0.708333,
+      "f1": 0.73913,
+      "weighted_error": 17
+    },
+    {
+      "threshold": 0.73,
+      "tp": 17,
+      "fp": 5,
+      "tn": 43,
+      "fn": 7,
+      "precision": 0.772727,
+      "recall": 0.708333,
+      "f1": 0.73913,
+      "weighted_error": 17
+    },
+    {
+      "threshold": 0.74,
+      "tp": 17,
+      "fp": 4,
+      "tn": 44,
+      "fn": 7,
+      "precision": 0.809524,
+      "recall": 0.708333,
+      "f1": 0.755556,
+      "weighted_error": 15
+    },
+    {
+      "threshold": 0.75,
+      "tp": 16,
+      "fp": 3,
+      "tn": 45,
+      "fn": 8,
+      "precision": 0.842105,
+      "recall": 0.666667,
+      "f1": 0.744186,
+      "weighted_error": 14
+    },
+    {
+      "threshold": 0.76,
+      "tp": 16,
+      "fp": 3,
+      "tn": 45,
+      "fn": 8,
+      "precision": 0.842105,
+      "recall": 0.666667,
+      "f1": 0.744186,
+      "weighted_error": 14
+    },
+    {
+      "threshold": 0.77,
+      "tp": 14,
+      "fp": 2,
+      "tn": 46,
+      "fn": 10,
+      "precision": 0.875,
+      "recall": 0.583333,
+      "f1": 0.7,
+      "weighted_error": 14
+    },
+    {
+      "threshold": 0.78,
+      "tp": 14,
+      "fp": 2,
+      "tn": 46,
+      "fn": 10,
+      "precision": 0.875,
+      "recall": 0.583333,
+      "f1": 0.7,
+      "weighted_error": 14
+    },
+    {
+      "threshold": 0.79,
+      "tp": 10,
+      "fp": 2,
+      "tn": 46,
+      "fn": 14,
+      "precision": 0.833333,
+      "recall": 0.416667,
+      "f1": 0.555556,
+      "weighted_error": 18
+    },
+    {
+      "threshold": 0.8,
+      "tp": 9,
+      "fp": 1,
+      "tn": 47,
+      "fn": 15,
+      "precision": 0.9,
+      "recall": 0.375,
+      "f1": 0.529412,
+      "weighted_error": 17
+    },
+    {
+      "threshold": 0.81,
+      "tp": 8,
+      "fp": 1,
+      "tn": 47,
+      "fn": 16,
+      "precision": 0.888889,
+      "recall": 0.333333,
+      "f1": 0.484848,
+      "weighted_error": 18
+    },
+    {
+      "threshold": 0.82,
+      "tp": 8,
+      "fp": 1,
+      "tn": 47,
+      "fn": 16,
+      "precision": 0.888889,
+      "recall": 0.333333,
+      "f1": 0.484848,
+      "weighted_error": 18
+    },
+    {
+      "threshold": 0.83,
+      "tp": 7,
+      "fp": 1,
+      "tn": 47,
+      "fn": 17,
+      "precision": 0.875,
+      "recall": 0.291667,
+      "f1": 0.4375,
+      "weighted_error": 19
+    },
+    {
+      "threshold": 0.84,
+      "tp": 7,
+      "fp": 1,
+      "tn": 47,
+      "fn": 17,
+      "precision": 0.875,
+      "recall": 0.291667,
+      "f1": 0.4375,
+      "weighted_error": 19
+    },
+    {
+      "threshold": 0.85,
+      "tp": 5,
+      "fp": 1,
+      "tn": 47,
+      "fn": 19,
+      "precision": 0.833333,
+      "recall": 0.208333,
+      "f1": 0.333333,
+      "weighted_error": 21
+    },
+    {
+      "threshold": 0.86,
+      "tp": 5,
+      "fp": 0,
+      "tn": 48,
+      "fn": 19,
+      "precision": 1.0,
+      "recall": 0.208333,
+      "f1": 0.344828,
+      "weighted_error": 19
+    },
+    {
+      "threshold": 0.87,
+      "tp": 3,
+      "fp": 0,
+      "tn": 48,
+      "fn": 21,
+      "precision": 1.0,
+      "recall": 0.125,
+      "f1": 0.222222,
+      "weighted_error": 21
+    },
+    {
+      "threshold": 0.88,
+      "tp": 2,
+      "fp": 0,
+      "tn": 48,
+      "fn": 22,
+      "precision": 1.0,
+      "recall": 0.083333,
+      "f1": 0.153846,
+      "weighted_error": 22
+    },
+    {
+      "threshold": 0.89,
+      "tp": 0,
+      "fp": 0,
+      "tn": 48,
+      "fn": 24,
+      "precision": 1.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "weighted_error": 24
+    },
+    {
+      "threshold": 0.9,
+      "tp": 0,
+      "fp": 0,
+      "tn": 48,
+      "fn": 24,
+      "precision": 1.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "weighted_error": 24
+    }
+  ]
+}

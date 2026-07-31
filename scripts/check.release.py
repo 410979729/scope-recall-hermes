@@ -35,7 +35,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-PACKAGE_VERSION = "1.8.2"
+PACKAGE_VERSION = "1.8.3"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 RELEASE_READINESS_DOC = f"docs/release-readiness.{PACKAGE_VERSION}.md"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
@@ -1884,14 +1884,14 @@ def scan_tree() -> dict[str, list[str]]:
             continue
         if any(part in GENERATED_DIRS for part in rel.parts):
             if path.exists():
-                findings["generated_artifacts"].append(str(rel))
+                findings["generated_artifacts"].append(rel.as_posix())
             continue
         if rel.match("review-report.*.md") or rel.name == ".env":
             continue
         if not path.is_file():
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
-        scanned = _scan_sensitive_text(rel, text)
+        scanned = _scan_sensitive_text(rel, text, display_path=rel.as_posix())
         findings["secrets"].extend(scanned["secrets"])
         findings["private_paths"].extend(scanned["private_paths"])
     for key in findings:
@@ -2236,6 +2236,16 @@ print(json.dumps({'plugin_dir': str(plugin_dir), 'version': verified['manifest_v
 
 
 def cleanup_generated() -> None:
+    """Remove release-tool residue without touching developer-owned environments."""
+
+    sdist_staging = ROOT / f"hermes_scope_recall-{PACKAGE_VERSION}"
+    if sdist_staging.exists() or sdist_staging.is_symlink():
+        if sdist_staging.is_symlink() or not sdist_staging.is_dir():
+            raise RuntimeError(f"refusing to remove unexpected sdist staging path: {sdist_staging}")
+        shutil.rmtree(sdist_staging)
+        if sdist_staging.exists():  # pragma: no cover - defensive filesystem invariant
+            raise RuntimeError(f"failed to remove sdist staging path: {sdist_staging}")
+
     for pattern in ["__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", "*.egg-info"]:
         for path in sorted(ROOT.rglob(pattern), key=lambda item: len(item.parts), reverse=True):
             if not path.exists():

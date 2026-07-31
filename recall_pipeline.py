@@ -107,7 +107,9 @@ def rank_recall_items(items: list[RecallItem]) -> list[RecallItem]:
     return sorted(
         items,
         key=lambda item: (
+            int((item.metadata or {}).get("current_state_rank") or 0),
             item.score,
+            bool((item.metadata or {}).get("intent_matched")),
             float((item.metadata or {}).get("base_score") or 0.0),
             item.updated_at,
             item.id,

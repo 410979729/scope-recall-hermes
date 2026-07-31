@@ -252,6 +252,7 @@ def test_hidden_vector_repair_handles_legacy_root_lancedb(tmp_path: Path) -> Non
     assert result["ok"] is True
     assert result["deleted"] == 2
     assert len(result["backups"]) == 1
+    assert result["backups"][0]["source_manifest"] == result["backups"][0]["backup_manifest"]
     reopened = LanceVectorStore(vector_dir, table_name="memories", dimensions=2)
     reopened.open()
     try:
