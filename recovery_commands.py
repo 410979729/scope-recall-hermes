@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
-from pathlib import Path
+from pathlib import PureWindowsPath
 
 
 def _platform_name(platform: str | None) -> str:
@@ -30,6 +30,12 @@ def _powershell_literal(value: str | os.PathLike[str]) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def _windows_path(value: str | os.PathLike[str]) -> PureWindowsPath:
+    """Interpret a path with Windows semantics regardless of the current host."""
+
+    return PureWindowsPath(str(value))
+
+
 def _powershell(statements: list[str]) -> str:
     script = "; ".join(statement for statement in statements if statement)
     return (
@@ -39,9 +45,9 @@ def _powershell(statements: list[str]) -> str:
 
 
 def restore_file_command(
-    path: Path,
+    path: str | os.PathLike[str],
     *,
-    backup_path: Path | None,
+    backup_path: str | os.PathLike[str] | None,
     preexisting: bool,
     platform: str | None = None,
 ) -> str:
@@ -51,15 +57,16 @@ def restore_file_command(
     if backup_path is None and preexisting:
         return ""
     if selected == "nt":
-        destination = _powershell_literal(path)
+        windows_path = _windows_path(path)
+        destination = _powershell_literal(windows_path)
         if backup_path is None:
             return _powershell(
                 [
                     f"Remove-Item -LiteralPath {destination} -Force -ErrorAction SilentlyContinue"
                 ]
             )
-        parent = _powershell_literal(path.parent)
-        source = _powershell_literal(backup_path)
+        parent = _powershell_literal(windows_path.parent)
+        source = _powershell_literal(_windows_path(backup_path))
         return _powershell(
             [
                 f"New-Item -ItemType Directory -Path {parent} -Force | Out-Null",
@@ -73,11 +80,11 @@ def restore_file_command(
 
 
 def restore_symlink_command(
-    path: Path,
+    path: str | os.PathLike[str],
     *,
     link_target: str,
-    target_path: Path,
-    target_backup_path: Path | None,
+    target_path: str | os.PathLike[str],
+    target_backup_path: str | os.PathLike[str] | None,
     platform: str | None = None,
 ) -> str:
     """Return a command that restores a symlink and its dereferenced file target."""
@@ -85,7 +92,9 @@ def restore_symlink_command(
     selected = _platform_name(platform)
     if selected == "nt":
         statements: list[str] = []
-        target = _powershell_literal(target_path)
+        windows_path = _windows_path(path)
+        windows_target_path = _windows_path(target_path)
+        target = _powershell_literal(windows_target_path)
         if target_backup_path is None:
             statements.append(
                 f"Remove-Item -LiteralPath {target} -Force -ErrorAction SilentlyContinue"
@@ -93,16 +102,16 @@ def restore_symlink_command(
         else:
             statements.extend(
                 [
-                    f"New-Item -ItemType Directory -Path {_powershell_literal(target_path.parent)} -Force | Out-Null",
-                    f"Copy-Item -LiteralPath {_powershell_literal(target_backup_path)} -Destination {target} -Force",
+                    f"New-Item -ItemType Directory -Path {_powershell_literal(windows_target_path.parent)} -Force | Out-Null",
+                    f"Copy-Item -LiteralPath {_powershell_literal(_windows_path(target_backup_path))} -Destination {target} -Force",
                 ]
             )
-        link = _powershell_literal(path)
+        link = _powershell_literal(windows_path)
         statements.extend(
             [
                 f"Remove-Item -LiteralPath {link} -Force -ErrorAction SilentlyContinue",
-                f"New-Item -ItemType Directory -Path {_powershell_literal(path.parent)} -Force | Out-Null",
-                f"New-Item -ItemType SymbolicLink -Path {link} -Target {_powershell_literal(link_target)} -Force | Out-Null",
+                f"New-Item -ItemType Directory -Path {_powershell_literal(windows_path.parent)} -Force | Out-Null",
+                f"New-Item -ItemType SymbolicLink -Path {link} -Target {_powershell_literal(_windows_path(link_target))} -Force | Out-Null",
             ]
         )
         return _powershell(statements)
@@ -121,9 +130,9 @@ def restore_symlink_command(
 
 
 def restore_tree_command(
-    path: Path,
+    path: str | os.PathLike[str],
     *,
-    backup_path: Path | None,
+    backup_path: str | os.PathLike[str] | None,
     preexisting: bool,
     platform: str | None = None,
 ) -> str:
@@ -133,15 +142,16 @@ def restore_tree_command(
     if backup_path is None and preexisting:
         return ""
     if selected == "nt":
-        destination = _powershell_literal(path)
+        windows_path = _windows_path(path)
+        destination = _powershell_literal(windows_path)
         statements = [
             f"Remove-Item -LiteralPath {destination} -Recurse -Force -ErrorAction SilentlyContinue"
         ]
         if backup_path is not None:
             statements.extend(
                 [
-                    f"New-Item -ItemType Directory -Path {_powershell_literal(path.parent)} -Force | Out-Null",
-                    f"Copy-Item -LiteralPath {_powershell_literal(backup_path)} -Destination {destination} -Recurse -Force",
+                    f"New-Item -ItemType Directory -Path {_powershell_literal(windows_path.parent)} -Force | Out-Null",
+                    f"Copy-Item -LiteralPath {_powershell_literal(_windows_path(backup_path))} -Destination {destination} -Recurse -Force",
                 ]
             )
         return _powershell(statements)

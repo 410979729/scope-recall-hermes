@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -47,6 +47,35 @@ def test_windows_recovery_commands_use_powershell_and_literal_paths():
     assert "Remove-Item" in absent_command
     assert "-Recurse" in tree_command
     assert "'C:\\Temp\\A Home\\config.yaml'" in file_command
+
+
+def test_windows_recovery_normalizes_paths_created_on_a_posix_host():
+    file_command = restore_file_command(
+        PurePosixPath(r"C:\Temp\A Home/config.yaml"),
+        backup_path=PurePosixPath(r"C:\Temp\B Backup/config.yaml"),
+        preexisting=True,
+        platform="nt",
+    )
+    tree_command = restore_tree_command(
+        PurePosixPath(r"C:\Temp\A Home/plugins/scope-recall"),
+        backup_path=PurePosixPath(r"C:\Temp\B Backup/scope-recall"),
+        preexisting=True,
+        platform="nt",
+    )
+    symlink_command = restore_symlink_command(
+        PurePosixPath(r"C:\Temp\A Home/config.yaml"),
+        link_target=r"..\external config.yaml",
+        target_path=PurePosixPath(r"C:\Temp/external config.yaml"),
+        target_backup_path=PurePosixPath(r"C:\Temp\B Backup/external config.yaml"),
+        platform="nt",
+    )
+
+    assert "'C:\\Temp\\A Home\\config.yaml'" in file_command
+    assert "'C:\\Temp\\A Home\\plugins\\scope-recall'" in tree_command
+    assert "'C:\\Temp\\external config.yaml'" in symlink_command
+    for command in (file_command, tree_command, symlink_command):
+        assert r"C:\Temp\A Home/" not in command
+        assert r"C:\Temp\B Backup/" not in command
 
 
 def test_windows_symlink_recovery_is_one_powershell_command():
