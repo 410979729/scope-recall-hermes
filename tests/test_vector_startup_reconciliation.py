@@ -256,6 +256,57 @@ def test_existing_outbox_backlog_blocks_truth_page_and_watermark_advance() -> No
     conn.close()
 
 
+def test_ready_startup_prunes_only_old_completed_outbox_history() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    _seed_truth(conn, 0)
+    generation_id = _generation(conn)
+    conn.executemany(
+        """
+        INSERT INTO vector_outbox(
+            event_key, generation_id, memory_id, operation, payload, status,
+            available_at, created_at, updated_at, completed_at
+        ) VALUES (?, ?, ?, 'delete', '{}', 'completed', ?, ?, ?, ?)
+        """,
+        (
+            (
+                f"old-completed-{index}",
+                generation_id,
+                f"missing-{index}",
+                "2020-01-01T00:00:00+00:00",
+                "2020-01-01T00:00:00+00:00",
+                "2020-01-01T00:00:00+00:00",
+                "2020-01-01T00:00:00+00:00",
+            )
+            for index in range(5)
+        ),
+    )
+    conn.commit()
+    provider = _Provider(
+        conn,
+        generation_id,
+        page_size=2,
+        outbox_limit=2,
+    )
+    provider._vector_config.update(
+        {
+            "outbox_completed_retention_days": 30,
+            "outbox_completed_keep_per_generation": 2,
+        }
+    )
+
+    result = run_bounded_vector_reconciliation(provider)
+
+    assert result["status"] == "completed"
+    assert result["outbox_retention"]["status"] == "pruned"
+    assert result["outbox_retention"]["deleted"] == 3
+    assert conn.execute(
+        "SELECT COUNT(*) FROM vector_outbox WHERE status='completed'"
+    ).fetchone()[0] == 2
+    conn.close()
+
+
 def test_page_outbox_and_watermark_roll_back_together(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

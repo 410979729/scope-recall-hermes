@@ -6,12 +6,12 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import gc
 import hashlib
 import importlib
 import importlib.util
 import json
 import os
-import shlex
 import shutil
 import sqlite3
 import stat
@@ -44,6 +44,7 @@ from .response_schemas import (
     DOCTOR_REQUIRED_CHECK_NAMES,
     DOCTOR_RESPONSE_SCHEMA_VERSION,
 )
+from .recovery_commands import quote_argument, restore_file_command
 from .vector_bootstrap import vector_companion_presence
 from .vector_generation_preflight import validate_generation_for_activation
 from .vector_store import normalize_vector_backend
@@ -461,15 +462,15 @@ def _rollback_command(home: Path, backup_path: str) -> str:
 
 def _config_restore_command(home: Path, backup_path: str, *, previous_config_existed: bool) -> str:
     config_path = home / "config.yaml"
-    if backup_path:
-        return f"cp {_shell_quote_path(Path(backup_path))} {_shell_quote_path(config_path)}"
-    if not previous_config_existed:
-        return f"rm -f {_shell_quote_path(config_path)}"
-    return ""
+    return restore_file_command(
+        config_path,
+        backup_path=Path(backup_path) if backup_path else None,
+        preexisting=previous_config_existed,
+    )
 
 
 def _shell_quote_path(path: Path) -> str:
-    return shlex.quote(str(path))
+    return quote_argument(path)
 
 
 def _config_backup_path(home: Path) -> Path:
@@ -490,9 +491,14 @@ def _set_memory_provider_yaml_text(text: str) -> tuple[str, bool]:
 def _write_memory_provider_config(home: Path) -> dict[str, Any]:
     """Activate Scope Recall in Hermes config.yaml and preserve rollback evidence."""
     config_path = home / "config.yaml"
-    previous_config_existed = config_path.is_file()
+    config_source = (
+        config_path.resolve(strict=False) if config_path.is_symlink() else config_path
+    )
+    if config_path.is_symlink() and not config_source.is_file():
+        raise InstallError(f"config symlink target is not a regular file: {config_source}")
+    previous_config_existed = config_source.is_file()
     before = (
-        config_path.read_text(encoding="utf-8", errors="strict")
+        config_source.read_text(encoding="utf-8", errors="strict")
         if previous_config_existed
         else ""
     )
@@ -502,7 +508,7 @@ def _write_memory_provider_config(home: Path) -> dict[str, Any]:
         home.mkdir(parents=True, exist_ok=True)
         if previous_config_existed:
             backup = _config_backup_path(home)
-            shutil.copy2(config_path, backup)
+            shutil.copy2(config_source, backup)
             backup_path = str(backup)
         try:
             atomic_replace_text(
@@ -825,6 +831,27 @@ def _extend_rollback_commands(result: dict[str, Any], commands: list[str]) -> No
         result["rollback_command"] = existing[0]
 
 
+def _detach_exception_tracebacks(exc: BaseException) -> None:
+    """Release frames that may retain Windows file handles before compensation."""
+
+    pending: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        marker = id(current)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        cause = current.__cause__
+        context = current.__context__
+        current.__traceback__ = None
+        if cause is not None:
+            pending.append(cause)
+        if context is not None:
+            pending.append(context)
+    gc.collect()
+
+
 def _activate_installed_target(
     home: Path,
     target: Path,
@@ -872,6 +899,11 @@ def _activate_installed_target(
                 message += f"; {detail}"
             raise InstallError(message)
     except Exception as exc:
+        activation_error = {
+            "type": type(exc).__name__,
+            "message": str(exc)[:1000],
+        }
+        _detach_exception_tracebacks(exc)
         transaction = compensate_activation_failure(
             snapshot,
             plugin_dir=target,
@@ -891,10 +923,7 @@ def _activate_installed_target(
                     if transaction["automatic_rollback"]
                     else "activation-failed-rollback-failed"
                 ),
-                "activation_error": {
-                    "type": type(exc).__name__,
-                    "message": str(exc)[:1000],
-                },
+                "activation_error": activation_error,
                 "activation_transaction": transaction,
                 "verify": verify(home),
             }

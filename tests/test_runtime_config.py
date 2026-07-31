@@ -183,6 +183,35 @@ def test_runtime_and_doctor_accept_explicit_retrieval_default_keys(tmp_path: Pat
     assert doctor["retrieval"]["entity_scope_filter_enabled"] is False
 
 
+def test_runtime_and_doctor_accept_explicit_chat_alias_map(tmp_path: Path):
+    hermes_home = tmp_path / "home"
+    storage_dir = hermes_home / "scope-recall"
+    storage_dir.mkdir(parents=True)
+    (storage_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "identity": {
+                    "cross_platform_shared_scope": True,
+                    "chat_aliases": {"telegram:synthetic-chat": "joy"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runtime = load_runtime_config(PLUGIN_ROOT, storage_dir)
+    doctor = doctor_load_runtime_config(PLUGIN_ROOT, hermes_home)
+
+    assert load_runtime_config_errors(runtime) == []
+    assert doctor.get("_config_load_errors") is None
+    assert runtime["identity"]["chat_aliases"] == {
+        "telegram:synthetic-chat": "joy"
+    }
+    assert doctor["identity"]["chat_aliases"] == {
+        "telegram:synthetic-chat": "joy"
+    }
+
+
 def test_runtime_config_validates_embedding_connection_retry_delays(tmp_path: Path):
     storage_dir = tmp_path / "scope-recall"
     storage_dir.mkdir(parents=True)
@@ -329,6 +358,100 @@ def test_runtime_config_normalizes_supported_boolean_aliases(tmp_path: Path):
         assert doctor.get("_config_load_errors") is None
         assert runtime["relation_extraction_enabled"] is expected
         assert doctor["relation_extraction_enabled"] is expected
+
+
+def test_vector_outbox_retention_config_is_bounded_and_packaged_consistently(
+    tmp_path: Path,
+):
+    plugin_dir = tmp_path / "plugin"
+    storage_dir = tmp_path / "scope-recall"
+    plugin_dir.mkdir()
+    storage_dir.mkdir()
+    (storage_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "vector": {
+                    "outbox_completed_retention_days": -1,
+                    "outbox_completed_keep_per_generation": 1_000_001,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rejected = load_runtime_config(plugin_dir, storage_dir)
+    errors = load_runtime_config_errors(rejected)
+
+    assert rejected["vector"]["outbox_completed_retention_days"] == 30
+    assert rejected["vector"]["outbox_completed_keep_per_generation"] == 5000
+    assert [item["kind"] for item in errors] == ["invalid_value", "invalid_value"]
+
+    (storage_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "vector": {
+                    "outbox_completed_retention_days": 0,
+                    "outbox_completed_keep_per_generation": 0,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    disabled = load_runtime_config(plugin_dir, storage_dir)
+    assert load_runtime_config_errors(disabled) == []
+    assert disabled["vector"]["outbox_completed_retention_days"] == 0
+    assert disabled["vector"]["outbox_completed_keep_per_generation"] == 0
+
+    packaged = json.loads((PLUGIN_ROOT / "config.json").read_text(encoding="utf-8"))
+    assert packaged["vector"]["outbox_completed_retention_days"] == DEFAULT_CONFIG[
+        "vector"
+    ]["outbox_completed_retention_days"]
+    assert packaged["vector"]["outbox_completed_keep_per_generation"] == DEFAULT_CONFIG[
+        "vector"
+    ]["outbox_completed_keep_per_generation"]
+
+
+def test_runtime_config_rejects_malformed_identity_alias_entries(tmp_path: Path):
+    storage_dir = tmp_path / "scope-recall"
+    storage_dir.mkdir(parents=True)
+    malformed = [
+        {"chat_aliases": {"telegram:": "owner"}},
+        {"chat_aliases": {":synthetic-chat": "owner"}},
+        {"chat_aliases": {"telegram:synthetic-chat": ""}},
+        {"chat_aliases": {"telegram:synthetic-chat": {"owner": True}}},
+        {"user_aliases": {"telegram:": "owner"}},
+    ]
+
+    for identity in malformed:
+        (storage_dir / "config.json").write_text(
+            json.dumps({"identity": identity}), encoding="utf-8"
+        )
+        runtime = load_runtime_config(PLUGIN_ROOT, storage_dir)
+        errors = load_runtime_config_errors(runtime)
+
+        assert runtime["identity"].get("chat_aliases", {}) == {}
+        assert runtime["identity"].get("user_aliases", {}) == {}
+        assert len(errors) == 1
+        assert errors[0]["kind"] == "invalid_value"
+        assert "identity alias" in errors[0]["message"]
+
+
+def test_runtime_config_accepts_nonempty_identity_alias_entries(tmp_path: Path):
+    storage_dir = tmp_path / "scope-recall"
+    storage_dir.mkdir(parents=True)
+    aliases = {
+        "chat_aliases": {"telegram:synthetic-chat": "chat-owner"},
+        "user_aliases": {"telegram:synthetic-user": "account-owner"},
+    }
+    (storage_dir / "config.json").write_text(
+        json.dumps({"identity": aliases}), encoding="utf-8"
+    )
+
+    runtime = load_runtime_config(PLUGIN_ROOT, storage_dir)
+
+    assert load_runtime_config_errors(runtime) == []
+    assert runtime["identity"]["chat_aliases"] == aliases["chat_aliases"]
+    assert runtime["identity"]["user_aliases"] == aliases["user_aliases"]
 
 
 def test_relation_runtime_config_rejects_out_of_range_overrides(tmp_path: Path):

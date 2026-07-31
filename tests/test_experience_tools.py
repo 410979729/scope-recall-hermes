@@ -10,6 +10,8 @@ import pytest
 
 from plugins.memory import load_memory_provider
 from scope_recall.experience_store import create_playbook, review_playbook
+from scope_recall.models import RuntimeScope
+from scope_recall.scope import build_shared_scope_id
 
 
 def _write_scope_recall_config(hermes_home, values):
@@ -193,7 +195,14 @@ def test_playbook_review_tool_can_dedupe_and_merge(provider):
     applied = json.loads(
         provider.handle_tool_call(
             "scope_recall_playbook_review",
-            {"action": "merge", "id": "pb_tool_b", "source_ids": ["pb_tool_a"], "reason": "tool dedupe", "dry_run": False},
+            {
+                "action": "merge",
+                "id": "pb_tool_b",
+                "source_ids": ["pb_tool_a"],
+                "reason": "tool dedupe",
+                "dry_run": False,
+                "validated_payload": dry,
+            },
         )
     )
     assert applied["merged"] is True
@@ -201,6 +210,102 @@ def test_playbook_review_tool_can_dedupe_and_merge(provider):
         row = provider._require_conn().execute("SELECT status, superseded_by FROM procedural_playbooks WHERE id = ?", ("pb_tool_a",)).fetchone()
     assert row["status"] == "superseded"
     assert row["superseded_by"] == "pb_tool_b"
+
+
+def test_playbook_review_tool_derives_authenticated_legacy_owner_aliases(tmp_path):
+    _write_scope_recall_config(
+        tmp_path,
+        {
+            "vector": {"enabled": False},
+            "tool_schema_profile": "standard",
+            "maintenance_tools_enabled": True,
+            "experience": {"prefetch_enabled": False},
+            "identity": {
+                "cross_platform_shared_scope": True,
+                "user_aliases": {"telegram:9000000001": "joy"},  # fixture
+            },
+        },
+    )
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    plugin.initialize(
+        "session-experience-owner-alias",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="9000000001",  # fixture
+        chat_id="9000000001",  # fixture
+        gateway_session_key="agent:default:telegram:direct:9000000001",  # fixture
+        agent_identity="default",
+        agent_workspace="hermes",
+    )
+    try:
+        legacy_scope = build_shared_scope_id(
+            RuntimeScope(
+                platform="telegram",
+                user_id="9000000001",  # fixture
+                agent_identity="default",
+                agent_workspace="hermes",
+            )
+        )
+        with plugin._lock:
+            create_playbook(
+                plugin._require_conn(),
+                playbook_id="pb_legacy_core",
+                scope_id=legacy_scope,
+                payload=_payload(),
+                status="candidate",
+                confidence=0.9,
+            )
+            promoted = review_playbook(
+                plugin._require_conn(),
+                playbook_id="pb_legacy_core",
+                accessible_scope_ids=[legacy_scope],
+                action="promote",
+                reason="fixture verified core",
+            )
+            assert promoted["reviewed"] is True
+        created = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_playbook_create",
+                {
+                    "id": "pb_canonical_candidate",
+                    "payload": _payload(),
+                    "status": "candidate",
+                    "confidence": 0.7,
+                },
+            )
+        )
+        assert created["created"] is True
+
+        dedupe = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_playbook_review",
+                {"action": "dedupe"},
+            )
+        )
+        assert dedupe["count"] == 1
+        assert {
+            item["id"] for item in dedupe["groups"][0]["items"]
+        } == {"pb_legacy_core", "pb_canonical_candidate"}
+
+        applied = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_playbook_review",
+                {
+                    "id": "pb_canonical_candidate",
+                    "action": "supersede",
+                    "superseded_by": "pb_legacy_core",
+                    "reason": "identity migration dedupe",
+                    "dry_run": False,
+                },
+            )
+        )
+
+        assert applied["reviewed"] is True
+        assert applied["status"] == "superseded"
+        assert applied["superseded_by"] == "pb_legacy_core"
+    finally:
+        plugin.shutdown()
 
 
 def test_playbook_review_tool_non_merge_actions_default_to_dry_run_and_require_apply(provider):
@@ -532,3 +637,54 @@ def test_experience_enabled_false_hides_and_blocks_non_preflight_experience_tool
     assert "experience kernel is disabled" in search.lower()
     assert "experience kernel is disabled" in create.lower()
     assert "experience kernel is disabled" in stats.lower()
+
+
+def test_playbook_review_tool_rejects_stale_validated_payload(provider):
+    provider.handle_tool_call(
+        "scope_recall_playbook_create",
+        {
+            "id": "pb_stale_tool",
+            "payload": _payload(),
+            "status": "candidate",
+            "confidence": 0.9,
+        },
+    )
+    dry_run = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_playbook_review",
+            {
+                "id": "pb_stale_tool",
+                "action": "promote",
+                "reason": "operator inspected",
+            },
+        )
+    )
+    assert dry_run["validation_token"]
+
+    with provider._lock:
+        provider._require_conn().execute(
+            "UPDATE procedural_playbooks SET updated_at = ? WHERE id = ?",
+            ("2099-01-01T00:00:00+00:00", "pb_stale_tool"),
+        )
+        provider._require_conn().commit()
+
+    applied = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_playbook_review",
+            {
+                "id": "pb_stale_tool",
+                "action": "promote",
+                "reason": "operator inspected",
+                "dry_run": False,
+                "validated_payload": dry_run,
+            },
+        )
+    )
+    with provider._lock:
+        status = provider._require_conn().execute(
+            "SELECT status FROM procedural_playbooks WHERE id = ?",
+            ("pb_stale_tool",),
+        ).fetchone()[0]
+
+    assert applied["error"] == "stale_validation"
+    assert status == "candidate"

@@ -4,6 +4,25 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.8.3] - 2026-07-31
+
+### Added
+- Added a public 72-pair `gemini-embedding-001` vector-only threshold calibration fixture, a metric gate, bounded completed-outbox retention, and platform-native recovery-command generation.
+
+### Changed
+- Raised the default vector-only recall threshold from `0.30` to calibrated `0.70`, while preserving explicit per-profile overrides; the packaged benchmark reduces weighted error from 29 to 16 at the required 0.80 recall floor.
+
+### Fixed
+- Restored strict-schema and runtime compatibility for operator-authorized `identity.chat_aliases`. Exact chat aliases remain opt-in, require cross-platform identity sharing, and take precedence over account aliases because they explicitly grant the whole chat one canonical durable identity.
+- Fixed short Chinese system/location questions being tokenized as hard entity scopes, added bounded answer-shape intent evidence and present-state authority ranking, and kept historical questions out of current-state reranking.
+- Fixed Experience review/dedupe/merge closure across authenticated canonical-user and legacy account scopes. Runtime-derived owner aliases are restricted to accessible non-pool scopes, structured shared-pool ids can never prove owner equivalence, and review/merge apply revalidates authoritative rows under an immediate write transaction with compare-and-swap updates. Optional prior dry-run payloads bind both public tool and storage apply paths; direct callers remain exact-scope by default.
+- Added raw Telegram-ID curated-memory allowlist coverage for canonical identity configurations without changing the conservative gateway default.
+- Rejected empty or malformed account/chat aliases at both runtime resolution and configuration ingestion, and made canonical-alias governance tests exercise the actual cross-platform gate.
+- Fixed `merge_playbooks(commit=False)` transaction ownership and journal doctor streak semantics so callers never receive an uncommitted success and recovered digest runs reset current failure health.
+- Made Windows FTS repair, activation compensation, LanceDB backup, long-path handling, symlinked config updates, and manual rollback receipts use verified platform-correct contracts; genuine external file locks remain fail-closed with a physically retained maintenance lease.
+- Required concrete answer evidence for current operating-system and timezone questions, including Linux distributions and multi-character Chinese subjects, so generic manuals and topic mentions cannot outrank the actual current fact.
+- Preserved the stable Fact Evolution, temporal, Reflection, scope routing, evidence authority, provenance-root, idempotency, journal checkpoint, and release-identity contracts while hardening their surrounding reliability boundaries.
+
 ## [1.8.2] - 2026-07-28
 
 ### Added

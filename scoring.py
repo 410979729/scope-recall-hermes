@@ -8,7 +8,7 @@ from functools import lru_cache
 from typing import Any
 
 from .aliases import canonicalize_alias
-from .gating import normalized_token_set, query_tokens
+from .gating import matched_query_intent_terms, normalized_token_set, query_tokens, semantic_query_tokens
 
 
 _QUERY_STOPWORDS = {
@@ -71,11 +71,21 @@ def _canonical_tokens(text: str) -> frozenset[str]:
     return frozenset(canonical)
 
 
+@lru_cache(maxsize=4096)
+def _canonical_query_tokens(text: str) -> frozenset[str]:
+    canonical: set[str] = set()
+    for token in normalized_token_set(semantic_query_tokens(text)):
+        normalized = canonicalize_alias(token)
+        if normalized:
+            canonical.add(normalized)
+    return frozenset(canonical)
+
+
 
 def lexical_score(*, query: str, content: str, summary: str, source: str, target: str) -> float:
     haystack = f"{summary}\n{content}".lower()
     normalized_query = query.lower()
-    query_token_set = _canonical_tokens(query)
+    query_token_set = _canonical_query_tokens(query)
     doc_token_set = _canonical_tokens(haystack)
 
     overlap = 0.0
@@ -86,9 +96,10 @@ def lexical_score(*, query: str, content: str, summary: str, source: str, target
         overlap = len(query_token_set & doc_token_set) / max(len(query_token_set), 1)
 
     phrase_bonus = 0.35 if normalized_query and normalized_query in haystack else 0.0
+    intent_bonus = 0.18 if matched_query_intent_terms(query, haystack) else 0.0
     source_bonus = 0.18 if source == "builtin-curated" else 0.08 if source.startswith("tool") else 0.02
     target_bonus = TARGET_PRIORITY_BONUS.get(target, 0.0)
-    return max(0.0, min(1.0, overlap * 0.72 + phrase_bonus + source_bonus + target_bonus))
+    return max(0.0, min(1.0, overlap * 0.72 + phrase_bonus + intent_bonus + source_bonus + target_bonus))
 
 
 

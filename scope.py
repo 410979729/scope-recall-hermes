@@ -87,6 +87,23 @@ def _canonical_user_for_account(config: dict[str, Any] | None, platform: str, us
     return ""
 
 
+def _canonical_user_for_chat(config: dict[str, Any] | None, platform: str, chat_id: str) -> str:
+    """Resolve an operator-authorized whole-chat canonical identity."""
+
+    if not _identity_enabled(config):
+        return ""
+    safe_platform = str(platform or "").strip().lower()
+    safe_chat_id = str(chat_id or "").strip()
+    if not safe_platform or not safe_chat_id:
+        return ""
+    identity = _identity_config(config)
+    aliases = identity.get("chat_aliases") or {}
+    key = _account_key(safe_platform, safe_chat_id)
+    if isinstance(aliases, dict) and str(aliases.get(key) or "").strip():
+        return str(aliases[key]).strip()
+    return ""
+
+
 def _accounts_for_canonical(config: dict[str, Any] | None, canonical_user: str) -> list[tuple[str, str]]:
     accounts: list[tuple[str, str]] = []
     identity = _identity_config(config)
@@ -124,6 +141,15 @@ def _accounts_for_canonical(config: dict[str, Any] | None, canonical_user: str) 
 
 def canonical_user_id(scope: RuntimeScope, config: dict[str, Any] | None = None) -> str:
     normalized = normalize_scope_identity(scope, config)
+    # An exact chat alias is an explicit operator grant for every participant
+    # in that chat, so it intentionally takes precedence over account aliases.
+    chat_canonical = _canonical_user_for_chat(
+        config,
+        str(scope.platform or ""),
+        str(scope.chat_id or ""),
+    )
+    if chat_canonical:
+        return chat_canonical
     return _canonical_user_for_account(config, normalized.platform or "cli", normalized.user_id or "local")
 
 

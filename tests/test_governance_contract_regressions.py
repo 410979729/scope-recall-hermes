@@ -148,6 +148,50 @@ def test_curated_memory_allowlist_can_opt_in_specific_gateway_user(tmp_path, mon
         provider.shutdown()
 
 
+def test_curated_memory_allowlist_accepts_raw_gateway_id_with_canonical_alias(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = MemoryStore()
+    store.load_from_disk()
+    result = json.loads(
+        memory_tool(
+            action="add",
+            target="user",
+            content="Joy keeps a raw-id curated canary.",
+            store=store,
+        )
+    )
+    assert result["success"] is True
+
+    provider = _provider(
+        tmp_path,
+        user_id="9000000001",  # fixture
+        config={
+            "identity": {
+                "cross_platform_shared_scope": True,
+                "user_aliases": {"telegram:9000000001": "joy"},  # fixture
+            },
+            "curated_memory": {
+                "mode": "explicit-users",
+                "allowed_user_ids": ["9000000001"],  # fixture
+            },
+        },
+    )
+    try:
+        assert provider._scope.user_id == "9000000001"  # fixture
+        from scope_recall.scope import build_shared_scope_id, canonical_user_id
+
+        assert canonical_user_id(provider._scope, provider._config) == "joy"
+        assert "canonical_user:3:joy" in build_shared_scope_id(
+            provider._scope, provider._config
+        )
+        provider.on_turn_start(1, "What curated canary does Joy keep?")
+        assert "raw-id curated canary" in provider.prefetch(
+            "What curated canary does Joy keep?"
+        ).lower()
+    finally:
+        provider.shutdown()
+
+
 def test_curated_memory_disabled_config_blocks_single_user_live_read(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     store = MemoryStore()

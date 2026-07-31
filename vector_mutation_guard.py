@@ -70,8 +70,19 @@ def advisory_file_lock(lock_path: Path) -> Iterator[None]:
             windows_locking = (
                 getattr(_msvcrt, "locking", None) if _msvcrt is not None else None
             )
-            if _fcntl is not None:
-                _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX)
+            posix_locking = (
+                getattr(_fcntl, "flock", None) if _fcntl is not None else None
+            )
+            posix_lock_ex = (
+                getattr(_fcntl, "LOCK_EX", None) if _fcntl is not None else None
+            )
+            posix_lock_un = (
+                getattr(_fcntl, "LOCK_UN", None) if _fcntl is not None else None
+            )
+            using_posix_lock = False
+            if callable(posix_locking) and posix_lock_ex is not None:
+                posix_locking(handle.fileno(), int(posix_lock_ex))
+                using_posix_lock = True
             elif callable(windows_locking):
                 handle.seek(0, 2)
                 if handle.tell() == 0:
@@ -86,8 +97,12 @@ def advisory_file_lock(lock_path: Path) -> Iterator[None]:
                 yield
             finally:
                 depths.pop(key, None)
-                if _fcntl is not None:
-                    _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
+                if (
+                    using_posix_lock
+                    and callable(posix_locking)
+                    and posix_lock_un is not None
+                ):
+                    posix_locking(handle.fileno(), int(posix_lock_un))
                 elif callable(windows_locking):
                     handle.seek(0)
                     windows_locking(

@@ -7,7 +7,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from .gating import build_fts_query, compact_text, like_terms, normalized_token_set, query_tokens
+from .gating import build_fts_query, compact_text, like_terms, normalized_token_set, retrieval_query_tokens
 from .governance import classify_memory
 from .graph import load_metadata
 from .lifecycle_policy import ORDINARY_RECALL_HIDDEN_LIFECYCLE_VALUES, ordinary_recall_lifecycle_visible_sql
@@ -99,7 +99,7 @@ def search_db_memories(provider: Any, query: str, *, limit: int) -> list[RecallI
 
     Lifecycle and scope filters are applied here before ranking so downstream retrieval cannot accidentally surface archived or inaccessible state."""
     conn = provider._require_conn()
-    tokens = query_tokens(query)
+    tokens = retrieval_query_tokens(query)
     fts_query = build_fts_query(tokens)
     rows: list[sqlite3.Row] = []
     try:

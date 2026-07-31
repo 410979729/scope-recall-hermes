@@ -168,7 +168,8 @@
   "identity": {
     "cross_platform_shared_scope": false,
     "cli_user_id_fallback": "local",
-    "user_aliases": {}
+    "user_aliases": {},
+    "chat_aliases": {}
   },
   "shared_pool": {
     "enabled": false,
@@ -188,7 +189,7 @@
     "top_k": 5,
     "min_score": 0.18,
     "vector_min_score": 0.12,
-    "vector_only_min_score": 0.30,
+    "vector_only_min_score": 0.70,
     "include_general": "same-scope",
     "general_weight": 0.35,
     "general_min_importance": 0.2,
@@ -286,6 +287,8 @@
     "startup_outbox_limit": 200,
     "write_outbox_replay_limit": 20,
     "startup_reconcile_interval_seconds": 86400,
+    "outbox_completed_retention_days": 30,
+    "outbox_completed_keep_per_generation": 5000,
     "embedder": {
       "provider": "openai-compatible",
       "dimensions": 3072,

@@ -41,6 +41,18 @@ def _provider(tmp_path, *, write_enabled: bool, maintenance_tools_enabled: bool 
     return plugin
 
 
+def test_playbook_owner_aliases_exclude_shared_pool_scope(tmp_path):
+    plugin = _provider(tmp_path, write_enabled=True)
+    try:
+        aliases = plugin._tool_service._playbook_owner_scope_aliases()
+
+        assert plugin._shared_scope_id in aliases
+        assert plugin._shared_pool_scope_id in plugin._accessible_scope_ids
+        assert plugin._shared_pool_scope_id not in aliases
+    finally:
+        plugin.shutdown()
+
+
 def test_shared_pool_write_fails_closed_by_default(tmp_path):
     plugin = _provider(tmp_path, write_enabled=False)
     try:

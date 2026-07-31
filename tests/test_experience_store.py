@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+import scope_recall.experience_store as experience_store_module
 from scope_recall.experience_models import ExperienceValidationError
 from scope_recall.experience_preflight import experience_preflight
 from scope_recall.experience_store import (
@@ -24,6 +25,8 @@ from scope_recall.experience_store import (
     review_playbook,
     search_playbooks,
 )
+from scope_recall.models import RuntimeScope
+from scope_recall.scope import build_shared_pool_scope_id, build_shared_scope_id
 from scope_recall.sql_store import ensure_schema
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -400,6 +403,58 @@ def test_review_playbook_commit_false_requires_caller_owned_transaction():
 
     assert conn.execute(
         "SELECT status FROM procedural_playbooks WHERE id='pb_commit_owner'"
+    ).fetchone()[0] == "candidate"
+
+
+def test_merge_playbooks_commit_false_requires_caller_owned_transaction():
+    conn = _conn()
+    create_playbook(
+        conn,
+        playbook_id="pb_merge_target",
+        scope_id="scope-a",
+        payload=_payload(),
+        status="candidate",
+    )
+    create_playbook(
+        conn,
+        playbook_id="pb_merge_source",
+        scope_id="scope-a",
+        payload=_payload(),
+        status="candidate",
+    )
+    conn.commit()
+
+    with pytest.raises(ExperienceValidationError, match="caller-owned transaction"):
+        merge_playbooks(
+            conn,
+            target_id="pb_merge_target",
+            source_ids=["pb_merge_source"],
+            accessible_scope_ids=["scope-a"],
+            reason="caller owns commit",
+            dry_run=False,
+            commit=False,
+        )
+
+    assert conn.in_transaction is False
+    assert conn.execute(
+        "SELECT status FROM procedural_playbooks WHERE id='pb_merge_source'"
+    ).fetchone()[0] == "candidate"
+
+    conn.execute("BEGIN IMMEDIATE")
+    applied = merge_playbooks(
+        conn,
+        target_id="pb_merge_target",
+        source_ids=["pb_merge_source"],
+        accessible_scope_ids=["scope-a"],
+        reason="caller owns commit",
+        dry_run=False,
+        commit=False,
+    )
+    assert applied["merged"] is True
+    assert conn.in_transaction is True
+    conn.rollback()
+    assert conn.execute(
+        "SELECT status FROM procedural_playbooks WHERE id='pb_merge_source'"
     ).fetchone()[0] == "candidate"
 
 
@@ -792,6 +847,143 @@ def test_review_supersede_requires_existing_same_owner_canonical():
     row = conn.execute("SELECT status, superseded_by FROM procedural_playbooks WHERE id = 'pb_source'").fetchone()
     assert row["status"] == "superseded"
     assert row["superseded_by"] == "pb_target"
+
+
+def test_review_supersede_accepts_explicit_runtime_owner_alias_group_only():
+    conn = _conn()
+    legacy_scope = "platform:telegram|workspace:hermes|agent:default|user:9000000001"  # fixture
+    canonical_scope = "workspace:hermes|agent:default|canonical_user:joy"
+    unrelated_scope = "workspace:hermes|agent:default|canonical_user:other"
+    create_playbook(
+        conn,
+        playbook_id="pb_legacy_core",
+        scope_id=legacy_scope,
+        payload=_payload(),
+        confidence=0.9,
+    )
+    create_playbook(
+        conn,
+        playbook_id="pb_canonical_candidate",
+        scope_id=canonical_scope,
+        payload=_payload(),
+        confidence=0.7,
+    )
+    create_playbook(
+        conn,
+        playbook_id="pb_unrelated",
+        scope_id=unrelated_scope,
+        payload=_payload(),
+        confidence=0.7,
+    )
+    accessible = [legacy_scope, canonical_scope, unrelated_scope]
+
+    exact_groups = find_duplicate_playbooks(
+        conn,
+        accessible_scope_ids=accessible,
+        limit=10,
+    )
+    alias_groups = find_duplicate_playbooks(
+        conn,
+        accessible_scope_ids=accessible,
+        owner_scope_aliases=[legacy_scope, canonical_scope],
+        limit=10,
+    )
+    blocked = review_playbook(
+        conn,
+        playbook_id="pb_canonical_candidate",
+        accessible_scope_ids=accessible,
+        action="supersede",
+        superseded_by="pb_legacy_core",
+        reason="identity migration dedupe",
+        dry_run=True,
+    )
+    allowed = review_playbook(
+        conn,
+        playbook_id="pb_canonical_candidate",
+        accessible_scope_ids=accessible,
+        owner_scope_aliases=[legacy_scope, canonical_scope],
+        action="supersede",
+        superseded_by="pb_legacy_core",
+        reason="identity migration dedupe",
+        dry_run=True,
+    )
+    unrelated = review_playbook(
+        conn,
+        playbook_id="pb_unrelated",
+        accessible_scope_ids=accessible,
+        owner_scope_aliases=[legacy_scope, canonical_scope],
+        action="supersede",
+        superseded_by="pb_legacy_core",
+        reason="must remain isolated",
+        dry_run=True,
+    )
+    forged_alias = review_playbook(
+        conn,
+        playbook_id="pb_canonical_candidate",
+        accessible_scope_ids=accessible,
+        owner_scope_aliases=[legacy_scope, canonical_scope, "forged-owner"],
+        action="supersede",
+        superseded_by="pb_legacy_core",
+        reason="must fail closed",
+        dry_run=True,
+    )
+
+    assert exact_groups == []
+    assert len(alias_groups) == 1
+    assert {item["id"] for item in alias_groups[0]["items"]} == {
+        "pb_legacy_core",
+        "pb_canonical_candidate",
+    }
+    assert blocked["error"] == "superseded_by_scope_mismatch"
+    assert allowed["changed"] is True
+    assert allowed["status"] == "superseded"
+    assert unrelated["error"] == "superseded_by_scope_mismatch"
+    assert forged_alias["error"] == "owner_scope_alias_not_accessible"
+
+
+def test_review_validation_token_binds_runtime_owner_alias_group():
+    conn = _conn()
+    legacy_scope = "legacy-owner"
+    canonical_scope = "canonical-owner"
+    create_playbook(conn, playbook_id="pb_legacy", scope_id=legacy_scope, payload=_payload(), confidence=0.9)
+    create_playbook(conn, playbook_id="pb_candidate", scope_id=canonical_scope, payload=_payload(), confidence=0.7)
+    accessible = [legacy_scope, canonical_scope, "another-accessible-owner"]
+    aliases = [legacy_scope, canonical_scope]
+    dry_run = review_playbook(
+        conn,
+        playbook_id="pb_candidate",
+        accessible_scope_ids=accessible,
+        owner_scope_aliases=aliases,
+        action="supersede",
+        superseded_by="pb_legacy",
+        reason="identity migration dedupe",
+        dry_run=True,
+    )
+
+    stale = review_playbook(
+        conn,
+        playbook_id="pb_candidate",
+        accessible_scope_ids=accessible,
+        owner_scope_aliases=[legacy_scope, canonical_scope, "another-accessible-owner"],
+        action="supersede",
+        superseded_by="pb_legacy",
+        reason="identity migration dedupe",
+        validated_payload=dry_run,
+    )
+    applied = review_playbook(
+        conn,
+        playbook_id="pb_candidate",
+        accessible_scope_ids=accessible,
+        owner_scope_aliases=aliases,
+        action="supersede",
+        superseded_by="pb_legacy",
+        reason="identity migration dedupe",
+        validated_payload=dry_run,
+    )
+
+    assert stale["error"] == "stale_validation"
+    assert applied["reviewed"] is True
+    assert applied["status"] == "superseded"
 
 
 def test_review_playbook_is_idempotent_for_repeated_supersede():
@@ -1697,3 +1889,274 @@ def test_shared_playbook_inspect_and_stats_filter_runs_by_run_scope():
     assert [run["outcome_reason"] for run in a_view["runs"]] == ["private-A"]
     assert a_stats["runs"]["total"] == 1
     assert a_stats["runs"]["by_outcome"] == {"success": 1}
+
+
+def test_shared_pool_scope_never_proves_same_playbook_owner():
+    conn = _conn()
+    owner_a_scope = RuntimeScope(
+        platform="telegram",
+        user_id="fixture-user",
+        agent_identity="agent-a",
+        agent_workspace="hermes",
+    )
+    owner_b_scope = RuntimeScope(
+        platform="telegram",
+        user_id="fixture-user",
+        agent_identity="agent-b",
+        agent_workspace="hermes",
+    )
+    owner_a = build_shared_scope_id(owner_a_scope)
+    owner_b = build_shared_scope_id(owner_b_scope)
+    shared_pool = build_shared_pool_scope_id(owner_a_scope, "fixture-pool")
+    accessible = [owner_a, owner_b, shared_pool]
+    create_playbook(
+        conn,
+        playbook_id="pool_target",
+        scope_id=owner_a,
+        shared_scope_id=shared_pool,
+        payload=_payload(),
+        confidence=0.9,
+    )
+    create_playbook(
+        conn,
+        playbook_id="pool_source",
+        scope_id=owner_b,
+        shared_scope_id=shared_pool,
+        payload=_payload(),
+        confidence=0.7,
+    )
+
+    groups = find_duplicate_playbooks(
+        conn,
+        accessible_scope_ids=accessible,
+        limit=10,
+    )
+    reviewed = review_playbook(
+        conn,
+        playbook_id="pool_source",
+        accessible_scope_ids=accessible,
+        action="supersede",
+        superseded_by="pool_target",
+        reason="must remain agent-owned",
+        dry_run=True,
+    )
+    merged = merge_playbooks(
+        conn,
+        target_id="pool_target",
+        source_ids=["pool_source"],
+        accessible_scope_ids=accessible,
+        reason="must remain agent-owned",
+        dry_run=True,
+    )
+
+    assert groups == []
+    assert reviewed["error"] == "superseded_by_scope_mismatch"
+    assert merged["error"] == "scope_owner_mismatch"
+
+
+def test_owner_alias_group_rejects_structured_shared_pool_scope():
+    conn = _conn()
+    owner_a_scope = RuntimeScope(
+        platform="telegram",
+        user_id="fixture-user",
+        agent_identity="agent-a",
+        agent_workspace="hermes",
+    )
+    owner_b_scope = RuntimeScope(
+        platform="telegram",
+        user_id="fixture-user",
+        agent_identity="agent-b",
+        agent_workspace="hermes",
+    )
+    owner_a = build_shared_scope_id(owner_a_scope)
+    owner_b = build_shared_scope_id(owner_b_scope)
+    shared_pool = build_shared_pool_scope_id(owner_a_scope, "fixture-pool")
+    accessible = [owner_a, owner_b, shared_pool]
+    create_playbook(
+        conn,
+        playbook_id="alias_target",
+        scope_id=owner_a,
+        payload=_payload(),
+        confidence=0.9,
+    )
+    create_playbook(
+        conn,
+        playbook_id="alias_source",
+        scope_id=owner_b,
+        payload=_payload(),
+        confidence=0.7,
+    )
+
+    reviewed = review_playbook(
+        conn,
+        playbook_id="alias_source",
+        accessible_scope_ids=accessible,
+        owner_scope_aliases=[owner_a, owner_b, shared_pool],
+        action="supersede",
+        superseded_by="alias_target",
+        reason="pool must not become owner capability",
+        dry_run=True,
+    )
+    merged = merge_playbooks(
+        conn,
+        target_id="alias_target",
+        source_ids=["alias_source"],
+        accessible_scope_ids=accessible,
+        owner_scope_aliases=[owner_a, owner_b, shared_pool],
+        reason="pool must not become owner capability",
+        dry_run=True,
+    )
+    groups = find_duplicate_playbooks(
+        conn,
+        accessible_scope_ids=accessible,
+        owner_scope_aliases=[owner_a, owner_b, shared_pool],
+        limit=10,
+    )
+
+    assert reviewed["error"] == "owner_scope_alias_is_shared_pool"
+    assert merged["error"] == "owner_scope_alias_is_shared_pool"
+    assert groups == []
+
+
+def test_review_rechecks_authoritative_rows_after_validation_token_check(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    db_path = tmp_path / "review-race.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    writer = sqlite3.connect(db_path)
+    create_playbook(
+        conn,
+        playbook_id="review_target",
+        scope_id="owner-a",
+        payload=_payload(),
+        confidence=0.9,
+    )
+    create_playbook(
+        conn,
+        playbook_id="review_source",
+        scope_id="owner-a",
+        payload=_payload(),
+        confidence=0.7,
+    )
+    accessible = ["owner-a", "owner-victim"]
+    dry_run = review_playbook(
+        conn,
+        playbook_id="review_source",
+        accessible_scope_ids=accessible,
+        action="supersede",
+        superseded_by="review_target",
+        reason="race fixture",
+        dry_run=True,
+    )
+    original = experience_store_module._review_validation_token
+    raced = False
+
+    def race_after_token(*args, **kwargs):
+        nonlocal raced
+        token = original(*args, **kwargs)
+        if not raced:
+            raced = True
+            writer.execute(
+                "UPDATE procedural_playbooks SET scope_id = ?, updated_at = ? WHERE id = ?",
+                ("owner-victim", "2099-01-01T00:00:00+00:00", "review_source"),
+            )
+            writer.commit()
+        return token
+
+    monkeypatch.setattr(
+        experience_store_module,
+        "_review_validation_token",
+        race_after_token,
+    )
+    applied = review_playbook(
+        conn,
+        playbook_id="review_source",
+        accessible_scope_ids=accessible,
+        action="supersede",
+        superseded_by="review_target",
+        reason="race fixture",
+        validated_payload=dry_run,
+    )
+    row = conn.execute(
+        "SELECT scope_id, status, superseded_by FROM procedural_playbooks WHERE id = ?",
+        ("review_source",),
+    ).fetchone()
+
+    assert applied["error"] == "stale_validation"
+    assert dict(row) == {
+        "scope_id": "owner-victim",
+        "status": "candidate",
+        "superseded_by": "",
+    }
+    writer.close()
+    conn.close()
+
+
+def test_merge_rechecks_authoritative_rows_after_owner_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    db_path = tmp_path / "merge-race.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    writer = sqlite3.connect(db_path)
+    create_playbook(
+        conn,
+        playbook_id="merge_target",
+        scope_id="owner-a",
+        payload=_payload(),
+        confidence=0.9,
+    )
+    create_playbook(
+        conn,
+        playbook_id="merge_source",
+        scope_id="owner-a",
+        payload=_payload(),
+        confidence=0.7,
+    )
+    accessible = ["owner-a", "owner-victim"]
+    original = experience_store_module._same_owner_scope
+    raced = False
+
+    def race_after_owner_check(left, right, owner_scope_aliases=()):
+        nonlocal raced
+        same_owner = original(left, right, owner_scope_aliases)
+        if not raced:
+            raced = True
+            writer.execute(
+                "UPDATE procedural_playbooks SET scope_id = ?, updated_at = ? WHERE id = ?",
+                ("owner-victim", "2099-01-01T00:00:00+00:00", "merge_source"),
+            )
+            writer.commit()
+        return same_owner
+
+    monkeypatch.setattr(
+        experience_store_module,
+        "_same_owner_scope",
+        race_after_owner_check,
+    )
+    applied = merge_playbooks(
+        conn,
+        target_id="merge_target",
+        source_ids=["merge_source"],
+        accessible_scope_ids=accessible,
+        reason="race fixture",
+        dry_run=False,
+    )
+    row = conn.execute(
+        "SELECT scope_id, status, superseded_by FROM procedural_playbooks WHERE id = ?",
+        ("merge_source",),
+    ).fetchone()
+
+    assert applied["error"] == "stale_validation"
+    assert dict(row) == {
+        "scope_id": "owner-victim",
+        "status": "candidate",
+        "superseded_by": "",
+    }
+    writer.close()
+    conn.close()

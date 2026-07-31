@@ -60,6 +60,8 @@ Important defaults:
 - Core playbook JSON columns (`steps`, `preconditions`, `verification`, `reuse_policy`, and `environment_constraints`) fail closed if a legacy/corrupt row cannot be parsed; preflight returns `no_reuse` instead of defaulting to empty safe-looking structures.
 - Per-playbook `reuse_policy` is enforced before direct reuse: `default_decision=no_reuse` suppresses packets, `default_decision=guided_reuse` or `allow_direct_reuse=false` prevents `direct_reuse`, and capability/staleness policy violations fail closed.
 - Search/inspect/preflight are always scope-filtered before ranking.
+- Shared-pool access grants visibility only. A structured shared-pool scope can never act as an Experience owner alias or authorize cross-agent review, dedupe, or merge.
+- Review and merge apply re-fetch authoritative rows under a write transaction and use compare-and-swap updates. For a strict two-step operator flow, pass the prior dry-run result back as `validated_payload`; apply returns `stale_validation` if rows, owner aliases, requested action, or version inputs changed.
 
 ## Playbook schema
 
@@ -97,7 +99,7 @@ Every step must also carry `evidence_required`; a playbook is a checkable proced
 | `scope_recall_playbook_inspect` | read-only | Inspect one playbook, versions, and recent runs. |
 | `scope_recall_experience_preflight` | read-only | Render direct/guided/no-reuse decision and packet. |
 | `scope_recall_playbook_feedback` | scoped write | Records per-scope reuse outcome. Owner-scope feedback may update global counters/confidence/status; shared-pool consumer feedback records a private run without demoting the shared playbook, and terminal `quarantined`/`superseded` playbooks reject feedback. |
-| `scope_recall_playbook_review` | maintenance-only | Mark reviewed/promoted/needs_review/quarantined/superseded. |
+| `scope_recall_playbook_review` | maintenance-only | Mark reviewed/promoted/needs_review/quarantined/superseded, list duplicates, or merge. Write actions default to dry-run and accept the prior result as optional `validated_payload` for stale-plan rejection. |
 | `scope_recall_experience_stats` | read-only | Count accessible playbooks and runs. |
 | `scope_recall_experience_promote` | maintenance-only | 自动从 journal 任务轨迹提取可复用经验手册；默认 dry-run。 |
 | `scope_recall_forgetting_report` | maintenance-only | 只读遗忘/归档报告，找出重复、草稿、极短、包装噪声和疑似敏感记忆。 |
