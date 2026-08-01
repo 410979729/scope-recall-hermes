@@ -4,6 +4,12 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.8.5] - 2026-08-01
+
+### Fixed
+- Replaced Windows activation-lease PID probing through `os.kill(pid, 0)` with a read-only process-handle query, preventing child doctor checks from sending `CTRL_C_EVENT` to a process-group owner.
+- Preserved Fact Evolution, temporal, Reflection, scope routing, evidence authority, provenance-root, idempotency, journal checkpoint, and release-identity contracts.
+
 ## [1.8.4] - 2026-08-01
 
 ### Added

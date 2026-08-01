@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import scope_recall.doctor_sqlite as doctor_sqlite
+import scope_recall.maintenance_lease as maintenance_lease
 from scope_recall.activation_transaction import (
     capture_activation_state,
     committed_activation_receipt,
@@ -43,6 +44,31 @@ def _write_lease(
         encoding="utf-8",
     )
     return path
+
+
+def test_windows_pid_liveness_dispatch_never_uses_os_kill(monkeypatch):
+    calls: list[int] = []
+
+    monkeypatch.setattr(maintenance_lease, "_IS_WINDOWS", True)
+    monkeypatch.setattr(
+        maintenance_lease,
+        "_windows_pid_liveness",
+        lambda process_id: calls.append(process_id) or "alive",
+    )
+
+    def forbidden_kill(_process_id: int, _signal: int) -> None:
+        raise AssertionError("Windows PID probes must not call os.kill")
+
+    monkeypatch.setattr(maintenance_lease.os, "kill", forbidden_kill)
+
+    assert maintenance_lease._pid_liveness(12345) == "alive"
+    assert calls == [12345]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows process-query contract")
+def test_windows_pid_liveness_uses_read_only_process_query():
+    assert maintenance_lease._windows_pid_liveness(os.getpid()) == "alive"
+    assert maintenance_lease._windows_pid_liveness(2_147_483_647) == "dead"
 
 
 def test_existing_writer_connection_is_blocked_when_lease_appears(tmp_path):
