@@ -24,6 +24,7 @@ from scope_recall.relation_rebuild_queue import (
 from scope_recall.relation_scope_state import RELATION_SCOPE_RECEIPT_MIGRATION_ID
 from scope_recall.sql_store import ensure_schema, schema_migration_status, store_row
 from scope_recall.temporal_facts import FACT_CLAIMS_MIGRATION_ID
+from scope_recall.truth_connection import connect_truth_database
 from scope_recall.vector_reconciliation import VECTOR_RECONCILIATION_MIGRATION_ID
 
 
@@ -31,7 +32,7 @@ def test_sqlite_report_opens_truth_db_read_only(tmp_path, monkeypatch):
     db_dir = tmp_path / "scope-recall"
     db_dir.mkdir(parents=True)
     db_path = db_dir / "memory.sqlite3"
-    conn = sqlite3.connect(db_path)
+    conn = connect_truth_database(db_path, mode="rwc")
     conn.execute("CREATE TABLE memories (id TEXT PRIMARY KEY)")
     conn.commit()
     conn.close()
@@ -89,7 +90,7 @@ def test_sqlite_report_fails_on_hidden_fts_membership_drift(tmp_path):
     db_dir = tmp_path / "scope-recall"
     db_dir.mkdir(parents=True)
     db_path = db_dir / "memory.sqlite3"
-    conn = sqlite3.connect(db_path)
+    conn = connect_truth_database(db_path, mode="rwc")
     conn.row_factory = sqlite3.Row
     ensure_schema(conn)
     store_row(

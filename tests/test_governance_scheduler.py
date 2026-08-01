@@ -396,6 +396,7 @@ def test_governance_scheduler_script_defaults_to_hermes_home_env(tmp_path):
     env = dict(os.environ)
     env["HERMES_HOME"] = str(hermes_home)
     env["HOME"] = str(fake_home)
+    env["PYTHONIOENCODING"] = "cp1252"
     result = subprocess.run(
         [sys.executable, str(PLUGIN_ROOT / "scripts" / "governance.scheduler.py"), "--dry-run", "--json"],
         text=True,
@@ -423,6 +424,8 @@ def test_governance_scheduler_script_emits_json_for_tmp_home(tmp_path):
     finally:
         conn.close()
 
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "cp1252"
     result = subprocess.run(
         [
             sys.executable,
@@ -435,6 +438,7 @@ def test_governance_scheduler_script_emits_json_for_tmp_home(tmp_path):
         text=True,
         capture_output=True,
         check=True,
+        env=env,
     )
 
     payload = json.loads(result.stdout)

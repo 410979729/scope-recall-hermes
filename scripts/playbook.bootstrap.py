@@ -42,7 +42,9 @@ def db_path(args: argparse.Namespace) -> Path:
 
 def emit(payload: dict[str, Any], *, fmt: str) -> None:
     if fmt == "json":
-        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        # JSON CLIs must remain writable under Windows' legacy cp1252 console
+        # encoding. Escapes preserve the exact Unicode value after decoding.
+        print(json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True))
         return
     print("# scope-recall experience bootstrap")
     print(f"- ok: {payload.get('ok')}")

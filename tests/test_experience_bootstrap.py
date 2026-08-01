@@ -5,6 +5,7 @@ They guard against creating low-value or unreviewable procedural memories."""
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -122,6 +123,7 @@ def test_playbook_bootstrap_cli_dry_run_does_not_mutate(tmp_path):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
+        env={**os.environ, "PYTHONIOENCODING": "cp1252"},
     )
 
     assert completed.returncode == 0, completed.stderr
