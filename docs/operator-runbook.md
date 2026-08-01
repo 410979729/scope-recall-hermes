@@ -58,6 +58,19 @@ hermes-scope-recall upgrade \
 
 Do not use `--maintenance-mode` to bypass an active writer. The installer creates `.activation-maintenance.json`, probes `BEGIN IMMEDIATE`, invalidates cached statements, and installs temporary DML guard triggers before snapshotting; lease-aware and raw/legacy writers then remain blocked through commit or compensation. If a failure reports `sqlite.manual_recovery_required=true`, do **not** run the offline SQLite restore command or delete the retained lease blindly. First identify and stop every writer, preserve the live DB/WAL/SHM and snapshot, compare the receipt fingerprints, and decide whether to keep the newer truth or restore the snapshot. Remove a stale lease only after confirming no activation process owns it and recording that manual decision. If a failed activation receipt marks a vector companion `rebuild_required`, run the emitted vector repair command only after SQLite truth is stable.
 
+Use the bounded recovery tool instead of deleting the lease file by hand. Dry-run reports owner liveness without exposing the lease token; apply is allowed only when the recorded PID is proven dead and creates a verified online backup first:
+
+```bash
+python scripts/recover.activation_lease.py --hermes-home "$HERMES_HOME" --dry-run
+python scripts/recover.activation_lease.py \
+  --hermes-home "$HERMES_HOME" \
+  --apply --maintenance-confirmed \
+  --operation-id "activation-lease-recovery-$(date +%Y%m%d_%H%M%S)" \
+  --reason "Verified stale activation owner after failed upgrade"
+```
+
+The apply result must include `recovered=true`, `guards_removed`, an operator-ledger operation, and a mirrored receipt path before writers resume.
+
 For source-tree validation before a copy/install upgrade, pin the interpreter first. A release gate run is only reproducible when the active interpreter has the dev and vector extras (`pytest`, `ruff`, `pyright`, `wheel`, `lancedb`, and `pyarrow`). Do not compare results from a stale sibling venv such as `.venv` with the Hermes runtime venv unless both have been installed the same way.
 
 ```bash
@@ -253,6 +266,39 @@ hermes-scope-recall vector repair --hermes-home "$HERMES_HOME"
 ```
 
 If fallback is intentional, use the script's explicit fallback flag rather than silently degrading semantic quality.
+
+Dead-letter outbox debt is a different failure from physical index corruption. Inspect and requeue selected terminal events before rebuilding the entire companion:
+
+```bash
+python scripts/requeue.vector_dead_letter.py --hermes-home "$HERMES_HOME"
+python scripts/requeue.vector_dead_letter.py \
+  --hermes-home "$HERMES_HOME" \
+  --event-id 17 --event-id 23 \
+  --apply --maintenance-confirmed \
+  --operation-id "vector-dead-letter-requeue-$(date +%Y%m%d_%H%M%S)" \
+  --reason "Dependency repaired; replay selected terminal events"
+```
+
+The command keeps terminal rows fail-closed until an operator proves the dependency is repaired. Apply requires exact event ids or one generation, `--maintenance-confirmed`, a unique operation id, and a specific reason; it creates a verified SQLite backup and mirrored receipt before normal replay resumes.
+
+Legacy stores may have active memories without `fact_freshness` rows. Inventory the full bounded cohort before changing it:
+
+```bash
+python scripts/backfill.freshness.py --hermes-home ~/.hermes --dry-run
+```
+
+Apply only with controlled writers and explicit evidence:
+
+```bash
+python scripts/backfill.freshness.py \
+  --hermes-home ~/.hermes \
+  --batch-size 500 \
+  --apply --maintenance-confirmed \
+  --operation-id freshness-backfill-YYYYMMDD \
+  --reason "upgrade legacy freshness coverage"
+```
+
+Each batch is idempotent; apply creates a verified online backup, records the authoritative operator result, mirrors a receipt, and reports any remaining cohort. Rerun doctor and require 100% factual coverage before declaring the store ready.
 
 ## governance cleanup
 

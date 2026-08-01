@@ -17,7 +17,12 @@ from .gating import (
     query_requests_current_state,
     query_tokens,
 )
-from .freshness import attach_freshness_metadata, memory_freshness_map
+from .freshness import (
+    CURRENT_STATUSES,
+    STALE_STATUSES,
+    attach_freshness_metadata,
+    memory_freshness_map,
+)
 from .graph import apply_quality_weight, entity_distance_scores, entity_overlap_bonus, metadata_entities, normalize_entity, query_entities as graph_query_entities
 from .lifecycle_policy import ORDINARY_RECALL_HIDDEN_LIFECYCLE_VALUES, ordinary_recall_lifecycle_visible_sql
 from .models import RecallItem
@@ -152,10 +157,22 @@ class RecallService:
         self.last_funnel_trace: dict[str, Any] = {}
         self.last_temporal_query_diagnostics: dict[str, Any] = {}
 
-    def search_memories(self, query: str, *, limit: int) -> list[RecallItem]:
+    def search_memories(
+        self,
+        query: str,
+        *,
+        limit: int,
+        recall_mode: str = "advisory",
+    ) -> list[RecallItem]:
         """Search accessible memory sources and return ranked recall payloads.
 
-        The method keeps lifecycle/scope filtering ahead of ranking so archived, candidate, rejected, or inaccessible rows do not spend prompt budget unless the caller explicitly asks for them."""
+        ``advisory`` keeps stale evidence with explicit warnings and penalties;
+        ``strict`` excludes stale and expired rows while preserving rejection
+        diagnostics in the funnel trace.
+        """
+        normalized_recall_mode = str(recall_mode or "advisory").strip().lower()
+        if normalized_recall_mode not in {"advisory", "strict"}:
+            raise ValueError("recall_mode must be advisory or strict")
         started_at = time.perf_counter()
         # Diagnostics describe one search only; never leak a prior temporal
         # query into a later request where the feature gate is disabled.
@@ -173,6 +190,7 @@ class RecallService:
             plan=plan,
             accessible_scope_count=len(getattr(self.provider, "_accessible_scope_ids", []) or []),
         )
+        trace["recall_mode"] = normalized_recall_mode
         intent_terms = query_intent_terms(query)
         current_state_requested = query_requests_current_state(query)
 
@@ -330,6 +348,17 @@ class RecallService:
             entity_distance_weight = float(retrieval_cfg.get("entity_distance_weight", 0.04))
             entity_distance_bonus = entity_distance_score * entity_distance_weight
             relation_payload = relation_evidence.get(item.id, {})
+            relation_types = [
+                str(value).strip().lower()
+                for value in (relation_payload.get("types") or [])
+                if str(value).strip()
+            ]
+            contradiction_mode = str(
+                retrieval_cfg.get("relation_contradiction_mode") or "surface"
+            ).strip().lower()
+            if contradiction_mode not in {"surface", "suppress", "penalize"}:
+                contradiction_mode = "surface"
+            has_contradiction = "contradicts" in relation_types
             relation_rerank_bonus = self._relation_rerank_bonus(relation_payload)
             base_score = max(0.0, min(1.0, quality_adjusted_score + entity_overlap + entity_distance_bonus + relation_rerank_bonus))
             freshness_payload = freshness_evidence.get(item.id)
@@ -364,8 +393,14 @@ class RecallService:
                     "entity_distance_weight": entity_distance_weight,
                     "entity_distance_bonus": entity_distance_bonus,
                     "relation_evidence_count": int(relation_payload.get("count") or 0),
-                    "relation_evidence_types": relation_payload.get("types") or [],
+                    "relation_evidence_types": relation_types,
                     "relation_evidence_ids": relation_payload.get("ids") or [],
+                    "relation_contradiction_mode": contradiction_mode,
+                    "relation_contradiction_warning": (
+                        "contradictory_relation_evidence_present"
+                        if has_contradiction and contradiction_mode == "surface"
+                        else ""
+                    ),
                     "relation_rerank_bonus": relation_rerank_bonus,
                     "relation_rerank_enabled": self._config_bool(retrieval_cfg.get("relation_rerank_enabled"), False),
                     "fact_freshness_penalty": fact_freshness_penalty,
@@ -385,6 +420,23 @@ class RecallService:
             meta.setdefault("general_weight", 1.0)
             item.metadata = meta
             item.score = base_score
+            freshness_status = str(
+                meta.get("fact_freshness_status") or "untracked"
+            ).strip().lower()
+            if normalized_recall_mode == "strict" and (
+                freshness_status in STALE_STATUSES or freshness_status == "expired"
+            ):
+                meta["rejected_reason"] = "freshness_strict_excluded"
+                trace["filters"]["freshness_strict_excluded"] += 1
+                item.metadata = meta
+                rejected.append(item)
+                continue
+            if has_contradiction and contradiction_mode == "suppress":
+                meta["rejected_reason"] = "relation_contradiction_suppressed"
+                trace["filters"]["relation_contradiction_suppressed"] += 1
+                item.metadata = meta
+                rejected.append(item)
+                continue
             lexical_score = float(meta.get("lexical_score") or 0.0)
             vector_score = float(meta.get("vector_score") or 0.0)
             if self._entity_scope_mismatch(query, item, meta):
@@ -432,6 +484,33 @@ class RecallService:
         self.last_rejected_candidates = ranked_rejected
 
         ranked = [_safe_recall_item(item) for item in rank_recall_items(filtered)]
+        current_positions = [
+            index
+            for index, item in enumerate(ranked)
+            if str(
+                (item.metadata or {}).get("fact_freshness_status") or ""
+            ).strip().lower()
+            in CURRENT_STATUSES
+        ]
+        ranking_warnings: list[dict[str, str]] = []
+        for index, item in enumerate(ranked):
+            status = str(
+                (item.metadata or {}).get("fact_freshness_status") or ""
+            ).strip().lower()
+            if status not in STALE_STATUSES or not any(
+                current_index > index for current_index in current_positions
+            ):
+                continue
+            item.metadata = dict(item.metadata or {})
+            item.metadata["ranking_warning"] = "stale_result_ranked_above_current"
+            ranking_warnings.append(
+                {
+                    "id": item.id,
+                    "warning": "stale_result_ranked_above_current",
+                }
+            )
+        if ranking_warnings:
+            trace["ranking_warnings"] = ranking_warnings
         returned = ranked[:bounded_limit]
         trace["stages"]["ranked"] = self._trace_stage(ranked)
         trace["final"] = final_trace_payload(returned=returned, ranked_rejected=ranked_rejected)
@@ -820,7 +899,20 @@ class RecallService:
         supports_boost = _relation_weight("relation_supports_boost", maximum=0.08)
         same_topic_boost = _relation_weight("relation_same_topic_boost", fallback_key=None, default=0.01, maximum=0.03)
         superseded_penalty = _relation_weight("relation_superseded_penalty")
-        contradicts_penalty = _relation_weight("relation_contradicts_penalty", fallback_key=None, default=0.0)
+        contradiction_mode = str(
+            retrieval_cfg.get("relation_contradiction_mode") or "surface"
+        ).strip().lower()
+        if contradiction_mode not in {"surface", "suppress", "penalize"}:
+            contradiction_mode = "surface"
+        contradicts_penalty = (
+            _relation_weight(
+                "relation_contradicts_penalty",
+                fallback_key=None,
+                default=0.0,
+            )
+            if contradiction_mode == "penalize"
+            else 0.0
+        )
         invalidated_penalty = _relation_weight(
             "relation_invalidated_penalty",
             fallback_key="relation_invalidates_penalty",

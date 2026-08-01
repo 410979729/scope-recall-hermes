@@ -81,7 +81,7 @@ def test_sqlite_report_opens_truth_db_read_only(tmp_path, monkeypatch):
     assert calls
     assert observed_query_only == [1]
     database, _args, kwargs = calls[0]
-    assert str(database) == f"file:{db_path}?mode=ro"
+    assert str(database) == f"{db_path.resolve().as_uri()}?mode=ro"
     assert kwargs.get("uri") is True
 
 

@@ -148,15 +148,22 @@ def build_tool_schemas(config: dict[str, Any], *, agent_context: str = "primary"
         SCOPE_RECALL_GOVERN_SCHEMA,
         SCOPE_RECALL_REPAIR_SCHEMA,
         SCOPE_RECALL_HYGIENE_SCHEMA,
-        SCOPE_RECALL_PLAYBOOK_CREATE_SCHEMA,
-        SCOPE_RECALL_PLAYBOOK_REVIEW_SCHEMA,
-        SCOPE_RECALL_EXPERIENCE_PROMOTE_SCHEMA,
         SCOPE_RECALL_FORGETTING_REPORT_SCHEMA,
         SCOPE_RECALL_FORGETTING_RUN_SCHEMA,
     ]
-    if experience_enabled and maintenance_enabled:
+    experience_maintenance_schemas = [
+        SCOPE_RECALL_PLAYBOOK_CREATE_SCHEMA,
+        SCOPE_RECALL_PLAYBOOK_REVIEW_SCHEMA,
+        SCOPE_RECALL_EXPERIENCE_PROMOTE_SCHEMA,
+    ]
+    if maintenance_enabled:
         schema_by_name.update({str(schema["name"]): schema for schema in maintenance_schemas})
         schemas.extend(maintenance_schemas)
+    if experience_enabled and maintenance_enabled:
+        schema_by_name.update(
+            {str(schema["name"]): schema for schema in experience_maintenance_schemas}
+        )
+        schemas.extend(experience_maintenance_schemas)
 
     if maintenance_enabled:
         schemas.append(SCOPE_RECALL_EVOLVE_SCHEMA)

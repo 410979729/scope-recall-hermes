@@ -42,7 +42,7 @@ def test_release_scanner_detects_json_yaml_and_python_secret_assignments(tmp_pat
     assert "config.yaml" in joined
     assert "settings.py" in joined
     assert fake_value not in joined
-    assert "[REDACTED]" in joined
+    assert "[REDACTED_SECRET]" in joined
 
 
 def test_release_scanner_uses_runtime_home_for_private_paths(tmp_path, monkeypatch):

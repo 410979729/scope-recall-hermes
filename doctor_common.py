@@ -18,43 +18,10 @@ try:
     from .capture_filters import contains_secret_like_text as _contains_secret_like_text
     from .capture_filters import redact_secret_like_text as _redact_secret_like_text
     from .capture_filters import sanitize_report_text as _sanitize_report_text
-except ImportError:  # pragma: no cover - keeps the standalone doctor script usable from source checkouts
-    def _contains_secret_like_text(text: Any) -> bool:
-        value = "" if text is None else str(text)
-        return bool(
-            re.search(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----", value)
-            or re.search(
-                r"(?:api[_ \t-]?key|token|secret|password|passwd|credential(?:[_ \t-]?[a-z0-9_]+)?|private[_ \t-]?key)"
-                r"(?:[ \t]*(?::|=|是)[ \t]*|[ \t]+is[ \t]+)[^\s]+",
-                value,
-                flags=re.IGNORECASE,
-            )
-            or re.search(r"s" r"k-[A-Za-z0-9][A-Za-z0-9_-]{18,}", value)
-            or re.search(r"g" r"h[pousr]_[A-Za-z0-9_]{20,}", value)
-            or re.search(r"bea" r"rer\s+[A-Za-z0-9._\-~+/=]{16,}", value, flags=re.IGNORECASE)
-        )
-
-    def _redact_secret_like_text(text: Any) -> str:
-        value = "" if text is None else str(text)
-        value = re.sub(
-            r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
-            "[REDACTED_SECRET]",
-            value,
-        )
-        value = re.sub(
-            r"(?:api[_ \t-]?key|token|secret|password|passwd|credential(?:[_ \t-]?[a-z0-9_]+)?|private[_ \t-]?key)"
-            r"(?:[ \t]*(?::|=|是)[ \t]*|[ \t]+is[ \t]+)[^\s]+",
-            "[REDACTED_SECRET]",
-            value,
-            flags=re.IGNORECASE,
-        )
-        value = re.sub(r"s" r"k-[A-Za-z0-9][A-Za-z0-9_-]{18,}", "[REDACTED_SECRET]", value)
-        value = re.sub(r"g" r"h[pousr]_[A-Za-z0-9_]{20,}", "[REDACTED_SECRET]", value)
-        value = re.sub(r"bea" r"rer\s+[A-Za-z0-9._\-~+/=]{16,}", "[REDACTED_SECRET]", value, flags=re.IGNORECASE)
-        return value
-
-    def _sanitize_report_text(text: Any) -> str:
-        return _redact_secret_like_text(text)
+except ImportError:  # pragma: no cover - standalone doctor source checkout
+    from capture_filters import contains_secret_like_text as _contains_secret_like_text
+    from capture_filters import redact_secret_like_text as _redact_secret_like_text
+    from capture_filters import sanitize_report_text as _sanitize_report_text
 
 
 def contains_secret_like_text(text: Any) -> bool:

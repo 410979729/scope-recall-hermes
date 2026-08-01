@@ -565,7 +565,10 @@ def setup_vector_layer(provider: Any) -> None:
         if int(reconciliation.get("failed") or 0) > 0:
             raise RuntimeError("bounded vector outbox replay failed during startup")
         if int(reconciliation.get("dead_letter") or 0) > 0:
-            raise RuntimeError("vector outbox contains dead-lettered startup debt")
+            raise RuntimeError(
+                "vector outbox contains dead-lettered startup debt; inspect with "
+                "python scripts/requeue.vector_dead_letter.py --dry-run"
+            )
         replayed = int(reconciliation.get("completed") or 0)
         planned = int(reconciliation.get("planned") or 0)
         if replayed or planned:

@@ -528,6 +528,27 @@ def _backend_vector_report(
                     "fallback": fallback_payload,
                 }
                 check = {"ok": True, "failures": []}
+            elif (
+                str(fallback_payload.get("status") or "") == "missing"
+                and sqlite_indexable_memory_count(
+                    hermes_home,
+                    index_general=index_general,
+                )
+                == 0
+            ):
+                recommendations.insert(
+                    0,
+                    "Configured sqlite-bruteforce fallback is not initialized, but SQLite truth has no indexable truth rows; initialize the companion on first use.",
+                )
+                payload = {
+                    "backend": "lancedb",
+                    "status": "fallback_not_initialized",
+                    "ready": False,
+                    "primary": primary_payload,
+                    "fallback_backend": "sqlite-bruteforce",
+                    "fallback": fallback_payload,
+                }
+                check = {"ok": True, "failures": []}
             else:
                 payload = {
                     "backend": "lancedb",

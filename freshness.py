@@ -4,12 +4,15 @@ Freshness is advisory evidence for ranking and dashboards; it should not overwri
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Iterable, Sequence
+from urllib.parse import urlsplit
 
 from .capture_filters import sanitize_report_text, sanitize_structured_value
 from .lifecycle_policy import (
@@ -28,6 +31,30 @@ NEEDS_CHECK_STATUSES = {
 STALE_STATUSES = {"stale", "invalid", "superseded", "outdated"}
 VALIDATOR_KINDS = {"file_exists", "command", "http", "manual", "none"}
 FACTUAL_MEMORY_TYPES = {"environment_fact", "fact", "factual", "project_fact"}
+_MEMORY_TYPE_ALIASES = {
+    "environment_fact": "factual",
+    "fact": "factual",
+    "project_fact": "factual",
+}
+_DEFAULT_FRESHNESS_POLICY = {
+    "status": "needs_live_check",
+    "ttl_days": 30,
+    "validator_kind": "manual",
+}
+MEMORY_TYPE_FRESHNESS_POLICIES: dict[str, dict[str, Any]] = {
+    "factual": dict(_DEFAULT_FRESHNESS_POLICY),
+    "preference": {"status": "current", "ttl_days": 365, "validator_kind": "none"},
+    "procedure": {"status": "current", "ttl_days": 180, "validator_kind": "none"},
+    "workflow": {"status": "current", "ttl_days": 180, "validator_kind": "none"},
+    "tool_trace": {"status": "current", "ttl_days": 30, "validator_kind": "none"},
+    "project": dict(_DEFAULT_FRESHNESS_POLICY),
+    "summary": dict(_DEFAULT_FRESHNESS_POLICY),
+    "pitfall": {"status": "current", "ttl_days": 180, "validator_kind": "none"},
+    "decision": {"status": "current", "ttl_days": 0, "validator_kind": "none"},
+    "episodic": {"status": "current", "ttl_days": 0, "validator_kind": "none"},
+    "resource": {"status": "current", "ttl_days": 365, "validator_kind": "none"},
+    "constraint": {"status": "current", "ttl_days": 365, "validator_kind": "none"},
+}
 _OPERATIONAL_STATUS_MEMORY_TYPES = {"decision", "episodic", "project", "summary"}
 _CURRENT_STATE_MARKER_RE = re.compile(
     r"(?:当前|目前|现在|现状|截至|状态快照|current(?:ly)?|as\s+of|live[-\s]?check)",
@@ -128,6 +155,14 @@ def normalize_freshness_status(
     return normalized
 
 
+def _metadata_mapping(value: Any) -> dict[str, Any]:
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _normalized_fact_key(value: Any) -> str:
     text = str(value or "memory_fact").strip().lower().replace(" ", "_")
     cleaned = re.sub(r"[^a-z0-9_.:-]+", "_", text).strip("_.:-")
@@ -156,6 +191,94 @@ def _safe_validator_spec(value: Any) -> dict[str, Any]:
     return clean(sanitized)
 
 
+_COMMAND_VALIDATOR_ID_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,79}")
+REGISTERED_COMMAND_VALIDATOR_IDS = frozenset(
+    {"git-head", "git-status", "hermes-doctor"}
+)
+
+
+def _validated_validator_spec(kind: str, value: Any) -> dict[str, Any]:
+    """Return one bounded declarative validator target or fail closed.
+
+    This module does not execute validators. These restrictions ensure stored
+    metadata cannot silently become arbitrary shell, filesystem, or SSRF input
+    when an executor is added. Executors must still re-check resolved paths and
+    DNS answers at use time.
+    """
+
+    spec = _safe_validator_spec(value)
+    if kind in {"manual", "none"}:
+        return spec
+    if kind == "command":
+        command_id = str(spec.get("command_id") or "").strip().lower()
+        if (
+            set(spec) != {"command_id"}
+            or not _COMMAND_VALIDATOR_ID_RE.fullmatch(command_id)
+            or command_id not in REGISTERED_COMMAND_VALIDATOR_IDS
+        ):
+            raise ValueError(
+                "validator_spec for command must contain one registered command_id"
+            )
+        return {"command_id": command_id}
+    if kind == "file_exists":
+        raw_path = str(spec.get("path") or "").strip()
+        normalized_path = raw_path.replace("\\", "/")
+        posix_path = PurePosixPath(normalized_path)
+        windows_path = PureWindowsPath(raw_path)
+        if (
+            set(spec) != {"path"}
+            or not normalized_path
+            or len(normalized_path) > 512
+            or "\x00" in normalized_path
+            or ":" in normalized_path
+            or any(character in normalized_path for character in "*?")
+            or posix_path.is_absolute()
+            or windows_path.is_absolute()
+            or bool(windows_path.drive)
+            or ".." in posix_path.parts
+            or ".." in windows_path.parts
+        ):
+            raise ValueError(
+                "validator_spec for file_exists must contain one safe relative path"
+            )
+        return {"path": posix_path.as_posix()}
+    if kind == "http":
+        raw_url = str(spec.get("url") or "").strip()
+        try:
+            parsed = urlsplit(raw_url)
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("validator_spec contains an invalid HTTP URL") from exc
+        hostname = str(parsed.hostname or "").strip().lower()
+        if (
+            set(spec) != {"url"}
+            or len(raw_url) > 2048
+            or parsed.scheme.lower() != "https"
+            or not hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or bool(parsed.query)
+            or bool(parsed.fragment)
+            or (port is not None and not 1 <= port <= 65535)
+            or hostname == "localhost"
+            or hostname.endswith((".localhost", ".local", ".internal"))
+        ):
+            raise ValueError(
+                "validator_spec for http must contain one public credential-free HTTPS URL"
+            )
+        try:
+            address = ipaddress.ip_address(hostname)
+        except ValueError:
+            pass
+        else:
+            if not address.is_global:
+                raise ValueError(
+                    "validator_spec for http cannot target a non-public IP address"
+                )
+        return {"url": raw_url}
+    raise ValueError(f"unsupported validator_spec kind: {kind}")
+
+
 def _looks_like_operational_status_snapshot(content: str, memory_type: str) -> bool:
     """Conservatively detect volatile status assertions outside factual rows."""
 
@@ -178,20 +301,30 @@ def _freshness_spec_from_metadata(
     now: datetime | None = None,
 ) -> dict[str, Any] | None:
     payload = dict(metadata or {})
-    memory_type = (
-        str(payload.get("memory_type") or payload.get("category") or "").strip().lower()
-    )
+    raw_memory_type = str(
+        payload.get("memory_type") or payload.get("category") or ""
+    ).strip().lower()
+    memory_type = _MEMORY_TYPE_ALIASES.get(raw_memory_type, raw_memory_type)
     raw_freshness = payload.get("freshness")
     explicit = dict(raw_freshness) if isinstance(raw_freshness, dict) else {}
     operational_status = not explicit and _looks_like_operational_status_snapshot(
         content, memory_type
     )
-    if (
-        memory_type not in FACTUAL_MEMORY_TYPES
-        and not explicit
-        and not operational_status
-    ):
+    if not memory_type and not explicit:
         return None
+
+    policy = dict(
+        MEMORY_TYPE_FRESHNESS_POLICIES.get(
+            memory_type,
+            _DEFAULT_FRESHNESS_POLICY,
+        )
+    )
+    if operational_status:
+        policy.update(
+            status="needs_live_check",
+            ttl_days=1,
+            validator_kind="manual",
+        )
 
     now_dt = now or datetime.now(timezone.utc)
     valid_until_dt = _parse_iso(
@@ -201,23 +334,25 @@ def _freshness_spec_from_metadata(
         explicit.get("status")
         or payload.get("freshness_status")
         or payload.get("fact_freshness_status")
+        or policy["status"]
     )
     status = normalize_freshness_status(
-        requested_status or "needs_live_check", valid_until=valid_until_dt, now=now_dt
+        requested_status, valid_until=valid_until_dt, now=now_dt
     )
     validator_kind = normalize_validator_kind(
-        explicit.get("validator_kind") or payload.get("validator_kind") or "manual"
+        explicit.get("validator_kind")
+        or payload.get("validator_kind")
+        or policy["validator_kind"]
     )
+    raw_ttl_days: Any = policy["ttl_days"]
+    if "ttl_days" in explicit:
+        raw_ttl_days = explicit.get("ttl_days")
+    elif payload.get("ttl_days") is not None:
+        raw_ttl_days = payload.get("ttl_days")
     try:
-        default_ttl_days = 1 if operational_status else 0
-        ttl_days = max(
-            0,
-            int(
-                explicit.get("ttl_days") or payload.get("ttl_days") or default_ttl_days
-            ),
-        )
+        ttl_days = max(0, int(raw_ttl_days))
     except (TypeError, ValueError):
-        ttl_days = 1 if operational_status else 0
+        ttl_days = int(policy["ttl_days"])
     checked_dt = _parse_iso(
         explicit.get("last_checked_at") or payload.get("last_checked_at")
     )
@@ -242,8 +377,9 @@ def _freshness_spec_from_metadata(
             or default_truth_type
         )[:80],
         "validator_kind": validator_kind,
-        "validator_spec": _safe_validator_spec(
-            explicit.get("validator_spec") or payload.get("validator_spec")
+        "validator_spec": _validated_validator_spec(
+            validator_kind,
+            explicit.get("validator_spec") or payload.get("validator_spec"),
         ),
         "ttl_days": ttl_days,
         "last_checked_at": checked_dt.isoformat() if checked_dt is not None else "",
@@ -406,18 +542,48 @@ def memory_freshness_map(
 def freshness_penalty(
     freshness: dict[str, Any] | None, config: dict[str, Any] | None = None
 ) -> float:
-    if not freshness:
-        return 0.0
     cfg = config or {}
+
+    def configured_penalty(key: str, default: float) -> float:
+        raw_value = cfg[key] if key in cfg else default
+        if raw_value is None or raw_value == "":
+            raw_value = default
+        return float(raw_value)
+
+    try:
+        needs_live_check_penalty = configured_penalty(
+            "fact_freshness_needs_live_check_penalty", 0.18
+        )
+        stale_penalty = configured_penalty(
+            "fact_freshness_stale_penalty", 0.35
+        )
+    except (TypeError, ValueError):
+        needs_live_check_penalty = 0.18
+        stale_penalty = 0.35
+    if not freshness:
+        try:
+            configured_untracked = configured_penalty(
+                "fact_freshness_untracked_penalty", 0.10
+            )
+        except (TypeError, ValueError):
+            configured_untracked = 0.10
+        penalty = min(
+            configured_untracked,
+            max(0.0, needs_live_check_penalty - 0.01),
+        )
+        return max(0.0, min(0.9, penalty))
     status = str(freshness.get("status") or "").strip().lower()
     truth_type = str(freshness.get("truth_type") or "").strip().lower()
     try:
         if status in STALE_STATUSES:
-            penalty = float(cfg.get("fact_freshness_stale_penalty") or 0.35)
+            penalty = stale_penalty
         elif status == "expired":
-            penalty = float(cfg.get("fact_freshness_expired_penalty") or 0.28)
+            configured_expired = configured_penalty(
+                "fact_freshness_expired_penalty", 0.45
+            )
+            penalty = max(stale_penalty, configured_expired)
         elif status in NEEDS_CHECK_STATUSES:
-            penalty = float(cfg.get("fact_freshness_needs_live_check_penalty") or 0.18)
+            penalty = needs_live_check_penalty
         else:
             return 0.0
     except (TypeError, ValueError):
@@ -438,10 +604,15 @@ def attach_freshness_metadata(
     penalty = freshness_penalty(freshness, config)
     if not freshness:
         metadata.setdefault("fact_freshness_status", "untracked")
-        metadata.setdefault("needs_live_check", False)
-        metadata.setdefault("fact_freshness_penalty", 0.0)
-        return 0.0
-    metadata["fact_freshness_status"] = str(freshness.get("status") or "unknown")
+        metadata.setdefault("needs_live_check", True)
+        metadata.setdefault("fact_freshness_penalty", penalty)
+        metadata.setdefault(
+            "freshness_warning",
+            "⚠ UNTRACKED — freshness unknown; verify before use",
+        )
+        return penalty
+    status = str(freshness.get("status") or "unknown")
+    metadata["fact_freshness_status"] = status
     metadata["fact_key"] = str(freshness.get("fact_key") or "")
     metadata["truth_type"] = str(freshness.get("truth_type") or "")
     metadata["validator_kind"] = str(freshness.get("validator_kind") or "")
@@ -450,6 +621,19 @@ def attach_freshness_metadata(
     metadata["stale_reason"] = str(freshness.get("stale_reason") or "")
     metadata["needs_live_check"] = bool(freshness.get("needs_live_check"))
     metadata["fact_freshness_penalty"] = penalty
+    last_checked_at = str(freshness.get("last_checked_at") or "unknown")
+    if status in STALE_STATUSES:
+        metadata["freshness_warning"] = (
+            f"⚠ STALE — last checked {last_checked_at}; verify before use"
+        )
+    elif status == "expired":
+        metadata["freshness_warning"] = (
+            f"⚠ EXPIRED — last checked {last_checked_at}; verify before use"
+        )
+    elif status in NEEDS_CHECK_STATUSES:
+        metadata["freshness_warning"] = "⚠ NEEDS LIVE CHECK — verify before use"
+    else:
+        metadata.pop("freshness_warning", None)
     return penalty
 
 
@@ -463,6 +647,102 @@ def _metadata_memory_type_sql(alias: str) -> str:
             ''
         ))
     """.strip()
+
+
+def freshness_backfill_inventory(
+    conn: sqlite3.Connection,
+    *,
+    page_size: int = 1000,
+    max_rows: int = 1_000_000,
+) -> dict[str, Any]:
+    """Inventory all active rows that still lack freshness metadata.
+
+    The scan is read-only and keyset paginated so large legacy stores do not
+    materialize the full corpus at once. Content is inspected only to select a
+    deterministic policy; report samples contain ids, never memory text.
+    """
+
+    bounded_page = max(1, min(int(page_size), 5000))
+    bounded_max = max(bounded_page, min(int(max_rows), 5_000_000))
+    scanned = 0
+    eligible = 0
+    ineligible = 0
+    last_id = ""
+    memory_types: dict[str, int] = {}
+    statuses: dict[str, int] = {}
+    sample_ids: list[str] = []
+    truncated = False
+    while scanned < bounded_max:
+        rows = conn.execute(
+            """
+            SELECT m.id, m.content, m.metadata
+            FROM memories AS m
+            LEFT JOIN fact_freshness AS f
+              ON f.subject_type = 'memory' AND f.subject_id = m.id
+            WHERE f.id IS NULL
+              AND m.id > ?
+              AND COALESCE(LOWER(json_extract(m.metadata, '$.lifecycle')), '')
+                  NOT IN ('archived', 'deleted', 'expired', 'forgotten', 'invalidated', 'merged', 'superseded')
+            ORDER BY m.id ASC
+            LIMIT ?
+            """,
+            (last_id, min(bounded_page, bounded_max - scanned)),
+        ).fetchall()
+        if not rows:
+            break
+        for row in rows:
+            memory_id = str(row["id"])
+            last_id = memory_id
+            scanned += 1
+            metadata = _metadata_mapping(row["metadata"])
+            spec = _freshness_spec_from_metadata(
+                metadata,
+                content=str(row["content"] or ""),
+            )
+            if spec is None:
+                ineligible += 1
+                continue
+            eligible += 1
+            memory_type = str(
+                metadata.get("memory_type") or metadata.get("category") or "unknown"
+            ).strip().lower()
+            memory_types[memory_type] = memory_types.get(memory_type, 0) + 1
+            status = str(spec.get("status") or "needs_live_check")
+            statuses[status] = statuses.get(status, 0) + 1
+            if len(sample_ids) < 50:
+                sample_ids.append(memory_id)
+        if len(rows) < bounded_page:
+            break
+    else:
+        truncated = True
+    if scanned >= bounded_max:
+        more = conn.execute(
+            """
+            SELECT 1
+            FROM memories AS m
+            LEFT JOIN fact_freshness AS f
+              ON f.subject_type = 'memory' AND f.subject_id = m.id
+            WHERE f.id IS NULL AND m.id > ?
+            LIMIT 1
+            """,
+            (last_id,),
+        ).fetchone()
+        truncated = more is not None
+    return {
+        "status": (
+            "scan_truncated"
+            if truncated
+            else ("needs_backfill" if eligible else "ready")
+        ),
+        "scanned": scanned,
+        "eligible": eligible,
+        "ineligible": ineligible,
+        "truncated": truncated,
+        "max_rows": bounded_max,
+        "memory_types": dict(sorted(memory_types.items())),
+        "statuses": dict(sorted(statuses.items())),
+        "sample_ids": sample_ids,
+    }
 
 
 def backfill_untracked_memory_freshness(
@@ -488,27 +768,34 @@ def backfill_untracked_memory_freshness(
         clauses.append(f"m.scope_id IN ({','.join('?' for _ in scopes)})")
         params.extend(scopes)
     bounded_limit = max(1, min(int(limit or 500), 5000))
-    scan_limit = min(5000, max(bounded_limit, bounded_limit * 20))
-    candidate_rows = conn.execute(
-        f"SELECT m.id, m.content, m.metadata FROM memories m WHERE {' AND '.join(clauses)} "
-        "ORDER BY m.updated_at DESC, m.id ASC LIMIT ?",
-        [*params, scan_limit],
-    ).fetchall()
     rows: list[tuple[sqlite3.Row, dict[str, Any]]] = []
-    for row in candidate_rows:
-        try:
-            metadata = json.loads(str(row["metadata"] or "{}"))
-        except (TypeError, ValueError, json.JSONDecodeError):
-            metadata = {}
-        if not isinstance(metadata, dict):
-            metadata = {}
-        if (
-            _freshness_spec_from_metadata(metadata, content=str(row["content"] or ""))
-            is None
-        ):
-            continue
-        rows.append((row, metadata))
-        if len(rows) >= bounded_limit:
+    truncated = False
+    offset = 0
+    scan_page = min(1000, max(100, bounded_limit))
+    while not truncated and offset < 1_000_000:
+        candidate_rows = conn.execute(
+            f"SELECT m.id, m.content, m.metadata FROM memories m WHERE {' AND '.join(clauses)} "
+            "ORDER BY m.updated_at DESC, m.id ASC LIMIT ? OFFSET ?",
+            [*params, scan_page, offset],
+        ).fetchall()
+        if not candidate_rows:
+            break
+        offset += len(candidate_rows)
+        for row in candidate_rows:
+            metadata = _metadata_mapping(row["metadata"])
+            if (
+                _freshness_spec_from_metadata(
+                    metadata,
+                    content=str(row["content"] or ""),
+                )
+                is None
+            ):
+                continue
+            if len(rows) >= bounded_limit:
+                truncated = True
+                break
+            rows.append((row, metadata))
+        if len(candidate_rows) < scan_page:
             break
     ids = [str(row["id"]) for row, _metadata in rows]
     inserted = 0
@@ -532,6 +819,7 @@ def backfill_untracked_memory_freshness(
         "apply": bool(apply),
         "eligible": len(rows),
         "inserted": inserted,
+        "truncated": truncated,
         "ids": ids,
     }
 

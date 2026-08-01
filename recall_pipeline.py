@@ -56,6 +56,8 @@ def initial_trace(*, query: str, plan: RecallSearchPlan, accessible_scope_count:
             "lifecycle_removed": 0,
             "general_policy_removed": 0,
             "entity_scope_mismatch": 0,
+            "freshness_strict_excluded": 0,
+            "relation_contradiction_suppressed": 0,
             "vector_only_below_min_score": 0,
             "below_min_score": 0,
         },

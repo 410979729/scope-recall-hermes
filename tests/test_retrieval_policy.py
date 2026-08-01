@@ -754,6 +754,7 @@ def test_vector_only_filter_uses_packaged_default_threshold_without_override():
         "mode": "hybrid",
         "include_general": "same-scope",
         "min_score": 0.0,
+        "fact_freshness_untracked_penalty": 0.0,
     }
 
     below_service = RecallService(

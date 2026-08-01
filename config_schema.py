@@ -49,7 +49,13 @@ _DESCRIPTION_OVERRIDES = {
     "fact_evolution.journal_mode": "Journal lane mode loaded by each scheduled invocation. preview is medium risk; auto_apply is high risk and may persist durable memory.",
     "fact_evolution.tool_mode": "Resident public tool-lane mode. Caller evidence remains non-authoritative until a runtime-owned evidence registry is available; provider reload is required.",
     "fact_evolution.maintenance_mode": "Explicit maintenance-lane mode. reviewed_apply permits maintenance-gated operator corrections and is high risk; provider reload is required.",
-    "forgetting.hard_delete_sensitive": "Allow sensitive-data cleanup paths to hard-delete when explicitly invoked.",
+    "forgetting.archive_assistant_scratch": "Classify general-target assistant prose scratch as soft-archive candidates.",
+    "forgetting.archive_duplicates": "Classify older duplicate memories as soft-archive candidates.",
+    "forgetting.archive_very_short": "Classify very short non-preference memories as soft-archive candidates.",
+    "forgetting.enabled": "Enable forgetting report and apply tools; disabled tools fail closed.",
+    "forgetting.hard_delete_sensitive": "Second safety gate for sensitive-data hard deletion; apply also requires an explicit hard_delete request.",
+    "forgetting.soft_archive_default": "Default whether forgetting apply archives soft candidates; each call may explicitly override it.",
+    "retrieval.relation_contradiction_mode": "Contradiction handling: surface keeps and warns, suppress excludes, and penalize applies relation_contradicts_penalty.",
 }
 
 _GROUP_NOTES = {

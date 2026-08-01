@@ -12,9 +12,16 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+try:
+    from .operator_ledger import record_committed_operator_operation
+except ImportError:  # pragma: no cover - direct source-script fallback
+    from operator_ledger import record_committed_operator_operation
 
 
 ACTIVATION_LEASE_FILENAME = ".activation-maintenance.json"
@@ -73,6 +80,186 @@ def read_activation_lease(database_path: Path) -> dict[str, Any] | None:
     return payload
 
 
+def _pid_liveness(pid: Any) -> str:
+    try:
+        process_id = int(pid)
+    except (TypeError, ValueError):
+        return "unknown"
+    if process_id <= 0:
+        return "unknown"
+    try:
+        os.kill(process_id, 0)
+    except ProcessLookupError:
+        return "dead"
+    except PermissionError:
+        return "alive"
+    except OSError:
+        # Windows reports a generic OSError for a nonexistent PID. POSIX may
+        # also use it for ESRCH; fail closed only when this direct probe says
+        # the owner is absent, never merely because a lease is old.
+        return "dead" if os.name == "nt" else "unknown"
+    return "alive"
+
+
+def _lease_age_seconds(value: Any, *, now: datetime | None = None) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        created = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    return max(0.0, (current.astimezone(timezone.utc) - created.astimezone(timezone.utc)).total_seconds())
+
+
+def activation_lease_status(
+    database_path: Path,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Report lease owner liveness without exposing the capability token."""
+
+    path = activation_lease_path(database_path)
+    payload = read_activation_lease(database_path)
+    if payload is None:
+        return {
+            "status": "absent",
+            "path": str(path),
+            "active": False,
+            "recoverable": False,
+            "owner_liveness": "absent",
+            "pid": 0,
+            "created_at": "",
+            "age_seconds": None,
+        }
+    liveness = _pid_liveness(payload.get("pid"))
+    stale = liveness == "dead"
+    try:
+        pid = int(payload.get("pid") or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    return {
+        "status": "stale" if stale else "active",
+        "path": str(path),
+        "active": not stale,
+        "recoverable": stale,
+        "owner_liveness": liveness,
+        "pid": pid,
+        "created_at": str(payload.get("created_at") or ""),
+        "age_seconds": _lease_age_seconds(payload.get("created_at"), now=now),
+    }
+
+
+def _restore_lease_payload(path: Path, payload: dict[str, Any]) -> None:
+    if path.exists():
+        return
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+
+
+def recover_stale_activation_lease(
+    database_path: Path,
+    *,
+    apply: bool = False,
+    operation_id: str = "",
+    reason: str = "",
+    backup_path: str = "",
+) -> dict[str, Any]:
+    """Plan or recover a lease whose recorded PID is definitely dead.
+
+    Apply removes guard triggers and the lease under one exclusive SQLite
+    transaction. If commit fails after the file unlink, the original lease is
+    restored so recovery cannot silently weaken the fail-closed boundary.
+    """
+
+    expanded_path = Path(database_path).expanduser()
+    db_path = Path(os.path.abspath(os.fspath(expanded_path)))
+    if db_path.is_symlink() or db_path.parent.is_symlink():
+        raise MaintenanceLeaseError(
+            "activation lease recovery cannot mutate a symlinked truth store"
+        )
+    status = activation_lease_status(db_path)
+    result = {
+        **status,
+        "apply": bool(apply),
+        "recovered": False,
+        "guards_removed": 0,
+    }
+    if not apply:
+        return result
+    if not bool(status.get("recoverable")):
+        raise RuntimeError("activation maintenance lease is not stale and cannot be recovered")
+    original = read_activation_lease(db_path)
+    if original is None:
+        return {**result, "status": "absent"}
+    clean_operation_id = str(operation_id or "").strip()
+    clean_reason = str(reason or "").strip()[:500]
+    clean_backup_path = str(backup_path or "").strip()[:4000]
+    if not clean_operation_id or len(clean_reason) < 8 or not clean_backup_path:
+        raise ValueError(
+            "audited lease recovery requires operation_id, a specific reason, and backup_path"
+        )
+    expected_token = str(original.get("token") or "")
+    lease_path = activation_lease_path(db_path)
+    conn = sqlite3.connect(str(db_path), timeout=10.0)
+    unlinked = False
+    try:
+        conn.execute("BEGIN EXCLUSIVE")
+        current = read_activation_lease(db_path)
+        if current is None or not hmac.compare_digest(
+            str(current.get("token") or ""), expected_token
+        ):
+            raise RuntimeError("activation maintenance lease changed during recovery")
+        removed = remove_activation_guard_triggers(conn)
+        lease_path.unlink()
+        unlinked = True
+        operator_operation = record_committed_operator_operation(
+            conn,
+            operation_id=clean_operation_id,
+            operation_kind="activation_lease.recover_stale",
+            target_ref=str(db_path),
+            before={
+                "lease_status": status,
+                "reason": clean_reason,
+                "guard_count": len(removed),
+            },
+            result={
+                "recovered": True,
+                "guards_removed": len(removed),
+            },
+            backup_path=clean_backup_path,
+            commit=False,
+        )
+        conn.commit()
+    except BaseException:
+        if conn.in_transaction:
+            conn.rollback()
+        if unlinked:
+            _restore_lease_payload(lease_path, original)
+        raise
+    finally:
+        conn.close()
+    return {
+        **result,
+        "status": "recovered",
+        "active": False,
+        "recoverable": False,
+        "recovered": True,
+        "guards_removed": len(removed),
+        "operator_operation": operator_operation,
+    }
+
+
 def activation_lease_allows_token(database_path: Path, lease_token: str) -> bool:
     """Return whether an explicit connection token owns the active lease."""
 
@@ -114,6 +301,10 @@ def ensure_activation_guard_triggers(
 
     payload = read_activation_lease(database_path)
     if payload is None:
+        # A crash after lease unlink but before trigger cleanup must not strand
+        # raw connections forever. Normal writable startup repairs this orphan
+        # state while no maintenance owner exists.
+        remove_activation_guard_triggers(connection)
         return []
     captured_token = str(lease_token or "")
     if not activation_lease_allows_token(database_path, captured_token):
@@ -233,9 +424,11 @@ __all__ = [
     "MaintenanceLeaseError",
     "activation_lease_allows_token",
     "activation_lease_path",
+    "activation_lease_status",
     "assert_activation_write_allowed",
     "ensure_activation_guard_triggers",
     "install_activation_lease_authorizer",
     "read_activation_lease",
+    "recover_stale_activation_lease",
     "remove_activation_guard_triggers",
 ]

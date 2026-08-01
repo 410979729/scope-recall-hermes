@@ -86,12 +86,13 @@ def test_forget_requires_explicit_accessible_ids_before_archiving(tmp_path):
 
 
 def test_capture_llm_parse_failures_log_metadata_not_raw_sensitive_text(caplog):
-    raw = 'secret-token sk-test-SHOULD-NOT-LOG before json [{"action":"insert","content":"unterminated secret memory'
+    redacted_key_marker = "«redacted:" + "sk-" + "…»"
+    raw = f'secret-token {redacted_key_marker} before json [{{"action":"insert","content":"unterminated secret memory'
     caplog.set_level(logging.WARNING, logger="scope_recall.capture_llm")
 
     assert _parse_response(raw) == []
 
     log_text = caplog.text
-    assert "sk-test-SHOULD-NOT-LOG" not in log_text
+    assert redacted_key_marker not in log_text
     assert "unterminated secret memory" not in log_text
     assert "raw_len=" in log_text

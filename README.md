@@ -782,7 +782,7 @@ Schema-surface targets after the compact-profile change:
 - standard profile: 20 tools, about 10.6 KB
 - maintenance/secret schema surfaces still require their explicit safety flags
 
-Release `1.8.2` is a compatibility-preserving reliability patch on the 1.8 line:
+Release `1.8.3` is a compatibility-preserving reliability patch on the 1.8 line:
 
 - Local SentenceTransformers models are loaded before a fresh vector identity is committed. Load failures are visible in runtime statistics, and an existing generation can be opened only by an embedder with the same provider, model, prompt profile, and actual dimensions.
 - `journal.retention_profile` adds `light`, `balanced`, and `full` semantic detail levels. Raw journal evidence remains separately governed by `retention_days`, and long transcript copies are rejected before ordinary recall/vector writes.

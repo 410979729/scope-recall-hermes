@@ -15,7 +15,6 @@ from contextlib import nullcontext
 from typing import Any, Callable
 
 from .capture_filters import should_capture_text
-from .freshness import upsert_memory_freshness
 from .models import recall_scope_mode
 from .relation_frequency_maintenance import (
     drain_relation_frequency_work,
@@ -307,26 +306,6 @@ def store_now(
                 commit=False,
             )
             if inserted:
-                conn.execute("SAVEPOINT scope_recall_capture_freshness")
-                try:
-                    upsert_memory_freshness(
-                        conn,
-                        memory_id=memory_id,
-                        metadata=metadata_payload,
-                        content=content,
-                        commit=False,
-                    )
-                except Exception as exc:
-                    conn.execute("ROLLBACK TO scope_recall_capture_freshness")
-                    conn.execute("RELEASE scope_recall_capture_freshness")
-                    provider._freshness_write_failures = (
-                        int(getattr(provider, "_freshness_write_failures", 0) or 0)
-                        + 1
-                    )
-                    provider._freshness_last_error_type = type(exc).__name__
-                    logger.exception("Scope Recall freshness companion write failed")
-                else:
-                    conn.execute("RELEASE scope_recall_capture_freshness")
                 if before_commit is not None:
                     companion_result = before_commit(conn, memory_id)
             conn.commit()

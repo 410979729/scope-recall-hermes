@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -18,6 +20,7 @@ from plugins.memory import load_memory_provider
 
 from scope_recall.freshness import (
     _parse_iso,
+    attach_freshness_metadata,
     backfill_untracked_memory_freshness,
     fact_freshness_report,
     freshness_penalty,
@@ -26,7 +29,8 @@ from scope_recall.freshness import (
 from scope_recall.graph import ensure_graph_schema
 from scope_recall.models import RecallItem
 from scope_recall.recall import RecallService
-from scope_recall.sql_store import ensure_schema, now_iso
+import scope_recall.sql_store as sql_store_module
+from scope_recall.sql_store import ensure_schema, now_iso, store_row
 
 
 def _disable_unrelated_vector_runtime(hermes_home: Path) -> None:
@@ -139,6 +143,235 @@ def test_freshness_validator_kind_normalization_contract():
     assert normalize_validator_kind("path") == "file_exists"
     assert normalize_validator_kind("static") == "none"
     assert normalize_validator_kind("custom-validator") == "manual"
+
+
+def _store_direct_memory(
+    conn: sqlite3.Connection,
+    *,
+    memory_id: str,
+    memory_type: str,
+    content: str = "Freshness policy contract memory.",
+    freshness: dict[str, object] | None = None,
+) -> tuple[str, str, str, bool]:
+    metadata: dict[str, object] = {"memory_type": memory_type}
+    if freshness is not None:
+        metadata["freshness"] = freshness
+    return store_row(
+        conn,
+        memory_id=memory_id,
+        scope_id="shared-scope",
+        platform="telegram",
+        user_id="joy",
+        chat_id="dm",
+        thread_id="",
+        gateway_session_key="",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+        session_id="freshness-contract",
+        source="tool-store",
+        target="memory",
+        content=content,
+        metadata=json.dumps(metadata),
+    )
+
+
+@pytest.mark.parametrize(
+    ("memory_type", "expected_status", "expected_ttl", "expects_deadline"),
+    [
+        ("factual", "needs_live_check", 30, False),
+        ("preference", "current", 365, True),
+        ("procedure", "current", 180, True),
+        ("workflow", "current", 180, True),
+        ("tool_trace", "current", 30, True),
+        ("project", "needs_live_check", 30, False),
+        ("summary", "needs_live_check", 30, False),
+        ("pitfall", "current", 180, True),
+        ("decision", "current", 0, False),
+        ("episodic", "current", 0, False),
+        ("resource", "current", 365, True),
+        ("constraint", "current", 365, True),
+    ],
+)
+def test_store_row_initializes_freshness_by_memory_type_policy(
+    memory_type: str,
+    expected_status: str,
+    expected_ttl: int,
+    expects_deadline: bool,
+):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        memory_id = f"policy-{memory_type}"
+        _store_direct_memory(conn, memory_id=memory_id, memory_type=memory_type)
+        row = conn.execute(
+            "SELECT truth_type, validator_kind, ttl_days, valid_until, status "
+            "FROM fact_freshness WHERE subject_id = ?",
+            (memory_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None
+    assert row["truth_type"] == memory_type
+    assert row["status"] == expected_status
+    assert row["ttl_days"] == expected_ttl
+    assert bool(row["valid_until"]) is expects_deadline
+
+
+def test_duplicate_store_repairs_missing_freshness_without_overwriting_existing_state():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    content = "Duplicate legacy factual memory for freshness repair."
+    _store_direct_memory(
+        conn,
+        memory_id="duplicate-legacy",
+        memory_type="factual",
+        content=content,
+    )
+    conn.execute("DELETE FROM fact_freshness WHERE subject_id = ?", ("duplicate-legacy",))
+    conn.commit()
+
+    memory_id, _summary, _updated_at, inserted = _store_direct_memory(
+        conn,
+        memory_id="duplicate-attempt",
+        memory_type="factual",
+        content=content,
+    )
+    repaired = conn.execute(
+        "SELECT status FROM fact_freshness WHERE subject_id = ?",
+        ("duplicate-legacy",),
+    ).fetchone()
+    assert memory_id == "duplicate-legacy"
+    assert inserted is False
+    assert repaired is not None
+    assert str(repaired[0]) == "needs_live_check"
+
+    conn.execute(
+        "UPDATE fact_freshness SET status='current', ttl_days=77 WHERE subject_id = ?",
+        ("duplicate-legacy",),
+    )
+    conn.commit()
+    _store_direct_memory(
+        conn,
+        memory_id="duplicate-attempt-two",
+        memory_type="factual",
+        content=content,
+    )
+    preserved = conn.execute(
+        "SELECT status, ttl_days FROM fact_freshness WHERE subject_id = ?",
+        ("duplicate-legacy",),
+    ).fetchone()
+    assert tuple(preserved) == ("current", 77)
+
+
+def test_store_row_rolls_back_memory_when_freshness_initialization_fails(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+
+    def fail_freshness(*_args, **_kwargs):
+        raise RuntimeError("freshness companion failed")
+
+    monkeypatch.setattr(sql_store_module, "upsert_memory_freshness", fail_freshness)
+    try:
+        with pytest.raises(RuntimeError, match="freshness companion failed"):
+            _store_direct_memory(conn, memory_id="fail-closed", memory_type="factual")
+        assert conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE id = 'fail-closed'"
+        ).fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    ("validator_kind", "validator_spec"),
+    [
+        ("command", {"command_id": "git-head"}),
+        ("file_exists", {"path": "state/config.yaml"}),
+        ("http", {"url": "https://status.example.invalid/health"}),
+    ],
+)
+def test_freshness_validator_specs_accept_only_declarative_safe_shapes(
+    validator_kind: str,
+    validator_spec: dict[str, str],
+):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        memory_id = f"safe-validator-{validator_kind}"
+        _store_direct_memory(
+            conn,
+            memory_id=memory_id,
+            memory_type="factual",
+            freshness={
+                "validator_kind": validator_kind,
+                "validator_spec": validator_spec,
+            },
+        )
+        stored = conn.execute(
+            "SELECT validator_spec FROM fact_freshness WHERE subject_id = ?",
+            (memory_id,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert json.loads(stored) == validator_spec
+
+
+@pytest.mark.parametrize(
+    ("validator_kind", "validator_spec"),
+    [
+        ("command", {"command": "rm -rf workspace"}),
+        ("command", {"command_id": "arbitrary-unregistered-command"}),
+        ("file_exists", {"path": "/etc/shadow"}),
+        ("file_exists", {"path": "state/../secrets.txt"}),
+        ("http", {"url": "http://127.0.0.1/admin"}),
+        ("http", {"url": "https://user:pass@example.invalid/health"}),
+        ("http", {"url": "https://example.invalid/health?token=value"}),
+    ],
+)
+def test_freshness_validator_specs_reject_unsafe_execution_targets(
+    validator_kind: str,
+    validator_spec: dict[str, str],
+):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    try:
+        with pytest.raises(ValueError, match="validator_spec"):
+            _store_direct_memory(
+                conn,
+                memory_id=f"unsafe-validator-{validator_kind}",
+                memory_type="factual",
+                freshness={
+                    "validator_kind": validator_kind,
+                    "validator_spec": validator_spec,
+                },
+            )
+        assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_untracked_freshness_is_penalized_and_requires_live_check():
+    metadata: dict[str, object] = {}
+
+    penalty = attach_freshness_metadata(metadata, None)
+
+    assert 0.0 < penalty < freshness_penalty({"status": "needs_live_check"})
+    assert metadata["fact_freshness_status"] == "untracked"
+    assert metadata["needs_live_check"] is True
+    assert metadata["fact_freshness_penalty"] == penalty
+    assert "UNTRACKED" in str(metadata["freshness_warning"])
+
+
+def test_expired_freshness_penalty_is_not_lighter_than_stale():
+    assert freshness_penalty({"status": "expired"}) >= freshness_penalty(
+        {"status": "stale"}
+    )
 
 
 def test_parse_iso_treats_naive_timestamps_as_utc(monkeypatch):
@@ -384,6 +617,63 @@ def test_fact_freshness_stale_memory_is_marked_and_downgraded_below_current_fact
         provider.close()
 
 
+def test_advisory_warns_when_stale_out_ranks_current_and_strict_excludes_it():
+    stale = _item("high-score-stale", 0.99)
+    current = _item("low-score-current", 0.30)
+    provider = DummyProvider(
+        {
+            "mode": "lexical",
+            "min_score": 0.01,
+            "include_general": "same-scope",
+            "fact_freshness_enabled": True,
+            "fact_freshness_stale_penalty": 0.05,
+        },
+        [stale, current],
+    )
+    service = RecallService(provider)
+    try:
+        _mark_freshness(provider._require_conn(), stale.id, status="stale")
+        _mark_freshness(provider._require_conn(), current.id, status="current")
+
+        advisory = service.search_memories(
+            "Northstar API base URL latest config",
+            limit=2,
+            recall_mode="advisory",
+        )
+        assert [item.id for item in advisory] == [stale.id, current.id]
+        stale_metadata = advisory[0].metadata or {}
+        assert "STALE" in str(stale_metadata["freshness_warning"])
+        assert stale_metadata["ranking_warning"] == "stale_result_ranked_above_current"
+
+        strict = service.search_memories(
+            "Northstar API base URL latest config",
+            limit=2,
+            recall_mode="strict",
+        )
+        assert [item.id for item in strict] == [current.id]
+        assert service.last_funnel_trace["filters"]["freshness_strict_excluded"] == 1
+        assert [item.id for item in service.last_rejected_candidates] == [stale.id]
+        assert (service.last_rejected_candidates[0].metadata or {})[
+            "rejected_reason"
+        ] == "freshness_strict_excluded"
+    finally:
+        provider.close()
+
+
+def test_freshness_penalty_respects_explicit_zero_overrides():
+    config = {
+        "fact_freshness_untracked_penalty": 0.0,
+        "fact_freshness_needs_live_check_penalty": 0.0,
+        "fact_freshness_stale_penalty": 0.0,
+        "fact_freshness_expired_penalty": 0.0,
+    }
+
+    assert freshness_penalty(None, config) == 0.0
+    assert freshness_penalty({"status": "needs_live_check"}, config) == 0.0
+    assert freshness_penalty({"status": "stale"}, config) == 0.0
+    assert freshness_penalty({"status": "expired"}, config) == 0.0
+
+
 def test_public_store_tracks_unverified_factual_memory_as_needs_live_check(tmp_path):
     _disable_unrelated_vector_runtime(tmp_path)
     plugin = load_memory_provider("scope-recall")
@@ -494,6 +784,191 @@ def test_public_store_honors_explicit_current_freshness_with_ttl(tmp_path):
         plugin.shutdown()
 
 
+def test_public_search_exposes_advisory_and_strict_freshness_contract(tmp_path):
+    _disable_unrelated_vector_runtime(tmp_path)
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    plugin.initialize(
+        "session-freshness-public-strict",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="joy",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        search_schema = next(
+            schema
+            for schema in plugin.get_tool_schemas()
+            if schema["name"] == "scope_recall_search"
+        )
+        recall_mode_schema = search_schema["parameters"]["properties"]["recall_mode"]
+        assert recall_mode_schema["enum"] == ["advisory", "strict"]
+
+        stored = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_store",
+                {
+                    "content": "Strict freshness sentinel for Northstar endpoint lookup.",
+                    "target": "ops",
+                    "memory_type": "factual",
+                },
+            )
+        )
+        with plugin._lock:
+            plugin._require_conn().execute(
+                "UPDATE fact_freshness SET status = 'stale' WHERE subject_id = ?",
+                (stored["id"],),
+            )
+            plugin._require_conn().commit()
+
+        advisory = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_search",
+                {
+                    "query": "Strict freshness sentinel Northstar endpoint",
+                    "recall_mode": "advisory",
+                },
+            )
+        )
+        advisory_item = next(
+            item for item in advisory["results"] if item["id"] == stored["id"]
+        )
+        assert "STALE" in advisory_item["freshness_warning"]
+        assert "ranking_warning" in advisory_item
+
+        strict = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_search",
+                {
+                    "query": "Strict freshness sentinel Northstar endpoint",
+                    "recall_mode": "strict",
+                    "include_trace": True,
+                },
+            )
+        )
+        assert stored["id"] not in {item["id"] for item in strict["results"]}
+        assert strict["funnel_trace"]["filters"]["freshness_strict_excluded"] == 1
+    finally:
+        plugin.shutdown()
+
+
+def test_freshness_backfill_operator_script_inventory_apply_and_idempotency(tmp_path):
+    storage_dir = tmp_path / "scope-recall"
+    storage_dir.mkdir(parents=True)
+    db_path = storage_dir / "memory.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    for index, memory_type in enumerate(
+        ("factual", "preference", "procedure", "decision", "episodic"),
+        start=1,
+    ):
+        _store_direct_memory(
+            conn,
+            memory_id=f"legacy-{index}",
+            memory_type=memory_type,
+            content=f"Legacy {memory_type} memory number {index}.",
+        )
+    conn.execute("DELETE FROM fact_freshness")
+    conn.commit()
+    conn.close()
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "backfill.freshness.py"
+    dry = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--hermes-home",
+            str(tmp_path),
+            "--batch-size",
+            "2",
+            "--max-scan",
+            "100",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert dry.returncode == 0, dry.stderr
+    dry_payload = json.loads(dry.stdout)
+    assert dry_payload["status"] == "dry_run"
+    assert dry_payload["inventory"]["eligible"] == 5
+    assert dry_payload["next_batch"]["eligible"] == 2
+
+    blocked = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--hermes-home",
+            str(tmp_path),
+            "--apply",
+            "--operation-id",
+            "freshness-backfill-test",
+            "--reason",
+            "legacy cohort migration",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert blocked.returncode == 2
+
+    apply_command = [
+        sys.executable,
+        str(script),
+        "--hermes-home",
+        str(tmp_path),
+        "--batch-size",
+        "2",
+        "--max-batches",
+        "10",
+        "--max-scan",
+        "100",
+        "--apply",
+        "--maintenance-confirmed",
+        "--operation-id",
+        "freshness-backfill-test",
+        "--reason",
+        "legacy cohort migration",
+    ]
+    applied = subprocess.run(
+        apply_command,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert applied.returncode == 0, applied.stderr
+    payload = json.loads(applied.stdout)
+    assert payload["status"] == "complete"
+    assert payload["inserted"] == 5
+    assert payload["batches"] == 3
+    assert Path(payload["backup"]["path"]).is_file()
+    assert len(payload["backup"]["sha256"]) == 64
+    assert Path(payload["receipt"]["receipt_path"]).is_file()
+
+    replay = subprocess.run(
+        apply_command,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert replay.returncode == 0, replay.stderr
+    assert json.loads(replay.stdout)["status"] == "idempotent_replay"
+
+    check = sqlite3.connect(db_path)
+    try:
+        assert int(check.execute("SELECT COUNT(*) FROM fact_freshness").fetchone()[0]) == 5
+        row = check.execute(
+            "SELECT receipt_state FROM operator_operations WHERE operation_id = ?",
+            ("freshness-backfill-test",),
+        ).fetchone()
+        assert row == ("mirrored",)
+    finally:
+        check.close()
+
+
 def test_factual_freshness_backfill_is_dry_run_bounded_and_idempotent(tmp_path):
     _disable_unrelated_vector_runtime(tmp_path)
     plugin = load_memory_provider("scope-recall")
@@ -534,9 +1009,92 @@ def test_factual_freshness_backfill_is_dry_run_bounded_and_idempotent(tmp_path):
             applied = backfill_untracked_memory_freshness(conn, apply=True, limit=10)
             repeated = backfill_untracked_memory_freshness(conn, apply=True, limit=10)
 
-        assert dry_run == {"apply": False, "eligible": 1, "inserted": 0, "ids": [active["id"]]}
-        assert applied == {"apply": True, "eligible": 1, "inserted": 1, "ids": [active["id"]]}
-        assert repeated == {"apply": True, "eligible": 0, "inserted": 0, "ids": []}
+        assert dry_run == {
+            "apply": False,
+            "eligible": 1,
+            "inserted": 0,
+            "truncated": False,
+            "ids": [active["id"]],
+        }
+        assert applied == {
+            "apply": True,
+            "eligible": 1,
+            "inserted": 1,
+            "truncated": False,
+            "ids": [active["id"]],
+        }
+        assert repeated == {
+            "apply": True,
+            "eligible": 0,
+            "inserted": 0,
+            "truncated": False,
+            "ids": [],
+        }
+    finally:
+        plugin.shutdown()
+
+
+def test_provider_startup_applies_one_bounded_idempotent_freshness_backfill(tmp_path):
+    _disable_unrelated_vector_runtime(tmp_path)
+    storage_dir = tmp_path / "scope-recall"
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    db_path = storage_dir / "memory.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        _store_direct_memory(
+            conn,
+            memory_id="legacy-untracked-factual",
+            memory_type="factual",
+        )
+        conn.execute(
+            "DELETE FROM fact_freshness WHERE subject_id = 'legacy-untracked-factual'"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    plugin.initialize(
+        "session-startup-freshness-backfill",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="joy",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        assert plugin._freshness_backfill == {
+            "apply": True,
+            "eligible": 1,
+            "inserted": 1,
+            "truncated": False,
+            "ids": ["legacy-untracked-factual"],
+        }
+        with plugin._lock:
+            status = plugin._require_conn().execute(
+                "SELECT status FROM fact_freshness WHERE subject_id = ?",
+                ("legacy-untracked-factual",),
+            ).fetchone()[0]
+        assert status == "needs_live_check"
+    finally:
+        plugin.shutdown()
+
+    plugin.initialize(
+        "session-startup-freshness-backfill-repeat",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="joy",
+        agent_context="primary",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    try:
+        assert plugin._freshness_backfill["eligible"] == 0
+        assert plugin._freshness_backfill["inserted"] == 0
     finally:
         plugin.shutdown()
 
@@ -716,7 +1274,8 @@ def test_public_store_tracks_nonfactual_operational_status_snapshot_as_needs_liv
                 (stored["id"],),
             ).fetchone()
             procedure_row = plugin._require_conn().execute(
-                "SELECT id FROM fact_freshness WHERE subject_id = ?",
+                "SELECT truth_type, validator_kind, ttl_days, status "
+                "FROM fact_freshness WHERE subject_id = ?",
                 (procedure["id"],),
             ).fetchone()
 
@@ -727,7 +1286,12 @@ def test_public_store_tracks_nonfactual_operational_status_snapshot_as_needs_liv
             "ttl_days": 1,
             "status": "needs_live_check",
         }
-        assert procedure_row is None
+        assert dict(procedure_row) == {
+            "truth_type": "procedure",
+            "validator_kind": "none",
+            "ttl_days": 180,
+            "status": "current",
+        }
         assert freshness_penalty(
             {"status": "needs_live_check", "truth_type": "operational_status"}
         ) == pytest.approx(0.55)

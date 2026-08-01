@@ -100,6 +100,104 @@ def test_forgetting_report_is_read_only_and_finds_soft_archive_candidates():
     assert report["hard_delete_candidates"]["count"] == 0
 
 
+def test_forgetting_policy_config_controls_detection_and_apply_defaults():
+    conn = _conn()
+    _insert(
+        conn,
+        memory_id="assistant-1",
+        target="general",
+        source="turn-assistant",
+        content="Assistant scratch prose.",
+    )
+    _insert(conn, memory_id="short-1", target="memory", content="tiny")
+    _insert(
+        conn,
+        memory_id="dup-1",
+        target="memory",
+        content="Duplicate durable note for forgetting.",
+        allow_duplicate=True,
+    )
+    _insert(
+        conn,
+        memory_id="dup-2",
+        target="memory",
+        content="Duplicate durable note for forgetting.",
+        allow_duplicate=True,
+    )
+
+    policy = {
+        "enabled": True,
+        "archive_assistant_scratch": False,
+        "archive_very_short": False,
+        "archive_duplicates": False,
+        "soft_archive_default": False,
+        "hard_delete_sensitive": False,
+    }
+    report = build_forgetting_report(
+        conn,
+        accessible_scope_ids=["shared-scope", "local-scope"],
+        limit=20,
+        config=policy,
+    )
+    disabled_report = build_forgetting_report(
+        conn,
+        accessible_scope_ids=["shared-scope", "local-scope"],
+        limit=20,
+        config={"enabled": False},
+    )
+    default_run = run_forgetting(
+        conn,
+        accessible_scope_ids=["shared-scope", "local-scope"],
+        dry_run=False,
+        config=policy,
+    )
+    explicit_run = run_forgetting(
+        conn,
+        accessible_scope_ids=["shared-scope", "local-scope"],
+        dry_run=False,
+        soft_archive=True,
+        config={**policy, "archive_very_short": True},
+    )
+
+    assert report["enabled"] is True
+    assert disabled_report["enabled"] is False
+    assert disabled_report["total_rows"] == 0
+    assert report["soft_archive_candidates"]["count"] == 0
+    assert report["duplicate_groups"]["count"] == 0
+    assert default_run["soft_archive_enabled"] is False
+    assert default_run["archived"] == 0
+    assert explicit_run["soft_archive_enabled"] is True
+    assert explicit_run["archive_ids"] == ["short-1"]
+
+
+def test_forgetting_hard_delete_requires_config_gate_and_explicit_request():
+    conn = _conn()
+    secret = "sk-" + "Z" * 24
+    _insert(
+        conn,
+        memory_id="secret-policy-row",
+        target="ops",
+        content="Temporary api_key=" + secret + " requires reviewed deletion.",
+        raw_legacy=True,
+    )
+
+    refused = run_forgetting(
+        conn,
+        accessible_scope_ids=["shared-scope", "local-scope"],
+        dry_run=False,
+        hard_delete=True,
+        config={"enabled": True, "hard_delete_sensitive": False},
+    )
+
+    assert refused["hard_delete_requested"] is True
+    assert refused["hard_delete_allowed"] is False
+    assert refused["deleted"] == 0
+    assert "hard_delete_sensitive" in refused["policy_error"]
+    assert conn.execute(
+        "SELECT COUNT(*) FROM memories WHERE id = 'secret-policy-row'"
+    ).fetchone()[0] == 1
+
+
 def test_forgetting_report_does_not_rebuild_stale_fts_index():
     conn = _conn()
     _insert(conn, memory_id="assistant-1", target="general", source="turn-assistant", content="Assistant scratch prose.")
@@ -388,6 +486,7 @@ def test_forgetting_hard_delete_removes_vector_records():
         accessible_scope_ids=["shared-scope", "local-scope"],
         dry_run=False,
         hard_delete=True,
+        config={"enabled": True, "hard_delete_sensitive": True},
         vector_store=vector_store,
         batch_id="hard-batch",
     )
@@ -436,6 +535,7 @@ def test_forgetting_hard_delete_never_calls_failing_store_and_keeps_pending_inte
         accessible_scope_ids=["shared-scope", "local-scope"],
         dry_run=False,
         hard_delete=True,
+        config={"enabled": True, "hard_delete_sensitive": True},
         vector_store=FailingVectorStore(),
         batch_id="hard-vector-fail",
     )
@@ -479,6 +579,7 @@ def test_forgetting_hard_delete_audit_failure_keeps_truth_and_vector(tmp_path):
         accessible_scope_ids=["shared-scope", "local-scope"],
         dry_run=False,
         hard_delete=True,
+        config={"enabled": True, "hard_delete_sensitive": True},
         vector_store=vector_store,
         batch_id="hard-audit-fail",
     )
@@ -507,6 +608,7 @@ def test_forgetting_hard_delete_requires_vector_store_by_default():
         accessible_scope_ids=["shared-scope", "local-scope"],
         dry_run=False,
         hard_delete=True,
+        config={"enabled": True, "hard_delete_sensitive": True},
         vector_store=None,
         batch_id="hard-no-vector",
     )

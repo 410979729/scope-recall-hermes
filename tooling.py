@@ -417,7 +417,14 @@ class ScopeRecallToolService:
         if not query:
             return tool_error("query is required")
         limit = self._retrieval_limit(args)
-        results = self.provider._recall_service.search_memories(query, limit=limit)
+        recall_mode = str(args.get("recall_mode") or "advisory").strip().lower()
+        if recall_mode not in {"advisory", "strict"}:
+            return tool_error("recall_mode must be advisory or strict")
+        results = self.provider._recall_service.search_memories(
+            query,
+            limit=limit,
+            recall_mode=recall_mode,
+        )
         payload: dict[str, Any] = {
             "count": len(results),
             "results": [self._serialize_recall_item(item) for item in results],
@@ -752,11 +759,18 @@ class ScopeRecallToolService:
                 "scope_recall_forgetting_report requires maintenance_tools_enabled=true"
             )
         limit = max(1, min(1000, int(args.get("limit") or 200)))
+        raw_forgetting = self.provider._config.get("forgetting")
+        forgetting_config = (
+            raw_forgetting if isinstance(raw_forgetting, dict) else {}
+        )
+        if not config_bool(forgetting_config, "enabled", True):
+            return tool_error("forgetting tools are disabled by forgetting.enabled=false")
         with self.provider._lock:
             payload = build_forgetting_report(
                 self.provider._require_conn(),
                 accessible_scope_ids=self.provider._accessible_scope_ids,
                 limit=limit,
+                config=forgetting_config,
             )
         return self._json(payload)
 
@@ -766,12 +780,25 @@ class ScopeRecallToolService:
                 "scope_recall_forgetting_run requires maintenance_tools_enabled=true"
             )
         limit = max(1, min(1000, int(args.get("limit") or 200)))
+        raw_forgetting = self.provider._config.get("forgetting")
+        forgetting_config = (
+            raw_forgetting if isinstance(raw_forgetting, dict) else {}
+        )
+        if not config_bool(forgetting_config, "enabled", True):
+            return tool_error("forgetting tools are disabled by forgetting.enabled=false")
+        soft_archive = (
+            self._bool_arg(args, "soft_archive", True)
+            if "soft_archive" in args
+            else None
+        )
         with self.provider._lock:
             payload = run_forgetting(
                 self.provider._require_conn(),
                 accessible_scope_ids=self.provider._writable_scope_ids,
                 dry_run=self._bool_arg(args, "dry_run", True),
                 hard_delete=self._bool_arg(args, "hard_delete", False),
+                soft_archive=soft_archive,
+                config=forgetting_config,
                 limit=limit,
                 vector_store=self.provider._vector_store,
             )
@@ -1282,6 +1309,8 @@ class ScopeRecallToolService:
             "fact_freshness_penalty": self._rounded_metadata(
                 metadata, "fact_freshness_penalty"
             ),
+            "freshness_warning": str(metadata.get("freshness_warning") or ""),
+            "ranking_warning": str(metadata.get("ranking_warning") or ""),
             "temporal_candidate_diagnostics": candidate_diagnostics,
         }
 

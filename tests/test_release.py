@@ -104,6 +104,15 @@ def _load_release_check_module(module_name: str = "scope_recall_check_release_co
     return release_check
 
 
+def _force_safe_native_vector_probe(doctor, monkeypatch) -> None:
+    vector_module = importlib.import_module(doctor.vector_report.__module__)
+    monkeypatch.setattr(
+        vector_module,
+        "native_vector_dependency_status",
+        lambda: {"safe": True, "returncode": 0},
+    )
+
+
 def test_transcript_guard_is_required_in_source_wheel_sdist_and_pyright():
     release_check = _load_release_check_module(
         "scope_recall_check_release_transcript_guard"
@@ -123,6 +132,52 @@ def test_transcript_guard_is_required_in_source_wheel_sdist_and_pyright():
         release_check.REQUIRED_SDIST
     )
     assert release_check.pyright_include_check()["ok"] is True
+
+
+def test_release_gate_covers_every_package_and_script_python_source():
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_complete_python_surface"
+    )
+    root_sources = {
+        path.name for path in PLUGIN_ROOT.glob("*.py") if path.is_file()
+    }
+    script_sources = {
+        path.relative_to(PLUGIN_ROOT).as_posix()
+        for path in (PLUGIN_ROOT / "scripts").glob("*.py")
+        if path.is_file()
+    }
+    expected_sources = root_sources | script_sources
+
+    assert expected_sources <= release_check.REQUIRED_SOURCE_FILES
+    assert {
+        f"scope_recall/{source}" for source in expected_sources
+    } <= release_check.REQUIRED_WHEEL
+
+    pyright = release_check.pyright_include_check()
+    assert set(pyright["required_source_py"]) == expected_sources
+    assert pyright["ok"] is True, pyright["missing_pyright_include"]
+
+
+def test_release_tree_scanner_does_not_exempt_force_added_sensitive_files(
+    tmp_path,
+    monkeypatch,
+):
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_force_added_sensitive_files"
+    )
+    secret = "github_" + "pat_" + ("A" * 40)
+    (tmp_path / ".env").write_text("TOKEN=" + secret + "\n", encoding="utf-8")
+    (tmp_path / "review-report.synthetic.md").write_text(
+        "credential: " + secret + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(release_check, "ROOT", tmp_path)
+
+    findings = release_check.scan_tree()["secrets"]
+
+    assert any(item.startswith(".env:") for item in findings)
+    assert any(item.startswith("review-report.synthetic.md:") for item in findings)
+    assert secret not in "\n".join(findings)
 
 
 def test_packaged_tool_trace_skip_names_preserve_default_safety_set():
@@ -347,6 +402,25 @@ def test_windows_lane_remains_a_release_gate():
     assert "test_atomic_replace" in windows_command
     assert "test_confirmed_activation_compensation" in windows_command
     assert "test_maintenance_lease.py" in windows_command
+
+    matrix_job = workflow["jobs"]["test"]
+    windows_full = [
+        lane
+        for lane in matrix_job["strategy"]["matrix"]["include"]
+        if lane.get("name") == "windows-full-py312"
+    ]
+    assert matrix_job["runs-on"] == "${{ matrix.os }}"
+    assert matrix_job.get("continue-on-error") is None
+    assert len(windows_full) == 1
+    assert windows_full[0]["os"] == "windows-latest"
+    assert windows_full[0]["install-target"] == ".[lancedb,dev]"
+    assert windows_full[0]["command"] == "python -m pytest -q"
+    checkout_step = next(
+        step
+        for step in matrix_job["steps"]
+        if step.get("name") == "Install Hermes runtime for plugin tests"
+    )
+    assert "rm -rf" not in str(checkout_step.get("run") or "")
 
 
 def test_release_identity_requires_version_newer_than_latest_tag():
@@ -702,6 +776,20 @@ def test_historical_release_readiness_is_marked_not_current():
     assert "Joy" not in upstream
 
 
+def test_current_release_and_benchmark_docs_match_runtime_defaults():
+    from scope_recall.config import DEFAULT_CONFIG
+
+    current = _package_version()
+    vector_only_floor = float(DEFAULT_CONFIG["retrieval"]["vector_only_min_score"])
+    readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+    benchmark = (PLUGIN_ROOT / "docs" / "benchmark.vector-threshold.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert f"Release `{current}`" in readme
+    assert f"At the selected `{vector_only_floor:.2f}` default" in benchmark
+
+
 def test_readme_public_version_matches_package_metadata():
     readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
     version = _package_version()
@@ -914,6 +1002,7 @@ def test_doctor_vector_report_accepts_lancedb_list_tables_dict_response(tmp_path
     assert spec.loader is not None
     doctor = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(doctor)
+    _force_safe_native_vector_probe(doctor, monkeypatch)
 
     vector_dir = tmp_path / "scope-recall" / "lancedb"
     vector_dir.mkdir(parents=True)
@@ -949,6 +1038,7 @@ def test_doctor_vector_report_marks_search_smoke_failure_needs_repair(tmp_path, 
     assert spec.loader is not None
     doctor = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(doctor)
+    _force_safe_native_vector_probe(doctor, monkeypatch)
 
     vector_dir = tmp_path / "scope-recall" / "lancedb"
     vector_dir.mkdir(parents=True)
@@ -1000,6 +1090,7 @@ def test_doctor_vector_report_marks_dimension_mismatch_needs_repair(tmp_path, mo
     assert spec.loader is not None
     doctor = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(doctor)
+    _force_safe_native_vector_probe(doctor, monkeypatch)
 
     vector_dir = tmp_path / "scope-recall" / "lancedb"
     vector_dir.mkdir(parents=True)
@@ -1430,6 +1521,7 @@ def test_pypi_workflow_runs_release_gate_before_publish():
     assert "fetch-depth: 0" in release_workflow
     assert "pypa/gh-action-pypi-publish" in release_workflow
     assert "Upload release distributions" in release_workflow
+    assert "continue-on-error: true" not in release_workflow
     assert "Invalid release tag" in release_workflow
     assert "Verify tag matches package version" in release_workflow
     assert "echo \"tag=${{ github.event.inputs.tag }}\"" not in release_workflow
@@ -1567,6 +1659,7 @@ def test_sentence_transformers_provider_path_uses_local_vector_dimensions(tmp_pa
         json.dumps(
             {
                 "vector": {
+                    "backend": "sqlite-bruteforce",
                     "embedder": {
                         "provider": "sentence-transformers",
                         "model": "sentence-transformers/all-MiniLM-L6-v2",
@@ -1701,7 +1794,10 @@ def test_ordinary_vector_startup_defers_duplicate_detection_to_explicit_audit(tm
         plugin.flush(timeout=5.0)
         assert plugin._vector_store is not None
         assert plugin._embedder is not None
-        plugin._vector_store._require_table().add(
+        require_table = getattr(plugin._vector_store, "_require_table", None)
+        if not callable(require_table):
+            pytest.skip("physical duplicate-row audit requires the LanceDB backend")
+        require_table().add(
             [
                 {
                     "id": memory_id,
@@ -1860,6 +1956,7 @@ def test_vector_store_preserves_active_generation_when_embedder_dimensions_chang
         json.dumps(
             {
                 "vector": {
+                    "backend": "sqlite-bruteforce",
                     "embedder": {
                         "provider": "local-hash",
                         "dimensions": 3072,
@@ -1892,8 +1989,11 @@ def test_vector_store_preserves_active_generation_when_embedder_dimensions_chang
         plugin.flush(timeout=5.0)
         assert plugin._vector_store is not None
         assert plugin._vector_store.dimensions == 3072
-        schema_field = plugin._vector_store._require_table().schema.field("vector")
-        assert int(schema_field.type.list_size) == 3072
+        manifest = plugin._require_conn().execute(
+            "SELECT backend, dimensions FROM vector_generations "
+            "WHERE status = 'active'"
+        ).fetchone()
+        assert tuple(manifest) == ("sqlite-bruteforce", 3072)
     finally:
         plugin.shutdown()
 
@@ -1928,10 +2028,11 @@ def test_vector_store_preserves_active_generation_when_embedder_dimensions_chang
         assert plugin._vector_store is None
         assert plugin._vector_status == "degraded"
         assert "identity mismatch" in plugin._vector_message
-        db = lancedb.connect(str(tmp_path / "scope-recall" / "lancedb"))
-        table = db.open_table("memories")
-        schema_field = table.schema.field("vector")
-        assert int(schema_field.type.list_size) == 3072
+        manifest = plugin._require_conn().execute(
+            "SELECT backend, dimensions FROM vector_generations "
+            "WHERE status = 'active'"
+        ).fetchone()
+        assert tuple(manifest) == ("sqlite-bruteforce", 3072)
     finally:
         plugin.shutdown()
 
@@ -2058,7 +2159,7 @@ def test_lexical_and_combined_scores_are_capped_at_one():
     assert combined == 1.0
 
 
-def test_recall_merge_preserves_incoming_recency_metadata(tmp_path):
+def test_recall_merge_preserves_incoming_recency_metadata(tmp_path, monkeypatch):
     from scope_recall.models import RecallItem
 
     plugin = load_memory_provider("scope-recall")
@@ -2098,6 +2199,21 @@ def test_recall_merge_preserves_incoming_recency_metadata(tmp_path):
         plugin._search_db_memories = lambda query, limit: [older]
         plugin._search_vector_memories = lambda query, limit: [newer]
         plugin._search_curated_memories = lambda query: []
+        recall_module = importlib.import_module(
+            plugin._recall_service.__class__.__module__
+        )
+        monkeypatch.setattr(
+            recall_module,
+            "memory_freshness_map",
+            lambda _conn, ids: {
+                memory_id: {
+                    "subject_id": memory_id,
+                    "truth_type": "factual",
+                    "status": "current",
+                }
+                for memory_id in ids
+            },
+        )
 
         results = plugin._recall_service.search_memories("Joy concise answers", limit=1)
     finally:

@@ -10,35 +10,46 @@ on:
 jobs:
   test:
     name: ${{ matrix.name }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: release-lancedb-py311
+            os: ubuntu-latest
             python-version: '3.11'
             install-target: ".[lancedb,dev]"
             command: python scripts/check.release.py
           - name: release-lancedb-py312
+            os: ubuntu-latest
             python-version: '3.12'
             install-target: ".[lancedb,dev]"
             command: python scripts/check.release.py
           - name: sqlite-only-no-extras-py312
+            os: ubuntu-latest
             python-version: '3.12'
             install-target: '.[dev]'
             command: python -m pytest -q tests/test_optional_vector_deps.py tests/test_sqlite_vector_store.py tests/test_benchmark_regression_cases.py
           - name: vector-disabled-py312
+            os: ubuntu-latest
             python-version: '3.12'
             install-target: '.[dev]'
             command: python -m pytest -q tests/test_roadmap_observability.py tests/test_benchmark_regression_cases.py tests/test_provider.py::test_save_config_bootstraps_empty_sqlite_schema
           - name: optional-jieba-missing-py312
+            os: ubuntu-latest
             python-version: '3.12'
             install-target: '.[dev]'
             command: python -m pytest -q tests/test_retrieval_rrf_graph.py tests/test_optional_vector_deps.py
           - name: type-check-py312
+            os: ubuntu-latest
             python-version: '3.12'
             install-target: '.[dev]'
             command: pyright
+          - name: windows-full-py312
+            os: windows-latest
+            python-version: '3.12'
+            install-target: ".[lancedb,dev]"
+            command: python -m pytest -q
 
     steps:
       - name: Check out scope-recall
@@ -62,8 +73,6 @@ jobs:
           python -m pip install -e "${{ matrix.install-target }}"
 
       - name: Run lane gate
-        env:
-          PYTHONPATH: ${{ github.workspace }}/.hermes-agent-src:${{ github.workspace }}
         run: ${{ matrix.command }}
 
   windows-installer:
