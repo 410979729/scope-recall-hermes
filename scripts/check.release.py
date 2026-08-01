@@ -37,7 +37,7 @@ if str(ROOT) not in sys.path:
 
 from secret_patterns import COMMON_SECRET_PATTERNS  # noqa: E402
 
-PACKAGE_VERSION = "1.8.5"
+PACKAGE_VERSION = "1.8.6"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 RELEASE_READINESS_DOC = f"docs/release-readiness.{PACKAGE_VERSION}.md"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}

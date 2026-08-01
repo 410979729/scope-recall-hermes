@@ -202,6 +202,65 @@ def test_common_unlabeled_secret_token_formats_are_rejected():
         assert "[REDACTED_SECRET]" in redacted
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "GitHub token " + "ghp_" + "A" * 10 + "\u200b" + "B" * 14,
+        "aws_secret_access_key\u00a0=\u00a0" + "C" * 40,
+        "pass\u200bword=" + "D" * 24,
+        "-----BEGIN PRIV\u200bATE KEY-----\nsynthetic-body",
+        "redis://:" + "E" * 24 + "@localhost/0",
+        "Bearer:" + "F" * 24,
+    ],
+)
+def test_unicode_and_transport_secret_obfuscation_is_rejected_and_redacted(text):
+    result = should_capture_text(text)
+    redacted = redact_secret_like_text(text)
+
+    assert result.allowed is False
+    assert result.reason == "plaintext_secret_rejected"
+    assert "[REDACTED_SECRET]" in redacted
+    assert text not in redacted
+
+
+def test_unicode_obfuscated_structured_secret_key_is_redacted():
+    safe_key, changed = sanitize_mapping_key("pass\u200bword")
+    structured, structured_changed = sanitize_structured_value(
+        {"pass\u200bword": "synthetic-value"}
+    )
+
+    assert (safe_key, changed) == ("[REDACTED_KEY]", True)
+    assert structured_changed is True
+    assert structured == {"[REDACTED_KEY]": "synthetic-value"}
+
+
+def test_mixed_visible_and_unicode_obfuscated_secrets_redact_the_whole_value():
+    visible_value = "V" * 24
+    hidden_value = "H" * 24
+    text = (
+        "api_key="
+        + visible_value
+        + " and pass\u200bword="
+        + hidden_value
+    )
+
+    redacted = redact_secret_like_text(text)
+    structured, changed = sanitize_structured_value({"note": text})
+
+    assert redacted == "[REDACTED_SECRET]"
+    assert visible_value not in redacted
+    assert hidden_value not in redacted
+    assert changed is True
+    assert structured == {"note": "[REDACTED_SECRET]"}
+
+
+def test_cookie_header_requires_name_value_syntax():
+    text = "Cookie: recipe uses chocolate chips and butter"
+
+    assert should_capture_text(text).allowed is True
+    assert redact_secret_like_text(text) == text
+
+
 def test_secret_index_like_multiline_metadata_is_not_cross_line_rejected():
     result = should_capture_text("Secret index: Scope Recall smoke dummy credential\nKind: api_key\nVault ref: vault://smoke/scope-recall/dummy")
 

@@ -229,6 +229,48 @@ def test_stale_activation_lease_recovery_is_dry_run_first_and_removes_guards(
         raw.close()
 
 
+def test_stale_activation_lease_recovery_uses_truth_connection_boundary(
+    tmp_path,
+    monkeypatch,
+):
+    """Lease recovery must inherit FK/path invariants from the shared boundary."""
+
+    from scope_recall.truth_connection import connect_truth_database as real_connect
+
+    db_path = tmp_path / "memory.sqlite3"
+    seed = real_connect(db_path, mode="rwc")
+    ensure_schema(seed)
+    seed.commit()
+    seed.close()
+    _write_lease(db_path, token="stale-boundary-token", pid=2_147_483_647)
+
+    calls: list[dict[str, object]] = []
+
+    def tracked_connect(path, **kwargs):
+        calls.append({"path": Path(path), **kwargs})
+        return real_connect(path, **kwargs)
+
+    monkeypatch.setattr(
+        maintenance_lease,
+        "_connect_truth_database",
+        tracked_connect,
+        raising=False,
+    )
+
+    result = recover_stale_activation_lease(
+        db_path,
+        apply=True,
+        operation_id="stale-lease-boundary-test",
+        reason="recorded lease owner is definitely dead",
+        backup_path=str(tmp_path / "backup.sqlite3"),
+    )
+
+    assert result["recovered"] is True
+    assert calls
+    assert calls[0]["path"] == db_path
+    assert calls[0]["mode"] == "rw"
+
+
 def test_live_activation_lease_is_never_auto_recovered(tmp_path):
     db_path = tmp_path / "memory.sqlite3"
     with sqlite3.connect(db_path) as conn:

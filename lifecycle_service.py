@@ -528,6 +528,17 @@ def transition_memory_lifecycle(
                     source_id = str(relation.get("source_memory_id") or "")
                     target_id = str(relation.get("target_memory_id") or "")
                     relation_type = str(relation.get("relation_type") or "")
+                    if memory_id not in {source_id, target_id}:
+                        skipped_relations.append(
+                            {
+                                "allowed": False,
+                                "reason": "unrelated_endpoint",
+                                "source_memory_id": source_id,
+                                "target_memory_id": target_id,
+                                "relation_type": relation_type,
+                            }
+                        )
+                        continue
                     decision = evaluate_relation_policy(
                         conn,
                         source_memory_id=source_id,

@@ -225,6 +225,10 @@ Treat chat aliases as explicit operator access-control grants.
 - `retrieval.entity_distance_weight` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.entity_distance_weight` in the `retrieval` group. Default: `0.04`
 - `retrieval.entity_scope_filter_enabled` (boolean; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.entity_scope_filter_enabled` in the `retrieval` group. Default: `true`
 - `retrieval.entity_weight` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.entity_weight` in the `retrieval` group. Default: `0.06`
+- `retrieval.fact_freshness_expired_penalty` (number; risk: `medium`; restart_required: `no`) — Score penalty for factual memories whose validity window expired. Default: `0.45`
+- `retrieval.fact_freshness_needs_live_check_penalty` (number; risk: `medium`; restart_required: `no`) — Score penalty for factual memories that require a live check. Default: `0.18`
+- `retrieval.fact_freshness_stale_penalty` (number; risk: `medium`; restart_required: `no`) — Score penalty for factual memories marked stale. Default: `0.35`
+- `retrieval.fact_freshness_untracked_penalty` (number; risk: `medium`; restart_required: `no`) — Score penalty for factual memories without tracked freshness evidence. Default: `0.1`
 - `retrieval.freshness_base_weight` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.freshness_base_weight` in the `retrieval` group. Default: `0.22`
 - `retrieval.freshness_hints` (array; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.freshness_hints` in the `retrieval` group. Default: `["current", "currently", "latest", "new", "newest", "now", "recent", "recently", "today", "updated"]`
 - `retrieval.freshness_max_weight` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.freshness_max_weight` in the `retrieval` group. Default: `0.42`

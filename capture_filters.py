@@ -5,6 +5,7 @@ These filters are intentionally conservative because they sit before SQLite trut
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -237,7 +238,11 @@ def sanitize_capture_text(text: Any) -> str:
 def _normalize_mapping_key(value: Any) -> str:
     """Normalize field separators for shared secret-key classification."""
 
-    return re.sub(r"[-\s]+", "_", str(value or "").strip().casefold())
+    return re.sub(
+        r"[-\s]+",
+        "_",
+        _secret_scan_shadow(value).strip().casefold(),
+    )
 
 
 def _is_safe_token_metric_key(value: Any) -> bool:
@@ -269,7 +274,7 @@ def _is_sensitive_mapping_key(value: Any) -> bool:
         return False
     raw = str(value or "")
     normalized = _normalize_mapping_key(raw)
-    if SENSITIVE_MAPPING_KEY_RE.search(raw):
+    if SENSITIVE_MAPPING_KEY_RE.search(raw) or SENSITIVE_MAPPING_KEY_RE.search(normalized):
         return True
     if normalized == "token" or normalized.endswith("_token"):
         return True
@@ -298,7 +303,23 @@ def _redact_private_key_blocks(text: str) -> str:
     return "".join(output)
 
 
-def contains_secret_like_text(text: str) -> bool:
+def _secret_scan_shadow(text: Any) -> str:
+    """Return a Unicode-normalized shadow used only for secret detection.
+
+    Format controls can visually split credential prefixes and sensitive field
+    names. Removing them from the scan view closes that bypass without mutating
+    stored user text or trying to map normalized spans back onto the original.
+    """
+
+    normalized = unicodedata.normalize("NFKC", str(text or ""))
+    return "".join(
+        character
+        for character in normalized
+        if unicodedata.category(character) != "Cf"
+    )
+
+
+def _contains_secret_like_shadow(text: str) -> bool:
     if PEM_PRIVATE_KEY_BEGIN_RE.search(text):
         return True
     if any(pattern.search(text) for pattern in SECRET_PATTERNS):
@@ -309,10 +330,17 @@ def contains_secret_like_text(text: str) -> bool:
     )
 
 
+def contains_secret_like_text(text: str) -> bool:
+    return _contains_secret_like_shadow(_secret_scan_shadow(text))
+
+
 def redact_secret_like_text(text: Any) -> str:
     cleaned = clean_text(text)
     if not cleaned:
         return ""
+    shadow = _secret_scan_shadow(cleaned)
+    if shadow != cleaned and _contains_secret_like_shadow(shadow):
+        return "[REDACTED_SECRET]"
     redacted = _redact_private_key_blocks(cleaned)
     for pattern in SECRET_PATTERNS:
         redacted = pattern.sub("[REDACTED_SECRET]", redacted)

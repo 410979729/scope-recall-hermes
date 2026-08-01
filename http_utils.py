@@ -4,32 +4,21 @@ Network errors should be returned with sanitized diagnostics so credentials and 
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
-SECRET_PATTERNS = [
-    re.compile(r"(?i)\b(api[_-]?key|token|secret|password|passwd|private[_-]?key)\s*[:=]\s*['\"]?[^\s,'\"\]}]+['\"]?"),
-    re.compile(r"(?i)\bauthorization\s*[:=]\s*bearer\s+[A-Za-z0-9._\-~+/=]{8,}"),
-    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-~+/=]{16,}"),
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
-    re.compile(r"\bsk-[A-Za-z0-9._\-]{12,}\b"),
-]
-
-
-def _redact_match(match: re.Match[str]) -> str:
-    text = match.group(0)
-    if "=" in text:
-        return f"{text.split('=', 1)[0]}=[REDACTED]"
-    if ":" in text:
-        return f"{text.split(':', 1)[0]}: [REDACTED]"
-    return "[REDACTED]"
+try:  # Support package imports and direct plugin scripts.
+    from .capture_filters import redact_secret_like_text
+except ImportError:  # pragma: no cover - direct script import style
+    from capture_filters import redact_secret_like_text
 
 
 def redact_sensitive(text: Any) -> str:
-    redacted = str(text or "")
-    for pattern in SECRET_PATTERNS:
-        redacted = pattern.sub(_redact_match, redacted)
-    return redacted
+    """Redact HTTP/provider diagnostics with the canonical capture taxonomy."""
+
+    return redact_secret_like_text(text).replace(
+        "[REDACTED_SECRET]",
+        "[REDACTED]",
+    )
 
 
 def chat_completions_endpoint(base_url: str, *, endpoint: str = "", append_v1: bool = True) -> str:

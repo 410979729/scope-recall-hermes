@@ -1342,6 +1342,13 @@ def exact_duplicate_groups(
     scope_id: str | None = None,
     scope_ids: list[str] | tuple[str, ...] | None = None,
 ) -> list[dict[str, Any]]:
+    """Return exact-text groups without crossing durable semantic types."""
+
+    memory_type_sql = (
+        "CASE WHEN json_valid(m.metadata) THEN LOWER(TRIM(COALESCE("
+        "NULLIF(json_extract(m.metadata, '$.memory_type'), ''), "
+        "NULLIF(json_extract(m.metadata, '$.category'), ''), ''))) ELSE '' END"
+    )
     conditions = [ordinary_recall_lifecycle_visible_sql("m")]
     if scope_ids is not None:
         clean_scope_ids = [str(item) for item in scope_ids if str(item)]
@@ -1357,10 +1364,12 @@ def exact_duplicate_groups(
     where = "WHERE " + " AND ".join(f"({condition})" for condition in conditions)
     rows = conn.execute(
         f"""
-        SELECT m.scope_id, m.target, m.dedup_key, COUNT(*) AS count
+        SELECT m.scope_id, m.target, m.dedup_key,
+               {memory_type_sql} AS memory_type,
+               COUNT(*) AS count
         FROM memories AS m
         {where}
-        GROUP BY m.scope_id, m.target, m.dedup_key
+        GROUP BY m.scope_id, m.target, m.dedup_key, {memory_type_sql}
         HAVING COUNT(*) > 1
         ORDER BY count DESC
         """,
@@ -1375,16 +1384,23 @@ def exact_duplicate_groups(
             WHERE m.scope_id = ?
               AND m.target = ?
               AND m.dedup_key = ?
+              AND {memory_type_sql} = ?
               AND {ordinary_recall_lifecycle_visible_sql('m')}
             ORDER BY m.updated_at DESC, m.created_at DESC, m.id DESC
             """,
-            (row["scope_id"], row["target"], row["dedup_key"]),
+            (
+                row["scope_id"],
+                row["target"],
+                row["dedup_key"],
+                row["memory_type"],
+            ),
         ).fetchall()
         groups.append(
             {
                 "scope_id": row["scope_id"],
                 "target": row["target"],
                 "dedup_key": row["dedup_key"],
+                "memory_type": row["memory_type"],
                 "count": int(row["count"]),
                 "keep_id": str(members[0]["id"]),
                 "delete_ids": [str(member["id"]) for member in members[1:]],

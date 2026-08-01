@@ -25,7 +25,7 @@ COMMON_SECRET_PATTERNS: dict[str, re.Pattern[str]] = {
     ),
     "database_uri_with_password": re.compile(
         r"\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis(?:s)?|"
-        r"amqp(?:s)?|mssql)://[^/\s:@]+:[^@\s/]+@[^\s]+",
+        r"amqp(?:s)?|mssql)://[^/\s:@]*:[^@\s/]+@[^\s]+",
         re.IGNORECASE,
     ),
     "openai_key": re.compile(
@@ -47,7 +47,7 @@ COMMON_SECRET_PATTERNS: dict[str, re.Pattern[str]] = {
         re.IGNORECASE,
     ),
     "bearer_token": re.compile(
-        r"\bbearer\s+[A-Za-z0-9._\-~+/=*]{16,}",
+        r"\bbearer(?:\s+|\s*[:=]\s*)[A-Za-z0-9._\-~+/=*]{16,}",
         re.IGNORECASE,
     ),
     "aws_access_key_id": re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9.*_-]{16}\b"),
@@ -56,7 +56,7 @@ COMMON_SECRET_PATTERNS: dict[str, re.Pattern[str]] = {
         re.IGNORECASE,
     ),
     "cookie_header": re.compile(
-        r"^\s*(?:cookie|set-cookie)\s*:\s*[^\r\n]{8,}$",
+        r"^\s*(?:cookie|set-cookie)\s*:\s*[^=\n;,\s]+=[^\n]+$",
         re.IGNORECASE | re.MULTILINE,
     ),
     "telegram_bot_token": re.compile(

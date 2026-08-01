@@ -39,6 +39,7 @@ def _add_memory(
     *,
     scope_id: str = "scope-a",
     content: str = "same",
+    memory_type: str = "factual",
 ) -> None:
     store_row(
         conn,
@@ -55,7 +56,7 @@ def _add_memory(
         source="fixture",
         target="memory",
         content=content,
-        metadata={"lifecycle": "promoted", "memory_type": "factual"},
+        metadata={"lifecycle": "promoted", "memory_type": memory_type},
         allow_duplicate=True,
     )
 
@@ -164,6 +165,21 @@ def test_dedupe_degraded_store_uses_durable_outbox_without_silent_zero(tmp_path)
     assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 1
     outbox = conn.execute("SELECT operation, status FROM vector_outbox").fetchone()
     assert tuple(outbox) == ("delete", "pending")
+
+
+def test_dedupe_preserves_identical_text_with_distinct_memory_types(tmp_path):
+    """Equal text is not a duplicate when the durable semantic type differs."""
+
+    conn = _conn(tmp_path / "memory.sqlite3")
+    _add_memory(conn, "fact", content="Same durable text.", memory_type="factual")
+    _add_memory(conn, "procedure", content="Same durable text.", memory_type="procedure")
+    conn.commit()
+
+    result = dedupe_memories(_MemoryProvider(conn), dry_run=True, scope_only=False)
+
+    assert result["duplicate_groups"] == 0
+    assert result["duplicates"] == 0
+    assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 2
 
 
 class _VectorProvider:
@@ -502,3 +518,29 @@ def test_relation_rollback_skips_existing_contradiction(tmp_path):
     assert result["relation_restore"]["skipped"][0]["reason"] == "contradiction_conflict"
     rows = conn.execute("SELECT relation_type FROM memory_relations ORDER BY relation_type").fetchall()
     assert [row[0] for row in rows] == ["contradicts"]
+
+
+def test_relation_rollback_rejects_unrelated_endpoints(tmp_path):
+    """Restoring one memory cannot create an edge between two other memories."""
+
+    conn, _relation = _relation_fixture(tmp_path)
+    _add_memory(conn, "other-a", content="unrelated source")
+    _add_memory(conn, "other-b", content="unrelated target")
+    conn.commit()
+    unrelated = {
+        "source_memory_id": "other-a",
+        "target_memory_id": "other-b",
+        "relation_type": "supports",
+        "confidence": 0.8,
+        "note": "must not be restored through subject rollback",
+        "created_at": "2026-07-12T02:00:00+00:00",
+    }
+
+    result = _restore_subject(conn, unrelated)
+
+    assert result["relation_restore"]["restored"] == 0
+    assert result["relation_restore"]["skipped"][0]["reason"] == "unrelated_endpoint"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM memory_relations "
+        "WHERE source_memory_id='other-a' AND target_memory_id='other-b'"
+    ).fetchone()[0] == 0
