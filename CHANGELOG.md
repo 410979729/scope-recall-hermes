@@ -4,6 +4,8 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.8.4] - 2026-08-01
+
 ### Added
 - Added dry-run-first operator recovery for stale activation leases, legacy freshness coverage, and vector outbox dead-letter events, with verified SQLite backups, idempotent operator-ledger evidence, and mirrored receipts.
 - Added a blocking Windows Python 3.12 full-suite CI lane alongside the focused installer contract.
@@ -15,6 +17,8 @@ All notable changes to `scope-recall` will be documented in this file.
 ### Fixed
 - Closed maintenance-tool schema gating, PyPI fail-open, shared-connection lock, SQLite reconnect, truth-store permission, release-source coverage, and stale activation-guard recovery gaps.
 - Centralized secret patterns across capture, doctor, and release scanning; expanded provider/token/database/cookie coverage, stopped exempting force-added sensitive files, and removed matched-value echo from release findings.
+- Made operator JSON automation ASCII-safe under Windows legacy console encodings and aligned POSIX doctor fixtures with the owner-only truth-store contract.
+- Preserved Fact Evolution, temporal, Reflection, scope routing, evidence authority, provenance-root, idempotency, journal checkpoint, and release-identity contracts.
 
 ## [1.8.3] - 2026-07-31
 

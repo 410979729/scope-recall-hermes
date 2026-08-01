@@ -53,7 +53,8 @@ def main() -> int:
         scope_ids=selected_scope_ids,
         accessible_scope_ids=selected_scope_ids,
     )
-    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    # Keep automation output ASCII-safe even when Windows uses cp1252 stdout.
+    print(json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True))
     return 0 if payload.get("ok") else 1
 
 

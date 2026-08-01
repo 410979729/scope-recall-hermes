@@ -12,6 +12,7 @@ from pathlib import Path
 from scope_recall.journal import ensure_journal_schema
 from scope_recall.sql_store import ensure_schema, store_row
 from scope_recall.graph import ensure_graph_schema
+from scope_recall.truth_connection import connect_truth_database
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 DOCTOR_PATH = PLUGIN_ROOT / "scripts" / "doctor.py"
@@ -40,9 +41,8 @@ def _repair_vector_module():
 
 
 def _conn(hermes_home: Path) -> sqlite3.Connection:
-    db_dir = hermes_home / "scope-recall"
-    db_dir.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_dir / "memory.sqlite3")
+    db_path = hermes_home / "scope-recall" / "memory.sqlite3"
+    conn = connect_truth_database(db_path, mode="rwc")
     conn.row_factory = sqlite3.Row
     ensure_schema(conn)
     ensure_journal_schema(conn)

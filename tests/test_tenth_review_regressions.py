@@ -18,6 +18,8 @@ from typing import Any
 
 import pytest
 
+from scope_recall.truth_connection import connect_truth_database
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -582,7 +584,7 @@ def test_sqlite_doctor_surfaces_relation_debt_and_fails_dead_letter(
     db_dir = tmp_path / "scope-recall"
     db_dir.mkdir(parents=True)
     db_path = db_dir / "memory.sqlite3"
-    conn = sqlite3.connect(db_path)
+    conn = connect_truth_database(db_path, mode="rwc")
     conn.row_factory = sqlite3.Row
     ensure_schema(conn)
     _insert_relation_scope_rows(
@@ -636,7 +638,7 @@ def test_operator_ledger_recovers_file_written_before_mirror_state(
 
     db_path = tmp_path / "scope-recall" / "memory.sqlite3"
     db_path.parent.mkdir(parents=True)
-    conn = sqlite3.connect(db_path)
+    conn = connect_truth_database(db_path, mode="rwc")
     conn.row_factory = sqlite3.Row
     ensure_schema(conn)
     conn.execute("BEGIN IMMEDIATE")

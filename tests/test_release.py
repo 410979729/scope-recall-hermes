@@ -19,6 +19,7 @@ import pytest
 import yaml
 
 from plugins.memory import load_memory_provider
+from scope_recall.truth_connection import connect_truth_database
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "import.openclaw.memory_lancedb_pro.py"
 DOCTOR_PATH = Path(__file__).resolve().parents[1] / "scripts" / "doctor.py"
@@ -490,11 +491,11 @@ def test_release_identity_requires_version_newer_than_latest_tag():
     assert "mutually exclusive" in conflicting_modes["error"]
 
 
-def test_v183_release_candidate_identity_surfaces_are_consistent():
+def test_v184_release_candidate_identity_surfaces_are_consistent():
     """Bind the patch release to every authoritative version surface."""
 
-    expected_version = "1.8.3"
-    release_check = _load_release_check_module("scope_recall_check_release_v183_identity")
+    expected_version = "1.8.4"
+    release_check = _load_release_check_module("scope_recall_check_release_v184_identity")
     temporal_facts = importlib.import_module(f"{PACKAGE_NAME}.temporal_facts")
     plugin_manifest = (PLUGIN_ROOT / "plugin.yaml").read_text(encoding="utf-8")
     changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -504,7 +505,7 @@ def test_v183_release_candidate_identity_surfaces_are_consistent():
     assert _package_version() == expected_version
     assert f"version: {expected_version}" in plugin_manifest
     assert release_check.PACKAGE_VERSION == expected_version
-    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.8.3.md"
+    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.8.4.md"
     assert (PLUGIN_ROOT / release_check.RELEASE_READINESS_DOC).is_file()
     assert f"## [{expected_version}]" in changelog
     assert f"Version `{expected_version}`" in readme
@@ -517,7 +518,7 @@ def test_v183_release_candidate_identity_surfaces_are_consistent():
     )
     assert identity["ok"] is True
     assert identity["release_eligible"] is True
-    assert identity["expected_release_tag"] == "v1.8.3"
+    assert identity["expected_release_tag"] == "v1.8.4"
 
 
 def test_ruff_lint_contract_is_explicit_across_toolchain_upgrades():
@@ -1341,7 +1342,7 @@ def test_repair_vector_index_rebuilds_sqlite_bruteforce_backend(tmp_path):
         + "\n",
         encoding="utf-8",
     )
-    conn = sqlite3.connect(storage_dir / "memory.sqlite3")
+    conn = connect_truth_database(storage_dir / "memory.sqlite3", mode="rwc")
     conn.row_factory = sqlite3.Row
     try:
         ensure_schema(conn)

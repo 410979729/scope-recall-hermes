@@ -71,7 +71,7 @@ def test_mutable_truth_connection_rejects_database_symlink(tmp_path):
     report = truth_storage_permissions(link)
     assert report["status"] == "unsafe"
     assert report["symlink"] is True
-    with pytest.raises(TruthDatabaseConnectionError, match="harden"):
+    with pytest.raises(TruthDatabaseConnectionError, match="symlink"):
         connect_truth_database(link, mode="rw")
 
 
