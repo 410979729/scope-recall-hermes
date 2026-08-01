@@ -4,9 +4,6 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
-### Docs
-- Added `CONTRIBUTORS.md` and credited @pixel4039 for the fact-freshness governance issue series (#32-#36) that set the freshness-governance roadmap.
-
 ## [1.8.3] - 2026-07-31
 
 ### Added
