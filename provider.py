@@ -88,6 +88,19 @@ _PROVIDER_REGISTRY_LOCK = threading.RLock()
 _PROVIDER_REGISTRY: weakref.WeakSet[Any] = weakref.WeakSet()
 
 
+def _is_sqlite_lock_contention(exc: sqlite3.OperationalError) -> bool:
+    """Return whether one SQLite operational failure is safe to defer at startup."""
+
+    error_code = getattr(exc, "sqlite_errorcode", None)
+    if isinstance(error_code, int) and (error_code & 0xFF) in {
+        sqlite3.SQLITE_BUSY,
+        sqlite3.SQLITE_LOCKED,
+    }:
+        return True
+    message = str(exc).strip().lower()
+    return "database is locked" in message or "database table is locked" in message
+
+
 class ScopeRecallMemoryProvider(MemoryProvider):
     """Hermes memory-provider runtime for Scope Recall.
 
@@ -337,6 +350,20 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 conn,
                 apply=True,
                 limit=STARTUP_FRESHNESS_BACKFILL_LIMIT,
+            )
+        except sqlite3.OperationalError as exc:
+            if not _is_sqlite_lock_contention(exc):
+                self._conn = None
+                conn.close()
+                raise
+            self._rollback_conn_after_error("startup freshness backfill contention")
+            self._freshness_backfill = {
+                "apply": True,
+                "status": "deferred_error",
+                "error_type": type(exc).__name__,
+            }
+            logger.warning(
+                "Scope Recall startup freshness backfill deferred after SQLite lock contention"
             )
         except BaseException:
             self._conn = None

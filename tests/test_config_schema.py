@@ -93,6 +93,32 @@ def test_provider_config_schema_uses_registry_for_deep_keys():
     assert by_key["journal.max_entries_per_digest"]["type"] == "integer"
 
 
+def test_recall_freshness_penalty_runtime_keys_are_owned_configuration():
+    """Every retrieval leaf read by freshness_penalty() must have one config owner."""
+
+    from scope_recall.config import DEFAULT_CONFIG
+    from scope_recall.config_schema import build_config_registry
+
+    expected = {
+        "retrieval.fact_freshness_untracked_penalty": 0.10,
+        "retrieval.fact_freshness_needs_live_check_penalty": 0.18,
+        "retrieval.fact_freshness_stale_penalty": 0.35,
+        "retrieval.fact_freshness_expired_penalty": 0.45,
+    }
+    packaged = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
+    defaults = _leaf_values(DEFAULT_CONFIG)
+    packaged_values = _leaf_values(packaged)
+    registry = {entry["key"]: entry for entry in build_config_registry()}
+
+    for key, expected_value in expected.items():
+        assert key in defaults, f"runtime-read key lacks a DEFAULT_CONFIG owner: {key}"
+        assert key in packaged_values, f"runtime-read key lacks a packaged owner: {key}"
+        assert key in registry, f"runtime-read key cannot be set through the registry: {key}"
+        assert defaults[key] == expected_value
+        assert packaged_values[key] == expected_value
+        assert registry[key]["type"] == "number"
+
+
 def test_retention_profile_registry_exposes_safe_default_and_choices():
     from scope_recall.config_schema import build_config_registry
 

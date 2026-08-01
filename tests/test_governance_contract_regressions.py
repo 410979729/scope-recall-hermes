@@ -75,6 +75,34 @@ def test_tool_store_rejected_secret_returns_receipt(tmp_path):
     assert payload["receipt"]["provider"] == "scope-recall"
 
 
+def test_tool_store_rejects_unicode_and_transport_secret_bypasses(tmp_path):
+    provider = _provider(tmp_path)
+    samples = [
+        "GitHub token " + "ghp_" + "A" * 10 + "\u200b" + "B" * 14,
+        "pass\u200bword=" + "D" * 24,
+        "redis://:" + "E" * 24 + "@localhost/0",
+        "Bearer:" + "F" * 24,
+    ]
+    try:
+        payloads = [
+            json.loads(
+                provider.handle_tool_call(
+                    "scope_recall_store",
+                    {"content": sample, "target": "memory"},
+                )
+            )
+            for sample in samples
+        ]
+    finally:
+        provider.shutdown()
+
+    assert all(payload["stored"] is False for payload in payloads)
+    assert all(
+        payload["receipt"]["action"] == "rejected_sensitive"
+        for payload in payloads
+    )
+
+
 def test_store_and_merge_return_contract_receipts(tmp_path, monkeypatch):
     monkeypatch.delenv("SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY", raising=False)
     provider = _provider(tmp_path)

@@ -394,6 +394,52 @@ def _freshness_spec_from_metadata(
     }
 
 
+def _legacy_backfill_plan(
+    metadata: dict[str, Any],
+    *,
+    content: str,
+) -> tuple[dict[str, Any], dict[str, Any], bool] | None:
+    """Plan one legacy row without trusting obsolete validator metadata.
+
+    Current writes must reject unsafe validator targets atomically. Historical
+    rows predate that invariant, so migration isolates an invalid target as a
+    manual live check instead of executing, preserving, or echoing it. The
+    returned metadata is an in-memory backfill view; the authoritative memory
+    metadata is never rewritten by this helper.
+    """
+
+    try:
+        spec = _freshness_spec_from_metadata(metadata, content=content)
+    except ValueError:
+        planned_metadata = dict(metadata)
+        # Empty nested values would otherwise fall through to these legacy
+        # top-level aliases via ``or`` in _freshness_spec_from_metadata().
+        # Remove them only from the in-memory migration view so quarantined
+        # rows cannot persist an obsolete validator target under manual mode.
+        planned_metadata.pop("validator_kind", None)
+        planned_metadata.pop("validator_spec", None)
+        raw_freshness = planned_metadata.get("freshness")
+        planned_freshness = (
+            dict(raw_freshness) if isinstance(raw_freshness, dict) else {}
+        )
+        planned_freshness.update(
+            validator_kind="manual",
+            validator_spec={},
+            status="needs_live_check",
+            last_checked_at="",
+            valid_until="",
+            stale_reason="legacy_invalid_validator_spec",
+        )
+        planned_metadata["freshness"] = planned_freshness
+        spec = _freshness_spec_from_metadata(planned_metadata, content=content)
+        if spec is None:  # pragma: no cover - explicit freshness is always eligible
+            return None
+        return spec, planned_metadata, True
+    if spec is None:
+        return None
+    return spec, metadata, False
+
+
 def upsert_memory_freshness(
     conn: sqlite3.Connection,
     *,
@@ -667,10 +713,12 @@ def freshness_backfill_inventory(
     scanned = 0
     eligible = 0
     ineligible = 0
+    quarantined = 0
     last_id = ""
     memory_types: dict[str, int] = {}
     statuses: dict[str, int] = {}
     sample_ids: list[str] = []
+    quarantined_sample_ids: list[str] = []
     truncated = False
     while scanned < bounded_max:
         rows = conn.execute(
@@ -695,14 +743,19 @@ def freshness_backfill_inventory(
             last_id = memory_id
             scanned += 1
             metadata = _metadata_mapping(row["metadata"])
-            spec = _freshness_spec_from_metadata(
+            plan = _legacy_backfill_plan(
                 metadata,
                 content=str(row["content"] or ""),
             )
-            if spec is None:
+            if plan is None:
                 ineligible += 1
                 continue
+            spec, _planned_metadata, is_quarantined = plan
             eligible += 1
+            if is_quarantined:
+                quarantined += 1
+                if len(quarantined_sample_ids) < 50:
+                    quarantined_sample_ids.append(memory_id)
             memory_type = str(
                 metadata.get("memory_type") or metadata.get("category") or "unknown"
             ).strip().lower()
@@ -737,41 +790,29 @@ def freshness_backfill_inventory(
         "scanned": scanned,
         "eligible": eligible,
         "ineligible": ineligible,
+        "quarantined": quarantined,
         "truncated": truncated,
         "max_rows": bounded_max,
         "memory_types": dict(sorted(memory_types.items())),
         "statuses": dict(sorted(statuses.items())),
         "sample_ids": sample_ids,
+        "quarantined_sample_ids": quarantined_sample_ids,
     }
 
 
-def backfill_untracked_memory_freshness(
+def _scan_untracked_memory_freshness_candidates(
     conn: sqlite3.Connection,
     *,
-    scope_ids: Sequence[str] | None = None,
-    apply: bool = False,
-    limit: int = 500,
-) -> dict[str, Any]:
-    """Plan or apply a bounded freshness backfill for facts and status snapshots."""
+    clauses: Sequence[str],
+    params: Sequence[Any],
+    limit: int,
+) -> tuple[list[tuple[sqlite3.Row, dict[str, Any], bool]], bool]:
+    """Return a bounded, validated candidate set without mutating truth state."""
 
-    if not _table_exists(conn, "fact_freshness") or not _table_exists(conn, "memories"):
-        return {"apply": bool(apply), "eligible": 0, "inserted": 0, "ids": []}
-    clauses = [
-        ordinary_recall_lifecycle_visible_sql("m"),
-        "NOT EXISTS (SELECT 1 FROM fact_freshness f WHERE f.subject_type = 'memory' AND f.subject_id = m.id)",
-    ]
-    params: list[Any] = []
-    scopes = [str(scope_id) for scope_id in (scope_ids or []) if str(scope_id)]
-    if scope_ids is not None:
-        if not scopes:
-            return {"apply": bool(apply), "eligible": 0, "inserted": 0, "ids": []}
-        clauses.append(f"m.scope_id IN ({','.join('?' for _ in scopes)})")
-        params.extend(scopes)
-    bounded_limit = max(1, min(int(limit or 500), 5000))
-    rows: list[tuple[sqlite3.Row, dict[str, Any]]] = []
+    rows: list[tuple[sqlite3.Row, dict[str, Any], bool]] = []
     truncated = False
     offset = 0
-    scan_page = min(1000, max(100, bounded_limit))
+    scan_page = min(1000, max(100, limit))
     while not truncated and offset < 1_000_000:
         candidate_rows = conn.execute(
             f"SELECT m.id, m.content, m.metadata FROM memories m WHERE {' AND '.join(clauses)} "
@@ -783,45 +824,129 @@ def backfill_untracked_memory_freshness(
         offset += len(candidate_rows)
         for row in candidate_rows:
             metadata = _metadata_mapping(row["metadata"])
-            if (
-                _freshness_spec_from_metadata(
-                    metadata,
-                    content=str(row["content"] or ""),
-                )
-                is None
-            ):
+            plan = _legacy_backfill_plan(
+                metadata,
+                content=str(row["content"] or ""),
+            )
+            if plan is None:
                 continue
-            if len(rows) >= bounded_limit:
+            _spec, planned_metadata, is_quarantined = plan
+            if len(rows) >= limit:
                 truncated = True
                 break
-            rows.append((row, metadata))
+            rows.append((row, planned_metadata, is_quarantined))
         if len(candidate_rows) < scan_page:
             break
-    ids = [str(row["id"]) for row, _metadata in rows]
-    inserted = 0
-    if apply and rows:
-        try:
-            conn.execute("BEGIN")
-            for row, metadata in rows:
-                if upsert_memory_freshness(
-                    conn,
-                    memory_id=str(row["id"]),
-                    metadata=metadata,
-                    content=str(row["content"] or ""),
-                    commit=False,
-                ):
-                    inserted += 1
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+    return rows, truncated
+
+
+def _freshness_backfill_result(
+    *,
+    apply: bool,
+    rows: Sequence[tuple[sqlite3.Row, dict[str, Any], bool]],
+    inserted: int,
+    truncated: bool,
+) -> dict[str, Any]:
+    """Build the stable, content-free operator/startup result."""
+
     return {
         "apply": bool(apply),
         "eligible": len(rows),
         "inserted": inserted,
+        "quarantined": sum(1 for _row, _metadata, flag in rows if flag),
         "truncated": truncated,
-        "ids": ids,
+        "ids": [str(row["id"]) for row, _metadata, _flag in rows],
+        "quarantined_ids": [
+            str(row["id"]) for row, _metadata, flag in rows if flag
+        ],
     }
+
+
+def backfill_untracked_memory_freshness(
+    conn: sqlite3.Connection,
+    *,
+    scope_ids: Sequence[str] | None = None,
+    apply: bool = False,
+    limit: int = 500,
+) -> dict[str, Any]:
+    """Plan or atomically apply a bounded freshness backfill.
+
+    Apply owns its transaction. It first performs a read-only eligibility probe
+    to avoid taking a write reservation on already-current databases, then
+    re-scans authoritative rows under ``BEGIN IMMEDIATE`` before writing. This
+    prevents a WAL read snapshot from being invalidated by a competing writer.
+    """
+
+    empty_rows: list[tuple[sqlite3.Row, dict[str, Any], bool]] = []
+    if not _table_exists(conn, "fact_freshness") or not _table_exists(conn, "memories"):
+        return _freshness_backfill_result(
+            apply=apply,
+            rows=empty_rows,
+            inserted=0,
+            truncated=False,
+        )
+    clauses = [
+        ordinary_recall_lifecycle_visible_sql("m"),
+        "NOT EXISTS (SELECT 1 FROM fact_freshness f WHERE f.subject_type = 'memory' AND f.subject_id = m.id)",
+    ]
+    params: list[Any] = []
+    scopes = [str(scope_id) for scope_id in (scope_ids or []) if str(scope_id)]
+    if scope_ids is not None:
+        if not scopes:
+            return _freshness_backfill_result(
+                apply=apply,
+                rows=empty_rows,
+                inserted=0,
+                truncated=False,
+            )
+        clauses.append(f"m.scope_id IN ({','.join('?' for _ in scopes)})")
+        params.extend(scopes)
+    bounded_limit = max(1, min(int(limit or 500), 5000))
+    rows, truncated = _scan_untracked_memory_freshness_candidates(
+        conn,
+        clauses=clauses,
+        params=params,
+        limit=bounded_limit,
+    )
+    if not apply or not rows:
+        return _freshness_backfill_result(
+            apply=apply,
+            rows=rows,
+            inserted=0,
+            truncated=truncated,
+        )
+    if conn.in_transaction:
+        raise RuntimeError("freshness backfill apply requires transaction ownership")
+
+    inserted = 0
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        rows, truncated = _scan_untracked_memory_freshness_candidates(
+            conn,
+            clauses=clauses,
+            params=params,
+            limit=bounded_limit,
+        )
+        for row, metadata, _is_quarantined in rows:
+            if upsert_memory_freshness(
+                conn,
+                memory_id=str(row["id"]),
+                metadata=metadata,
+                content=str(row["content"] or ""),
+                commit=False,
+            ):
+                inserted += 1
+        conn.commit()
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+    return _freshness_backfill_result(
+        apply=apply,
+        rows=rows,
+        inserted=inserted,
+        truncated=truncated,
+    )
 
 
 def _scope_filter_sql(scope_ids: Sequence[str] | None) -> tuple[str, list[str]] | None:

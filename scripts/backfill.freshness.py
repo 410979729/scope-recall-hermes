@@ -76,7 +76,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _print(payload: dict[str, Any]) -> None:
-    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    print(json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True))
 
 
 def _request_fingerprint(*, batch_size: int, max_batches: int, reason: str) -> str:

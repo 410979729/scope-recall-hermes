@@ -23,12 +23,15 @@ from scope_recall.freshness import (
     attach_freshness_metadata,
     backfill_untracked_memory_freshness,
     fact_freshness_report,
+    freshness_backfill_inventory,
     freshness_penalty,
     normalize_validator_kind,
 )
 from scope_recall.graph import ensure_graph_schema
 from scope_recall.models import RecallItem
 from scope_recall.recall import RecallService
+import scope_recall.freshness as freshness_module
+import scope_recall.provider as provider_module
 import scope_recall.sql_store as sql_store_module
 from scope_recall.sql_store import ensure_schema, now_iso, store_row
 
@@ -173,6 +176,40 @@ def _store_direct_memory(
         content=content,
         metadata=json.dumps(metadata),
     )
+
+
+def _insert_legacy_memory_without_freshness(
+    conn: sqlite3.Connection,
+    *,
+    memory_id: str,
+    metadata: dict[str, object],
+    content: str = "Legacy freshness backfill contract memory.",
+) -> None:
+    """Insert a pre-backfill row without invoking the current write chokepoint."""
+
+    timestamp = now_iso()
+    conn.execute(
+        """
+        INSERT INTO memories(
+            id, scope_id, platform, user_id, chat_id, thread_id,
+            gateway_session_key, agent_identity, agent_workspace, session_id,
+            source, target, content, summary, created_at, updated_at,
+            last_recalled_turn, dedup_key, metadata
+        ) VALUES (?, 'shared-scope', 'telegram', 'joy', 'dm', '', '',
+                  'yuheng', 'hermes', 'legacy-session', 'legacy-import',
+                  'memory', ?, ?, ?, ?, 0, ?, ?)
+        """,
+        (
+            memory_id,
+            content,
+            content,
+            timestamp,
+            timestamp,
+            memory_id,
+            json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+        ),
+    )
+    conn.commit()
 
 
 @pytest.mark.parametrize(
@@ -854,6 +891,289 @@ def test_public_search_exposes_advisory_and_strict_freshness_contract(tmp_path):
         plugin.shutdown()
 
 
+def test_freshness_backfill_inventory_quarantines_invalid_legacy_validator_metadata():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        _insert_legacy_memory_without_freshness(
+            conn,
+            memory_id="legacy-invalid-inventory",
+            metadata={
+                "memory_type": "factual",
+                "freshness": {
+                    "validator_kind": "command",
+                    "validator_spec": {"command": "legacy free-form command"},
+                },
+            },
+        )
+
+        report = freshness_backfill_inventory(conn)
+
+        assert report["status"] == "needs_backfill"
+        assert report["eligible"] == 1
+        assert report["quarantined"] == 1
+        assert report["quarantined_sample_ids"] == ["legacy-invalid-inventory"]
+        assert conn.execute("SELECT COUNT(*) FROM fact_freshness").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {
+            "memory_type": "factual",
+            "validator_kind": "command",
+            "validator_spec": {"command_id": "unregistered-legacy-command"},
+        },
+        {
+            "memory_type": "factual",
+            "validator_spec": {"command_id": "unregistered-legacy-command"},
+            "freshness": {"validator_kind": "command"},
+        },
+    ],
+    ids=["top-level", "mixed-nested-kind"],
+)
+def test_freshness_backfill_quarantine_drops_top_level_validator_aliases(metadata):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        _insert_legacy_memory_without_freshness(
+            conn,
+            memory_id="legacy-validator-alias",
+            metadata=metadata,
+        )
+
+        applied = backfill_untracked_memory_freshness(conn, apply=True, limit=10)
+        row = conn.execute(
+            """
+            SELECT validator_kind, validator_spec, status, stale_reason
+            FROM fact_freshness
+            WHERE subject_id = 'legacy-validator-alias'
+            """
+        ).fetchone()
+
+        assert applied["quarantined"] == 1
+        assert tuple(row) == (
+            "manual",
+            "{}",
+            "needs_live_check",
+            "legacy_invalid_validator_spec",
+        )
+    finally:
+        conn.close()
+
+
+def test_freshness_backfill_quarantines_invalid_row_without_aborting_valid_rows():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        _insert_legacy_memory_without_freshness(
+            conn,
+            memory_id="legacy-invalid-apply",
+            metadata={
+                "memory_type": "factual",
+                "freshness": {
+                    "validator_kind": "command",
+                    "validator_spec": {"command_id": "unregistered-legacy-command"},
+                },
+            },
+        )
+        _insert_legacy_memory_without_freshness(
+            conn,
+            memory_id="legacy-valid-apply",
+            metadata={"memory_type": "factual"},
+        )
+
+        dry_run = backfill_untracked_memory_freshness(conn, apply=False, limit=10)
+        assert dry_run["eligible"] == 2
+        assert dry_run["quarantined"] == 1
+        assert dry_run["quarantined_ids"] == ["legacy-invalid-apply"]
+        assert conn.execute("SELECT COUNT(*) FROM fact_freshness").fetchone()[0] == 0
+
+        applied = backfill_untracked_memory_freshness(conn, apply=True, limit=10)
+        rows = conn.execute(
+            """
+            SELECT subject_id, validator_kind, validator_spec, status, stale_reason
+            FROM fact_freshness
+            ORDER BY subject_id
+            """
+        ).fetchall()
+
+        assert applied["eligible"] == 2
+        assert applied["inserted"] == 2
+        assert applied["quarantined"] == 1
+        assert [tuple(row) for row in rows] == [
+            (
+                "legacy-invalid-apply",
+                "manual",
+                "{}",
+                "needs_live_check",
+                "legacy_invalid_validator_spec",
+            ),
+            ("legacy-valid-apply", "manual", "{}", "needs_live_check", ""),
+        ]
+    finally:
+        conn.close()
+
+
+def test_freshness_backfill_reserves_write_before_read_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    db_path = tmp_path / "freshness-race.sqlite3"
+    conn = sqlite3.connect(db_path, timeout=1.0, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    ensure_schema(conn)
+    conn.execute("CREATE TABLE race_probe(value TEXT NOT NULL)")
+    conn.commit()
+    _insert_legacy_memory_without_freshness(
+        conn,
+        memory_id="legacy-race",
+        metadata={"memory_type": "factual"},
+    )
+
+    original_upsert = freshness_module.upsert_memory_freshness
+    writer_attempted = threading.Event()
+    writer_committed = threading.Event()
+    writer_errors: list[BaseException] = []
+    writer_thread: threading.Thread | None = None
+    race_started = False
+    committed_before_backfill_write: bool | None = None
+
+    def competing_writer() -> None:
+        other = sqlite3.connect(db_path, timeout=2.0)
+        try:
+            other.execute("PRAGMA journal_mode=WAL")
+            writer_attempted.set()
+            other.execute("BEGIN IMMEDIATE")
+            other.execute("INSERT INTO race_probe(value) VALUES ('competing-write')")
+            other.commit()
+            writer_committed.set()
+        except BaseException as exc:  # pragma: no cover - asserted below
+            writer_errors.append(exc)
+        finally:
+            other.close()
+
+    def interleaving_upsert(*args, **kwargs):
+        nonlocal race_started, writer_thread, committed_before_backfill_write
+        active_conn = kwargs.get("conn") or args[0]
+        active_conn.execute("SELECT COUNT(*) FROM fact_freshness").fetchone()
+        if not race_started:
+            race_started = True
+            writer_thread = threading.Thread(target=competing_writer, daemon=True)
+            writer_thread.start()
+            assert writer_attempted.wait(timeout=1.0)
+            committed_before_backfill_write = writer_committed.wait(timeout=0.25)
+        return original_upsert(*args, **kwargs)
+
+    monkeypatch.setattr(freshness_module, "upsert_memory_freshness", interleaving_upsert)
+    try:
+        report = backfill_untracked_memory_freshness(conn, apply=True, limit=10)
+    finally:
+        if conn.in_transaction:
+            conn.rollback()
+        if writer_thread is not None:
+            writer_thread.join(timeout=3.0)
+
+    try:
+        assert report["inserted"] == 1
+        assert committed_before_backfill_write is False
+        assert writer_committed.is_set()
+        assert writer_errors == []
+        assert conn.execute("SELECT COUNT(*) FROM race_probe").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_provider_startup_defers_recoverable_freshness_backfill_lock_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _disable_unrelated_vector_runtime(tmp_path)
+
+    def fail_backfill(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked at a private path")
+
+    monkeypatch.setattr(
+        provider_module,
+        "backfill_untracked_memory_freshness",
+        fail_backfill,
+    )
+    plugin = provider_module.ScopeRecallMemoryProvider()
+    try:
+        plugin.initialize(
+            "session-freshness-deferred-startup",
+            hermes_home=str(tmp_path),
+            platform="telegram",
+            user_id="joy",
+            agent_context="primary",
+            agent_identity="yuheng",
+            agent_workspace="hermes",
+        )
+
+        assert plugin._require_conn() is not None
+        assert plugin._freshness_backfill == {
+            "apply": True,
+            "status": "deferred_error",
+            "error_type": "OperationalError",
+        }
+    finally:
+        plugin.shutdown()
+
+
+def test_provider_startup_quarantines_invalid_legacy_freshness_metadata(tmp_path: Path):
+    _disable_unrelated_vector_runtime(tmp_path)
+    db_path = tmp_path / "scope-recall" / "memory.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        _insert_legacy_memory_without_freshness(
+            conn,
+            memory_id="legacy-invalid-startup",
+            metadata={
+                "memory_type": "factual",
+                "freshness": {
+                    "validator_kind": "command",
+                    "validator_spec": {"command": "legacy free-form command"},
+                },
+            },
+        )
+    finally:
+        conn.close()
+
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    try:
+        plugin.initialize(
+            "session-freshness-invalid-startup",
+            hermes_home=str(tmp_path),
+            platform="telegram",
+            user_id="joy",
+            agent_context="primary",
+            agent_identity="yuheng",
+            agent_workspace="hermes",
+        )
+        row = plugin._require_conn().execute(
+            "SELECT validator_kind, status, stale_reason FROM fact_freshness WHERE subject_id = ?",
+            ("legacy-invalid-startup",),
+        ).fetchone()
+
+        assert plugin._freshness_backfill["quarantined"] == 1
+        assert tuple(row) == (
+            "manual",
+            "needs_live_check",
+            "legacy_invalid_validator_spec",
+        )
+    finally:
+        plugin.shutdown()
+
+
 def test_freshness_backfill_operator_script_inventory_apply_and_idempotency(tmp_path):
     storage_dir = tmp_path / "scope-recall"
     storage_dir.mkdir(parents=True)
@@ -1013,22 +1333,28 @@ def test_factual_freshness_backfill_is_dry_run_bounded_and_idempotent(tmp_path):
             "apply": False,
             "eligible": 1,
             "inserted": 0,
+            "quarantined": 0,
             "truncated": False,
             "ids": [active["id"]],
+            "quarantined_ids": [],
         }
         assert applied == {
             "apply": True,
             "eligible": 1,
             "inserted": 1,
+            "quarantined": 0,
             "truncated": False,
             "ids": [active["id"]],
+            "quarantined_ids": [],
         }
         assert repeated == {
             "apply": True,
             "eligible": 0,
             "inserted": 0,
+            "quarantined": 0,
             "truncated": False,
             "ids": [],
+            "quarantined_ids": [],
         }
     finally:
         plugin.shutdown()
@@ -1071,8 +1397,10 @@ def test_provider_startup_applies_one_bounded_idempotent_freshness_backfill(tmp_
             "apply": True,
             "eligible": 1,
             "inserted": 1,
+            "quarantined": 0,
             "truncated": False,
             "ids": ["legacy-untracked-factual"],
+            "quarantined_ids": [],
         }
         with plugin._lock:
             status = plugin._require_conn().execute(

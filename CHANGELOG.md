@@ -4,6 +4,19 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.8.6] - 2026-08-01
+
+### Changed
+- Made legacy fact-freshness backfill quarantine invalid validator metadata, continue past malformed rows, and re-scan under an immediate owner transaction; startup now defers recoverable SQLite contention explicitly.
+- Moved the standalone capture-LLM probe out of pytest collection while retaining an explicit subprocess contract for all manual checks.
+
+### Fixed
+- Added governed defaults and configuration-registry ownership for untracked, needs-live-check, stale, and expired fact-freshness ranking penalties.
+- Closed Unicode-compatible sensitive-key bypasses and centralized HTTP/transport error redaction on the canonical secret-pattern taxonomy.
+- Made freshness, vector dead-letter, and activation-lease operator JSON ASCII-safe; routed stale-lease recovery through the shared truth-connection boundary.
+- Rejected unrelated relation endpoints during lifecycle rollback and kept exact-text rows with distinct durable memory types out of the same deduplication group.
+- Preserved Fact Evolution, temporal, Reflection, scope routing, evidence authority, provenance-root, idempotency, journal checkpoint, release-identity, and Windows PID-liveness contracts.
+
 ## [1.8.5] - 2026-08-01
 
 ### Fixed

@@ -16,7 +16,7 @@ import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 try:
     from .operator_ledger import record_committed_operator_operation
@@ -57,6 +57,22 @@ _WRITE_ACTIONS = frozenset(
 )
 
 _IS_WINDOWS = os.name == "nt"
+
+
+def _connect_truth_database(
+    database_path: Path,
+    *,
+    mode: Literal["ro", "rw", "rwc"],
+    timeout: float,
+) -> sqlite3.Connection:
+    """Open truth storage lazily to avoid the deliberate lease/connection cycle."""
+
+    try:
+        from .truth_connection import connect_truth_database
+    except ImportError:  # pragma: no cover - direct source-script fallback
+        from truth_connection import connect_truth_database
+
+    return connect_truth_database(database_path, mode=mode, timeout=timeout)
 
 
 class MaintenanceLeaseError(RuntimeError):
@@ -264,7 +280,7 @@ def recover_stale_activation_lease(
         )
     expected_token = str(original.get("token") or "")
     lease_path = activation_lease_path(db_path)
-    conn = sqlite3.connect(str(db_path), timeout=10.0)
+    conn = _connect_truth_database(db_path, mode="rw", timeout=10.0)
     unlinked = False
     try:
         conn.execute("BEGIN EXCLUSIVE")
