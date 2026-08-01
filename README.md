@@ -1164,6 +1164,7 @@ See [`docs/stability.md`](docs/stability.md) for the exact V1 compatibility scop
 | [`docs/differences-from-memory-lancedb-pro.md`](docs/differences-from-memory-lancedb-pro.md) | Honest comparison with OpenClaw `memory-lancedb-pro` |
 | [`CHANGELOG.md`](CHANGELOG.md) | Release history |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Contribution and development notes |
+| [`CONTRIBUTORS.md`](CONTRIBUTORS.md) | Community contributor credits |
 
 ---
 
