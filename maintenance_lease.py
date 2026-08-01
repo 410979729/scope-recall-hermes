@@ -56,6 +56,8 @@ _WRITE_ACTIONS = frozenset(
     if isinstance((value := getattr(sqlite3, name, None)), int)
 )
 
+_IS_WINDOWS = os.name == "nt"
+
 
 class MaintenanceLeaseError(RuntimeError):
     """Raised when a writer is blocked by an active activation lease."""
@@ -80,6 +82,56 @@ def read_activation_lease(database_path: Path) -> dict[str, Any] | None:
     return payload
 
 
+def _windows_pid_liveness(process_id: int) -> str:
+    """Probe a Windows PID without emitting console control events.
+
+    ``os.kill(pid, 0)`` is not a harmless existence check on Windows because
+    signal zero is ``CTRL_C_EVENT``. A child doctor probing a process-group
+    owner can therefore interrupt the owner it is validating. Querying the
+    process handle is read-only and treats access-denied or unknown states as
+    non-recoverable rather than declaring the owner dead.
+    """
+
+    import ctypes
+    from ctypes import wintypes
+
+    win_dll = getattr(ctypes, "WinDLL", None)
+    get_last_error = getattr(ctypes, "get_last_error", None)
+    if win_dll is None or get_last_error is None:
+        return "unknown"
+
+    process_query_limited_information = 0x1000
+    error_access_denied = 5
+    error_invalid_parameter = 87
+    still_active = 259
+    kernel32 = win_dll("kernel32", use_last_error=True)
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    open_process.restype = wintypes.HANDLE
+    get_exit_code_process = kernel32.GetExitCodeProcess
+    get_exit_code_process.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    get_exit_code_process.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+
+    handle = open_process(process_query_limited_information, False, process_id)
+    if not handle:
+        error_code = int(get_last_error())
+        if error_code == error_invalid_parameter:
+            return "dead"
+        if error_code == error_access_denied:
+            return "alive"
+        return "unknown"
+    try:
+        exit_code = wintypes.DWORD()
+        if not get_exit_code_process(handle, ctypes.byref(exit_code)):
+            return "unknown"
+        return "alive" if exit_code.value == still_active else "dead"
+    finally:
+        close_handle(handle)
+
+
 def _pid_liveness(pid: Any) -> str:
     try:
         process_id = int(pid)
@@ -87,6 +139,8 @@ def _pid_liveness(pid: Any) -> str:
         return "unknown"
     if process_id <= 0:
         return "unknown"
+    if _IS_WINDOWS:
+        return _windows_pid_liveness(process_id)
     try:
         os.kill(process_id, 0)
     except ProcessLookupError:
@@ -94,10 +148,9 @@ def _pid_liveness(pid: Any) -> str:
     except PermissionError:
         return "alive"
     except OSError:
-        # Windows reports a generic OSError for a nonexistent PID. POSIX may
-        # also use it for ESRCH; fail closed only when this direct probe says
-        # the owner is absent, never merely because a lease is old.
-        return "dead" if os.name == "nt" else "unknown"
+        # POSIX may use a generic error other than ESRCH. Unknown liveness
+        # remains active/non-recoverable so recovery stays fail closed.
+        return "unknown"
     return "alive"
 
 

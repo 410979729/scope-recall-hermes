@@ -491,11 +491,11 @@ def test_release_identity_requires_version_newer_than_latest_tag():
     assert "mutually exclusive" in conflicting_modes["error"]
 
 
-def test_v184_release_candidate_identity_surfaces_are_consistent():
+def test_v185_release_candidate_identity_surfaces_are_consistent():
     """Bind the patch release to every authoritative version surface."""
 
-    expected_version = "1.8.4"
-    release_check = _load_release_check_module("scope_recall_check_release_v184_identity")
+    expected_version = "1.8.5"
+    release_check = _load_release_check_module("scope_recall_check_release_v185_identity")
     temporal_facts = importlib.import_module(f"{PACKAGE_NAME}.temporal_facts")
     plugin_manifest = (PLUGIN_ROOT / "plugin.yaml").read_text(encoding="utf-8")
     changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -505,7 +505,7 @@ def test_v184_release_candidate_identity_surfaces_are_consistent():
     assert _package_version() == expected_version
     assert f"version: {expected_version}" in plugin_manifest
     assert release_check.PACKAGE_VERSION == expected_version
-    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.8.4.md"
+    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.8.5.md"
     assert (PLUGIN_ROOT / release_check.RELEASE_READINESS_DOC).is_file()
     assert f"## [{expected_version}]" in changelog
     assert f"Version `{expected_version}`" in readme
@@ -518,7 +518,7 @@ def test_v184_release_candidate_identity_surfaces_are_consistent():
     )
     assert identity["ok"] is True
     assert identity["release_eligible"] is True
-    assert identity["expected_release_tag"] == "v1.8.4"
+    assert identity["expected_release_tag"] == "v1.8.5"
 
 
 def test_ruff_lint_contract_is_explicit_across_toolchain_upgrades():
