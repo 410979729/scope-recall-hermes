@@ -23,6 +23,27 @@ class VectorDeleteStore(Protocol):
 
 VERY_SHORT_CHARS = 12
 
+_DEFAULT_FORGETTING_POLICY: dict[str, bool] = {
+    "enabled": True,
+    "soft_archive_default": True,
+    "archive_very_short": True,
+    "archive_assistant_scratch": True,
+    "archive_duplicates": True,
+    "hard_delete_sensitive": False,
+}
+
+
+def _forgetting_policy(config: dict[str, Any] | None) -> dict[str, bool]:
+    raw = config if isinstance(config, dict) else {}
+    policy: dict[str, bool] = {}
+    for key, default in _DEFAULT_FORGETTING_POLICY.items():
+        value = raw.get(key, default)
+        if isinstance(value, str):
+            policy[key] = value.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            policy[key] = bool(value)
+    return policy
+
 
 def _now_iso() -> str:
     return now_utc_iso()
@@ -99,12 +120,31 @@ def _journal_template_transcript_noise(row: sqlite3.Row) -> bool:
     return template_prefix or role_transcript
 
 
-def build_forgetting_report(conn: sqlite3.Connection, *, accessible_scope_ids: Sequence[str] | None, limit: int = 200) -> dict[str, Any]:
+def build_forgetting_report(
+    conn: sqlite3.Connection,
+    *,
+    accessible_scope_ids: Sequence[str] | None,
+    limit: int = 200,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """构建只读遗忘报告。
 
     默认只提出“软归档”候选；物理删除只用于明确敏感内容或运行噪声。
     """
 
+    policy = _forgetting_policy(config)
+    if not policy["enabled"]:
+        empty = _limited([], limit)
+        return {
+            "schema_version": FORGETTING_REPORT_SCHEMA_VERSION,
+            "enabled": False,
+            "policy": policy,
+            "total_rows": 0,
+            "soft_archive_candidates": empty,
+            "hard_delete_candidates": empty,
+            "review_debt": empty,
+            "duplicate_groups": empty,
+        }
     rows = _scoped_rows(conn, accessible_scope_ids)
     soft_by_id: dict[str, dict[str, Any]] = {}
     hard_by_id: dict[str, dict[str, Any]] = {}
@@ -127,11 +167,15 @@ def build_forgetting_report(conn: sqlite3.Connection, *, accessible_scope_ids: S
         if not capture.allowed and capture.reason.startswith("skip-pattern:"):
             hard_by_id.setdefault(str(row["id"]), _preview(row, reason="runtime-wrapper-noise"))
             continue
-        if target == "general" and source == "turn-assistant":
+        if (
+            policy["archive_assistant_scratch"]
+            and target == "general"
+            and source == "turn-assistant"
+        ):
             soft_by_id.setdefault(str(row["id"]), _preview(row, reason="assistant-prose-scratch"))
         if _journal_template_transcript_noise(row):
             soft_by_id.setdefault(str(row["id"]), _preview(row, reason="journal-template-transcript-noise"))
-        if len(content.strip()) <= VERY_SHORT_CHARS:
+        if policy["archive_very_short"] and len(content.strip()) <= VERY_SHORT_CHARS:
             soft_by_id.setdefault(str(row["id"]), _preview(row, reason="very-short-low-value"))
         metadata = _json_loads(row["metadata"])
         row_lifecycle = str(metadata.get("lifecycle") or "").strip().lower()
@@ -146,6 +190,8 @@ def build_forgetting_report(conn: sqlite3.Connection, *, accessible_scope_ids: S
             review_debt_by_id.setdefault(str(row["id"]), _preview(row, reason="stale-review-needs-freshness-validation"))
 
     duplicate_groups: list[dict[str, Any]] = []
+    if not policy["archive_duplicates"]:
+        duplicate_map.clear()
     for (scope_id, target, key), group in duplicate_map.items():
         active = [row for row in group if not _already_archived(row)]
         if len(active) <= 1:
@@ -172,6 +218,8 @@ def build_forgetting_report(conn: sqlite3.Connection, *, accessible_scope_ids: S
     review_debt = list(review_debt_by_id.values())
     return {
         "schema_version": FORGETTING_REPORT_SCHEMA_VERSION,
+        "enabled": True,
+        "policy": policy,
         "total_rows": len(rows),
         "soft_archive_candidates": _limited(soft, limit),
         "hard_delete_candidates": _limited(hard, limit),
@@ -231,6 +279,8 @@ def run_forgetting(
     accessible_scope_ids: Sequence[str],
     dry_run: bool = True,
     hard_delete: bool = False,
+    soft_archive: bool | None = None,
+    config: dict[str, Any] | None = None,
     limit: int = 200,
     vector_store: VectorDeleteStore | None = None,
     allow_sql_delete_without_vector: bool = False,
@@ -240,23 +290,63 @@ def run_forgetting(
     """Execute a forgetting plan in dry-run or apply mode.
 
     Default behavior is soft archive with rollback evidence; hard delete paths are intentionally explicit because durable memory cleanup must be auditable and reversible where possible."""
+    policy = _forgetting_policy(config)
+    if not policy["enabled"]:
+        return {
+            "schema_version": FORGETTING_RUN_SCHEMA_VERSION,
+            "enabled": False,
+            "dry_run": bool(dry_run),
+            "archived": 0,
+            "deleted": 0,
+            "archive_ids": [],
+            "delete_ids": [],
+        }
     if not dry_run:
         ensure_schema(conn)
-    report = build_forgetting_report(conn, accessible_scope_ids=accessible_scope_ids, limit=limit)
+    report = build_forgetting_report(
+        conn,
+        accessible_scope_ids=accessible_scope_ids,
+        limit=limit,
+        config=policy,
+    )
     batch = batch_id or make_batch_id("forgetting")
-    soft_items = report["soft_archive_candidates"]["items"]
-    hard_items = report["hard_delete_candidates"]["items"] if hard_delete else []
+    soft_archive_enabled = (
+        policy["soft_archive_default"]
+        if soft_archive is None
+        else bool(soft_archive)
+    )
+    hard_delete_requested = bool(hard_delete)
+    hard_delete_allowed = policy["hard_delete_sensitive"]
+    soft_items = (
+        report["soft_archive_candidates"]["items"]
+        if soft_archive_enabled
+        else []
+    )
+    hard_items = (
+        report["hard_delete_candidates"]["items"]
+        if hard_delete_requested and hard_delete_allowed
+        else []
+    )
     review_debt_items = report.get("review_debt", {}).get("items", [])
     result = {
         "schema_version": FORGETTING_RUN_SCHEMA_VERSION,
+        "enabled": True,
         "dry_run": bool(dry_run),
         "batch_id": batch,
+        "soft_archive_enabled": soft_archive_enabled,
+        "hard_delete_requested": hard_delete_requested,
+        "hard_delete_allowed": hard_delete_allowed,
         "archived": len(soft_items),
         "deleted": len(hard_items),
         "review_debt": len(review_debt_items),
         "archive_ids": [item["id"] for item in soft_items],
         "delete_ids": [item["id"] for item in hard_items],
     }
+    if hard_delete_requested and not hard_delete_allowed:
+        result["policy_error"] = (
+            "hard delete refused: forgetting.hard_delete_sensitive must be true "
+            "and hard_delete must be explicitly requested"
+        )
     if dry_run:
         return result
     archived = 0

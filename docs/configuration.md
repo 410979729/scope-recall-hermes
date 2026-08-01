@@ -100,12 +100,12 @@ This file is generated from the packaged `config.json` registry. It lists every 
 
 ## `forgetting`
 
-- `forgetting.archive_assistant_scratch` (boolean; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `forgetting.archive_assistant_scratch` in the `forgetting` group. Default: `true`
-- `forgetting.archive_duplicates` (boolean; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `forgetting.archive_duplicates` in the `forgetting` group. Default: `true`
-- `forgetting.archive_very_short` (boolean; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `forgetting.archive_very_short` in the `forgetting` group. Default: `true`
-- `forgetting.enabled` (boolean; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `forgetting.enabled` in the `forgetting` group. Default: `true`
-- `forgetting.hard_delete_sensitive` (boolean; risk: `high`; restart_required: `no`) — Allow sensitive-data cleanup paths to hard-delete when explicitly invoked. Default: `false`
-- `forgetting.soft_archive_default` (boolean; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `forgetting.soft_archive_default` in the `forgetting` group. Default: `true`
+- `forgetting.archive_assistant_scratch` (boolean; risk: `medium`; restart_required: `no`) — Classify general-target assistant prose scratch as soft-archive candidates. Default: `true`
+- `forgetting.archive_duplicates` (boolean; risk: `medium`; restart_required: `no`) — Classify older duplicate memories as soft-archive candidates. Default: `true`
+- `forgetting.archive_very_short` (boolean; risk: `medium`; restart_required: `no`) — Classify very short non-preference memories as soft-archive candidates. Default: `true`
+- `forgetting.enabled` (boolean; risk: `medium`; restart_required: `no`) — Enable forgetting report and apply tools; disabled tools fail closed. Default: `true`
+- `forgetting.hard_delete_sensitive` (boolean; risk: `high`; restart_required: `no`) — Second safety gate for sensitive-data hard deletion; apply also requires an explicit hard_delete request. Default: `false`
+- `forgetting.soft_archive_default` (boolean; risk: `medium`; restart_required: `no`) — Default whether forgetting apply archives soft candidates; each call may explicitly override it. Default: `true`
 
 ## `identity`
 
@@ -238,7 +238,7 @@ Treat chat aliases as explicit operator access-control grants.
 - `retrieval.metric` (string; risk: `medium`; restart_required: `no`; choices: `cosine, dot, l2`) — Scope Recall configuration key `retrieval.metric` in the `retrieval` group. Default: `"cosine"`
 - `retrieval.min_score` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.min_score` in the `retrieval` group. Default: `0.18`
 - `retrieval.mode` (string; risk: `medium`; restart_required: `no`; choices: `lexical, vector, hybrid`) — Recall mode: lexical, vector, or hybrid. Default: `"hybrid"`
-- `retrieval.relation_contradiction_mode` (string; risk: `medium`; restart_required: `no`; choices: `surface, suppress, penalize`) — Scope Recall configuration key `retrieval.relation_contradiction_mode` in the `retrieval` group. Default: `"surface"`
+- `retrieval.relation_contradiction_mode` (string; risk: `medium`; restart_required: `no`; choices: `surface, suppress, penalize`) — Contradiction handling: surface keeps and warns, suppress excludes, and penalize applies relation_contradicts_penalty. Default: `"surface"`
 - `retrieval.relation_contradicts_penalty` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.relation_contradicts_penalty` in the `retrieval` group. Default: `0.0`
 - `retrieval.relation_rerank_enabled` (boolean; risk: `medium`; restart_required: `no`) — Enable small relation-graph rerank bonuses after primary recall scoring. Default: `false`
 - `retrieval.relation_rerank_weight` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.relation_rerank_weight` in the `retrieval` group. Default: `0.04`

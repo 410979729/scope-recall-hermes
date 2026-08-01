@@ -151,7 +151,8 @@ Use PGVector only when the deployment already operates PostgreSQL with the pgvec
 
 ```bash
 python -m pip install "hermes-scope-recall[pgvector]"
-export SCOPE_RECALL_PGVECTOR_DSN='postgresql://user:[password]@host:5432/database'
+# Authenticate with .pgpass, a PostgreSQL service, or your secret manager.
+export SCOPE_RECALL_PGVECTOR_DSN='postgresql://user@host:5432/database'
 hermes-scope-recall install --activate --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --json
 ```
 

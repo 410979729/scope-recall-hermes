@@ -22,6 +22,7 @@ from .gating import compact_text, dedup_key
 from .governance import classify_memory, merge_metadata
 from .graph import backfill_memory_entities, ensure_graph_schema, sync_memory_entities
 from .fact_repository import require_fact_mutation_authority
+from .freshness import upsert_memory_freshness
 from .lifecycle_policy import ordinary_recall_lifecycle_visible, ordinary_recall_lifecycle_visible_sql
 from .operator_ledger import (
     OPERATOR_LEDGER_MIGRATION_DESCRIPTION,
@@ -953,6 +954,26 @@ def store_row(
         ).fetchone()
         if existing is not None:
             try:
+                tracked = conn.execute(
+                    "SELECT 1 FROM fact_freshness WHERE subject_type='memory' AND subject_id=?",
+                    (str(existing["id"]),),
+                ).fetchone()
+                if tracked is None:
+                    try:
+                        existing_metadata = json.loads(
+                            str(existing["metadata"] or "{}")
+                        )
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        existing_metadata = {}
+                    if not isinstance(existing_metadata, dict):
+                        existing_metadata = {}
+                    upsert_memory_freshness(
+                        conn,
+                        memory_id=str(existing["id"]),
+                        metadata=existing_metadata,
+                        content=content,
+                        commit=False,
+                    )
                 conn.execute(
                     "UPDATE memories SET updated_at = ? WHERE id = ?",
                     (now, existing["id"]),
@@ -1010,6 +1031,13 @@ def store_row(
                 key,
                 metadata_json,
             ),
+        )
+        upsert_memory_freshness(
+            conn,
+            memory_id=memory_id,
+            metadata=metadata_payload,
+            content=content,
+            commit=False,
         )
         lifecycle = str(metadata_payload.get("lifecycle") or "").strip().lower()
         if ordinary_recall_lifecycle_visible(lifecycle=lifecycle, target=target):

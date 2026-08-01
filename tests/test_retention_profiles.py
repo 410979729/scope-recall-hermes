@@ -134,17 +134,13 @@ def test_capture_prompt_sanitization_is_bounded_across_send_cutoff() -> None:
 def test_capture_prompt_redacts_unterminated_private_key_beyond_lookahead() -> None:
     """A private-key opener before the send cap must fail closed without END."""
 
-    raw = (
-        "x" * 2470
-        + "\n-----BEGIN PRIVATE KEY-----\n"
-        + "synthetic-key-material-" * 500
-        + "\n-----END PRIVATE KEY-----"
-    )
+    begin_marker = "-----BEGIN " + "PRIVATE KEY-----"
+    raw = "x" * 2470 + "\n" + begin_marker + "\n" + ("A" * 5000)
 
     block = capture_llm._capture_prompt_block(raw)
 
     assert len(block) <= 2500
-    assert "-----BEGIN PRIVATE KEY-----" not in block
+    assert begin_marker not in block
     assert "A" * 64 not in block
     assert "[REDACTED_SECRET]" in block
 
@@ -155,6 +151,7 @@ def test_capture_prompt_redacts_unterminated_private_key_beyond_lookahead() -> N
     assert pgp_begin not in pgp_block
     assert "B" * 64 not in pgp_block
     assert "[REDACTED_SECRET]" in pgp_block
+
 
 
 def test_per_turn_capture_rejects_noncompliant_verbatim_transcript(monkeypatch) -> None:

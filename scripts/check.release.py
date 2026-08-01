@@ -35,6 +35,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from secret_patterns import COMMON_SECRET_PATTERNS  # noqa: E402
+
 PACKAGE_VERSION = "1.8.3"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 RELEASE_READINESS_DOC = f"docs/release-readiness.{PACKAGE_VERSION}.md"
@@ -48,9 +50,7 @@ SECRET_PATTERNS = {
         r"[\"']?\b(?:api[_ -]?key|secret|password|passwd|token)\b[\"']?\s*(?:=|:)\s*[\"']?[A-Za-z0-9._\-+/=]{12,}[\"']?",
         re.I,
     ),
-    "bearer_literal": re.compile(r"bearer\s+[A-Za-z0-9._\-~+/=]{16,}", re.I),
-    "github_pat": re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}"),
-    "openai_style": re.compile(r"sk-[A-Za-z0-9]{20,}"),
+    **COMMON_SECRET_PATTERNS,
     # Telegram supergroup/channel IDs use a signed ``-100...`` form and may
     # appear in Python, JSON, YAML, or list fixtures without a ``telegram:``
     # prefix. Match the shape everywhere in public source/artifacts, but never
@@ -130,6 +130,7 @@ REQUIRED_SOURCE_FILES = {
     "candidate_review.py",
     "candidate_store.py",
     "capture_filters.py",
+    "secret_patterns.py",
     "doctor_event_digest.py",
     "event_digest.py",
     "external_bridge.py",
@@ -289,6 +290,17 @@ REQUIRED_SOURCE_FILES = {
     "installer_yaml.py",
     "py.typed",
 }
+_PACKAGE_PYTHON_SOURCES = {
+    path.name for path in ROOT.glob("*.py") if path.is_file()
+}
+_SCRIPT_PYTHON_SOURCES = {
+    path.relative_to(ROOT).as_posix()
+    for path in (ROOT / "scripts").glob("*.py")
+    if path.is_file()
+}
+_REQUIRED_PYTHON_SOURCES = _PACKAGE_PYTHON_SOURCES | _SCRIPT_PYTHON_SOURCES
+REQUIRED_SOURCE_FILES.update(_REQUIRED_PYTHON_SOURCES)
+
 REQUIRED_SDIST = {
     f"{WHEEL_DIST_PREFIX}/{source_path}" for source_path in REQUIRED_SOURCE_FILES
 }
@@ -492,6 +504,10 @@ REQUIRED_WHEEL = {
     "scope_recall/scripts/memory.browser.py",
     "scope_recall/scripts/skill.bridge.py",
 }
+REQUIRED_WHEEL.update(
+    f"scope_recall/{source_path}" for source_path in _REQUIRED_PYTHON_SOURCES
+)
+
 STABLE_TOOL_NAMES = {
     "scope_recall_store",
     "scope_recall_store_secret_index",
@@ -1002,11 +1018,11 @@ def read_text(rel: str) -> str:
 
 
 def pyright_include_check() -> dict[str, object]:
-    """Ensure release-critical top-level source modules are covered by Pyright.
+    """Ensure every packaged Python source is covered by Pyright.
 
     Required-file and wheel checks prove packaging coverage, but not type-check
-    coverage. This gate prevents newly added modules from silently bypassing the
-    explicit Pyright include list used for release verification.
+    coverage. Include entries may be explicit files or Pyright glob patterns;
+    root-only globs do not implicitly cover scripts in nested directories.
     """
     try:
         pyproject = tomllib.loads(read_text("pyproject.toml"))
@@ -1016,8 +1032,19 @@ def pyright_include_check() -> dict[str, object]:
     pyright_config = tool_config.get("pyright", {}) if isinstance(tool_config, dict) else {}
     raw_include = pyright_config.get("include", []) if isinstance(pyright_config, dict) else []
     includes = {str(item).replace("\\", "/") for item in raw_include if str(item).strip()}
-    required_source_py = sorted(rel for rel in REQUIRED_SOURCE_FILES if rel.endswith(".py") and "/" not in rel)
-    missing = sorted(rel for rel in required_source_py if rel not in includes)
+    required_source_py = sorted(
+        rel for rel in REQUIRED_SOURCE_FILES if rel.endswith(".py")
+    )
+
+    def _covered(rel: str) -> bool:
+        for pattern in includes:
+            if "/" not in pattern and "/" in rel:
+                continue
+            if pathlib.PurePosixPath(rel).match(pattern):
+                return True
+        return False
+
+    missing = sorted(rel for rel in required_source_py if not _covered(rel))
     return {"ok": not missing, "required_source_py": required_source_py, "missing_pyright_include": missing}
 
 
@@ -1847,7 +1874,9 @@ def _scan_sensitive_text(rel: pathlib.Path, text: str, *, display_path: str = ""
                 continue
             if _is_synthetic_test_fixture_line(rel, line):
                 continue
-            findings["secrets"].append(f"{label}:{line_no}: {name}: {redact_sensitive(match.group(0))}")
+            findings["secrets"].append(
+                f"{label}:{line_no}: {name}: [REDACTED_SECRET]"
+            )
 
     home = pathlib.Path.home()
     private_markers = tuple(
@@ -1885,8 +1914,6 @@ def scan_tree() -> dict[str, list[str]]:
         if any(part in GENERATED_DIRS for part in rel.parts):
             if path.exists():
                 findings["generated_artifacts"].append(rel.as_posix())
-            continue
-        if rel.match("review-report.*.md") or rel.name == ".env":
             continue
         if not path.is_file():
             continue

@@ -95,6 +95,8 @@ pythonpath = ["."]
 
 [tool.pyright]
 include = [
+  "*.py",
+  "scripts/*.py",
   "activation_transaction.py",
   "aliases.py",
   "artifacts.py",
@@ -104,6 +106,7 @@ include = [
   "candidate_store.py",
   "capture.py",
   "capture_filters.py",
+  "secret_patterns.py",
   "capture_llm.py",
   "cli.py",
   "config.py",

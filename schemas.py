@@ -175,11 +175,22 @@ SCOPE_RECALL_REFLECT_SCHEMA = {
 
 SCOPE_RECALL_STORE_SCHEMA = {
     "name": "scope_recall_store",
-    "description": "Store a Scope Recall memory; durable targets are user/memory/project/ops, general is local scratch.",
+    "description": (
+        "Store one atomic fact or one cohesive memory topic. Use separate calls "
+        "for unrelated claims; durable targets are user/memory/project/ops, and "
+        "general is local scratch."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
-            "content": {"type": "string", "description": "Memory text."},
+            "content": {
+                "type": "string",
+                "description": (
+                    "One atomic fact or one cohesive procedure/topic. Split unrelated "
+                    "claims into separate calls so freshness and lifecycle remain "
+                    "independently governable."
+                ),
+            },
             "target": {
                 "type": "string",
                 "description": "Category; general stays local.",
@@ -313,6 +324,14 @@ SCOPE_RECALL_SEARCH_SCHEMA = {
                 "minimum": 1,
                 "maximum": 20,
                 "description": "Max results.",
+            },
+            "recall_mode": {
+                "type": "string",
+                "enum": ["advisory", "strict"],
+                "description": (
+                    "advisory returns stale evidence with warnings; strict excludes "
+                    "stale and expired rows."
+                ),
             },
             "include_trace": {"type": "boolean", "description": "Include Recall Funnel trace."},
         },
@@ -721,7 +740,17 @@ SCOPE_RECALL_FORGETTING_RUN_SCHEMA = {
         "type": "object",
         "properties": {
             "dry_run": {"type": "boolean", "description": "Inspect only; default true."},
-            "hard_delete": {"type": "boolean", "description": "Allow hard delete for explicit hard-delete candidates; default false."},
+            "soft_archive": {
+                "type": "boolean",
+                "description": "Override forgetting.soft_archive_default for this run.",
+            },
+            "hard_delete": {
+                "type": "boolean",
+                "description": (
+                    "Request hard delete for explicit candidates; also requires "
+                    "forgetting.hard_delete_sensitive=true."
+                ),
+            },
             "limit": {"type": "integer", "description": "Maximum candidates to process."},
         },
     },

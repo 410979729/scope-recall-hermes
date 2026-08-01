@@ -120,7 +120,10 @@ def test_journal_digest_dry_run_reads_source_db_read_only_and_does_not_mutate(tm
         str(database) == "file::memory:?mode=rwc" and kwargs.get("uri") is True
         for database, _args, kwargs in calls
     )
-    assert any(str(database) == f"file:{db_path}?mode=ro" and kwargs.get("uri") is True for database, _args, kwargs in calls)
+    assert any(
+        str(database) == f"{db_path.as_uri()}?mode=ro" and kwargs.get("uri") is True
+        for database, _args, kwargs in calls
+    )
 
     verifier = real_connect(db_path)
     verifier.row_factory = sqlite3.Row

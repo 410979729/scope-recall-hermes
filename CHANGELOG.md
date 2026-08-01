@@ -4,6 +4,18 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Added dry-run-first operator recovery for stale activation leases, legacy freshness coverage, and vector outbox dead-letter events, with verified SQLite backups, idempotent operator-ledger evidence, and mirrored receipts.
+- Added a blocking Windows Python 3.12 full-suite CI lane alongside the focused installer contract.
+
+### Changed
+- Made every authoritative memory insert initialize freshness in the same SQLite transaction using memory-type policy defaults; public recall now supports `advisory` and `strict` freshness modes with explicit warnings.
+- Made forgetting policy switches effective, including the two-key hard-delete safety gate, and implemented distinct `surface`, `penalize`, and `suppress` contradiction modes.
+
+### Fixed
+- Closed maintenance-tool schema gating, PyPI fail-open, shared-connection lock, SQLite reconnect, truth-store permission, release-source coverage, and stale activation-guard recovery gaps.
+- Centralized secret patterns across capture, doctor, and release scanning; expanded provider/token/database/cookie coverage, stopped exempting force-added sensitive files, and removed matched-value echo from release findings.
+
 ## [1.8.3] - 2026-07-31
 
 ### Added

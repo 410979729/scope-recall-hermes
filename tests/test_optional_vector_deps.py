@@ -85,6 +85,52 @@ def test_doctor_vector_report_accepts_configured_sqlite_fallback_when_lancedb_un
     assert any("sqlite-bruteforce fallback" in item for item in recommendations)
 
 
+def test_doctor_allows_uninitialized_fallback_when_truth_has_no_indexable_rows(
+    monkeypatch, tmp_path
+):
+    import sqlite3
+
+    import scope_recall.doctor_vector as doctor_vector
+    from scope_recall.sql_store import ensure_schema
+
+    storage = tmp_path / "scope-recall"
+    (storage / "lancedb").mkdir(parents=True)
+    conn = sqlite3.connect(storage / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(
+        doctor_vector,
+        "lancedb_vector_report",
+        lambda *_args, **_kwargs: (
+            {
+                "backend": "lancedb",
+                "status": "needs_repair",
+                "ready": False,
+                "error": "native probe unsafe",
+            },
+            {"ok": False, "failures": ["native probe unsafe"]},
+            ["repair lancedb"],
+        ),
+    )
+
+    payload, check, recommendations = doctor_vector._backend_vector_report(
+        tmp_path,
+        expected_embedder={"dimensions": 2},
+        backend="lancedb",
+        fallback_backend="sqlite-bruteforce",
+    )
+
+    assert check == {"ok": True, "failures": []}
+    assert payload["status"] == "fallback_not_initialized"
+    assert payload["ready"] is False
+    assert payload["fallback"]["status"] == "missing"
+    assert any("no indexable truth rows" in item for item in recommendations)
+
+
 def test_doctor_uses_native_probe_before_importing_lancedb(monkeypatch, tmp_path):
     import builtins
     import scope_recall.doctor_vector as doctor_vector

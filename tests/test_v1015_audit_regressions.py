@@ -979,6 +979,6 @@ def test_release_secret_scan_reports_locations_without_secret_text(tmp_path, mon
     findings = module.scan_tree()
 
     rendered = "\n".join(findings["secrets"])
-    assert "leaky.py" in rendered
-    assert "token" in rendered
+    assert "leaky.py:1:" in rendered
+    assert "[REDACTED_SECRET]" in rendered
     assert leaked_value not in rendered

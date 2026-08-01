@@ -133,6 +133,44 @@ def test_provider_initial_and_reconnected_writer_keep_foreign_keys_enabled(provi
     assert int(provider._require_conn().execute("PRAGMA foreign_keys").fetchone()[0]) == 1
 
 
+def test_failed_sqlite_reopen_is_retried_by_next_connection_requirement(
+    provider,
+    monkeypatch,
+):
+    live_provider_module = importlib.import_module(provider.__class__.__module__)
+    original_connect = live_provider_module.connect_truth_database
+    attempts = 0
+
+    def fail_once_then_connect(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise sqlite3.OperationalError("synthetic reopen failure")
+        return original_connect(*args, **kwargs)
+
+    monkeypatch.setattr(
+        live_provider_module,
+        "connect_truth_database",
+        fail_once_then_connect,
+    )
+    monkeypatch.setattr(provider, "_sqlite_write_probe", lambda _conn: False)
+    provider._maintenance_stop.set()
+
+    receipt = provider._recover_sqlite_connection_after_error(
+        "audit forced failed reconnect"
+    )
+
+    assert receipt["recovered"] is False
+    assert receipt["reconnect_pending"] is True
+    assert provider._conn is None
+    reconnected = provider._require_conn()
+    assert attempts == 2
+    assert int(reconnected.execute("PRAGMA foreign_keys").fetchone()[0]) == 1
+    reconnected.execute("BEGIN IMMEDIATE")
+    reconnected.rollback()
+    provider._maintenance_stop.clear()
+
+
 def test_provider_store_rolls_back_open_sqlite_transaction(provider, monkeypatch):
     def broken_store_memory_now(provider_arg, **kwargs):
         del kwargs
@@ -1457,6 +1495,39 @@ def test_on_pre_compress_writes_event_candidates_only_when_enabled(provider, mon
     assert audit["action"] == "insert_candidate"
 
 
+def test_event_candidate_store_holds_provider_sqlite_lock(provider, monkeypatch):
+    monkeypatch.setattr(
+        provider,
+        "_maybe_start_background_journal_digest",
+        lambda: None,
+    )
+    provider._config["event_digest"] = {
+        "enabled": True,
+        "write_candidates": True,
+        "dry_run_log": True,
+    }
+    live_provider_module = importlib.import_module(provider.__class__.__module__)
+    original_store = live_provider_module.store_event_candidates
+    assert not provider._lock._is_owned()
+
+    def guarded_store(*args, **kwargs):
+        assert provider._lock._is_owned(), (
+            "event candidate SQLite access must hold the provider connection lock"
+        )
+        return original_store(*args, **kwargs)
+
+    monkeypatch.setattr(live_provider_module, "store_event_candidates", guarded_store)
+
+    provider.on_pre_compress(
+        [
+            {
+                "role": "user",
+                "content": "User prefers concise Chinese release reports with exact verification outputs.",
+            }
+        ]
+    )
+
+
 def test_on_pre_compress_rejects_generic_chat_even_when_candidate_writes_enabled(provider, monkeypatch):
     monkeypatch.setattr(provider, "_maybe_start_background_journal_digest", lambda: None)
     provider._config["event_digest"] = {"enabled": True, "write_candidates": True, "dry_run_log": True}
@@ -2706,13 +2777,20 @@ def test_remove_from_curated_memory_is_reflected(provider, monkeypatch, tmp_path
     assert provider.prefetch("What style does Joy like?") == ""
 
 
-def test_freshness_companion_failure_is_observable_without_losing_memory(provider, monkeypatch):
+def test_freshness_companion_failure_is_observable_and_rolls_back_memory(provider, monkeypatch):
     def _fail_freshness(*args, **kwargs):
         raise RuntimeError("synthetic freshness companion failure")
 
     package = provider.__class__.__module__.rsplit(".", 1)[0]
-    capture_module = importlib.import_module(f"{package}.capture")
-    monkeypatch.setattr(capture_module, "upsert_memory_freshness", _fail_freshness)
+    sql_store_module = importlib.import_module(f"{package}.sql_store")
+    monkeypatch.setattr(
+        sql_store_module,
+        "upsert_memory_freshness",
+        _fail_freshness,
+    )
+    before = json.loads(provider.handle_tool_call("scope_recall_stats", {}))[
+        "total_memories"
+    ]
     stored = json.loads(
         provider.handle_tool_call(
             "scope_recall_store",
@@ -2723,12 +2801,13 @@ def test_freshness_companion_failure_is_observable_without_losing_memory(provide
             },
         )
     )
-    assert stored["stored"] is True
-    stats = json.loads(provider.handle_tool_call("scope_recall_stats", {}))
-    assert stats["freshness_writer"] == {
-        "failed_writes": 1,
-        "last_error_type": "RuntimeError",
-    }
+    after = json.loads(provider.handle_tool_call("scope_recall_stats", {}))[
+        "total_memories"
+    ]
+
+    assert stored.get("stored") is not True
+    assert "freshness" in str(stored).lower()
+    assert after == before
 
 
 def test_on_memory_write_is_observational_noop(provider):

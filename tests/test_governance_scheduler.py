@@ -108,12 +108,13 @@ def _seed_db(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE memories SET metadata = ? WHERE id = 'candidate-safe'", (json.dumps(candidate_metadata, ensure_ascii=False),))
     conn.execute(
         """
-        INSERT INTO fact_freshness(
-            id, subject_type, subject_id, fact_key, truth_type, validator_kind,
-            ttl_days, last_checked_at, valid_until, status, stale_reason, created_at, updated_at
-        ) VALUES ('fresh-template', 'memory', 'template-noise', 'fixture', 'config', 'manual-live-check', 7, ?, '2026-01-01T00:00:00+00:00', 'needs_live_check', 'fixture', ?, ?)
+        UPDATE fact_freshness
+        SET fact_key='fixture', truth_type='config', validator_kind='manual',
+            ttl_days=7, last_checked_at=?, valid_until='2026-01-01T00:00:00+00:00',
+            status='needs_live_check', stale_reason='fixture', updated_at=?
+        WHERE subject_type='memory' AND subject_id='template-noise'
         """,
-        (now, now, now),
+        (now, now),
     )
     conn.commit()
 
@@ -140,7 +141,7 @@ def test_governance_scheduler_dry_run_is_query_only_on_readonly_connection(tmp_p
     assert payload["summary"]["journal_unprocessed"] == 1
     assert payload["summary"]["journal_dead_letter"] == 1
     assert payload["summary"]["candidate_count"] == 1
-    assert payload["summary"]["fact_needs_live_check"] == 1
+    assert payload["summary"]["fact_needs_live_check"] == 2
     assert payload["summary"]["cleanup_candidates"] == 1
     assert "candidate_memory_triage" in payload["action_items"]
 
@@ -218,12 +219,13 @@ def test_governance_scheduler_forwards_accessible_scope_ids_to_subreports(tmp_pa
             conn.execute("UPDATE memories SET metadata = ? WHERE id = ?", (candidate_metadata, memory_id))
             conn.execute(
                 """
-                INSERT INTO fact_freshness(
-                    id, subject_type, subject_id, fact_key, truth_type, validator_kind,
-                    ttl_days, last_checked_at, valid_until, status, stale_reason, created_at, updated_at
-                ) VALUES (?, 'memory', ?, 'fixture', 'config', 'manual-live-check', 7, ?, '2026-01-01T00:00:00+00:00', 'needs_live_check', 'fixture', ?, ?)
+                UPDATE fact_freshness
+                SET fact_key='fixture', truth_type='config', validator_kind='manual',
+                    ttl_days=7, last_checked_at=?, valid_until='2026-01-01T00:00:00+00:00',
+                    status='needs_live_check', stale_reason='fixture', updated_at=?
+                WHERE subject_type='memory' AND subject_id=?
                 """,
-                (f"fresh-{memory_id}", memory_id, now, now, now),
+                (now, now, memory_id),
             )
         conn.commit()
 

@@ -60,7 +60,8 @@ Configure the vector backend and DSN environment variable name:
 Then export the DSN before starting Hermes:
 
 ```bash
-export SCOPE_RECALL_PGVECTOR_DSN='postgresql://user:password@host:5432/database'
+# Authenticate with .pgpass, a PostgreSQL service, or your secret manager.
+export SCOPE_RECALL_PGVECTOR_DSN='postgresql://user@host:5432/database'
 ```
 
 Fresh setup or an explicit generation migration creates the PGVector `vector` extension and configured companion table. Runtime startup for an active generation opens only the exact existing table and fails closed if it is missing or incompatible. Every connection has an explicit connection timeout plus PostgreSQL statement and lock timeouts, so an unavailable database or blocked DDL/DML cannot hold the vector replay worker indefinitely. The table is a cache: run vector repair to rebuild it from SQLite truth after changing embedding dimensions, table names, or backend configuration.

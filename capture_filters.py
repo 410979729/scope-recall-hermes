@@ -11,8 +11,10 @@ from typing import Any
 
 try:  # Support package imports and the repository's direct manual scripts.
     from .gating import clean_text, is_trivial
+    from .secret_patterns import COMMON_SECRET_PATTERN_VALUES
 except ImportError:  # pragma: no cover - exercised by manual script import style
     from gating import clean_text, is_trivial
+    from secret_patterns import COMMON_SECRET_PATTERN_VALUES
 
 
 @dataclass(frozen=True)
@@ -42,8 +44,6 @@ DEFAULT_CAPTURE_SKIP_PATTERNS: tuple[str, ...] = (
 )
 
 SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
-    # PEM private-key blocks must be redacted as a whole, not just the BEGIN line.
-    re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"),
     # Common assignment forms except token-suffixed identifiers, which need the
     # metric-aware classifier below to avoid rejecting ``*_per_token`` values.
     re.compile(
@@ -51,16 +51,7 @@ SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"(?:[ \t]*(?::|=|是)[ \t]*|[ \t]+is[ \t]+)[^\s]+",
         re.IGNORECASE,
     ),
-    # Provider-specific and transport token forms that often appear without labels,
-    # including partially masked values returned by upstream auth errors.
-    re.compile(r"(?<![A-Za-z0-9_-])s" r"k-(?:(?:proj|ant-api\d{2})-)?[A-Za-z0-9_*]{16,}(?![A-Za-z0-9_-])"),
-    re.compile(r"g" r"h[pousr]_[A-Za-z0-9_*_]{20,}"),
-    re.compile(r"bea" r"rer\s+[A-Za-z0-9._\-~+/=*]{16,}", re.IGNORECASE),
-    re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9.*_-]{8,}\b"),
-    re.compile(r"\bxox[abprs]-[A-Za-z0-9.*_-]{8,}\b", re.IGNORECASE),
-    re.compile(r"\beyJ[A-Za-z0-9._-]{8,}\b"),
-    re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),
-    re.compile(r"\b(?:sk|rk)_live_[A-Za-z0-9_*.-]{16,}\b", re.IGNORECASE),
+    *COMMON_SECRET_PATTERN_VALUES,
 )
 
 PEM_PRIVATE_KEY_BEGIN_RE = re.compile(

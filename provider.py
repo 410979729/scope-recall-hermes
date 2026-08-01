@@ -27,6 +27,8 @@ from .config import load_runtime_config, save_runtime_config
 from .event_digest import MemoryEvent, build_evidence_packet
 from .journal import append_journal_entry, ensure_journal_schema, run_journal_digest
 from .maintenance_lease import (
+    MaintenanceLeaseError,
+    activation_lease_status,
     ensure_activation_guard_triggers,
     install_activation_lease_authorizer,
 )
@@ -73,10 +75,12 @@ from .vector_runtime import setup_vector_layer
 from .experience_preflight import experience_preflight
 from .experience_promotion import promote_experiences
 from .experience_store import backfill_skill_anchors
+from .freshness import backfill_untracked_memory_freshness
 
 logger = logging.getLogger(__name__)
 
 SQLITE_BUSY_TIMEOUT_SECONDS = 10.0
+STARTUP_FRESHNESS_BACKFILL_LIMIT = 500
 
 DEFAULT_TOOL_TRACE_SKIP_NAMES = {"todo", "skill_view", "skills_list"}
 DEFAULT_TOOL_TRACE_SKIP_NAME_FRAGMENTS = {"session_messages"}
@@ -103,8 +107,6 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._writer_failed_writes = 0
         self._writer_reported_failures = 0
         self._writer_last_error_type = ""
-        self._freshness_write_failures = 0
-        self._freshness_last_error_type = ""
         self._stop = threading.Event()
         self._maintenance_stop = threading.Event()
         self._session_id = ""
@@ -135,6 +137,13 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._vector_duplicate_row_count = 0
         self._vector_backend = "lancedb"
         self._migration_info: dict[str, Any] = {"migrated": False}
+        self._freshness_backfill: dict[str, Any] = {
+            "apply": True,
+            "eligible": 0,
+            "inserted": 0,
+            "truncated": False,
+            "ids": [],
+        }
         self._recall_service = RecallService(self)
         self._tool_service = ScopeRecallToolService(self)
         self._shutdown_requested = threading.Event()
@@ -244,6 +253,42 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._last_vector_bootstrap = result
         return result
 
+    def _open_runtime_connection(self) -> sqlite3.Connection:
+        """Open and fully configure one live provider-owned SQLite connection."""
+
+        if self._db_path is None:
+            raise RuntimeError("Scope Recall database path is not initialized")
+        lease_status = activation_lease_status(self._db_path)
+        if lease_status["status"] == "stale":
+            raise MaintenanceLeaseError(
+                "stale activation maintenance lease blocks startup; inspect with "
+                "python scripts/recover.activation_lease.py --dry-run"
+            )
+        if lease_status["status"] == "active":
+            raise MaintenanceLeaseError(
+                "Scope Recall startup is blocked by an active activation maintenance lease"
+            )
+        conn = connect_truth_database(
+            self._db_path,
+            mode="rwc",
+            check_same_thread=False,
+            timeout=SQLITE_BUSY_TIMEOUT_SECONDS,
+        )
+        try:
+            install_activation_lease_authorizer(conn, self._db_path)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            ensure_schema(conn, commit=False)
+            ensure_journal_schema(conn, commit=False)
+            ensure_activation_guard_triggers(conn, self._db_path)
+            conn.commit()
+        except BaseException:
+            if conn.in_transaction:
+                conn.rollback()
+            conn.close()
+            raise
+        return conn
+
     def initialize(self, session_id: str, **kwargs) -> None:
         self._shutdown_requested.clear()
         hermes_home = Path(kwargs.get("hermes_home") or "~/.hermes").expanduser()
@@ -285,19 +330,18 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._current_turn = 0
         self._last_recall_turns = {}
 
-        conn = connect_truth_database(
-            self._db_path,
-            mode="rwc",
-            check_same_thread=False,
-            timeout=SQLITE_BUSY_TIMEOUT_SECONDS,
-        )
+        conn = self._open_runtime_connection()
         self._conn = conn
-        install_activation_lease_authorizer(conn, self._db_path)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        ensure_schema(conn, commit=False)
-        ensure_activation_guard_triggers(conn, self._db_path)
-        conn.commit()
+        try:
+            self._freshness_backfill = backfill_untracked_memory_freshness(
+                conn,
+                apply=True,
+                limit=STARTUP_FRESHNESS_BACKFILL_LIMIT,
+            )
+        except BaseException:
+            self._conn = None
+            conn.close()
+            raise
         try:
             backfill_skill_anchors(conn)
         except Exception:
@@ -602,14 +646,15 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             if extraction.rejection_reasons:
                 rejected += 1
                 reasons.update(extraction.rejection_reasons)
-        store_report = store_event_candidates(
-            self._require_conn(),
-            candidates=proposed_candidates,
-            scope=self._scope,
-            scope_id=self._scope_id,
-            session_id=self._session_id,
-            dry_run=dry_run,
-        )
+        with self._lock:
+            store_report = store_event_candidates(
+                self._require_conn(),
+                candidates=proposed_candidates,
+                scope=self._scope,
+                scope_id=self._scope_id,
+                session_id=self._session_id,
+                dry_run=dry_run,
+            )
         report.update(
             {
                 "events_seen": seen,
@@ -1232,7 +1277,15 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         """
         with self._lock:
             conn = self._conn
-            if conn is None or not conn.in_transaction:
+            if conn is None:
+                return
+            try:
+                in_transaction = bool(conn.in_transaction)
+            except sqlite3.ProgrammingError:
+                if self._conn is conn:
+                    self._conn = None
+                return
+            if not in_transaction:
                 return
             try:
                 conn.rollback()
@@ -1280,7 +1333,13 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         for SQLite lock/transaction errors. Non-SQLite exceptions still surface as
         errors so business-logic failures are not hidden by a retry.
         """
-        payload: dict[str, Any] = {"recovered": False, "rolled_back": False, "reopened": False, "write_probe": False}
+        payload: dict[str, Any] = {
+            "recovered": False,
+            "rolled_back": False,
+            "reopened": False,
+            "write_probe": False,
+            "reconnect_pending": False,
+        }
         payload.update(self._rollback_peer_provider_transactions(context))
         with self._lock:
             conn = self._conn
@@ -1298,29 +1357,24 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 return payload
             if self._db_path is None:
                 return payload
+            self._conn = None
             try:
                 conn.close()
             except Exception:
                 logger.exception("Scope Recall SQLite close failed during recovery after %s", context)
             try:
-                reopened = connect_truth_database(
-                    self._db_path,
-                    mode="rwc",
-                    check_same_thread=False,
-                    timeout=SQLITE_BUSY_TIMEOUT_SECONDS,
-                )
-                install_activation_lease_authorizer(reopened, self._db_path)
-                reopened.execute("PRAGMA journal_mode=WAL")
-                reopened.execute("PRAGMA synchronous=NORMAL")
-                ensure_schema(reopened, commit=False)
-                ensure_journal_schema(reopened, commit=False)
-                ensure_activation_guard_triggers(reopened, self._db_path)
-                reopened.commit()
+                reopened = self._open_runtime_connection()
                 self._conn = reopened
                 payload["reopened"] = True
                 payload["write_probe"] = self._sqlite_write_probe(reopened)
                 payload["recovered"] = bool(payload["write_probe"])
+                payload["reconnect_pending"] = not payload["recovered"]
+                if not payload["recovered"]:
+                    self._conn = None
+                    reopened.close()
             except Exception:
+                self._conn = None
+                payload["reconnect_pending"] = True
                 logger.exception("Scope Recall SQLite reopen failed during recovery after %s", context)
             return payload
 
@@ -1338,9 +1392,15 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             return False
 
     def _require_conn(self) -> sqlite3.Connection:
-        if self._conn is None:
-            raise RuntimeError("Scope Recall is not initialized")
-        return self._conn
+        conn = self._conn
+        if conn is not None:
+            return conn
+        if self._shutdown_requested.is_set():
+            raise RuntimeError("Scope Recall is shutting down")
+        with self._lock:
+            if self._conn is None:
+                self._conn = self._open_runtime_connection()
+            return self._conn
 
     def _config_value(self, key: str, default: Any) -> Any:
         return self._config.get(key, default)

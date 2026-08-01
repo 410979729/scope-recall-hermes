@@ -12,22 +12,28 @@ from typing import Any
 
 try:
     from .doctor_common import contains_secret_like_text, sanitize_report_text
+    from .freshness import fact_freshness_report
     from .governance_cleanup import governance_audit_coverage_report
     from .graph_hygiene import graph_hygiene_counts, remaining_graph_hygiene_rows
+    from .maintenance_lease import activation_lease_status
     from .memory_quality import memory_quality_report
     from .operator_ledger import operator_ledger_report
     from .relation_frequency_maintenance import relation_frequency_index_report
     from .relation_rebuild_queue import relation_rebuild_queue_report
     from .sql_store import fts_integrity_report, schema_migration_status
+    from .truth_connection import connect_truth_database, truth_storage_permissions
 except ImportError:  # pragma: no cover - direct source-script execution fallback
     from doctor_common import contains_secret_like_text, sanitize_report_text
+    from freshness import fact_freshness_report
     from governance_cleanup import governance_audit_coverage_report
     from graph_hygiene import graph_hygiene_counts, remaining_graph_hygiene_rows
+    from maintenance_lease import activation_lease_status
     from memory_quality import memory_quality_report
     from operator_ledger import operator_ledger_report
     from relation_frequency_maintenance import relation_frequency_index_report
     from relation_rebuild_queue import relation_rebuild_queue_report
     from sql_store import fts_integrity_report, schema_migration_status
+    from truth_connection import connect_truth_database, truth_storage_permissions
 
 def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     """Inspect SQLite truth-store health, schema, and migration status in read-only mode.
@@ -43,11 +49,11 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
         sqlite_payload = {"path": str(db_path), "status": "missing", "memory_count": 0, "tables": []}
         return sqlite_payload, {"ok": False, "failures": [f"SQLite truth DB not found: {db_path}"]}, recommendations
 
+    activation_lease = activation_lease_status(db_path)
+    storage_permissions = truth_storage_permissions(db_path)
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
+        conn = connect_truth_database(db_path, mode="ro")
         try:
-            conn.execute("PRAGMA query_only=ON")
             tables = sorted(row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'"))
             memory_count = 0
             if "memories" in tables:
@@ -72,6 +78,7 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
             relation_rebuild = relation_rebuild_queue_report(conn)
             schema_migrations = schema_migration_status(conn)
             governance_audit_coverage = governance_audit_coverage_report(conn)
+            freshness_report = fact_freshness_report(conn)
         finally:
             conn.close()
     except Exception as exc:
@@ -81,6 +88,49 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
 
     orphan_graph_rows = remaining_graph_hygiene_rows(graph_hygiene)
     failures: list[str] = []
+    lease_status = str(activation_lease.get("status") or "absent")
+    if lease_status == "stale":
+        failures.append("stale activation maintenance lease blocks SQLite writers")
+        recommendations.append(
+            "Inspect stale lease recovery with `python "
+            "scripts/recover.activation_lease.py --dry-run --hermes-home <profile>`; "
+            "apply only after verifying the recorded owner process is dead."
+        )
+    elif lease_status == "active":
+        recommendations.append(
+            "Activation maintenance is currently active; wait for the owner to finish "
+            "before resuming ordinary writers."
+        )
+    if not bool(storage_permissions.get("ok")):
+        failures.append(
+            "SQLite truth-store permissions are unsafe: "
+            f"directory={storage_permissions.get('directory_mode') or 'unknown'}, "
+            f"database={storage_permissions.get('database_mode') or 'unknown'}"
+        )
+        recommendations.append(
+            "Harden the scope-recall storage directory to 0700 and memory.sqlite3 "
+            "to 0600 before resuming normal writers."
+        )
+    raw_freshness_coverage = freshness_report.get("coverage")
+    freshness_coverage = (
+        raw_freshness_coverage
+        if isinstance(raw_freshness_coverage, dict)
+        else {}
+    )
+    factual_memories = int(freshness_coverage.get("factual_memories") or 0)
+    tracked_memory_facts = int(
+        freshness_coverage.get("tracked_memory_facts") or 0
+    )
+    if tracked_memory_facts < factual_memories:
+        failures.append(
+            "SQLite factual freshness coverage is incomplete: "
+            f"tracked={tracked_memory_facts}, factual={factual_memories}"
+        )
+        recommendations.append(
+            "Run `python scripts/backfill.freshness.py --hermes-home <profile> "
+            "--dry-run`; apply bounded batches only after backup/maintenance confirmation, "
+            "then rerun doctor before declaring the store ready."
+        )
     if (
         str(fts_integrity.get("status") or "") == "needs_repair"
         and not bool(fts_integrity.get("healthy"))
@@ -202,6 +252,8 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
     sqlite_payload = {
         "path": str(db_path),
         "status": status,
+        "activation_lease": activation_lease,
+        "storage_permissions": storage_permissions,
         "memory_count": memory_count,
         "tables": tables,
         "fts_integrity": fts_integrity,
@@ -211,6 +263,7 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
         "relation_rebuild_queue": relation_rebuild,
         "schema_migrations": schema_migrations,
         "governance_audit_coverage": governance_audit_coverage,
+        "fact_freshness": freshness_report,
     }
     return sqlite_payload, {"ok": not failures, "failures": failures}, recommendations
 

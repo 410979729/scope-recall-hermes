@@ -8,6 +8,8 @@ import json
 import sqlite3
 import threading
 
+import pytest
+
 from plugins.memory import load_memory_provider
 
 from scope_recall.graph import ensure_graph_schema
@@ -263,6 +265,81 @@ def test_relation_rerank_boosts_superseding_candidate_when_enabled():
         assert [item.id for item in results] == ["newer-deploy-command", "older-deploy-command"]
         assert results[0].metadata["relation_rerank_bonus"] > 0.0
         assert "supersedes" in results[0].metadata["relation_evidence_types"]
+    finally:
+        provider.close()
+
+
+@pytest.mark.parametrize("mode", ["surface", "penalize", "suppress"])
+def test_relation_contradiction_mode_has_distinct_surface_penalize_and_suppress_semantics(mode):
+    contradicted = _item("contradicted-command", 0.82)
+    clean = _item("clean-command", 0.80)
+    provider = DummyProvider(
+        {
+            "mode": "lexical",
+            "min_score": 0.01,
+            "relation_rerank_enabled": True,
+            "relation_contradiction_mode": mode,
+            "relation_contradicts_penalty": 0.05,
+        },
+        [contradicted, clean],
+    )
+    try:
+        provider._require_conn().execute(
+            "INSERT OR REPLACE INTO memories(id, scope_id, target, metadata) VALUES (?, ?, ?, ?)",
+            (
+                "contradiction-peer",
+                "shared-scope",
+                "project",
+                json.dumps({"lifecycle": "active", "scope_id": "shared-scope"}),
+            ),
+        )
+        provider._require_conn().execute(
+            """
+            INSERT INTO memory_relations(
+                source_memory_id, target_memory_id, relation_type,
+                confidence, note, created_at
+            ) VALUES (?, ?, 'contradicts', 1.0, ?, ?)
+            """,
+            (
+                "contradicted-command",
+                "contradiction-peer",
+                "mode contract",
+                "2026-06-01T00:00:00+00:00",
+            ),
+        )
+        provider._require_conn().commit()
+
+        service = RecallService(provider)
+        results = service.search_memories("Project Atlas deploy command", limit=2)
+        by_id = {item.id: item for item in results}
+
+        if mode == "surface":
+            assert [item.id for item in results] == [
+                "contradicted-command",
+                "clean-command",
+            ]
+            assert by_id["contradicted-command"].metadata[
+                "relation_contradiction_warning"
+            ] == "contradictory_relation_evidence_present"
+            assert by_id["contradicted-command"].metadata[
+                "relation_rerank_bonus"
+            ] == 0.0
+        elif mode == "penalize":
+            assert [item.id for item in results] == [
+                "clean-command",
+                "contradicted-command",
+            ]
+            assert by_id["contradicted-command"].metadata[
+                "relation_rerank_bonus"
+            ] < 0.0
+        else:
+            assert [item.id for item in results] == ["clean-command"]
+            assert any(
+                row.id == "contradicted-command"
+                and (row.metadata or {}).get("rejected_reason")
+                == "relation_contradiction_suppressed"
+                for row in service.last_rejected_candidates
+            )
     finally:
         provider.close()
 

@@ -27,6 +27,8 @@ def test_search_plan_and_initial_trace_preserve_existing_keys():
         "entity_scope_mismatch": 0,
         "vector_only_below_min_score": 0,
         "below_min_score": 0,
+        "freshness_strict_excluded": 0,
+        "relation_contradiction_suppressed": 0,
     }
 
 

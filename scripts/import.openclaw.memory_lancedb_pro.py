@@ -15,7 +15,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME = "scope_recall_openclaw_import_runtime"
@@ -87,13 +87,18 @@ def load_openclaw_rows(source: Path) -> tuple[list[dict[str, Any]], list[str]]:
     tables = [str(item) for item in list(getattr(listed, "tables", listed))]
     if "memories" not in tables:
         raise RuntimeError(json.dumps({"error": f"memories table missing in {source}", "tables": tables}, ensure_ascii=False))
-    table = db.open_table("memories")
-    if hasattr(table, "to_list"):
-        rows = table.to_list()
-    elif hasattr(table, "to_arrow"):
-        rows = table.to_arrow().to_pylist()
+    table: Any = db.open_table("memories")
+    to_list = getattr(table, "to_list", None)
+    to_arrow = getattr(table, "to_arrow", None)
+    rows: list[dict[str, Any]]
+    if callable(to_list):
+        rows = cast(list[dict[str, Any]], to_list())
+    elif callable(to_arrow):
+        arrow: Any = to_arrow()
+        rows = cast(list[dict[str, Any]], arrow.to_pylist())
     else:
-        rows = table.to_pandas().to_dict(orient="records")
+        frame: Any = table.to_pandas()
+        rows = cast(list[dict[str, Any]], frame.to_dict(orient="records"))
     return [dict(row) for row in rows], tables
 
 

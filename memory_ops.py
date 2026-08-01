@@ -13,7 +13,11 @@ from typing import Any
 
 from .capture import store_now
 from .capture_filters import sanitize_report_text, sanitize_structured_value
-from .freshness import attach_freshness_metadata, memory_freshness_map
+from .freshness import (
+    attach_freshness_metadata,
+    fact_freshness_report,
+    memory_freshness_map,
+)
 from .fact_repository import (
     FactMutationAuthorityError,
     fact_ownership_for_memories,
@@ -2241,6 +2245,7 @@ def stats_payload(provider: Any) -> dict[str, Any]:
         )
         relation_rebuild = relation_rebuild_queue_report(conn)
         operator_ledger = operator_ledger_report(conn)
+        freshness = fact_freshness_report(conn)
     vector_path = ""
     vector_table = ""
     vector_embedder: dict[str, Any] = {}
@@ -2295,12 +2300,10 @@ def stats_payload(provider: Any) -> dict[str, Any]:
                 getattr(provider, "_writer_last_error_type", "") or ""
             ),
         },
-        "freshness_writer": {
-            "failed_writes": int(
-                getattr(provider, "_freshness_write_failures", 0) or 0
-            ),
-            "last_error_type": str(
-                getattr(provider, "_freshness_last_error_type", "") or ""
+        "freshness": {
+            **freshness,
+            "startup_backfill": dict(
+                getattr(provider, "_freshness_backfill", {}) or {}
             ),
         },
         "journal_digest": {

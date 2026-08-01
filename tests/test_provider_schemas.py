@@ -73,6 +73,53 @@ def test_standard_tool_schema_includes_experience_when_enabled():
     assert "scope_recall_dedupe" not in names
 
 
+def test_store_schema_requires_one_atomic_fact_or_cohesive_topic_per_call():
+    schema = next(
+        item
+        for item in build_tool_schemas({"tool_schema_profile": "standard"})
+        if item["name"] == "scope_recall_store"
+    )
+
+    assert "one atomic fact" in schema["description"].lower()
+    assert "separate calls" in schema["parameters"]["properties"]["content"][
+        "description"
+    ].lower()
+
+
+def test_maintenance_schema_exposure_is_independent_from_experience():
+    common_maintenance = {
+        "scope_recall_dedupe",
+        "scope_recall_govern",
+        "scope_recall_repair",
+        "scope_recall_hygiene",
+        "scope_recall_forgetting_report",
+        "scope_recall_forgetting_run",
+    }
+    experience_maintenance = {
+        "scope_recall_playbook_create",
+        "scope_recall_playbook_review",
+        "scope_recall_experience_promote",
+    }
+
+    for experience_enabled in (False, True):
+        for maintenance_enabled in (False, True):
+            names = set(
+                _names(
+                    build_tool_schemas(
+                        {
+                            "tool_schema_profile": "standard",
+                            "maintenance_tools_enabled": maintenance_enabled,
+                            "experience": {"enabled": experience_enabled},
+                        }
+                    )
+                )
+            )
+            assert common_maintenance.issubset(names) is maintenance_enabled
+            assert experience_maintenance.issubset(names) is (
+                experience_enabled and maintenance_enabled
+            )
+
+
 def test_release_stable_tool_names_cover_schema_profiles():
     release_check = _load_release_check_module()
     stable_names = set(release_check.STABLE_TOOL_NAMES)

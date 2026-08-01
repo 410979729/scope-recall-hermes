@@ -134,17 +134,25 @@ def test_sensitive_token_prefix_cannot_be_whitelisted_by_metric_suffix():
 
 
 def test_private_key_redaction_removes_entire_pem_block():
-    text = """Use this key:
------BEGIN PRIVATE KEY-----
-notreallybase64butsecretbody
------END PRIVATE KEY-----
-done"""
+    begin_marker = "-----BEGIN " + "PRIVATE KEY-----"
+    end_marker = "-----END " + "PRIVATE KEY-----"
+    text = "\n".join(
+        [
+            "Use this key:",
+            begin_marker,
+            "notreallybase64butsecretbody",
+            end_marker,
+            "done",
+        ]
+    )
 
     redacted = redact_secret_like_text(text)
 
     assert "[REDACTED_SECRET]" in redacted
     assert "notreallybase64butsecretbody" not in redacted
-    assert "END PRIVATE KEY" not in redacted
+    assert begin_marker not in redacted
+    assert end_marker not in redacted
+
 
 
 def test_redaction_removes_partially_masked_provider_keys_from_error_text():

@@ -120,5 +120,4 @@ jobs:
           gh release upload "$TAG" dist/* --clobber
 
       - name: Publish to PyPI
-        continue-on-error: true
         uses: pypa/gh-action-pypi-publish@release/v1
