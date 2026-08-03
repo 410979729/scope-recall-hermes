@@ -5,17 +5,34 @@ These filters are intentionally conservative because they sit before SQLite trut
 from __future__ import annotations
 
 import re
-import unicodedata
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
 try:  # Support package imports and the repository's direct manual scripts.
     from .gating import clean_text, is_trivial
-    from .secret_patterns import COMMON_SECRET_PATTERN_VALUES
+    from .secret_patterns import (
+        COMMON_SECRET_PATTERN_VALUES,
+        PEM_PRIVATE_KEY_BEGIN_RE,
+        SECRET_ASSIGNMENT_RE,
+        TOKEN_ASSIGNMENT_RE,
+        contains_secret_like_text,
+        is_safe_token_metric_key,
+        is_sensitive_mapping_key,
+        secret_scan_shadow,
+    )
 except ImportError:  # pragma: no cover - exercised by manual script import style
     from gating import clean_text, is_trivial
-    from secret_patterns import COMMON_SECRET_PATTERN_VALUES
+    from secret_patterns import (
+        COMMON_SECRET_PATTERN_VALUES,
+        PEM_PRIVATE_KEY_BEGIN_RE,
+        SECRET_ASSIGNMENT_RE,
+        TOKEN_ASSIGNMENT_RE,
+        contains_secret_like_text,
+        is_safe_token_metric_key,
+        is_sensitive_mapping_key,
+        secret_scan_shadow,
+    )
 
 
 @dataclass(frozen=True)
@@ -45,25 +62,8 @@ DEFAULT_CAPTURE_SKIP_PATTERNS: tuple[str, ...] = (
 )
 
 SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
-    # Common assignment forms except token-suffixed identifiers, which need the
-    # metric-aware classifier below to avoid rejecting ``*_per_token`` values.
-    re.compile(
-        r"(?:api[_ \t-]?key|secret|password|passwd|credential(?:[_ \t-]?[a-z0-9_]+)?|private[_ \t-]?key)"
-        r"(?:[ \t]*(?::|=|是)[ \t]*|[ \t]+is[ \t]+)[^\s]+",
-        re.IGNORECASE,
-    ),
+    SECRET_ASSIGNMENT_RE,
     *COMMON_SECRET_PATTERN_VALUES,
-)
-
-PEM_PRIVATE_KEY_BEGIN_RE = re.compile(
-    r"-----BEGIN (?P<label>(?:[A-Z0-9-]+[ ]+)*PRIVATE KEY(?:[ ]+BLOCK)?)-----",
-    re.IGNORECASE,
-)
-
-TOKEN_ASSIGNMENT_RE = re.compile(
-    r"(?P<key>(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_-]*[_-])?token)"
-    r"(?:[ \t]*(?::|=|是)[ \t]*|[ \t]+is[ \t]+)[^\s]+",
-    re.IGNORECASE,
 )
 
 PRIVATE_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -80,23 +80,6 @@ PRIVATE_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"(?<![A-Za-z0-9])(?:/home|/Users|/root)/[^\s\]})>'\"]+"),
     re.compile(r"(?<![A-Za-z0-9])~/(?:[^\s\]})>'\"]+)", re.IGNORECASE),
     re.compile(r"(?<![A-Za-z0-9])/tmp/(?:hermes|scope|pytest|tmp)[^\s\]})>'\"]*", re.IGNORECASE),
-)
-
-SENSITIVE_MAPPING_KEY_RE = re.compile(
-    r"(?:"
-    r"(?:^|[_\-\s])(?:authorization|api[_\-\s]?key|access[_\-\s]?token|refresh[_\-\s]?token|"
-    r"password|passwd|private[_\-\s]?key|client[_\-\s]?secret|cookie)(?:$|[_\-\s:=])"
-    r"|(?:^|[_\-\s])token(?:$|[\s:=])"
-    r")",
-    re.IGNORECASE,
-)
-
-SENSITIVE_KEY_COMPONENT_RE = re.compile(
-    r"(?:^|_)(?:"
-    r"authorization|auth|bearer|cookie|credential|credentials|password|passwd|"
-    r"secret|token|api_key|private_key|client_secret"
-    r")(?:_|$)",
-    re.IGNORECASE,
 )
 
 TOOL_TRACE_LINE_RE = re.compile(r"\bTool execution trace(?:\s*\(([^)]*)\))?:[^\n\r]*(?:[\n\r]|$)", re.IGNORECASE)
@@ -235,56 +218,6 @@ def sanitize_capture_text(text: Any) -> str:
     return re.sub(r"\n{3,}", "\n\n", sanitized)
 
 
-def _normalize_mapping_key(value: Any) -> str:
-    """Normalize field separators for shared secret-key classification."""
-
-    return re.sub(
-        r"[-\s]+",
-        "_",
-        _secret_scan_shadow(value).strip().casefold(),
-    )
-
-
-def _is_safe_token_metric_key(value: Any) -> bool:
-    """Allow token metrics only when their prefix is not credential-shaped.
-
-    A suffix must never override a sensitive prefix: for example,
-    ``api_token_per_token`` is credential-shaped even though
-    ``kv_bytes_per_token`` is a valid public metric.
-    """
-
-    raw = str(value or "")
-    normalized = _normalize_mapping_key(raw)
-    if normalized == "per_token":
-        return True
-    suffix = "_per_token"
-    if not normalized.endswith(suffix):
-        return False
-    metric_prefix = normalized[: -len(suffix)]
-    return not bool(
-        SENSITIVE_MAPPING_KEY_RE.search(metric_prefix)
-        or SENSITIVE_KEY_COMPONENT_RE.search(metric_prefix)
-    )
-
-
-def _is_sensitive_mapping_key(value: Any) -> bool:
-    """Classify credential keys without redacting benign telemetry metadata."""
-
-    if _is_safe_token_metric_key(value):
-        return False
-    raw = str(value or "")
-    normalized = _normalize_mapping_key(raw)
-    if SENSITIVE_MAPPING_KEY_RE.search(raw) or SENSITIVE_MAPPING_KEY_RE.search(normalized):
-        return True
-    if normalized == "token" or normalized.endswith("_token"):
-        return True
-    suffix = "_per_token"
-    if normalized.endswith(suffix):
-        metric_prefix = normalized[: -len(suffix)]
-        return bool(SENSITIVE_KEY_COMPONENT_RE.search(metric_prefix))
-    return False
-
-
 def _redact_private_key_blocks(text: str) -> str:
     """Redact complete or truncated PEM private-key blocks fail closed."""
 
@@ -303,43 +236,12 @@ def _redact_private_key_blocks(text: str) -> str:
     return "".join(output)
 
 
-def _secret_scan_shadow(text: Any) -> str:
-    """Return a Unicode-normalized shadow used only for secret detection.
-
-    Format controls can visually split credential prefixes and sensitive field
-    names. Removing them from the scan view closes that bypass without mutating
-    stored user text or trying to map normalized spans back onto the original.
-    """
-
-    normalized = unicodedata.normalize("NFKC", str(text or ""))
-    return "".join(
-        character
-        for character in normalized
-        if unicodedata.category(character) != "Cf"
-    )
-
-
-def _contains_secret_like_shadow(text: str) -> bool:
-    if PEM_PRIVATE_KEY_BEGIN_RE.search(text):
-        return True
-    if any(pattern.search(text) for pattern in SECRET_PATTERNS):
-        return True
-    return any(
-        not _is_safe_token_metric_key(match.group("key"))
-        for match in TOKEN_ASSIGNMENT_RE.finditer(text)
-    )
-
-
-def contains_secret_like_text(text: str) -> bool:
-    return _contains_secret_like_shadow(_secret_scan_shadow(text))
-
-
 def redact_secret_like_text(text: Any) -> str:
     cleaned = clean_text(text)
     if not cleaned:
         return ""
-    shadow = _secret_scan_shadow(cleaned)
-    if shadow != cleaned and _contains_secret_like_shadow(shadow):
+    shadow = secret_scan_shadow(cleaned)
+    if shadow != cleaned and contains_secret_like_text(shadow):
         return "[REDACTED_SECRET]"
     redacted = _redact_private_key_blocks(cleaned)
     for pattern in SECRET_PATTERNS:
@@ -347,7 +249,7 @@ def redact_secret_like_text(text: Any) -> str:
     redacted = TOKEN_ASSIGNMENT_RE.sub(
         lambda match: (
             match.group(0)
-            if _is_safe_token_metric_key(match.group("key"))
+            if is_safe_token_metric_key(match.group("key"))
             else "[REDACTED_SECRET]"
         ),
         redacted,
@@ -406,7 +308,7 @@ def sanitize_mapping_key(value: Any) -> tuple[str, bool]:
 
     raw = str(value)
     safe = sanitize_report_text(raw)
-    if _is_sensitive_mapping_key(raw):
+    if is_sensitive_mapping_key(raw):
         safe = "[REDACTED_KEY]"
     if not safe:
         safe = "[REDACTED_KEY]"

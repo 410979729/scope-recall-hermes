@@ -641,33 +641,90 @@ def freshness_penalty(
     return max(0.0, min(0.9, penalty))
 
 
+def _authoritative_freshness_view(
+    freshness: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build the outward freshness view from the companion truth row only."""
+
+    if not freshness:
+        return {"status": "untracked", "needs_live_check": True}
+    status = normalize_freshness_status(
+        freshness.get("status"),
+        valid_until=freshness.get("valid_until"),
+    )
+    return {
+        "status": status,
+        "fact_key": str(freshness.get("fact_key") or ""),
+        "truth_type": str(freshness.get("truth_type") or ""),
+        "validator_kind": normalize_validator_kind(freshness.get("validator_kind")),
+        "last_checked_at": str(freshness.get("last_checked_at") or ""),
+        "valid_until": str(freshness.get("valid_until") or ""),
+        "stale_reason": str(freshness.get("stale_reason") or ""),
+        "superseded_by": str(freshness.get("superseded_by") or ""),
+        "needs_live_check": status in NEEDS_CHECK_STATUSES or status in STALE_STATUSES,
+    }
+
+
+def _preserve_declared_freshness(metadata: dict[str, Any]) -> None:
+    """Label the stored declaration before replacing it in an output projection."""
+
+    if metadata.get("freshness_authority") == "fact_freshness":
+        return
+    if "freshness" not in metadata:
+        return
+    declared, _ = sanitize_structured_value(metadata.get("freshness"))
+    metadata["freshness_declared"] = declared
+
+
 def attach_freshness_metadata(
     metadata: dict[str, Any],
     freshness: dict[str, Any] | None,
     *,
     config: dict[str, Any] | None = None,
 ) -> float:
-    penalty = freshness_penalty(freshness, config)
+    """Attach one non-persistent projection with ``fact_freshness`` authority.
+
+    ``memories.metadata.freshness`` is write-time declaration evidence.  The
+    companion ``fact_freshness`` row is the runtime state authority.  Recall and
+    profile callers pass metadata copies, so this projection can label the
+    declaration and replace the ambiguous nested view without rewriting SQLite.
+    """
+
+    _preserve_declared_freshness(metadata)
+    authoritative = _authoritative_freshness_view(freshness)
+    metadata["freshness_authority"] = "fact_freshness"
+    metadata["freshness"] = authoritative
+
     if not freshness:
-        metadata.setdefault("fact_freshness_status", "untracked")
-        metadata.setdefault("needs_live_check", True)
-        metadata.setdefault("fact_freshness_penalty", penalty)
-        metadata.setdefault(
-            "freshness_warning",
-            "⚠ UNTRACKED — freshness unknown; verify before use",
+        penalty = freshness_penalty(None, config)
+        metadata["fact_freshness_status"] = "untracked"
+        metadata["needs_live_check"] = True
+        metadata["fact_freshness_penalty"] = penalty
+        metadata["freshness_warning"] = (
+            "⚠ UNTRACKED — freshness unknown; verify before use"
         )
+        for key in (
+            "fact_key",
+            "validator_kind",
+            "last_checked_at",
+            "valid_until",
+            "stale_reason",
+        ):
+            metadata.pop(key, None)
         return penalty
-    status = str(freshness.get("status") or "unknown")
+
+    penalty = freshness_penalty(authoritative, config)
+    status = str(authoritative["status"])
     metadata["fact_freshness_status"] = status
-    metadata["fact_key"] = str(freshness.get("fact_key") or "")
-    metadata["truth_type"] = str(freshness.get("truth_type") or "")
-    metadata["validator_kind"] = str(freshness.get("validator_kind") or "")
-    metadata["last_checked_at"] = str(freshness.get("last_checked_at") or "")
-    metadata["valid_until"] = str(freshness.get("valid_until") or "")
-    metadata["stale_reason"] = str(freshness.get("stale_reason") or "")
-    metadata["needs_live_check"] = bool(freshness.get("needs_live_check"))
+    metadata["fact_key"] = str(authoritative["fact_key"])
+    metadata["truth_type"] = str(authoritative["truth_type"])
+    metadata["validator_kind"] = str(authoritative["validator_kind"])
+    metadata["last_checked_at"] = str(authoritative["last_checked_at"])
+    metadata["valid_until"] = str(authoritative["valid_until"])
+    metadata["stale_reason"] = str(authoritative["stale_reason"])
+    metadata["needs_live_check"] = bool(authoritative["needs_live_check"])
     metadata["fact_freshness_penalty"] = penalty
-    last_checked_at = str(freshness.get("last_checked_at") or "unknown")
+    last_checked_at = str(authoritative["last_checked_at"] or "unknown")
     if status in STALE_STATUSES:
         metadata["freshness_warning"] = (
             f"⚠ STALE — last checked {last_checked_at}; verify before use"
