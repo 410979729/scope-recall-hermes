@@ -117,16 +117,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
         run: |
-          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release edit "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
               --title "scope-recall ${RELEASE_TAG}" \
               --notes-file release-assets/release-notes.md
             gh release upload "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
               release-assets/dist/* \
               release-assets/SHA256SUMS \
               --clobber
           else
             gh release create "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
               release-assets/dist/* \
               release-assets/SHA256SUMS \
               --title "scope-recall ${RELEASE_TAG}" \

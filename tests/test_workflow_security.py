@@ -138,6 +138,8 @@ def test_github_release_publish_is_retry_safe_without_source_execution():
     assert "gh release upload" in publish_text
     assert "--clobber" in publish_text
     assert "gh release create" in publish_text
+    assert publish_text.count("gh release ") == 4
+    assert publish_text.count('--repo "${GITHUB_REPOSITORY}"') == 4
 
 
 def test_release_credentials_are_isolated_from_build_and_source_execution():
