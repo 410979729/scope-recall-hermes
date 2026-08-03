@@ -74,15 +74,19 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Install LanceDB runtime
+      - name: Install LanceDB runtime and pinned Hermes
         run: |
           python -m pip install --upgrade pip
           python -m pip install ".[lancedb,dev]"
+          python .github/scripts/checkout_pinned_hermes.py
+          python -m pip install -e .hermes-agent-src
       - name: Smoke native LanceDB path
+        env:
+          PYTHONPATH: .hermes-agent-src
         run: >-
           python -m pytest -q
-          tests/test_release.py::test_macos_native_lancedb_smoke_uses_real_runtime
-          tests/test_release.py::test_release_gate_executes_native_dependency_probe
+          tests/test_hidden_vector_repair.py::test_hidden_vector_repair_handles_legacy_root_lancedb
+          tests/test_tenth_review_regressions.py::test_lancedb_concurrent_handles_do_not_duplicate_ids
 
   windows-installer:
     runs-on: windows-latest
@@ -105,10 +109,10 @@ jobs:
           PYTHONPATH: .hermes-agent-src
         run: >-
           python -m pytest -q
-          tests/test_installer.py::test_atomic_replace_retries_windows_permission_error
-          tests/test_installer.py::test_confirmed_activation_compensation_failure_reports_recovery
-          tests/test_installer.py::test_confirmed_activation_compensation_failure_rejects_cli_json_injection
-          tests/test_installer.py::test_confirmed_activation_compensation_preserves_symlink_identity_and_target_bytes
+          tests/test_installer.py::test_atomic_config_replace_keeps_original_on_replace_failure
+          tests/test_installer.py::test_atomic_replace_treats_unsupported_parent_fsync_as_success_after_replace
+          tests/test_installer.py::test_unconfirmed_activation_compensation_never_overwrites_post_snapshot_truth
+          tests/test_installer.py::test_confirmed_activation_compensation_refuses_post_snapshot_truth_drift
           tests/test_maintenance_lease.py
 
   release-gate:

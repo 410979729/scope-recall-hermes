@@ -254,6 +254,7 @@ def test_scope_recall_store_recovers_peer_provider_dirty_transaction(tmp_path, m
     provider_b = load_memory_provider("scope-recall")
     assert provider_a is not None
     assert provider_b is not None
+    assert provider_a is not provider_b
     try:
         for index, plugin in enumerate((provider_a, provider_b), start=1):
             plugin.initialize(
@@ -266,20 +267,31 @@ def test_scope_recall_store_recovers_peer_provider_dirty_transaction(tmp_path, m
             )
         with provider_a._lock:
             conn_a = provider_a._require_conn()
+            conn_a.execute("BEGIN IMMEDIATE")
             conn_a.execute("CREATE TABLE IF NOT EXISTS rollback_probe(marker TEXT PRIMARY KEY)")
             conn_a.execute("INSERT INTO rollback_probe(marker) VALUES ('peer-provider')")
             assert conn_a.in_transaction
         with provider_b._lock:
             provider_b._require_conn().execute("PRAGMA busy_timeout=50")
         original_recover = provider_b._recover_sqlite_connection_after_error
+        original_store_now = provider_b._store_now
         recovery_reports: list[dict[str, object]] = []
+        store_attempts = 0
 
         def capture_recover(context: str) -> dict[str, object]:
             report = original_recover(context)
             recovery_reports.append(dict(report))
             return report
 
+        def locked_then_store(**kwargs):
+            nonlocal store_attempts
+            store_attempts += 1
+            if store_attempts == 1:
+                raise sqlite3.OperationalError("database is locked")
+            return original_store_now(**kwargs)
+
         monkeypatch.setattr(provider_b, "_recover_sqlite_connection_after_error", capture_recover)
+        monkeypatch.setattr(provider_b, "_store_now", locked_then_store)
 
         payload = json.loads(
             provider_b.handle_tool_call(
@@ -291,6 +303,7 @@ def test_scope_recall_store_recovers_peer_provider_dirty_transaction(tmp_path, m
         assert payload["stored"] is True
         assert payload["recovered"] is True
         assert payload["retry_count"] == 1
+        assert store_attempts == 2
         assert recovery_reports
         checked = recovery_reports[0]["peer_providers_checked"]
         rollbacks = recovery_reports[0]["peer_rollbacks"]

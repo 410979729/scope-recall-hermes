@@ -7,6 +7,7 @@ actions and the Hermes compatibility source are pinned to reviewed commits.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -77,7 +78,7 @@ def test_ci_and_release_builds_pin_and_verify_stable_hermes_source():
         assert not re.search(r"(?:--branch|checkout|fetch)[^\n]*\bmain\b", all_run_text)
 
 
-def test_explicit_pytest_paths_in_workflows_exist():
+def test_explicit_pytest_nodes_in_workflows_exist():
     def strings(value):
         if isinstance(value, dict):
             for child in value.values():
@@ -88,23 +89,46 @@ def test_explicit_pytest_paths_in_workflows_exist():
         elif isinstance(value, str):
             yield value
 
-    missing: dict[str, list[str]] = {}
+    missing_paths: dict[str, list[str]] = {}
+    missing_nodes: dict[str, list[str]] = {}
+    node_pattern = re.compile(
+        r"(?P<path>tests/[A-Za-z0-9_./-]+\.py)::(?P<name>test_[A-Za-z0-9_]+)"
+    )
     for workflow_name in ("ci.yml", "release.yml", "pypi.yml"):
         workflow = _workflow(workflow_name)
         workflow_text = "\n".join(strings(workflow))
         paths = set(re.findall(r"tests/[A-Za-z0-9_./-]+\.py", workflow_text))
-        absent = sorted(path for path in paths if not (ROOT / path).is_file())
-        if absent:
-            missing[workflow_name] = absent
-    assert missing == {}
+        absent_paths = sorted(path for path in paths if not (ROOT / path).is_file())
+        if absent_paths:
+            missing_paths[workflow_name] = absent_paths
+        absent_nodes: list[str] = []
+        for match in node_pattern.finditer(workflow_text):
+            relative_path = match.group("path")
+            test_path = ROOT / relative_path
+            if not test_path.is_file():
+                continue
+            tree = ast.parse(test_path.read_text(encoding="utf-8"), filename=relative_path)
+            test_names = {
+                node.name
+                for node in ast.walk(tree)
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name.startswith("test_")
+            }
+            if match.group("name") not in test_names:
+                absent_nodes.append(f"{relative_path}::{match.group('name')}")
+        if absent_nodes:
+            missing_nodes[workflow_name] = sorted(set(absent_nodes))
+    assert missing_paths == {}
+    assert missing_nodes == {}
 
 
 def test_ci_jobs_that_execute_plugin_tests_use_pinned_hermes_checkout():
     workflow = _workflow("ci.yml")
-    for job_name in ("test", "windows-installer", "release-gate"):
-        assert ".github/scripts/checkout_pinned_hermes.py" in _run_text(
-            workflow["jobs"][job_name]
-        )
+    for job_name, job in workflow["jobs"].items():
+        serialized = yaml.safe_dump(job)
+        if "pytest" not in serialized and "matrix.command" not in serialized:
+            continue
+        assert ".github/scripts/checkout_pinned_hermes.py" in _run_text(job), job_name
 
 
 def test_github_release_publish_is_retry_safe_without_source_execution():
