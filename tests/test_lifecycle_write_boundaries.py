@@ -30,14 +30,28 @@ ALLOWED_HARD_DELETE_SQL = {("sql_store.py", "delete_rows")}
 ALLOWED_DELETE_ROWS_CALLS = {("lifecycle_service.py", "hard_delete_memories")}
 
 
-def _python_sources() -> list[Path]:
-    return sorted(
-        path
-        for path in ROOT.rglob("*.py")
-        if "tests" not in path.relative_to(ROOT).parts
-        and "__pycache__" not in path.parts
-        and ".git" not in path.parts
-    )
+GENERATED_SOURCE_ROOTS = {
+    ".hermes-agent-src",
+    ".venv",
+    "build",
+    "dist",
+    "venv",
+}
+
+
+def _python_sources(root: Path = ROOT) -> list[Path]:
+    sources: list[Path] = []
+    for path in root.rglob("*.py"):
+        relative_parts = path.relative_to(root).parts
+        if (
+            "tests" in relative_parts
+            or "__pycache__" in relative_parts
+            or ".git" in relative_parts
+            or (relative_parts and relative_parts[0] in GENERATED_SOURCE_ROOTS)
+        ):
+            continue
+        sources.append(path)
+    return sorted(sources)
 
 
 def _parents(tree: ast.AST) -> dict[ast.AST, ast.AST]:
@@ -46,6 +60,16 @@ def _parents(tree: ast.AST) -> dict[ast.AST, ast.AST]:
         for child in ast.iter_child_nodes(node):
             parents[child] = node
     return parents
+
+
+def test_python_sources_ignore_generated_copies(tmp_path: Path) -> None:
+    source = tmp_path / "runtime.py"
+    generated = tmp_path / "build" / "lib" / "scope_recall" / "runtime.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    generated.parent.mkdir(parents=True)
+    generated.write_text("VALUE = 1\n", encoding="utf-8")
+
+    assert _python_sources(tmp_path) == [source]
 
 
 def _function_name(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> str:
