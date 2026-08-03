@@ -532,11 +532,11 @@ def test_release_identity_requires_version_newer_than_latest_tag():
     assert "mutually exclusive" in conflicting_modes["error"]
 
 
-def test_v186_release_candidate_identity_surfaces_are_consistent():
+def test_v187_release_candidate_identity_surfaces_are_consistent():
     """Bind the patch release to every authoritative version surface."""
 
-    expected_version = "1.8.6"
-    release_check = _load_release_check_module("scope_recall_check_release_v186_identity")
+    expected_version = "1.8.7"
+    release_check = _load_release_check_module("scope_recall_check_release_v187_identity")
     temporal_facts = importlib.import_module(f"{PACKAGE_NAME}.temporal_facts")
     plugin_manifest = (PLUGIN_ROOT / "plugin.yaml").read_text(encoding="utf-8")
     changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -546,7 +546,7 @@ def test_v186_release_candidate_identity_surfaces_are_consistent():
     assert _package_version() == expected_version
     assert f"version: {expected_version}" in plugin_manifest
     assert release_check.PACKAGE_VERSION == expected_version
-    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.8.6.md"
+    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.8.7.md"
     assert (PLUGIN_ROOT / release_check.RELEASE_READINESS_DOC).is_file()
     assert f"## [{expected_version}]" in changelog
     assert f"Version `{expected_version}`" in readme
@@ -559,7 +559,21 @@ def test_v186_release_candidate_identity_surfaces_are_consistent():
     )
     assert identity["ok"] is True
     assert identity["release_eligible"] is True
-    assert identity["expected_release_tag"] == "v1.8.6"
+    assert identity["expected_release_tag"] == "v1.8.7"
+
+
+def test_v187_changelog_is_cumulative_from_last_public_release():
+    release_check = _load_release_check_module("scope_recall_check_release_v187_changelog")
+
+    assert release_check.PACKAGE_VERSION == "1.8.7"
+    assert release_check.PUBLIC_RELEASE_BASELINE == "1.8.2"
+    section = release_check.changelog_section(
+        (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8"),
+        "1.8.7",
+    )
+    assert "since the last public release, `1.8.2`" in section
+    for term in ("freshness", "vector", "relation", "Experience", "secret", "Windows"):
+        assert term.lower() in section.lower(), term
 
 
 def test_ruff_lint_contract_is_explicit_across_toolchain_upgrades():
@@ -600,6 +614,7 @@ def test_productization_artifacts_are_release_gate_listed():
         "scripts/candidate.review.py",
         "scripts/memory.browser.py",
         "scripts/skill.bridge.py",
+        "scripts/release_changelog.py",
     ]:
         assert source in release_check.REQUIRED_SOURCE_FILES
 
@@ -628,6 +643,7 @@ def test_productization_artifacts_are_release_gate_listed():
         "scope_recall/scripts/candidate.review.py",
         "scope_recall/scripts/memory.browser.py",
         "scope_recall/scripts/skill.bridge.py",
+        "scope_recall/scripts/release_changelog.py",
     ]:
         assert wheel_path in release_check.REQUIRED_WHEEL
 
@@ -724,12 +740,39 @@ def test_changelog_completeness_gate_requires_current_release_terms():
     empty_current = f"# Changelog\n\n## [{version}] - 2026-07-15\n\n## [1.7.2] - 2026-07-12\n"
     failed = release_check.changelog_completeness_check(empty_current)
     assert failed["ok"] is False
-    assert failed["section_found"] is True
+    assert failed["section_found"] is False
     assert "Fact Evolution" in failed["missing_terms"]
     assert "Reflection" in failed["missing_terms"]
 
-    complete = f"# Changelog\n\n## [{version}] - 2026-07-15\n" + "\n".join(release_check.REQUIRED_CHANGELOG_TERMS)
-    assert release_check.changelog_completeness_check(complete)["ok"] is True
+    missing_baseline = (
+        f"# Changelog\n\n## [{version}] - 2026-08-03\n"
+        + "\n".join(release_check.REQUIRED_CHANGELOG_TERMS)
+    )
+    baseline_failure = release_check.changelog_completeness_check(missing_baseline)
+    assert baseline_failure["ok"] is False
+    assert baseline_failure["baseline_found"] is False
+
+    fenced_only = (
+        "# Changelog\n\n```markdown\n"
+        f"## [{version}] - 2099-01-01\n"
+        f"This cumulative release covers changes since the last public release, "
+        f"`{release_check.PUBLIC_RELEASE_BASELINE}`.\n"
+        + "\n".join(release_check.REQUIRED_CHANGELOG_TERMS)
+        + "\n```\n"
+    )
+    fenced_failure = release_check.changelog_completeness_check(fenced_only)
+    assert fenced_failure["ok"] is False
+    assert fenced_failure["section_found"] is False
+
+    complete = (
+        f"# Changelog\n\n## [{version}] - 2026-08-03\n"
+        f"This cumulative release covers changes since the last public release, "
+        f"`{release_check.PUBLIC_RELEASE_BASELINE}`.\n"
+        + "\n".join(release_check.REQUIRED_CHANGELOG_TERMS)
+    )
+    passed = release_check.changelog_completeness_check(complete)
+    assert passed["ok"] is True
+    assert passed["baseline_found"] is True
 
 
 def test_live_dashboard_waiver_check_detects_stale_snapshot():

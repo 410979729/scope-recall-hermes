@@ -4,6 +4,34 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.8.7] - 2026-08-03
+
+This cumulative release covers all changes since the last public release, `1.8.2`. It keeps SQLite authoritative and the stable provider/tool identities unchanged while combining the 1.8.3-1.8.6 reliability line with final identity, freshness, secret-handling, and cross-platform release hardening.
+
+### Added
+- Added a public vector-only threshold calibration fixture, bounded completed-outbox retention, and platform-native recovery-command generation.
+- Added dry-run-first, receipt-backed operator recovery for legacy freshness debt, vector dead letters, and stale activation leases.
+- Added blocking Windows Python 3.12 and pinned optional-native-dependency release lanes alongside Linux and macOS validation.
+
+### Changed
+- Made fact freshness an authoritative companion projection across recall and profile output. Invalid legacy validator metadata is quarantined as live-check debt, valid rows continue through bounded maintenance, and untracked rows never masquerade as verified current facts.
+- Raised the default vector-only threshold to the calibrated value while preserving explicit per-profile overrides; local-embedder readiness and fresh fallback remain explicit and cannot reopen an existing generation with a different embedding space.
+- Made forgetting policy switches effective, separated contradiction surface/penalize/suppress behavior, and tightened exact-text deduplication so distinct durable memory types remain distinct.
+- Kept Experience promotion and Fact Evolution evidence-gated and reviewable, with scope routing, evidence authority, provenance-root validation, idempotency, and journal checkpoint ownership enforced at mutation boundaries.
+
+### Fixed
+- Failed closed before storage initialization when a non-CLI Hermes runtime lacks a trusted principal, preventing unscoped reads, writes, prompt injection, or background maintenance.
+- Fixed current-state ranking and temporal interpretation for short Chinese and system/location questions without leaking stale, historical, or merely normative facts into present-state answers.
+- Fixed Experience review, dedupe, merge, and transaction ownership across authenticated canonical-user and legacy account scopes.
+- Hardened Windows PID liveness, installer replacement and rollback, long paths, FTS repair, console-safe operator JSON, LanceDB backup, and activation compensation without applying Unix-only assumptions.
+- Centralized secret detection and redaction across capture, durable writes, recall, doctor, HTTP errors, release scanning, structured mapping keys, private-key blocks, cookies, tokens, and database credentials, including Unicode-compatible key forms.
+- Hardened lifecycle relation restore, freshness backfill, semantic deduplication, truth-store permissions, package membership, release-identity checks, and pinned Windows/macOS/Linux CI lanes.
+
+### Compatibility
+- Preserved the stable V1 provider ID, tool names, SQLite truth-source contract, and rebuildable vector/graph companions.
+- Preserved opt-in Fact Evolution, temporal current/as-of/history queries, bounded citation-grounded Reflection, existing evidence authority and provenance-root rules, deterministic idempotency, atomic journal checkpoint behavior, and the release-identity contract.
+- Durable `user`, `memory`, `project`, and `ops` targets continue to use governed shared scope; `general` remains local scratch. Optional PGVector and legacy-import paths remain optional and are not runtime dependencies.
+
 ## [1.8.6] - 2026-08-01
 
 ### Changed
