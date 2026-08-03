@@ -36,8 +36,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from secret_patterns import scan_secret_like_text, secret_scan_shadow  # noqa: E402
+from scripts.release_changelog import extract_version_section  # noqa: E402
 
-PACKAGE_VERSION = "1.8.6"
+PACKAGE_VERSION = "1.8.7"
+PUBLIC_RELEASE_BASELINE = "1.8.2"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 RELEASE_READINESS_DOC = f"docs/release-readiness.{PACKAGE_VERSION}.md"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
@@ -1079,24 +1081,33 @@ def pyright_include_check() -> dict[str, object]:
 
 
 def changelog_section(changelog: str, version: str) -> str:
-    marker = f"## [{version}]"
-    start = changelog.find(marker)
-    if start < 0:
+    try:
+        return extract_version_section(changelog, version)
+    except ValueError:
         return ""
-    next_match = re.search(r"(?m)^## \[[^\]]+\]", changelog[start + len(marker) :])
-    if next_match is None:
-        return changelog[start:]
-    end = start + len(marker) + next_match.start()
-    return changelog[start:end]
 
 
 def changelog_completeness_check(changelog: str, *, version: str = PACKAGE_VERSION) -> dict[str, object]:
     section = changelog_section(changelog, version)
     if not section:
-        return {"ok": False, "version": version, "missing_terms": list(REQUIRED_CHANGELOG_TERMS), "section_found": False}
+        return {
+            "ok": False,
+            "version": version,
+            "missing_terms": list(REQUIRED_CHANGELOG_TERMS),
+            "section_found": False,
+            "baseline_found": False,
+        }
     lower = section.lower()
     missing_terms = [term for term in REQUIRED_CHANGELOG_TERMS if term.lower() not in lower]
-    return {"ok": not missing_terms, "version": version, "missing_terms": missing_terms, "section_found": True}
+    baseline_marker = f"since the last public release, `{PUBLIC_RELEASE_BASELINE}`"
+    baseline_found = baseline_marker.lower() in lower
+    return {
+        "ok": not missing_terms and baseline_found,
+        "version": version,
+        "missing_terms": missing_terms,
+        "section_found": True,
+        "baseline_found": baseline_found,
+    }
 
 
 def release_readiness_public_hygiene_check(readiness_text: str) -> dict[str, object]:
@@ -2098,10 +2109,15 @@ def metadata_check() -> dict[str, object]:
     if 'version = "0.' in pyproject or "version: 0." in plugin:
         failures.append("0.x package/plugin version still present")
     changelog_gate = changelog_completeness_check(changelog)
-    if not changelog_gate["ok"]:
-        missing_obj = changelog_gate.get("missing_terms", [])
-        missing_terms = [str(term) for term in missing_obj] if isinstance(missing_obj, list) else []
+    missing_obj = changelog_gate.get("missing_terms", [])
+    missing_terms = [str(term) for term in missing_obj] if isinstance(missing_obj, list) else []
+    if missing_terms:
         failures.append(f"changelog {PACKAGE_VERSION} missing release-note terms: {', '.join(missing_terms)}")
+    if not changelog_gate.get("baseline_found", False):
+        failures.append(
+            f"changelog {PACKAGE_VERSION} must identify cumulative public baseline {PUBLIC_RELEASE_BASELINE}"
+        )
+
     for label, snippet in {
         "release readiness title": f"Scope Recall {PACKAGE_VERSION} Release Readiness",
         "runtime evidence policy": "Runtime evidence policy",
