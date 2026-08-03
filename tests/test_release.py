@@ -334,6 +334,47 @@ def test_release_gate_progress_emits_machine_readable_stderr(capsys):
     assert "timestamp" in payload
 
 
+def test_release_gate_pytest_command_disables_repository_cache():
+    release_check = _load_release_check_module("scope_recall_check_release_pytest_command")
+
+    command = release_check.release_pytest_command()
+
+    assert command == [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+    ]
+
+
+def test_release_gate_streams_test_stages_without_captured_pipes(monkeypatch):
+    release_check = _load_release_check_module("scope_recall_check_release_streaming")
+    captured: dict[str, object] = {}
+
+    class Completed:
+        returncode = 0
+        stdout = None
+        stderr = None
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured.update(kwargs)
+        return Completed()
+
+    monkeypatch.setattr(release_check.subprocess, "run", fake_run)
+
+    assert release_check.release_stage_capture_output("release_invariants") is False
+    assert release_check.release_stage_capture_output("pytest") is False
+    assert release_check.release_stage_capture_output("ruff") is True
+    result = release_check.run([sys.executable, "-m", "pytest"], capture_output=False)
+
+    assert captured["capture_output"] is False
+    assert result["stdout"] == ""
+    assert result["stderr"] == ""
+
+
 def test_release_invariant_manifest_is_versioned_unique_and_executable():
     release_check = _load_release_check_module("scope_recall_check_invariant_manifest")
 

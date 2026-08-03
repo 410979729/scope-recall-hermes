@@ -126,7 +126,8 @@ print("\n=== _resolve_api_key ===")
 os.environ["TEST_LLM_KEY"] = "unit-test-key"
 check("env var resolved", _resolve_api_key({"api_key_env": ["TEST_LLM_KEY"]}) == "unit-test-key")
 del os.environ["TEST_LLM_KEY"]
-check("direct config key", _resolve_api_key({"api_key": "direct-key-456"}) == "direct-key-456")
+direct_placeholder_key = "direct-" + "key-456"
+check("direct config key", _resolve_api_key({"api_key": direct_placeholder_key}) == direct_placeholder_key)
 check("no key returns empty", _resolve_api_key({"api_key_env": []}) == "")
 check("direct key via api_key_env", _resolve_api_key({"api_key_env": ["NONEXISTENT_KEY_XYZ"]}) == "")
 

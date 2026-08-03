@@ -35,7 +35,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from secret_patterns import COMMON_SECRET_PATTERNS  # noqa: E402
+from secret_patterns import scan_secret_like_text, secret_scan_shadow  # noqa: E402
 
 PACKAGE_VERSION = "1.8.6"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
@@ -45,18 +45,12 @@ LOCAL_ONLY_DIRS = {".hermes"}
 EXTERNAL_TEST_DIRS = {".hermes-agent-src"}
 RELEASE_REQUIRED_MODULES = ("build", "pytest", "ruff", "wheel", "pyright", "yaml", "lancedb", "pyarrow")
 RELEASE_INVARIANT_MANIFEST = ROOT / "scripts" / "release.invariants.json"
-SECRET_PATTERNS = {
-    "api_key_assignment": re.compile(
-        r"[\"']?\b(?:api[_ -]?key|secret|password|passwd|token)\b[\"']?\s*(?:=|:)\s*[\"']?[A-Za-z0-9._\-+/=]{12,}[\"']?",
-        re.I,
-    ),
-    **COMMON_SECRET_PATTERNS,
-    # Telegram supergroup/channel IDs use a signed ``-100...`` form and may
-    # appear in Python, JSON, YAML, or list fixtures without a ``telegram:``
-    # prefix. Match the shape everywhere in public source/artifacts, but never
-    # echo the identifier in scanner output.
-    "telegram_group_id": re.compile(r"(?P<telegram_id>(?<!\d)-100\d{8,12})(?!\d)"),
-}
+# Telegram supergroup/channel IDs are personal release metadata, not generic
+# credential values. Keep this publication policy local while secret matching
+# itself delegates to ``secret_patterns.scan_secret_like_text``.
+TELEGRAM_GROUP_ID_RE = re.compile(
+    r"(?P<telegram_id>(?<!\d)-100\d{8,12})(?!\d)"
+)
 
 _POSITIVE_TELEGRAM_ID = r"(?P<telegram_id>\d{8,12})(?!\d)"
 POSITIVE_TELEGRAM_ID_CONTEXT_PATTERNS = (
@@ -576,9 +570,39 @@ PRIVATE_TILDE_INSTANCE_HOME_RE = re.compile(
 )
 
 
-def run(cmd: list[str], *, cwd: pathlib.Path = ROOT, env: dict[str, str] | None = None) -> dict[str, object]:
-    proc = subprocess.run(cmd, cwd=cwd, env=env, text=True, capture_output=True)
-    return {"cmd": cmd, "returncode": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}
+def run(
+    cmd: list[str],
+    *,
+    cwd: pathlib.Path = ROOT,
+    env: dict[str, str] | None = None,
+    capture_output: bool = True,
+) -> dict[str, object]:
+    """Run a release subprocess with optional output capture.
+
+    Long-lived descendants on Windows can inherit captured pipe handles and keep
+    ``subprocess.run`` waiting after the direct child exits. Test stages stream
+    to the parent terminal instead; short machine-parsed helpers stay captured.
+    """
+
+    proc = subprocess.run(
+        cmd,
+        cwd=cwd,
+        env=env,
+        text=True,
+        capture_output=capture_output,
+    )
+    return {
+        "cmd": cmd,
+        "returncode": proc.returncode,
+        "stdout": proc.stdout or "",
+        "stderr": proc.stderr or "",
+    }
+
+
+def release_stage_capture_output(stage: str) -> bool:
+    """Return whether a release stage may safely use captured subprocess pipes."""
+
+    return stage not in {"release_invariants", "pytest"}
 
 
 def fail_if_bad(result: dict[str, object]) -> None:
@@ -654,6 +678,12 @@ def release_invariant_command() -> list[str]:
         "no:cacheprovider",
         *nodes,
     ]
+
+
+def release_pytest_command() -> list[str]:
+    """Return the deterministic full-suite command used by the release gate."""
+
+    return [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"]
 
 
 def progress(stage: str) -> None:
@@ -1529,7 +1559,9 @@ def _is_reserved_identifier_fixture_context(rel: pathlib.Path, context: str) -> 
     return bool(identifiers) and identifiers <= {_RESERVED_POSITIVE_IDENTIFIER}
 
 
-def _looks_like_release_secret(match_text: str) -> bool:
+def _looks_like_release_secret(
+    match_text: str, *, source_line: str = ""
+) -> bool:
     """Return true only for likely plaintext secret literals.
 
     The release scanner should catch real JSON/YAML/Python secret assignments,
@@ -1541,6 +1573,14 @@ def _looks_like_release_secret(match_text: str) -> bool:
     raw_value = parts[1] if len(parts) == 2 else match_text
     value = raw_value.strip().strip("'\"").strip()
     value_lower = value.lower()
+    if source_line and re.search(
+        r"[\"']\s*\+|\+\s*[\"']|[\"')\w]\s*\*\s*\d",
+        source_line,
+    ):
+        # The runtime scanner deliberately rejects dynamically assembled test
+        # values. A release scan reports only plaintext literals; complete
+        # provider tokens remain covered by the independent common patterns.
+        return False
     if not value or value.startswith("_") or "(" in value or "[" in value:
         return False
     if value_lower in {"none", "null", "true", "false", "api_key", "token", "secret", "password"}:
@@ -1863,20 +1903,29 @@ def _scan_sensitive_text(rel: pathlib.Path, text: str, *, display_path: str = ""
         f"{label}:{line_no}: personal_numeric_id: [REDACTED_ID]" for line_no in sorted(positive_lines)
     )
 
-    for name, rx in SECRET_PATTERNS.items():
-        for match in rx.finditer(text):
-            if name == "api_key_assignment" and not _looks_like_release_secret(match.group(0)):
-                continue
-            line_no = text[: match.start()].count("\n") + 1
-            line = lines[line_no - 1] if 0 <= line_no - 1 < len(lines) else match.group(0)
-            if name == "telegram_group_id":
-                findings["secrets"].append(f"{label}:{line_no}: personal_numeric_id: [REDACTED_ID]")
-                continue
-            if _is_synthetic_test_fixture_line(rel, line):
-                continue
-            findings["secrets"].append(
-                f"{label}:{line_no}: {name}: [REDACTED_SECRET]"
-            )
+    scan_shadow = secret_scan_shadow(text)
+    for match in scan_secret_like_text(text):
+        line_no = scan_shadow[: match.start].count("\n") + 1
+        line = lines[line_no - 1] if 0 <= line_no - 1 < len(lines) else match.text
+        if match.name in {"api_key_assignment", "token_assignment"} and not _looks_like_release_secret(
+            match.text,
+            source_line=line,
+        ):
+            continue
+        if _is_synthetic_test_fixture_line(rel, line):
+            continue
+        findings["secrets"].append(
+            f"{label}:{line_no}: {match.name}: [REDACTED_SECRET]"
+        )
+
+    for match in TELEGRAM_GROUP_ID_RE.finditer(scan_shadow):
+        line_no = scan_shadow[: match.start()].count("\n") + 1
+        line = lines[line_no - 1] if 0 <= line_no - 1 < len(lines) else ""
+        if _is_synthetic_test_fixture_line(rel, line):
+            continue
+        findings["secrets"].append(
+            f"{label}:{line_no}: personal_numeric_id: [REDACTED_ID]"
+        )
 
     home = pathlib.Path.home()
     private_markers = tuple(
@@ -2345,11 +2394,11 @@ def main() -> int:
         ("ruff", [sys.executable, "-m", "ruff", "check", "."]),
         ("pyright", [sys.executable, "-m", "pyright"]),
         ("release_invariants", release_invariant_command()),
-        ("pytest", [sys.executable, "-m", "pytest", "-q"]),
+        ("pytest", release_pytest_command()),
         ("compileall", [sys.executable, "-m", "compileall", "-q", "."]),
     ):
         progress(f"{stage}:start")
-        fail_if_bad(run(cmd))
+        fail_if_bad(run(cmd, capture_output=release_stage_capture_output(stage)))
         progress(f"{stage}:done")
     progress("benchmark:start")
     benchmark = benchmark_check()

@@ -9,6 +9,26 @@ from typing import Any
 from .models import RuntimeScope
 
 
+RUNTIME_STATUS_ACTIVE = "active"
+RUNTIME_STATUS_DISABLED_MISSING_PRINCIPAL = "disabled_missing_principal"
+
+
+def runtime_principal_status(scope: RuntimeScope) -> str:
+    """Classify whether one runtime has a safe durable-memory principal.
+
+    CLI sessions may deliberately use the configured local fallback because they
+    are single-operator runtimes.  Every other platform must provide an explicit
+    user id; chat and thread ids are routing context and cannot substitute for a
+    principal, even when an operator configured a whole-chat alias.
+    """
+
+    platform = str(scope.platform or "cli").strip().lower() or "cli"
+    user_id = str(scope.user_id or "").strip()
+    if platform != "cli" and not user_id:
+        return RUNTIME_STATUS_DISABLED_MISSING_PRINCIPAL
+    return RUNTIME_STATUS_ACTIVE
+
+
 def _scope_component(label: str, value: str) -> str:
     return f"{label}:{len(value)}:{value}"
 

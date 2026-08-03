@@ -63,7 +63,17 @@ from .models import RecallItem, RuntimeScope, recall_scope_mode
 from .recall import RecallService
 from .prompting import render_current_turn_recall
 from .provider_schemas import build_config_schema, build_tool_schemas
-from .scope import accessible_scope_ids, build_scope_id, build_shared_pool_scope_id, build_shared_scope_id, normalize_scope_identity, writable_scope_ids
+from .scope import (
+    RUNTIME_STATUS_ACTIVE,
+    RUNTIME_STATUS_DISABLED_MISSING_PRINCIPAL,
+    accessible_scope_ids,
+    build_scope_id,
+    build_shared_pool_scope_id,
+    build_shared_scope_id,
+    normalize_scope_identity,
+    runtime_principal_status,
+    writable_scope_ids,
+)
 from .source_isolation import scope_is_memory_isolated
 from .sql_store import ensure_schema
 
@@ -123,6 +133,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._stop = threading.Event()
         self._maintenance_stop = threading.Event()
         self._session_id = ""
+        self._runtime_status = "uninitialized"
         self._current_turn = 0
         self._scope = RuntimeScope()
         self._scope_id = ""
@@ -182,8 +193,14 @@ class ScopeRecallMemoryProvider(MemoryProvider):
     def name(self) -> str:
         return "scope-recall"
 
+    @property
+    def runtime_status(self) -> str:
+        """Return the provider lifecycle state without touching storage."""
+
+        return self._runtime_status
+
     def is_available(self) -> bool:
-        return True
+        return self._runtime_status != RUNTIME_STATUS_DISABLED_MISSING_PRINCIPAL
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
         return build_config_schema()
@@ -304,27 +321,54 @@ class ScopeRecallMemoryProvider(MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._shutdown_requested.clear()
-        hermes_home = Path(kwargs.get("hermes_home") or "~/.hermes").expanduser()
-        self._hermes_home = hermes_home
-        self._storage_dir = hermes_home / "scope-recall"
+        self._session_id = session_id
+        self._current_turn = 0
+        self._last_recall_turns = {}
+        self._config = {}
+        self._retrieval_config = {}
+        self._vector_config = {}
+        self._scope_id = ""
+        self._shared_scope_id = ""
+        self._shared_pool_enabled = False
+        self._shared_pool_write_enabled = False
+        self._shared_pool_id = ""
+        self._shared_pool_scope_id = ""
+        self._accessible_scope_ids = []
+        self._writable_scope_ids = []
+
+        raw_scope = RuntimeScope(
+            platform=str(kwargs.get("platform") or "cli").strip().lower() or "cli",
+            user_id=str(kwargs.get("user_id") or "").strip(),
+            chat_id=str(kwargs.get("chat_id") or "").strip(),
+            thread_id=str(kwargs.get("thread_id") or "").strip(),
+            gateway_session_key=str(kwargs.get("gateway_session_key") or "").strip(),
+            agent_identity=str(kwargs.get("agent_identity") or "").strip(),
+            agent_workspace=str(kwargs.get("agent_workspace") or "").strip(),
+            agent_context=str(kwargs.get("agent_context") or "primary").strip() or "primary",
+        )
+        self._scope = raw_scope
+        self._runtime_status = runtime_principal_status(raw_scope)
+        self._hermes_home = Path(
+            kwargs.get("hermes_home") or "~/.hermes"
+        ).expanduser()
+        self._storage_dir = None
+        self._db_path = None
+        if self._runtime_status == RUNTIME_STATUS_DISABLED_MISSING_PRINCIPAL:
+            logger.error(
+                "Scope Recall disabled: trusted non-CLI user principal is missing"
+            )
+            return
+
+        self._runtime_status = "initializing"
+        self._storage_dir = self._hermes_home / "scope-recall"
         self._storage_dir.mkdir(parents=True, exist_ok=True)
-        self._migration_info = migrate_legacy_scope_recall_storage(self._hermes_home, self._storage_dir)
+        self._migration_info = migrate_legacy_scope_recall_storage(
+            self._hermes_home, self._storage_dir
+        )
         self._db_path = self._storage_dir / "memory.sqlite3"
         self._config = load_runtime_config(self._plugin_dir, self._storage_dir)
         self._retrieval_config = dict(self._config.get("retrieval") or {})
         self._vector_config = dict(self._config.get("vector") or {})
-
-        self._session_id = session_id
-        raw_scope = RuntimeScope(
-            platform=str(kwargs.get("platform") or "cli"),
-            user_id=str(kwargs.get("user_id") or ""),
-            chat_id=str(kwargs.get("chat_id") or ""),
-            thread_id=str(kwargs.get("thread_id") or ""),
-            gateway_session_key=str(kwargs.get("gateway_session_key") or ""),
-            agent_identity=str(kwargs.get("agent_identity") or ""),
-            agent_workspace=str(kwargs.get("agent_workspace") or ""),
-            agent_context=str(kwargs.get("agent_context") or "primary"),
-        )
         self._scope = normalize_scope_identity(raw_scope, self._config)
         self._scope_id = build_scope_id(self._scope, self._config)
         self._shared_scope_id = build_shared_scope_id(self._scope, self._config)
@@ -380,6 +424,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         setup_vector_layer(self)
         start_writer(self)
         self._register_provider_instance()
+        self._runtime_status = RUNTIME_STATUS_ACTIVE
 
     def _register_provider_instance(self) -> None:
         """Register this live provider for same-process SQLite lock recovery."""
@@ -390,12 +435,24 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         with _PROVIDER_REGISTRY_LOCK:
             _PROVIDER_REGISTRY.discard(self)
 
-    def _memory_isolated_for_scope(self) -> bool:
-        """Return whether this chat is excluded from every memory surface."""
+    def _runtime_memory_disabled(self) -> bool:
+        return self._runtime_status == RUNTIME_STATUS_DISABLED_MISSING_PRINCIPAL
 
-        return scope_is_memory_isolated(getattr(self, "_scope", None), self._config)
+    def _memory_isolated_for_scope(self) -> bool:
+        """Return whether this runtime is excluded from every memory surface."""
+
+        return self._runtime_memory_disabled() or scope_is_memory_isolated(
+            getattr(self, "_scope", None), self._config
+        )
 
     def system_prompt_block(self) -> str:
+        if self._runtime_memory_disabled():
+            return (
+                "# Scope Recall Memory\n"
+                "Disabled because the trusted runtime user principal is missing "
+                f"(status={RUNTIME_STATUS_DISABLED_MISSING_PRINCIPAL}). "
+                "Do not read, infer, or store durable memory in this runtime."
+            )
         if self._memory_isolated_for_scope():
             return (
                 "# Scope Recall Memory\n"
@@ -1070,6 +1127,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             self._last_recall_turns = {}
 
     def _schema_config(self) -> dict[str, Any]:
+        if self._runtime_memory_disabled():
+            return {}
         if self._config:
             return self._config
         hermes_home = self._hermes_home or Path(os.environ.get("HERMES_HOME") or "~/.hermes").expanduser()
@@ -1087,6 +1146,10 @@ class ScopeRecallMemoryProvider(MemoryProvider):
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         del kwargs
+        if self._runtime_memory_disabled():
+            from tools.registry import tool_error
+
+            return tool_error(RUNTIME_STATUS_DISABLED_MISSING_PRINCIPAL)
         if self._memory_isolated_for_scope():
             from tools.registry import tool_error
 
@@ -1108,6 +1171,12 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         can retry safely. Closing underneath a live digest can otherwise turn a
         slow shutdown into partial writes or use-after-close failures.
         """
+
+        if self._runtime_memory_disabled():
+            self._shutdown_requested.set()
+            self._maintenance_stop.set()
+            self._unregister_provider_instance()
+            return
 
         wait_timeout = max(0.0, float(timeout))
         with self._writer_lifecycle_lock:
@@ -1145,6 +1214,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._unregister_provider_instance()
 
     def flush(self, timeout: float = 2.0) -> bool:
+        if self._runtime_memory_disabled():
+            return True
         return flush_writer(self, timeout=timeout)
 
     def _search_db_memories(self, query: str, *, limit: int) -> List[RecallItem]:
@@ -1419,6 +1490,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             return False
 
     def _require_conn(self) -> sqlite3.Connection:
+        if self._runtime_memory_disabled():
+            raise RuntimeError(RUNTIME_STATUS_DISABLED_MISSING_PRINCIPAL)
         conn = self._conn
         if conn is not None:
             return conn

@@ -1,87 +1,87 @@
 name: Publish to PyPI
+run-name: Manual fallback PyPI publish ${{ github.ref_name }}
 
 on:
   workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Git tag to publish, e.g. v1.4.0'
-        required: true
-        type: string
 
 permissions:
   contents: read
 
+env:
+  # Hermes Agent v0.19.1 / v2026.7.30. Compatibility upgrades are reviewed explicitly.
+  HERMES_AGENT_COMMIT: cc4cab2f592e60a197e796506de9168f74baf3ea
+
 jobs:
-  publish:
-    name: Manual fallback PyPI publish
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/hermes-scope-recall
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Validate release tag
+        run: |
+          if [ "${GITHUB_REF_TYPE}" != "tag" ] || ! [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release tag: expected a v<major>.<minor>.<patch> tag ref" >&2
+            exit 1
+          fi
+      - name: Verify tag matches package version
+        run: |
+          expected="v$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          test "${GITHUB_REF_NAME}" = "${expected}"
+          test "$(git tag --points-at HEAD | grep -Fx "${expected}")" = "${expected}"
+      - name: Install release dependencies
+        run: |
+          python -m pip install --upgrade pip build ".[lancedb,dev]"
+          python .github/scripts/checkout_pinned_hermes.py
+          python -m pip install -e .hermes-agent-src
+      - name: Run tagged release gate
+        env:
+          PYTHONPATH: .hermes-agent-src
+        run: python scripts/check.release.py --tagged-release
+      - name: Build distributions and checksums
+        run: |
+          python -m build
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+
+          lines = []
+          for artifact in sorted(Path("dist").iterdir()):
+              digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+              lines.append(f"{digest}  {artifact.name}")
+          Path("SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+      - name: Upload reviewed release artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: scope-recall-pypi
+          path: |
+            dist/*
+            SHA256SUMS
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
     permissions:
       contents: read
       id-token: write
-
     steps:
-      - name: Resolve ref
-        id: ref
-        env:
-          REQUESTED_TAG: ${{ inputs.tag }}
-        run: |
-          set -euo pipefail
-          TAG="$REQUESTED_TAG"
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9][A-Za-z0-9.-]*)?$ ]]; then
-            echo "::error::Invalid release tag: $TAG"
-            exit 1
-          fi
-          echo "ref=$TAG" >> "$GITHUB_OUTPUT"
-
-      - name: Check out release tag
-        uses: actions/checkout@v6
+      - name: Download reviewed release artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          ref: ${{ steps.ref.outputs.ref }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Verify tag matches package version
-        env:
-          RELEASE_TAG: ${{ steps.ref.outputs.ref }}
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import os
-          import pathlib
-          import tomllib
-
-          tag = os.environ["RELEASE_TAG"]
-          version = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
-          expected = f"v{version}"
-          if tag != expected:
-              raise SystemExit(f"release tag {tag} does not match package version {expected}")
-          print(f"release tag matches package version: {tag}")
-          PY
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
+          name: scope-recall-pypi
+          path: release-assets
+      - name: Publish distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
-          python-version: '3.12'
-
-      - name: Install Hermes runtime for plugin tests
-        run: |
-          git clone --depth 1 https://github.com/NousResearch/hermes-agent.git .hermes-agent-src
-          python -m pip install --upgrade pip
-          python -m pip install -e .hermes-agent-src
-
-      - name: Install release gate tooling
-        run: python -m pip install --upgrade pip build ".[lancedb,dev]"
-
-      - name: Run release readiness gate
-        env:
-          PYTHONPATH: ${{ github.workspace }}/.hermes-agent-src:${{ github.workspace }}
-        run: python scripts/check.release.py --tagged-release
-
-      - name: Build sdist and wheel
-        run: python -m build --sdist --wheel
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+          packages-dir: release-assets/dist/
+          print-hash: true
