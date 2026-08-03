@@ -1596,21 +1596,24 @@ def test_pypi_workflow_runs_release_gate_before_publish():
     assert "fetch-depth: 0" in pypi_workflow
     assert "python -m pip install --upgrade pip build \".[lancedb,dev]\"" in pypi_workflow
     assert pypi_workflow.index("scripts/check.release.py") < pypi_workflow.index("pypa/gh-action-pypi-publish")
-    assert "  release:" not in pypi_workflow
-    assert "Manual fallback PyPI publish" in pypi_workflow
+    assert "  release:" in pypi_workflow
+    assert "types: [published]" in pypi_workflow
+    assert "workflow_dispatch:" in pypi_workflow
+    assert "PyPI publish" in pypi_workflow
     assert "Invalid release tag" in pypi_workflow
     assert "Verify tag matches package version" in pypi_workflow
     assert "echo \"ref=${{ inputs.tag }}\"" not in pypi_workflow
 
     assert "scripts/check.release.py --tagged-release" in release_workflow
     assert "fetch-depth: 0" in release_workflow
-    assert "pypa/gh-action-pypi-publish" in release_workflow
+    assert "pypa/gh-action-pypi-publish" not in release_workflow
+    assert "id-token: write" not in release_workflow
     assert "Upload release distributions" in release_workflow
     assert "continue-on-error: true" not in release_workflow
     assert "Invalid release tag" in release_workflow
     assert "Verify tag matches package version" in release_workflow
     assert "echo \"tag=${{ github.event.inputs.tag }}\"" not in release_workflow
-    assert release_workflow.index("scripts/check.release.py") < release_workflow.index("pypa/gh-action-pypi-publish")
+
 
 
 

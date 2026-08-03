@@ -144,7 +144,7 @@ def test_github_release_publish_is_retry_safe_without_source_execution():
 
 def test_release_credentials_are_isolated_from_build_and_source_execution():
     expectations = {
-        "release.yml": {"contents": "write", "id-token": "write"},
+        "release.yml": {"contents": "write"},
         "pypi.yml": {"contents": "read", "id-token": "write"},
     }
     forbidden_publish_commands = re.compile(
@@ -160,6 +160,8 @@ def test_release_credentials_are_isolated_from_build_and_source_execution():
         assert build_job.get("permissions", {"contents": "read"}) == {"contents": "read"}
         assert publish_job["needs"] == "build"
         assert publish_job["permissions"] == expected_publish_permissions
+        expected_environment = "pypi" if workflow_name == "pypi.yml" else None
+        assert publish_job.get("environment") == expected_environment
 
         publish_actions = {
             str(step.get("uses") or "").partition("@")[0]

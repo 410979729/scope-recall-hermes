@@ -1427,13 +1427,19 @@ def pypi_workflow_gate_check() -> dict[str, object]:
     gate_marker = "scripts/check.release.py"
     publish_marker = "pypa/gh-action-pypi-publish"
     if gate_marker not in pypi_text:
-        failures.append("manual PyPI workflow does not invoke scripts/check.release.py")
+        failures.append("PyPI workflow does not invoke scripts/check.release.py")
+    if publish_marker not in pypi_text:
+        failures.append("PyPI workflow does not publish to PyPI")
     if publish_marker in pypi_text and gate_marker in pypi_text and pypi_text.index(gate_marker) > pypi_text.index(publish_marker):
-        failures.append("manual PyPI workflow invokes release gate after the publish step")
-    if re.search(r"(?m)^\s+release:\s*$", pypi_text):
-        failures.append("manual PyPI workflow must not listen to release: published; tag release workflow publishes PyPI directly")
+        failures.append("PyPI workflow invokes release gate after the publish step")
+    if not re.search(r"(?m)^  release:\s*$", pypi_text):
+        failures.append("PyPI workflow does not listen for published GitHub Releases")
+    if not re.search(r"(?m)^    types:\s*\[published\]\s*$", pypi_text):
+        failures.append("PyPI workflow release trigger is not limited to published releases")
+    if not re.search(r"(?m)^  workflow_dispatch:\s*$", pypi_text):
+        failures.append("PyPI workflow does not retain a manual fallback")
 
-    for workflow_name, workflow_text in (("manual PyPI", pypi_text), ("tag release", release_text)):
+    for workflow_name, workflow_text in (("PyPI", pypi_text), ("tag release", release_text)):
         if "Invalid release tag" not in workflow_text:
             failures.append(f"{workflow_name} workflow does not validate release tag format")
         if "Verify tag matches package version" not in workflow_text:
@@ -1441,10 +1447,10 @@ def pypi_workflow_gate_check() -> dict[str, object]:
 
     if gate_marker not in release_text:
         failures.append("tag release workflow does not invoke scripts/check.release.py")
-    if publish_marker not in release_text:
-        failures.append("tag release workflow does not publish to PyPI")
-    if publish_marker in release_text and gate_marker in release_text and release_text.index(gate_marker) > release_text.index(publish_marker):
-        failures.append("tag release workflow invokes release gate after the PyPI publish step")
+    if publish_marker in release_text:
+        failures.append("tag release workflow must not publish to PyPI directly")
+    if "id-token: write" in release_text:
+        failures.append("tag release workflow must not hold PyPI OIDC permission")
     return {"ok": not failures, "failures": failures}
 
 
