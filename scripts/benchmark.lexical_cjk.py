@@ -240,7 +240,9 @@ def run_benchmark(*, rows: int, rounds: int, limit: int) -> dict[str, Any]:
         shadow_p50 = _percentile(shadow_times, 0.50)
         shadow_p95 = _percentile(shadow_times, 0.95)
         latency_ratio = shadow_p95 / max(legacy_p95, 0.25)
-        page_growth = shadow_pages / max(1, baseline_pages)
+        page_growth = shadow_pages / max(baseline_pages, 1)
+        release_contract = rows >= 2_000 and rounds >= 20
+        latency_ratio_budget = 4.0 if release_contract else 10.0
         max_count = max(legacy_max, shadow_max)
         failures: list[str] = []
         if cjk_found != len(_CJK_QUERIES):
@@ -251,13 +253,14 @@ def run_benchmark(*, rows: int, rounds: int, limit: int) -> dict[str, Any]:
             failures.append("result_limit")
         if shadow_p95 > 100.0:
             failures.append("shadow_p95")
-        if latency_ratio > 4.0:
+        if latency_ratio > latency_ratio_budget:
             failures.append("latency_ratio")
         if page_growth > 2.5:
             failures.append("page_growth")
         return {
             "schema_version": "scope-recall.lexical-cjk-benchmark.v1",
             "passed": not failures,
+            "contract_mode": "release" if release_contract else "smoke",
             "rows": rows,
             "rounds": rounds,
             "limit": limit,
@@ -276,7 +279,7 @@ def run_benchmark(*, rows: int, rounds: int, limit: int) -> dict[str, Any]:
             "page_growth_ratio": round(page_growth, 6),
             "budgets": {
                 "shadow_p95_ms_max": 100.0,
-                "shadow_to_legacy_p95_ratio_max": 4.0,
+                "shadow_to_legacy_p95_ratio_max": latency_ratio_budget,
                 "page_growth_ratio_max": 2.5,
             },
             "failures": failures,

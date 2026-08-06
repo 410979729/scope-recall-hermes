@@ -18,6 +18,11 @@ This cumulative minor release covers all changes since the last public release, 
 - Added a read-only `doctor` endpoint-policy check for enabled capture, LLM journal, reflection, and hosted primary/fallback embedding transports; it resolves the same inherited provider routes and embedding base-URL environment aliases as runtime without reading API keys, and reports only origins plus recognized public API suffixes.
 
 ### Fixed
+- Bound READY/ACTIVE lexical quality receipts to a strict privacy-safe schema, fixed provenance, source revision, integrity report, and canonical evidence fingerprint; stale or forged receipts now fail closed.
+- Acquired the durable maintenance lease and SQLite DML guard triggers for lexical build/activate/rollback, with backup-first source fencing and explicit release evidence.
+- Enforced requested limits for direct vector retrieval after stable score ordering and ID deduplication.
+- Extended Windows long-path handling to profile enumeration, manifest/config reads, rollback receipt reads, and atomic receipt publication.
+- Required durable pre-mutation rollout receipts and compensated installer failures, `ok=false` results, and post-install receipt publication failures before stopping further profile changes.
 - Applied final relevance ordering before enforcing the requested SQLite lexical result limit, so direct storage-view callers no longer receive the larger internal candidate pool.
 - Fixed cross-profile and installer backup/restore failures when deep profile homes pushed copied descendants past the legacy Windows path limit; failed copies now clean partial destinations before active plugin mutation.
 - Rejected non-HTTP(S), credential-bearing URL authorities and query parameters, fragments, cross-origin redirects, and HTTPS-to-HTTP downgrades before memory-bearing requests can leave the process. Loopback HTTP remains compatible for local model servers, while every HTTP path strips authorization, API-key, cookie, and proxy credentials; OpenAI SDK embedding calls no longer auto-follow redirects, only a literal boolean `true` can opt into plaintext HTTP, and endpoint-policy failures cannot degrade into heuristic fallback.

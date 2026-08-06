@@ -31,11 +31,21 @@ def memory_db_path(hermes_home: Path, *, db_path: Path | str | None = None) -> P
     return hermes_home.expanduser() / "scope-recall" / "memory.sqlite3"
 
 
-def connect_memory_db(path: Path, *, apply: bool = False, timeout: float = 30.0) -> sqlite3.Connection:
+def connect_memory_db(
+    path: Path,
+    *,
+    apply: bool = False,
+    timeout: float = 30.0,
+    lease_token: str | None = None,
+) -> sqlite3.Connection:
     mode = "rw" if apply else "ro"
     conn = connect_truth_database(path, mode=mode, timeout=timeout)
     if apply:
-        install_activation_lease_authorizer(conn, path)
+        install_activation_lease_authorizer(
+            conn,
+            path,
+            lease_token=lease_token,
+        )
     return conn
 
 

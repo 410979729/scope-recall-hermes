@@ -21,10 +21,10 @@ from pathlib import Path
 from typing import Any
 
 from .maintenance_lease import (
-    ACTIVATION_LEASE_FILENAME,
-    activation_lease_path,
+    acquire_activation_lease,
     ensure_activation_guard_triggers,
     read_activation_lease,
+    release_activation_lease,
     remove_activation_guard_triggers,
 )
 from .recovery_commands import (
@@ -42,62 +42,6 @@ class ActivationSnapshotError(RuntimeError):
 
 def _stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d.%H%M%S.%f")
-
-
-def _acquire_activation_lease(database_path: Path) -> dict[str, Any]:
-    database_path.parent.mkdir(parents=True, exist_ok=True)
-    path = activation_lease_path(database_path)
-    token = uuid.uuid4().hex
-    payload = {
-        "kind": "scope-recall-activation-maintenance",
-        "token": token,
-        "pid": os.getpid(),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "database_path": str(database_path),
-    }
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    try:
-        descriptor = os.open(path, flags, 0o600)
-    except FileExistsError as exc:
-        raise ActivationSnapshotError(
-            "an activation maintenance lease already exists; verify no activation "
-            f"is running before manual cleanup: {path}"
-        ) from exc
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-    except Exception:
-        path.unlink(missing_ok=True)
-        raise
-    return {
-        "path": path,
-        "database_path": database_path,
-        "token": token,
-        "payload": payload,
-        "acquired": True,
-        "released": False,
-        "filename": ACTIVATION_LEASE_FILENAME,
-    }
-
-
-def _release_activation_lease(lease: dict[str, Any]) -> bool:
-    path = Path(lease["path"])
-    if not path.exists():
-        lease["released"] = True
-        return True
-    try:
-        payload = read_activation_lease(
-            Path(str(lease.get("database_path") or path.parent / "memory.sqlite3"))
-        )
-    except Exception:
-        return False
-    if payload is None or str(payload.get("token") or "") != str(lease.get("token") or ""):
-        return False
-    path.unlink()
-    lease["released"] = True
-    return True
 
 
 def _ensure_activation_lease_retained(lease: dict[str, Any]) -> bool:
@@ -659,7 +603,7 @@ def capture_activation_state(
     if db_path.exists() and not db_path.is_file():
         raise ActivationSnapshotError(f"SQLite truth path is not a file: {db_path}")
     vector_companions: list[dict[str, Any]] = []
-    lease = _acquire_activation_lease(db_path)
+    lease = acquire_activation_lease(db_path)
     try:
         vector_companions = _capture_vector_companions(storage_dir)
         if db_path.is_file():
@@ -693,7 +637,7 @@ def capture_activation_state(
             except Exception:
                 guards_removed = False
         if guards_removed:
-            _release_activation_lease(lease)
+            release_activation_lease(lease)
         if not storage_dir_preexisting and guards_removed:
             try:
                 storage_dir.rmdir()
@@ -841,7 +785,7 @@ def committed_activation_receipt(
             sqlite_snapshot["guards_installed"] = False
         except Exception as exc:
             failures.append(f"activation SQLite guard cleanup failed: {exc}")
-    if lease and not failures and not _release_activation_lease(lease):
+    if lease and not failures and not release_activation_lease(lease):
         failures.append("activation maintenance lease release failed")
         try:
             guard_names = _install_sqlite_activation_guards(
@@ -1069,7 +1013,7 @@ def compensate_activation_failure(
         failures.append(
             "activation maintenance lease could not be retained after rollback failure"
         )
-    if not failures and lease and not _release_activation_lease(lease):
+    if not failures and lease and not release_activation_lease(lease):
         failures.append("activation maintenance lease release failed")
     if lease:
         snapshot["maintenance_lease"] = lease

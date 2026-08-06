@@ -361,7 +361,17 @@ def search_vector_memories(provider: Any, query: str, *, limit: int) -> list[Rec
                 metadata=metadata,
             )
         )
-    return results
+    best_by_id: dict[str, RecallItem] = {}
+    for item in results:
+        current = best_by_id.get(str(item.id))
+        if current is None or float(item.score) > float(current.score):
+            best_by_id[str(item.id)] = item
+    ranked = sorted(
+        best_by_id.values(),
+        key=lambda item: float(item.score),
+        reverse=True,
+    )
+    return ranked[: max(0, int(limit))]
 
 
 def _curated_memory_allowed(provider: Any) -> bool:

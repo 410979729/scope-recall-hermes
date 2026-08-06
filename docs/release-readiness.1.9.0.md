@@ -18,8 +18,8 @@ This public maintainer note records the product-level release requirements for t
 - Schema migration `0012_lexical_shadow_index_v1_9_0` adds only generation metadata and an activation pointer during ordinary initialization.
 - The supplemental trigram index is created only by an explicit backup-first maintenance command. Backfill commits bounded rowid pages and resumes from a durable watermark.
 - Truth-table triggers keep visible insert, update, lifecycle, and delete changes synchronized while the shadow is building, ready, or active.
-- Quality review requires the fixed high-interference Chinese fixture, bounded live CJK samples, exact integrity counts, and zero removal of legacy English candidates.
-- Activation uses an explicit current-generation compare-and-swap. Rollback changes only the pointer and retains both legacy and shadow index storage.
+- Quality review requires the fixed high-interference Chinese fixture, bounded live CJK samples, exact integrity counts, zero removal of legacy English candidates, fixed provenance, a source-revision binding, and a canonical evidence fingerprint. Unknown or raw sample fields fail closed.
+- Build, activation, and rollback acquire the durable activation lease, prove an immediate writer window, take the online backup before DB mutation, install temporary DML guard triggers, and report guard/lease cleanup. Activation rechecks the reviewed source binding in addition to the explicit current-generation compare-and-swap. Rollback changes only the pointer and retains both legacy and shadow index storage.
 - Two-character Chinese concepts use one bounded ranked fallback scan because SQLite trigram FTS cannot represent them. A single generic bigram is insufficient final relevance evidence.
 - The release gate runs a fixed 2,000-row, 20-round benchmark and enforces CJK 3/3 discovery, zero English candidate removal, requested-limit compliance, bounded p95 latency, and bounded SQLite page growth.
 
@@ -27,7 +27,8 @@ This public maintainer note records the product-level release requirements for t
 
 - Copy operations preflight the complete destination tree before mutation, including component and extended-path budgets.
 - Windows I/O uses an internal extended-length path representation while operator receipts retain ordinary public paths.
-- Installer and cross-profile rollout share one filesystem primitive layer and short, collision-resistant backup/staging roots.
+- Installer and cross-profile rollout share one filesystem primitive layer and short, collision-resistant backup/staging roots. Profile enumeration, manifest/config reads, and receipt reads/writes use the same long-path-safe layer.
+- Apply requires an explicit durable receipt. Each backup capability is atomically published before replacement; installer failures, `ok=false`, and post-install receipt publication failures compensate to the previous plugin state before further profiles can change.
 - Partial copies are removed on failure. A failed final rollback replacement automatically restores the just-created current-plugin backup or reports an explicit compensation failure.
 - Historical rollout receipts under the previous backup root remain valid.
 
@@ -37,7 +38,7 @@ This public maintainer note records the product-level release requirements for t
 - Credential-bearing URL components, unsafe encodings, fragments, cross-origin redirects, HTTPS downgrade, and non-boolean plaintext opt-ins fail closed.
 - Loopback HTTP strips authorization, API-key, cookie, proxy, and registered credential-like headers while preserving reviewed non-credential controls.
 - Doctor and transport errors expose only an origin or recognized public API suffix, not private path/query material.
-- Public memory-ID collections remain bounded and validated before database access; large accepted operations are chunked under the live SQLite parameter limit without partial transaction commits.
+- Public memory-ID collections remain bounded and validated before database access; large accepted operations are chunked under the live SQLite parameter limit without partial transaction commits. Direct SQLite and vector storage views both enforce the caller-requested final limit after ordering/deduplication.
 
 ## Preserved release contracts
 

@@ -8,10 +8,14 @@ import threading
 
 from scope_recall.lexical_generation import (
     LEXICAL_GENERATION_ID,
+    LEXICAL_QUALITY_PROVENANCE,
     activate_generation,
     backfill_generation,
     create_shadow_generation,
     ensure_lexical_generation_schema,
+    generation_integrity_report,
+    lexical_quality_evidence_fingerprint,
+    lexical_source_binding,
     mark_generation_ready,
     rollback_generation,
 )
@@ -64,14 +68,26 @@ def _store(
     )
 
 
-def _quality_receipt() -> dict[str, object]:
-    return {
+def _quality_receipt(conn: sqlite3.Connection) -> dict[str, object]:
+    receipt = {
         "ok": True,
         "status": "ready",
+        "generation_id": LEXICAL_GENERATION_ID,
+        "synthetic_cjk_queries": 3,
+        "synthetic_cjk_expected_found": 3,
+        "live_cjk_queries": 0,
+        "live_cjk_expected_found": 0,
+        "english_queries": 1,
         "cjk_queries": 3,
         "cjk_expected_found": 3,
         "english_regressions": 0,
+        "integrity": generation_integrity_report(conn, LEXICAL_GENERATION_ID),
+        "source_binding": lexical_source_binding(conn),
+        "provenance": dict(LEXICAL_QUALITY_PROVENANCE),
+        "contains_raw_samples": False,
     }
+    receipt["evidence_fingerprint"] = lexical_quality_evidence_fingerprint(receipt)
+    return receipt
 
 
 def _corpus() -> tuple[sqlite3.Connection, _Provider]:
@@ -118,7 +134,7 @@ def _corpus() -> tuple[sqlite3.Connection, _Provider]:
     mark_generation_ready(
         conn,
         LEXICAL_GENERATION_ID,
-        quality_receipt=_quality_receipt(),
+        quality_receipt=_quality_receipt(conn),
     )
     conn.commit()
     return conn, _Provider(conn)

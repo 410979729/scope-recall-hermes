@@ -35,6 +35,7 @@ from scope_recall_lexical_migration_runtime.fts_maintenance import (  # noqa: E4
 from scope_recall_lexical_migration_runtime.lexical_generation import (  # noqa: E402
     LEXICAL_GENERATION_ID,
     activate_generation,
+    lexical_source_binding,
     rollback_generation,
 )
 from scope_recall_lexical_migration_runtime.lexical_migration import (  # noqa: E402
@@ -44,6 +45,13 @@ from scope_recall_lexical_migration_runtime.lexical_migration import (  # noqa: 
 from scope_recall_lexical_migration_runtime.maintenance_ops import (  # noqa: E402
     connect_memory_db,
     memory_db_path,
+)
+from scope_recall_lexical_migration_runtime.maintenance_lease import (  # noqa: E402
+    MaintenanceLeaseError,
+    acquire_activation_lease,
+    ensure_activation_guard_triggers,
+    remove_activation_guard_triggers,
+    release_activation_lease,
 )
 from scope_recall_lexical_migration_runtime.sql_store import ensure_schema  # noqa: E402
 
@@ -81,7 +89,13 @@ def _expected_current(raw: str | None) -> str:
     return "" if normalized.lower() == "legacy" else normalized
 
 
-def _blocked(status: str, error: str, *, backup_path: str = "") -> int:
+def _blocked(
+    status: str,
+    error: str,
+    *,
+    backup_path: str = "",
+    maintenance_lease: dict[str, bool] | None = None,
+) -> int:
     _emit(
         {
             "ok": False,
@@ -89,6 +103,8 @@ def _blocked(status: str, error: str, *, backup_path: str = "") -> int:
             "dry_run": False,
             "backup_path": backup_path,
             "error": sanitize_report_text(error),
+            "maintenance_lease": maintenance_lease
+            or {"acquired": False, "released": False},
         }
     )
     return 2
@@ -119,16 +135,16 @@ def main() -> int:
     if not args.apply:
         conn = connect_memory_db(db_path, apply=False)
         try:
-            payload = plan_lexical_migration(
+            dry_payload = plan_lexical_migration(
                 conn,
                 str(args.generation_id),
             )
         finally:
             conn.close()
-        payload["requested_action"] = (
+        dry_payload["requested_action"] = (
             "rollback" if args.rollback else "activate" if args.activate else "build"
         )
-        _emit(payload)
+        _emit(dry_payload)
         return 0
 
     if not args.maintenance_confirmed:
@@ -139,52 +155,124 @@ def main() -> int:
 
     action = "rollback" if args.rollback else "activate" if args.activate else "build"
     backup_path = ""
-    conn = connect_memory_db(db_path, apply=True)
     try:
+        lease = acquire_activation_lease(db_path)
+    except MaintenanceLeaseError as exc:
+        return _blocked("lease_conflict", str(exc))
+    lease_state = {
+        "acquired": True,
+        "guards_installed": False,
+        "guards_removed": False,
+        "released": False,
+    }
+    conn = None
+    apply_payload: dict[str, Any] | None = None
+    failure: Exception | None = None
+    try:
+        conn = connect_memory_db(
+            db_path,
+            apply=True,
+            lease_token=str(lease["token"]),
+        )
+        conn.execute("BEGIN IMMEDIATE")
+        conn.commit()
+        source_before = lexical_source_binding(conn)
         backup = secure_online_backup(
             conn,
             db_path,
             purpose=f"lexical-{action}",
         )
         backup_path = str(backup)
+        source_after_backup = lexical_source_binding(conn)
+        if source_after_backup != source_before:
+            raise RuntimeError("SQLite truth changed during backup fence")
+        ensure_activation_guard_triggers(
+            conn,
+            db_path,
+            lease_token=str(lease["token"]),
+        )
+        conn.commit()
+        lease_state["guards_installed"] = True
         ensure_schema(conn, commit=True)
         if args.rollback:
-            payload = rollback_generation(
+            apply_payload = rollback_generation(
                 conn,
                 expected_current=_expected_current(args.expected_current),
             )
             conn.commit()
         elif args.activate:
-            payload = activate_generation(
+            apply_payload = activate_generation(
                 conn,
                 str(args.generation_id),
                 expected_current=_expected_current(args.expected_current),
             )
             conn.commit()
         else:
-            payload = build_lexical_generation(
+            apply_payload = build_lexical_generation(
                 conn,
                 str(args.generation_id),
                 batch_size=int(args.batch_size),
                 sample_limit=int(args.sample_limit),
             )
-        payload.update(
+        assert apply_payload is not None
+        apply_payload.update(
             {
-                "ok": bool(payload.get("ok", True)),
+                "ok": bool(apply_payload.get("ok", True)),
                 "dry_run": False,
                 "requested_action": action,
                 "backup_path": backup_path,
                 "backup_permission_model": backup_permission_model(),
+                "source_fence": {
+                    "before": source_before,
+                    "after_backup": source_after_backup,
+                    "stable": True,
+                },
             }
         )
-        _emit(payload)
-        return 0 if bool(payload.get("ok")) else 2
     except Exception as exc:
-        if conn.in_transaction:
+        failure = exc
+        if conn is not None and conn.in_transaction:
             conn.rollback()
-        return _blocked("blocked", str(exc), backup_path=backup_path)
     finally:
-        conn.close()
+        if conn is not None and lease_state["guards_installed"]:
+            try:
+                remove_activation_guard_triggers(conn)
+                conn.commit()
+                lease_state["guards_removed"] = True
+            except Exception as exc:
+                if conn.in_transaction:
+                    conn.rollback()
+                if failure is None:
+                    failure = exc
+        if conn is not None:
+            conn.close()
+        if not lease_state["guards_installed"] or lease_state["guards_removed"]:
+            lease_state["released"] = release_activation_lease(lease)
+
+    if not lease_state["released"]:
+        return _blocked(
+            "lease_release_failed",
+            "activation maintenance lease release failed",
+            backup_path=backup_path,
+            maintenance_lease=lease_state,
+        )
+    if failure is not None:
+        return _blocked(
+            "blocked",
+            str(failure),
+            backup_path=backup_path,
+            maintenance_lease=lease_state,
+        )
+    if apply_payload is None:
+        return _blocked(
+            "blocked",
+            "lexical migration produced no receipt",
+            backup_path=backup_path,
+            maintenance_lease=lease_state,
+        )
+    apply_payload["maintenance_lease"] = lease_state
+    _emit(apply_payload)
+    return 0 if bool(apply_payload.get("ok")) else 2
 
 
 if __name__ == "__main__":

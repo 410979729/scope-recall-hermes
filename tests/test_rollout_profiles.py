@@ -359,3 +359,160 @@ def test_rollout_backup_and_repeat_restore_support_deep_profile_paths(tmp_path: 
         assert "version: 0.1.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
     finally:
         remove_path(profile_home, missing_ok=True, ignore_errors=True)
+
+
+def test_apply_requires_durable_receipt_before_mutation(tmp_path: Path):
+    module = _load_rollout_module()
+    profiles_root = tmp_path / "profiles"
+    home = profiles_root / "alpha"
+    _write_plugin(home, version="0.1.0")
+
+    with pytest.raises(ValueError, match="receipt"):
+        module.rollout_profiles(
+            profiles_root=profiles_root,
+            selected_profiles=["alpha"],
+            canary="alpha",
+            apply=True,
+            receipt_path=None,
+        )
+
+    assert module.read_manifest_version(home / "plugins" / "scope-recall") == "0.1.0"
+
+
+def test_receipt_is_published_after_backup_before_install(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    module = _load_rollout_module()
+    profiles_root = tmp_path / "profiles"
+    home = profiles_root / "alpha"
+    receipt = tmp_path / "receipts" / "rollout.json"
+    _write_plugin(home, version="0.1.0")
+    observed = {"prepublished": False}
+    original_install = module.installer.install
+
+    def checking_install(profile_home: Path, *, force: bool = False):
+        payload = json.loads(receipt.read_text(encoding="utf-8"))
+        action = payload["actions"][0]
+        observed["prepublished"] = bool(action["backup_path"])
+        return original_install(profile_home, force=force)
+
+    monkeypatch.setattr(module.installer, "install", checking_install)
+
+    report = module.rollout_profiles(
+        profiles_root=profiles_root,
+        selected_profiles=["alpha"],
+        canary="alpha",
+        apply=True,
+        receipt_path=receipt,
+    )
+
+    assert report["ok"] is True
+    assert observed["prepublished"] is True
+
+
+def test_install_not_ok_is_compensated_to_previous_plugin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    module = _load_rollout_module()
+    profiles_root = tmp_path / "profiles"
+    home = profiles_root / "alpha"
+    receipt = tmp_path / "receipt.json"
+    _write_plugin(home, version="0.1.0")
+
+    def broken_install(profile_home: Path, *, force: bool = False):
+        del force
+        (profile_home / "plugins" / "scope-recall" / "plugin.yaml").write_text(
+            "name: scope-recall\nversion: 9.9.9-broken\n",
+            encoding="utf-8",
+        )
+        return {"ok": False, "installed": True, "verify": {"ok": False}}
+
+    monkeypatch.setattr(module.installer, "install", broken_install)
+
+    report = module.rollout_profiles(
+        profiles_root=profiles_root,
+        selected_profiles=["alpha"],
+        canary="alpha",
+        apply=True,
+        receipt_path=receipt,
+    )
+
+    action = report["actions"][0]
+    assert report["ok"] is False
+    assert action["compensated"] is True
+    assert module.read_manifest_version(home / "plugins" / "scope-recall") == "0.1.0"
+
+
+def test_receipt_failure_after_install_compensates_previous_plugin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    module = _load_rollout_module()
+    profiles_root = tmp_path / "profiles"
+    home = profiles_root / "alpha"
+    receipt = tmp_path / "receipt.json"
+    _write_plugin(home, version="0.1.0")
+    calls = {"count": 0}
+
+    def flaky_publish(report: dict, path: Path) -> None:
+        calls["count"] += 1
+        if calls["count"] >= 2:
+            raise OSError("injected receipt publication failure")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(report), encoding="utf-8")
+
+    monkeypatch.setattr(module, "_publish_receipt", flaky_publish)
+
+    report = module.rollout_profiles(
+        profiles_root=profiles_root,
+        selected_profiles=["alpha"],
+        canary="alpha",
+        apply=True,
+        receipt_path=receipt,
+    )
+
+    action = report["actions"][0]
+    assert report["ok"] is False
+    assert action["compensated"] is True
+    assert module.read_manifest_version(home / "plugins" / "scope-recall") == "0.1.0"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended path boundary")
+def test_deep_profile_inventory_and_receipt_use_long_path_io(tmp_path: Path):
+    from scope_recall.windows_filesystem import io_path, make_dirs, path_is_file, remove_path
+
+    module = _load_rollout_module()
+    profiles_root = tmp_path / "profiles"
+    suffix_length = 245 - len(str(profiles_root)) - 1
+    if suffix_length < 8 or suffix_length > 240:
+        pytest.skip("temporary path cannot form the 245-character profile fixture")
+    home = profiles_root / ("p" * suffix_length)
+    plugin = home / "plugins" / "scope-recall"
+    make_dirs(plugin)
+    for name, text in {
+        "plugin.yaml": "name: scope-recall\nversion: 0.1.0\n",
+        "__init__.py": "",
+        "provider.py": "",
+        "config.json": "{}",
+    }.items():
+        with open(io_path(plugin / name), "w", encoding="utf-8") as handle:
+            handle.write(text)
+    receipt = home / "receipts" / "rollout.json"
+
+    try:
+        report = module.rollout_profiles(
+            profiles_root=profiles_root,
+            selected_profiles=[home.name],
+            canary=home.name,
+            apply=False,
+            receipt_path=receipt,
+        )
+
+        assert report["ok"] is True
+        assert report["profiles"][0]["plugin_exists"] is True
+        assert report["profiles"][0]["plugin_version"] == "0.1.0"
+        assert path_is_file(receipt)
+    finally:
+        remove_path(home, missing_ok=True, ignore_errors=True)

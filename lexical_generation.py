@@ -9,6 +9,7 @@ not create or activate the shadow index.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -30,6 +31,12 @@ _TRIGGER_NAMES = (
     "trg_lexical_cjk_v1_update",
     "trg_lexical_cjk_v1_delete",
 )
+LEXICAL_QUALITY_PROVENANCE = {
+    "contract": "scope-recall.lexical-quality.v1",
+    "evaluator": "lexical_migration.validate_lexical_generation",
+    "synthetic_corpus": "cjk-high-interference-v1",
+    "retrieval_algorithm": "legacy-plus-shadow-v1",
+}
 _REQUIRED_TABLES = {"lexical_generations", "lexical_generation_state"}
 _REQUIRED_GENERATION_COLUMNS = {
     "generation_id",
@@ -480,17 +487,145 @@ def generation_integrity_report(
     }
 
 
-def _validate_quality_receipt(receipt: dict[str, Any]) -> None:
-    if receipt.get("ok") is not True:
+def lexical_source_binding(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Return a privacy-safe logical fingerprint of ordinary-recall truth rows."""
+
+    visible_m = ordinary_recall_lifecycle_visible_sql("m")
+    rows = conn.execute(
+        f"""
+        SELECT m.rowid, m.id, m.updated_at, m.target, m.content, m.summary, m.metadata
+        FROM memories m
+        WHERE {visible_m}
+        ORDER BY m.rowid
+        """
+    ).fetchall()
+    digest = hashlib.sha256()
+    for row in rows:
+        for value in row:
+            encoded = str(value if value is not None else "").encode(
+                "utf-8", errors="surrogatepass"
+            )
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+    max_rowid = int(
+        conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM memories").fetchone()[0]
+    )
+    return {
+        "algorithm": "sha256-visible-memory-v1",
+        "fingerprint": digest.hexdigest(),
+        "visible_rows": len(rows),
+        "max_rowid": max_rowid,
+    }
+
+
+def lexical_quality_evidence_fingerprint(receipt: dict[str, Any]) -> str:
+    """Hash a structured quality receipt without its self-hash field."""
+
+    payload = {
+        key: value
+        for key, value in receipt.items()
+        if key != "evidence_fingerprint"
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+_QUALITY_RECEIPT_KEYS = {
+    "ok",
+    "status",
+    "generation_id",
+    "synthetic_cjk_queries",
+    "synthetic_cjk_expected_found",
+    "live_cjk_queries",
+    "live_cjk_expected_found",
+    "english_queries",
+    "english_regressions",
+    "cjk_queries",
+    "cjk_expected_found",
+    "integrity",
+    "source_binding",
+    "provenance",
+    "evidence_fingerprint",
+    "contains_raw_samples",
+}
+
+
+def _quality_count(receipt: dict[str, Any], key: str) -> int:
+    value = receipt.get(key)
+    if type(value) is not int or int(value) < 0:
+        raise LexicalGenerationError("quality receipt count schema is invalid")
+    return int(value)
+
+
+def _validate_quality_receipt(
+    conn: sqlite3.Connection,
+    generation_id: str,
+    receipt: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate and canonicalize the complete privacy-safe quality contract."""
+
+    if not isinstance(receipt, dict) or set(receipt) != _QUALITY_RECEIPT_KEYS:
+        raise LexicalGenerationError("quality receipt schema is invalid")
+    if receipt.get("ok") is not True or receipt.get("status") != "ready":
         raise LexicalGenerationError("quality receipt is not approved")
-    cjk_queries = int(receipt.get("cjk_queries") or 0)
-    cjk_found = int(receipt.get("cjk_expected_found") or 0)
-    if cjk_found < cjk_queries:
-        raise LexicalGenerationError(
-            "quality receipt has unresolved CJK discovery failures"
-        )
-    if int(receipt.get("english_regressions") or 0) != 0:
-        raise LexicalGenerationError("quality receipt has English regressions")
+    if receipt.get("generation_id") != generation_id:
+        raise LexicalGenerationError("quality receipt generation binding is invalid")
+    if receipt.get("contains_raw_samples") is not False:
+        raise LexicalGenerationError("quality receipt privacy contract is invalid")
+    if receipt.get("provenance") != LEXICAL_QUALITY_PROVENANCE:
+        raise LexicalGenerationError("quality receipt provenance is invalid")
+    if receipt.get("evidence_fingerprint") != lexical_quality_evidence_fingerprint(
+        receipt
+    ):
+        raise LexicalGenerationError("quality receipt evidence fingerprint is invalid")
+
+    synthetic_queries = _quality_count(receipt, "synthetic_cjk_queries")
+    synthetic_found = _quality_count(receipt, "synthetic_cjk_expected_found")
+    live_queries = _quality_count(receipt, "live_cjk_queries")
+    live_found = _quality_count(receipt, "live_cjk_expected_found")
+    english_queries = _quality_count(receipt, "english_queries")
+    english_regressions = _quality_count(receipt, "english_regressions")
+    cjk_queries = _quality_count(receipt, "cjk_queries")
+    cjk_found = _quality_count(receipt, "cjk_expected_found")
+    if synthetic_queries < 3 or synthetic_found != synthetic_queries:
+        raise LexicalGenerationError("quality receipt synthetic CJK gate is invalid")
+    if live_found != live_queries:
+        raise LexicalGenerationError("quality receipt live CJK gate is invalid")
+    if cjk_queries != synthetic_queries + live_queries or cjk_found != cjk_queries:
+        raise LexicalGenerationError("quality receipt aggregate CJK gate is invalid")
+    if english_queries < 1 or english_regressions != 0:
+        raise LexicalGenerationError("quality receipt English gate is invalid")
+
+    source_binding = lexical_source_binding(conn)
+    if receipt.get("source_binding") != source_binding:
+        raise LexicalGenerationError("quality receipt source binding is invalid")
+    integrity = generation_integrity_report(conn, generation_id)
+    if receipt.get("integrity") != integrity or not bool(integrity.get("healthy")):
+        raise LexicalGenerationError("quality receipt integrity binding is invalid")
+
+    return {
+        "ok": True,
+        "status": "ready",
+        "generation_id": generation_id,
+        "synthetic_cjk_queries": synthetic_queries,
+        "synthetic_cjk_expected_found": synthetic_found,
+        "live_cjk_queries": live_queries,
+        "live_cjk_expected_found": live_found,
+        "english_queries": english_queries,
+        "english_regressions": 0,
+        "cjk_queries": cjk_queries,
+        "cjk_expected_found": cjk_found,
+        "integrity": integrity,
+        "source_binding": source_binding,
+        "provenance": dict(LEXICAL_QUALITY_PROVENANCE),
+        "evidence_fingerprint": str(receipt["evidence_fingerprint"]),
+        "contains_raw_samples": False,
+    }
 
 
 def mark_generation_ready(
@@ -505,7 +640,11 @@ def mark_generation_ready(
     report = generation_integrity_report(conn, generation_id)
     if not bool(report.get("healthy")):
         raise LexicalGenerationError("lexical generation integrity gate failed")
-    _validate_quality_receipt(quality_receipt)
+    canonical_receipt = _validate_quality_receipt(
+        conn,
+        generation_id,
+        quality_receipt,
+    )
     updated = conn.execute(
         """
         UPDATE lexical_generations
@@ -513,7 +652,7 @@ def mark_generation_ready(
         WHERE generation_id=? AND status IN ('building', 'failed', 'ready')
         """,
         (
-            json.dumps(quality_receipt, ensure_ascii=False, sort_keys=True),
+            json.dumps(canonical_receipt, ensure_ascii=False, sort_keys=True),
             _now_iso(),
             generation_id,
         ),
@@ -540,8 +679,10 @@ def activate_generation(
     manifest = generation_status(conn, generation_id)
     if manifest.get("status") != "ready" or manifest.get("quality_ok") is not True:
         raise LexicalGenerationError("lexical generation is not reviewed READY")
-    if not bool(generation_integrity_report(conn, generation_id).get("healthy")):
-        raise LexicalGenerationError("lexical generation integrity changed before activation")
+    quality = manifest.get("quality")
+    if not isinstance(quality, dict):
+        raise LexicalGenerationError("lexical generation quality receipt is missing")
+    _validate_quality_receipt(conn, generation_id, quality)
     now = _now_iso()
     if actual:
         conn.execute(

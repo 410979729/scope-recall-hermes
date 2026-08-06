@@ -16,10 +16,13 @@ import pytest
 
 from scope_recall.windows_filesystem import (
     PathBudgetError,
+    atomic_write_text,
     copy_tree,
     io_path,
+    list_directory_paths,
     preflight_copy_tree,
     public_path,
+    read_text,
     remove_path,
 )
 
@@ -94,3 +97,17 @@ def test_copy_tree_removes_partial_destination_after_copy_failure(
         copy_tree(source, destination, copy_function=flaky_copy)
 
     assert not destination.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended path boundary")
+def test_deep_path_directory_listing_and_atomic_text_round_trip(tmp_path: Path):
+    root = _deep_home(tmp_path, target_length=245)
+    receipt = root / "receipts" / "rollout.json"
+
+    atomic_write_text(receipt, '{"ok":true}\n')
+
+    assert read_text(receipt) == '{"ok":true}\n'
+    assert [path.name for path in list_directory_paths(root / "receipts")] == [
+        "rollout.json"
+    ]
+    remove_path(root)

@@ -14,6 +14,7 @@ import hmac
 import json
 import os
 import sqlite3
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -77,6 +78,74 @@ def _connect_truth_database(
 
 class MaintenanceLeaseError(RuntimeError):
     """Raised when a writer is blocked by an active activation lease."""
+
+
+def acquire_activation_lease(database_path: Path) -> dict[str, Any]:
+    """Atomically acquire the durable cooperative writer lease."""
+
+    expanded = Path(database_path).expanduser()
+    db_path = Path(os.path.abspath(os.fspath(expanded)))
+    if db_path.is_symlink() or db_path.parent.is_symlink():
+        raise MaintenanceLeaseError(
+            "activation maintenance lease cannot protect a symlinked truth store"
+        )
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    path = activation_lease_path(db_path)
+    token = uuid.uuid4().hex
+    payload = {
+        "kind": "scope-recall-activation-maintenance",
+        "token": token,
+        "pid": os.getpid(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "database_path": str(db_path),
+    }
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise MaintenanceLeaseError(
+            "an activation maintenance lease already exists"
+        ) from exc
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+    return {
+        "path": path,
+        "database_path": db_path,
+        "token": token,
+        "payload": payload,
+        "acquired": True,
+        "released": False,
+        "filename": ACTIVATION_LEASE_FILENAME,
+    }
+
+
+def release_activation_lease(lease: dict[str, Any]) -> bool:
+    """Release only the exact lease capability held by *lease*."""
+
+    path = Path(str(lease.get("path") or ""))
+    if not path.exists():
+        lease["released"] = True
+        return True
+    database_path = Path(
+        str(lease.get("database_path") or path.parent / "memory.sqlite3")
+    )
+    try:
+        payload = read_activation_lease(database_path)
+    except MaintenanceLeaseError:
+        return False
+    if payload is None or not hmac.compare_digest(
+        str(payload.get("token") or ""),
+        str(lease.get("token") or ""),
+    ):
+        return False
+    path.unlink()
+    lease["released"] = True
+    return True
 
 
 def activation_lease_path(database_path: Path) -> Path:
@@ -491,6 +560,7 @@ __all__ = [
     "ACTIVATION_GUARD_TRIGGER_PREFIX",
     "ACTIVATION_LEASE_FILENAME",
     "MaintenanceLeaseError",
+    "acquire_activation_lease",
     "activation_lease_allows_token",
     "activation_lease_path",
     "activation_lease_status",
@@ -498,6 +568,7 @@ __all__ = [
     "ensure_activation_guard_triggers",
     "install_activation_lease_authorizer",
     "read_activation_lease",
+    "release_activation_lease",
     "recover_stale_activation_lease",
     "remove_activation_guard_triggers",
 ]
