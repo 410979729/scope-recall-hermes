@@ -24,6 +24,7 @@ def test_doctor_cli_is_thin_wrapper():
     source = DOCTOR_SCRIPT.read_text(encoding="utf-8")
     for module_name in (
         "doctor_common",
+        "doctor_endpoint",
         "doctor_source",
         "doctor_sqlite",
         "doctor_journal",
@@ -45,6 +46,7 @@ def test_doctor_modules_importable_from_source_checkout():
     expected = {
         "graph_hygiene": ["graph_hygiene_counts", "delete_graph_hygiene_rows", "repair_graph_hygiene"],
         "doctor_common": ["load_runtime_config", "expected_embedder_from_config", "vector_backend_from_config"],
+        "doctor_endpoint": ["endpoint_policy_report"],
         "doctor_source": ["source_report"],
         "doctor_sqlite": ["sqlite_report", "memory_candidate_debt_report", "memory_secret_report"],
         "doctor_journal": ["journal_enabled_from_config", "journal_report"],
@@ -60,6 +62,7 @@ def test_doctor_modules_importable_from_source_checkout():
 
 def test_doctor_required_check_registry_is_single_source_of_truth():
     assert DOCTOR_REQUIRED_CHECK_NAMES == tuple(sorted(set(DOCTOR_REQUIRED_CHECK_NAMES)))
+    assert "endpoint_policy" in DOCTOR_REQUIRED_CHECK_NAMES
 
     doctor_source = DOCTOR_SCRIPT.read_text(encoding="utf-8")
     installer_source = INSTALLER_MODULE.read_text(encoding="utf-8")

@@ -56,6 +56,7 @@ from .sql_store import (
     record_governance_audit_event,
     update_row,
 )
+from .sqlite_params import chunked_sql_parameters
 from .storage_views import _curated_memory_allowed
 from .vector_generation import enqueue_current_vector_event
 from .vector_runtime import (
@@ -88,15 +89,24 @@ def fact_owned_memory_ids(provider: Any, ids: list[str]) -> list[str]:
         return []
     with provider._lock:
         conn = provider._require_conn()
-        rows = conn.execute(
-            f"""
-            SELECT id FROM memories
-            WHERE id IN ({','.join('?' for _ in requested)})
-              AND scope_id IN ({_scope_placeholders(provider, writable=True)})
-            ORDER BY id
-            """,
-            [*requested, *_writable_scope_params(provider)],
-        ).fetchall()
+        scope_params = _writable_scope_params(provider)
+        rows: list[Any] = []
+        for id_chunk in chunked_sql_parameters(
+            conn,
+            requested,
+            reserved=len(scope_params),
+        ):
+            rows.extend(
+                conn.execute(
+                    f"""
+                    SELECT id FROM memories
+                    WHERE id IN ({','.join('?' for _ in id_chunk)})
+                      AND scope_id IN ({_scope_placeholders(provider, writable=True)})
+                    ORDER BY id
+                    """,
+                    [*id_chunk, *scope_params],
+                ).fetchall()
+            )
         scoped_ids = [str(row["id"]) for row in rows]
         return sorted(fact_ownership_for_memories(conn, scoped_ids))
 
@@ -670,12 +680,26 @@ def merge_memories(
                 f"SELECT * FROM memories WHERE id = ? AND scope_id IN ({placeholders})",
                 [target_id, *scope_params],
             ).fetchone()
-            source_rows = conn.execute(
-                f"SELECT * FROM memories WHERE id IN ({','.join('?' for _ in source_ids)}) AND scope_id IN ({placeholders})"
-                if source_ids
-                else "SELECT * FROM memories WHERE 0",
-                [*source_ids, *scope_params] if source_ids else [],
-            ).fetchall()
+            source_rows: list[Any] = []
+            for id_chunk in chunked_sql_parameters(
+                conn,
+                source_ids,
+                reserved=len(scope_params),
+            ):
+                source_rows.extend(
+                    conn.execute(
+                        f"SELECT * FROM memories "
+                        f"WHERE id IN ({','.join('?' for _ in id_chunk)}) "
+                        f"AND scope_id IN ({placeholders})",
+                        [*id_chunk, *scope_params],
+                    ).fetchall()
+                )
+            source_rows_by_id = {str(row["id"]): row for row in source_rows}
+            source_rows = [
+                source_rows_by_id[memory_id]
+                for memory_id in source_ids
+                if memory_id in source_rows_by_id
+            ]
             if target_row is None:
                 return {
                     "merged": False,
@@ -1098,7 +1122,11 @@ def _archive_memories_truth(
     """Commit soft-archive truth, governance audit, and vector intent.
 
     Archiving preserves SQLite truth and rollback metadata while removing rows from ordinary recall surfaces."""
-    requested_ids = [str(memory_id) for memory_id in ids if str(memory_id).strip()]
+    requested_ids = list(
+        dict.fromkeys(
+            str(memory_id) for memory_id in ids if str(memory_id).strip()
+        )
+    )
     batch = batch_id or f"scope_recall_forget_{uuid.uuid4().hex}"
     payload: dict[str, Any] = {
         "archived": 0,
@@ -1114,22 +1142,34 @@ def _archive_memories_truth(
     }
     if not requested_ids:
         return payload
-    placeholders = ",".join("?" for _ in requested_ids)
     now = datetime.now(timezone.utc).isoformat()
     with provider._lock:
-        rows = (
-            provider._require_conn()
-            .execute(
-                f"""
-            SELECT id, scope_id, source, target, content, summary, updated_at, metadata
-            FROM memories
-            WHERE id IN ({placeholders})
-              AND scope_id IN ({_scope_placeholders(provider, writable=True)})
-            """,
-                [*requested_ids, *_writable_scope_params(provider)],
+        conn = provider._require_conn()
+        scope_params = _writable_scope_params(provider)
+        rows: list[Any] = []
+        for id_chunk in chunked_sql_parameters(
+            conn,
+            requested_ids,
+            reserved=len(scope_params),
+        ):
+            placeholders = ",".join("?" for _ in id_chunk)
+            rows.extend(
+                conn.execute(
+                    f"""
+                    SELECT id, scope_id, source, target, content, summary, updated_at, metadata
+                    FROM memories
+                    WHERE id IN ({placeholders})
+                      AND scope_id IN ({_scope_placeholders(provider, writable=True)})
+                    """,
+                    [*id_chunk, *scope_params],
+                ).fetchall()
             )
-            .fetchall()
-        )
+        rows_by_id = {str(row["id"]): row for row in rows}
+        rows = [
+            rows_by_id[memory_id]
+            for memory_id in requested_ids
+            if memory_id in rows_by_id
+        ]
         scoped_ids = [str(row["id"]) for row in rows]
         scoped_id_set = set(scoped_ids)
         payload["skipped"] = [

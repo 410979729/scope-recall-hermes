@@ -15,6 +15,16 @@ _SCRIPT_COMMANDS: dict[tuple[str, ...], tuple[str, list[str]]] = {
     ("dashboard",): ("report.dashboard.py", []),
     ("journal", "digest"): ("journal-digest.py", []),
     ("journal", "recovery"): ("journal.recovery.py", []),
+    ("lexical", "plan"): ("migrate.lexical_index.py", []),
+    ("lexical", "build"): ("migrate.lexical_index.py", ["--apply"]),
+    ("lexical", "activate"): (
+        "migrate.lexical_index.py",
+        ["--apply", "--activate"],
+    ),
+    ("lexical", "rollback"): (
+        "migrate.lexical_index.py",
+        ["--apply", "--rollback"],
+    ),
     ("candidates", "report"): ("promote.memory_candidates.py", ["--dry-run"]),
     ("candidates", "list"): ("memory.browser.py", ["candidates", "list"]),
     ("candidates", "promote"): ("candidate.review.py", ["promote", "--dry-run"]),
@@ -61,6 +71,10 @@ Usage:
   hermes-scope-recall dashboard [dashboard options]
   hermes-scope-recall journal digest [digest options]
   hermes-scope-recall journal recovery [recovery options]
+  hermes-scope-recall lexical plan [lexical options]      # zero-write status
+  hermes-scope-recall lexical build --maintenance-confirmed [lexical options]
+  hermes-scope-recall lexical activate --expected-current legacy --maintenance-confirmed
+  hermes-scope-recall lexical rollback --expected-current <generation> --maintenance-confirmed
   hermes-scope-recall candidates report [candidate options]
   hermes-scope-recall candidates list --json [browser options]
   hermes-scope-recall candidates promote --id <id> --dry-run --json [review options]

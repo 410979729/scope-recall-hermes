@@ -1817,32 +1817,74 @@ def record_playbook_feedback(
 
 
 def experience_stats(conn: sqlite3.Connection, *, accessible_scope_ids: Sequence[str]) -> dict[str, Any]:
-    scope_sql, scope_params = _scope_predicate(accessible_scope_ids)
-    rows = conn.execute(f"SELECT id, status FROM procedural_playbooks WHERE {scope_sql}", scope_params).fetchall()
-    ids = [str(row["id"]) for row in rows]
+    scopes = [str(scope_id) for scope_id in accessible_scope_ids if str(scope_id)]
+    if not scopes:
+        return {
+            "playbooks": {"total": 0, "by_status": {}},
+            "runs": {"total": 0, "by_outcome": {}},
+        }
+
+    scope_json = json.dumps(scopes, ensure_ascii=False)
+    status_rows = conn.execute(
+        """
+        WITH accessible_scopes(scope_id) AS (
+            SELECT CAST(value AS TEXT) FROM json_each(?)
+        )
+        SELECT playbook.status, COUNT(*)
+        FROM procedural_playbooks AS playbook
+        WHERE EXISTS (
+            SELECT 1
+            FROM accessible_scopes AS allowed
+            WHERE allowed.scope_id = playbook.scope_id
+               OR allowed.scope_id = playbook.shared_scope_id
+        )
+        GROUP BY playbook.status
+        """,
+        (scope_json,),
+    ).fetchall()
     by_status: dict[str, int] = {}
-    for row in rows:
-        status = sanitize_report_text(row["status"])
-        by_status[status] = by_status.get(status, 0) + 1
+    total_playbooks = 0
+    for row in status_rows:
+        status = sanitize_report_text(row[0])
+        count = int(row[1])
+        by_status[status] = by_status.get(status, 0) + count
+        total_playbooks += count
+
+    run_rows = conn.execute(
+        """
+        WITH accessible_scopes(scope_id) AS (
+            SELECT CAST(value AS TEXT) FROM json_each(?)
+        )
+        SELECT run.outcome, COUNT(*)
+        FROM experience_runs AS run
+        JOIN procedural_playbooks AS playbook ON playbook.id = run.playbook_id
+        WHERE EXISTS (
+            SELECT 1
+            FROM accessible_scopes AS allowed
+            WHERE allowed.scope_id = run.scope_id
+        )
+          AND EXISTS (
+            SELECT 1
+            FROM accessible_scopes AS allowed
+            WHERE allowed.scope_id = playbook.scope_id
+               OR allowed.scope_id = playbook.shared_scope_id
+        )
+        GROUP BY run.outcome
+        """,
+        (scope_json,),
+    ).fetchall()
     by_outcome: dict[str, int] = {}
     total_runs = 0
-    if ids:
-        placeholders = ",".join("?" for _ in ids)
-        run_scope_sql, run_scope_params = _run_scope_predicate(accessible_scope_ids)
-        for row in conn.execute(
-            f"""
-            SELECT outcome, COUNT(*)
-            FROM experience_runs
-            WHERE playbook_id IN ({placeholders}) AND {run_scope_sql}
-            GROUP BY outcome
-            """,
-            [*ids, *run_scope_params],
-        ):
-            outcome = sanitize_report_text(row[0])
-            count = int(row[1])
-            by_outcome[outcome] = count
-            total_runs += count
+    for row in run_rows:
+        outcome = sanitize_report_text(row[0])
+        count = int(row[1])
+        by_outcome[outcome] = by_outcome.get(outcome, 0) + count
+        total_runs += count
+
     return {
-        "playbooks": {"total": len(rows), "by_status": dict(sorted(by_status.items()))},
+        "playbooks": {
+            "total": total_playbooks,
+            "by_status": dict(sorted(by_status.items())),
+        },
         "runs": {"total": total_runs, "by_outcome": dict(sorted(by_outcome.items()))},
     }

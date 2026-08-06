@@ -2,6 +2,9 @@
 
 Schema changes must stay synchronized with migration ledger constants and release tests."""
 
+MAX_MEMORY_IDS_PER_REQUEST = 1000
+MAX_MEMORY_ID_LENGTH = 512
+
 FACT_CLAIM_HINT_SCHEMA = {
     "type": "object",
     "description": "Optional structured factual claim. Scope is always bound by the runtime.",
@@ -346,14 +349,24 @@ SCOPE_RECALL_MEMORY_SCHEMA = {
         "type": "object",
         "properties": {
             "action": {"type": "string", "enum": ["inspect", "feedback", "update", "merge", "forget"], "description": "Operation."},
-            "id": {"type": "string", "description": "Memory id."},
-            "ids": {"type": "array", "items": {"type": "string"}, "description": "Memory ids for forget."},
+            "id": {"type": "string", "maxLength": MAX_MEMORY_ID_LENGTH, "description": "Memory id."},
+            "ids": {
+                "type": "array",
+                "maxItems": MAX_MEMORY_IDS_PER_REQUEST,
+                "items": {"type": "string", "maxLength": MAX_MEMORY_ID_LENGTH},
+                "description": "Memory ids for forget.",
+            },
             "rating": {"type": "string", "description": "Feedback rating."},
             "note": {"type": "string", "description": "Feedback note."},
             "content": {"type": "string", "description": "Replacement or merged content."},
             "target": {"type": "string", "enum": ["user", "memory", "project", "ops", "general"], "description": "Optional target."},
-            "target_id": {"type": "string", "description": "Merge target id."},
-            "source_ids": {"type": "array", "items": {"type": "string"}, "description": "Merge source ids."},
+            "target_id": {"type": "string", "maxLength": MAX_MEMORY_ID_LENGTH, "description": "Merge target id."},
+            "source_ids": {
+                "type": "array",
+                "maxItems": MAX_MEMORY_IDS_PER_REQUEST,
+                "items": {"type": "string", "maxLength": MAX_MEMORY_ID_LENGTH},
+                "description": "Merge source ids.",
+            },
             "source_candidate_id": {"type": "string", "description": "Optional merge audit candidate id."},
             "memory_type": {
                 "type": "string",
@@ -386,8 +399,13 @@ SCOPE_RECALL_FORGET_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "id": {"type": "string", "description": "Single memory id to forget/archive."},
-            "ids": {"type": "array", "items": {"type": "string"}, "description": "Exact memory ids to forget/archive."},
+            "id": {"type": "string", "maxLength": MAX_MEMORY_ID_LENGTH, "description": "Single memory id to forget/archive."},
+            "ids": {
+                "type": "array",
+                "maxItems": MAX_MEMORY_IDS_PER_REQUEST,
+                "items": {"type": "string", "maxLength": MAX_MEMORY_ID_LENGTH},
+                "description": "Exact memory ids to forget/archive.",
+            },
             "reason": {"type": "string", "description": "Operator-readable reason for the audited forget/archive action."},
             "hard_delete": {"type": "boolean", "description": "Maintenance-only: hard delete instead of soft archive."},
         },
@@ -447,8 +465,17 @@ SCOPE_RECALL_MERGE_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "target_id": {"type": "string", "description": "Memory id to keep/update."},
-            "source_ids": {"type": "array", "items": {"type": "string"}, "description": "Memory ids to merge then delete."},
+            "target_id": {
+                "type": "string",
+                "maxLength": MAX_MEMORY_ID_LENGTH,
+                "description": "Memory id to keep/update.",
+            },
+            "source_ids": {
+                "type": "array",
+                "maxItems": MAX_MEMORY_IDS_PER_REQUEST,
+                "items": {"type": "string", "maxLength": MAX_MEMORY_ID_LENGTH},
+                "description": "Memory ids to merge then delete.",
+            },
             "content": {"type": "string", "description": "Optional explicit merged content."},
             "target": {"type": "string", "enum": ["user", "memory", "project", "ops", "general"]},
             "source_candidate_id": {"type": "string", "description": "Optional audit candidate id to include in the merge receipt."},

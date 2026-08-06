@@ -10,6 +10,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+from scope_recall.lexical_generation import (
+    LEXICAL_MIGRATION_ID,
+    LEXICAL_SCHEMA_VERSION,
+    LEXICAL_SHADOW_TABLE,
+)
 from scope_recall.operator_ledger import (
     OPERATOR_LEDGER_MIGRATION_ID,
     OPERATOR_LEDGER_SCHEMA_VERSION,
@@ -57,6 +62,7 @@ def test_schema_migration_status_reports_baseline_after_ensure_schema():
         VECTOR_RECONCILIATION_MIGRATION_ID,
         RELATION_REBUILD_EXPIRY_MIGRATION_ID,
         RELATION_FREQUENCY_FAILURE_MIGRATION_ID,
+        LEXICAL_MIGRATION_ID,
     ]
     assert after["current"] is True
     assert after["user_version"] == after["schema_version"]
@@ -72,7 +78,18 @@ def test_schema_migration_status_reports_baseline_after_ensure_schema():
         VECTOR_RECONCILIATION_MIGRATION_ID,
         RELATION_REBUILD_EXPIRY_MIGRATION_ID,
         RELATION_FREQUENCY_FAILURE_MIGRATION_ID,
+        LEXICAL_MIGRATION_ID,
     ]
+    assert after["schema_version"] == LEXICAL_SCHEMA_VERSION
+    assert after["lexical_generation"]["current"] is True
+    tables = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    assert {"lexical_generations", "lexical_generation_state"} <= tables
+    assert LEXICAL_SHADOW_TABLE not in tables
 
 
 def test_relation_lease_token_migration_upgrades_pre_0005_queue_in_place():

@@ -615,6 +615,7 @@ def test_shipped_truth_connections_use_the_unified_boundary() -> None:
 
     allowed_direct_connections = {
         ("benchmark.graph_relations.py", "':memory:'"),
+        ("benchmark.lexical_cjk.py", "':memory:'"),
         ("benchmark.memory_evolution.py", "':memory:'"),
         ("benchmark.reflection.py", "':memory:'"),
         ("benchmark.temporal_scale.py", "path"),

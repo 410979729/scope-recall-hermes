@@ -12,6 +12,7 @@ from typing import Any
 
 from .config import load_runtime_config
 from .gating import compact_text
+from .http_utils import explicit_insecure_endpoint_opt_in
 from .journal_candidates import JournalDigestCandidate, _unique
 from .journal_llm import JournalDigestLLMError, _call_llm_with_retries
 from .journal_store import JournalEntry, _journal_entry_for_digest
@@ -216,7 +217,7 @@ def _config_bool(config: dict[str, Any], key: str, default: bool = False) -> boo
         return value
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
+    return default
 
 
 def llm_journal_candidates(
@@ -242,6 +243,13 @@ def llm_journal_candidates(
         base_url=str(journal_config.get("base_url") or ""),
         endpoint=str(journal_config.get("endpoint") or journal_config.get("chat_endpoint") or ""),
         append_v1=_config_bool(journal_config, "append_v1", True) if "append_v1" in journal_config else None,
+        allow_insecure_endpoint=(
+            explicit_insecure_endpoint_opt_in(
+                journal_config.get("allow_insecure_endpoint")
+            )
+            if "allow_insecure_endpoint" in journal_config
+            else None
+        ),
         api_key=str(journal_config.get("api_key") or ""),
         api_key_env=str(journal_config.get("api_key_env") or journal_config.get("key_env") or ""),
         api_mode=str(journal_config.get("api_mode") or ""),
@@ -297,7 +305,10 @@ def llm_journal_candidates(
                     timeout=options.timeout,
                     api_mode=llm_config.get("api_mode", "chat_completions"),
                     endpoint=str(llm_config.get("endpoint") or ""),
-                    append_v1=bool(llm_config.get("append_v1", True)),
+                    append_v1=_config_bool(llm_config, "append_v1", True),
+                    allow_insecure_endpoint=explicit_insecure_endpoint_opt_in(
+                        llm_config.get("allow_insecure_endpoint")
+                    ),
                     max_attempts=max_attempts,
                     retry_delay=retry_delay,
                 )

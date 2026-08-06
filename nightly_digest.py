@@ -36,7 +36,10 @@ from .fact_evolution import (
 from .gating import clean_text, compact_text, dedup_key
 from .governance import normalize_memory_type, semantic_similarity
 from .graph import clamp_float, load_metadata, normalize_entity, sync_memory_entities
-from .http_utils import redact_sensitive as _shared_redact_sensitive
+from .http_utils import (
+    explicit_insecure_endpoint_opt_in,
+    redact_sensitive as _shared_redact_sensitive,
+)
 from .lifecycle_service import hard_delete_memories
 from .lifecycle_policy import durable_lifecycle_visible_sql, ordinary_recall_lifecycle_visible_sql
 from .maintenance_lease import install_activation_lease_authorizer
@@ -199,6 +202,7 @@ class DigestOptions:
     base_url: str = ""
     endpoint: str = ""
     append_v1: bool | None = None
+    allow_insecure_endpoint: bool | None = None
     api_key: str = ""
     api_key_env: str = ""
     api_mode: str = ""
@@ -1716,7 +1720,10 @@ def collect_candidates(
                     timeout=options.timeout,
                     api_mode=llm_config.get("api_mode", "chat_completions"),
                     endpoint=str(llm_config.get("endpoint") or ""),
-                    append_v1=bool(llm_config.get("append_v1", True)),
+                    append_v1=_config_bool_value(llm_config.get("append_v1"), True),
+                    allow_insecure_endpoint=explicit_insecure_endpoint_opt_in(
+                        llm_config.get("allow_insecure_endpoint")
+                    ),
                     max_attempts=options.max_attempts,
                     retry_delay=options.retry_delay,
                 )
@@ -1969,6 +1976,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-url", default="", help="Override OpenAI-compatible base URL")
     parser.add_argument("--endpoint", default="", help="Override full chat completions endpoint")
     parser.add_argument("--append-v1", action=argparse.BooleanOptionalAction, default=None, help="Append /v1 before /chat/completions for base URLs")
+    parser.add_argument("--allow-insecure-endpoint", action=argparse.BooleanOptionalAction, default=None, help="Allow an explicitly trusted non-loopback HTTP endpoint; credential headers are still stripped")
     parser.add_argument("--api-key", default="", help=argparse.SUPPRESS)
     parser.add_argument("--timeout", type=float, default=60.0, help="LLM request timeout seconds")
     parser.add_argument("--llm-max-attempts", type=int, default=2, help="LLM retry attempts before falling back or failing")
@@ -1992,6 +2000,7 @@ def options_from_args(args: argparse.Namespace) -> DigestOptions:
         base_url=str(args.base_url or ""),
         endpoint=str(args.endpoint or ""),
         append_v1=args.append_v1,
+        allow_insecure_endpoint=args.allow_insecure_endpoint,
         api_key=str(args.api_key or ""),
         timeout=float(args.timeout or 60.0),
         max_attempts=max(1, int(args.llm_max_attempts or 1)),

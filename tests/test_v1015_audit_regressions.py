@@ -46,11 +46,11 @@ def _json_response(content: str = "[]"):
 def test_capture_llm_uses_explicit_endpoint_without_appending_v1(monkeypatch):
     seen_urls: list[str] = []
 
-    def fake_urlopen(request, timeout=None):
+    def fake_urlopen(request, *, timeout=None, allow_insecure=False):
         seen_urls.append(request.full_url)
         return _json_response("[]")
 
-    monkeypatch.setattr(capture_llm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(capture_llm, "safe_urlopen", fake_urlopen)
 
     capture_llm.extract_capture_candidates(
         "user asks something durable",
@@ -72,11 +72,11 @@ def test_capture_llm_uses_explicit_endpoint_without_appending_v1(monkeypatch):
 def test_capture_llm_respects_append_v1_false_for_provider_roots(monkeypatch):
     seen_urls: list[str] = []
 
-    def fake_urlopen(request, timeout=None):
+    def fake_urlopen(request, *, timeout=None, allow_insecure=False):
         seen_urls.append(request.full_url)
         return _json_response("[]")
 
-    monkeypatch.setattr(capture_llm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(capture_llm, "safe_urlopen", fake_urlopen)
 
     capture_llm.extract_capture_candidates(
         "user asks something durable",
@@ -100,12 +100,12 @@ def test_codex_responses_http_errors_are_redacted(monkeypatch):
     leaked_bearer = "abcdef" + "ghijklmnopqrstuvwxyz"
     api_key = "sk-" + "abc" + "c123"
 
-    def fake_urlopen(request, timeout=None):
+    def fake_urlopen(request, *, timeout=None, allow_insecure=False):
         payload = {"error": f"token={leaked_token} Authorization: Bearer {leaked_bearer}"}
         body = json.dumps(payload).encode("utf-8")
         raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", hdrs=None, fp=io.BytesIO(body))
 
-    monkeypatch.setattr(nightly_digest.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("scope_recall.nightly_llm.safe_urlopen", fake_urlopen)
 
     with pytest.raises(RuntimeError) as exc_info:
         nightly_digest._call_codex_responses_llm(

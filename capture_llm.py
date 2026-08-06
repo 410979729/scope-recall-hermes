@@ -19,12 +19,26 @@ from typing import Any
 
 try:  # Support both package imports and direct manual test imports.
     from .capture_filters import sanitize_report_text
-    from .http_utils import chat_completions_endpoint, redact_sensitive
+    from .http_utils import (
+        UnsafeEndpointError,
+        chat_completions_endpoint,
+        explicit_insecure_endpoint_opt_in,
+        redact_sensitive,
+        safe_endpoint_display,
+        safe_urlopen,
+    )
     from .retention_profiles import retention_profile_instruction
     from .transcript_overlap import is_source_transcript_copy
 except ImportError:  # pragma: no cover - exercised by manual script import style
     from capture_filters import sanitize_report_text
-    from http_utils import chat_completions_endpoint, redact_sensitive
+    from http_utils import (
+        UnsafeEndpointError,
+        chat_completions_endpoint,
+        explicit_insecure_endpoint_opt_in,
+        redact_sensitive,
+        safe_endpoint_display,
+        safe_urlopen,
+    )
     from retention_profiles import retention_profile_instruction
     from transcript_overlap import is_source_transcript_copy
 
@@ -119,9 +133,11 @@ def extract_capture_candidates(
 ) -> list[Candidate]:
     """Run LLM semantic extraction on a user+assistant turn.
 
-    Returns a list of Candidate objects ready for enqueue_store.
-    Returns an empty list if LLM extraction is disabled, not configured,
-    or fails — callers should fall back to regex extraction.
+    Returns a list of Candidate objects ready for enqueue_store. Disabled,
+    unconfigured, and ordinary provider failures return an empty list so the
+    caller may apply its configured compatibility fallback. Endpoint-policy
+    failures raise ``UnsafeEndpointError`` and must never trigger durable
+    regex or raw-capture fallback.
     """
     llm_config = config.get("capture_llm")
     if not isinstance(llm_config, dict):
@@ -133,6 +149,9 @@ def extract_capture_candidates(
     base_url = str(llm_config.get("base_url", "https://api.openai.com")).rstrip("/")
     endpoint = str(llm_config.get("endpoint") or llm_config.get("chat_endpoint") or "").rstrip("/")
     append_v1 = _truthy(llm_config.get("append_v1", True)) if "append_v1" in llm_config else True
+    allow_insecure_endpoint = explicit_insecure_endpoint_opt_in(
+        llm_config.get("allow_insecure_endpoint", False)
+    )
     timeout = float(llm_config.get("timeout", 15.0))
     max_tokens = int(llm_config.get("max_tokens_per_turn", 2000))
 
@@ -167,7 +186,22 @@ def extract_capture_candidates(
     ]
 
     try:
-        raw = _call_openai_compatible(base_url, api_key, model, messages, max_tokens, timeout, endpoint=endpoint, append_v1=append_v1)
+        raw = _call_openai_compatible(
+            base_url,
+            api_key,
+            model,
+            messages,
+            max_tokens,
+            timeout,
+            endpoint=endpoint,
+            append_v1=append_v1,
+            allow_insecure_endpoint=allow_insecure_endpoint,
+        )
+    except UnsafeEndpointError:
+        logger.warning(
+            "scope-recall capture_llm: request blocked by endpoint policy"
+        )
+        raise
     except Exception as exc:
         logger.warning(f"scope-recall capture_llm: API call failed: {redact_sensitive(exc)}")
         return []
@@ -223,9 +257,15 @@ def _call_openai_compatible(
     *,
     endpoint: str = "",
     append_v1: bool = True,
+    allow_insecure_endpoint: bool = False,
 ) -> str:
     """Call an OpenAI-compatible chat completions endpoint."""
-    url = chat_completions_endpoint(base_url, endpoint=endpoint, append_v1=append_v1)
+    url = chat_completions_endpoint(
+        base_url,
+        endpoint=endpoint,
+        append_v1=append_v1,
+        allow_insecure_endpoint=allow_insecure_endpoint,
+    )
     body = json.dumps(
         {
             "model": model,
@@ -241,11 +281,17 @@ def _call_openai_compatible(
     req.add_header("Content-Type", "application/json; charset=utf-8")
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with safe_urlopen(
+            req,
+            timeout=timeout,
+            allow_insecure=allow_insecure_endpoint,
+        ) as resp:
             result = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = redact_sensitive(exc.read().decode("utf-8", errors="replace")[:500])
-        raise RuntimeError(f"LLM HTTP {exc.code} at {url}: {body}") from exc
+        raise RuntimeError(
+            f"LLM HTTP {exc.code} at {safe_endpoint_display(url)}: {body}"
+        ) from exc
 
     choices = result.get("choices")
     if not choices:

@@ -9,6 +9,7 @@ import sqlite3
 import pytest
 
 from scope_recall.experience_models import ExperienceValidationError, validate_procedural_playbook
+from scope_recall.lexical_generation import LEXICAL_MIGRATION_ID
 from scope_recall.operator_ledger import OPERATOR_LEDGER_MIGRATION_ID
 from scope_recall.relation_frequency_index import (
     RELATION_FREQUENCY_FAILURE_MIGRATION_ID,
@@ -81,6 +82,7 @@ def test_ensure_schema_creates_experience_tables_idempotently():
         VECTOR_RECONCILIATION_MIGRATION_ID,
         RELATION_REBUILD_EXPIRY_MIGRATION_ID,
         RELATION_FREQUENCY_FAILURE_MIGRATION_ID,
+        LEXICAL_MIGRATION_ID,
     ]
     migration = status["applied_migrations"][0]
     assert migration["plugin_version"] == "1.6.0"
@@ -155,6 +157,7 @@ def test_ensure_schema_fails_closed_for_newer_user_version():
         VECTOR_RECONCILIATION_MIGRATION_ID,
         RELATION_REBUILD_EXPIRY_MIGRATION_ID,
         RELATION_FREQUENCY_FAILURE_MIGRATION_ID,
+        LEXICAL_MIGRATION_ID,
     ]
 
 

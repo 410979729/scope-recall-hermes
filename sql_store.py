@@ -24,6 +24,14 @@ from .graph import backfill_memory_entities, ensure_graph_schema, sync_memory_en
 from .fact_repository import require_fact_mutation_authority
 from .freshness import upsert_memory_freshness
 from .lifecycle_policy import ordinary_recall_lifecycle_visible, ordinary_recall_lifecycle_visible_sql
+from .lexical_generation import (
+    LEXICAL_MIGRATION_DESCRIPTION,
+    LEXICAL_MIGRATION_ID,
+    LEXICAL_MIGRATION_PLUGIN_VERSION,
+    LEXICAL_SCHEMA_VERSION,
+    ensure_lexical_generation_schema,
+    lexical_schema_status,
+)
 from .operator_ledger import (
     OPERATOR_LEDGER_MIGRATION_DESCRIPTION,
     OPERATOR_LEDGER_MIGRATION_ID,
@@ -45,6 +53,7 @@ from .relation_frequency_index import (
     relation_frequency_index_schema_status,
     sync_relation_frequency_memory,
 )
+from .sqlite_params import chunked_sql_parameters
 from .relation_rebuild_queue import (
     RELATION_REBUILD_EXPIRY_MIGRATION_DESCRIPTION,
     RELATION_REBUILD_EXPIRY_MIGRATION_ID,
@@ -91,7 +100,7 @@ from .vector_reconciliation import (
 )
 
 ENTRY_DELIMITER = "\n§\n"
-SCHEMA_VERSION = RELATION_FREQUENCY_FAILURE_SCHEMA_VERSION
+SCHEMA_VERSION = LEXICAL_SCHEMA_VERSION
 BASELINE_SCHEMA_VERSION = 10600
 BASELINE_MIGRATION_ID = "0001_baseline_v1_6_0"
 BASELINE_MIGRATION_PLUGIN_VERSION = "1.6.0"
@@ -169,6 +178,12 @@ EXPECTED_SCHEMA_MIGRATIONS: tuple[dict[str, Any], ...] = (
         "description": RELATION_FREQUENCY_FAILURE_MIGRATION_DESCRIPTION,
         "schema_version": RELATION_FREQUENCY_FAILURE_SCHEMA_VERSION,
     },
+    {
+        "id": LEXICAL_MIGRATION_ID,
+        "plugin_version": LEXICAL_MIGRATION_PLUGIN_VERSION,
+        "description": LEXICAL_MIGRATION_DESCRIPTION,
+        "schema_version": LEXICAL_SCHEMA_VERSION,
+    },
 )
 
 
@@ -233,6 +248,7 @@ def ensure_schema_migrations(conn: sqlite3.Connection) -> None:
     ensure_relation_frequency_index_schema(conn)
     ensure_vector_reconciliation_schema(conn)
     ensure_operator_ledger_schema(conn)
+    ensure_lexical_generation_schema(conn)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -364,6 +380,7 @@ def schema_migration_status(conn: sqlite3.Connection) -> dict[str, Any]:
     relation_frequency_status = relation_frequency_index_schema_status(conn)
     vector_reconciliation_status = vector_reconciliation_schema_status(conn)
     operator_status = operator_ledger_schema_status(conn)
+    lexical_status = lexical_schema_status(conn)
     return {
         "schema_version": SCHEMA_VERSION,
         "user_version": user_version,
@@ -377,6 +394,7 @@ def schema_migration_status(conn: sqlite3.Connection) -> dict[str, Any]:
             and bool(relation_frequency_status["current"])
             and bool(vector_reconciliation_status["current"])
             and bool(operator_status["current"])
+            and bool(lexical_status["current"])
         ),
         "newer_schema": newer_schema,
         "missing_migrations": missing,
@@ -387,6 +405,7 @@ def schema_migration_status(conn: sqlite3.Connection) -> dict[str, Any]:
         "relation_frequency_index": relation_frequency_status,
         "vector_reconciliation": vector_reconciliation_status,
         "operator_ledger": operator_status,
+        "lexical_generation": lexical_status,
     }
 
 
@@ -1252,6 +1271,44 @@ def _sync_conflict_metadata_after_relation_delete(conn: sqlite3.Connection, memo
         )
 
 
+def _scoped_memory_ids_for_delete(
+    conn: sqlite3.Connection,
+    ids: list[str],
+    *,
+    scope_id: str | None,
+    scope_ids: list[str] | tuple[str, ...] | None,
+) -> list[str]:
+    """Return existing IDs in caller order without exceeding SQL variables."""
+
+    if scope_ids is None and scope_id is None:
+        return list(ids)
+    if scope_ids is not None:
+        clean_scope_ids = list(
+            dict.fromkeys(str(item) for item in scope_ids if str(item))
+        )
+        if not clean_scope_ids:
+            return []
+        scope_clause = "scope_id IN (" + ",".join("?" for _ in clean_scope_ids) + ")"
+        scope_params = clean_scope_ids
+    else:
+        scope_clause = "scope_id = ?"
+        scope_params = [str(scope_id)]
+
+    found: set[str] = set()
+    for id_chunk in chunked_sql_parameters(
+        conn,
+        ids,
+        reserved=len(scope_params),
+    ):
+        placeholders = ",".join("?" for _ in id_chunk)
+        rows = conn.execute(
+            f"SELECT id FROM memories WHERE id IN ({placeholders}) AND {scope_clause}",
+            [*id_chunk, *scope_params],
+        ).fetchall()
+        found.update(str(row["id"]) for row in rows)
+    return [memory_id for memory_id in ids if memory_id in found]
+
+
 def delete_rows(
     conn: sqlite3.Connection,
     ids: list[str],
@@ -1260,71 +1317,99 @@ def delete_rows(
     scope_ids: list[str] | tuple[str, ...] | None = None,
     commit: bool = True,
 ) -> int:
-    """Delete selected truth/companion rows.
+    """Delete selected truth/companion rows in bounded SQL chunks.
 
     Public maintenance callers keep the historical commit-by-default behavior.
     Atomic hard-delete domains pass ``commit=False`` so audit and vector intent
-    remain in the caller-owned transaction.
+    remain in the caller-owned transaction. Chunking never commits between
+    statements, preserving that transaction ownership and rollback behavior.
     """
-    ids = [str(memory_id) for memory_id in ids if str(memory_id).strip()]
-    if not ids:
+
+    requested_ids = list(
+        dict.fromkeys(str(memory_id) for memory_id in ids if str(memory_id).strip())
+    )
+    if not requested_ids:
         return 0
-    placeholders = ",".join("?" for _ in ids)
-    if scope_ids is not None:
-        clean_scope_ids = [str(item) for item in scope_ids if str(item)]
-        if not clean_scope_ids:
-            return 0
-        scoped_ids = [
-            str(row["id"])
-            for row in conn.execute(
-                f"SELECT id FROM memories WHERE id IN ({placeholders}) AND scope_id IN ({','.join('?' for _ in clean_scope_ids)})",
-                [*ids, *clean_scope_ids],
-            ).fetchall()
-        ]
-    elif scope_id is None:
-        scoped_ids = ids
-    else:
-        scoped_ids = [
-            str(row["id"])
-            for row in conn.execute(f"SELECT id FROM memories WHERE id IN ({placeholders}) AND scope_id = ?", [*ids, scope_id]).fetchall()
-        ]
+    scoped_ids = _scoped_memory_ids_for_delete(
+        conn,
+        requested_ids,
+        scope_id=scope_id,
+        scope_ids=scope_ids,
+    )
     if not scoped_ids:
         return 0
-    placeholders = ",".join("?" for _ in scoped_ids)
+
     before = int(conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0])
-    conflict_peer_rows = conn.execute(
-        f"""
-        SELECT target_memory_id AS peer_id
-        FROM memory_relations
-        WHERE relation_type = 'contradicts' AND source_memory_id IN ({placeholders})
-        UNION
-        SELECT source_memory_id AS peer_id
-        FROM memory_relations
-        WHERE relation_type = 'contradicts' AND target_memory_id IN ({placeholders})
-        """,
-        [*scoped_ids, *scoped_ids],
-    ).fetchall()
-    conflict_peer_ids = [str(row["peer_id"]) for row in conflict_peer_rows if str(row["peer_id"]) and str(row["peer_id"]) not in scoped_ids]
-    conn.execute(f"DELETE FROM memories_fts WHERE memory_id IN ({placeholders})", scoped_ids)
-    conn.execute(f"DELETE FROM memory_entities WHERE memory_id IN ({placeholders})", scoped_ids)
-    conn.execute(f"DELETE FROM memory_feedback WHERE memory_id IN ({placeholders})", scoped_ids)
-    conn.execute(
-        f"DELETE FROM memory_relations WHERE source_memory_id IN ({placeholders}) OR target_memory_id IN ({placeholders})",
-        [*scoped_ids, *scoped_ids],
-    )
-    if _table_exists(conn, "memory_digest_sources"):
-        conn.execute(f"DELETE FROM memory_digest_sources WHERE memory_id IN ({placeholders})", scoped_ids)
-    if _table_exists(conn, "memory_journal_sources"):
-        conn.execute(f"DELETE FROM memory_journal_sources WHERE memory_id IN ({placeholders})", scoped_ids)
-    if _table_exists(conn, "fact_freshness"):
-        conn.execute(
-            f"DELETE FROM fact_freshness WHERE subject_type = 'memory' AND subject_id IN ({placeholders})",
-            scoped_ids,
+    scoped_id_set = set(scoped_ids)
+    conflict_peer_ids: set[str] = set()
+    for id_chunk in chunked_sql_parameters(
+        conn,
+        scoped_ids,
+        variables_per_item=2,
+    ):
+        placeholders = ",".join("?" for _ in id_chunk)
+        conflict_peer_rows = conn.execute(
+            f"""
+            SELECT target_memory_id AS peer_id
+            FROM memory_relations
+            WHERE relation_type = 'contradicts'
+              AND source_memory_id IN ({placeholders})
+            UNION
+            SELECT source_memory_id AS peer_id
+            FROM memory_relations
+            WHERE relation_type = 'contradicts'
+              AND target_memory_id IN ({placeholders})
+            """,
+            [*id_chunk, *id_chunk],
+        ).fetchall()
+        conflict_peer_ids.update(
+            str(row["peer_id"])
+            for row in conflict_peer_rows
+            if str(row["peer_id"]) and str(row["peer_id"]) not in scoped_id_set
         )
-    conn.execute(f"DELETE FROM memories WHERE id IN ({placeholders})", scoped_ids)
+        conn.execute(
+            f"DELETE FROM memories_fts WHERE memory_id IN ({placeholders})",
+            id_chunk,
+        )
+        conn.execute(
+            f"DELETE FROM memory_entities WHERE memory_id IN ({placeholders})",
+            id_chunk,
+        )
+        conn.execute(
+            f"DELETE FROM memory_feedback WHERE memory_id IN ({placeholders})",
+            id_chunk,
+        )
+        conn.execute(
+            f"DELETE FROM memory_relations "
+            f"WHERE source_memory_id IN ({placeholders}) "
+            f"OR target_memory_id IN ({placeholders})",
+            [*id_chunk, *id_chunk],
+        )
+        if _table_exists(conn, "memory_digest_sources"):
+            conn.execute(
+                f"DELETE FROM memory_digest_sources WHERE memory_id IN ({placeholders})",
+                id_chunk,
+            )
+        if _table_exists(conn, "memory_journal_sources"):
+            conn.execute(
+                f"DELETE FROM memory_journal_sources WHERE memory_id IN ({placeholders})",
+                id_chunk,
+            )
+        if _table_exists(conn, "fact_freshness"):
+            conn.execute(
+                f"DELETE FROM fact_freshness "
+                f"WHERE subject_type = 'memory' "
+                f"AND subject_id IN ({placeholders})",
+                id_chunk,
+            )
+        conn.execute(
+            f"DELETE FROM memories WHERE id IN ({placeholders})",
+            id_chunk,
+        )
+
     for memory_id in scoped_ids:
         sync_relation_frequency_memory(conn, memory_id)
-    _sync_conflict_metadata_after_relation_delete(conn, conflict_peer_ids)
+    _sync_conflict_metadata_after_relation_delete(conn, sorted(conflict_peer_ids))
     if commit:
         conn.commit()
     after = int(conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0])

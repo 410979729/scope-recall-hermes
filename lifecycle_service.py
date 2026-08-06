@@ -17,6 +17,7 @@ from .graph_relations import evaluate_relation_policy, upsert_relation
 from .lifecycle_policy import ordinary_recall_lifecycle_visible
 from .relation_frequency_index import sync_relation_frequency_memory
 from .sql_store import delete_rows, now_iso, record_governance_audit_event
+from .sqlite_params import chunked_sql_parameters
 from .vector_generation import enqueue_vector_event
 
 
@@ -105,9 +106,6 @@ def hard_delete_memories(
     savepoint_active = True
     scoped_ids: list[str] = []
     try:
-        id_placeholders = ",".join("?" for _ in clean_ids)
-        params: list[str] = list(clean_ids)
-        where = f"id IN ({id_placeholders})"
         clean_scope_ids = list(
             dict.fromkeys(
                 str(scope_id).strip()
@@ -128,17 +126,35 @@ def hard_delete_memories(
                     "event_ids": [],
                     "outbox_enqueued": 0,
                 }
-            where += f" AND scope_id IN ({','.join('?' for _ in clean_scope_ids)})"
-            params.extend(clean_scope_ids)
-        rows = conn.execute(
-            f"""
-            SELECT id, scope_id, source, target, content, summary, updated_at, metadata
-            FROM memories
-            WHERE {where}
-            ORDER BY id
-            """,
-            params,
-        ).fetchall()
+        rows: list[Any] = []
+        reserved = len(clean_scope_ids) if scope_ids is not None else 0
+        for id_chunk in chunked_sql_parameters(
+            conn,
+            clean_ids,
+            reserved=reserved,
+        ):
+            id_placeholders = ",".join("?" for _ in id_chunk)
+            params: list[str] = list(id_chunk)
+            where = f"id IN ({id_placeholders})"
+            if scope_ids is not None:
+                where += (
+                    " AND scope_id IN ("
+                    + ",".join("?" for _ in clean_scope_ids)
+                    + ")"
+                )
+                params.extend(clean_scope_ids)
+            rows.extend(
+                conn.execute(
+                    f"""
+                    SELECT id, scope_id, source, target, content, summary, updated_at, metadata
+                    FROM memories
+                    WHERE {where}
+                    ORDER BY id
+                    """,
+                    params,
+                ).fetchall()
+            )
+        rows.sort(key=lambda row: str(row["id"]))
         scoped_ids = [str(row["id"]) for row in rows]
         if not scoped_ids:
             conn.execute(f"RELEASE SAVEPOINT {savepoint}")

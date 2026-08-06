@@ -29,6 +29,7 @@ from .fact_evolution import (
 )
 from .gating import clean_text, compact_text, dedup_key
 from .governance import semantic_similarity
+from .http_utils import explicit_insecure_endpoint_opt_in
 from .maintenance_lease import install_activation_lease_authorizer
 from .models import RuntimeScope, recall_scope_id_for_target
 from .truth_connection import connect_truth_database
@@ -1276,7 +1277,11 @@ def _collect_journal_candidates(
                 return heuristic_journal_candidates(entries), "heuristic-fallback", "llm produced no candidates", candidate_status_counts
             return candidates, "llm", "", candidate_status_counts
         except Exception as exc:
-            if isinstance(exc, JournalDigestLLMError) and exc.error_kind in {"parse", "filtered"}:
+            if isinstance(exc, JournalDigestLLMError) and exc.error_kind in {
+                "endpoint_policy",
+                "filtered",
+                "parse",
+            }:
                 raise
             if fallback_allowed:
                 try:
@@ -1403,6 +1408,7 @@ def run_journal_digest(
     llm_key_env: str = "",
     llm_api_key: str = "",
     llm_append_v1: bool | None = None,
+    llm_allow_insecure_endpoint: bool | None = None,
 ) -> dict[str, Any]:
     """Run one bounded journal digest pass and record visible status metadata.
 
@@ -1435,6 +1441,10 @@ def run_journal_digest(
             journal_config[key] = str(value).strip()
     if llm_append_v1 is not None:
         journal_config["append_v1"] = bool(llm_append_v1)
+    if llm_allow_insecure_endpoint is not None:
+        journal_config["allow_insecure_endpoint"] = (
+            explicit_insecure_endpoint_opt_in(llm_allow_insecure_endpoint)
+        )
     configured_limit = _coerce_positive_int(journal_config.get("max_entries_per_digest"), 500)
     effective_limit = _coerce_positive_int(limit_entries, configured_limit) if limit_entries is not None else configured_limit
     retention_days = int(journal_config.get("retention_days") or 0)
@@ -1790,6 +1800,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     append_group = parser.add_mutually_exclusive_group()
     append_group.add_argument("--append-v1", dest="append_v1", action="store_true", default=None, help="Append /v1 before /chat/completions when using base-url")
     append_group.add_argument("--no-append-v1", dest="append_v1", action="store_false", help="Do not append /v1 before /chat/completions when using base-url")
+    parser.add_argument("--allow-insecure-endpoint", action=argparse.BooleanOptionalAction, default=None, help="Allow an explicitly trusted non-loopback HTTP endpoint; credential headers are still stripped")
     parser.add_argument("--dry-run", action="store_true", help="Plan without writing memories or advancing watermarks")
     parser.add_argument("--verbose", action="store_true", help="Print full JSON result")
     return parser
@@ -1814,6 +1825,7 @@ def main(argv: list[str] | None = None) -> int:
             llm_key_env=str(args.key_env or ""),
             llm_api_key=str(args.api_key or ""),
             llm_append_v1=args.append_v1,
+            llm_allow_insecure_endpoint=args.allow_insecure_endpoint,
         )
         result["elapsed_seconds"] = round(time.time() - started, 3)
         if args.verbose:

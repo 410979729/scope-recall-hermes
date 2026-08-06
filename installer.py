@@ -12,7 +12,6 @@ import importlib
 import importlib.util
 import json
 import os
-import shutil
 import sqlite3
 import stat
 import subprocess
@@ -48,6 +47,19 @@ from .recovery_commands import quote_argument, restore_file_command
 from .vector_bootstrap import vector_companion_presence
 from .vector_generation_preflight import validate_generation_for_activation
 from .vector_store import normalize_vector_backend
+from .windows_filesystem import (
+    copy_file,
+    copy_tree as filesystem_copy_tree,
+    io_path,
+    make_dirs,
+    move_path,
+    path_exists,
+    path_is_dir,
+    path_is_file,
+    path_is_symlink,
+    public_path,
+    remove_path,
+)
 
 PLUGIN_NAME = "scope-recall"
 PROVIDER_CONFIG_COMMAND = f"hermes config set memory.provider {PLUGIN_NAME}"
@@ -384,6 +396,10 @@ def _should_skip_entry(directory: str, name: str) -> bool:
 def _make_copied_directories_owner_writable(destination: Path) -> None:
     """Normalize copied directory modes for staging, cleanup, and runtime use."""
 
+    # Windows ACLs, not POSIX mode bits, govern writability.  Avoid traversing
+    # a deep copied tree through ordinary Path strings after the safe copy.
+    if os.name == "nt":
+        return
     directories = [destination]
     directories.extend(path for path in destination.rglob("*") if path.is_dir())
     for directory in directories:
@@ -395,31 +411,37 @@ def _copy_tree(source: Path, destination: Path) -> None:
     def ignore(directory: str, names: list[str]) -> set[str]:
         return {name for name in names if _should_skip_entry(directory, name)}
 
-    shutil.copytree(source, destination, ignore=ignore, symlinks=False)
+    filesystem_copy_tree(source, destination, ignore=ignore, symlinks=False)
     _make_copied_directories_owner_writable(destination)
-    for pyc in destination.rglob("*.pyc"):
-        pyc.unlink(missing_ok=True)
-    for cache in destination.rglob("__pycache__"):
-        shutil.rmtree(cache, ignore_errors=True)
 
 
 def _copy_existing_plugin(source: Path, destination: Path) -> None:
-    if source.is_symlink() or source.is_file():
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination, follow_symlinks=False)
+    if path_is_symlink(source) or path_is_file(source):
+        copy_file(source, destination, follow_symlinks=False)
     else:
-        shutil.copytree(source, destination, symlinks=True)
+        filesystem_copy_tree(source, destination, symlinks=True)
 
 
 def _remove_existing_plugin(path: Path) -> None:
-    if path.is_symlink() or path.is_file():
-        path.unlink()
-    elif path.exists():
-        shutil.rmtree(path)
+    remove_path(path, missing_ok=True)
 
 
 def _backup_stamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%d.%H%M%S.%f")
+    return datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+
+
+_BACKUP_CATEGORY_DIRS = {
+    "scope-recall-installer": "i",
+    "scope-recall-rollback-current": "r",
+    "scope-recall-installer-config": "c",
+}
+
+
+def _backup_root(home: Path, category: str) -> Path:
+    """Return a short collision-resistant backup root without creating it."""
+
+    lane = _BACKUP_CATEGORY_DIRS.get(category, "x")
+    return home / "backups" / "sr" / lane / f"{_backup_stamp()}.{uuid.uuid4().hex[:8]}"
 
 
 def _backup_existing_plugin(
@@ -434,21 +456,24 @@ def _backup_existing_plugin(
     # epoch and then enter the backup body without being revalidated first.
     if pre_mutation_check is not None:
         pre_mutation_check()
-    backup_root = home / "backups" / category / f"{_backup_stamp()}.{uuid.uuid4().hex[:8]}"
-    backup_root.mkdir(parents=True, exist_ok=False)
+    backup_root = _backup_root(home, category)
     backup_path = backup_root / PLUGIN_NAME
-    _copy_existing_plugin(plugin_dir, backup_path)
+    try:
+        _copy_existing_plugin(plugin_dir, backup_path)
+    except Exception:
+        remove_path(backup_root, missing_ok=True, ignore_errors=True)
+        raise
     return backup_path
 
 
 def _validate_backup_dir(backup_dir: Path) -> str:
-    if not backup_dir.exists():
+    if not path_exists(backup_dir):
         return f"rollback backup missing: {backup_dir}"
-    if not backup_dir.is_dir():
+    if not path_is_dir(backup_dir):
         return f"rollback backup is not a directory: {backup_dir}"
     if _read_manifest_name(backup_dir) != PLUGIN_NAME:
         return f"rollback backup plugin.yaml is not {PLUGIN_NAME}: {backup_dir}"
-    missing = [rel for rel in REQUIRED_PLUGIN_FILES if not (backup_dir / rel).is_file()]
+    missing = [rel for rel in REQUIRED_PLUGIN_FILES if not path_is_file(backup_dir / rel)]
     if missing:
         return f"rollback backup missing required files: {', '.join(missing)}"
     return ""
@@ -474,9 +499,7 @@ def _shell_quote_path(path: Path) -> str:
 
 
 def _config_backup_path(home: Path) -> Path:
-    backup_root = home / "backups" / "scope-recall-installer-config" / f"{_backup_stamp()}.{uuid.uuid4().hex[:8]}"
-    backup_root.mkdir(parents=True, exist_ok=False)
-    return backup_root / "config.yaml"
+    return _backup_root(home, "scope-recall-installer-config") / "config.yaml"
 
 
 def _set_memory_provider_yaml_text(text: str) -> tuple[str, bool]:
@@ -508,7 +531,7 @@ def _write_memory_provider_config(home: Path) -> dict[str, Any]:
         home.mkdir(parents=True, exist_ok=True)
         if previous_config_existed:
             backup = _config_backup_path(home)
-            shutil.copy2(config_source, backup)
+            copy_file(config_source, backup, follow_symlinks=False)
             backup_path = str(backup)
         try:
             atomic_replace_text(
@@ -1400,7 +1423,7 @@ def install(
         missing = [rel for rel in REQUIRED_PLUGIN_FILES if not (source / rel).is_file()]
         raise InstallError(f"source tree is missing required plugin files: {', '.join(missing)}")
 
-    previous_plugin_existed = target.exists() or target.is_symlink()
+    previous_plugin_existed = path_exists(target) or path_is_symlink(target)
     previous_version = _read_manifest_version(target) if previous_plugin_existed else ""
     new_version = _read_manifest_version(source)
     result: dict[str, Any] = {
@@ -1457,8 +1480,8 @@ def install(
             ]
         return result
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target_exists = target.exists() or target.is_symlink()
+    make_dirs(target.parent, exist_ok=True)
+    target_exists = path_exists(target) or path_is_symlink(target)
     same_tree = target_exists and _is_same_tree(source, target)
     if target_exists and not same_tree:
         existing_name = _read_manifest_name(target)
@@ -1472,7 +1495,7 @@ def install(
     activation_snapshot: dict[str, Any] | None = None
     if activate:
         truth_db = home / "scope-recall" / "memory.sqlite3"
-        if truth_db.is_file() and not maintenance_mode:
+        if path_is_file(truth_db) and not maintenance_mode:
             raise InstallError(
                 "activation against an existing truth DB requires --maintenance-mode; "
                 "stop the gateway and all Scope Recall writers before retrying"
@@ -1512,12 +1535,14 @@ def install(
             initial=compatibility,
         )
 
-    staging_root = Path(tempfile.mkdtemp(prefix="scope.recall.install.", dir=str(target.parent)))
+    staging_root = public_path(
+        tempfile.mkdtemp(prefix="sr.stg.", dir=io_path(target.parent))
+    )
     staging = staging_root / PLUGIN_NAME
     backup_path = ""
     try:
         _copy_tree(source, staging)
-        if target.exists() or target.is_symlink():
+        if path_exists(target) or path_is_symlink(target):
             backup = _backup_existing_plugin(
                 home,
                 target,
@@ -1532,9 +1557,9 @@ def install(
             _remove_existing_plugin(target)
         try:
             revalidate_before_target_mutation()
-            staging.rename(target)
+            move_path(staging, target)
         except Exception:
-            if backup_path and not target.exists():
+            if backup_path and not path_exists(target):
                 _copy_existing_plugin(Path(backup_path), target)
             raise
     except Exception as exc:
@@ -1560,8 +1585,7 @@ def install(
                 ) from exc
         raise
     finally:
-        if staging_root.exists():
-            shutil.rmtree(staging_root, ignore_errors=True)
+        remove_path(staging_root, missing_ok=True, ignore_errors=True)
 
     result["installed"] = True
     if activate:
@@ -1589,11 +1613,11 @@ def rollback(
 ) -> dict[str, Any]:
     home = resolve_hermes_home(hermes_home)
     target = plugin_dir_for(home)
-    backup = Path(backup_dir).expanduser().resolve()
+    backup = public_path(Path(backup_dir).expanduser())
     error = _validate_backup_dir(backup)
     if error:
         raise InstallError(error)
-    replaced_version = _read_manifest_version(target) if target.exists() or target.is_symlink() else ""
+    replaced_version = _read_manifest_version(target) if path_exists(target) or path_is_symlink(target) else ""
     restored_version = _read_manifest_version(backup)
     result: dict[str, Any] = {
         "ok": True,
@@ -1609,8 +1633,8 @@ def rollback(
     }
     if dry_run:
         return result
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists() or target.is_symlink():
+    make_dirs(target.parent, exist_ok=True)
+    if path_exists(target) or path_is_symlink(target):
         current_backup = _backup_existing_plugin(home, target, category="scope-recall-rollback-current")
         result["current_backup_path"] = str(current_backup)
         _remove_existing_plugin(target)
@@ -1618,7 +1642,7 @@ def rollback(
         _copy_existing_plugin(backup, target)
     except Exception:
         current_backup_path = str(result.get("current_backup_path") or "")
-        if current_backup_path and not target.exists():
+        if current_backup_path and not path_exists(target):
             _copy_existing_plugin(Path(current_backup_path), target)
         raise
     result["restored"] = True

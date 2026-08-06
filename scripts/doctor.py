@@ -28,6 +28,7 @@ try:  # installed package / pytest package-alias path
         vector_fallback_backend_from_config,
     )
     from scope_recall.doctor_event_digest import event_digest_report
+    from scope_recall.doctor_endpoint import endpoint_policy_report
     from scope_recall.doctor_experience import experience_config_summary, experience_report, nightly_digest_report
     from scope_recall.doctor_journal import journal_enabled_from_config, journal_report
     from scope_recall.doctor_source import source_report
@@ -41,6 +42,7 @@ try:  # installed package / pytest package-alias path
 except ImportError:  # pragma: no cover - direct source checkout execution fallback
     from doctor_common import expected_embedder_from_config, load_runtime_config, redact_secret_like_text, vector_backend_from_config, vector_enabled_from_config, vector_fallback_backend_from_config
     from doctor_event_digest import event_digest_report
+    from doctor_endpoint import endpoint_policy_report
     from doctor_experience import experience_config_summary, experience_report, nightly_digest_report
     from doctor_journal import journal_enabled_from_config, journal_report
     from doctor_source import source_report
@@ -55,6 +57,7 @@ except ImportError:  # pragma: no cover - direct source checkout execution fallb
 __all__ = [
     "disabled_vector_report",
     "event_digest_report",
+    "endpoint_policy_report",
     "experience_config_summary",
     "experience_report",
     "expected_embedder_from_config",
@@ -119,6 +122,10 @@ def main() -> int:
         config_check = {"ok": not config_errors, "errors": config_errors}
         if config_errors:
             recommendations.append("Fix malformed or unreadable Scope Recall config files; runtime is using defaults or partial config.")
+        endpoint_payload, endpoint_check, endpoint_recommendations = endpoint_policy_report(
+            runtime_config,
+            hermes_home=hermes_home,
+        )
         expected_embedder = expected_embedder_from_config(runtime_config)
         sqlite_payload, sqlite_check, sqlite_recommendations = sqlite_report(hermes_home)
         temporal_payload, temporal_check, temporal_recommendations = temporal_evolution_report(
@@ -156,6 +163,7 @@ def main() -> int:
         payload["runtime"] = {
             "hermes_home": str(hermes_home),
             "config_load": {"errors": config_errors},
+            "endpoint_policy": endpoint_payload,
             "expected_embedder": expected_embedder,
             "vector_backend": backend,
             "sqlite": sqlite_payload,
@@ -170,6 +178,7 @@ def main() -> int:
             "vector": vector_payload,
         }
         checks["config_load"] = config_check
+        checks["endpoint_policy"] = endpoint_check
         checks["sqlite_truth"] = sqlite_check
         checks["temporal_evolution"] = temporal_check
         checks["memory_candidate_debt"] = candidate_check
@@ -181,6 +190,7 @@ def main() -> int:
         checks["nightly_digest"] = nightly_check
         checks["vector_companion"] = vector_check
         recommendations.extend(sqlite_recommendations)
+        recommendations.extend(endpoint_recommendations)
         recommendations.extend(temporal_recommendations)
         recommendations.extend(candidate_recommendations)
         recommendations.extend(quality_recommendations)

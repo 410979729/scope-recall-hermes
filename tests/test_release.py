@@ -105,6 +105,40 @@ def _load_release_check_module(module_name: str = "scope_recall_check_release_co
     return release_check
 
 
+def test_release_subprocess_runner_forces_utf8_without_mutating_caller_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_utf8_contract"
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["cmd"] = cmd
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(cmd, 0, stdout="中文输出", stderr="中文错误")
+
+    monkeypatch.setattr(release_check.subprocess, "run", fake_run)
+    caller_env = {"EXISTING": "preserved"}
+
+    result = release_check.run(
+        [sys.executable, "-c", "print('unused')"],
+        env=caller_env,
+    )
+
+    assert result["stdout"] == "中文输出"
+    assert result["stderr"] == "中文错误"
+    assert captured["encoding"] == "utf-8"
+    assert captured["errors"] == "replace"
+    assert captured["text"] is True
+    assert captured["env"] == {
+        "EXISTING": "preserved",
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8",
+    }
+    assert caller_env == {"EXISTING": "preserved"}
+
+
 def _force_safe_native_vector_probe(doctor, monkeypatch) -> None:
     vector_module = importlib.import_module(doctor.vector_report.__module__)
     monkeypatch.setattr(
@@ -380,7 +414,7 @@ def test_release_invariant_manifest_is_versioned_unique_and_executable():
 
     manifest = release_check.release_invariant_manifest()
     assert manifest["schema"] == "scope-recall.release-invariants.v1"
-    assert manifest["suite_count"] == 11
+    assert manifest["suite_count"] == 12
     assert manifest["node_count"] >= 50
     suites = manifest["suites"]
     suite_ids = {suite["id"] for suite in suites}
@@ -396,6 +430,7 @@ def test_release_invariant_manifest_is_versioned_unique_and_executable():
         "seventh-independent-audit-2026-07-release-blockers",
         "sixteenth-independent-audit-performance-liveness-blockers",
         "seventeenth-independent-audit-security-transaction-liveness-blockers",
+        "lexical-shadow-and-windows-rollout-release-blockers",
     } == suite_ids
     nodes = [node for suite in suites for node in suite["nodes"]]
     assert len(nodes) == len(set(nodes))
@@ -419,6 +454,10 @@ def test_release_invariant_manifest_is_versioned_unique_and_executable():
     )
     assert (
         "tests/test_relation_queue_liveness.py::test_expired_relation_leases_dead_letter_and_yield_to_later_work"
+        in nodes
+    )
+    assert (
+        "tests/test_lexical_cjk_retrieval.py::test_cjk_bigram_fallback_uses_one_bounded_sql_scan"
         in nodes
     )
     command = release_check.release_invariant_command()
@@ -532,12 +571,14 @@ def test_release_identity_requires_version_newer_than_latest_tag():
     assert "mutually exclusive" in conflicting_modes["error"]
 
 
-def test_v187_release_candidate_identity_surfaces_are_consistent():
-    """Bind the patch release to every authoritative version surface."""
+def test_v190_release_candidate_identity_surfaces_are_consistent():
+    """Bind the minor release to every authoritative version surface."""
 
-    expected_version = "1.8.7"
-    release_check = _load_release_check_module("scope_recall_check_release_v187_identity")
-    temporal_facts = importlib.import_module(f"{PACKAGE_NAME}.temporal_facts")
+    expected_version = "1.9.0"
+    release_check = _load_release_check_module("scope_recall_check_release_v190_identity")
+    lexical_generation = importlib.import_module(
+        f"{PACKAGE_NAME}.lexical_generation"
+    )
     plugin_manifest = (PLUGIN_ROOT / "plugin.yaml").read_text(encoding="utf-8")
     changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
@@ -546,33 +587,33 @@ def test_v187_release_candidate_identity_surfaces_are_consistent():
     assert _package_version() == expected_version
     assert f"version: {expected_version}" in plugin_manifest
     assert release_check.PACKAGE_VERSION == expected_version
-    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.8.7.md"
+    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.9.0.md"
     assert (PLUGIN_ROOT / release_check.RELEASE_READINESS_DOC).is_file()
     assert f"## [{expected_version}]" in changelog
     assert f"Version `{expected_version}`" in readme
     assert f"`scope-recall` {expected_version}" in stability
-    assert temporal_facts.FACT_CLAIMS_SCHEMA_VERSION == 10800
-    assert temporal_facts.FACT_CLAIMS_MIGRATION_PLUGIN_VERSION == "1.8.0"
+    assert lexical_generation.LEXICAL_SCHEMA_VERSION == 10812
+    assert lexical_generation.LEXICAL_MIGRATION_PLUGIN_VERSION == "1.9.0"
 
     identity = release_check.release_version_identity_check(
-        tags=["v1.8.0", "v1.8.1", "v1.8.2"]
+        tags=["v1.8.0", "v1.8.2", "v1.8.7"]
     )
     assert identity["ok"] is True
     assert identity["release_eligible"] is True
-    assert identity["expected_release_tag"] == "v1.8.7"
+    assert identity["expected_release_tag"] == "v1.9.0"
 
 
-def test_v187_changelog_is_cumulative_from_last_public_release():
-    release_check = _load_release_check_module("scope_recall_check_release_v187_changelog")
+def test_v190_changelog_is_cumulative_from_last_public_release():
+    release_check = _load_release_check_module("scope_recall_check_release_v190_changelog")
 
-    assert release_check.PACKAGE_VERSION == "1.8.7"
-    assert release_check.PUBLIC_RELEASE_BASELINE == "1.8.2"
+    assert release_check.PACKAGE_VERSION == "1.9.0"
+    assert release_check.PUBLIC_RELEASE_BASELINE == "1.8.7"
     section = release_check.changelog_section(
         (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8"),
-        "1.8.7",
+        "1.9.0",
     )
-    assert "since the last public release, `1.8.2`" in section
-    for term in ("freshness", "vector", "relation", "Experience", "secret", "Windows"):
+    assert "since the last public release, `1.8.7`" in section
+    for term in ("endpoint", "lexical", "Windows", "SQLite", "credentials", "Experience"):
         assert term.lower() in section.lower(), term
 
 
@@ -2340,7 +2381,7 @@ def test_openai_compatible_embedder_rotates_to_next_key_after_failure(monkeypatc
             return _Response()
 
     class _FakeOpenAI:
-        def __init__(self, *, api_key: str, base_url: str | None = None) -> None:
+        def __init__(self, *, api_key: str, base_url: str | None = None, http_client=None) -> None:  # noqa: ANN001,ARG002
             self.embeddings = _FakeEmbeddings(api_key)
 
     monkeypatch.setattr("scope_recall.embedders.OpenAI", _FakeOpenAI)

@@ -137,3 +137,21 @@ def test_fts_candidates_use_bm25_before_recency_cutoff():
     exact = next(item for item in results if item.id == "old-exact")
     assert exact.metadata is not None
     assert "bm25_score" in exact.metadata
+
+
+def test_search_db_memories_respects_limit_after_final_scoring():
+    conn = _conn()
+    for idx in range(8):
+        _store(
+            conn,
+            memory_id=f"candidate-{idx}",
+            content=f"OpenClaw gateway candidate {idx} uses explicit rollout validation.",
+        )
+    provider = FakeProvider(conn)
+
+    results = search_db_memories(provider, "OpenClaw gateway rollout", limit=3)
+
+    assert len(results) == 3
+    assert [item.score for item in results] == sorted(
+        (item.score for item in results), reverse=True
+    )

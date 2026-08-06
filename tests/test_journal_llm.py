@@ -57,6 +57,61 @@ def test_journal_llm_retry_preserves_journal_call_llm_monkeypatch_and_sanitizati
     assert "/tmp/hermes-secret-output.log" not in message
 
 
+def test_journal_llm_passes_explicit_insecure_endpoint_opt_in(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_call_llm(_prompt: str, **kwargs: object) -> str:
+        captured.update(kwargs)
+        return "[]"
+
+    monkeypatch.setattr(journal_module, "call_llm", fake_call_llm)
+
+    result = journal_llm._call_llm_with_retries(
+        "prompt",
+        model="test-model",
+        base_url="http://model.internal:1234",
+        api_key="",
+        timeout=1,
+        api_mode="chat_completions",
+        allow_insecure_endpoint=True,
+        max_attempts=1,
+        retry_delay=0,
+    )
+
+    assert result == "[]"
+    assert captured["allow_insecure_endpoint"] is True
+
+
+def test_journal_llm_rejects_non_boolean_insecure_endpoint_before_transport(
+    monkeypatch,
+):
+    calls = {"count": 0}
+
+    def fake_call_llm(*_args, **_kwargs):
+        calls["count"] += 1
+        return "[]"
+
+    monkeypatch.setattr(journal_module, "call_llm", fake_call_llm)
+
+    with pytest.raises(journal_llm.JournalDigestLLMError) as excinfo:
+        journal_llm._call_llm_with_retries(
+            "prompt",
+            model="test-model",
+            base_url="http://model.internal:1234",
+            api_key="",
+            timeout=1,
+            api_mode="chat_completions",
+            allow_insecure_endpoint="false",  # type: ignore[arg-type]
+            max_attempts=3,
+            retry_delay=0,
+        )
+
+    assert calls["count"] == 0
+    assert excinfo.value.attempts == 1
+    assert excinfo.value.error_kind == "endpoint_policy"
+    assert excinfo.value.retryable is False
+
+
 def test_journal_llm_quarantine_classification_preserves_metadata():
     retry_error = journal_llm.JournalDigestLLMError(
         "timeout at /tmp/hermes-secret-output.log",

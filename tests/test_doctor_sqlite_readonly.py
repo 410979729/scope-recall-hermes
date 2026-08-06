@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from scope_recall import doctor_sqlite  # type: ignore[attr-defined]
+from scope_recall.lexical_generation import LEXICAL_MIGRATION_ID
 from scope_recall.operator_ledger import OPERATOR_LEDGER_MIGRATION_ID
 from scope_recall.relation_frequency_index import (
     RELATION_FREQUENCY_FAILURE_MIGRATION_ID,
@@ -70,6 +71,7 @@ def test_sqlite_report_opens_truth_db_read_only(tmp_path, monkeypatch):
         VECTOR_RECONCILIATION_MIGRATION_ID,
         RELATION_REBUILD_EXPIRY_MIGRATION_ID,
         RELATION_FREQUENCY_FAILURE_MIGRATION_ID,
+        LEXICAL_MIGRATION_ID,
     ]
     assert payload["relation_frequency_index"]["status"] == "schema_missing"
     assert check == {"ok": True, "failures": []}

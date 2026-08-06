@@ -812,16 +812,15 @@ def test_call_llm_codex_responses_uses_responses_endpoint_and_extracts_text(monk
                 'data: {"type":"response.completed","response":{"status":"completed"}}\n\n'
             ).encode("utf-8")
 
-    def fake_urlopen(request, timeout):
+    def fake_urlopen(request, *, timeout, allow_insecure=False):
         captured["url"] = request.full_url
         captured["headers"] = dict(request.header_items())
         captured["body"] = json.loads(request.data.decode("utf-8"))
         captured["timeout"] = timeout
         return FakeResponse()
 
-    import scope_recall.nightly_digest as nightly_digest
 
-    monkeypatch.setattr(nightly_digest.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("scope_recall.nightly_llm.safe_urlopen", fake_urlopen)
     fake_codex_token = "token" + "-without" + "-jwt" + "-claims"
 
     raw = call_llm(
@@ -858,15 +857,14 @@ def test_call_llm_openai_compatible_uses_chat_completions_endpoint(monkeypatch):
         def read(self):
             return json.dumps({"choices": [{"message": {"content": "[]"}}]}).encode("utf-8")
 
-    def fake_urlopen(request, timeout):
+    def fake_urlopen(request, *, timeout, allow_insecure=False):
         captured["url"] = request.full_url
         captured["headers"] = dict(request.header_items())
         captured["body"] = json.loads(request.data.decode("utf-8"))
         return FakeResponse()
 
-    import scope_recall.nightly_digest as nightly_digest
 
-    monkeypatch.setattr(nightly_digest.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("scope_recall.nightly_llm.safe_urlopen", fake_urlopen)
 
     raw = call_llm(
         "extract this",
@@ -897,13 +895,12 @@ def test_call_llm_chat_completions_respects_explicit_endpoint_without_appending_
         def read(self):
             return json.dumps({"choices": [{"message": {"content": "[]"}}]}).encode("utf-8")
 
-    def fake_urlopen(request, timeout):
+    def fake_urlopen(request, *, timeout, allow_insecure=False):
         captured["url"] = request.full_url
         return FakeResponse()
 
-    import scope_recall.nightly_digest as nightly_digest
 
-    monkeypatch.setattr(nightly_digest.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("scope_recall.nightly_llm.safe_urlopen", fake_urlopen)
 
     raw = call_llm(
         "extract this",
@@ -932,13 +929,12 @@ def test_call_llm_chat_completions_append_v1_false_uses_provider_specific_root(m
         def read(self):
             return json.dumps({"choices": [{"message": {"content": "[]"}}]}).encode("utf-8")
 
-    def fake_urlopen(request, timeout):
+    def fake_urlopen(request, *, timeout, allow_insecure=False):
         captured["url"] = request.full_url
         return FakeResponse()
 
-    import scope_recall.nightly_digest as nightly_digest
 
-    monkeypatch.setattr(nightly_digest.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("scope_recall.nightly_llm.safe_urlopen", fake_urlopen)
 
     call_llm(
         "extract this",
@@ -953,13 +949,15 @@ def test_call_llm_chat_completions_append_v1_false_uses_provider_specific_root(m
     assert captured["url"] == "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions"
 
 
-def test_call_llm_chat_completions_http_error_mentions_endpoint_without_secret(monkeypatch):
+def test_call_llm_http_error_mentions_public_endpoint_without_secret_or_private_path(
+    monkeypatch,
+):
     import io
     from email.message import Message
 
     fake_secret = "sk-" + "a" * 28
 
-    def fake_urlopen(request, timeout):
+    def fake_urlopen(request, *, timeout, allow_insecure=False):
         raise urllib.error.HTTPError(
             request.full_url,
             404,
@@ -968,9 +966,8 @@ def test_call_llm_chat_completions_http_error_mentions_endpoint_without_secret(m
             fp=io.BytesIO(f"provider error api_key={fake_secret}".encode("utf-8")),
         )
 
-    import scope_recall.nightly_digest as nightly_digest
 
-    monkeypatch.setattr(nightly_digest.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("scope_recall.nightly_llm.safe_urlopen", fake_urlopen)
 
     try:
         call_llm(
@@ -987,7 +984,8 @@ def test_call_llm_chat_completions_http_error_mentions_endpoint_without_secret(m
     else:
         raise AssertionError("expected RuntimeError")
 
-    assert "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions" in message
+    assert "https://ark.cn-beijing.volces.com/chat/completions" in message
+    assert "/api/coding/v3/" not in message
     assert fake_secret not in message
     assert "[REDACTED]" in message
 
@@ -1113,7 +1111,6 @@ def test_dry_run_does_not_write_digest_rows(tmp_path):
 
 
 def test_llm_digest_timeout_falls_back_to_heuristic_and_records_degraded_ok(tmp_path, monkeypatch):
-    import scope_recall.nightly_digest as nightly_digest
 
     day = date(2026, 6, 1)
     hermes_home = tmp_path / "hermes"
@@ -1121,10 +1118,10 @@ def test_llm_digest_timeout_falls_back_to_heuristic_and_records_degraded_ok(tmp_
     _write_config(hermes_home)
     _create_state_db(hermes_home / "state.db", day)
 
-    def fake_urlopen(request, timeout):  # noqa: ARG001
+    def fake_urlopen(request, *, timeout, allow_insecure=False):  # noqa: ARG001
         raise TimeoutError("The read operation timed out")
 
-    monkeypatch.setattr(nightly_digest.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("scope_recall.nightly_llm.safe_urlopen", fake_urlopen)
     fake_digest_key = "fake" + "-digest-key"
 
     result = run_digest(
@@ -1583,3 +1580,88 @@ def test_nightly_duplicate_cleanup_uses_shared_replay_without_direct_vector_dele
     assert vector_runtime._vector_message == "nightly duplicate vector outbox replay failed"
     assert "secret123456789" not in vector_runtime._vector_message
     assert "/tmp/hermes" not in vector_runtime._vector_message
+
+
+@pytest.mark.parametrize(
+    ("raw_insecure_opt_in", "expected_insecure_opt_in"),
+    ((True, True), ("true", False)),
+)
+def test_collect_candidates_propagates_endpoint_opt_in_and_explicit_booleans(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    raw_insecure_opt_in: object,
+    expected_insecure_opt_in: bool,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_call(_prompt: str, **kwargs: object) -> str:
+        captured.update(kwargs)
+        return '[{"action":"skip"}]'
+
+    monkeypatch.setattr(nightly_digest, "_call_llm_with_retries", fake_call)
+
+    nightly_digest.collect_candidates(
+        [_parse_test_bundle()],
+        options=DigestOptions(
+            hermes_home=tmp_path,
+            digest_date=date(2026, 8, 5),
+            extractor="llm",
+            allow_heuristic_fallback=False,
+        ),
+        llm_config={
+            "model": "test-model",
+            "base_url": "http://model.internal:1234/v1",
+            "api_key": "placeholder-only",
+            "api_mode": "chat_completions",
+            "append_v1": "false",
+            "allow_insecure_endpoint": raw_insecure_opt_in,
+        },
+        existing_context=[],
+    )
+
+    assert captured["allow_insecure_endpoint"] is expected_insecure_opt_in
+    assert captured["append_v1"] is False
+
+
+def test_collect_candidates_endpoint_policy_error_never_uses_heuristic_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import scope_recall.nightly_llm as nightly_llm
+
+    calls = {"count": 0}
+    fallback_events: list[dict[str, object]] = []
+
+    def blocked_retry(*args: object, **kwargs: object) -> str:  # noqa: ARG001
+        calls["count"] += 1
+        raise nightly_llm.NightlyDigestLLMError(
+            "endpoint_policy after 1 attempt(s): blocked by endpoint policy",
+            attempts=1,
+            error_kind="endpoint_policy",
+            retryable=False,
+        )
+
+    monkeypatch.setattr(nightly_digest, "_call_llm_with_retries", blocked_retry)
+
+    with pytest.raises(RuntimeError):
+        nightly_digest.collect_candidates(
+            [_parse_test_bundle()],
+            options=DigestOptions(
+                hermes_home=tmp_path,
+                digest_date=date(2026, 8, 5),
+                extractor="llm",
+                max_attempts=3,
+                allow_heuristic_fallback=True,
+            ),
+            llm_config={
+                "model": "test-model",
+                "base_url": "https://api.example.invalid/v1",
+                "api_key": "placeholder-only",
+                "api_mode": "chat_completions",
+            },
+            existing_context=[],
+            fallback_events=fallback_events,
+        )
+
+    assert calls["count"] == 1
+    assert fallback_events == []

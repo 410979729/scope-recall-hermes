@@ -9,9 +9,10 @@ Use this guide when updating `scope-recall` across multiple Hermes profile homes
 - Canary first with `--canary <profile>` before batch rollout.
 - Existing `plugins/scope-recall/` directories are copied to a unique per-profile backup path before replacement.
 - Rollback uses the rollout receipt and also backs up the current plugin copy before restoring the previous one.
-- Rollback validates every receipt action before mutation: target `hermes_home` must stay under `--profiles-root`, backup paths must stay under that profile's `backups/scope-recall-rollout/`, and backups must contain a valid `scope-recall` plugin manifest.
+- Rollback validates every receipt action before mutation: target `hermes_home` must stay under `--profiles-root`, new backup paths must stay under the short `backups/sr/o/` root, historical receipts under `backups/scope-recall-rollout/` remain accepted, and backups must contain a valid `scope-recall` plugin manifest.
 - If any rollback receipt action fails validation, rollback returns `ok=false` and does not mutate any profile.
 - This tool changes plugin files only; it does not mutate SQLite memory truth or vector companion state.
+- On Windows, copy/remove/move operations use an internal extended-length path adapter and preflight every destination component before mutation. Receipts always contain normal public paths; the internal `\\?\` prefix is never emitted.
 
 ## Inventory / dry-run
 

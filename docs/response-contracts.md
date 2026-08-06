@@ -15,6 +15,7 @@ These versions are lightweight response-contract identifiers, not full JSON Sche
   - Producer: `scripts/doctor.py`
   - Required top-level keys: `schema_version`, `ok`, `source`, `checks`, `recommendations`, `runtime`
   - Purpose: source/runtime health checks and operator recommendations.
+  - `checks.endpoint_policy` is a required additive check. It evaluates inherited Hermes provider routes and hosted embedder `base_url_env` values without reading credential sources. Sanitized per-surface results under `runtime.endpoint_policy` expose only endpoint origins and recognized public API suffixes; arbitrary configured paths, query strings, userinfo, API keys, and credential values are never reported.
 
 - `dashboard_report.v1`
   - Producer: `scripts/report.dashboard.py`

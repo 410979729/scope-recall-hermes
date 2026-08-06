@@ -14,6 +14,7 @@ callers branch safely when report fields evolve.
 DOCTOR_RESPONSE_SCHEMA_VERSION = "doctor_report.v1"
 DOCTOR_REQUIRED_CHECK_NAMES = (
     "config_load",
+    "endpoint_policy",
     "event_digest",
     "experience_kernel",
     "journal_provenance",
