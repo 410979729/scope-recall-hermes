@@ -259,7 +259,7 @@ The supplemental CJK lexical index is never created or activated by ordinary pro
 hermes-scope-recall lexical plan --hermes-home "$HERMES_HOME" --json
 ```
 
-2. Stop the gateway and every Scope Recall SQLite writer. Build the shadow in resumable batches; the command creates and quick-checks an online backup before schema/index mutation:
+2. Stop the gateway and every Scope Recall SQLite writer. Build the shadow in resumable batches. Apply atomically acquires the durable activation lease, proves `BEGIN IMMEDIATE` quiescence, creates and quick-checks an online backup, verifies a stable source fingerprint, then installs temporary SQLite guard triggers before schema/index mutation:
 
 ```bash
 hermes-scope-recall lexical build \
@@ -269,7 +269,7 @@ hermes-scope-recall lexical build \
   --json
 ```
 
-3. Require `status=ready`, `integrity.healthy=true`, the fixed high-interference CJK fixture at `3/3`, live CJK samples at full recall, and `english_regressions=0`.
+3. Require `status=ready`, `integrity.healthy=true`, the fixed high-interference CJK fixture at `3/3`, live CJK samples at full recall, `english_regressions=0`, a matching generation/source binding, the fixed quality provenance contract, and a valid evidence fingerprint. The command must report `maintenance_lease.acquired=true`, `guards_installed=true`, `guards_removed=true`, and `released=true`.
 4. Activate with an explicit compare-and-swap value. Use `legacy` only when doctor/plan reports no active supplemental generation:
 
 ```bash
@@ -280,7 +280,7 @@ hermes-scope-recall lexical activate \
   --json
 ```
 
-5. Start writers and require doctor `sqlite.lexical_generation.status=active` and `healthy=true`.
+5. Activation rechecks the READY source binding; any intervening truth write makes the old review stale and blocks activation. Start writers only after lease/guard cleanup, then require doctor `sqlite.lexical_generation.status=active` and `healthy=true`.
 
 Rollback only changes the generation pointer; neither the legacy nor shadow table is deleted:
 

@@ -5,14 +5,16 @@ Use this guide when updating `scope-recall` across multiple Hermes profile homes
 ## Safety model
 
 - Default mode is dry-run: inventory only, no filesystem mutation.
-- `--apply` is required to install into profile plugin directories.
+- `--apply` is required to install into profile plugin directories, and every apply requires an explicit durable `--receipt` path.
 - Canary first with `--canary <profile>` before batch rollout.
 - Existing `plugins/scope-recall/` directories are copied to a unique per-profile backup path before replacement.
+- Each per-profile backup path is atomically published to the receipt before replacement begins. A receipt can therefore roll back a crash-interrupted `mutation_started` action even if final publication never ran.
+- Any installer `ok=false`, installer exception, or post-install receipt publication failure triggers immediate compensation to the previous plugin state and stops further profile mutations.
 - Rollback uses the rollout receipt and also backs up the current plugin copy before restoring the previous one.
 - Rollback validates every receipt action before mutation: target `hermes_home` must stay under `--profiles-root`, new backup paths must stay under the short `backups/sr/o/` root, historical receipts under `backups/scope-recall-rollout/` remain accepted, and backups must contain a valid `scope-recall` plugin manifest.
 - If any rollback receipt action fails validation, rollback returns `ok=false` and does not mutate any profile.
 - This tool changes plugin files only; it does not mutate SQLite memory truth or vector companion state.
-- On Windows, copy/remove/move operations use an internal extended-length path adapter and preflight every destination component before mutation. Receipts always contain normal public paths; the internal `\\?\` prefix is never emitted.
+- On Windows, enumeration, manifest/config reads, receipt reads/writes, copy/remove/move operations, and atomic receipt publication use an internal extended-length path adapter. Receipts always contain normal public paths; the internal `\\?\` prefix is never emitted.
 
 ## Inventory / dry-run
 

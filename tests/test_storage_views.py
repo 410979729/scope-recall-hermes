@@ -7,7 +7,7 @@ from __future__ import annotations
 import sqlite3
 
 from scope_recall.sql_store import ensure_schema, store_row
-from scope_recall.storage_views import search_db_memories
+from scope_recall.storage_views import search_db_memories, search_vector_memories
 
 
 class FakeProvider:
@@ -155,3 +155,60 @@ def test_search_db_memories_respects_limit_after_final_scoring():
     assert [item.score for item in results] == sorted(
         (item.score for item in results), reverse=True
     )
+
+
+def test_search_vector_memories_respects_requested_limit():
+    conn = _conn()
+    for idx in range(8):
+        _store(
+            conn,
+            memory_id=f"vector-{idx}",
+            content=f"vector candidate {idx}",
+        )
+    provider = FakeProvider(conn)
+    provider._vector_ready = True
+    provider._embedder = type(
+        "Embedder",
+        (),
+        {"embed_query": staticmethod(lambda _query: [1.0, 0.0])},
+    )()
+
+    class VectorStore:
+        @staticmethod
+        def search(_vector, *, scope_id: str, limit: int):
+            assert limit == 20
+            rows = [
+                {
+                    "id": f"vector-{idx}",
+                    "scope_id": scope_id,
+                    "content": f"vector candidate {idx}",
+                    "summary": f"vector candidate {idx}",
+                    "source": "tool-store",
+                    "target": "ops",
+                    "updated_at": f"2026-01-{idx + 1:02d}T00:00:00+00:00",
+                    "_distance": float(idx) / 100.0,
+                }
+                for idx in range(8)
+            ]
+            rows.append(
+                {
+                    "id": "vector-0",
+                    "scope_id": scope_id,
+                    "content": "vector candidate 0",
+                    "summary": "vector candidate 0",
+                    "source": "tool-store",
+                    "target": "ops",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                    "_distance": 0.99,
+                }
+            )
+            return rows
+
+    provider._vector_store = VectorStore()
+    provider._vector_config = {"top_k": 20}
+    provider._retrieval_config["vector_min_score"] = 0.0
+
+    results = search_vector_memories(provider, "vector candidate", limit=1)
+
+    assert len(results) == 1
+    assert results[0].id == "vector-0"

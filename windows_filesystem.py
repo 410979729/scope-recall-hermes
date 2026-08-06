@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -177,9 +178,64 @@ def path_is_dir(path: str | os.PathLike[str]) -> bool:
 
 
 def path_is_symlink(path: str | os.PathLike[str]) -> bool:
-    """Return whether *path* is a symlink/reparse link through safe I/O."""
+    """Return whether a filesystem entry is a symlink."""
 
     return os.path.islink(io_path(path))
+
+
+def list_directory_paths(path: str | os.PathLike[str]) -> list[Path]:
+    """List one directory through extended-length I/O using public paths."""
+
+    directory = public_path(path)
+    raw = io_path(directory)
+    if not os.path.isdir(raw):
+        raise NotADirectoryError(str(directory))
+    with os.scandir(raw) as entries:
+        names = sorted(entry.name for entry in entries)
+    return [directory / name for name in names]
+
+
+def read_text(
+    path: str | os.PathLike[str],
+    *,
+    encoding: str = "utf-8",
+    errors: str | None = None,
+) -> str:
+    """Read a text file through extended-length I/O."""
+
+    with open(io_path(path), encoding=encoding, errors=errors) as handle:
+        return handle.read()
+
+
+def real_path(path: str | os.PathLike[str]) -> Path:
+    """Resolve symlinks/reparse points through extended-length path I/O."""
+
+    return public_path(os.path.realpath(io_path(path)))
+
+
+def atomic_write_text(
+    path: str | os.PathLike[str],
+    content: str,
+    *,
+    encoding: str = "utf-8",
+) -> Path:
+    """Durably publish text through a same-directory atomic replacement."""
+
+    destination = public_path(path)
+    _validate_windows_destination(destination)
+    make_dirs(destination.parent)
+    temporary = destination.parent / f".{destination.name}.{uuid.uuid4().hex[:8]}.tmp"
+    _validate_windows_destination(temporary)
+    try:
+        with open(io_path(temporary), "w", encoding=encoding, newline="") as handle:
+            handle.write(str(content))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(io_path(temporary), io_path(destination))
+    except Exception:
+        remove_path(temporary, missing_ok=True, ignore_errors=True)
+        raise
+    return destination
 
 
 def remove_path(

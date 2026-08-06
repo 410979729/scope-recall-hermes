@@ -35,8 +35,10 @@ if PACKAGE_NAME not in sys.modules:
 
 from scope_recall_rollout_runtime import installer  # noqa: E402
 from scope_recall_rollout_runtime.windows_filesystem import (  # noqa: E402
+    atomic_write_text,
     copy_file,
     copy_tree,
+    list_directory_paths,
     make_dirs,
     move_path,
     path_exists,
@@ -44,6 +46,8 @@ from scope_recall_rollout_runtime.windows_filesystem import (  # noqa: E402
     path_is_file,
     path_is_symlink,
     public_path,
+    read_text,
+    real_path,
     remove_path,
 )
 
@@ -56,9 +60,9 @@ def now_stamp() -> str:
 
 def read_manifest_name(plugin_dir: Path) -> str:
     manifest = plugin_dir / "plugin.yaml"
-    if not manifest.is_file():
+    if not path_is_file(manifest):
         return ""
-    for raw_line in manifest.read_text(encoding="utf-8", errors="replace").splitlines():
+    for raw_line in read_text(manifest, errors="replace").splitlines():
         line = raw_line.strip()
         if line.startswith("name:"):
             return line.split(":", 1)[1].strip().strip('"\'')
@@ -67,9 +71,9 @@ def read_manifest_name(plugin_dir: Path) -> str:
 
 def read_manifest_version(plugin_dir: Path) -> str:
     manifest = plugin_dir / "plugin.yaml"
-    if not manifest.is_file():
+    if not path_is_file(manifest):
         return ""
-    for raw_line in manifest.read_text(encoding="utf-8", errors="replace").splitlines():
+    for raw_line in read_text(manifest, errors="replace").splitlines():
         line = raw_line.strip()
         if line.startswith("version:"):
             return line.split(":", 1)[1].strip().strip('"\'')
@@ -78,16 +82,16 @@ def read_manifest_version(plugin_dir: Path) -> str:
 
 def read_config_summary(profile_home: Path) -> dict[str, Any]:
     config = profile_home / "config.yaml"
-    if not config.is_file():
+    if not path_is_file(config):
         return {"exists": False, "memory_provider": ""}
-    text = config.read_text(encoding="utf-8", errors="replace")[:100_000]
+    text = read_text(config, errors="replace")[:100_000]
     provider = "scope-recall" if "scope-recall" in text else ""
     return {"exists": True, "memory_provider": provider}
 
 
 def is_relative_to(path: Path, root: Path) -> bool:
     try:
-        path.resolve().relative_to(root.resolve())
+        real_path(path).relative_to(real_path(root))
         return True
     except (OSError, ValueError):
         return False
@@ -112,9 +116,13 @@ def validate_plugin_backup(backup_path: Path) -> str:
 
 def profile_homes(profiles_root: Path, selected: list[str] | None = None) -> list[Path]:
     selected_set = {item for item in selected or [] if item}
-    if not profiles_root.exists():
+    if not path_is_dir(profiles_root):
         return []
-    homes = [path for path in sorted(profiles_root.iterdir(), key=lambda item: item.name) if path.is_dir()]
+    homes = [
+        path
+        for path in list_directory_paths(profiles_root)
+        if path_is_dir(path)
+    ]
     if selected_set:
         homes = [path for path in homes if path.name in selected_set]
     return homes
@@ -127,7 +135,7 @@ def inventory_profile(profile_home: Path) -> dict[str, Any]:
         "name": profile_home.name,
         "hermes_home": str(profile_home),
         "plugin_dir": str(plugin_dir),
-        "plugin_exists": plugin_dir.exists(),
+        "plugin_exists": path_exists(plugin_dir),
         "plugin_version": read_manifest_version(plugin_dir),
         "config": read_config_summary(profile_home),
         "verify": verify,
@@ -209,6 +217,55 @@ def restore_plugin(profile_home: Path, backup_path: str, *, previous_plugin_exis
     return current_backup
 
 
+def _publish_receipt(report: dict[str, Any], receipt_path: Path) -> None:
+    """Atomically publish one durable rollout/rollback capability receipt."""
+
+    report["receipt_path"] = str(receipt_path)
+    atomic_write_text(
+        receipt_path,
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    )
+
+
+def _compensate_action(
+    profile_home: Path,
+    action: dict[str, Any],
+) -> bool:
+    """Restore the exact pre-rollout plugin state for one failed action."""
+
+    try:
+        action["compensation_backup_path"] = restore_plugin(
+            profile_home,
+            str(action.get("backup_path") or ""),
+            previous_plugin_existed=bool(action.get("previous_plugin_existed")),
+        )
+    except Exception as exc:
+        action["compensated"] = False
+        action["compensation_error"] = str(exc)
+        return False
+    action["compensated"] = True
+    action["applied"] = False
+    action["mutation_started"] = False
+    return True
+
+
+def _rollout_ok(
+    actions: list[dict[str, Any]],
+    *,
+    apply: bool,
+    selection_error: bool,
+) -> bool:
+    planned = [action for action in actions if action.get("planned")]
+    if selection_error or (apply and not planned):
+        return False
+    if not apply:
+        return True
+    return all(
+        action.get("ok") is True and action.get("applied") is True
+        for action in planned
+    )
+
+
 def rollout_profiles(
     *,
     profiles_root: Path,
@@ -217,15 +274,16 @@ def rollout_profiles(
     apply: bool = False,
     receipt_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Plan or apply cross-profile plugin rollout actions.
+    """Plan or durably apply cross-profile plugin rollout actions."""
 
-    The function reports every target and backup path explicitly because cross-profile writes can affect other Hermes sessions."""
-    profiles_root = profiles_root.expanduser()
+    profiles_root = public_path(profiles_root.expanduser())
     selected_set = {item for item in selected_profiles or [] if item}
     all_homes = profile_homes(profiles_root)
     available_names = {home.name for home in all_homes}
     missing_profiles = sorted(selected_set - available_names)
-    selected_homes = [home for home in all_homes if not selected_set or home.name in selected_set]
+    selected_homes = [
+        home for home in all_homes if not selected_set or home.name in selected_set
+    ]
     profiles = [inventory_profile(home) for home in selected_homes]
     profile_names = {str(profile["name"]) for profile in profiles}
     missing_canary = canary if canary and canary not in profile_names else ""
@@ -233,47 +291,36 @@ def rollout_profiles(
     actions: list[dict[str, Any]] = []
     for profile in profiles:
         name = str(profile["name"])
-        home = Path(str(profile["hermes_home"]))
         action: dict[str, Any] = {
             "profile": name,
-            "hermes_home": str(home),
-            "planned": True,
+            "hermes_home": str(profile["hermes_home"]),
+            "planned": not bool(canary and name != canary),
             "applied": False,
-            "reason": "",
+            "mutation_started": False,
+            "compensated": False,
+            "reason": "not_canary" if canary and name != canary else "",
             "previous_plugin_existed": bool(profile["plugin_exists"]),
             "previous_version": str(profile["plugin_version"]),
             "target_version": source_version,
             "backup_path": "",
+            "compensation_backup_path": "",
             "verify": {},
             "error": "",
         }
-        if canary and name != canary:
-            action["planned"] = False
-            action["reason"] = "not_canary"
-            actions.append(action)
-            continue
-        if apply and not (missing_profiles or missing_canary):
-            try:
-                action["backup_path"] = backup_plugin(home)
-                install_result = installer.install(home, force=True)
-                action["applied"] = bool(install_result.get("installed") or install_result.get("mode") == "already-installed")
-                action["verify"] = install_result.get("verify", {})
-                action["ok"] = bool(install_result.get("ok"))
-            except Exception as exc:  # pragma: no cover - exact exception type depends on installer/runtime path
-                action["ok"] = False
-                action["applied"] = False
-                action["reason"] = "install_error"
-                action["error"] = str(exc)
-        elif apply and (missing_profiles or missing_canary):
-            action["planned"] = False
-            action["reason"] = "selection_error"
         actions.append(action)
-    applied_actions = [action for action in actions if action.get("applied")]
-    action_error = any(action.get("ok") is False or bool(action.get("error")) for action in actions)
+
     selection_error = bool(missing_profiles or missing_canary)
-    no_apply_target = bool(apply and not selection_error and not any(action.get("planned") for action in actions))
-    report = {
-        "ok": False if selection_error or no_apply_target or action_error else (all(bool(action.get("ok", True)) for action in applied_actions) if apply else True),
+    if apply and selection_error:
+        for action in actions:
+            if action.get("planned"):
+                action["planned"] = False
+                action["reason"] = "selection_error"
+    report: dict[str, Any] = {
+        "ok": _rollout_ok(
+            actions,
+            apply=apply,
+            selection_error=selection_error,
+        ),
         "dry_run": not apply,
         "plan": not apply,
         "rollback": False,
@@ -285,10 +332,61 @@ def rollout_profiles(
         "profiles": profiles,
         "actions": actions,
     }
-    if receipt_path is not None:
-        receipt_path.parent.mkdir(parents=True, exist_ok=True)
-        report["receipt_path"] = str(receipt_path)
-        receipt_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    planned_actions = [action for action in actions if action.get("planned")]
+    if apply and not selection_error and planned_actions and receipt_path is None:
+        raise ValueError("--apply requires a durable --receipt path")
+    if not apply or selection_error or not planned_actions:
+        if receipt_path is not None:
+            _publish_receipt(report, receipt_path)
+        return report
+
+    assert receipt_path is not None
+    for action in planned_actions:
+        home = public_path(Path(str(action["hermes_home"])))
+        target_mutation_possible = False
+        try:
+            action["backup_path"] = backup_plugin(home)
+            action["mutation_started"] = True
+            _publish_receipt(report, receipt_path)
+            target_mutation_possible = True
+            install_result = installer.install(home, force=True)
+            action["applied"] = bool(
+                install_result.get("installed")
+                or install_result.get("mode") == "already-installed"
+            )
+            action["verify"] = install_result.get("verify", {})
+            action["ok"] = bool(install_result.get("ok"))
+            if not action["ok"]:
+                action["reason"] = "install_not_ok"
+                _compensate_action(home, action)
+        except Exception as exc:
+            action["ok"] = False
+            action["reason"] = "install_error"
+            action["error"] = str(exc)
+            if target_mutation_possible:
+                _compensate_action(home, action)
+
+        report["ok"] = _rollout_ok(
+            actions,
+            apply=True,
+            selection_error=False,
+        )
+        try:
+            _publish_receipt(report, receipt_path)
+        except Exception as exc:
+            if target_mutation_possible:
+                _compensate_action(home, action)
+            action["ok"] = False
+            action["reason"] = "receipt_error"
+            action["error"] = str(exc)
+            report["ok"] = False
+            try:
+                _publish_receipt(report, receipt_path)
+            except Exception:
+                pass
+            break
+        if action.get("ok") is not True:
+            break
     return report
 
 
@@ -327,11 +425,11 @@ def validate_rollback_action(original: dict[str, Any], profiles_root: Path) -> t
 
 def rollback_profiles(*, profiles_root: Path, receipt_path: Path, apply: bool = False) -> dict[str, Any]:
     profiles_root = profiles_root.expanduser()
-    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt = json.loads(read_text(receipt_path))
     actions: list[dict[str, Any]] = []
     valid_homes: list[tuple[dict[str, Any], Path]] = []
     for original in receipt.get("actions", []):
-        if not original.get("applied"):
+        if not (original.get("applied") or original.get("mutation_started")):
             continue
         action, profile_home = validate_rollback_action(original, profiles_root)
         actions.append(action)

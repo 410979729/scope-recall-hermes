@@ -18,12 +18,15 @@ from typing import Any
 from .capture_filters import sanitize_report_text
 from .lexical_generation import (
     LEXICAL_GENERATION_ID,
+    LEXICAL_QUALITY_PROVENANCE,
     LEXICAL_SHADOW_TABLE,
     backfill_generation,
     create_shadow_generation,
     current_generation_id,
     generation_integrity_report,
     generation_status,
+    lexical_source_binding,
+    lexical_quality_evidence_fingerprint,
     lexical_schema_status,
     mark_generation_ready,
 )
@@ -305,7 +308,7 @@ def validate_lexical_generation(
         and cjk_found == cjk_queries
         and english_regressions == 0
     )
-    return {
+    receipt = {
         "ok": ok,
         "status": "ready" if ok else "blocked",
         "generation_id": generation_id,
@@ -318,8 +321,12 @@ def validate_lexical_generation(
         "cjk_queries": cjk_queries,
         "cjk_expected_found": cjk_found,
         "integrity": integrity,
+        "source_binding": lexical_source_binding(conn),
+        "provenance": dict(LEXICAL_QUALITY_PROVENANCE),
         "contains_raw_samples": False,
     }
+    receipt["evidence_fingerprint"] = lexical_quality_evidence_fingerprint(receipt)
+    return receipt
 
 
 def plan_lexical_migration(

@@ -9,12 +9,20 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from scope_recall.lexical_generation import (
     LEXICAL_GENERATION_ID,
     LEXICAL_SHADOW_TABLE,
     current_generation_id,
     generation_status,
 )
+from scope_recall.maintenance_lease import (
+    acquire_activation_lease,
+    activation_lease_status,
+    release_activation_lease,
+)
+from scope_recall.maintenance_ops import connect_memory_db
 from scope_recall.sql_store import ensure_schema, store_row
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -150,6 +158,51 @@ def test_cli_apply_requires_explicit_maintenance_confirmation(tmp_path: Path):
     assert not (db_path.parent / "backups").exists()
 
 
+def test_owner_token_connection_writes_while_ordinary_writer_is_blocked(
+    tmp_path: Path,
+):
+    _home_path, db_path = _home(tmp_path)
+    lease = acquire_activation_lease(db_path)
+    try:
+        owner = connect_memory_db(
+            db_path,
+            apply=True,
+            lease_token=str(lease["token"]),
+        )
+        ordinary = connect_memory_db(db_path, apply=True)
+        try:
+            owner.execute(
+                "UPDATE lexical_generation_state SET updated_at=? WHERE key='current'",
+                ("owner-write",),
+            )
+            owner.commit()
+            with pytest.raises(sqlite3.DatabaseError):
+                ordinary.execute(
+                    "UPDATE lexical_generation_state SET updated_at=? WHERE key='current'",
+                    ("ordinary-write",),
+                )
+        finally:
+            ordinary.close()
+            owner.close()
+    finally:
+        assert release_activation_lease(lease) is True
+
+
+def test_cli_apply_rejects_foreign_active_lease_before_backup(tmp_path: Path):
+    home, db_path = _home(tmp_path)
+    lease = acquire_activation_lease(db_path)
+    try:
+        proc = _run(home, "--apply", "--maintenance-confirmed")
+    finally:
+        assert release_activation_lease(lease) is True
+
+    payload = _payload(proc)
+    assert proc.returncode == 2
+    assert payload["status"] == "lease_conflict"
+    assert payload["backup_path"] == ""
+    assert not (db_path.parent / "backups").exists()
+
+
 def test_cli_build_activate_and_rollback_are_backup_first_and_cas_guarded(
     tmp_path: Path,
 ):
@@ -169,6 +222,13 @@ def test_cli_build_activate_and_rollback_are_backup_first_and_cas_guarded(
     assert built["status"] == "ready"
     assert built["quality"]["synthetic_cjk_expected_found"] == 3
     assert Path(built["backup_path"]).is_file()
+    assert built["maintenance_lease"] == {
+        "acquired": True,
+        "guards_installed": True,
+        "guards_removed": True,
+        "released": True,
+    }
+    assert activation_lease_status(db_path)["status"] == "absent"
 
     conflict_proc = _run(
         home,

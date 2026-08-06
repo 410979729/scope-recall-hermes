@@ -9,6 +9,7 @@ import pytest
 
 from scope_recall.lexical_generation import (
     LEXICAL_GENERATION_ID,
+    LEXICAL_QUALITY_PROVENANCE,
     LEXICAL_SHADOW_TABLE,
     LexicalGenerationError,
     activate_generation,
@@ -18,6 +19,8 @@ from scope_recall.lexical_generation import (
     ensure_lexical_generation_schema,
     generation_integrity_report,
     generation_status,
+    lexical_quality_evidence_fingerprint,
+    lexical_source_binding,
     lexical_schema_status,
     mark_generation_ready,
     rollback_generation,
@@ -63,14 +66,27 @@ def _store(
     )
 
 
-def _quality_receipt() -> dict[str, object]:
-    return {
+def _quality_receipt(conn: sqlite3.Connection) -> dict[str, object]:
+    integrity = generation_integrity_report(conn, LEXICAL_GENERATION_ID)
+    receipt = {
         "ok": True,
         "status": "ready",
+        "generation_id": LEXICAL_GENERATION_ID,
+        "synthetic_cjk_queries": 3,
+        "synthetic_cjk_expected_found": 3,
+        "live_cjk_queries": 0,
+        "live_cjk_expected_found": 0,
+        "english_queries": 1,
         "cjk_queries": 3,
         "cjk_expected_found": 3,
         "english_regressions": 0,
+        "integrity": integrity,
+        "source_binding": lexical_source_binding(conn),
+        "provenance": dict(LEXICAL_QUALITY_PROVENANCE),
+        "contains_raw_samples": False,
     }
+    receipt["evidence_fingerprint"] = lexical_quality_evidence_fingerprint(receipt)
+    return receipt
 
 
 def test_schema_metadata_is_additive_and_does_not_auto_create_shadow_storage():
@@ -187,14 +203,14 @@ def test_ready_gate_rejects_integrity_drift_and_accepts_reviewed_quality_receipt
         mark_generation_ready(
             conn,
             LEXICAL_GENERATION_ID,
-            quality_receipt=_quality_receipt(),
+            quality_receipt=_quality_receipt(conn),
         )
 
     backfill_generation(conn, LEXICAL_GENERATION_ID, batch_size=10, reconcile=True)
     ready = mark_generation_ready(
         conn,
         LEXICAL_GENERATION_ID,
-        quality_receipt=_quality_receipt(),
+        quality_receipt=_quality_receipt(conn),
     )
 
     assert ready["status"] == "ready"
@@ -210,7 +226,7 @@ def test_activation_and_rollback_use_cas_and_retain_legacy_storage():
     mark_generation_ready(
         conn,
         LEXICAL_GENERATION_ID,
-        quality_receipt=_quality_receipt(),
+        quality_receipt=_quality_receipt(conn),
     )
 
     with pytest.raises(LexicalGenerationError, match="CAS"):
@@ -244,3 +260,69 @@ def test_activation_and_rollback_use_cas_and_retain_legacy_storage():
     assert rolled_back["status"] == "legacy"
     assert current_generation_id(conn) == ""
     assert {"memories_fts", LEXICAL_SHADOW_TABLE} <= tables
+
+
+def test_ready_rejects_zero_query_unknown_secret_like_quality_receipt():
+    conn = _conn()
+    _store(conn, "memory-1", "数据库迁移方案")
+    conn.commit()
+    create_shadow_generation(conn)
+    backfill_generation(conn, LEXICAL_GENERATION_ID, batch_size=10)
+
+    forged = {
+        "ok": True,
+        "cjk_queries": 0,
+        "cjk_expected_found": 0,
+        "english_regressions": 0,
+        "sample": "api_key=must-never-persist",
+    }
+    with pytest.raises(LexicalGenerationError, match="quality"):
+        mark_generation_ready(
+            conn,
+            LEXICAL_GENERATION_ID,
+            quality_receipt=forged,
+        )
+
+    manifest = generation_status(conn, LEXICAL_GENERATION_ID)
+    assert manifest["status"] == "building"
+    assert "api_key" not in str(manifest.get("quality_json") or "")
+
+
+def test_ready_rejects_tampered_quality_evidence_fingerprint():
+    conn = _conn()
+    _store(conn, "memory-1", "数据库迁移方案")
+    conn.commit()
+    create_shadow_generation(conn)
+    backfill_generation(conn, LEXICAL_GENERATION_ID, batch_size=10)
+    receipt = _quality_receipt(conn)
+    receipt["english_queries"] = 2
+
+    with pytest.raises(LexicalGenerationError, match="fingerprint"):
+        mark_generation_ready(
+            conn,
+            LEXICAL_GENERATION_ID,
+            quality_receipt=receipt,
+        )
+
+
+def test_activation_rejects_quality_receipt_after_truth_source_changes():
+    conn = _conn()
+    _store(conn, "memory-1", "数据库迁移方案")
+    conn.commit()
+    create_shadow_generation(conn)
+    backfill_generation(conn, LEXICAL_GENERATION_ID, batch_size=10)
+    mark_generation_ready(
+        conn,
+        LEXICAL_GENERATION_ID,
+        quality_receipt=_quality_receipt(conn),
+    )
+
+    _store(conn, "memory-2", "数据库迁移方案后续变更")
+    conn.commit()
+
+    with pytest.raises(LexicalGenerationError, match="source"):
+        activate_generation(
+            conn,
+            LEXICAL_GENERATION_ID,
+            expected_current="",
+        )
