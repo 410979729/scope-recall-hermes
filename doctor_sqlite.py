@@ -15,6 +15,7 @@ try:
     from .freshness import fact_freshness_report
     from .governance_cleanup import governance_audit_coverage_report
     from .graph_hygiene import graph_hygiene_counts, remaining_graph_hygiene_rows
+    from .lexical_generation import lexical_generation_report
     from .maintenance_lease import activation_lease_status
     from .memory_quality import memory_quality_report
     from .operator_ledger import operator_ledger_report
@@ -27,6 +28,7 @@ except ImportError:  # pragma: no cover - direct source-script execution fallbac
     from freshness import fact_freshness_report
     from governance_cleanup import governance_audit_coverage_report
     from graph_hygiene import graph_hygiene_counts, remaining_graph_hygiene_rows
+    from lexical_generation import lexical_generation_report
     from maintenance_lease import activation_lease_status
     from memory_quality import memory_quality_report
     from operator_ledger import operator_ledger_report
@@ -76,6 +78,7 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
             operator_ledger = operator_ledger_report(conn)
             relation_frequency = relation_frequency_index_report(conn)
             relation_rebuild = relation_rebuild_queue_report(conn)
+            lexical_generation = lexical_generation_report(conn)
             schema_migrations = schema_migration_status(conn)
             governance_audit_coverage = governance_audit_coverage_report(conn)
             freshness_report = fact_freshness_report(conn)
@@ -149,6 +152,28 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
             "`python scripts/repair.fts_index.py --hermes-home <profile> --dry-run`; "
             "only add `--apply --maintenance-confirmed` after taking normal writers "
             "offline (the apply path creates and verifies an online backup first)."
+        )
+    lexical_current = str(lexical_generation.get("current_generation_id") or "")
+    if lexical_current and not bool(lexical_generation.get("healthy")):
+        raw_integrity = lexical_generation.get("integrity")
+        integrity = raw_integrity if isinstance(raw_integrity, dict) else {}
+        failures.append(
+            "Active lexical shadow integrity failed: "
+            f"missing={int(integrity.get('missing_rows') or 0)}, "
+            f"stale={int(integrity.get('stale_rows') or 0)}, "
+            f"hidden={int(integrity.get('hidden_rows') or 0)}, "
+            f"duplicates={int(integrity.get('duplicate_rows') or 0)}, "
+            f"content_drift={int(integrity.get('content_drift_rows') or 0)}"
+        )
+        recommendations.append(
+            "Run lexical rollback under a confirmed maintenance window with "
+            f"`hermes-scope-recall lexical rollback --expected-current {lexical_current} "
+            "--apply --maintenance-confirmed`, then inspect/rebuild the retained shadow."
+        )
+    elif str(lexical_generation.get("status") or "") == "ready":
+        recommendations.append(
+            "A reviewed lexical shadow is READY but inactive; activate it only after "
+            "reviewing the migration quality receipt and current-generation CAS value."
         )
     if orphan_graph_rows:
         failures.append(
@@ -261,6 +286,7 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
         "operator_ledger": operator_ledger,
         "relation_frequency_index": relation_frequency,
         "relation_rebuild_queue": relation_rebuild,
+        "lexical_generation": lexical_generation,
         "schema_migrations": schema_migrations,
         "governance_audit_coverage": governance_audit_coverage,
         "fact_freshness": freshness_report,

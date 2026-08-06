@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
+import scope_recall.reflection_tooling as reflection_tooling
 from scope_recall.reflection import ReflectionEvidence, ReflectionEvidencePack
 from scope_recall.reflection_llm import (
     ReflectionLLMError,
@@ -218,6 +220,36 @@ def test_reflection_transport_overrides_digest_system_prompt(monkeypatch) -> Non
     assert captured["prompt"] == "reflection prompt"
     assert "grounded reflection" in str(captured["system_prompt"])
     assert "durable memory" not in str(captured["system_prompt"])
+
+
+@pytest.mark.parametrize("raw_value", ("true", [False]))
+def test_reflection_resolver_keeps_malformed_endpoint_opt_in_fail_closed(
+    monkeypatch,
+    tmp_path,
+    raw_value,
+) -> None:
+    monkeypatch.setattr(
+        reflection_tooling,
+        "resolve_llm_config",
+        lambda *_args, **_kwargs: {
+            "model": "fixture-model",
+            "base_url": "http://model.internal:1234",
+            "api_key": "fixture-key",
+            "api_mode": "chat_completions",
+            "endpoint": "",
+            "append_v1": True,
+            "allow_insecure_endpoint": raw_value,
+        },
+    )
+    provider = SimpleNamespace(_hermes_home=tmp_path)
+
+    transport = reflection_tooling._resolve_transport(
+        provider,
+        {"provider": "fixture", "model": "fixture-model"},
+    )
+
+    assert isinstance(transport, ReflectionTransport)
+    assert transport.allow_insecure_endpoint is False
 
 
 def test_build_reflection_prompt_rejects_non_read_only_pack() -> None:

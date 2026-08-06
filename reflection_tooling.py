@@ -17,7 +17,8 @@ from typing import Any, Callable, cast
 
 from .capture_filters import should_capture_text
 from .gating import config_bool
-from .nightly_llm import resolve_llm_config
+from .http_utils import explicit_insecure_endpoint_opt_in
+from .nightly_llm import config_bool_value, resolve_llm_config
 from .reflection import (
     ReflectionBudget,
     ReflectionEvidence,
@@ -182,6 +183,7 @@ def _resolve_transport(
         base_url=str(config.get("base_url") or ""),
         endpoint=str(config.get("endpoint") or ""),
         append_v1=config.get("append_v1"),
+        allow_insecure_endpoint=config.get("allow_insecure_endpoint"),
         api_key=str(config.get("api_key") or ""),
         api_key_env=str(config.get("api_key_env") or ""),
         api_mode=str(config.get("api_mode") or ""),
@@ -198,7 +200,10 @@ def _resolve_transport(
         api_key=str(resolved.get("api_key") or ""),
         api_mode=str(resolved.get("api_mode") or "chat_completions"),
         endpoint=str(resolved.get("endpoint") or ""),
-        append_v1=bool(resolved.get("append_v1", True)),
+        append_v1=config_bool_value(resolved.get("append_v1"), True),
+        allow_insecure_endpoint=explicit_insecure_endpoint_opt_in(
+            resolved.get("allow_insecure_endpoint")
+        ),
         timeout=_strict_float(
             config.get("timeout"),
             name="reflection.timeout",

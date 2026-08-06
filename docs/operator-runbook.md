@@ -87,7 +87,7 @@ python scripts/check.release.py --allow-dirty
 
 Rollback strategy:
 
-1. Prefer the `rollback_command` emitted by `install`/`upgrade` JSON output. It points at the backup directory under `$HERMES_HOME/backups/scope-recall-installer/.../scope-recall`.
+1. Prefer the `rollback_command` emitted by `install`/`upgrade` JSON output. New releases use the short long-path-safe root `$HERMES_HOME/backups/sr/i/.../scope-recall`; previously emitted backup paths remain valid rollback inputs.
 2. Validate first, then apply:
 
 ```bash
@@ -248,6 +248,49 @@ hermes-scope-recall migrate openclaw-import \
 ```
 
 `migrate status` reports the SQLite `schema_migrations` ledger through a read-only connection (`mode=ro` + `PRAGMA query_only=ON`) and does not repair missing metadata implicitly. `migrate legacy` runs the legacy-hygiene dry-run. `migrate apply` applies that legacy hygiene migration and creates its own backup unless `--no-backup` is explicitly passed. `migrate openclaw-import` maps to the OpenClaw importer; use dry-run first, then run vector repair after apply.
+
+## CJK lexical shadow migration
+
+The supplemental CJK lexical index is never created or activated by ordinary provider startup. The legacy `memories_fts` channel remains present throughout build, activation, and rollback.
+
+1. Inspect without writes:
+
+```bash
+hermes-scope-recall lexical plan --hermes-home "$HERMES_HOME" --json
+```
+
+2. Stop the gateway and every Scope Recall SQLite writer. Build the shadow in resumable batches; the command creates and quick-checks an online backup before schema/index mutation:
+
+```bash
+hermes-scope-recall lexical build \
+  --hermes-home "$HERMES_HOME" \
+  --maintenance-confirmed \
+  --batch-size 500 \
+  --json
+```
+
+3. Require `status=ready`, `integrity.healthy=true`, the fixed high-interference CJK fixture at `3/3`, live CJK samples at full recall, and `english_regressions=0`.
+4. Activate with an explicit compare-and-swap value. Use `legacy` only when doctor/plan reports no active supplemental generation:
+
+```bash
+hermes-scope-recall lexical activate \
+  --hermes-home "$HERMES_HOME" \
+  --expected-current legacy \
+  --maintenance-confirmed \
+  --json
+```
+
+5. Start writers and require doctor `sqlite.lexical_generation.status=active` and `healthy=true`.
+
+Rollback only changes the generation pointer; neither the legacy nor shadow table is deleted:
+
+```bash
+hermes-scope-recall lexical rollback \
+  --hermes-home "$HERMES_HOME" \
+  --expected-current cjk-trigram-v1 \
+  --maintenance-confirmed \
+  --json
+```
 
 ## vector repair
 

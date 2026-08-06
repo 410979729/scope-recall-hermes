@@ -83,7 +83,11 @@ def test_provider_config_schema_uses_registry_for_deep_keys():
     assert "journal.max_entries_per_digest" in by_key
     assert "retrieval.relation_rerank_enabled" in by_key
     assert "vector.embedder.api_key_env" in by_key
+    assert "vector.embedder.base_url_env" in by_key
+    assert "vector.fallback_embedder.base_url_env" in by_key
     assert "vector.embedder.connection_retry_delays" in by_key
+    assert by_key["vector.embedder.base_url_env"]["default"] == ""
+    assert by_key["vector.fallback_embedder.base_url_env"]["default"] == ""
     assert by_key["vector.embedder.api_key_env"]["risk"] == "high"
     assert by_key["vector.embedder.connection_retry_delays"]["default"] == [
         2.0,

@@ -392,6 +392,31 @@ def test_build_embedder_threads_connection_retry_configuration():
     assert embedder.describe()["connection_retry_delays"] == [0.1]
 
 
+def test_build_embedder_honors_configured_base_url_env_over_packaged_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "TEST_EMBEDDER_BASE_URL",
+        "https://env-embedding.example.test/v1",
+    )
+
+    embedder = build_embedder(
+        {
+            "provider": "openai-compatible",
+            "model": "test-embedding-model",
+            "api_key": "pk-test",
+            "base_url": "https://packaged-default.example.test/v1",
+            "base_url_env": "TEST_EMBEDDER_BASE_URL",
+            "dimensions": 3,
+        }
+    )
+
+    assert isinstance(embedder, OpenAICompatibleEmbedder)
+    assert embedder.describe()["base_url"] == (
+        "https://env-embedding.example.test/v1"
+    )
+
+
 # ---------------------------------------------------------------------------
 # MiniMax (embo-01) embedder tests
 # ---------------------------------------------------------------------------
@@ -462,7 +487,7 @@ def test_minimax_embedder_sends_expected_request(monkeypatch):
     embedder = _make_minimax_embedder()
     captured: list[dict] = []
 
-    def fake_urlopen(request, timeout):  # noqa: ARG001
+    def fake_urlopen(request, *, timeout, allow_insecure=False):  # noqa: ARG001
         captured.append(
             {
                 "url": request.full_url,
@@ -478,7 +503,7 @@ def test_minimax_embedder_sends_expected_request(monkeypatch):
             }
         )
 
-    monkeypatch.setattr("scope_recall.embedders.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("scope_recall.embedders.safe_urlopen", fake_urlopen)
 
     vectors = embedder.embed_texts(["alpha", "beta"])
 
@@ -500,7 +525,7 @@ def test_minimax_embedder_uses_query_type_for_search_queries(monkeypatch):
     embedder = _make_minimax_embedder()
     captured: list[dict] = []
 
-    def fake_urlopen(request, timeout):  # noqa: ARG001
+    def fake_urlopen(request, *, timeout, allow_insecure=False):  # noqa: ARG001
         captured.append(
             {
                 "url": request.full_url,
@@ -509,7 +534,7 @@ def test_minimax_embedder_uses_query_type_for_search_queries(monkeypatch):
         )
         return _FakeHTTPResponse({"vectors": [[0.7, 0.8, 0.9]]})
 
-    monkeypatch.setattr("scope_recall.embedders.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("scope_recall.embedders.safe_urlopen", fake_urlopen)
 
     vector = embedder.embed_query("find this")
 
@@ -529,11 +554,11 @@ def test_minimax_embedder_sends_optional_group_id_query_param(monkeypatch):
     )
     captured_urls: list[str] = []
 
-    def fake_urlopen(request, timeout):  # noqa: ARG001
+    def fake_urlopen(request, *, timeout, allow_insecure=False):  # noqa: ARG001
         captured_urls.append(request.full_url)
         return _FakeHTTPResponse({"vectors": [[0.1, 0.2, 0.3]]})
 
-    monkeypatch.setattr("scope_recall.embedders.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("scope_recall.embedders.safe_urlopen", fake_urlopen)
 
     embedder.embed_texts(["alpha"])
 
@@ -546,14 +571,14 @@ def test_minimax_embedder_chunks_large_batches(monkeypatch):
     embedder = _make_minimax_embedder()
     call_sizes: list[int] = []
 
-    def fake_urlopen(request, timeout):  # noqa: ARG001
+    def fake_urlopen(request, *, timeout, allow_insecure=False):  # noqa: ARG001
         body = json.loads(request.data.decode("utf-8"))
         call_sizes.append(len(body["texts"]))
         return _FakeHTTPResponse(
             {"vectors": [[0.0, 0.0, 0.0] for _ in body["texts"]]}
         )
 
-    monkeypatch.setattr("scope_recall.embedders.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("scope_recall.embedders.safe_urlopen", fake_urlopen)
 
     payload = [f"row {i}" for i in range(150)]
     vectors = embedder.embed_texts(payload)
@@ -575,7 +600,7 @@ def test_minimax_embedder_raises_on_http_error(monkeypatch):
     )
     assert len(embedder._api_keys) == 1
 
-    def fake_urlopen(request, timeout):  # noqa: ARG001
+    def fake_urlopen(request, *, timeout, allow_insecure=False):  # noqa: ARG001
         raise urllib_error.HTTPError(
             request.full_url,
             429,
@@ -584,7 +609,7 @@ def test_minimax_embedder_raises_on_http_error(monkeypatch):
             _FakeHTTPResponse({"error": "rate limited"}),  # type: ignore[arg-type]
         )
 
-    monkeypatch.setattr("scope_recall.embedders.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("scope_recall.embedders.safe_urlopen", fake_urlopen)
 
     with pytest.raises(urllib_error.HTTPError) as exc:
         embedder.embed_texts(["one"])
@@ -605,7 +630,7 @@ def test_minimax_embedder_rotates_to_second_key(monkeypatch):
 
     call_auths: list[str] = []
 
-    def fake_urlopen(request, timeout):  # noqa: ARG001
+    def fake_urlopen(request, *, timeout, allow_insecure=False):  # noqa: ARG001
         call_auths.append(request.headers["Authorization"])
         if len(call_auths) == 1:
             raise urllib_error.HTTPError(
@@ -619,7 +644,7 @@ def test_minimax_embedder_rotates_to_second_key(monkeypatch):
             {"vectors": [[0.1, 0.2, 0.3]]}
         )
 
-    monkeypatch.setattr("scope_recall.embedders.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("scope_recall.embedders.safe_urlopen", fake_urlopen)
 
     vectors = embedder.embed_texts(["hello"])
 
@@ -631,10 +656,10 @@ def test_minimax_embedder_rotates_to_second_key(monkeypatch):
 def test_minimax_embedder_raises_on_missing_vectors(monkeypatch):
     embedder = _make_minimax_embedder()
 
-    def fake_urlopen(request, timeout):  # noqa: ARG001
+    def fake_urlopen(request, *, timeout, allow_insecure=False):  # noqa: ARG001
         return _FakeHTTPResponse({"base_resp": {"status_msg": "ok"}})
 
-    monkeypatch.setattr("scope_recall.embedders.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("scope_recall.embedders.safe_urlopen", fake_urlopen)
 
     with pytest.raises(RuntimeError) as exc:
         embedder.embed_texts(["one"])

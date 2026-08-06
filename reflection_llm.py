@@ -86,6 +86,7 @@ class ReflectionTransport:
     api_mode: str = "chat_completions"
     endpoint: str = ""
     append_v1: bool = True
+    allow_insecure_endpoint: bool = False
     max_attempts: int = 1
     retry_delay: float = 0.0
 
@@ -99,6 +100,7 @@ class ReflectionTransport:
             api_mode=self.api_mode,
             endpoint=self.endpoint,
             append_v1=self.append_v1,
+            allow_insecure_endpoint=self.allow_insecure_endpoint,
             max_attempts=self.max_attempts,
             retry_delay=self.retry_delay,
             system_prompt=REFLECTION_SYSTEM_PROMPT,

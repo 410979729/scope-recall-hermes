@@ -22,6 +22,7 @@ from .gating import config_bool
 from .graph import clamp_float
 from .models import resolve_store_scope_mode
 from .scope import accessible_scope_ids as runtime_accessible_scope_ids
+from .schemas import MAX_MEMORY_ID_LENGTH, MAX_MEMORY_IDS_PER_REQUEST
 from .tool_validation import validate_tool_arguments
 from .experience_preflight import experience_preflight
 from .experience_promotion import promote_experiences
@@ -59,6 +60,15 @@ TOOL_ALIASES = {
     "lancepro_search": "scope_recall_search",
     "lancepro_stats": "scope_recall_stats",
 }
+
+
+class _MemoryIdsArgumentError(ValueError):
+    """Runtime validation error for direct handler callers that bypass schemas."""
+
+    def __init__(self, message: str, *, field: str, constraint: str) -> None:
+        super().__init__(message)
+        self.field = field
+        self.constraint = constraint
 
 
 class ScopeRecallToolService:
@@ -536,7 +546,15 @@ class ScopeRecallToolService:
         )
 
     def _handle_forget(self, args: dict[str, Any]) -> str:
-        ids = self._memory_ids_arg(args)
+        try:
+            ids = self._memory_ids_arg(args)
+        except _MemoryIdsArgumentError as exc:
+            return tool_error(
+                str(exc),
+                invalid_arguments=True,
+                field=exc.field,
+                constraint=exc.constraint,
+            )
         if not ids:
             return tool_error(
                 "ids are required for scope_recall_forget; search or inspect first, then pass exact ids"
@@ -678,9 +696,37 @@ class ScopeRecallToolService:
         target_id = str(args.get("target_id") or "").strip()
         if not target_id:
             return tool_error("target_id is required")
+        if len(target_id) > MAX_MEMORY_ID_LENGTH:
+            return tool_error(
+                f"memory id must not exceed {MAX_MEMORY_ID_LENGTH} characters",
+                invalid_arguments=True,
+                field="target_id",
+                constraint=f"maxLength={MAX_MEMORY_ID_LENGTH}",
+            )
         source_ids = args.get("source_ids") or []
         if isinstance(source_ids, str):
             source_ids = [source_ids]
+        elif not isinstance(source_ids, list):
+            return tool_error(
+                "source_ids must be an array of memory ids",
+                invalid_arguments=True,
+                field="source_ids",
+                constraint="type=array",
+            )
+        if len(source_ids) > MAX_MEMORY_IDS_PER_REQUEST:
+            return tool_error(
+                f"source_ids must contain at most {MAX_MEMORY_IDS_PER_REQUEST} items",
+                invalid_arguments=True,
+                field="source_ids",
+                constraint=f"maxItems={MAX_MEMORY_IDS_PER_REQUEST}",
+            )
+        if any(len(str(item).strip()) > MAX_MEMORY_ID_LENGTH for item in source_ids):
+            return tool_error(
+                f"memory id must not exceed {MAX_MEMORY_ID_LENGTH} characters",
+                invalid_arguments=True,
+                field="source_ids",
+                constraint=f"maxLength={MAX_MEMORY_ID_LENGTH}",
+            )
         content_arg = args.get("content")
         content = self.provider._clean_text(str(content_arg)) if content_arg else None
         if content is not None:
@@ -1262,14 +1308,29 @@ class ScopeRecallToolService:
             raw_ids = args.get("id")
         if isinstance(raw_ids, str):
             candidates = [raw_ids]
+            field = "id"
         elif isinstance(raw_ids, list):
+            if len(raw_ids) > MAX_MEMORY_IDS_PER_REQUEST:
+                raise _MemoryIdsArgumentError(
+                    f"ids must contain at most {MAX_MEMORY_IDS_PER_REQUEST} items",
+                    field="ids",
+                    constraint=f"maxItems={MAX_MEMORY_IDS_PER_REQUEST}",
+                )
             candidates = [str(item) for item in raw_ids]
+            field = "ids"
         else:
             candidates = []
+            field = "ids"
         ids: list[str] = []
         seen: set[str] = set()
         for memory_id in candidates:
             memory_id = str(memory_id or "").strip()
+            if len(memory_id) > MAX_MEMORY_ID_LENGTH:
+                raise _MemoryIdsArgumentError(
+                    f"memory id must not exceed {MAX_MEMORY_ID_LENGTH} characters",
+                    field=field,
+                    constraint=f"maxLength={MAX_MEMORY_ID_LENGTH}",
+                )
             if not memory_id or memory_id.startswith("curated:") or memory_id in seen:
                 continue
             seen.add(memory_id)

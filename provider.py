@@ -26,6 +26,7 @@ from .capture_llm import extract_capture_candidates
 from .config import load_runtime_config, save_runtime_config
 from .event_digest import MemoryEvent, build_evidence_packet
 from .journal import append_journal_entry, ensure_journal_schema, run_journal_digest
+from .http_utils import UnsafeEndpointError
 from .maintenance_lease import (
     MaintenanceLeaseError,
     activation_lease_status,
@@ -589,6 +590,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
 
         # ── LLM semantic extraction (preferred when explicitly enabled) ──
         llm_extracted = False
+        capture_policy_blocked = False
         capture_llm_config = self._config.get("capture_llm")
         if isinstance(capture_llm_config, dict) and (
             capture_llm_config.get("enabled") in (True, "true", "1", "yes", "on")
@@ -601,23 +603,36 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 and assistant_filter.allowed
                 and len(clean_assistant) >= min_asst
             ):
-                for candidate in extract_capture_candidates(clean_user, clean_assistant, self._config):
-                    if len(candidate.content) < 12:
-                        continue
-                    enqueue_store(
-                        self,
-                        content=candidate.content,
-                        source="turn-llm-extracted",
-                        target=candidate.target,
-                        session_id=self._session_id,
-                        metadata={
-                            "category": candidate.memory_type,
-                            "confidence": candidate.confidence,
-                            "entities": candidate.entities,
-                            "tags": candidate.tags,
-                        },
+                try:
+                    candidates = extract_capture_candidates(
+                        clean_user,
+                        clean_assistant,
+                        self._config,
                     )
-                    llm_extracted = True
+                except UnsafeEndpointError:
+                    capture_policy_blocked = True
+                    logger.warning(
+                        "Scope Recall capture blocked by endpoint policy; "
+                        "durable capture fallbacks disabled for this turn"
+                    )
+                else:
+                    for candidate in candidates:
+                        if len(candidate.content) < 12:
+                            continue
+                        enqueue_store(
+                            self,
+                            content=candidate.content,
+                            source="turn-llm-extracted",
+                            target=candidate.target,
+                            session_id=self._session_id,
+                            metadata={
+                                "category": candidate.memory_type,
+                                "confidence": candidate.confidence,
+                                "entities": candidate.entities,
+                                "tags": candidate.tags,
+                            },
+                        )
+                        llm_extracted = True
 
         # ── Regex extraction (legacy hot-path fallback; disabled by default) ──
         extracted = False
@@ -625,7 +640,12 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         per_turn_regex_enabled = False
         if isinstance(per_turn_cfg, dict):
             per_turn_regex_enabled = config_bool(per_turn_cfg, "enabled", False)
-        if not llm_extracted and per_turn_regex_enabled and user_filter.allowed:
+        if (
+            not llm_extracted
+            and not capture_policy_blocked
+            and per_turn_regex_enabled
+            and user_filter.allowed
+        ):
             for candidate in extract_candidates(clean_user):
                 candidate_min_capture = min(min_capture, 24) if candidate.target in {"user", "ops", "project"} else min_capture
                 if len(candidate.content) < candidate_min_capture:
@@ -643,6 +663,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         # ── Raw user capture (last-resort fallback) ──
         if (
             not llm_extracted
+            and not capture_policy_blocked
             and config_bool(self._config, "capture_raw_user", False)
             and user_filter.allowed
             and len(clean_user) >= min_capture
@@ -659,6 +680,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         # ── Raw assistant capture (legacy, only when LLM not used) ──
         if (
             not llm_extracted
+            and not capture_policy_blocked
             and config_bool(self._config, "capture_assistant", False)
             and assistant_filter.allowed
             and len(clean_assistant) >= min_capture

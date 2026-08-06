@@ -38,8 +38,8 @@ if str(ROOT) not in sys.path:
 from secret_patterns import scan_secret_like_text, secret_scan_shadow  # noqa: E402
 from scripts.release_changelog import extract_version_section  # noqa: E402
 
-PACKAGE_VERSION = "1.8.7"
-PUBLIC_RELEASE_BASELINE = "1.8.2"
+PACKAGE_VERSION = "1.9.0"
+PUBLIC_RELEASE_BASELINE = "1.8.7"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 RELEASE_READINESS_DOC = f"docs/release-readiness.{PACKAGE_VERSION}.md"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
@@ -258,6 +258,7 @@ REQUIRED_SOURCE_FILES = {
     "scripts/benchmark.memory_evolution.py",
     "scripts/benchmark.reflection.py",
     "scripts/benchmark.temporal_scale.py",
+    "scripts/benchmark.lexical_cjk.py",
     "scripts/benchmark.graph_relations.py",
     "scripts/benchmark.retrieval_regression.py",
     "scripts/backfill.graph_relations.py",
@@ -485,6 +486,7 @@ REQUIRED_WHEEL = {
     "scope_recall/scripts/benchmark.memory_evolution.py",
     "scope_recall/scripts/benchmark.reflection.py",
     "scope_recall/scripts/benchmark.temporal_scale.py",
+    "scope_recall/scripts/benchmark.lexical_cjk.py",
     "scope_recall/scripts/benchmark.graph_relations.py",
     "scope_recall/scripts/benchmark.retrieval_regression.py",
     "scope_recall/scripts/backfill.graph_relations.py",
@@ -586,11 +588,16 @@ def run(
     to the parent terminal instead; short machine-parsed helpers stay captured.
     """
 
+    child_env = dict(os.environ if env is None else env)
+    child_env["PYTHONUTF8"] = "1"
+    child_env["PYTHONIOENCODING"] = "utf-8"
     proc = subprocess.run(
         cmd,
         cwd=cwd,
-        env=env,
+        env=child_env,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=capture_output,
     )
     return {
@@ -987,6 +994,11 @@ def benchmark_check() -> dict[str, object]:
     )
     if scale_payload is None:
         return {"ok": False, "temporal_scale_result": scale_result}
+    lexical_result, lexical_payload = _run_json_benchmark(
+        "scripts/benchmark.lexical_cjk.py"
+    )
+    if lexical_payload is None:
+        return {"ok": False, "lexical_cjk_result": lexical_result}
 
     expected_golden_profiles = (
         ("curated_recall_regression_v2", 100),
@@ -1018,12 +1030,26 @@ def benchmark_check() -> dict[str, object]:
         and scale_payload.get("sizes") == [100_000, 1_000_000]
         and _int_payload_value(scale_payload, "rounds_per_query") >= 30
     )
+    lexical_ok = (
+        bool(lexical_payload.get("passed"))
+        and lexical_payload.get("schema_version")
+        == "scope-recall.lexical-cjk-benchmark.v1"
+        and _int_payload_value(lexical_payload, "rows") == 2_000
+        and _int_payload_value(lexical_payload, "rounds") >= 20
+        and _int_payload_value(lexical_payload, "cjk_expected_found")
+        == _int_payload_value(lexical_payload, "cjk_queries")
+        == 3
+        and _int_payload_value(lexical_payload, "english_regressions") == 0
+        and _int_payload_value(lexical_payload, "max_result_count")
+        <= _int_payload_value(lexical_payload, "limit")
+    )
     return {
         "ok": golden_ok
         and bool(graph_payload.get("passed"))
         and temporal_ok
         and reflection_ok
-        and scale_ok,
+        and scale_ok
+        and lexical_ok,
         "schema_version": golden_payloads[0].get("schema_version"),
         "golden_profiles": [
             {
@@ -1042,6 +1068,7 @@ def benchmark_check() -> dict[str, object]:
         "temporal_evolution_metrics": temporal_payload.get("metrics"),
         "reflection_metrics": reflection_payload.get("metrics"),
         "temporal_scale_metrics": scale_payload,
+        "lexical_cjk_metrics": lexical_payload,
     }
 
 

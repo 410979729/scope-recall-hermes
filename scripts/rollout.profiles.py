@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import shutil
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -35,6 +34,18 @@ if PACKAGE_NAME not in sys.modules:
     spec.loader.exec_module(package)
 
 from scope_recall_rollout_runtime import installer  # noqa: E402
+from scope_recall_rollout_runtime.windows_filesystem import (  # noqa: E402
+    copy_file,
+    copy_tree,
+    make_dirs,
+    move_path,
+    path_exists,
+    path_is_dir,
+    path_is_file,
+    path_is_symlink,
+    public_path,
+    remove_path,
+)
 
 PLUGIN_NAME = "scope-recall"
 
@@ -84,17 +95,17 @@ def is_relative_to(path: Path, root: Path) -> bool:
 
 def validate_plugin_backup(backup_path: Path) -> str:
     try:
-        backup = backup_path.resolve()
+        backup = public_path(backup_path)
     except OSError as exc:
         return f"rollback backup cannot be resolved: {exc}"
-    if not backup.exists():
+    if not path_exists(backup):
         return f"rollback backup missing: {backup_path}"
-    if not backup.is_dir():
+    if not path_is_dir(backup):
         return f"rollback backup is not a directory: {backup_path}"
     if read_manifest_name(backup) != PLUGIN_NAME:
         return f"rollback backup plugin.yaml is not {PLUGIN_NAME}: {backup_path}"
     for required in ("__init__.py", "provider.py", "config.json"):
-        if not (backup / required).is_file():
+        if not path_is_file(backup / required):
             return f"rollback backup missing required file {required}: {backup_path}"
     return ""
 
@@ -123,40 +134,48 @@ def inventory_profile(profile_home: Path) -> dict[str, Any]:
     }
 
 
+def _backup_root(profile_home: Path, lane: str) -> Path:
+    stamp = now_stamp().replace(".", "")[:14]
+    return profile_home / "backups" / "sr" / lane / f"{stamp}.{uuid.uuid4().hex[:8]}"
+
+
+def _copy_plugin(source: Path, destination: Path) -> None:
+    if path_is_dir(source) and not path_is_symlink(source):
+        copy_tree(source, destination, symlinks=True)
+    else:
+        copy_file(source, destination, follow_symlinks=False)
+
+
 def backup_plugin(profile_home: Path) -> str:
     plugin_dir = profile_home / "plugins" / PLUGIN_NAME
-    if not plugin_dir.exists() and not plugin_dir.is_symlink():
+    if not path_exists(plugin_dir) and not path_is_symlink(plugin_dir):
         return ""
-    backup_root = profile_home / "backups" / "scope-recall-rollout" / f"{now_stamp()}.{uuid.uuid4().hex[:8]}"
-    backup_root.mkdir(parents=True, exist_ok=False)
+    backup_root = _backup_root(profile_home, "o")
     backup_path = backup_root / PLUGIN_NAME
-    if plugin_dir.is_dir() and not plugin_dir.is_symlink():
-        shutil.copytree(plugin_dir, backup_path, symlinks=True)
-    else:
-        backup_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(plugin_dir, backup_path, follow_symlinks=False)
+    try:
+        _copy_plugin(plugin_dir, backup_path)
+    except Exception:
+        remove_path(backup_root, missing_ok=True, ignore_errors=True)
+        raise
     return str(backup_path)
 
 
 def backup_current_for_rollback(profile_home: Path) -> str:
     plugin_dir = profile_home / "plugins" / PLUGIN_NAME
-    if not plugin_dir.exists() and not plugin_dir.is_symlink():
+    if not path_exists(plugin_dir) and not path_is_symlink(plugin_dir):
         return ""
-    backup_root = profile_home / "backups" / "scope-recall-rollback-current" / f"{now_stamp()}.{uuid.uuid4().hex[:8]}"
-    backup_root.mkdir(parents=True, exist_ok=False)
+    backup_root = _backup_root(profile_home, "r")
     backup_path = backup_root / PLUGIN_NAME
-    if plugin_dir.is_dir() and not plugin_dir.is_symlink():
-        shutil.copytree(plugin_dir, backup_path, symlinks=True)
-    else:
-        shutil.copy2(plugin_dir, backup_path, follow_symlinks=False)
+    try:
+        _copy_plugin(plugin_dir, backup_path)
+    except Exception:
+        remove_path(backup_root, missing_ok=True, ignore_errors=True)
+        raise
     return str(backup_path)
 
 
 def remove_plugin(plugin_dir: Path) -> None:
-    if plugin_dir.is_symlink() or plugin_dir.is_file():
-        plugin_dir.unlink()
-    elif plugin_dir.exists():
-        shutil.rmtree(plugin_dir)
+    remove_path(plugin_dir, missing_ok=True)
 
 
 def restore_plugin(profile_home: Path, backup_path: str, *, previous_plugin_existed: bool) -> str:
@@ -166,18 +185,27 @@ def restore_plugin(profile_home: Path, backup_path: str, *, previous_plugin_exis
         error = validate_plugin_backup(backup)
         if error:
             raise FileNotFoundError(error)
-    staging = plugin_dir.parent / f".scope-recall-rollback-staging-{now_stamp()}.{uuid.uuid4().hex[:8]}"
+    staging = plugin_dir.parent / f".sr-rb-{uuid.uuid4().hex[:8]}"
+    current_backup = ""
     try:
         if previous_plugin_existed:
-            shutil.copytree(backup.resolve(), staging, symlinks=True)
+            copy_tree(public_path(backup), staging, symlinks=True)
         current_backup = backup_current_for_rollback(profile_home)
         remove_plugin(plugin_dir)
         if previous_plugin_existed:
-            plugin_dir.parent.mkdir(parents=True, exist_ok=True)
-            staging.rename(plugin_dir)
+            make_dirs(plugin_dir.parent, exist_ok=True)
+            move_path(staging, plugin_dir)
+    except Exception as original_exc:
+        if current_backup and not path_exists(plugin_dir):
+            try:
+                _copy_plugin(public_path(current_backup), plugin_dir)
+            except Exception as compensation_exc:
+                raise RuntimeError(
+                    "rollback replacement failed and automatic current-plugin compensation failed"
+                ) from compensation_exc
+        raise original_exc
     finally:
-        if staging.exists():
-            shutil.rmtree(staging, ignore_errors=True)
+        remove_path(staging, missing_ok=True, ignore_errors=True)
     return current_backup
 
 
@@ -282,8 +310,11 @@ def validate_rollback_action(original: dict[str, Any], profiles_root: Path) -> t
         return action, profile_home
     if action["previous_plugin_existed"]:
         backup = Path(action["backup_path"]).expanduser()
-        expected_backup_root = profile_home / "backups" / "scope-recall-rollout"
-        if not is_relative_to(backup, expected_backup_root):
+        expected_backup_roots = (
+            profile_home / "backups" / "sr" / "o",
+            profile_home / "backups" / "scope-recall-rollout",
+        )
+        if not any(is_relative_to(backup, root) for root in expected_backup_roots):
             action["error"] = f"rollback backup outside profile rollout backup root: {backup}"
             action["planned"] = False
             return action, profile_home

@@ -7,6 +7,7 @@ verified online backup before the companion is reconciled.
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import stat
 import uuid
@@ -18,14 +19,23 @@ from .maintenance_ops import connect_memory_db, memory_db_path
 from .sql_store import fts_integrity_report, reconcile_fts_index
 
 
-def _backup_permission_model() -> str:
+def backup_permission_model() -> str:
     """Describe the permission primitive recorded in operator receipts."""
 
     return "windows_acl_inherited" if os.name == "nt" else "posix_owner_only"
 
 
-def _secure_online_backup(conn: sqlite3.Connection, db_path: Path) -> Path:
+def secure_online_backup(
+    conn: sqlite3.Connection,
+    db_path: Path,
+    *,
+    purpose: str = "fts-reconcile",
+) -> Path:
     """Create and quick-check an owner-only SQLite online backup."""
+
+    normalized_purpose = str(purpose or "").strip().lower()
+    if re.fullmatch(r"[a-z0-9-]{1,24}", normalized_purpose) is None:
+        raise ValueError("backup purpose must match [a-z0-9-]{1,24}")
 
     backup_dir = db_path.parent / "backups"
     if backup_dir.is_symlink():
@@ -34,7 +44,7 @@ def _secure_online_backup(conn: sqlite3.Connection, db_path: Path) -> Path:
     backup_dir.chmod(0o700)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     destination = backup_dir / (
-        f"memory.sqlite3.pre-fts-reconcile.{stamp}.{uuid.uuid4().hex[:8]}.sqlite3"
+        f"memory.pre-{normalized_purpose}.{stamp}.{uuid.uuid4().hex[:8]}.sqlite3"
     )
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     flags |= int(getattr(os, "O_NOFOLLOW", 0))
@@ -166,7 +176,11 @@ def repair_fts_index(
         }
     backup_path: Path | None = None
     try:
-        backup_path = _secure_online_backup(conn, db_path)
+        backup_path = secure_online_backup(
+            conn,
+            db_path,
+            purpose="fts-reconcile",
+        )
         repair_receipt = reconcile_fts_index(conn, commit=True)
         raw_after = repair_receipt.get("after")
         after = dict(raw_after) if isinstance(raw_after, dict) else fts_integrity_report(conn)
@@ -197,7 +211,7 @@ def repair_fts_index(
         "dry_run": False,
         "path": str(db_path),
         "backup_path": str(backup_path) if backup_path else "",
-        "backup_permission_model": _backup_permission_model(),
+        "backup_permission_model": backup_permission_model(),
         "before": before,
         "after": after,
         "repair": repair_receipt,

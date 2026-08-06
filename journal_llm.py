@@ -10,6 +10,7 @@ from collections.abc import Callable
 from typing import Any, cast
 
 from .capture_filters import sanitize_report_text
+from .http_utils import UnsafeEndpointError
 from .nightly_llm import call_llm, classify_llm_error as _classify_llm_digest_error
 
 __all__ = [
@@ -81,6 +82,7 @@ def _call_llm_with_retries(
     retry_delay: float,
     endpoint: str = "",
     append_v1: bool = True,
+    allow_insecure_endpoint: bool = False,
 ) -> str:
     last_error: Exception | None = None
     last_kind = "unknown"
@@ -88,16 +90,23 @@ def _call_llm_with_retries(
     active_call_llm = _active_call_llm()
     for attempt in range(1, max(1, max_attempts) + 1):
         try:
-            return active_call_llm(
-                prompt,
-                model=model,
-                base_url=base_url,
-                api_key=api_key,
-                timeout=timeout,
-                api_mode=api_mode,
-                endpoint=endpoint,
-                append_v1=append_v1,
-            )
+            if not isinstance(allow_insecure_endpoint, bool):
+                raise UnsafeEndpointError("allow_insecure must be a boolean")
+            call_kwargs = {
+                "model": model,
+                "base_url": base_url,
+                "api_key": api_key,
+                "timeout": timeout,
+                "api_mode": api_mode,
+                "endpoint": endpoint,
+                "append_v1": append_v1,
+            }
+            # Preserve the legacy monkeypatch/custom-hook call contract when
+            # the new opt-in is not in use.  Explicit insecure HTTP support is
+            # the only case that requires the new keyword.
+            if allow_insecure_endpoint:
+                call_kwargs["allow_insecure_endpoint"] = True
+            return active_call_llm(prompt, **call_kwargs)
         except Exception as exc:
             last_error = exc
             last_kind, last_retryable = _classify_llm_digest_error(exc)

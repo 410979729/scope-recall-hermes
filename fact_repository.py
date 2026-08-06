@@ -20,6 +20,7 @@ from .capture_filters import (
     sanitize_structured_value,
 )
 from .fact_identity import FactIdentityError, build_fact_identity, canonical_fact_key
+from .sqlite_params import chunked_sql_parameters
 
 class TemporalFactError(ValueError):
     """Base error for structured temporal-fact operations."""
@@ -91,16 +92,20 @@ def fact_ownership_for_memories(
     ).fetchone()
     if table_exists is None:
         return {}
-    placeholders = ",".join("?" for _ in clean_ids)
-    rows = conn.execute(
-        f"""
-        SELECT memory_id, status
-        FROM fact_claims
-        WHERE memory_id IN ({placeholders})
-        ORDER BY memory_id, status, claim_id
-        """,
-        clean_ids,
-    ).fetchall()
+    rows: list[Any] = []
+    for id_chunk in chunked_sql_parameters(conn, clean_ids):
+        placeholders = ",".join("?" for _ in id_chunk)
+        rows.extend(
+            conn.execute(
+                f"""
+                SELECT memory_id, status
+                FROM fact_claims
+                WHERE memory_id IN ({placeholders})
+                ORDER BY memory_id, status, claim_id
+                """,
+                id_chunk,
+            ).fetchall()
+        )
     collected: dict[str, list[str]] = {}
     for row in rows:
         if isinstance(row, sqlite3.Row):

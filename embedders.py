@@ -12,16 +12,32 @@ import threading
 import time
 from concurrent.futures import Future
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from .aliases import canonicalize_alias
 from .capture_filters import sanitize_report_text
 from .gating import clean_text, query_tokens
+from .http_utils import (
+    UnsafeEndpointError,
+    is_credential_key,
+    require_safe_endpoint,
+    safe_urlopen,
+)
 
 try:
     from openai import OpenAI
 except Exception:  # pragma: no cover - optional dependency
     OpenAI = None
+
+try:
+    from openai import DefaultHttpxClient
+except Exception:  # pragma: no cover - compatibility with older optional SDKs
+    DefaultHttpxClient = None
+
+try:
+    import httpx as _httpx
+except Exception:  # pragma: no cover - optional dependency of OpenAI adapters
+    _httpx = None
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -112,6 +128,23 @@ _MAX_CONNECTION_RETRY_DELAYS = 8
 _MAX_CONNECTION_RETRY_DELAY_SECONDS = 300.0
 
 
+def _config_bool_value(value: Any, default: bool = False) -> bool:
+    """Interpret JSON booleans and Hermes UI strings without truthy-string bugs."""
+
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        return default
+    return default
+
+
 def _coerce_connection_retry_delays(value: Any) -> tuple[float, ...]:
     """Return bounded retry delays or reject unsafe/malformed configuration."""
 
@@ -185,6 +218,58 @@ def _resolve_optional_value(raw_value: Any = None, env_names: Any = None) -> str
         return direct
     value = _resolve_from_env(env_names)
     return value or None
+
+
+_HOSTED_EMBEDDER_DEFAULT_BASE_URLS = {
+    "openai": "https://api.openai.com/v1",
+    "openai-compatible": "https://api.openai.com/v1",
+    "generic-openai-compatible": "https://api.openai.com/v1",
+    "gemini-openai-compatible": "https://api.openai.com/v1",
+    "minimax": "https://api.minimaxi.com",
+}
+
+
+def _configured_embedder_base_url(
+    provider: str,
+    base_url: Any = None,
+    base_url_env: Any = None,
+) -> str | None:
+    """Resolve an explicitly configured hosted base URL without credentials."""
+
+    provider_name = str(provider or "").strip().casefold()
+    default_env = (
+        "OPENAI_BASE_URL"
+        if provider_name in _HOSTED_EMBEDDER_DEFAULT_BASE_URLS
+        and provider_name != "minimax"
+        else None
+    )
+    return _resolve_optional_value(base_url, base_url_env or default_env)
+
+
+def resolve_embedder_base_url(config: Mapping[str, Any]) -> str | None:
+    """Return the runtime hosted base URL without reading any API key source.
+
+    A runtime config that explicitly names ``base_url_env`` delegates URL
+    selection to that environment variable. Its non-empty value therefore
+    takes precedence over a packaged fallback ``base_url`` retained by deep
+    config merging. Direct constructor calls keep their existing explicit
+    argument precedence through :func:`_configured_embedder_base_url`.
+    """
+
+    provider = str(config.get("provider") or "local-hash").strip().casefold()
+    default_url = _HOSTED_EMBEDDER_DEFAULT_BASE_URLS.get(provider)
+    if default_url is None:
+        return None
+    configured_env_url = _resolve_from_env(config.get("base_url_env"))
+    return (
+        configured_env_url
+        or _configured_embedder_base_url(
+            provider,
+            config.get("base_url"),
+            config.get("base_url_env"),
+        )
+        or default_url
+    ).rstrip("/")
 
 
 
@@ -326,12 +411,22 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
         query_prefix: str = "",
         prompt_profile: str = "default-v1",
         connection_retry_delays: Any = None,
+        allow_insecure_endpoint: bool = False,
     ) -> None:
         resolved_dimensions = int(dimensions or _known_dimensions(model, 1536) or 1536)
         super().__init__(provider=provider, dimensions=resolved_dimensions, model=model)
         self._api_keys = _resolve_api_keys(api_key, api_key_env or "OPENAI_API_KEY")
-        self._base_url = _resolve_optional_value(base_url, base_url_env or "OPENAI_BASE_URL")
-        self._request_dimensions = bool(request_dimensions)
+        self._base_url = _configured_embedder_base_url(
+            provider,
+            base_url,
+            base_url_env,
+        )
+        require_safe_endpoint(
+            self._base_url or "https://api.openai.com/v1",
+            allow_insecure=allow_insecure_endpoint,
+        )
+        self._allow_insecure_endpoint = allow_insecure_endpoint
+        self._request_dimensions = _config_bool_value(request_dimensions)
         self._document_prefix = str(document_prefix or "")
         self._query_prefix = str(query_prefix or "")
         self._prompt_profile = str(prompt_profile or "default-v1")
@@ -342,6 +437,7 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
         )
         self._connection_retry_delays = _coerce_connection_retry_delays(retry_delays)
         self._client = None
+        self._http_client = None
         self._active_key_index = 0
 
     def is_available(self) -> bool:
@@ -351,6 +447,8 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
         payload = super().describe()
         if self._base_url:
             payload["base_url"] = self._base_url
+        if self._allow_insecure_endpoint:
+            payload["allow_insecure_endpoint"] = True
         payload.update(
             {
                 "request_dimensions": self._request_dimensions,
@@ -362,11 +460,39 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
         )
         return payload
 
+    def _sanitize_httpx_request(self, request: Any) -> None:
+        """Apply endpoint and credential policy immediately before SDK send."""
+
+        policy = require_safe_endpoint(
+            str(request.url),
+            allow_insecure=self._allow_insecure_endpoint,
+        )
+        if policy.allow_credentials:
+            return
+        for header_name in list(request.headers):
+            if is_credential_key(str(header_name)):
+                request.headers.pop(header_name, None)
+
+    def _http_client_or_raise(self) -> Any:
+        if _httpx is None:
+            raise RuntimeError("httpx is required for OpenAI-compatible embeddings")
+        if self._http_client is None:
+            client_factory = DefaultHttpxClient or _httpx.Client
+            self._http_client = client_factory(
+                follow_redirects=False,
+                event_hooks={"request": [self._sanitize_httpx_request]},
+            )
+        return self._http_client
+
     def _client_or_raise(self):
         if not self.is_available() or OpenAI is None:
             raise RuntimeError(f"{self.provider} embedder is not configured")
         if self._client is None:
-            self._client = OpenAI(api_key=self._api_keys[self._active_key_index], base_url=self._base_url)
+            self._client = OpenAI(
+                api_key=self._api_keys[self._active_key_index],
+                base_url=self._base_url,
+                http_client=self._http_client_or_raise(),
+            )
         return self._client
 
     def _rotate_client_after_failure(self) -> bool:
@@ -420,6 +546,8 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
                             request["dimensions"] = self.dimensions
                         response = client.embeddings.create(**request)
                         break
+                    except UnsafeEndpointError:
+                        raise
                     except Exception as exc:
                         if self._is_connection_error(exc):
                             # Transport failures are endpoint-wide, not key-specific.
@@ -630,14 +758,20 @@ class MiniMaxEmbedder(BaseEmbedder):
         group_id_env: Any = None,
         timeout: float = 30.0,
         dimensions: int | None = None,
+        allow_insecure_endpoint: bool = False,
     ) -> None:
         resolved_dimensions = int(dimensions or _known_dimensions(model, 1536) or 1536)
         super().__init__(provider=provider, dimensions=resolved_dimensions, model=model)
         self._api_keys = _resolve_api_keys(api_key, api_key_env)
         self._base_url = (
-            _resolve_optional_value(base_url, base_url_env)
+            _configured_embedder_base_url(provider, base_url, base_url_env)
             or self._DEFAULT_BASE_URL
         ).rstrip("/")
+        require_safe_endpoint(
+            self._base_url,
+            allow_insecure=allow_insecure_endpoint,
+        )
+        self._allow_insecure_endpoint = allow_insecure_endpoint
         self._document_type = self._coerce_request_type(request_type or document_type, "db")
         self._query_type = self._coerce_request_type(query_type, "query")
         self._group_id = _resolve_optional_value(group_id, group_id_env)
@@ -659,6 +793,8 @@ class MiniMaxEmbedder(BaseEmbedder):
         payload["query_type"] = self._query_type
         if self._group_id:
             payload["group_id_configured"] = True
+        if self._allow_insecure_endpoint:
+            payload["allow_insecure_endpoint"] = True
         return payload
 
     def _rotate_key_after_failure(self) -> bool:
@@ -686,9 +822,15 @@ class MiniMaxEmbedder(BaseEmbedder):
                 },
             )
             try:
-                with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                with safe_urlopen(
+                    req,
+                    timeout=self._timeout,
+                    allow_insecure=self._allow_insecure_endpoint,
+                ) as resp:
                     raw = resp.read().decode("utf-8")
                 payload = _json_lib.loads(raw)
+            except UnsafeEndpointError:
+                raise
             except urllib.error.HTTPError as exc:  # pragma: no cover - network
                 last_error = exc
                 if not self._rotate_key_after_failure():
@@ -736,6 +878,7 @@ def build_embedder(config: dict[str, Any]) -> BaseEmbedder:
     provider = str(raw.get("provider") or "local-hash").strip().lower()
     dimensions = int(raw.get("dimensions") or 0)
     model = str(raw.get("model") or "").strip()
+    resolved_base_url = resolve_embedder_base_url(raw)
 
     if provider == "local-debug":
         return LocalDebugEmbedder(dimensions=dimensions or 16, model=model or "debug-hash-v1")
@@ -746,14 +889,14 @@ def build_embedder(config: dict[str, Any]) -> BaseEmbedder:
             model=model or "text-embedding-3-small",
             api_key=raw.get("api_key"),
             api_key_env=raw.get("api_key_env"),
-            base_url=raw.get("base_url"),
-            base_url_env=raw.get("base_url_env"),
+            base_url=resolved_base_url,
             dimensions=dimensions or None,
-            request_dimensions=bool(raw.get("request_dimensions", False)),
+            request_dimensions=_config_bool_value(raw.get("request_dimensions"), False),
             document_prefix=str(raw.get("document_prefix") or ""),
             query_prefix=str(raw.get("query_prefix") or ""),
             prompt_profile=str(raw.get("prompt_profile") or "default-v1"),
             connection_retry_delays=raw.get("connection_retry_delays"),
+            allow_insecure_endpoint=raw.get("allow_insecure_endpoint", False),
         )
 
     if provider in {"sentence-transformers", "local-model", "local-embedding", "huggingface"}:
@@ -762,7 +905,7 @@ def build_embedder(config: dict[str, Any]) -> BaseEmbedder:
             model=model or "sentence-transformers/all-MiniLM-L6-v2",
             dimensions=dimensions or None,
             device=raw.get("device"),
-            normalize=bool(raw.get("normalize", True)),
+            normalize=_config_bool_value(raw.get("normalize"), True),
         )
 
     if provider in {"minimax"}:
@@ -771,8 +914,7 @@ def build_embedder(config: dict[str, Any]) -> BaseEmbedder:
             model=model or "embo-01",
             api_key=raw.get("api_key"),
             api_key_env=raw.get("api_key_env"),
-            base_url=raw.get("base_url"),
-            base_url_env=raw.get("base_url_env"),
+            base_url=resolved_base_url,
             request_type=raw.get("request_type"),
             document_type=str(raw.get("document_type") or raw.get("embed_type_db") or "db"),
             query_type=str(raw.get("query_type") or raw.get("embed_type_query") or "query"),
@@ -780,6 +922,7 @@ def build_embedder(config: dict[str, Any]) -> BaseEmbedder:
             group_id_env=raw.get("group_id_env"),
             timeout=float(raw.get("timeout") or 30.0),
             dimensions=dimensions or None,
+            allow_insecure_endpoint=raw.get("allow_insecure_endpoint", False),
         )
 
     return LocalHashEmbedder(provider="local-hash", dimensions=dimensions or 256, model=model or "hash-v1")

@@ -57,6 +57,10 @@ def test_journal_extractors_config_coercion_helpers():
     assert journal_extractors._config_bool({"flag": "YES"}, "flag") is True
     assert journal_extractors._config_bool({"flag": "0"}, "flag") is False
     assert journal_extractors._config_bool({}, "missing", default=True) is True
+    assert journal_extractors._config_bool({"flag": [False]}, "flag") is False
+    assert journal_extractors._config_bool(
+        {"flag": {"enabled": True}}, "flag"
+    ) is False
 
     assert journal_extractors._coerce_positive_int(None, 5) == 5
     assert journal_extractors._coerce_positive_int("bad", 5) == 5
@@ -165,20 +169,25 @@ def test_journal_collect_candidates_preserves_journal_llm_journal_candidates_mon
 
 
 def test_llm_journal_candidates_passes_retention_profile_to_prompt(monkeypatch, tmp_path):
-    captured: dict[str, str] = {}
+    captured: dict[str, object] = {}
 
     monkeypatch.setattr(journal_extractors, "_runtime_config", lambda _home: {})
-    monkeypatch.setattr(
-        journal_extractors,
-        "resolve_llm_config",
-        lambda _home, _options: {
+    def fake_resolve_llm_config(_home, options):
+        captured["option_allow_insecure"] = options.allow_insecure_endpoint
+        return {
             "model": "test-model",
             "base_url": "https://example.invalid",
             "api_key": "test-only",
             "api_mode": "chat_completions",
             "endpoint": "",
             "append_v1": True,
-        },
+            "allow_insecure_endpoint": options.allow_insecure_endpoint,
+        }
+
+    monkeypatch.setattr(
+        journal_extractors,
+        "resolve_llm_config",
+        fake_resolve_llm_config,
     )
     monkeypatch.setattr(journal_extractors, "existing_memory_context", lambda _conn, _profile: [])
     monkeypatch.setattr(journal_extractors, "_existing_context_target_ids_by_scope", lambda _conn, _profile: {})
@@ -188,7 +197,13 @@ def test_llm_journal_candidates_passes_retention_profile_to_prompt(monkeypatch, 
         return "test prompt"
 
     monkeypatch.setattr(journal_extractors, "build_prompt", fake_build_prompt)
-    monkeypatch.setattr(journal_extractors, "_call_llm_with_retries", lambda *_args, **_kwargs: "[]")
+    def fake_call_llm(*_args, **kwargs):
+        captured["transport_allow_insecure"] = kwargs.get(
+            "allow_insecure_endpoint", False
+        )
+        return "[]"
+
+    monkeypatch.setattr(journal_extractors, "_call_llm_with_retries", fake_call_llm)
     monkeypatch.setattr(
         journal_extractors,
         "_parse_journal_llm_candidates",
@@ -213,10 +228,15 @@ def test_llm_journal_candidates_passes_retention_profile_to_prompt(monkeypatch, 
             ],
             hermes_home=tmp_path,
             scope=_scope(),
-            journal_config={"retention_profile": "full"},
+            journal_config={
+                "retention_profile": "full",
+                "allow_insecure_endpoint": "true",
+            },
         )
     finally:
         conn.close()
 
     assert result == []
     assert captured["profile"] == "full"
+    assert captured["option_allow_insecure"] is False
+    assert captured["transport_allow_insecure"] is False

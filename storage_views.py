@@ -11,6 +11,12 @@ from .gating import build_fts_query, compact_text, like_terms, normalized_token_
 from .governance import classify_memory
 from .graph import load_metadata
 from .lifecycle_policy import ORDINARY_RECALL_HIDDEN_LIFECYCLE_VALUES, ordinary_recall_lifecycle_visible_sql
+from .lexical_generation import supplemental_table_for_search
+from .lexical_query import (
+    cjk_query_ngrams,
+    cjk_substring_score,
+    trigram_fts_query,
+)
 from .models import RecallItem
 from .scoring import bm25_to_score, lexical_score
 from .sql_store import curated_recall_item_id, iter_curated_entries
@@ -94,7 +100,14 @@ def _row_metadata(
     return metadata
 
 
-def search_db_memories(provider: Any, query: str, *, limit: int) -> list[RecallItem]:
+def search_db_memories(
+    provider: Any,
+    query: str,
+    *,
+    limit: int,
+    generation_override: str | None = None,
+    allow_unreviewed_generation: bool = False,
+) -> list[RecallItem]:
     """Search SQLite truth rows for accessible recall candidates.
 
     Lifecycle and scope filters are applied here before ranking so downstream retrieval cannot accidentally surface archived or inaccessible state."""
@@ -102,12 +115,18 @@ def search_db_memories(provider: Any, query: str, *, limit: int) -> list[RecallI
     tokens = retrieval_query_tokens(query)
     fts_query = build_fts_query(tokens)
     rows: list[sqlite3.Row] = []
+    supplemental_row_ids: set[str] = set()
     try:
         configured_pool = int((provider._retrieval_config or {}).get("candidate_pool") or 0)
     except (TypeError, ValueError):
         configured_pool = 0
     candidate_pool = max(limit * 2, limit, configured_pool)
     with provider._lock:
+        supplemental_table = supplemental_table_for_search(
+            conn,
+            generation_override,
+            allow_unreviewed_override=allow_unreviewed_generation,
+        )
         if fts_query:
             rows.extend(
                 conn.execute(
@@ -122,6 +141,62 @@ def search_db_memories(provider: Any, query: str, *, limit: int) -> list[RecallI
                     [fts_query, *_accessible_scope_params(provider), candidate_pool],
                 ).fetchall()
             )
+        if supplemental_table:
+            shadow_rows: list[sqlite3.Row] = []
+            shadow_query = trigram_fts_query(query, tokens)
+            if shadow_query:
+                shadow_rows = conn.execute(
+                    f"""
+                    SELECT m.*, NULL AS bm25_score
+                    FROM {supplemental_table}
+                    JOIN memories m ON m.id = {supplemental_table}.memory_id
+                    WHERE {supplemental_table} MATCH ?
+                      AND m.scope_id IN ({_scope_placeholders(provider)})
+                      AND {_ACTIVE_MEMORY_SQL_M}
+                    ORDER BY bm25({supplemental_table}) ASC, m.updated_at DESC
+                    LIMIT ?
+                    """,
+                    [
+                        shadow_query,
+                        *_accessible_scope_params(provider),
+                        candidate_pool,
+                    ],
+                ).fetchall()
+                rows.extend(shadow_rows)
+                supplemental_row_ids.update(str(row["id"]) for row in shadow_rows)
+            bigram_terms = [
+                term for term in cjk_query_ngrams(query, limit=24) if len(term) == 2
+            ]
+            if bigram_terms and len(shadow_rows) < candidate_pool:
+                term_values = ",".join("(?)" for _ in bigram_terms)
+                match_count_sql = (
+                    "(SELECT COUNT(*) FROM query_terms qt "
+                    "WHERE instr(m.content, qt.term) > 0 "
+                    "OR instr(m.summary, qt.term) > 0)"
+                )
+                term_rows = conn.execute(
+                    f"""
+                    WITH query_terms(term) AS (VALUES {term_values})
+                    SELECT m.*, {match_count_sql} AS cjk_match_count
+                    FROM memories m
+                    WHERE m.scope_id IN ({_scope_placeholders(provider)})
+                      AND {_ACTIVE_MEMORY_SQL_M}
+                      AND EXISTS (
+                          SELECT 1 FROM query_terms qt
+                          WHERE instr(m.content, qt.term) > 0
+                             OR instr(m.summary, qt.term) > 0
+                      )
+                    ORDER BY cjk_match_count DESC, m.updated_at DESC
+                    LIMIT ?
+                    """,
+                    [
+                        *bigram_terms,
+                        *_accessible_scope_params(provider),
+                        candidate_pool,
+                    ],
+                ).fetchall()
+                rows.extend(term_rows)
+                supplemental_row_ids.update(str(row["id"]) for row in term_rows)
         like_query_terms = like_terms(query, tokens)
         if like_query_terms:
             clause = " OR ".join(["content LIKE ?", "summary LIKE ?"] * len(like_query_terms))
@@ -189,6 +264,14 @@ def search_db_memories(provider: Any, query: str, *, limit: int) -> list[RecallI
             source=row["source"],
             target=row["target"],
         )
+        supplemental_score = 0.0
+        if str(row["id"]) in supplemental_row_ids:
+            supplemental_score = cjk_substring_score(
+                query,
+                str(row["content"]),
+                str(row["summary"]),
+            )
+            score = max(score, supplemental_score)
         if score < min_score * 0.5:
             continue
         results.append(
@@ -210,7 +293,10 @@ def search_db_memories(provider: Any, query: str, *, limit: int) -> list[RecallI
         )
         if results[-1].metadata is not None and str(row["id"]) in bm25_raw_scores:
             results[-1].metadata["bm25_raw"] = bm25_raw_scores[str(row["id"])]
-    return results
+        if results[-1].metadata is not None and supplemental_score > 0.0:
+            results[-1].metadata["supplemental_lexical_score"] = supplemental_score
+    results.sort(key=lambda item: float(item.score), reverse=True)
+    return results[: max(0, int(limit))]
 
 
 def search_vector_memories(provider: Any, query: str, *, limit: int) -> list[RecallItem]:

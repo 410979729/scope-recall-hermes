@@ -168,6 +168,34 @@
         "tests/test_relation_queue_liveness.py::test_expired_relation_lease_budget_promotes_newer_revision",
         "tests/test_schema_migrations.py::test_relation_lease_expiry_budget_migration_upgrades_pre_0010_in_place"
       ]
+    },
+    {
+      "id": "lexical-shadow-and-windows-rollout-release-blockers",
+      "nodes": [
+        "tests/test_windows_filesystem.py::test_copy_tree_crosses_legacy_windows_limit_without_prefix_leak",
+        "tests/test_windows_filesystem.py::test_preflight_rejects_oversized_component_before_destination_mutation",
+        "tests/test_windows_filesystem.py::test_copy_tree_removes_partial_destination_after_copy_failure",
+        "tests/test_rollout_profiles.py::test_rollout_restore_move_failure_compensates_from_current_backup",
+        "tests/test_rollout_profiles.py::test_rollout_backup_and_repeat_restore_support_deep_profile_paths",
+        "tests/test_installer.py::test_installer_install_and_repeat_rollback_support_deep_home_paths",
+        "tests/test_lexical_generation.py::test_shadow_creation_is_explicit_and_backfill_is_bounded_and_resumable",
+        "tests/test_lexical_generation.py::test_shadow_triggers_track_updates_lifecycle_visibility_and_deletes",
+        "tests/test_lexical_generation.py::test_activation_and_rollback_use_cas_and_retain_legacy_storage",
+        "tests/test_lexical_query.py::test_cjk_substring_score_rejects_single_generic_bigram",
+        "tests/test_lexical_cjk_retrieval.py::test_ready_shadow_override_recovers_cjk_target_under_newer_noise",
+        "tests/test_lexical_cjk_retrieval.py::test_cjk_bigram_fallback_uses_one_bounded_sql_scan",
+        "tests/test_lexical_cjk_retrieval.py::test_active_cjk_generation_ranks_old_target_inside_requested_limit",
+        "tests/test_lexical_cjk_retrieval.py::test_supplemental_mode_cannot_remove_english_legacy_candidates",
+        "tests/test_lexical_migration.py::test_quality_gate_uses_synthetic_and_live_dual_reads_without_raw_text",
+        "tests/test_lexical_migration.py::test_build_resumes_committed_backfill_and_marks_generation_ready",
+        "tests/test_lexical_migration_cli.py::test_cli_dry_run_is_read_only_and_does_not_create_shadow",
+        "tests/test_lexical_migration_cli.py::test_cli_apply_requires_explicit_maintenance_confirmation",
+        "tests/test_lexical_migration_cli.py::test_cli_build_activate_and_rollback_are_backup_first_and_cas_guarded",
+        "tests/test_storage_views.py::test_search_db_memories_respects_limit_after_final_scoring",
+        "tests/test_lexical_benchmark.py::test_lexical_cjk_benchmark_reports_quality_latency_and_growth",
+        "tests/test_doctor_lexical_generation.py::test_doctor_reports_healthy_active_generation_without_writes",
+        "tests/test_doctor_lexical_generation.py::test_doctor_fails_when_active_shadow_integrity_drifts"
+      ]
     }
   ]
 }

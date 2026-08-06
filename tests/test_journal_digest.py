@@ -1855,6 +1855,143 @@ def test_journal_capture_keeps_long_english_text_that_only_looks_base64ish(tmp_p
     assert row_count >= 1
 
 
+@pytest.mark.parametrize(
+    "override",
+    ["false", "true", 1, [True], {"enabled": True}],
+)
+def test_run_journal_digest_override_keeps_non_boolean_insecure_opt_in_false(
+    tmp_path,
+    monkeypatch,
+    override,
+):
+    hermes_home = tmp_path / "hermes"
+    storage = hermes_home / "scope-recall"
+    storage.mkdir(parents=True)
+    (storage / "config.json").write_text(
+        json.dumps(
+            {
+                "vector": {"enabled": False},
+                "journal": {
+                    "extractor": "llm",
+                    "llm_max_attempts": 1,
+                    "llm_retry_delay": 0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    conn = _open_memory_db(storage / "memory.sqlite3")
+    scope = _scope()
+    append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=build_scope_id(scope),
+        shared_scope_id=build_shared_scope_id(scope),
+        session_id="strict-endpoint-opt-in",
+        turn_number=1,
+        role="user",
+        content="The public journal digest override must not truthify malformed endpoint opt-ins.",
+    )
+    observed: list[object] = []
+
+    def recording_call_llm(*_args, **kwargs):
+        observed.append(kwargs.get("allow_insecure_endpoint", False))
+        return "[]"
+
+    monkeypatch.setattr(journal_module, "call_llm", recording_call_llm)
+
+    run_journal_digest(
+        hermes_home=hermes_home,
+        extractor="llm",
+        scope=scope,
+        interval_label="test",
+        limit_entries=50,
+        llm_api_key="test-key",
+        llm_allow_insecure_endpoint=override,
+    )
+
+    assert observed == [False]
+
+
+def test_journal_endpoint_policy_failure_never_falls_back_or_writes_memory(
+    tmp_path,
+    monkeypatch,
+):
+    hermes_home = tmp_path / "hermes"
+    storage = hermes_home / "scope-recall"
+    storage.mkdir(parents=True)
+    (storage / "config.json").write_text(
+        json.dumps(
+            {
+                "vector": {"enabled": False},
+                "journal": {
+                    "extractor": "llm",
+                    "model": "test-model",
+                    "base_url": "http://198.51.100.10:65535",
+                    "allow_insecure_endpoint": False,
+                    "allow_heuristic_fallback": True,
+                    "llm_max_attempts": 3,
+                    "llm_retry_delay": 0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (hermes_home / ".env").write_text(
+        "SCOPE_RECALL_DIGEST_API_KEY=test-key\n",
+        encoding="utf-8",
+    )
+    conn = _open_memory_db(storage / "memory.sqlite3")
+    scope = _scope()
+    entry_id = append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=build_scope_id(scope),
+        shared_scope_id=build_shared_scope_id(scope),
+        session_id="endpoint-policy-no-fallback",
+        turn_number=1,
+        role="user",
+        content="Always retain the verified deployment rollback procedure as durable project memory.",
+    )
+    original_call_llm = journal_module.call_llm
+    attempts = 0
+
+    def recording_call_llm(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        return original_call_llm(*args, **kwargs)
+
+    monkeypatch.setattr(journal_module, "call_llm", recording_call_llm)
+
+    result = run_journal_digest(
+        hermes_home=hermes_home,
+        extractor="llm",
+        scope=scope,
+        interval_label="test",
+        limit_entries=50,
+    )
+
+    assert attempts == 1
+    assert result["ok"] is False
+    assert result["status"] == "error"
+    assert result["extractor_used"] == "llm-error"
+    assert result["processed_entries"] == 0
+    assert result["inserted"] == 0
+    assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+    row = conn.execute(
+        "SELECT processed_run_id FROM journal_entries WHERE id = ?",
+        (entry_id,),
+    ).fetchone()
+    assert row["processed_run_id"] == ""
+    run = conn.execute(
+        "SELECT metadata FROM journal_digest_runs WHERE id = ?",
+        (result["run_id"],),
+    ).fetchone()
+    metadata = json.loads(run["metadata"])
+    assert metadata["extractor_errors"][0]["kind"] == "endpoint_policy"
+    assert metadata["extractor_errors"][0]["retryable"] is False
+
+
 def test_journal_digest_cli_forwards_llm_provider_overrides(monkeypatch, tmp_path, capsys):
     captured = {}
 

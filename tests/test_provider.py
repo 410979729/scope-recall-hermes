@@ -1191,6 +1191,84 @@ def test_sync_turn_does_not_store_raw_user_turns_by_default(provider):
     assert journal_count == 1
 
 
+def test_sync_turn_endpoint_policy_block_suppresses_capture_fallbacks(provider):
+    provider._config.update(
+        {
+            "min_capture_length": 20,
+            "capture_raw_user": True,
+            "capture_assistant": True,
+            "per_turn_extraction": {"enabled": True},
+            "journal": {"enabled": False},
+            "capture_llm": {
+                "enabled": True,
+                "model": "test-model",
+                "base_url": "http://198.51.100.10:65535",
+                "api_key": "test-key",
+                "allow_insecure_endpoint": False,
+                "min_user_chars": 1,
+                "min_assistant_chars": 1,
+            },
+        }
+    )
+
+    provider.sync_turn(
+        "Remember that this ordinary deployment note is long enough for raw capture fallback.",
+        "Acknowledged; this assistant response is also long enough for fallback capture.",
+    )
+    provider.flush(timeout=2.0)
+
+    with provider._lock:
+        rows = provider._require_conn().execute(
+            "SELECT source, target, content FROM memories ORDER BY created_at"
+        ).fetchall()
+    assert rows == []
+
+
+def test_sync_turn_transient_capture_failure_keeps_explicit_raw_fallback(
+    provider,
+    monkeypatch,
+):
+    import scope_recall.capture_llm as capture_llm_module
+
+    provider._config.update(
+        {
+            "min_capture_length": 20,
+            "capture_raw_user": True,
+            "capture_assistant": False,
+            "per_turn_extraction": {"enabled": False},
+            "journal": {"enabled": False},
+            "capture_llm": {
+                "enabled": True,
+                "model": "test-model",
+                "base_url": "https://api.example.test",
+                "api_key": "test-key",
+                "min_user_chars": 1,
+                "min_assistant_chars": 1,
+            },
+        }
+    )
+
+    def fail_capture(*_args, **_kwargs):
+        raise TimeoutError("simulated capture provider timeout")
+
+    monkeypatch.setattr(capture_llm_module, "_call_openai_compatible", fail_capture)
+
+    user_content = "This ordinary message is long enough for the explicitly enabled raw fallback."
+    provider.sync_turn(
+        user_content,
+        "Acknowledged; this response is long enough to enter capture extraction.",
+    )
+    provider.flush(timeout=2.0)
+
+    with provider._lock:
+        rows = provider._require_conn().execute(
+            "SELECT source, target, content FROM memories ORDER BY created_at"
+        ).fetchall()
+    assert [(row["source"], row["target"], row["content"]) for row in rows] == [
+        ("turn-user", "general", user_content)
+    ]
+
+
 def test_sync_turn_preserves_long_user_turns_in_journal_chunks(provider):
     marker = "TAIL-MARKER-PROVIDER-LONG-TURN"
     long_user = "用户长任务说明：" + ("不要把长 turn 因为 capture_hard_max_chars 丢弃，要进入 journal chunking。" * 90) + marker

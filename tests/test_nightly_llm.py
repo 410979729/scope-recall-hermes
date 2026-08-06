@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 from datetime import date
 
+import pytest
+
 from scope_recall.nightly_digest import DigestOptions
 
 
@@ -39,14 +41,14 @@ def test_nightly_llm_direct_call_chat_completions(monkeypatch):
         def read(self):
             return json.dumps({"choices": [{"message": {"content": "[]"}}]}).encode("utf-8")
 
-    def fake_urlopen(request, timeout):
+    def fake_urlopen(request, *, timeout, allow_insecure=False):  # noqa: ARG001
         captured["url"] = request.full_url
         captured["headers"] = dict(request.header_items())
         captured["body"] = json.loads(request.data.decode("utf-8"))
         captured["timeout"] = timeout
         return FakeResponse()
 
-    monkeypatch.setattr(nightly_llm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(nightly_llm, "safe_urlopen", fake_urlopen)
 
     raw = nightly_llm.call_llm(
         "extract this",
@@ -79,14 +81,14 @@ def test_nightly_llm_direct_call_anthropic_messages(monkeypatch):
         def read(self):
             return json.dumps({"content": [{"type": "text", "text": "[]"}]}).encode("utf-8")
 
-    def fake_urlopen(request, timeout):
+    def fake_urlopen(request, *, timeout, allow_insecure=False):  # noqa: ARG001
         captured["url"] = request.full_url
         captured["headers"] = dict(request.header_items())
         captured["body"] = json.loads(request.data.decode("utf-8"))
         captured["timeout"] = timeout
         return FakeResponse()
 
-    monkeypatch.setattr(nightly_llm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(nightly_llm, "safe_urlopen", fake_urlopen)
 
     raw = nightly_llm.call_llm(
         "extract this",
@@ -138,6 +140,49 @@ def test_nightly_llm_retry_reports_actual_attempt_count_for_non_retryable_errors
     assert "auth after 3 attempt(s)" not in message
 
 
+def test_nightly_llm_retry_preserves_endpoint_policy_classification(monkeypatch):
+    import scope_recall.nightly_llm as nightly_llm
+    from scope_recall.http_utils import UnsafeEndpointError
+
+    calls = {"count": 0}
+
+    def fake_call_llm(*args, **kwargs):  # noqa: ARG001
+        calls["count"] += 1
+        raise UnsafeEndpointError("blocked by endpoint policy")
+
+    monkeypatch.setattr(nightly_llm, "call_llm", fake_call_llm)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        nightly_llm.call_llm_with_retries(
+            "prompt",
+            model="test-model",
+            base_url="https://example.invalid",
+            api_key="",
+            timeout=1,
+            api_mode="chat_completions",
+            max_attempts=3,
+            retry_delay=0,
+        )
+
+    assert calls["count"] == 1
+    assert getattr(excinfo.value, "error_kind", None) == "endpoint_policy"
+    assert getattr(excinfo.value, "retryable", None) is False
+    assert nightly_llm.classify_llm_error(excinfo.value) == ("endpoint_policy", False)
+
+
+@pytest.mark.parametrize(
+    "raw_value",
+    ([False], {"enabled": True}, 1, 1.0),
+    ids=("array", "object", "integer", "float"),
+)
+def test_nightly_llm_non_boolean_endpoint_opt_in_uses_safe_default(
+    raw_value: object,
+) -> None:
+    from scope_recall.nightly_llm import config_bool_value
+
+    assert config_bool_value(raw_value, False) is False
+
+
 def test_nightly_llm_resolve_config_accepts_digest_options_shape(tmp_path):
     from scope_recall.nightly_llm import resolve_llm_config
 
@@ -169,6 +214,61 @@ scope_recall_nightly_digest:
     assert config["base_url"] == "https://api.deepseek.com"
     assert config["api_key"] == "deepseek-test-key"
     assert config["api_mode"] == "chat_completions"
+
+
+def test_nightly_llm_insecure_endpoint_opt_in_has_explicit_override(tmp_path):
+    from scope_recall.nightly_llm import resolve_llm_config
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        """
+scope_recall_nightly_digest:
+  base_url: http://model.internal:1234
+  allow_insecure_endpoint: true
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    default_options = DigestOptions(
+        hermes_home=hermes_home,
+        digest_date=date(2026, 6, 13),
+    )
+    explicit_safe_options = DigestOptions(
+        hermes_home=hermes_home,
+        digest_date=date(2026, 6, 13),
+        allow_insecure_endpoint=False,
+    )
+
+    assert resolve_llm_config(hermes_home, default_options)[
+        "allow_insecure_endpoint"
+    ] is True
+    assert resolve_llm_config(hermes_home, explicit_safe_options)[
+        "allow_insecure_endpoint"
+    ] is False
+
+
+def test_nightly_llm_true_string_insecure_endpoint_opt_in_is_fail_closed(tmp_path):
+    from scope_recall.nightly_llm import resolve_llm_config
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        """
+scope_recall_nightly_digest:
+  base_url: http://model.internal:1234
+  allow_insecure_endpoint: "true"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = resolve_llm_config(
+        hermes_home,
+        DigestOptions(hermes_home=hermes_home, digest_date=date(2026, 6, 13)),
+    )
+
+    assert config["allow_insecure_endpoint"] is False
 
 
 def test_nightly_llm_options_provider_override_prevents_codex_mode_leakage(tmp_path):

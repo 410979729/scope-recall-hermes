@@ -41,6 +41,7 @@ This file is generated from the packaged `config.json` registry. It lists every 
 
 ## `capture_llm`
 
+- `capture_llm.allow_insecure_endpoint` (boolean; risk: `high`; restart_required: `no`) — Allow an explicitly trusted non-loopback HTTP capture endpoint. Credential-bearing headers are always stripped on HTTP. Default: `false`
 - `capture_llm.api_key_env` (array; risk: `high`; restart_required: `no`) — Scope Recall configuration key `capture_llm.api_key_env` in the `capture_llm` group. Default: `["SCOPE_RECALL_CAPTURE_LLM_API_KEY", "OPENAI_API_KEY"]`
 - `capture_llm.base_url` (string; risk: `low`; restart_required: `no`) — Scope Recall configuration key `capture_llm.base_url` in the `capture_llm` group. Default: `"https://api.openai.com"`
 - `capture_llm.enabled` (boolean; risk: `low`; restart_required: `no`) — Scope Recall configuration key `capture_llm.enabled` in the `capture_llm` group. Default: `false`
@@ -121,6 +122,7 @@ Treat chat aliases as explicit operator access-control grants.
 ## `journal`
 
 - `journal.allow_heuristic_fallback` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.allow_heuristic_fallback` in the `journal` group. Default: `false`
+- `journal.allow_insecure_endpoint` (boolean; risk: `high`; restart_required: `yes`) — Allow an explicitly trusted non-loopback HTTP journal endpoint. Credential-bearing headers are always stripped on HTTP. Default: `false`
 - `journal.allow_session_end_llm` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.allow_session_end_llm` in the `journal` group. Default: `false`
 - `journal.append_v1` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.append_v1` in the `journal` group. Default: `true`
 - `journal.background_digest_enabled` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.background_digest_enabled` in the `journal` group. Default: `true`
@@ -180,6 +182,7 @@ Treat chat aliases as explicit operator access-control grants.
 
 ## `reflection`
 
+- `reflection.allow_insecure_endpoint` (boolean; risk: `high`; restart_required: `yes`) — Allow an explicitly trusted non-loopback HTTP reflection endpoint. Credential-bearing headers are always stripped on HTTP. Default: `false`
 - `reflection.api_key_env` (string; risk: `high`; restart_required: `yes`) — Scope Recall configuration key `reflection.api_key_env` in the `reflection` group. Default: `"SCOPE_RECALL_REFLECTION_API_KEY"`
 - `reflection.api_mode` (string; risk: `medium`; restart_required: `yes`; choices: `chat_completions, codex_responses, anthropic_messages`) — Scope Recall configuration key `reflection.api_mode` in the `reflection` group. Default: `"chat_completions"`
 - `reflection.append_v1` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `reflection.append_v1` in the `reflection` group. Default: `true`
@@ -301,8 +304,10 @@ Treat chat aliases as explicit operator access-control grants.
 ## `vector`
 
 - `vector.backend` (string; risk: `medium`; restart_required: `yes`; choices: `lancedb, sqlite-bruteforce, pgvector`) — Vector companion backend used for semantic recall. Default: `"lancedb"`
+- `vector.embedder.allow_insecure_endpoint` (boolean; risk: `high`; restart_required: `yes`) — Allow an explicitly trusted non-loopback HTTP embedding endpoint. Credential-bearing headers are always stripped on HTTP. Default: `false`
 - `vector.embedder.api_key_env` (array; risk: `high`; restart_required: `yes`) — Environment variable names that may hold the embedding API key. Default: `["SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY"]`
 - `vector.embedder.base_url` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.embedder.base_url` in the `vector` group. Default: `"https://generativelanguage.googleapis.com/v1beta/openai"`
+- `vector.embedder.base_url_env` (string; risk: `medium`; restart_required: `yes`) — Optional environment variable name that supplies the primary hosted embedding base URL. Default: `""`
 - `vector.embedder.connection_retry_delays` (array; risk: `medium`; restart_required: `yes`) — Optional bounded delays in seconds for retrying transport-level embedding connection failures (maximum 8 entries, each 0 to 300 seconds). HTTP/API errors are not retried by this schedule; set an explicit empty array to disable retries. Default: `[2.0, 4.0, 8.0]`
 - `vector.embedder.dimensions` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.embedder.dimensions` in the `vector` group. Default: `3072`
 - `vector.embedder.document_prefix` (string; risk: `medium`; restart_required: `yes`) — Optional instruction prefix applied only when embedding indexed documents. Default: `""`
@@ -313,6 +318,8 @@ Treat chat aliases as explicit operator access-control grants.
 - `vector.embedder.request_dimensions` (boolean; risk: `medium`; restart_required: `yes`) — Send the configured output dimension to providers that support explicit dimensionality. Default: `false`
 - `vector.enabled` (boolean; risk: `medium`; restart_required: `yes`) — Enable the rebuildable vector companion index. Default: `true`
 - `vector.fallback_backend` (string; risk: `medium`; restart_required: `yes`; choices: `sqlite-bruteforce, disabled`) — Scope Recall configuration key `vector.fallback_backend` in the `vector` group. Default: `"sqlite-bruteforce"`
+- `vector.fallback_embedder.allow_insecure_endpoint` (boolean; risk: `high`; restart_required: `yes`) — Allow an explicitly trusted non-loopback HTTP fallback embedding endpoint. Credential-bearing headers are always stripped on HTTP. Default: `false`
+- `vector.fallback_embedder.base_url_env` (string; risk: `medium`; restart_required: `yes`) — Optional environment variable name that supplies the fallback hosted embedding base URL. Default: `""`
 - `vector.fallback_embedder.dimensions` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.fallback_embedder.dimensions` in the `vector` group. Default: `256`
 - `vector.fallback_embedder.model` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.fallback_embedder.model` in the `vector` group. Default: `"hash-v1"`
 - `vector.fallback_embedder.provider` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.fallback_embedder.provider` in the `vector` group. Default: `"local-hash"`

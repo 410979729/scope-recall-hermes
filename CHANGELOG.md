@@ -4,6 +4,32 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-08-06
+
+This cumulative minor release covers all changes since the last public release, `1.8.7`. It keeps SQLite authoritative and the stable provider/tool identities unchanged while adding an explicit CJK lexical shadow-generation path, Windows long-path-safe rollout and rollback, and fail-closed endpoint transport policy.
+
+### Added
+- Consolidated the cumulative Fact Evolution, temporal query, scope routing, evidence authority, provenance-root, idempotency, journal checkpoint, and release-identity guarantees required by the 1.9.0 public release line.
+- Added a release-gated CJK lexical benchmark that records high-interference recall, English non-regression, requested-limit enforcement, p50/p95 latency, and SQLite page growth.
+- Added a backup-first CJK lexical shadow index with resumable bounded backfill, truth-table maintenance triggers, synthetic/live dual-read quality evidence, explicit compare-and-swap activation, read-only doctor health, and pointer-only rollback that retains the legacy index.
+- Added one bounded CJK bigram fallback scan for two-character concepts that SQLite trigram FTS cannot represent; the active read path permanently retains legacy FTS/LIKE/alias candidates, and the release gate rejects English candidate regressions.
+- Added Windows extended-length filesystem primitives with complete destination preflight, short collision-resistant backup/staging roots, public-path receipts, repeatable rollback, and automatic compensation when final replacement fails.
+- Added one endpoint-policy configuration gate across capture, journal/nightly, reflection, OpenAI-compatible embedding, and MiniMax embedding, with explicit CLI opt-in for trusted non-loopback HTTP endpoints.
+- Added a read-only `doctor` endpoint-policy check for enabled capture, LLM journal, reflection, and hosted primary/fallback embedding transports; it resolves the same inherited provider routes and embedding base-URL environment aliases as runtime without reading API keys, and reports only origins plus recognized public API suffixes.
+
+### Fixed
+- Applied final relevance ordering before enforcing the requested SQLite lexical result limit, so direct storage-view callers no longer receive the larger internal candidate pool.
+- Fixed cross-profile and installer backup/restore failures when deep profile homes pushed copied descendants past the legacy Windows path limit; failed copies now clean partial destinations before active plugin mutation.
+- Rejected non-HTTP(S), credential-bearing URL authorities and query parameters, fragments, cross-origin redirects, and HTTPS-to-HTTP downgrades before memory-bearing requests can leave the process. Loopback HTTP remains compatible for local model servers, while every HTTP path strips authorization, API-key, cookie, and proxy credentials; OpenAI SDK embedding calls no longer auto-follow redirects, only a literal boolean `true` can opt into plaintext HTTP, and endpoint-policy failures cannot degrade into heuristic fallback.
+- Kept ordinary feature-flag compatibility separate from endpoint permission: quoted `"true"`/`"false"`, numbers, arrays, objects, and every other non-boolean endpoint opt-in fail closed at config, public-option, custom-hook, and direct transport boundaries.
+- Kept public journal overrides and capture-provider callers fail-closed: malformed insecure-endpoint opt-ins cannot be truthified downstream, and endpoint-policy blocks suppress journal heuristic plus per-turn regex/raw durable fallbacks without changing fallback behavior for ordinary provider outages.
+- Bound forget and merge memory-ID arrays to 1,000 items and each ID to 512 characters at both schema and runtime boundaries; affected SQLite truth, fact-ownership, lifecycle, merge, and delete paths now chunk against the live connection variable limit without committing between chunks.
+- Unified URL-query rejection and plaintext-HTTP header stripping behind one normalized credential-key registry, including Azure APIM, OAuth assertions, Google signed requests, AWS signed requests, generic `x-token`/`access_key_id`, auth/bearer tokens, and provider API-key aliases while preserving non-credential metadata such as `api-version`, `model-version`, `page_token`, and `token-estimate`; insecure-endpoint warnings now expose only the origin plus a recognized public API suffix.
+- Preserved raw `allow_insecure_endpoint` values through OpenAI-compatible and MiniMax embedder builders until strict constructor transport validation, so strings, numerics, arrays, and objects are rejected even for HTTPS and loopback endpoints instead of being silently coerced to `false`.
+- Reworked Experience statistics as scoped relational aggregation instead of expanding every accessible playbook ID into one `IN (...)` list, preserving playbook/run scope checks below reduced SQLite host-parameter limits.
+- Made the release runner force UTF-8 for Python subprocesses and decode captured output explicitly, so non-UTF-8 Windows system locales cannot lose benchmark or package-stage JSON to reader-thread decode failures.
+- Made primary and fallback embedding `base_url_env` valid runtime configuration and ensured a configured non-empty environment value overrides the packaged URL fallback in both runtime construction and doctor checks.
+
 ## [1.8.7] - 2026-08-03
 
 This cumulative release covers all changes since the last public release, `1.8.2`. It keeps SQLite authoritative and the stable provider/tool identities unchanged while combining the 1.8.3-1.8.6 reliability line with final identity, freshness, secret-handling, and cross-platform release hardening.

@@ -23,8 +23,15 @@ The 1.8.x schema adds append-only migration receipts including:
 - `0009_vector_reconciliation_watermark_v1_8_0` adds a generation-bound `(updated_at, id)` startup reconciliation cursor and cycle upper bound. It creates no vector rows and performs no full vector scan.
 - `0010_relation_rebuild_lease_expiry_budget_v1_8_0` adds bounded relation-rebuild lease expiry and work-budget state.
 - `0011_relation_frequency_failure_queue_v1_8_0` adds per-memory retry/dead-letter evidence so one malformed relation-frequency dirty row cannot block healthy rows in the same maintenance batch.
+- `0012_lexical_shadow_index_v1_9_0` adds only the lexical generation manifest and activation pointer. It does not create, backfill, or activate the CJK shadow table during ordinary schema initialization.
 
 These companions are rebuildable, but their debt is explicit. Until legacy relation backfill completes, foreground relation synchronization defers to the queue rather than computing an unbounded scope scan. Vector outbox replay always precedes truth-page reconciliation.
+
+### CJK lexical shadow index
+
+Use `hermes-scope-recall lexical plan` first. A reviewed maintenance window then runs `lexical build --maintenance-confirmed`, which creates a verified SQLite backup, installs the trigram shadow plus truth-table maintenance triggers, commits bounded rowid pages, and records a quality receipt. The runtime keeps using legacy retrieval until a separate `lexical activate --expected-current legacy --maintenance-confirmed` compare-and-swap succeeds.
+
+The active read path unions legacy FTS/LIKE/alias candidates with the supplemental channel. Chinese two-character concepts use a bounded per-term companion because SQLite trigram FTS cannot represent them; a single generic bigram is not enough to pass final relevance. `lexical rollback` atomically clears the supplemental pointer and retains both tables for evidence and repair.
 
 ### 0. Legacy raw/general/scratch hygiene inside an existing `scope-recall` SQLite store
 

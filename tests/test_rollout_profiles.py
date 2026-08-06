@@ -6,9 +6,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = PLUGIN_ROOT / "scripts" / "rollout.profiles.py"
@@ -126,7 +129,7 @@ def test_rollout_profiles_apply_canary_backs_up_only_selected_profile(tmp_path: 
     assert by_profile["beta"]["applied"] is False
     assert by_profile["beta"]["reason"] == "not_canary"
     assert "version: 0.1.0" in (Path(by_profile["alpha"]["backup_path"]) / "plugin.yaml").read_text(encoding="utf-8")
-    assert "version: 1.8.7" in (alpha / "plugins" / "scope-recall" / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.9.0" in (alpha / "plugins" / "scope-recall" / "plugin.yaml").read_text(encoding="utf-8")
     assert "version: 0.2.0" in (beta / "plugins" / "scope-recall" / "plugin.yaml").read_text(encoding="utf-8")
 
 
@@ -278,7 +281,7 @@ def test_rollout_profiles_rollback_restores_plugin_from_receipt(tmp_path: Path):
     receipt = tmp_path / "rollout-receipt.json"
 
     _run_rollout("--profiles-root", str(profiles_root), "--canary", "alpha", "--apply", "--receipt", str(receipt))
-    assert "version: 1.8.7" in (alpha / "plugins" / "scope-recall" / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.9.0" in (alpha / "plugins" / "scope-recall" / "plugin.yaml").read_text(encoding="utf-8")
 
     rollback = _run_rollout("--profiles-root", str(profiles_root), "--rollback", "--apply", "--receipt", str(receipt))
 
@@ -287,3 +290,72 @@ def test_rollout_profiles_rollback_restores_plugin_from_receipt(tmp_path: Path):
     assert rollback["dry_run"] is False
     assert rollback["rollback_restored"] == 1
     assert "version: 0.1.0" in (alpha / "plugins" / "scope-recall" / "plugin.yaml").read_text(encoding="utf-8")
+
+
+def test_rollout_restore_move_failure_compensates_from_current_backup(
+    tmp_path: Path,
+    monkeypatch,
+):
+    module = _load_rollout_module()
+    profile_home = tmp_path / "profile"
+    plugin_dir = _write_plugin(profile_home, version="2.0.0")
+    previous_home = tmp_path / "previous"
+    previous = _write_plugin(previous_home, version="1.0.0")
+
+    def fail_move(_source: Path, _destination: Path) -> Path:
+        raise OSError("injected final move failure")
+
+    monkeypatch.setattr(module, "move_path", fail_move)
+
+    with pytest.raises(OSError, match="injected final move failure"):
+        module.restore_plugin(
+            profile_home,
+            str(previous),
+            previous_plugin_existed=True,
+        )
+
+    assert "version: 2.0.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    assert not any(plugin_dir.parent.glob(".sr-rb-*"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended-length rollout contract")
+def test_rollout_backup_and_repeat_restore_support_deep_profile_paths(tmp_path: Path):
+    from scope_recall.windows_filesystem import io_path, make_dirs, remove_path
+
+    component_length = 178 - len(str(tmp_path)) - 1
+    if component_length < 8 or component_length > 240:
+        pytest.skip("temporary path cannot form the 178-character profile fixture")
+    profile_home = tmp_path / ("p" * component_length)
+    plugin_dir = _write_plugin(profile_home, version="0.1.0")
+    nested = plugin_dir / ("n" * 80)
+    make_dirs(nested)
+    Path(io_path(nested / "payload.txt")).write_text("old deep payload", encoding="utf-8")
+    module = _load_rollout_module()
+
+    try:
+        backup_path = module.backup_plugin(profile_home)
+        assert "\\\\?\\" not in backup_path
+        assert os.path.isfile(io_path(Path(backup_path) / ("n" * 80) / "payload.txt"))
+
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: scope-recall\nversion: 2.0.0\n",
+            encoding="utf-8",
+        )
+        first_current_backup = module.restore_plugin(
+            profile_home,
+            backup_path,
+            previous_plugin_existed=True,
+        )
+        assert "\\\\?\\" not in first_current_backup
+        assert "version: 0.1.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+        assert Path(io_path(nested / "payload.txt")).read_text(encoding="utf-8") == "old deep payload"
+
+        second_current_backup = module.restore_plugin(
+            profile_home,
+            backup_path,
+            previous_plugin_existed=True,
+        )
+        assert "\\\\?\\" not in second_current_backup
+        assert "version: 0.1.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    finally:
+        remove_path(profile_home, missing_ok=True, ignore_errors=True)

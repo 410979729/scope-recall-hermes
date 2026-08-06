@@ -130,7 +130,7 @@ def test_distribution_metadata_exposes_official_standalone_install_shape():
     pyproject = tomllib.loads((PLUGIN_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert pyproject["project"]["name"] == "hermes-scope-recall"
-    assert pyproject["project"]["version"] == "1.8.7"
+    assert pyproject["project"]["version"] == "1.9.0"
     assert pyproject["project"]["scripts"] == {
         "hermes-scope-recall": "scope_recall.cli:main"
     }
@@ -1732,14 +1732,14 @@ def test_installer_upgrade_backs_up_existing_plugin_and_reports_versions(tmp_pat
     assert result["installed"] is True
     assert result["previous_plugin_existed"] is True
     assert result["previous_version"] == "0.9.0"
-    assert result["manifest_version"] == "1.8.7"
-    assert result["new_version"] == "1.8.7"
+    assert result["manifest_version"] == "1.9.0"
+    assert result["new_version"] == "1.9.0"
     backup_path = Path(result["backup_path"])
     assert backup_path.is_dir()
     assert tmp_path in backup_path.parents
     assert "version: 0.9.0" in (backup_path / "plugin.yaml").read_text(encoding="utf-8")
     assert "previous plugin" in (backup_path / "__init__.py").read_text(encoding="utf-8")
-    assert "version: 1.8.7" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.9.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
     assert any("restart" in step.lower() for step in result["next_steps"])
     assert any("doctor" in step for step in result["next_steps"])
     assert result["rollback_command"].endswith(str(backup_path))
@@ -1751,7 +1751,7 @@ def test_installer_rollback_restores_backup_and_backs_up_current_plugin(tmp_path
     plugin_dir = tmp_path / "plugins" / PLUGIN_NAME
     _write_installed_plugin(plugin_dir, version="0.9.0", marker="previous plugin")
     upgrade = installer.install(hermes_home=tmp_path)
-    assert "version: 1.8.7" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.9.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
 
     rollback = installer.rollback(hermes_home=tmp_path, backup_dir=upgrade["backup_path"])
 
@@ -1759,12 +1759,56 @@ def test_installer_rollback_restores_backup_and_backs_up_current_plugin(tmp_path
     assert rollback["dry_run"] is False
     assert rollback["restored"] is True
     assert rollback["restored_version"] == "0.9.0"
-    assert rollback["replaced_version"] == "1.8.7"
+    assert rollback["replaced_version"] == "1.9.0"
     current_backup = Path(rollback["current_backup_path"])
     assert current_backup.is_dir()
-    assert "version: 1.8.7" in (current_backup / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.9.0" in (current_backup / "plugin.yaml").read_text(encoding="utf-8")
     assert "version: 0.9.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
     assert "previous plugin" in (plugin_dir / "__init__.py").read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended-length installer contract")
+def test_installer_install_and_repeat_rollback_support_deep_home_paths(
+    tmp_path,
+    monkeypatch,
+):
+    import scope_recall.installer as installer
+    from scope_recall.windows_filesystem import io_path, make_dirs, remove_path
+
+    component_length = 178 - len(str(tmp_path)) - 1
+    if component_length < 8 or component_length > 240:
+        pytest.skip("temporary path cannot form the 178-character Hermes-home fixture")
+    home = tmp_path / ("h" * component_length)
+    plugin_dir = home / "plugins" / PLUGIN_NAME
+    _write_installed_plugin(plugin_dir, version="0.9.0", marker="previous deep plugin")
+    old_nested = plugin_dir / ("o" * 80)
+    make_dirs(old_nested)
+    Path(io_path(old_nested / "old.txt")).write_text("old", encoding="utf-8")
+
+    fake_source = tmp_path / "candidate-source"
+    _write_installed_plugin(fake_source, version="2.0.0", marker="new deep plugin")
+    source_nested = fake_source / ("n" * 80)
+    source_nested.mkdir()
+    (source_nested / "new.txt").write_text("new", encoding="utf-8")
+    monkeypatch.setattr(installer, "source_root", lambda: fake_source)
+
+    try:
+        installed = installer.install(hermes_home=home)
+        assert installed["ok"] is True
+        assert "\\\\?\\" not in installed["backup_path"]
+        assert os.path.isfile(io_path(plugin_dir / ("n" * 80) / "new.txt"))
+
+        first = installer.rollback(hermes_home=home, backup_dir=installed["backup_path"])
+        assert first["ok"] is True
+        assert "\\\\?\\" not in first["current_backup_path"]
+        assert "version: 0.9.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+        assert os.path.isfile(io_path(plugin_dir / ("o" * 80) / "old.txt"))
+
+        second = installer.rollback(hermes_home=home, backup_dir=installed["backup_path"])
+        assert second["ok"] is True
+        assert "version: 0.9.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    finally:
+        remove_path(home, missing_ok=True, ignore_errors=True)
 
 
 def test_installer_rollback_refuses_bad_backup_without_mutating_current_plugin(tmp_path):
@@ -1795,7 +1839,7 @@ def test_installer_cli_upgrade_dry_run_and_rollback_are_routed_by_product_cli(tm
 
     upgrade = installer.install(hermes_home=tmp_path)
     assert cli.main(["rollback", "--hermes-home", str(tmp_path), "--backup-dir", upgrade["backup_path"], "--dry-run", "--json"]) == 0
-    assert "version: 1.8.7" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.9.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
 
 
 def test_installer_runtime_verify_reports_missing_memory_setup(tmp_path):
@@ -1846,6 +1890,7 @@ def test_installer_runtime_verify_reports_schema_ledger_repair_steps_without_rei
         "0009_vector_reconciliation_watermark_v1_8_0",
         "0010_relation_rebuild_lease_expiry_budget_v1_8_0",
         "0011_relation_frequency_failure_queue_v1_8_0",
+        "0012_lexical_shadow_index_v1_9_0",
     ]
     assert "SQLite schema migration ledger is not current" in verify_result["failures"]
     assert any("migrate status" in step for step in verify_result["next_steps"])

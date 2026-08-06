@@ -1,6 +1,6 @@
 # Scope Recall Internal Module Map
 
-Updated: `2026-07-20` after the fifteenth-review relation-queue remediation.
+Updated: `2026-08-06` for release-blocker implementation boundaries.
 
 ## Quick rules
 
@@ -8,6 +8,12 @@ Updated: `2026-07-20` after the fifteenth-review relation-queue remediation.
 - `tooling.py`: tool argument normalization and dispatch only; complex behavior goes to focused modules.
 - `schemas.py` / `provider_schemas.py` / `response_schemas.py`: schemas/contracts only.
 - `sql_store.py`: schema registration and row helpers only; business flows belong elsewhere.
+- `lexical_generation.py` owns lexical generation manifests, FTS shadow objects/triggers, paged backfill state, integrity evidence, and current-generation CAS. `lexical_migration.py` owns resumable build and synthetic/live quality validation; `scripts/migrate.lexical_index.py` owns backup-first operator build/activate/rollback orchestration. None belongs in provider startup.
+- `lexical_query.py` is pure and owns bounded CJK n-grams, trigram query construction, and supplemental substring relevance. It performs no SQLite I/O or generation mutation.
+- `scripts/benchmark.lexical_cjk.py` owns the fixed synthetic CJK quality, latency, requested-limit, and SQLite page-growth release benchmark; it never opens live state.
+- `storage_views.py` remains a thin retrieval adapter: it may merge legacy, active lexical-generation, and bounded LIKE candidates, but it must not build, backfill, activate, or repair indexes.
+- `doctor_sqlite.py` exposes the read-only `lexical_generation_report()` alongside other SQLite health; it must never create shadow objects or advance migration state.
+- `windows_filesystem.py` owns Windows extended-length path conversion, destination path-budget preflight, and long-path-safe filesystem primitives. `installer.py` and rollout scripts own policy/orchestration and must not grow a second path implementation.
 - `vector_generation.py` owns generation manifests, current-generation CAS, and durable vector outbox state; no second vector queue or claim lease may be introduced.
 - `vector_outbox_replay.py` owns backend-neutral execution of already-committed outbox events; provider, journal, and nightly callers may trigger it but must not bypass it with direct companion writes.
 - `vector_reconciliation.py` owns generation-bound startup/background truth-page watermarks and atomic outbox planning; it never embeds or mutates a physical vector backend.
@@ -15,7 +21,7 @@ Updated: `2026-07-20` after the fifteenth-review relation-queue remediation.
 - `relation_entity_policy.py` owns shared normalization/distinctiveness rules. `relation_frequency_index.py` owns transactional per-memory postings/counts and bounded snapshots/peer lookup. `relation_frequency_maintenance.py` owns paged backfill, dirty-row drain, threshold reclassification, and debt reports.
 - `relation_rebuild_queue.py` owns durable deferred relation passes, monotonic lifetime/pass progress, claim leases, next-revision handoff, and atomic per-focus chunk publication. `relation_scope_state.py` owns relation-relevant scope revisions and receipt integrity. `relation_extraction.py` remains the candidate policy owner.
 - `operator_ledger.py` owns durable operator-operation state and post-commit JSON receipt mirroring; CLI scripts must not publish a success receipt before truth commit.
-- `doctor_vector.py` owns vector duplicate/truth consistency plus reconciliation-watermark health. `doctor_sqlite.py` owns relation-frequency/rebuild and operator-ledger debt summaries; doctor paths remain read-only.
+- `doctor_vector.py` owns vector duplicate/truth consistency plus reconciliation-watermark health. `doctor_sqlite.py` owns relation-frequency/rebuild, lexical-generation, and operator-ledger debt summaries; doctor paths remain read-only.
 - Fact evolution work follows `docs/fact-evolution-architecture.md`: pure identity/action contracts, an owned temporal ledger, one atomic executor, thin orchestration, and read-only reflection.
 - `reflection.py` owns read-only evidence packs; `reflection_llm.py` owns strict cited synthesis; `reflection_tooling.py` owns runtime gates and hidden reviewed candidates. The first two must never import or call the mutation executor.
 - `doctor_temporal.py` owns read-only Fact Evolution/reflection debt metrics; `scripts/benchmark.memory_evolution.py` and `scripts/benchmark.reflection.py` own deterministic release thresholds.
@@ -24,16 +30,17 @@ Updated: `2026-07-20` after the fifteenth-review relation-queue remediation.
 
 ## Largest modules
 
-Final inventory: 120 top-level Python modules and 151 test modules. Detailed per-module inventory below remains advisory; this summary is the current post-remediation count.
+Final inventory: 143 top-level Python modules and 194 test modules. Detailed per-module inventory below remains advisory; this summary is the current post-remediation count.
 
-- `memory_ops.py` — 2303 lines; public memory mutation, stats, recall and governance orchestration.
-- `nightly_digest.py` — 2043 lines; digest lifecycle, batching and committed companion replay.
-- `journal.py` — 1838 lines; journal extraction, transactional candidate application and replay.
-- `installer.py` — 1535 lines; install, activation, verification, rollback and compatibility checks.
-- `experience_store.py` — 1490 lines; playbook/episode/pitfall storage and review state.
-- `fact_repository.py` — 1446 lines; temporal fact ledger persistence and queries.
-- `tooling.py` — 1322 lines; public tool normalization and dispatch.
-- `provider.py` — 1306 lines; Hermes lifecycle and provider wiring.
+- `memory_ops.py` — 2399 lines; public memory mutation, stats, recall and governance orchestration.
+- `nightly_digest.py` — 2032 lines; digest lifecycle, batching and committed companion replay.
+- `experience_store.py` — 1890 lines; playbook/episode/pitfall storage and review state.
+- `journal.py` — 1860 lines; journal extraction, transactional candidate application and replay.
+- `installer.py` — 1752 lines; install, activation, verification, rollback and compatibility checks.
+- `provider.py` — 1550 lines; Hermes lifecycle and provider wiring.
+- `sql_store.py` — 1524 lines; schema registration and row-level truth helpers.
+- `fact_repository.py` — 1451 lines; temporal fact ledger persistence and queries.
+- `tooling.py` — 1450 lines; public tool normalization and dispatch.
 
 ## Capability ownership
 
