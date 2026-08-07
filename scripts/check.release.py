@@ -983,6 +983,19 @@ def _payload_failures(payload: dict[str, object]) -> list[object]:
     failures = payload.get("failures")
     return list(failures) if isinstance(failures, list) else []
 
+def _float_payload_value(payload: dict[str, object], key: str) -> float:
+    value = payload.get(key)
+    if isinstance(value, bool):
+        return float("nan")
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return float("nan")
+    return float("nan")
+
 
 def benchmark_check() -> dict[str, object]:
     golden_payloads: list[dict[str, object]] = []
@@ -1059,14 +1072,15 @@ def benchmark_check() -> dict[str, object]:
         bool(lexical_payload.get("passed"))
         and lexical_payload.get("schema_version")
         == "scope-recall.lexical-cjk-benchmark.v1"
-        and _int_payload_value(lexical_payload, "rows") == 2_000
-        and _int_payload_value(lexical_payload, "rounds") >= 20
+        and _int_payload_value(lexical_payload, "rows") == 50_000
+        and _int_payload_value(lexical_payload, "rounds") >= 3
         and _int_payload_value(lexical_payload, "cjk_expected_found")
         == _int_payload_value(lexical_payload, "cjk_queries")
         == 3
         and _int_payload_value(lexical_payload, "english_regressions") == 0
         and _int_payload_value(lexical_payload, "max_result_count")
         <= _int_payload_value(lexical_payload, "limit")
+        and _float_payload_value(lexical_payload, "shadow_p95_ms") <= 100.0
     )
     return {
         "ok": golden_ok
