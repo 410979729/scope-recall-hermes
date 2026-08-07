@@ -2447,3 +2447,95 @@ def test_release_gate_fails_closed_without_traceback_when_git_missing(
     assert "git" in serialized.lower()
     assert "Traceback" not in captured.out
     assert "Traceback" not in captured.err
+
+
+def test_release_benchmark_gate_accepts_lexical_50k_release_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_lexical_50k_contract"
+    )
+
+    golden_payload = {
+        "schema_version": "golden_benchmark_report.v1",
+        "passed": True,
+        "golden_name": "curated_recall_regression_v2",
+        "query_count": 120,
+        "failures": [],
+        "metrics": {},
+    }
+    smoke_payload = {
+        "schema_version": "golden_benchmark_report.v1",
+        "passed": True,
+        "golden_name": "recall_smoke_hybrid_vector_v1",
+        "query_count": 5,
+        "failures": [],
+        "metrics": {},
+    }
+    golden_by_cases_path = {
+        "": golden_payload,
+        "benchmarks/golden_recall_hybrid_cases.json": smoke_payload,
+    }
+    monkeypatch.setattr(
+        release_check,
+        "_run_golden_benchmark",
+        lambda cases_path: (
+            {"returncode": 0, "stdout": json.dumps(golden_by_cases_path[cases_path]), "stderr": ""},
+            golden_by_cases_path[cases_path],
+        ),
+    )
+
+    json_payloads = {
+        "scripts/benchmark.memory_evolution.py": {
+            "schema_version": "scope-recall.memory-evolution-benchmark.v1",
+            "passed": True,
+            "metrics": {},
+        },
+        "scripts/benchmark.reflection.py": {
+            "schema_version": "scope-recall.reflection-benchmark.v3",
+            "passed": True,
+            "metrics": {},
+        },
+        "scripts/benchmark.temporal_scale.py": {
+            "schema_version": "scope-recall.temporal-scale.v2",
+            "passed": True,
+            "sizes": [100_000, 1_000_000],
+            "rounds_per_query": 30,
+        },
+        "scripts/benchmark.lexical_cjk.py": {
+            "schema_version": "scope-recall.lexical-cjk-benchmark.v1",
+            "passed": True,
+            "rows": 50_000,
+            "rounds": 3,
+            "cjk_expected_found": 3,
+            "cjk_queries": 3,
+            "english_regressions": 0,
+            "max_result_count": 10,
+            "limit": 10,
+            "shadow_p95_ms": 73.385,
+        },
+    }
+
+    def fake_json_benchmark(script_path: str):
+        payload = json_payloads[script_path]
+        return {"returncode": 0, "stdout": json.dumps(payload), "stderr": ""}, payload
+
+    monkeypatch.setattr(release_check, "_run_json_benchmark", fake_json_benchmark)
+    monkeypatch.setattr(
+        release_check,
+        "run",
+        lambda cmd, **kwargs: {
+            "cmd": cmd,
+            "returncode": 0,
+            "stdout": json.dumps({"benchmark_name": "graph_relation_rerank_v1", "passed": True, "metrics": {}}),
+            "stderr": "",
+        },
+    )
+
+    result = release_check.benchmark_check()
+
+    assert result["ok"] is True, result
+    assert result["lexical_cjk_metrics"]["rows"] == 50_000
+    assert result["lexical_cjk_metrics"]["rounds"] == 3
+
+    json_payloads["scripts/benchmark.lexical_cjk.py"]["shadow_p95_ms"] = "fast"
+    invalid_latency = release_check.benchmark_check()
+    assert invalid_latency["ok"] is False
