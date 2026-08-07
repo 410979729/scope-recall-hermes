@@ -10,6 +10,7 @@ import re
 from typing import Any
 
 AUTO_DIGEST_SOURCES = frozenset({"journal-digest", "nightly-digest"})
+AUTOMATIC_DIGEST_LIFECYCLES = frozenset({"candidate", "promoted"})
 _EXPERIENCE_TYPES = frozenset({"procedure", "workflow", "pitfall"})
 
 _CURRENT_MARKER_RE = re.compile(
@@ -70,6 +71,7 @@ def automatic_admission_metadata(
     memory_type: str,
     source: str,
     recommended_action: str = "candidate",
+    default_lifecycle: str = "candidate",
     structured_evolution: bool = False,
 ) -> dict[str, Any]:
     """Build metadata that keeps automatic extraction provisional.
@@ -83,6 +85,11 @@ def automatic_admission_metadata(
         return {}
     normalized_type = str(memory_type or "summary").strip().lower()
     time_sensitive = is_time_sensitive_snapshot(content)
+    normalized_lifecycle = str(default_lifecycle or "candidate").strip().lower()
+    if normalized_lifecycle not in AUTOMATIC_DIGEST_LIFECYCLES:
+        normalized_lifecycle = "candidate"
+    if time_sensitive:
+        normalized_lifecycle = "candidate"
     route = "fact_evolution" if structured_evolution else (
         "experience_review" if normalized_type in _EXPERIENCE_TYPES else "memory_review"
     )
@@ -98,8 +105,12 @@ def automatic_admission_metadata(
 
     metadata: dict[str, Any] = {
         "automatic_admission": admission,
-        "lifecycle": "candidate",
-        "candidate_status": "needs_live_check" if time_sensitive else "needs_review",
+        "lifecycle": normalized_lifecycle,
+        "candidate_status": (
+            "promoted"
+            if normalized_lifecycle == "promoted"
+            else "needs_live_check" if time_sensitive else "needs_review"
+        ),
         "candidate_reason": (
             "automatic_time_sensitive_snapshot"
             if time_sensitive

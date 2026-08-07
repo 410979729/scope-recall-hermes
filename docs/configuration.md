@@ -31,6 +31,10 @@ This file is generated from the packaged `config.json` registry. It lists every 
 
 - `auto_recall_per_item_max_chars` (integer; risk: `low`; restart_required: `no`) — Scope Recall configuration key `auto_recall_per_item_max_chars` in the `auto_recall_per_item_max_chars` group. Default: `180`
 
+## `automatic_digest_default_lifecycle`
+
+- `automatic_digest_default_lifecycle` (string; risk: `high`; restart_required: `no`; choices: `candidate, promoted`; choice_risks: `candidate=medium, promoted=high`) — Lifecycle for non-time-sensitive journal/nightly automatic digest outputs. Candidate is the review-first default; promoted explicitly opts into immediate recall visibility. Time-sensitive snapshots remain candidates that need a live check. Default: `"candidate"`
+
 ## `capture_assistant`
 
 - `capture_assistant` (boolean; risk: `low`; restart_required: `no`) — Scope Recall configuration key `capture_assistant` in the `capture_assistant` group. Default: `false`
@@ -110,6 +114,7 @@ This file is generated from the packaged `config.json` registry. It lists every 
 
 ## `identity`
 
+- `identity.desktop_principal` (string; risk: `high`; restart_required: `yes`) — Optional explicit Desktop principal override. Empty keeps the profile-local opaque auto-minted principal used when Hermes Desktop omits user_id. Changing it changes durable scope identity and requires provider reload. Default: `""`
 - `identity.cli_user_id_fallback` (string; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `identity.cli_user_id_fallback` in the `identity` group. Default: `"local"`
 - `identity.cross_platform_shared_scope` (boolean; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `identity.cross_platform_shared_scope` in the `identity` group. Default: `false`
 
@@ -333,6 +338,7 @@ Treat chat aliases as explicit operator access-control grants.
 - `vector.pgvector.table_name` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.pgvector.table_name` in the `vector` group. Default: `"scope_recall_vectors"`
 - `vector.startup_outbox_limit` (integer; risk: `medium`; restart_required: `yes`) — Maximum durable vector outbox events replayed in one startup or background maintenance phase. Default: `200`
 - `vector.startup_reconcile_interval_seconds` (integer; risk: `medium`; restart_required: `yes`) — Minimum delay between completed vector reconciliation cycles; interrupted cycles resume immediately from their durable watermark. Default: `86400`
+- `vector.startup_reconcile_enabled` (boolean; risk: `medium`; restart_required: `yes`) — Run bounded startup/background vector outbox and truth reconciliation. Default true; set false to leave vector search available without automatic outbox/truth reconciliation ticks. Default: `true`
 - `vector.startup_reconcile_page_size` (integer; risk: `medium`; restart_required: `yes`) — Maximum truth rows planned into durable vector outbox events by one startup or background maintenance tick. Default: `200`
 - `vector.sync_mode` (string; risk: `medium`; restart_required: `yes`; choices: `incremental, rebuild`) — Scope Recall configuration key `vector.sync_mode` in the `vector` group. Default: `"incremental"`
 - `vector.table_name` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.table_name` in the `vector` group. Default: `"memories"`

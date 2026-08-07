@@ -22,6 +22,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "auto_recall_max_items": 3,
     "auto_recall_max_chars": 600,
     "auto_recall_per_item_max_chars": 180,
+    "automatic_digest_default_lifecycle": "candidate",
     "max_recall_per_turn": 10,
     "min_score": 0.18,
     "capture_assistant": False,
@@ -270,6 +271,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "top_k": 8,
         "sync_mode": "incremental",
         "index_general": False,
+        "startup_reconcile_enabled": True,
         "startup_reconcile_page_size": 200,
         "startup_outbox_limit": 200,
         "write_outbox_replay_limit": 20,
@@ -323,6 +325,9 @@ CONFIG_OPEN_MAP_PATHS = frozenset(
     {"identity.chat_aliases", "identity.user_aliases"}
 )
 CONFIG_BOOL_OR_OBJECT_PATHS = frozenset({"curated_memory"})
+CONFIG_ENUM_VALUES: dict[str, frozenset[str]] = {
+    "automatic_digest_default_lifecycle": frozenset({"candidate", "promoted"}),
+}
 CONFIG_BOUNDED_INTEGER_PATHS: dict[str, tuple[int, int]] = {
     "relation_extraction_max_pairs": (1, 5000),
     "relation_sync_neighbor_limit": (1, 256),
@@ -417,6 +422,10 @@ def _config_value_matches_template(value: Any, expected: Any) -> bool:
 def _config_value_error(dotted: str, value: Any) -> str:
     """Validate bounded leaf values whose array shape alone is insufficient."""
 
+    allowed_values = CONFIG_ENUM_VALUES.get(dotted)
+    if allowed_values is not None and value not in allowed_values:
+        choices = ", ".join(sorted(allowed_values))
+        return f"invalid value for {dotted}: expected one of {choices}"
     integer_bounds = CONFIG_BOUNDED_INTEGER_PATHS.get(dotted)
     if integer_bounds is not None:
         minimum, maximum = integer_bounds

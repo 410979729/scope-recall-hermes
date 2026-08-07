@@ -525,6 +525,41 @@ def test_journal_digest_allows_reusable_root_cause_fix_workflow_candidate(tmp_pa
     assert conn.execute("SELECT COUNT(*) FROM journal_rejections").fetchone()[0] == 0
 
 
+def test_journal_digest_real_write_honors_explicit_promoted_default(tmp_path):
+    conn = _open_memory_db(tmp_path / "memory.sqlite3")
+    scope = _scope()
+    entry_id = append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=build_scope_id(scope),
+        shared_scope_id=build_shared_scope_id(scope),
+        session_id="promoted-default",
+        turn_number=1,
+        role="user",
+        content="Keep this stable preference through the configured automatic digest lifecycle.",
+    )
+    candidate = JournalDigestCandidate(
+        content="The user prefers stable automatic digest summaries to use the explicitly configured lifecycle policy.",
+        target="memory",
+        memory_type="preference",
+        entry_ids=[entry_id],
+    )
+
+    result = apply_journal_candidates(
+        conn,
+        None,
+        scope,
+        run_id="promoted-default",
+        candidates=[candidate],
+        runtime_config={"automatic_digest_default_lifecycle": "promoted"},
+    )
+    metadata = json.loads(conn.execute("SELECT metadata FROM memories").fetchone()["metadata"])
+
+    assert result["counts"]["inserted"] == 1
+    assert metadata["lifecycle"] == "promoted"
+    assert metadata["candidate_status"] == "promoted"
+
+
 def test_feedback_and_governance_previews_redact_secret_like_text(tmp_path):
     conn = _open_memory_db(tmp_path / "memory.sqlite3")
     scope = _scope()

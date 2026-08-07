@@ -469,7 +469,14 @@ def _apply_structured_journal_fact(
     proposal = candidate.evolution
     if proposal is None:
         raise ValueError("structured journal fact requires an evolution proposal")
-    metadata = candidate_metadata(candidate, run_id)
+    metadata = candidate_metadata(
+        candidate,
+        run_id,
+        default_lifecycle=str(
+            (runtime_config or {}).get("automatic_digest_default_lifecycle")
+            or "candidate"
+        ),
+    )
     metadata.pop("fact_evolution", None)
     metadata["fact_evolution_action"] = proposal.action.value
     source_key = ":".join(
@@ -1215,7 +1222,23 @@ def apply_journal_candidates(
                 source="journal-digest",
                 target=candidate.target,
                 content=candidate.content,
-                metadata=json.dumps({**_cross_platform_metadata(scope, runtime_config), **candidate_metadata(candidate, run_id)}, ensure_ascii=False, sort_keys=True),
+                metadata=json.dumps(
+                    {
+                        **_cross_platform_metadata(scope, runtime_config),
+                        **candidate_metadata(
+                            candidate,
+                            run_id,
+                            default_lifecycle=str(
+                                (runtime_config or {}).get(
+                                    "automatic_digest_default_lifecycle"
+                                )
+                                or "candidate"
+                            ),
+                        ),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
                 commit=not _defer_commits,
             )
             if inserted:

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 import scope_recall.relation_extraction as relation_extraction
 import scope_recall.relation_frequency_index as relation_frequency_index
+import scope_recall.relation_rebuild_queue as relation_rebuild_queue
 from scope_recall.relation_rebuild_queue import (
     claim_relation_rebuild_events,
     drain_relation_rebuild_queue,
@@ -308,7 +310,8 @@ def test_relation_queue_rolls_back_when_corpus_changes_after_receipt_commit(
 
         queue_row = conn.execute(
             """
-            SELECT status, processed_pairs, pass_processed_pairs, lease_owner
+            SELECT status, processed_pairs, pass_processed_pairs,
+                   supersession_count, lease_owner
             FROM relation_rebuild_queue
             WHERE scope_id='scope-final-cas' AND focus_memory_id='focus'
             """
@@ -337,7 +340,7 @@ def test_relation_queue_rolls_back_when_corpus_changes_after_receipt_commit(
             "failed": 0,
             "dead_lettered": 0,
         }
-        assert tuple(queue_row) == ("pending", 0, 0, "")
+        assert tuple(queue_row) == ("pending", 0, 0, 1, "")
         assert int(scope_row[0]) == 20
         assert int(scope_row[1]) == 20
         assert "common hub" in json.loads(str(scope_row[2]))
@@ -545,3 +548,189 @@ def test_expired_relation_lease_budget_promotes_newer_revision(
         )
     finally:
         conn.close()
+
+
+def test_relation_queue_bounds_continuous_corpus_supersession_then_converges(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Continuous corpus churn must yield instead of retrying one chunk forever."""
+
+    db_path = tmp_path / "relation-continuous-corpus-churn.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    writer = sqlite3.connect(db_path, timeout=0)
+    writer.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    clock = [datetime(2026, 7, 21, 0, 0, tzinfo=timezone.utc)]
+    monkeypatch.setattr(relation_rebuild_queue, "_now", lambda: clock[0])
+    try:
+        _store(conn, "focus", "2026-07-21T00:00:00+00:00")
+        for index in range(4):
+            _store(
+                conn,
+                f"peer-{index:02d}",
+                f"2026-07-21T00:00:{index + 1:02d}+00:00",
+            )
+        conn.execute("DELETE FROM relation_rebuild_queue")
+        enqueue_relation_rebuild(
+            conn,
+            scope_id="scope-live",
+            focus_memory_id="focus",
+            requested_updated_at="2026-07-21T00:00:00+00:00",
+            reason="continuous corpus supersession regression",
+            commit=True,
+        )
+
+        original_rebuild = relation_extraction.rebuild_extracted_relations
+        writes = 0
+        blocked_writes = 0
+        deferred_write = False
+        precommit_changes_remaining = 2
+
+        def change_corpus() -> None:
+            nonlocal writes
+            memory_id = "peer-03"
+            changed_at = datetime(2026, 7, 21, 0, 1, tzinfo=timezone.utc) + timedelta(
+                seconds=writes
+            )
+            writer.execute(
+                "UPDATE memories SET updated_at=? WHERE id=?",
+                (changed_at.isoformat(), memory_id),
+            )
+            relation_frequency_index.sync_relation_frequency_memory(
+                writer,
+                memory_id,
+            )
+            writer.commit()
+            writes += 1
+
+        def continuously_change_corpus(*args: object, **kwargs: object) -> dict[str, object]:
+            nonlocal blocked_writes, deferred_write, precommit_changes_remaining
+            if bool(kwargs.get("dry_run")):
+                return original_rebuild(*args, **kwargs)
+            if precommit_changes_remaining:
+                change_corpus()
+                precommit_changes_remaining -= 1
+            result = original_rebuild(*args, **kwargs)
+            try:
+                change_corpus()
+            except sqlite3.OperationalError as exc:
+                writer.rollback()
+                if "locked" not in str(exc).lower():
+                    raise
+                blocked_writes += 1
+                deferred_write = True
+            return result
+
+        monkeypatch.setattr(
+            relation_extraction,
+            "rebuild_extracted_relations",
+            continuously_change_corpus,
+        )
+
+        churn_result = relation_rebuild_queue.drain_relation_rebuild_queue(
+            conn,
+            max_events=32,
+            pair_limit=1,
+            worker_id="continuous-churn-worker",
+        )
+        churn_row = conn.execute(
+            """
+            SELECT status, available_at, cursor_memory_id, processed_pairs,
+                   attempts, supersession_count, pass_number
+            FROM relation_rebuild_queue
+            WHERE scope_id='scope-live' AND focus_memory_id='focus'
+            """
+        ).fetchone()
+
+        assert writes >= 2
+        assert churn_result["claimed"] <= 2
+        assert churn_result["superseded"] <= 2
+        assert str(churn_row["status"]) == "pending"
+        assert str(churn_row["cursor_memory_id"]) == ""
+        assert int(churn_row["processed_pairs"]) == 0
+        assert str(churn_row["available_at"]) > clock[0].isoformat()
+        assert int(churn_row["attempts"]) == int(churn_result["claimed"])
+        assert int(churn_row["supersession_count"]) >= int(churn_result["superseded"])
+        assert int(churn_row["pass_number"]) >= 1
+        report = relation_rebuild_queue.relation_rebuild_queue_report(conn)
+        sample = report["samples"][0]
+        assert sample["available_at"] == str(churn_row["available_at"])
+        assert sample["corpus_revision"] == 0
+        assert report["supersession_count"] >= int(churn_row["supersession_count"])
+
+        previous_processed = 0
+        previous_attempts = int(churn_row["attempts"])
+        previous_supersessions = int(churn_row["supersession_count"])
+        previous_report_counters = (
+            int(report["lifetime_processed_pairs"]),
+            int(report["lifetime_attempts"]),
+            int(report["supersession_count"]),
+        )
+        for _ in range(16):
+            clock[0] = max(
+                clock[0] + timedelta(seconds=120),
+                datetime.fromisoformat(str(churn_row["available_at"]))
+                + timedelta(seconds=1),
+            )
+            result = relation_rebuild_queue.drain_relation_rebuild_queue(
+                conn,
+                max_events=1,
+                pair_limit=4,
+                worker_id="continuous-churn-worker",
+            )
+            row = conn.execute(
+                """
+                SELECT status, available_at, processed_pairs, attempts,
+                       supersession_count, pass_number
+                FROM relation_rebuild_queue
+                WHERE scope_id='scope-live' AND focus_memory_id='focus'
+                """
+            ).fetchone()
+            current_processed = int(row["processed_pairs"])
+            assert current_processed >= previous_processed
+            assert current_processed - previous_processed <= 1
+            assert int(row["attempts"]) >= previous_attempts
+            assert int(row["supersession_count"]) >= previous_supersessions
+            previous_processed = current_processed
+            previous_attempts = int(row["attempts"])
+            previous_supersessions = int(row["supersession_count"])
+            report = relation_rebuild_queue.relation_rebuild_queue_report(conn)
+            report_counters = (
+                int(report["lifetime_processed_pairs"]),
+                int(report["lifetime_attempts"]),
+                int(report["supersession_count"]),
+            )
+            assert all(
+                current >= previous
+                for current, previous in zip(
+                    report_counters,
+                    previous_report_counters,
+                    strict=True,
+                )
+            )
+            previous_report_counters = report_counters
+            churn_row = row
+            if str(row["status"]) == "completed":
+                assert result["events_completed"] == 1
+                break
+            if deferred_write:
+                deferred_write = False
+                change_corpus()
+        else:
+            pytest.fail("relation rebuild queue did not converge during sustained corpus churn")
+
+        assert previous_processed >= 4
+        assert writes >= 2
+        assert blocked_writes >= 1
+        assert previous_supersessions >= 2
+        assert int(churn_row["pass_number"]) >= 1
+        assert report["status"] == "ready"
+        assert report["unresolved"] == 0
+        assert report["lifetime_processed_pairs"] == previous_processed
+        assert report["lifetime_attempts"] == previous_attempts
+        assert report["supersession_count"] == previous_supersessions
+    finally:
+        conn.close()
+        writer.close()

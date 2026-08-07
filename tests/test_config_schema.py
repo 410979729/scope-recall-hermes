@@ -135,6 +135,29 @@ def test_retention_profile_registry_exposes_safe_default_and_choices():
     assert entry["restart_required"] is True
 
 
+def test_automatic_digest_lifecycle_registry_exposes_safe_default_and_choices():
+    from scope_recall.config_schema import build_config_registry
+
+    by_key = {entry["key"]: entry for entry in build_config_registry()}
+    entry = by_key["automatic_digest_default_lifecycle"]
+
+    assert entry["default"] == "candidate"
+    assert entry["choices"] == ["candidate", "promoted"]
+    assert entry["choice_risks"] == {"candidate": "medium", "promoted": "high"}
+    assert entry["risk"] == "high"
+    assert entry["restart_required"] is False
+
+
+def test_desktop_principal_registry_requires_reload_and_high_risk_review():
+    from scope_recall.config_schema import build_config_registry
+
+    by_key = {entry["key"]: entry for entry in build_config_registry()}
+    entry = by_key["identity.desktop_principal"]
+
+    assert entry["risk"] == "high"
+    assert entry["restart_required"] is True
+
+
 def test_fact_evolution_registry_exposes_persistence_risk_and_reload_semantics():
     from scope_recall.config_schema import build_config_registry
 

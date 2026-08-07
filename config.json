@@ -7,6 +7,7 @@
   "auto_recall_max_items": 3,
   "auto_recall_max_chars": 600,
   "auto_recall_per_item_max_chars": 180,
+  "automatic_digest_default_lifecycle": "candidate",
   "max_recall_per_turn": 10,
   "min_score": 0.18,
   "capture_assistant": false,
@@ -171,6 +172,7 @@
   "identity": {
     "cross_platform_shared_scope": false,
     "cli_user_id_fallback": "local",
+    "desktop_principal": "",
     "user_aliases": {},
     "chat_aliases": {}
   },
@@ -290,6 +292,7 @@
     "top_k": 8,
     "sync_mode": "incremental",
     "index_general": false,
+    "startup_reconcile_enabled": true,
     "startup_reconcile_page_size": 200,
     "startup_outbox_limit": 200,
     "write_outbox_replay_limit": 20,

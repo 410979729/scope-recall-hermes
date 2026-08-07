@@ -58,7 +58,10 @@ def _drain_relation_rebuild_debt(provider: Any) -> None:
             from .vector_runtime import run_bounded_vector_reconciliation
 
             vector_result = run_bounded_vector_reconciliation(provider)
-            if int(vector_result.get("failed") or 0):
+            if (
+                str(vector_result.get("status") or "").strip().lower() == "failed"
+                or int(vector_result.get("failed") or 0)
+            ):
                 logger.warning(
                     "Scope Recall bounded vector maintenance failed: %s",
                     vector_result,

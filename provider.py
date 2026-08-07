@@ -64,6 +64,11 @@ from .models import RecallItem, RuntimeScope, recall_scope_mode
 from .recall import RecallService
 from .prompting import render_current_turn_recall
 from .provider_schemas import build_config_schema, build_tool_schemas
+from .desktop_principal import (
+    desktop_principal_from_config,
+    is_desktop_platform,
+    resolve_desktop_principal,
+)
 from .scope import (
     RUNTIME_STATUS_ACTIVE,
     RUNTIME_STATUS_DISABLED_MISSING_PRINCIPAL,
@@ -347,13 +352,42 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             agent_workspace=str(kwargs.get("agent_workspace") or "").strip(),
             agent_context=str(kwargs.get("agent_context") or "primary").strip() or "primary",
         )
-        self._scope = raw_scope
-        self._runtime_status = runtime_principal_status(raw_scope)
         self._hermes_home = Path(
             kwargs.get("hermes_home") or "~/.hermes"
         ).expanduser()
         self._storage_dir = None
         self._db_path = None
+        # Desktop is a single-operator surface and often omits user_id. Resolve a
+        # profile-local opaque principal before the fail-closed principal gate so
+        # non-Desktop platforms still refuse activation without storage side effects.
+        if not raw_scope.user_id and is_desktop_platform(raw_scope.platform):
+            storage_dir = self._hermes_home / "scope-recall"
+            early_config = load_runtime_config(self._plugin_dir, storage_dir)
+            try:
+                explicit = desktop_principal_from_config(early_config)
+            except ValueError:
+                logger.error(
+                    "Scope Recall disabled: identity.desktop_principal is invalid"
+                )
+                self._scope = raw_scope
+                self._runtime_status = RUNTIME_STATUS_DISABLED_MISSING_PRINCIPAL
+                return
+            principal = resolve_desktop_principal(
+                hermes_home=self._hermes_home,
+                explicit=explicit,
+            )
+            raw_scope = RuntimeScope(
+                platform=raw_scope.platform,
+                user_id=principal,
+                chat_id=raw_scope.chat_id,
+                thread_id=raw_scope.thread_id,
+                gateway_session_key=raw_scope.gateway_session_key,
+                agent_identity=raw_scope.agent_identity,
+                agent_workspace=raw_scope.agent_workspace,
+                agent_context=raw_scope.agent_context,
+            )
+        self._scope = raw_scope
+        self._runtime_status = runtime_principal_status(raw_scope)
         if self._runtime_status == RUNTIME_STATUS_DISABLED_MISSING_PRINCIPAL:
             logger.error(
                 "Scope Recall disabled: trusted non-CLI user principal is missing"

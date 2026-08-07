@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+import scope_recall.capture as capture
 import scope_recall.vector_reconciliation as vector_reconciliation
 from scope_recall.doctor_vector import vector_generation_report
 from scope_recall.sql_store import ensure_schema
@@ -450,4 +451,141 @@ def test_bounded_reconciliation_updates_active_manifest_cardinality() -> None:
         (generation_id,),
     ).fetchone()
     assert dict(manifest) == {"row_count": 1, "unique_id_count": 1}
+    conn.close()
+
+
+def test_startup_reconcile_disabled_skips_outbox_and_truth_planning(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Explicit disable must not touch outbox replay or truth watermark planning."""
+
+    conn = sqlite3.connect(tmp_path / "disabled.sqlite3")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    _seed_truth(conn, 3)
+    generation_id = _generation(conn)
+    provider = _Provider(conn, generation_id, page_size=2, outbox_limit=2)
+    provider._db_path = tmp_path / "disabled.sqlite3"
+    provider._storage_dir = tmp_path
+    provider._vector_config["startup_reconcile_enabled"] = False
+
+    calls: list[str] = []
+
+    def boom_replay(*args, **kwargs):
+        del args, kwargs
+        calls.append("replay")
+        raise AssertionError("disabled reconciliation must not replay outbox")
+
+    def boom_prepare(*args, **kwargs):
+        del args, kwargs
+        calls.append("prepare")
+        raise AssertionError("disabled reconciliation must not plan truth pages")
+
+    monkeypatch.setattr(
+        "scope_recall.vector_runtime.replay_vector_outbox", boom_replay
+    )
+    monkeypatch.setattr(
+        "scope_recall.vector_runtime.prepare_vector_reconciliation_page", boom_prepare
+    )
+
+    result = run_bounded_vector_reconciliation(provider)
+
+    assert result["status"] == "disabled"
+    assert result["claimed"] == 0
+    assert result["completed"] == 0
+    assert result["failed"] == 0
+    assert result["planned"] == 0
+    assert calls == []
+    assert vector_reconciliation_state(conn, generation_id=generation_id) is None
+    backlog = conn.execute(
+        "SELECT COUNT(*) FROM vector_outbox WHERE generation_id=?",
+        (generation_id,),
+    ).fetchone()[0]
+    assert backlog == 0
+    assert not (tmp_path / ".vector-mutation.lock").exists()
+    conn.close()
+
+
+def test_corrupt_sqlite_header_blocks_reconciliation_without_outbox_writes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Cheap header probe must fail closed before outbox/truth reconciliation work."""
+
+    db_path = tmp_path / "corrupt-header.sqlite3"
+    db_path.write_bytes(b"NOT A SQLITE HEADER!!!!!!!!")
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    generation_id = _generation(conn)
+    provider = _Provider(conn, generation_id, page_size=2, outbox_limit=2)
+    provider._db_path = db_path
+    provider._storage_dir = tmp_path
+
+    calls: list[str] = []
+
+    def boom_replay(*args, **kwargs):
+        del args, kwargs
+        calls.append("replay")
+        raise AssertionError("corrupt header must not replay outbox")
+
+    monkeypatch.setattr(
+        "scope_recall.vector_runtime.replay_vector_outbox", boom_replay
+    )
+
+    result = run_bounded_vector_reconciliation(provider)
+
+    assert result["status"] == "failed"
+    assert result["failed"] == 1
+    assert "header" in str(result.get("error") or "").lower() or "corrupt" in str(
+        result.get("error") or ""
+    ).lower()
+    assert result["claimed"] == 0
+    assert result["planned"] == 0
+    assert calls == []
+    conn.close()
+
+
+def test_corrupt_sqlite_header_warns_background_maintenance(
+    tmp_path: Path, caplog
+) -> None:
+    """The writer must surface a failed header preflight instead of staying silent."""
+
+    db_path = tmp_path / "corrupt-background.sqlite3"
+    db_path.write_bytes(b"NOT A SQLITE HEADER!!!!!!!!")
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    generation_id = _generation(conn)
+    provider = _Provider(conn, generation_id, page_size=2, outbox_limit=2)
+    provider._db_path = db_path
+    provider._storage_dir = tmp_path
+    provider._config = {"relation_extraction_enabled": True}
+    caplog.set_level("WARNING", logger=capture.__name__)
+
+    capture._drain_relation_rebuild_debt(provider)
+
+    assert any(
+        "bounded vector maintenance failed" in record.getMessage()
+        for record in caplog.records
+    )
+    conn.close()
+
+
+def test_default_startup_reconcile_enabled_still_plans_truth_page(tmp_path: Path) -> None:
+    """Default contract remains enabled so ordinary startups still reconcile."""
+
+    conn = sqlite3.connect(tmp_path / "default-enabled.sqlite3")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    _seed_truth(conn, 2)
+    generation_id = _generation(conn)
+    provider = _Provider(conn, generation_id, page_size=2, outbox_limit=2)
+    provider._db_path = tmp_path / "default-enabled.sqlite3"
+    provider._storage_dir = tmp_path
+    # intentionally omit startup_reconcile_enabled
+
+    result = run_bounded_vector_reconciliation(provider)
+
+    assert result["status"] != "disabled"
+    assert int(result["planned"]) == 2
     conn.close()
