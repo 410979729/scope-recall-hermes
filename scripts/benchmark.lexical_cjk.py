@@ -75,8 +75,10 @@ def _parse_args() -> argparse.Namespace:
         description="Benchmark CJK lexical shadow quality and bounded latency"
     )
     parser.add_argument("--json", action="store_true", help="emit compact JSON")
-    parser.add_argument("--rows", type=int, default=2_000)
-    parser.add_argument("--rounds", type=int, default=20)
+    # Release-contract defaults: the strict gate must prove the shadow channel
+    # at real scale (50k rows), not only a 2k smoke corpus.
+    parser.add_argument("--rows", type=int, default=50_000)
+    parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument("--limit", type=int, default=10)
     return parser.parse_args()
 
@@ -241,7 +243,7 @@ def run_benchmark(*, rows: int, rounds: int, limit: int) -> dict[str, Any]:
         shadow_p95 = _percentile(shadow_times, 0.95)
         latency_ratio = shadow_p95 / max(legacy_p95, 0.25)
         page_growth = shadow_pages / max(baseline_pages, 1)
-        release_contract = rows >= 2_000 and rounds >= 20
+        release_contract = rows >= 50_000 and rounds >= 3
         latency_ratio_budget = 4.0 if release_contract else 10.0
         max_count = max(legacy_max, shadow_max)
         failures: list[str] = []

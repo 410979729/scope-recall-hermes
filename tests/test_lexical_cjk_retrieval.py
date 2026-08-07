@@ -190,7 +190,7 @@ def test_supplemental_mode_cannot_remove_english_legacy_candidates():
     conn.close()
 
 
-def test_cjk_bigram_fallback_uses_one_bounded_sql_scan():
+def test_cjk_bigram_fallback_uses_indexed_postings_without_truth_scan():
     conn, provider = _corpus()
     statements: list[str] = []
     conn.set_trace_callback(statements.append)
@@ -202,14 +202,63 @@ def test_cjk_bigram_fallback_uses_one_bounded_sql_scan():
     )
     conn.set_trace_callback(None)
 
-    fallback_statements = [
-        statement
-        for statement in statements
-        if "query_terms(term)" in statement and "cjk_match_count" in statement
+    postings_statements = [
+        statement for statement in statements if "lexical_cjk_postings_v1" in statement
     ]
     assert "target" in ids
-    assert len(fallback_statements) == 1
-    assert "LIMIT 20" in fallback_statements[0]
+    assert postings_statements, "bigram fallback must use the indexed postings table"
+    assert not any("instr(m.content" in statement for statement in statements), (
+        "bigram fallback must not run correlated instr() scans over truth rows"
+    )
+    plan = conn.execute(
+        "EXPLAIN QUERY PLAN " + postings_statements[0]
+    ).fetchall()
+    plan_text = " ".join(str(row[-1]) for row in plan)
+    assert "SCAN memories" not in plan_text
+    conn.close()
+
+
+def test_shadow_rows_use_truth_rowid_identity():
+    conn, _provider = _corpus()
+    mismatched = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM memories_fts_cjk_v1 f
+        LEFT JOIN memories m ON m.rowid = f.rowid AND m.id = f.memory_id
+        WHERE m.rowid IS NULL
+        """
+    ).fetchone()[0]
+    conn.close()
+
+    assert mismatched == 0
+
+
+def test_postings_triggers_track_insert_update_delete():
+    conn, _provider = _corpus()
+    target_rowid = int(
+        conn.execute("SELECT rowid FROM memories WHERE id='target'").fetchone()[0]
+    )
+
+    def posting_terms() -> set[str]:
+        return {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT term FROM lexical_cjk_postings_v1 WHERE docid=?",
+                (target_rowid,),
+            ).fetchall()
+        }
+
+    assert "迁移" in posting_terms()
+
+    conn.execute(
+        "UPDATE memories SET content='全新缓存预热清单', summary='' WHERE id='target'"
+    )
+    updated_terms = posting_terms()
+    assert "迁移" not in updated_terms
+    assert "缓存" in updated_terms
+
+    conn.execute("DELETE FROM memories WHERE id='target'")
+    assert posting_terms() == set()
     conn.close()
 
 

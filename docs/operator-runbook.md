@@ -259,7 +259,7 @@ The supplemental CJK lexical index is never created or activated by ordinary pro
 hermes-scope-recall lexical plan --hermes-home "$HERMES_HOME" --json
 ```
 
-2. Stop the gateway and every Scope Recall SQLite writer. Build the shadow in resumable batches. Apply atomically acquires the durable activation lease, proves `BEGIN IMMEDIATE` quiescence, creates and quick-checks an online backup, verifies a stable source fingerprint, then installs temporary SQLite guard triggers before schema/index mutation:
+2. Stop the gateway and every Scope Recall SQLite writer. Build the shadow in resumable batches. Apply atomically acquires the durable activation lease, then holds one `BEGIN IMMEDIATE` writer fence across the whole snapshot boundary: it captures the source binding, takes the quick-checked online backup through a separate reader connection, re-verifies the binding under the same fence, and only then installs the temporary SQLite guard triggers before schema/index mutation. A raw writer cannot commit between the compare and guard boundaries, and the backup itself never contains the temporary guard triggers:
 
 ```bash
 hermes-scope-recall lexical build \

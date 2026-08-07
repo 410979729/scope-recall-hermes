@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import re
 import threading
 import urllib.error
 import urllib.parse
@@ -120,6 +121,9 @@ _CREDENTIAL_KEY_SUFFIXES = (
     "secretkey",
     "password",
 )
+_MAX_QUERY_FIELDS = 64
+_MAX_ENCODED_KEY_DECODE_PASSES = 8
+_PERCENT_ESCAPE_PATTERN = re.compile(r"%(?:[0-9A-Fa-f]{2})?")
 _WARNED_INSECURE_ORIGINS: set[tuple[str, str, int]] = set()
 _WARNED_INSECURE_ORIGINS_LOCK = threading.Lock()
 
@@ -216,17 +220,57 @@ def explicit_insecure_endpoint_opt_in(value: object) -> bool:
 
 
 def _normalize_credential_key(raw_key: str) -> str:
-    """Normalize bounded URL/header spelling variants for credential policy."""
+    """Normalize spelling and nested percent encoding for credential policy.
+
+    Query/header names are policy-bearing bytes, so a fixed one- or two-pass
+    decoder lets attackers choose the depth that bypasses the contract. Decode
+    until stable (bounded for obfuscation bombs), reject malformed or residual
+    escapes, and reject decoded names that are still unreasonably long.
+    """
 
     decoded_key = str(raw_key or "")
-    for _ in range(2):
+    for _ in range(_MAX_ENCODED_KEY_DECODE_PASSES):
         next_key = urllib.parse.unquote_plus(decoded_key)
         if next_key == decoded_key:
             break
+        if not next_key:
+            raise UnsafeEndpointError("encoded query/header key is malformed")
+        if len(next_key) > max(len(decoded_key), 256):
+            raise UnsafeEndpointError("encoded query/header key is too large")
         decoded_key = next_key
+    else:
+        raise UnsafeEndpointError("encoded query/header key is too deeply encoded")
+
+    if "%" in decoded_key:
+        raise UnsafeEndpointError("encoded query/header key is malformed")
+    if len(decoded_key) > 128:
+        raise UnsafeEndpointError("query/header key is too large")
     return "".join(
         character for character in decoded_key.casefold() if character.isalnum()
     )
+
+
+def _iter_query_pairs(query: str) -> list[tuple[str, str]]:
+    """Parse a bounded query and validate raw keys before percent decoding."""
+
+    fields = str(query or "").replace(";", "&").split("&")
+    if len(fields) > _MAX_QUERY_FIELDS:
+        raise UnsafeEndpointError("endpoint URL query is malformed or too large")
+    pairs: list[tuple[str, str]] = []
+    for field in fields:
+        if not field:
+            continue
+        raw_key, separator, raw_value = field.partition("=")
+        for match in _PERCENT_ESCAPE_PATTERN.finditer(raw_key):
+            if len(match.group(0)) != 3:
+                raise UnsafeEndpointError("endpoint URL query key is malformed")
+        pairs.append(
+            (
+                raw_key,
+                urllib.parse.unquote_plus(raw_value if separator else ""),
+            )
+        )
+    return pairs
 
 
 def is_credential_key(raw_key: str) -> bool:
@@ -235,9 +279,13 @@ def is_credential_key(raw_key: str) -> bool:
     SDK transports must call this helper rather than iterating the legacy
     exact-spelling header set, because header names can use the same case,
     punctuation, and bounded encoding variants as endpoint query keys.
+    Unparseable or excessively encoded keys fail closed as credentials.
     """
 
-    normalized = _normalize_credential_key(raw_key)
+    try:
+        normalized = _normalize_credential_key(raw_key)
+    except UnsafeEndpointError:
+        return True
     return normalized in _CREDENTIAL_KEYS or any(
         normalized.endswith(suffix) for suffix in _CREDENTIAL_KEY_SUFFIXES
     )
@@ -246,16 +294,12 @@ def is_credential_key(raw_key: str) -> bool:
 def _query_contains_credentials(query: str) -> bool:
     """Return whether a URL query contains a credential-bearing key."""
 
-    try:
-        pairs = urllib.parse.parse_qsl(
-            query.replace(";", "&"),
-            keep_blank_values=True,
-            max_num_fields=64,
-        )
-    except ValueError as exc:
-        raise UnsafeEndpointError("endpoint URL query is malformed or too large") from exc
+    pairs = _iter_query_pairs(query)
     for key, _value in pairs:
-        if is_credential_key(key):
+        normalized = _normalize_credential_key(key)
+        if normalized in _CREDENTIAL_KEYS or any(
+            normalized.endswith(suffix) for suffix in _CREDENTIAL_KEY_SUFFIXES
+        ):
             return True
     return False
 

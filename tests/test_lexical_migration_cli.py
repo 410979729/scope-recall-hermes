@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import importlib.util
+import io
 import json
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -292,3 +296,213 @@ def test_cli_build_activate_and_rollback_are_backup_first_and_cas_guarded(
     assert manifest["status"] == "ready"
     assert {"memories_fts", LEXICAL_SHADOW_TABLE} <= tables
     assert quick_checks == ["ok", "ok", "ok"]
+
+
+def _load_migration_script() -> Any:
+    """Load the migration CLI in-process so race probes can hook its seams."""
+
+    spec = importlib.util.spec_from_file_location(
+        "lexical_migration_script_under_test",
+        SCRIPT,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("unable to load lexical migration script")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _raw_insert(db_path: Path, memory_id: str, *, timeout: float) -> str:
+    """Attempt one out-of-band writer insert and report its fence outcome."""
+
+    raw = sqlite3.connect(db_path, timeout=timeout)
+    raw.row_factory = sqlite3.Row
+    try:
+        store_row(
+            raw,
+            memory_id=memory_id,
+            scope_id="scope-a",
+            platform="local",
+            user_id="user-a",
+            chat_id="chat-a",
+            thread_id="",
+            gateway_session_key="",
+            agent_identity="audit",
+            agent_workspace="tmp",
+            session_id="s",
+            source="user",
+            target="memory",
+            content="生产库切换窗口中的并发写入",
+            metadata=json.dumps({"lifecycle": "promoted"}),
+            commit=False,
+            timestamp="2026-01-02T00:00:00+00:00",
+            enqueue_vector_intent=False,
+        )
+        raw.commit()
+        return "committed"
+    except sqlite3.OperationalError as exc:
+        return f"blocked:{exc}"
+    finally:
+        raw.close()
+
+
+def _run_script_in_process(module: Any, home: Path) -> tuple[int, dict[str, Any]]:
+    argv = [
+        str(SCRIPT),
+        "--hermes-home",
+        str(home),
+        "--apply",
+        "--maintenance-confirmed",
+        "--batch-size",
+        "10",
+        "--sample-limit",
+        "1",
+        "--json",
+    ]
+    stdout = io.StringIO()
+    old_argv = sys.argv
+    sys.argv = argv
+    try:
+        with contextlib.redirect_stdout(stdout):
+            exit_code = int(module.main())
+    finally:
+        sys.argv = old_argv
+    return exit_code, json.loads(stdout.getvalue())
+
+
+def _count_memory(db_path: Path, memory_id: str) -> int:
+    conn = sqlite3.connect(db_path)
+    try:
+        return int(
+            conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE id=?",
+                (memory_id,),
+            ).fetchone()[0]
+        )
+    finally:
+        conn.close()
+
+
+def _assert_backup_fence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    boundary: str,
+    injection_timeout: float,
+) -> None:
+    """Inject a raw writer at one fence boundary and require it to be fenced.
+
+    The backup fence contract: a raw writer must never be able to commit
+    between the owner's fence acquisition and guard installation, and the
+    resulting backup must match the live truth under the same fence.
+    """
+
+    home, db_path = _home(tmp_path)
+    module = _load_migration_script()
+    memory_id = f"raced-{boundary}"
+    outcomes: dict[str, str] = {}
+
+    if boundary == "before_backup":
+        original_binding = module.lexical_source_binding
+        calls = {"count": 0}
+
+        def inject_before_backup(conn: sqlite3.Connection) -> Any:
+            calls["count"] += 1
+            if calls["count"] == 1:
+                outcomes["injection"] = _raw_insert(
+                    db_path, memory_id, timeout=injection_timeout
+                )
+            return original_binding(conn)
+
+        monkeypatch.setattr(module, "lexical_source_binding", inject_before_backup)
+    elif boundary == "during_backup":
+        original_backup = module.secure_online_backup
+
+        def inject_during_backup(*args: Any, **kwargs: Any) -> Any:
+            outcomes["injection"] = _raw_insert(
+                db_path, memory_id, timeout=injection_timeout
+            )
+            return original_backup(*args, **kwargs)
+
+        monkeypatch.setattr(module, "secure_online_backup", inject_during_backup)
+    elif boundary == "after_backup_before_guards":
+        original_guards = module.ensure_activation_guard_triggers
+
+        def inject_before_guards(*args: Any, **kwargs: Any) -> Any:
+            outcomes["injection"] = _raw_insert(
+                db_path, memory_id, timeout=injection_timeout
+            )
+            return original_guards(*args, **kwargs)
+
+        monkeypatch.setattr(
+            module, "ensure_activation_guard_triggers", inject_before_guards
+        )
+    elif boundary == "before_mutation":
+        original_schema = module.ensure_schema
+
+        def inject_before_mutation(*args: Any, **kwargs: Any) -> Any:
+            outcomes["injection"] = _raw_insert(
+                db_path, memory_id, timeout=injection_timeout
+            )
+            return original_schema(*args, **kwargs)
+
+        monkeypatch.setattr(module, "ensure_schema", inject_before_mutation)
+    else:  # pragma: no cover - parametrization guard
+        raise AssertionError(f"unknown boundary {boundary}")
+
+    exit_code, payload = _run_script_in_process(module, home)
+
+    assert outcomes.get("injection", "").startswith("blocked:"), (
+        f"raw writer was not fenced at {boundary}: {outcomes.get('injection')}"
+    )
+    assert exit_code == 0, payload
+    assert _count_memory(db_path, memory_id) == 0
+
+    backup_path = Path(str(payload["backup_path"]))
+    assert _count_memory(backup_path, memory_id) == 0
+    guard_triggers = sqlite3.connect(backup_path)
+    try:
+        trigger_count = int(
+            guard_triggers.execute(
+                "SELECT COUNT(*) FROM sqlite_master "
+                "WHERE type='trigger' AND name LIKE 'scope_recall_activation_guard_%'"
+            ).fetchone()[0]
+        )
+    finally:
+        guard_triggers.close()
+    assert trigger_count == 0, "backup must not contain temporary guard triggers"
+
+
+def test_backup_fence_blocks_raw_writer_before_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assert_backup_fence(
+        tmp_path, monkeypatch, boundary="before_backup", injection_timeout=0.0
+    )
+
+
+def test_backup_fence_blocks_raw_writer_during_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assert_backup_fence(
+        tmp_path, monkeypatch, boundary="during_backup", injection_timeout=0.0
+    )
+
+
+def test_backup_fence_blocks_raw_writer_after_backup_before_guards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assert_backup_fence(
+        tmp_path,
+        monkeypatch,
+        boundary="after_backup_before_guards",
+        injection_timeout=0.0,
+    )
+
+
+def test_backup_fence_blocks_raw_writer_before_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assert_backup_fence(
+        tmp_path, monkeypatch, boundary="before_mutation", injection_timeout=5.0
+    )

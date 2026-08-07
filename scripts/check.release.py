@@ -591,15 +591,27 @@ def run(
     child_env = dict(os.environ if env is None else env)
     child_env["PYTHONUTF8"] = "1"
     child_env["PYTHONIOENCODING"] = "utf-8"
-    proc = subprocess.run(
-        cmd,
-        cwd=cwd,
-        env=child_env,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=capture_output,
-    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=cwd,
+            env=child_env,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=capture_output,
+        )
+    except FileNotFoundError:
+        # A missing prerequisite (for example Git absent from PATH) must fail
+        # closed as structured gate output, not as a bare traceback.
+        return {
+            "cmd": cmd,
+            "returncode": 127,
+            "stdout": "",
+            "stderr": "",
+            "error": "prerequisite_missing",
+            "prerequisite": pathlib.PurePath(str(cmd[0])).name if cmd else "",
+        }
     return {
         "cmd": cmd,
         "returncode": proc.returncode,
@@ -759,6 +771,19 @@ def _is_ignorable_git_status_line(line: str) -> bool:
     parts = pathlib.PurePosixPath(path).parts
     top_level = parts[0] if parts else ""
     return top_level in LOCAL_ONLY_DIRS or top_level in EXTERNAL_TEST_DIRS or top_level in GENERATED_DIRS
+
+
+def git_prerequisite_check() -> dict[str, object]:
+    """Fail closed with structured output when Git is unavailable on PATH."""
+
+    if shutil.which("git") is not None:
+        return {"ok": True, "prerequisite": "git"}
+    return {
+        "ok": False,
+        "error": "prerequisite_missing",
+        "prerequisite": "git",
+        "detail": "git executable not found on PATH; install Git and rerun the release gate",
+    }
 
 
 def git_tree_check(*, allow_dirty: bool) -> dict[str, object]:
@@ -2388,6 +2413,10 @@ def main() -> int:
 
     The command is intentionally strict because it is used by CI, tag release workflows, and local pre-publish checks."""
     args = parse_args()
+    git_prerequisite = git_prerequisite_check()
+    if not git_prerequisite["ok"]:
+        print(json.dumps(git_prerequisite, ensure_ascii=False, indent=2))
+        return 1
     progress("cleanup_generated:start")
     cleanup_generated()
     progress("environment:start")

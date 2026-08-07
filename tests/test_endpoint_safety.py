@@ -270,6 +270,64 @@ def _percent_encode_every_byte(value: str) -> str:
     return "".join(f"%{byte:02X}" for byte in value.encode("utf-8"))
 
 
+def _percent_encode_to_depth(value: str, depth: int) -> str:
+    """Apply the independent all-byte encoder repeatedly for nested-encoding probes."""
+
+    encoded = value
+    for _ in range(depth):
+        encoded = _percent_encode_every_byte(encoded)
+    return encoded
+
+
+@pytest.mark.parametrize("credential_key", ("api_key", "x-token", "access_key_id"))
+@pytest.mark.parametrize("depth", (4, 6, 8))
+def test_endpoint_policy_rejects_deeply_percent_encoded_credential_keys(
+    credential_key: str,
+    depth: int,
+) -> None:
+    encoded_key = _percent_encode_to_depth(credential_key, depth)
+
+    with pytest.raises(UnsafeEndpointError):
+        require_safe_endpoint(
+            f"https://api.example.com/v1?{encoded_key}={_TEST_CREDENTIAL}"
+        )
+
+    prepared = prepare_safe_request(
+        urllib.request.Request(
+            "http://127.0.0.1:1234/v1",
+            headers={encoded_key: _TEST_CREDENTIAL, "X-Request-ID": "public-request-id"},
+        )
+    )
+    assert _TEST_CREDENTIAL not in dict(prepared.header_items()).values()
+    assert prepared.get_header("X-request-id") == "public-request-id"
+
+
+@pytest.mark.parametrize("malformed_key", ("%", "%2", "%GG", "page%ZZtoken"))
+def test_endpoint_policy_fails_closed_on_malformed_percent_encoded_query_key(
+    malformed_key: str,
+) -> None:
+    with pytest.raises(UnsafeEndpointError):
+        require_safe_endpoint(
+            f"https://api.example.com/v1?{malformed_key}=public-metadata"
+        )
+
+
+@pytest.mark.parametrize(
+    "metadata_key",
+    ("api-version", "model-version", "page_token", "token-estimate"),
+)
+def test_deeply_percent_encoded_noncredential_metadata_remains_allowed(
+    metadata_key: str,
+) -> None:
+    encoded_key = _percent_encode_to_depth(metadata_key, 6)
+
+    policy = require_safe_endpoint(
+        f"https://api.example.com/v1?{encoded_key}=public-metadata"
+    )
+
+    assert policy.allow_credentials is True
+
+
 @pytest.mark.parametrize("credential_key", _EXTERNAL_CREDENTIAL_ALIASES)
 def test_external_credential_contract_rejects_query_and_strips_http_header(
     credential_key: str,

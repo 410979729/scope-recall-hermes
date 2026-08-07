@@ -175,13 +175,23 @@ def main() -> int:
             lease_token=str(lease["token"]),
         )
         conn.execute("BEGIN IMMEDIATE")
-        conn.commit()
+        # Hold the write fence across binding capture, backup, compare, and
+        # guard installation. SQLite online backup cannot run on the fenced
+        # connection itself, so a separate reader connection copies the
+        # committed snapshot while the fence blocks raw writers. The backup is
+        # taken before guard triggers exist, so it stays free of temporary
+        # maintenance objects.
         source_before = lexical_source_binding(conn)
-        backup = secure_online_backup(
-            conn,
-            db_path,
-            purpose=f"lexical-{action}",
-        )
+        backup_reader = connect_memory_db(db_path, apply=False)
+        try:
+            backup = secure_online_backup(
+                conn,
+                db_path,
+                purpose=f"lexical-{action}",
+                backup_source=backup_reader,
+            )
+        finally:
+            backup_reader.close()
         backup_path = str(backup)
         source_after_backup = lexical_source_binding(conn)
         if source_after_backup != source_before:
