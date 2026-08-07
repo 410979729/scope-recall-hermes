@@ -63,7 +63,75 @@ def test_nightly_llm_direct_call_chat_completions(monkeypatch):
     assert captured["url"] == "https://api.openai.com/v1/chat/completions"
     assert captured["headers"]["Authorization"] == "Bearer openai-key"
     assert captured["body"]["messages"][1]["content"] == "extract this"
+    assert "thinking" not in captured["body"]
     assert captured["timeout"] == 12
+
+
+def test_nightly_llm_configured_thinking_reaches_chat_request_without_key_leakage(
+    tmp_path, monkeypatch
+):
+    from scope_recall import nightly_llm
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        """
+scope_recall_nightly_digest:
+  provider: plain-provider
+  model: plain-chat-model
+  base_url: https://models.example.test
+  api_mode: chat_completions
+  thinking:
+    type: enabled
+    budget_tokens: 1536
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    resolved = nightly_llm.resolve_llm_config(
+        hermes_home,
+        DigestOptions(
+            hermes_home=hermes_home,
+            digest_date=date(2026, 8, 7),
+            api_key="super-secret-api-key",
+        ),
+    )
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "[]"}}]}).encode("utf-8")
+
+    def fake_urlopen(request, *, timeout, allow_insecure=False):  # noqa: ARG001
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr(nightly_llm, "safe_urlopen", fake_urlopen)
+
+    raw = nightly_llm.call_llm(
+        "extract this",
+        model=resolved["model"],
+        base_url=resolved["base_url"],
+        api_key=resolved["api_key"],
+        timeout=12,
+        api_mode=resolved["api_mode"],
+        thinking=resolved["thinking"],
+    )
+
+    assert raw == "[]"
+    assert resolved["model"] == "plain-chat-model"
+    assert captured["body"]["thinking"] == {
+        "type": "enabled",
+        "budget_tokens": 1536,
+    }
+    assert "api_key" not in captured["body"]
+    assert "super-secret-api-key" not in json.dumps(captured["body"])
 
 
 def test_nightly_llm_direct_call_anthropic_messages(monkeypatch):

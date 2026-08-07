@@ -252,12 +252,55 @@ def connect_truth_database(
         raise
 
 
+SQLITE_HEADER_PREFIX = b"SQLite format 3\x00"
+
+
+def probe_truth_database_header(path: str | Path) -> dict[str, Any]:
+    """Cheap fail-closed preflight for SQLite header corruption.
+
+    This reads at most the first 16 bytes and never opens a SQLite pager or runs
+    PRAGMA integrity_check / full-database snapshots. Bounded maintenance can
+    refuse to touch outbox or truth reconciliation when the on-disk header is
+    already invalid.
+    """
+
+    raw_path = os.fspath(path)
+    if raw_path == ":memory:":
+        return {"ok": True, "status": "memory"}
+    expanded = Path(path).expanduser()
+    db_path = Path(os.path.abspath(os.fspath(expanded)))
+    if not db_path.is_file():
+        return {
+            "ok": False,
+            "status": "missing",
+            "error": "SQLite truth database file is missing",
+        }
+    try:
+        with db_path.open("rb") as handle:
+            header = handle.read(len(SQLITE_HEADER_PREFIX))
+    except OSError:
+        return {
+            "ok": False,
+            "status": "unreadable",
+            "error": "SQLite truth database header is unreadable",
+        }
+    if header != SQLITE_HEADER_PREFIX:
+        return {
+            "ok": False,
+            "status": "corrupt_header",
+            "error": "SQLite truth database header is corrupt",
+        }
+    return {"ok": True, "status": "ok"}
+
+
 __all__ = [
+    "SQLITE_HEADER_PREFIX",
     "TRUTH_DATABASE_MODE",
     "TRUTH_DIRECTORY_MODE",
     "TruthDatabaseConnectionError",
     "TruthDatabaseMode",
     "connect_truth_database",
+    "probe_truth_database_header",
     "require_foreign_keys",
     "require_query_only",
     "truth_storage_permissions",

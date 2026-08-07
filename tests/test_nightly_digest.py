@@ -547,6 +547,41 @@ def test_digest_candidate_quality_action_is_stored_as_review_candidate_lifecycle
     assert metadata["candidate_status"] == "needs_review"
 
 
+def test_nightly_digest_real_write_honors_explicit_promoted_default():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    scope = ScopeProfile(
+        scope=RuntimeScope(platform="telegram", user_id="user-a", chat_id="dm", agent_identity="agent-a", agent_workspace="hermes"),
+        scope_id="scope-local",
+        shared_scope_id="scope-shared",
+        accessible_scope_ids=["scope-local", "scope-shared"],
+        writable_scope_ids=["scope-local", "scope-shared"],
+    )
+    candidate = DigestCandidate(
+        content="Scope Recall stores this stable automatic digest only after its configured lifecycle policy is evaluated.",
+        target="memory",
+        memory_type="summary",
+        confidence=0.7,
+        reason="stable automatic digest lifecycle regression",
+    )
+
+    result = apply_candidates(
+        conn,
+        None,
+        scope,
+        run_id="run-promoted-default",
+        candidates=[candidate],
+        dry_run=False,
+        runtime_config={"automatic_digest_default_lifecycle": "promoted"},
+    )
+    metadata = json.loads(conn.execute("SELECT metadata FROM memories").fetchone()["metadata"])
+
+    assert result["counts"]["inserted"] == 1
+    assert metadata["lifecycle"] == "promoted"
+    assert metadata["candidate_status"] == "promoted"
+
+
 def test_nightly_digest_hides_provisional_context_but_uses_it_for_deduplication():
     for lifecycle in ("archived", "candidate", "in_progress"):
         conn = sqlite3.connect(":memory:")
@@ -1613,6 +1648,7 @@ def test_collect_candidates_propagates_endpoint_opt_in_and_explicit_booleans(
             "base_url": "http://model.internal:1234/v1",
             "api_key": "placeholder-only",
             "api_mode": "chat_completions",
+            "thinking": {"type": "enabled", "budget_tokens": 512},
             "append_v1": "false",
             "allow_insecure_endpoint": raw_insecure_opt_in,
         },
@@ -1621,6 +1657,7 @@ def test_collect_candidates_propagates_endpoint_opt_in_and_explicit_booleans(
 
     assert captured["allow_insecure_endpoint"] is expected_insecure_opt_in
     assert captured["append_v1"] is False
+    assert captured["thinking"] == {"type": "enabled", "budget_tokens": 512}
 
 
 def test_collect_candidates_endpoint_policy_error_never_uses_heuristic_fallback(

@@ -35,6 +35,7 @@ from .vector_reconciliation import (
     vector_reconciliation_state,
 )
 from .vector_mutation_guard import vector_mutation_guard
+from .truth_connection import probe_truth_database_header
 from .vector_store import (
     LanceVectorStore,
     VectorStoreCompatibilityError,
@@ -97,6 +98,59 @@ def _bounded_config_int(
     except (TypeError, ValueError):
         value = default
     return max(minimum, min(value, maximum))
+
+
+
+def _startup_reconcile_enabled(provider: Any) -> bool:
+    """Return whether bounded startup/background reconciliation may run."""
+
+    config = getattr(provider, "_vector_config", None)
+    if not isinstance(config, dict):
+        config = {}
+    return config_bool(config, "startup_reconcile_enabled", True)
+
+
+def _empty_reconciliation_result(status: str, **extra: Any) -> dict[str, Any]:
+    """Build one stable bounded-reconciliation receipt.
+
+    A failed status always carries a positive failure count so count-based
+    consumers cannot accidentally treat a fail-closed result as successful.
+    """
+
+    result: dict[str, Any] = {
+        "status": status,
+        "claimed": 0,
+        "completed": 0,
+        "failed": 1 if status == "failed" else 0,
+        "planned": 0,
+        "replayable": 0,
+        "dead_letter": 0,
+    }
+    result.update(extra)
+    return result
+
+
+def _truth_header_preflight(provider: Any) -> dict[str, Any] | None:
+    """Return a failed receipt when the on-disk SQLite header is already corrupt."""
+
+    db_path = getattr(provider, "_db_path", None)
+    if db_path is None:
+        return None
+    raw = str(db_path)
+    if raw == ":memory:":
+        return None
+    probe = probe_truth_database_header(db_path)
+    if probe.get("ok"):
+        return None
+    # Missing on-disk paths are skipped: unit doubles and :memory:-backed
+    # runtimes may expose a db_path that is not the live pager file.
+    if str(probe.get("status") or "") == "missing":
+        return None
+    return _empty_reconciliation_result(
+        "failed",
+        error=str(probe.get("error") or "SQLite truth database header is corrupt"),
+        header_status=str(probe.get("status") or "corrupt_header"),
+    )
 
 
 def vector_write_replay_limit(provider: Any) -> int:
@@ -562,8 +616,14 @@ def setup_vector_layer(provider: Any) -> None:
         # sweeps remain explicit repair/doctor work; they are never hidden here.
         reconciliation = run_bounded_vector_reconciliation(provider)
         provider._vector_reconciliation = reconciliation
-        if int(reconciliation.get("failed") or 0) > 0:
-            raise RuntimeError("bounded vector outbox replay failed during startup")
+        if (
+            str(reconciliation.get("status") or "").strip().lower() == "failed"
+            or int(reconciliation.get("failed") or 0) > 0
+        ):
+            raise RuntimeError(
+                str(reconciliation.get("error") or "")
+                or "bounded vector outbox replay failed during startup"
+            )
         if int(reconciliation.get("dead_letter") or 0) > 0:
             raise RuntimeError(
                 "vector outbox contains dead-lettered startup debt; inspect with "
@@ -720,15 +780,14 @@ def run_bounded_vector_reconciliation(provider: Any) -> dict[str, Any]:
 
     generation_id = str(getattr(provider, "_vector_generation_id", "") or "")
     if not generation_id or not provider._vector_store or not provider._embedder:
-        return {
-            "status": "unavailable",
-            "claimed": 0,
-            "completed": 0,
-            "failed": 0,
-            "planned": 0,
-            "replayable": 0,
-            "dead_letter": 0,
-        }
+        return _empty_reconciliation_result("unavailable")
+    if not _startup_reconcile_enabled(provider):
+        # Disabled ticks must not acquire the mutation lock, touch outbox rows,
+        # or advance the truth reconciliation watermark.
+        return _empty_reconciliation_result("disabled")
+    header_failure = _truth_header_preflight(provider)
+    if header_failure is not None:
+        return header_failure
     with _vector_mutation_lock(provider):
         return _run_bounded_vector_reconciliation_guarded(provider)
 

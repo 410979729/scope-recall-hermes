@@ -236,6 +236,13 @@ def _resolve_llm_transport_config_and_layers(
         provider=provider,
         base_url=str(base_url or ""),
     )
+    thinking: Any = getattr(options, "thinking", None)
+    if thinking is None:
+        for layer in (nightly_cfg, provider_cfg, model_cfg):
+            if "thinking" in layer:
+                thinking = layer.get("thinking")
+                break
+    thinking = dict(thinking) if isinstance(thinking, dict) else None
     transport = {
         "provider": provider,
         "model": str(model or "gpt-4o-mini"),
@@ -246,6 +253,7 @@ def _resolve_llm_transport_config_and_layers(
             allow_insecure_raw
         ),
         "api_mode": api_mode,
+        "thinking": thinking,
     }
     return transport, model_cfg, provider_cfg, nightly_cfg
 
@@ -451,6 +459,7 @@ def call_chat_completions_llm(
     append_v1: bool = True,
     allow_insecure_endpoint: bool = False,
     system_prompt: str = "You extract durable memory as strict JSON.",
+    thinking: dict[str, Any] | None = None,
 ) -> str:
     endpoint_url = chat_completions_endpoint(
         base_url,
@@ -458,7 +467,7 @@ def call_chat_completions_llm(
         append_v1=append_v1,
         allow_insecure_endpoint=allow_insecure_endpoint,
     )
-    payload = {
+    payload: dict[str, Any] = {
         "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -471,6 +480,8 @@ def call_chat_completions_llm(
         # during digest repair.
         "max_tokens": 4096,
     }
+    if thinking is not None:
+        payload["thinking"] = thinking
     request = urllib.request.Request(
         endpoint_url,
         data=json.dumps(payload).encode("utf-8"),
@@ -620,6 +631,7 @@ def call_llm(
     append_v1: bool = True,
     allow_insecure_endpoint: bool = False,
     system_prompt: str = "You extract durable memory as strict JSON.",
+    thinking: dict[str, Any] | None = None,
 ) -> str:
     if not api_key:
         raise RuntimeError("API key not found for nightly digest")
@@ -657,6 +669,7 @@ def call_llm(
         append_v1=append_v1,
         allow_insecure_endpoint=allow_insecure_endpoint,
         system_prompt=system_prompt,
+        thinking=thinking,
     )
 
 
@@ -697,6 +710,7 @@ def call_llm_with_retries(
     max_attempts: int = 1,
     retry_delay: float = 0.0,
     system_prompt: str = "You extract durable memory as strict JSON.",
+    thinking: dict[str, Any] | None = None,
 ) -> str:
     last_error: Exception | None = None
     last_kind = "unknown"
@@ -717,6 +731,7 @@ def call_llm_with_retries(
                 append_v1=append_v1,
                 allow_insecure_endpoint=allow_insecure_endpoint,
                 system_prompt=system_prompt,
+                thinking=thinking,
             )
         except Exception as exc:
             last_error = exc

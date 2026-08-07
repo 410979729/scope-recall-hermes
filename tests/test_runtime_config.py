@@ -99,6 +99,34 @@ def test_runtime_config_rejects_unknown_and_invalid_typed_overrides(tmp_path: Pa
     }
 
 
+def test_runtime_config_accepts_promoted_digest_lifecycle_and_rejects_unknown_safely(
+    tmp_path: Path,
+):
+    storage_dir = tmp_path / "scope-recall"
+    storage_dir.mkdir()
+    config_path = storage_dir / "config.json"
+    config_path.write_text(
+        json.dumps({"automatic_digest_default_lifecycle": "auto-activate"}),
+        encoding="utf-8",
+    )
+
+    invalid = load_runtime_config(PLUGIN_ROOT, storage_dir)
+    errors = load_runtime_config_errors(invalid)
+
+    assert invalid["automatic_digest_default_lifecycle"] == "candidate"
+    assert [item["kind"] for item in errors] == ["invalid_value"]
+    assert "auto-activate" not in errors[0]["message"]
+
+    config_path.write_text(
+        json.dumps({"automatic_digest_default_lifecycle": "promoted"}),
+        encoding="utf-8",
+    )
+    promoted = load_runtime_config(PLUGIN_ROOT, storage_dir)
+
+    assert promoted["automatic_digest_default_lifecycle"] == "promoted"
+    assert load_runtime_config_errors(promoted) == []
+
+
 def test_doctor_runtime_config_rejects_unknown_and_invalid_typed_overrides(tmp_path: Path):
     source_root = tmp_path / "source"
     hermes_home = tmp_path / "home"

@@ -276,7 +276,12 @@ def heuristic_journal_candidates(entries: list[JournalEntry]) -> list[JournalDig
     return candidates
 
 
-def candidate_metadata(candidate: JournalDigestCandidate, run_id: str) -> dict[str, Any]:
+def candidate_metadata(
+    candidate: JournalDigestCandidate,
+    run_id: str,
+    *,
+    default_lifecycle: str = "candidate",
+) -> dict[str, Any]:
     metadata: dict[str, Any] = {
         "memory_type": normalize_memory_type(candidate.memory_type, "summary"),
         "importance": max(0.0, min(1.0, float(candidate.importance))),
@@ -296,6 +301,7 @@ def candidate_metadata(candidate: JournalDigestCandidate, run_id: str) -> dict[s
             memory_type=str(metadata["memory_type"]),
             source="journal-digest",
             recommended_action="candidate",
+            default_lifecycle=default_lifecycle,
             structured_evolution=candidate.evolution is not None,
         )
     )

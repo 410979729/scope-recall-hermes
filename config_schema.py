@@ -11,6 +11,7 @@ from typing import Any
 _DESCRIPTION_OVERRIDES = {
     "auto_recall": "Enable automatic recall injection at turn start.",
     "auto_capture": "Capture eligible conversation turns into Scope Recall.",
+    "automatic_digest_default_lifecycle": "Lifecycle for non-time-sensitive journal/nightly automatic digest outputs. Candidate is the review-first default; promoted explicitly opts into immediate recall visibility. Time-sensitive snapshots remain candidates that need a live check.",
     "memory_isolated_chat_ids": "Runtime-only chat identifiers excluded from prompt recall, tools, capture, journal, and digest surfaces.",
     "journal.max_entries_per_digest": "Maximum journal entries a digest run may review before dynamic backlog expansion.",
     "journal.retention_profile": "Semantic digest detail: light keeps only minimal durable facts, balanced preserves useful rationale and steps, and full preserves detailed durable context while raw transcript evidence remains in the journal.",
@@ -29,6 +30,7 @@ _DESCRIPTION_OVERRIDES = {
     "retrieval.fact_freshness_expired_penalty": "Score penalty for factual memories whose validity window expired.",
     "vector.enabled": "Enable the rebuildable vector companion index.",
     "vector.backend": "Vector companion backend used for semantic recall.",
+    "vector.startup_reconcile_enabled": "Run bounded startup/background vector outbox and truth reconciliation. Default true; set false to leave vector search available without automatic outbox/truth reconciliation ticks.",
     "vector.startup_reconcile_page_size": "Maximum truth rows planned into durable vector outbox events by one startup or background maintenance tick.",
     "vector.startup_outbox_limit": "Maximum durable vector outbox events replayed in one startup or background maintenance phase.",
     "vector.write_outbox_replay_limit": "Maximum durable vector outbox events replayed after one committed memory write so transient backlog converges during normal traffic.",
@@ -63,6 +65,7 @@ _DESCRIPTION_OVERRIDES = {
     "forgetting.archive_assistant_scratch": "Classify general-target assistant prose scratch as soft-archive candidates.",
     "forgetting.archive_duplicates": "Classify older duplicate memories as soft-archive candidates.",
     "forgetting.archive_very_short": "Classify very short non-preference memories as soft-archive candidates.",
+    "identity.desktop_principal": "Optional explicit Desktop principal override. Empty keeps the profile-local opaque auto-minted principal used when Hermes Desktop omits user_id. Changing it changes durable scope identity and requires provider reload.",
     "forgetting.enabled": "Enable forgetting report and apply tools; disabled tools fail closed.",
     "forgetting.hard_delete_sensitive": "Second safety gate for sensitive-data hard deletion; apply also requires an explicit hard_delete request.",
     "forgetting.soft_archive_default": "Default whether forgetting apply archives soft candidates; each call may explicitly override it.",
@@ -81,6 +84,8 @@ _GROUP_NOTES = {
 
 
 _HIGH_RISK_PREFIXES = (
+    "automatic_digest_default_lifecycle",
+    "identity.desktop_principal",
     "vector.embedder.api_key_env",
     "capture_llm.api_key_env",
     "capture_llm.allow_insecure_endpoint",
@@ -106,6 +111,7 @@ _MEDIUM_RISK_PREFIXES = (
     "relation_",
 )
 _RESTART_PREFIXES = (
+    "identity.desktop_principal",
     "vector.",
     "journal.",
     "tool_schema_",
@@ -133,6 +139,7 @@ _RESTART_OVERRIDES = {
     "fact_evolution.maintenance_mode": True,
 }
 _CHOICES = {
+    "automatic_digest_default_lifecycle": ["candidate", "promoted"],
     "tool_schema_profile": ["compact", "standard"],
     "retrieval.mode": ["lexical", "vector", "hybrid"],
     "retrieval.include_general": ["never", "same-scope", "always"],
@@ -158,6 +165,10 @@ _CHOICES = {
     "fact_evolution.maintenance_mode": ["preview", "reviewed_apply"],
 }
 _CHOICE_RISKS = {
+    "automatic_digest_default_lifecycle": {
+        "candidate": "medium",
+        "promoted": "high",
+    },
     "fact_evolution.mode": {
         "preview": "medium",
         "auto_apply": "high",

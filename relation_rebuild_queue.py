@@ -41,6 +41,11 @@ except ImportError:  # pragma: no cover - direct source-script execution fallbac
     from sqlite_schema import execute_script_transaction_neutral
 
 _QUEUE_STATUSES = ("pending", "retry", "processing", "completed", "dead_letter")
+_CORPUS_CHANGE_IMMEDIATE_RETRIES = 1
+_CORPUS_CHANGE_FENCE_AFTER = _CORPUS_CHANGE_IMMEDIATE_RETRIES + 1
+_CORPUS_CHANGE_FENCE_PAIR_LIMIT = 1
+_CORPUS_CHANGE_BACKOFF_BASE_SECONDS = 1
+_CORPUS_CHANGE_BACKOFF_MAX_SECONDS = 60
 RELATION_REBUILD_SCHEMA_VERSION = 10801
 RELATION_REBUILD_MIGRATION_ID = "0003_relation_rebuild_queue_v1_8_0"
 RELATION_REBUILD_MIGRATION_PLUGIN_VERSION = "1.8.0"
@@ -110,6 +115,22 @@ def _now() -> datetime:
 
 def _iso(value: datetime | None = None) -> str:
     return (value or _now()).isoformat()
+
+
+def _corpus_change_backoff_seconds(supersession_count: int) -> int:
+    """Bound immediate corpus-churn retries without discarding queue debt."""
+
+    count = max(0, int(supersession_count))
+    if count <= _CORPUS_CHANGE_IMMEDIATE_RETRIES:
+        return 0
+    exponent = min(
+        count - _CORPUS_CHANGE_IMMEDIATE_RETRIES - 1,
+        6,
+    )
+    return min(
+        _CORPUS_CHANGE_BACKOFF_MAX_SECONDS,
+        _CORPUS_CHANGE_BACKOFF_BASE_SECONDS * (2**exponent),
+    )
 
 
 def _table_exists(conn: sqlite3.Connection) -> bool:
@@ -631,24 +652,59 @@ def _defer_for_corpus_change(
     event: dict[str, Any],
     worker_id: str,
 ) -> NoReturn:
-    """Rollback one stale chunk and release its lease for a fresh receipt."""
+    """Rollback stale work, record supersession, and yield with bounded cooldown.
+
+    The cursor and processed-pair counters deliberately stay untouched: a stale
+    chunk has no committed relation evidence and remains debt.  The lease/token
+    CAS is still required both when reading the counter and when releasing the
+    lease, so an old worker cannot modify a replacement claim.
+    """
 
     if conn.in_transaction:
         conn.rollback()
-    now = _iso()
+    now_dt = _now()
+    now = _iso(now_dt)
+    current = conn.execute(
+        """
+        SELECT supersession_count
+        FROM relation_rebuild_queue
+        WHERE id=? AND status='processing' AND lease_owner=?
+          AND lease_token=? AND requested_updated_at=?
+        """,
+        (
+            int(event["id"]),
+            worker_id,
+            str(event.get("lease_token") or ""),
+            str(event.get("requested_updated_at") or ""),
+        ),
+    ).fetchone()
+    if current is None:
+        raise _RelationRebuildSuperseded(
+            "relation rebuild lease changed while reading corpus supersession state"
+        )
+    next_supersession_count = int(current[0] or 0) + 1
+    delay_seconds = _corpus_change_backoff_seconds(next_supersession_count)
+    available_at = _iso(now_dt + timedelta(seconds=delay_seconds))
+    last_error = "scope corpus changed before relation commit"
+    if delay_seconds:
+        last_error += (
+            f"; retry cooldown {delay_seconds}s after corpus supersession "
+            f"#{next_supersession_count}"
+        )
     changed = conn.execute(
         """
         UPDATE relation_rebuild_queue
         SET status='pending', available_at=?, lease_owner='', lease_token='',
             lease_expires_at=NULL, corpus_revision=0,
             blocked_entities_json='[]', blocked_entities_sha256='',
-            last_error='scope corpus changed before relation commit',
-            updated_at=?, completed_at=NULL
+            supersession_count=supersession_count+1,
+            last_error=?, updated_at=?, completed_at=NULL
         WHERE id=? AND status='processing' AND lease_owner=?
           AND lease_token=? AND requested_updated_at=?
         """,
         (
-            now,
+            available_at,
+            sanitize_report_text(last_error)[:500],
             now,
             int(event["id"]),
             worker_id,
@@ -671,8 +727,9 @@ def _prepare_frequency_snapshot(
     *,
     event: dict[str, Any],
     worker_id: str,
+    commit_receipt: bool = True,
 ) -> tuple[int, set[str]]:
-    """Bind an indexed receipt for observability without invalidating a pass."""
+    """Bind an indexed receipt, optionally retaining a caller-owned write fence."""
 
     scope_id = str(event["scope_id"])
     snapshot = relation_frequency_snapshot(
@@ -707,7 +764,8 @@ def _prepare_frequency_snapshot(
         raise _RelationRebuildSuperseded(
             "relation rebuild lease changed before indexed receipt commit"
         )
-    conn.commit()
+    if commit_receipt:
+        conn.commit()
     return revision, set(snapshot["blocked_entities"])
 
 
@@ -730,6 +788,14 @@ def _process_relation_chunk(
     scope_id = str(event["scope_id"])
     focus_id = str(event["focus_memory_id"])
     cursor_memory_id = str(event.get("cursor_memory_id") or "")
+    fence_corpus = (
+        int(event.get("supersession_count") or 0) >= _CORPUS_CHANGE_FENCE_AFTER
+    )
+    if fence_corpus:
+        # Escalate only after bounded optimistic retries.  The reservation is
+        # held for this one bounded chunk, so corpus truth, its frequency
+        # receipt, relation writes, and cursor advancement share one snapshot.
+        conn.execute("BEGIN IMMEDIATE")
     focus = conn.execute(
         f"""
         SELECT m.id
@@ -750,9 +816,14 @@ def _process_relation_chunk(
         conn,
         event=event,
         worker_id=worker_id,
+        commit_receipt=not fence_corpus,
     )
 
     bounded_pairs = max(1, min(int(pair_limit), 5000))
+    if fence_corpus:
+        # Once a corpus fence is needed, keep the write lock to one pair so a
+        # long caller chunk cannot starve concurrent corpus writers.
+        bounded_pairs = min(bounded_pairs, _CORPUS_CHANGE_FENCE_PAIR_LIMIT)
     peer_rows = conn.execute(
         f"""
         SELECT m.id
@@ -1203,6 +1274,8 @@ def relation_rebuild_queue_report(
             "pass_failures": int(row[13] or 0),
             "last_progress_at": str(row[14] or ""),
             "last_error": sanitize_report_text(str(row[15] or ""))[:240],
+            "available_at": str(row[16] or ""),
+            "corpus_revision": int(row[17] or 0),
         }
         for row in conn.execute(
             """
@@ -1210,7 +1283,7 @@ def relation_rebuild_queue_report(
                    pass_processed_pairs, pass_number, supersession_count,
                    next_requested_updated_at, attempts, lease_expirations,
                    pass_lease_expirations, failures, pass_failures,
-                   last_progress_at, last_error
+                   last_progress_at, last_error, available_at, corpus_revision
             FROM relation_rebuild_queue
             WHERE status IN ('pending','retry','processing','dead_letter')
             ORDER BY created_at, id

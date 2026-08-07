@@ -309,6 +309,11 @@ def llm_journal_candidates(
                     allow_insecure_endpoint=explicit_insecure_endpoint_opt_in(
                         llm_config.get("allow_insecure_endpoint")
                     ),
+                    thinking=(
+                        llm_config.get("thinking")
+                        if isinstance(llm_config.get("thinking"), dict)
+                        else None
+                    ),
                     max_attempts=max_attempts,
                     retry_delay=retry_delay,
                 )

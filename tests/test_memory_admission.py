@@ -37,6 +37,7 @@ def test_time_sensitive_snapshot_requires_live_check_and_candidate_lifecycle() -
         memory_type="decision",
         source="journal-digest",
         recommended_action="promote",
+        default_lifecycle="promoted",
     )
 
     assert metadata["lifecycle"] == "candidate"
@@ -96,6 +97,45 @@ def test_reusable_workflow_is_routed_to_experience_review_not_directly_promoted(
     )
     assert decision.action == "keep_candidate"
     assert decision.reason == "automatic_digest_requires_experience_review"
+
+
+def test_explicit_promoted_default_marks_stable_automatic_digest_as_promoted() -> None:
+    metadata = automatic_admission_metadata(
+        content="Scope Recall release verification uses a stable two-stage review workflow.",
+        memory_type="workflow",
+        source="nightly-digest",
+        default_lifecycle="promoted",
+    )
+
+    assert metadata["lifecycle"] == "promoted"
+    assert metadata["candidate_status"] == "promoted"
+    assert metadata["automatic_admission"]["route"] == "experience_review"
+
+
+def test_unknown_automatic_digest_lifecycle_falls_back_to_candidate() -> None:
+    metadata = automatic_admission_metadata(
+        content="Stable preference extracted from an automatic digest.",
+        memory_type="preference",
+        source="journal-digest",
+        default_lifecycle="auto-activate",
+    )
+
+    assert metadata["lifecycle"] == "candidate"
+    assert metadata["candidate_status"] == "needs_review"
+
+
+def test_structured_evolution_keeps_dedicated_path_with_promoted_default() -> None:
+    metadata = automatic_admission_metadata(
+        content="The project codename changed from Atlas to Borealis.",
+        memory_type="fact",
+        source="nightly-digest",
+        default_lifecycle="promoted",
+        structured_evolution=True,
+    )
+
+    assert metadata["automatic_admission"]["route"] == "fact_evolution"
+    assert "lifecycle" not in metadata
+    assert "candidate_status" not in metadata
 
 
 def test_journal_candidate_metadata_applies_admission_policy() -> None:

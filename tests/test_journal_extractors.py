@@ -240,3 +240,71 @@ def test_llm_journal_candidates_passes_retention_profile_to_prompt(monkeypatch, 
     assert captured["profile"] == "full"
     assert captured["option_allow_insecure"] is False
     assert captured["transport_allow_insecure"] is False
+
+
+def test_llm_journal_candidates_threads_resolved_thinking_to_llm_call(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(journal_extractors, "_runtime_config", lambda _home: {})
+
+    def fake_resolve_llm_config(_home, _options):
+        return {
+            "model": "test-model",
+            "base_url": "https://example.invalid",
+            "api_key": "test-only",
+            "api_mode": "chat_completions",
+            "endpoint": "",
+            "append_v1": True,
+            "allow_insecure_endpoint": False,
+            "thinking": {"type": "enabled", "budget_tokens": 1024},
+        }
+
+    monkeypatch.setattr(
+        journal_extractors,
+        "resolve_llm_config",
+        fake_resolve_llm_config,
+    )
+    monkeypatch.setattr(journal_extractors, "existing_memory_context", lambda _conn, _profile: [])
+    monkeypatch.setattr(journal_extractors, "_existing_context_target_ids_by_scope", lambda _conn, _profile: {})
+    monkeypatch.setattr(
+        journal_extractors,
+        "build_prompt",
+        lambda *_args, **_kwargs: "test prompt",
+    )
+
+    def fake_call_llm(*_args, **kwargs):
+        captured["thinking"] = kwargs.get("thinking")
+        return "[]"
+
+    monkeypatch.setattr(journal_extractors, "_call_llm_with_retries", fake_call_llm)
+    monkeypatch.setattr(
+        journal_extractors,
+        "_parse_journal_llm_candidates",
+        lambda *_args, **_kwargs: ([], "explicit_skip"),
+    )
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        result = journal_extractors.llm_journal_candidates(
+            conn,
+            entries=[
+                JournalEntry(
+                    1,
+                    "scope",
+                    "shared",
+                    "session-a",
+                    1,
+                    "user",
+                    "Preserve this durable rationale for future sessions.",
+                    "2026-06-01T00:00:00+00:00",
+                )
+            ],
+            hermes_home=tmp_path,
+            scope=_scope(),
+            journal_config={},
+        )
+    finally:
+        conn.close()
+
+    assert result == []
+    assert captured["thinking"] == {"type": "enabled", "budget_tokens": 1024}

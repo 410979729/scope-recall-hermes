@@ -82,6 +82,62 @@ def test_journal_llm_passes_explicit_insecure_endpoint_opt_in(monkeypatch):
     assert captured["allow_insecure_endpoint"] is True
 
 
+def test_journal_llm_threads_configured_thinking_to_call_llm(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_call_llm(_prompt: str, **kwargs: object) -> str:
+        captured.update(kwargs)
+        return "[]"
+
+    monkeypatch.setattr(journal_module, "call_llm", fake_call_llm)
+
+    result = journal_llm._call_llm_with_retries(
+        "prompt",
+        model="test-model",
+        base_url="https://example.invalid",
+        api_key="",
+        timeout=1,
+        api_mode="chat_completions",
+        thinking={"type": "enabled", "budget_tokens": 1024},
+        max_attempts=1,
+        retry_delay=0,
+    )
+
+    assert result == "[]"
+    assert captured["thinking"] == {"type": "enabled", "budget_tokens": 1024}
+
+
+def test_journal_llm_omits_thinking_kwarg_for_legacy_hooks(monkeypatch):
+    def legacy_call_llm(
+        _prompt: str,
+        *,
+        model: str,  # noqa: ARG001
+        base_url: str,  # noqa: ARG001
+        api_key: str,  # noqa: ARG001
+        timeout: float,  # noqa: ARG001
+        api_mode: str,  # noqa: ARG001
+        endpoint: str,  # noqa: ARG001
+        append_v1: bool,  # noqa: ARG001
+    ) -> str:
+        return "[]"
+
+    monkeypatch.setattr(journal_module, "call_llm", legacy_call_llm)
+
+    result = journal_llm._call_llm_with_retries(
+        "prompt",
+        model="test-model",
+        base_url="https://example.invalid",
+        api_key="",
+        timeout=1,
+        api_mode="chat_completions",
+        thinking=None,
+        max_attempts=1,
+        retry_delay=0,
+    )
+
+    assert result == "[]"
+
+
 def test_journal_llm_rejects_non_boolean_insecure_endpoint_before_transport(
     monkeypatch,
 ):

@@ -771,7 +771,14 @@ def _add_memory_column(conn: sqlite3.Connection, column: str) -> None:
     statement = allowed.get(column)
     if statement is None:
         raise ValueError(f"unsupported memories column: {column}")
-    conn.execute(statement)
+    try:
+        conn.execute(statement)
+    except sqlite3.OperationalError as exc:
+        # Concurrent first-boot initializes can race PRAGMA table_info -> ADD
+        # COLUMN. Treat already-present columns as success so Desktop principal
+        # cold-start remains fail-closed only on real schema problems.
+        if "duplicate column name" not in str(exc).lower():
+            raise
 
 
 def ensure_memory_columns(conn: sqlite3.Connection) -> None:
@@ -779,6 +786,7 @@ def ensure_memory_columns(conn: sqlite3.Connection) -> None:
     for column in ("chat_id", "thread_id", "gateway_session_key", "dedup_key", "metadata"):
         if column not in existing:
             _add_memory_column(conn, column)
+            existing.add(column)
     for row in conn.execute("SELECT id, content FROM memories WHERE dedup_key IS NULL OR dedup_key = ''").fetchall():
         conn.execute("UPDATE memories SET dedup_key = ? WHERE id = ?", (dedup_key(str(row["content"])), row["id"]))
     conn.execute("UPDATE memories SET metadata = '{}' WHERE metadata IS NULL OR metadata = ''")

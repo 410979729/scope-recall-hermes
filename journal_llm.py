@@ -83,6 +83,7 @@ def _call_llm_with_retries(
     endpoint: str = "",
     append_v1: bool = True,
     allow_insecure_endpoint: bool = False,
+    thinking: dict[str, Any] | None = None,
 ) -> str:
     last_error: Exception | None = None
     last_kind = "unknown"
@@ -102,10 +103,13 @@ def _call_llm_with_retries(
                 "append_v1": append_v1,
             }
             # Preserve the legacy monkeypatch/custom-hook call contract when
-            # the new opt-in is not in use.  Explicit insecure HTTP support is
-            # the only case that requires the new keyword.
+            # the new opt-ins are not in use.  Explicit insecure HTTP support
+            # and a configured thinking dict are the only cases that require
+            # the new keywords.
             if allow_insecure_endpoint:
                 call_kwargs["allow_insecure_endpoint"] = True
+            if thinking is not None:
+                call_kwargs["thinking"] = thinking
             return active_call_llm(prompt, **call_kwargs)
         except Exception as exc:
             last_error = exc

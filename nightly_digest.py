@@ -1227,7 +1227,12 @@ def _existing_context_target_ids_by_scope(
     return output
 
 
-def candidate_metadata(candidate: DigestCandidate, run_id: str) -> dict[str, Any]:
+def candidate_metadata(
+    candidate: DigestCandidate,
+    run_id: str,
+    *,
+    default_lifecycle: str = "candidate",
+) -> dict[str, Any]:
     quality = score_digest_candidate(candidate)
     metadata: dict[str, Any] = {
         "memory_type": candidate.memory_type,
@@ -1255,6 +1260,7 @@ def candidate_metadata(candidate: DigestCandidate, run_id: str) -> dict[str, Any
             memory_type=candidate.memory_type,
             source="nightly-digest",
             recommended_action=quality.recommended_action,
+            default_lifecycle=default_lifecycle,
             structured_evolution=candidate.evolution is not None,
         )
     )
@@ -1376,7 +1382,14 @@ def _apply_structured_fact_candidate(
     proposal = candidate.evolution
     if proposal is None:
         raise ValueError("structured fact candidate requires an evolution proposal")
-    metadata = candidate_metadata(candidate, run_id)
+    metadata = candidate_metadata(
+        candidate,
+        run_id,
+        default_lifecycle=str(
+            (runtime_config or {}).get("automatic_digest_default_lifecycle")
+            or "candidate"
+        ),
+    )
     # Evidence belongs in the evidence ledger, not duplicated as raw quote text
     # inside the ordinary memory metadata JSON.
     metadata.pop("fact_evolution", None)
@@ -1624,7 +1637,23 @@ def apply_candidates(
                 source="nightly-digest",
                 target=candidate.target,
                 content=candidate.content,
-                metadata=json.dumps({**_cross_platform_metadata(scope.scope, runtime_config), **candidate_metadata(candidate, run_id)}, ensure_ascii=False, sort_keys=True),
+                metadata=json.dumps(
+                    {
+                        **_cross_platform_metadata(scope.scope, runtime_config),
+                        **candidate_metadata(
+                            candidate,
+                            run_id,
+                            default_lifecycle=str(
+                                (runtime_config or {}).get(
+                                    "automatic_digest_default_lifecycle"
+                                )
+                                or "candidate"
+                            ),
+                        ),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
             )
             if inserted:
                 record_digest_source(conn, memory_id=stored_id, run_id=run_id, candidate=candidate)
@@ -1723,6 +1752,11 @@ def collect_candidates(
                     append_v1=_config_bool_value(llm_config.get("append_v1"), True),
                     allow_insecure_endpoint=explicit_insecure_endpoint_opt_in(
                         llm_config.get("allow_insecure_endpoint")
+                    ),
+                    thinking=(
+                        llm_config.get("thinking")
+                        if isinstance(llm_config.get("thinking"), dict)
+                        else None
                     ),
                     max_attempts=options.max_attempts,
                     retry_delay=options.retry_delay,
