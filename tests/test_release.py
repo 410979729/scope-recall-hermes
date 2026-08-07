@@ -583,11 +583,11 @@ def test_release_identity_requires_version_newer_than_latest_tag():
     assert "mutually exclusive" in conflicting_modes["error"]
 
 
-def test_v190_release_candidate_identity_surfaces_are_consistent():
-    """Bind the minor release to every authoritative version surface."""
+def test_v191_release_candidate_identity_surfaces_are_consistent():
+    """Bind the patch release to every authoritative version surface."""
 
-    expected_version = "1.9.0"
-    release_check = _load_release_check_module("scope_recall_check_release_v190_identity")
+    expected_version = "1.9.1"
+    release_check = _load_release_check_module("scope_recall_check_release_v191_identity")
     lexical_generation = importlib.import_module(
         f"{PACKAGE_NAME}.lexical_generation"
     )
@@ -599,7 +599,7 @@ def test_v190_release_candidate_identity_surfaces_are_consistent():
     assert _package_version() == expected_version
     assert f"version: {expected_version}" in plugin_manifest
     assert release_check.PACKAGE_VERSION == expected_version
-    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.9.0.md"
+    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.9.1.md"
     assert (PLUGIN_ROOT / release_check.RELEASE_READINESS_DOC).is_file()
     assert f"## [{expected_version}]" in changelog
     assert f"Version `{expected_version}`" in readme
@@ -612,17 +612,17 @@ def test_v190_release_candidate_identity_surfaces_are_consistent():
     )
     assert identity["ok"] is True
     assert identity["release_eligible"] is True
-    assert identity["expected_release_tag"] == "v1.9.0"
+    assert identity["expected_release_tag"] == "v1.9.1"
 
 
-def test_v190_changelog_is_cumulative_from_last_public_release():
-    release_check = _load_release_check_module("scope_recall_check_release_v190_changelog")
+def test_v191_changelog_is_cumulative_from_last_public_release():
+    release_check = _load_release_check_module("scope_recall_check_release_v191_changelog")
 
-    assert release_check.PACKAGE_VERSION == "1.9.0"
+    assert release_check.PACKAGE_VERSION == "1.9.1"
     assert release_check.PUBLIC_RELEASE_BASELINE == "1.8.7"
     section = release_check.changelog_section(
         (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8"),
-        "1.9.0",
+        "1.9.1",
     )
     assert "since the last public release, `1.8.7`" in section
     for term in ("endpoint", "lexical", "Windows", "SQLite", "credentials", "Experience"):

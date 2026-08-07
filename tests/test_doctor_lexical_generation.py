@@ -15,6 +15,7 @@ from scope_recall.lexical_generation import (
 )
 from scope_recall.lexical_migration import build_lexical_generation
 from scope_recall.sql_store import ensure_schema, store_row
+from scope_recall.truth_connection import connect_truth_database
 
 
 def _sha(path: Path) -> str:
@@ -24,10 +25,8 @@ def _sha(path: Path) -> str:
 def _database(tmp_path: Path) -> tuple[Path, Path]:
     home = tmp_path / "hermes"
     storage = home / "scope-recall"
-    storage.mkdir(parents=True)
     db_path = storage / "memory.sqlite3"
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect_truth_database(db_path, mode="rwc")
     ensure_schema(conn)
     store_row(
         conn,
@@ -71,6 +70,7 @@ def test_doctor_reports_healthy_active_generation_without_writes(tmp_path: Path)
     sqlite_payload, gate, _recommendations = sqlite_report(home)
 
     lexical = sqlite_payload["lexical_generation"]
+    assert sqlite_payload["storage_permissions"]["ok"] is True
     assert lexical["status"] == "active"
     assert lexical["healthy"] is True
     assert lexical["current_generation_id"] == LEXICAL_GENERATION_ID
