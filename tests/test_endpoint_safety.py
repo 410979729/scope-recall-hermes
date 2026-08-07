@@ -302,7 +302,10 @@ def test_endpoint_policy_rejects_deeply_percent_encoded_credential_keys(
     assert prepared.get_header("X-request-id") == "public-request-id"
 
 
-@pytest.mark.parametrize("malformed_key", ("%", "%2", "%GG", "page%ZZtoken"))
+@pytest.mark.parametrize(
+    "malformed_key",
+    ("%", "%2", "%GG", "page%ZZtoken", "%FF", "%C3%28"),
+)
 def test_endpoint_policy_fails_closed_on_malformed_percent_encoded_query_key(
     malformed_key: str,
 ) -> None:
@@ -310,6 +313,14 @@ def test_endpoint_policy_fails_closed_on_malformed_percent_encoded_query_key(
         require_safe_endpoint(
             f"https://api.example.com/v1?{malformed_key}=public-metadata"
         )
+
+    request = urllib.request.Request(
+        "http://127.0.0.1:8080/v1",
+        headers={malformed_key: _TEST_CREDENTIAL, "X-request-id": "public-request-id"},
+    )
+    prepared = prepare_safe_request(request)
+    assert _TEST_CREDENTIAL not in dict(prepared.header_items()).values()
+    assert prepared.get_header("X-request-id") == "public-request-id"
 
 
 @pytest.mark.parametrize(

@@ -230,7 +230,16 @@ def _normalize_credential_key(raw_key: str) -> str:
 
     decoded_key = str(raw_key or "")
     for _ in range(_MAX_ENCODED_KEY_DECODE_PASSES):
-        next_key = urllib.parse.unquote_plus(decoded_key)
+        try:
+            next_key = urllib.parse.unquote_plus(
+                decoded_key,
+                encoding="utf-8",
+                errors="strict",
+            )
+        except UnicodeDecodeError as exc:
+            raise UnsafeEndpointError(
+                "encoded query/header key is malformed"
+            ) from exc
         if next_key == decoded_key:
             break
         if not next_key:
