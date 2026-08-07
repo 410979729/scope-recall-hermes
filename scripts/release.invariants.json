@@ -192,7 +192,7 @@
         "tests/test_lexical_generation.py::test_activation_rejects_quality_receipt_after_truth_source_changes",
         "tests/test_lexical_query.py::test_cjk_substring_score_rejects_single_generic_bigram",
         "tests/test_lexical_cjk_retrieval.py::test_ready_shadow_override_recovers_cjk_target_under_newer_noise",
-        "tests/test_lexical_cjk_retrieval.py::test_cjk_bigram_fallback_uses_one_bounded_sql_scan",
+        "tests/test_lexical_cjk_retrieval.py::test_cjk_bigram_fallback_uses_indexed_postings_without_truth_scan",
         "tests/test_lexical_cjk_retrieval.py::test_active_cjk_generation_ranks_old_target_inside_requested_limit",
         "tests/test_lexical_cjk_retrieval.py::test_supplemental_mode_cannot_remove_english_legacy_candidates",
         "tests/test_lexical_migration.py::test_quality_gate_uses_synthetic_and_live_dual_reads_without_raw_text",
@@ -206,7 +206,20 @@
         "tests/test_storage_views.py::test_search_vector_memories_respects_requested_limit",
         "tests/test_lexical_benchmark.py::test_lexical_cjk_benchmark_reports_quality_latency_and_growth",
         "tests/test_doctor_lexical_generation.py::test_doctor_reports_healthy_active_generation_without_writes",
-        "tests/test_doctor_lexical_generation.py::test_doctor_fails_when_active_shadow_integrity_drifts"
+        "tests/test_doctor_lexical_generation.py::test_doctor_fails_when_active_shadow_integrity_drifts",
+        "tests/test_lexical_cjk_retrieval.py::test_shadow_rows_use_truth_rowid_identity",
+        "tests/test_lexical_cjk_retrieval.py::test_postings_triggers_track_insert_update_delete",
+        "tests/test_lexical_cjk_golden.py::test_held_out_chinese_golden_shadow_channel_metrics",
+        "tests/test_lexical_cjk_golden.py::test_held_out_golden_is_stable_with_vector_companion_enabled",
+        "tests/test_lexical_migration_cli.py::test_backup_fence_blocks_raw_writer_before_backup",
+        "tests/test_lexical_migration_cli.py::test_backup_fence_blocks_raw_writer_during_backup",
+        "tests/test_lexical_migration_cli.py::test_backup_fence_blocks_raw_writer_after_backup_before_guards",
+        "tests/test_lexical_migration_cli.py::test_backup_fence_blocks_raw_writer_before_mutation",
+        "tests/test_endpoint_safety.py::test_endpoint_policy_rejects_deeply_percent_encoded_credential_keys",
+        "tests/test_endpoint_safety.py::test_endpoint_policy_fails_closed_on_malformed_percent_encoded_query_key",
+        "tests/test_endpoint_safety.py::test_deeply_percent_encoded_noncredential_metadata_remains_allowed",
+        "tests/test_release.py::test_release_runner_returns_structured_error_when_executable_missing",
+        "tests/test_release.py::test_release_gate_fails_closed_without_traceback_when_git_missing"
       ]
     }
   ]

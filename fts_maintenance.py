@@ -30,8 +30,16 @@ def secure_online_backup(
     db_path: Path,
     *,
     purpose: str = "fts-reconcile",
+    backup_source: sqlite3.Connection | None = None,
 ) -> Path:
-    """Create and quick-check an owner-only SQLite online backup."""
+    """Create and quick-check an owner-only SQLite online backup.
+
+    ``backup_source`` may supply a separate reader connection when the caller
+    holds a write fence (``BEGIN IMMEDIATE``) on ``conn``: SQLite cannot run an
+    online backup from a connection with an open write transaction, but a
+    reader connection may copy the committed snapshot while the fence blocks
+    concurrent writers.
+    """
 
     normalized_purpose = str(purpose or "").strip().lower()
     if re.fullmatch(r"[a-z0-9-]{1,24}", normalized_purpose) is None:
@@ -66,7 +74,8 @@ def secure_online_backup(
     target: sqlite3.Connection | None = None
     try:
         target = sqlite3.connect(destination)
-        conn.backup(target)
+        source = backup_source if backup_source is not None else conn
+        source.backup(target)
         quick_check = str(target.execute("PRAGMA quick_check").fetchone()[0])
         if quick_check.lower() != "ok":
             raise RuntimeError(f"FTS backup quick_check failed: {quick_check}")

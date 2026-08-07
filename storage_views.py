@@ -11,7 +11,7 @@ from .gating import build_fts_query, compact_text, like_terms, normalized_token_
 from .governance import classify_memory
 from .graph import load_metadata
 from .lifecycle_policy import ORDINARY_RECALL_HIDDEN_LIFECYCLE_VALUES, ordinary_recall_lifecycle_visible_sql
-from .lexical_generation import supplemental_table_for_search
+from .lexical_generation import LEXICAL_POSTINGS_TABLE, supplemental_table_for_search
 from .lexical_query import (
     cjk_query_ngrams,
     cjk_substring_score,
@@ -145,19 +145,30 @@ def search_db_memories(
             shadow_rows: list[sqlite3.Row] = []
             shadow_query = trigram_fts_query(query, tokens)
             if shadow_query:
+                # The inner rank window must stay wider than the candidate
+                # pool: ties on near-identical rows (for example daily-report
+                # noise) would otherwise evict newer rows before the outer
+                # updated_at tie-breaker can run.
+                inner_window = max(candidate_pool * 5, 100)
                 shadow_rows = conn.execute(
                     f"""
                     SELECT m.*, NULL AS bm25_score
-                    FROM {supplemental_table}
-                    JOIN memories m ON m.id = {supplemental_table}.memory_id
-                    WHERE {supplemental_table} MATCH ?
-                      AND m.scope_id IN ({_scope_placeholders(provider)})
+                    FROM (
+                        SELECT {supplemental_table}.rowid AS docid, rank AS fts_rank
+                        FROM {supplemental_table}
+                        WHERE {supplemental_table} MATCH ?
+                        ORDER BY rank
+                        LIMIT ?
+                    ) cand
+                    JOIN memories m ON m.rowid = cand.docid
+                    WHERE m.scope_id IN ({_scope_placeholders(provider)})
                       AND {_ACTIVE_MEMORY_SQL_M}
-                    ORDER BY bm25({supplemental_table}) ASC, m.updated_at DESC
+                    ORDER BY cand.fts_rank ASC, m.updated_at DESC
                     LIMIT ?
                     """,
                     [
                         shadow_query,
+                        inner_window,
                         *_accessible_scope_params(provider),
                         candidate_pool,
                     ],
@@ -168,33 +179,50 @@ def search_db_memories(
                 term for term in cjk_query_ngrams(query, limit=24) if len(term) == 2
             ]
             if bigram_terms and len(shadow_rows) < candidate_pool:
-                term_values = ",".join("(?)" for _ in bigram_terms)
-                match_count_sql = (
-                    "(SELECT COUNT(*) FROM query_terms qt "
-                    "WHERE instr(m.content, qt.term) > 0 "
-                    "OR instr(m.summary, qt.term) > 0)"
+                # Indexed postings replace the old correlated instr() scan. A
+                # covering-index df prefilter drops runaway terms (for example a
+                # corpus-wide prefix like 数据库) whose posting lists would
+                # otherwise dominate the merge without adding discrimination.
+                term_placeholders = ",".join("?" for _ in bigram_terms)
+                document_total = int(
+                    conn.execute(
+                        f"SELECT COUNT(*) FROM {supplemental_table}"
+                    ).fetchone()[0]
                 )
-                term_rows = conn.execute(
+                df_cap = max(50, int(document_total * 0.05))
+                df_rows = conn.execute(
                     f"""
-                    WITH query_terms(term) AS (VALUES {term_values})
-                    SELECT m.*, {match_count_sql} AS cjk_match_count
-                    FROM memories m
-                    WHERE m.scope_id IN ({_scope_placeholders(provider)})
-                      AND {_ACTIVE_MEMORY_SQL_M}
-                      AND EXISTS (
-                          SELECT 1 FROM query_terms qt
-                          WHERE instr(m.content, qt.term) > 0
-                             OR instr(m.summary, qt.term) > 0
-                      )
-                    ORDER BY cjk_match_count DESC, m.updated_at DESC
-                    LIMIT ?
+                    SELECT term, COUNT(*) AS df
+                    FROM {LEXICAL_POSTINGS_TABLE}
+                    WHERE term IN ({term_placeholders})
+                    GROUP BY term
                     """,
-                    [
-                        *bigram_terms,
-                        *_accessible_scope_params(provider),
-                        candidate_pool,
-                    ],
+                    bigram_terms,
                 ).fetchall()
+                rare_terms = [
+                    str(row[0]) for row in df_rows if int(row[1]) <= df_cap
+                ]
+                term_rows: list[sqlite3.Row] = []
+                if rare_terms:
+                    rare_placeholders = ",".join("?" for _ in rare_terms)
+                    term_rows = conn.execute(
+                        f"""
+                        SELECT m.*, COUNT(*) AS cjk_match_count
+                        FROM {LEXICAL_POSTINGS_TABLE} p
+                        CROSS JOIN memories m ON m.rowid = p.docid
+                        WHERE p.term IN ({rare_placeholders})
+                          AND m.scope_id IN ({_scope_placeholders(provider)})
+                          AND {_ACTIVE_MEMORY_SQL_M}
+                        GROUP BY m.rowid
+                        ORDER BY cjk_match_count DESC, m.updated_at DESC
+                        LIMIT ?
+                        """,
+                        [
+                            *rare_terms,
+                            *_accessible_scope_params(provider),
+                            candidate_pool,
+                        ],
+                    ).fetchall()
                 rows.extend(term_rows)
                 supplemental_row_ids.update(str(row["id"]) for row in term_rows)
         like_query_terms = like_terms(query, tokens)

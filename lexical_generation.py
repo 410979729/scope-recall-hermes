@@ -25,6 +25,10 @@ LEXICAL_MIGRATION_DESCRIPTION = (
 )
 LEXICAL_GENERATION_ID = "cjk-trigram-v1"
 LEXICAL_SHADOW_TABLE = "memories_fts_cjk_v1"
+LEXICAL_POSTINGS_TABLE = "lexical_cjk_postings_v1"
+# Recursive-SQL postings extraction is bounded per document; longer documents
+# keep their leading terms, matching the trigger/backfill contract.
+_POSTINGS_MAX_DOCUMENT_CHARS = 1000
 _CURRENT_KEY = "current_generation"
 _TRIGGER_NAMES = (
     "trg_lexical_cjk_v1_insert",
@@ -80,6 +84,54 @@ def _trigger_names(conn: sqlite3.Connection) -> set[str]:
             "SELECT name FROM sqlite_master WHERE type='trigger'"
         ).fetchall()
     }
+
+
+def _cjk_character_sql(expression: str) -> str:
+    """Match the pure-Python CJK run ranges inside recursive trigger SQL."""
+
+    return (
+        f"(unicode({expression}) BETWEEN 13312 AND 19839 "
+        f"OR unicode({expression}) BETWEEN 19968 AND 40959 "
+        f"OR unicode({expression}) BETWEEN 63744 AND 64255)"
+    )
+
+
+def _postings_select_sql(
+    value_expression: str,
+    docid_expression: str,
+    *,
+    extra_condition: str = "",
+) -> str:
+    """Expand one document expression into indexed CJK bigram postings rows."""
+
+    first = _cjk_character_sql(f"substr({value_expression}, i, 1)")
+    second = _cjk_character_sql(f"substr({value_expression}, i + 1, 1)")
+    conditions = (
+        f"i < length({value_expression})\n          AND {first}\n          AND {second}"
+    )
+    if extra_condition:
+        conditions += f"\n          AND ({extra_condition})"
+    return f"""
+        WITH RECURSIVE pos(i) AS (
+            SELECT 1
+            UNION ALL SELECT i + 1 FROM pos
+            WHERE i < {_POSTINGS_MAX_DOCUMENT_CHARS - 1}
+        )
+        SELECT substr({value_expression}, i, 2), {docid_expression}
+        FROM pos
+        WHERE {conditions}
+    """
+
+
+def _insert_postings_for_document_sql(prefix: str) -> str:
+    """Return trigger-body SQL maintaining postings for one NEW/OLD row."""
+
+    return f"""
+        INSERT OR IGNORE INTO {LEXICAL_POSTINGS_TABLE}(term, docid)
+        {_postings_select_sql(f"{prefix}.content", f"{prefix}.rowid")};
+        INSERT OR IGNORE INTO {LEXICAL_POSTINGS_TABLE}(term, docid)
+        {_postings_select_sql(f"{prefix}.summary", f"{prefix}.rowid")};
+    """
 
 
 def _require_supported_generation(generation_id: str) -> None:
@@ -171,14 +223,18 @@ def _install_shadow_triggers(conn: sqlite3.Connection) -> None:
     conn.execute(f"DROP TRIGGER IF EXISTS {_TRIGGER_NAMES[0]}")
     conn.execute(f"DROP TRIGGER IF EXISTS {_TRIGGER_NAMES[1]}")
     conn.execute(f"DROP TRIGGER IF EXISTS {_TRIGGER_NAMES[2]}")
+    # Shadow rows use memories.rowid as their FTS rowid (docid mapping), and
+    # bigram postings are keyed by the same docid. Identity maintenance is an
+    # indexed O(log n) rowid delete instead of a text-column FTS scan.
     conn.execute(
         f"""
         CREATE TRIGGER {_TRIGGER_NAMES[0]}
         AFTER INSERT ON memories
         WHEN {visible_new}
         BEGIN
-            INSERT INTO {LEXICAL_SHADOW_TABLE}(memory_id, content, summary)
-            VALUES (NEW.id, NEW.content, NEW.summary);
+            INSERT INTO {LEXICAL_SHADOW_TABLE}(rowid, memory_id, content, summary)
+            VALUES (NEW.rowid, NEW.id, NEW.content, NEW.summary);
+            {_insert_postings_for_document_sql("NEW")}
         END
         """
     )
@@ -187,10 +243,15 @@ def _install_shadow_triggers(conn: sqlite3.Connection) -> None:
         CREATE TRIGGER {_TRIGGER_NAMES[1]}
         AFTER UPDATE ON memories
         BEGIN
-            DELETE FROM {LEXICAL_SHADOW_TABLE} WHERE memory_id = OLD.id;
-            INSERT INTO {LEXICAL_SHADOW_TABLE}(memory_id, content, summary)
-            SELECT NEW.id, NEW.content, NEW.summary
+            DELETE FROM {LEXICAL_SHADOW_TABLE} WHERE rowid = OLD.rowid;
+            DELETE FROM {LEXICAL_POSTINGS_TABLE} WHERE docid = OLD.rowid;
+            INSERT INTO {LEXICAL_SHADOW_TABLE}(rowid, memory_id, content, summary)
+            SELECT NEW.rowid, NEW.id, NEW.content, NEW.summary
             WHERE {visible_new};
+            INSERT OR IGNORE INTO {LEXICAL_POSTINGS_TABLE}(term, docid)
+            {_postings_select_sql("NEW.content", "NEW.rowid", extra_condition=visible_new)};
+            INSERT OR IGNORE INTO {LEXICAL_POSTINGS_TABLE}(term, docid)
+            {_postings_select_sql("NEW.summary", "NEW.rowid", extra_condition=visible_new)};
         END
         """
     )
@@ -199,7 +260,8 @@ def _install_shadow_triggers(conn: sqlite3.Connection) -> None:
         CREATE TRIGGER {_TRIGGER_NAMES[2]}
         AFTER DELETE ON memories
         BEGIN
-            DELETE FROM {LEXICAL_SHADOW_TABLE} WHERE memory_id = OLD.id;
+            DELETE FROM {LEXICAL_SHADOW_TABLE} WHERE rowid = OLD.rowid;
+            DELETE FROM {LEXICAL_POSTINGS_TABLE} WHERE docid = OLD.rowid;
         END
         """
     )
@@ -228,6 +290,15 @@ def create_shadow_generation(
         raise LexicalGenerationError(
             "SQLite FTS5 trigram tokenizer is unavailable"
         ) from exc
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {LEXICAL_POSTINGS_TABLE}(
+            term TEXT NOT NULL,
+            docid INTEGER NOT NULL,
+            PRIMARY KEY (term, docid)
+        ) WITHOUT ROWID
+        """
+    )
     _install_shadow_triggers(conn)
     max_row = int(
         conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM memories").fetchone()[0]
@@ -305,6 +376,28 @@ def generation_status(
     return payload
 
 
+def _backfill_postings_sql(document_column: str, visible_m: str) -> str:
+    """Build one batched postings insert over a rowid page of truth rows."""
+
+    first = _cjk_character_sql(f"substr(m.{document_column}, i, 1)")
+    second = _cjk_character_sql(f"substr(m.{document_column}, i + 1, 1)")
+    return f"""
+        INSERT OR IGNORE INTO {LEXICAL_POSTINGS_TABLE}(term, docid)
+        WITH RECURSIVE pos(i) AS (
+            SELECT 1
+            UNION ALL SELECT i + 1 FROM pos
+            WHERE i < {_POSTINGS_MAX_DOCUMENT_CHARS - 1}
+        )
+        SELECT substr(m.{document_column}, i, 2), m.rowid
+        FROM memories m
+        JOIN pos ON i < length(m.{document_column})
+        WHERE m.rowid > ? AND m.rowid <= ?
+          AND {visible_m}
+          AND {first}
+          AND {second}
+    """
+
+
 def backfill_generation(
     conn: sqlite3.Connection,
     generation_id: str = LEXICAL_GENERATION_ID,
@@ -331,6 +424,8 @@ def backfill_generation(
             conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM memories").fetchone()[0]
         )
         start = 0
+        conn.execute(f"DELETE FROM {LEXICAL_SHADOW_TABLE}")
+        conn.execute(f"DELETE FROM {LEXICAL_POSTINGS_TABLE}")
         conn.execute(
             """
             UPDATE lexical_generations
@@ -345,7 +440,7 @@ def backfill_generation(
         start = int(manifest.get("last_backfilled_rowid") or 0)
     rows = conn.execute(
         """
-        SELECT rowid, id
+        SELECT rowid
         FROM memories
         WHERE rowid > ? AND rowid <= ?
         ORDER BY rowid ASC
@@ -353,23 +448,22 @@ def backfill_generation(
         """,
         (start, source_max, batch_size),
     ).fetchall()
-    visible = ordinary_recall_lifecycle_visible_sql("memories")
-    for row in rows:
-        memory_id = str(row[1])
-        conn.execute(
-            f"DELETE FROM {LEXICAL_SHADOW_TABLE} WHERE memory_id=?",
-            (memory_id,),
-        )
+    last = int(rows[-1][0]) if rows else source_max
+    visible_m = ordinary_recall_lifecycle_visible_sql("m")
+    if rows:
+        # Batched rowid-range inserts replace the old per-row DELETE+INSERT
+        # cycle, which scanned the FTS text identity column once per row.
         conn.execute(
             f"""
-            INSERT INTO {LEXICAL_SHADOW_TABLE}(memory_id, content, summary)
-            SELECT id, content, summary
-            FROM memories
-            WHERE id=? AND {visible}
+            INSERT INTO {LEXICAL_SHADOW_TABLE}(rowid, memory_id, content, summary)
+            SELECT m.rowid, m.id, m.content, m.summary
+            FROM memories m
+            WHERE m.rowid > ? AND m.rowid <= ? AND {visible_m}
             """,
-            (memory_id,),
+            (start, last),
         )
-    last = int(rows[-1][0]) if rows else source_max
+        conn.execute(_backfill_postings_sql("content", visible_m), (start, last))
+        conn.execute(_backfill_postings_sql("summary", visible_m), (start, last))
     complete = last >= source_max
     conn.execute(
         """
@@ -412,6 +506,9 @@ def generation_integrity_report(
             "hidden_rows": 0,
             "duplicate_rows": 0,
             "content_drift_rows": 0,
+            "postings_present": False,
+            "postings_rows": 0,
+            "postings_stale_rows": 0,
         }
     visible_m = ordinary_recall_lifecycle_visible_sql("m")
     expected = int(
@@ -463,6 +560,23 @@ def generation_integrity_report(
         ).fetchone()[0]
     )
     duplicates = max(0, indexed - distinct)
+    postings_present = _table_exists(conn, LEXICAL_POSTINGS_TABLE)
+    postings_rows = 0
+    postings_stale_rows = 0
+    if postings_present:
+        postings_rows = int(
+            conn.execute(f"SELECT COUNT(*) FROM {LEXICAL_POSTINGS_TABLE}").fetchone()[0]
+        )
+        postings_stale_rows = int(
+            conn.execute(
+                f"""
+                SELECT COUNT(*) FROM {LEXICAL_POSTINGS_TABLE} p
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM {LEXICAL_SHADOW_TABLE} f WHERE f.rowid = p.docid
+                )
+                """
+            ).fetchone()[0]
+        )
     healthy = (
         not missing_triggers
         and indexed == expected
@@ -471,6 +585,8 @@ def generation_integrity_report(
         and hidden == 0
         and duplicates == 0
         and drift == 0
+        and postings_present
+        and postings_stale_rows == 0
     )
     return {
         "generation_id": generation_id,
@@ -484,6 +600,9 @@ def generation_integrity_report(
         "hidden_rows": hidden,
         "duplicate_rows": duplicates,
         "content_drift_rows": drift,
+        "postings_present": postings_present,
+        "postings_rows": postings_rows,
+        "postings_stale_rows": postings_stale_rows,
     }
 
 

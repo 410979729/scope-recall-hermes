@@ -457,7 +457,19 @@ def test_release_invariant_manifest_is_versioned_unique_and_executable():
         in nodes
     )
     assert (
-        "tests/test_lexical_cjk_retrieval.py::test_cjk_bigram_fallback_uses_one_bounded_sql_scan"
+        "tests/test_lexical_cjk_retrieval.py::test_cjk_bigram_fallback_uses_indexed_postings_without_truth_scan"
+        in nodes
+    )
+    assert (
+        "tests/test_lexical_cjk_retrieval.py::test_shadow_rows_use_truth_rowid_identity"
+        in nodes
+    )
+    assert (
+        "tests/test_lexical_cjk_golden.py::test_held_out_chinese_golden_shadow_channel_metrics"
+        in nodes
+    )
+    assert (
+        "tests/test_lexical_migration_cli.py::test_backup_fence_blocks_raw_writer_after_backup_before_guards"
         in nodes
     )
     command = release_check.release_invariant_command()
@@ -2397,3 +2409,41 @@ def test_openai_compatible_embedder_rotates_to_next_key_after_failure(monkeypatc
     assert vectors == [[0.1, 0.2, 0.3]]
     assert attempts == ["public-test-key-1", "public-test-key-2"]
     assert encoding_formats == ["float", "float"]
+def test_release_runner_returns_structured_error_when_executable_missing() -> None:
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_missing_prereq"
+    )
+
+    result = release_check.run(["definitely-missing-release-prereq-x9q7"])
+
+    assert result["returncode"] != 0
+    assert result["error"] == "prerequisite_missing"
+    assert result["prerequisite"] == "definitely-missing-release-prereq-x9q7"
+    assert result["stdout"] == ""
+    assert result["stderr"] == ""
+
+
+def test_release_gate_fails_closed_without_traceback_when_git_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_git_prereq"
+    )
+    empty_path = tmp_path / "empty-path"
+    empty_path.mkdir()
+    monkeypatch.setenv("PATH", str(empty_path))
+    monkeypatch.setattr(sys, "argv", ["check.release.py"])
+
+    exit_code = release_check.main()
+    captured = capsys.readouterr()
+
+    assert exit_code != 0
+    payload = json.loads(captured.out)
+    assert payload["ok"] is False
+    serialized = json.dumps(payload)
+    assert "prerequisite" in serialized
+    assert "git" in serialized.lower()
+    assert "Traceback" not in captured.out
+    assert "Traceback" not in captured.err
