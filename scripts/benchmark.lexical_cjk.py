@@ -185,6 +185,8 @@ def _measure(
 
 
 def run_benchmark(*, rows: int, rounds: int, limit: int) -> dict[str, Any]:
+    """Run the bounded synthetic lexical contract and return its evidence payload."""
+
     if rows < 100 or rows > 50_000:
         raise ValueError("rows must be between 100 and 50000")
     if rounds < 1 or rounds > 100:
@@ -291,6 +293,8 @@ def run_benchmark(*, rows: int, rounds: int, limit: int) -> dict[str, Any]:
 
 
 def main() -> int:
+    """Parse CLI arguments, emit benchmark evidence, and return its gate status."""
+
     args = _parse_args()
     payload = run_benchmark(rows=args.rows, rounds=args.rounds, limit=args.limit)
     text = json.dumps(

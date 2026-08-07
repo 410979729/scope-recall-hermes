@@ -13,6 +13,8 @@ Updated: `2026-08-06` for release-blocker implementation boundaries.
 - `scripts/benchmark.lexical_cjk.py` owns the fixed synthetic CJK quality, latency, requested-limit, and SQLite page-growth release benchmark; it never opens live state.
 - `storage_views.py` remains a thin retrieval adapter: it may merge legacy, active lexical-generation, and bounded LIKE candidates, but it must not build, backfill, activate, or repair indexes.
 - `doctor_sqlite.py` exposes the read-only `lexical_generation_report()` alongside other SQLite health; it must never create shadow objects or advance migration state.
+- `doctor_endpoint.py` owns sanitized, read-only endpoint-policy health checks; provider and transport modules own runtime behavior and must not duplicate its reporting policy.
+- `sqlite_params.py` owns connection-aware SQLite host-parameter budgets and deterministic chunk sizing; callers retain transaction ownership and must not commit individual chunks.
 - `windows_filesystem.py` owns Windows extended-length path conversion, destination path-budget preflight, and long-path-safe filesystem primitives. `installer.py` and rollout scripts own policy/orchestration and must not grow a second path implementation.
 - `vector_generation.py` owns generation manifests, current-generation CAS, and durable vector outbox state; no second vector queue or claim lease may be introduced.
 - `vector_outbox_replay.py` owns backend-neutral execution of already-committed outbox events; provider, journal, and nightly callers may trigger it but must not bypass it with direct companion writes.
@@ -30,7 +32,7 @@ Updated: `2026-08-06` for release-blocker implementation boundaries.
 
 ## Largest modules
 
-Final inventory: 143 top-level Python modules and 194 test modules. Detailed per-module inventory below remains advisory; this summary is the current post-remediation count.
+Final inventory: 143 top-level Python modules and 195 test modules. Detailed per-module inventory below remains advisory; this summary is the current post-remediation count.
 
 - `memory_ops.py` — 2399 lines; public memory mutation, stats, recall and governance orchestration.
 - `nightly_digest.py` — 2032 lines; digest lifecycle, batching and committed companion replay.
