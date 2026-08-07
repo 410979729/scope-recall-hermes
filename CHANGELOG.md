@@ -4,12 +4,12 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
-## [1.9.0] - 2026-08-06
+## [1.9.1] - 2026-08-07
 
-This cumulative minor release covers all changes since the last public release, `1.8.7`. It keeps SQLite authoritative and the stable provider/tool identities unchanged while adding an explicit CJK lexical shadow-generation path, Windows long-path-safe rollout and rollback, and fail-closed endpoint transport policy.
+This cumulative patch release covers all changes since the last public release, `1.8.7`. It carries forward the full 1.9.0 source candidate while correcting its POSIX release-validation fixture; SQLite remains authoritative and the stable provider/tool identities remain unchanged.
 
 ### Added
-- Consolidated the cumulative Fact Evolution, temporal query, scope routing, evidence authority, provenance-root, idempotency, journal checkpoint, and release-identity guarantees required by the 1.9.0 public release line.
+- Consolidated the cumulative Fact Evolution, temporal query, scope routing, evidence authority, provenance-root, idempotency, journal checkpoint, and release-identity guarantees required by the 1.9.1 public release line.
 - Added a release-gated CJK lexical benchmark that records high-interference recall, English non-regression, requested-limit enforcement, p50/p95 latency, and SQLite page growth.
 - Added a backup-first CJK lexical shadow index with resumable bounded backfill, truth-table maintenance triggers, synthetic/live dual-read quality evidence, explicit compare-and-swap activation, read-only doctor health, and pointer-only rollback that retains the legacy index.
 - Added an indexed CJK bigram postings channel for two-character concepts that SQLite trigram FTS cannot represent: postings are keyed by the truth rowid, maintained by the same generation triggers and bounded backfill, and queried through a covering-index document-frequency prefilter that drops corpus-wide terms instead of scanning truth rows; the active read path permanently retains legacy FTS/LIKE/alias candidates, and the release gate rejects English candidate regressions.
@@ -18,6 +18,7 @@ This cumulative minor release covers all changes since the last public release, 
 - Added a read-only `doctor` endpoint-policy check for enabled capture, LLM journal, reflection, and hosted primary/fallback embedding transports; it resolves the same inherited provider routes and embedding base-URL environment aliases as runtime without reading API keys, and reports only origins plus recognized public API suffixes.
 
 ### Fixed
+- Corrected the lexical-doctor release fixture to create SQLite truth storage through the production truth-connection boundary, preserving the 0700/0600 POSIX permission contract instead of weakening the doctor gate.
 - Bound READY/ACTIVE lexical quality receipts to a strict privacy-safe schema, fixed provenance, source revision, integrity report, and canonical evidence fingerprint; stale or forged receipts now fail closed.
 - Acquired the durable maintenance lease and SQLite DML guard triggers for lexical build/activate/rollback, with backup-first source fencing and explicit release evidence.
 - Mapped shadow FTS rows and bigram postings to truth-row integer docids so trigger and backfill identity maintenance is an indexed rowid operation, and restricted the shadow FTS query to a bounded `rank` candidate window ordered before the outer recency tie-breaker; the strict release gate now proves the 50,000-row shadow contract (`p95 <= 100 ms`) instead of a 2,000-row smoke.
@@ -39,6 +40,10 @@ This cumulative minor release covers all changes since the last public release, 
 - Reworked Experience statistics as scoped relational aggregation instead of expanding every accessible playbook ID into one `IN (...)` list, preserving playbook/run scope checks below reduced SQLite host-parameter limits.
 - Made the release runner force UTF-8 for Python subprocesses and decode captured output explicitly, so non-UTF-8 Windows system locales cannot lose benchmark or package-stage JSON to reader-thread decode failures.
 - Made primary and fallback embedding `base_url_env` valid runtime configuration and ensured a configured non-empty environment value overrides the packaged URL fallback in both runtime construction and doctor checks.
+
+## [1.9.0] - 2026-08-06
+
+The 1.9.0 source candidate was pushed to `main` but was not tagged or published. It was superseded by 1.9.1 after cross-platform CI exposed a POSIX-only test-fixture permission mismatch; runtime safety behavior was unchanged.
 
 ## [1.8.7] - 2026-08-03
 
