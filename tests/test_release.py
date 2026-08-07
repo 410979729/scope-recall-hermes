@@ -2500,18 +2500,7 @@ def test_release_benchmark_gate_accepts_lexical_50k_release_contract(monkeypatch
             "sizes": [100_000, 1_000_000],
             "rounds_per_query": 30,
         },
-        "scripts/benchmark.lexical_cjk.py": {
-            "schema_version": "scope-recall.lexical-cjk-benchmark.v1",
-            "passed": True,
-            "rows": 50_000,
-            "rounds": 3,
-            "cjk_expected_found": 3,
-            "cjk_queries": 3,
-            "english_regressions": 0,
-            "max_result_count": 10,
-            "limit": 10,
-            "shadow_p95_ms": 73.385,
-        },
+        "scripts/benchmark.lexical_cjk.py": _valid_lexical_v2_payload(),
     }
 
     def fake_json_benchmark(script_path: str):
@@ -2535,7 +2524,142 @@ def test_release_benchmark_gate_accepts_lexical_50k_release_contract(monkeypatch
     assert result["ok"] is True, result
     assert result["lexical_cjk_metrics"]["rows"] == 50_000
     assert result["lexical_cjk_metrics"]["rounds"] == 3
+    assert result["lexical_cjk_metrics"]["target_misses"] == ["shadow_p95"]
 
-    json_payloads["scripts/benchmark.lexical_cjk.py"]["shadow_p95_ms"] = "fast"
+    lexical_payload = json_payloads["scripts/benchmark.lexical_cjk.py"]
+    lexical_payload["shadow_p95_ms"] = "fast"
     invalid_latency = release_check.benchmark_check()
     assert invalid_latency["ok"] is False
+
+    lexical_payload["shadow_p95_ms"] = 128.146864
+    lexical_payload["shadow_to_legacy_p95_ratio"] = 4.01
+    relative_regression = release_check.benchmark_check()
+    assert relative_regression["ok"] is False
+
+    lexical_payload["shadow_to_legacy_p95_ratio"] = 1.407231
+    lexical_payload["page_growth_ratio"] = 2.51
+    page_growth_regression = release_check.benchmark_check()
+    assert page_growth_regression["ok"] is False
+
+
+def _valid_lexical_v2_payload() -> dict[str, object]:
+    return {
+        "schema_version": "scope-recall.lexical-cjk-benchmark.v2",
+        "passed": True,
+        "contract_mode": "release",
+        "rows": 50_000,
+        "rounds": 3,
+        "limit": 10,
+        "cjk_queries": 3,
+        "cjk_expected_found": 3,
+        "english_queries": 2,
+        "english_regressions": 0,
+        "max_result_count": 10,
+        "legacy_p50_ms": 54.4766,
+        "legacy_p95_ms": 91.063128,
+        "shadow_p50_ms": 98.043524,
+        "shadow_p95_ms": 128.146864,
+        "shadow_to_legacy_p95_ratio": 1.407231,
+        "baseline_pages": 10_786,
+        "shadow_pages": 19_295,
+        "page_growth_ratio": 1.788893,
+        "targets": {"shadow_p95_ms": 100.0},
+        "target_misses": ["shadow_p95"],
+        "budgets": {
+            "shadow_to_legacy_p95_ratio_max": 4.0,
+            "page_growth_ratio_max": 2.5,
+        },
+        "failures": [],
+    }
+
+
+def test_release_lexical_v2_payload_validation_fails_closed() -> None:
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_lexical_v2_adversarial"
+    )
+
+    valid = _valid_lexical_v2_payload()
+    assert release_check.validate_lexical_benchmark_payload(valid) is True
+
+    bad_payloads: list[tuple[str, dict[str, object]]] = []
+
+    def changed(name: str, **updates: object) -> None:
+        payload = _valid_lexical_v2_payload()
+        payload.update(updates)
+        bad_payloads.append((name, payload))
+
+    changed("negative_ratio", shadow_to_legacy_p95_ratio=-0.1)
+    changed("negative_page_growth", page_growth_ratio=-0.1)
+    changed(
+        "inconsistent_ratio",
+        legacy_p95_ms=1.0,
+        shadow_p95_ms=100.0,
+        shadow_to_legacy_p95_ratio=1.0,
+        target_misses=[],
+    )
+    changed("inconsistent_page_growth", page_growth_ratio=1.0)
+    changed("missing_target_miss", target_misses=[])
+    changed("passed_string_false", passed="false")
+    changed("smoke_contract_mode", contract_mode="smoke")
+    changed("duplicate_target_miss", target_misses=["shadow_p95", "shadow_p95"])
+    changed("nan_latency", shadow_p95_ms=float("nan"))
+    changed("infinite_latency", shadow_p95_ms=float("inf"))
+    changed("too_many_rounds", rounds=101)
+    changed("zero_results", max_result_count=0)
+    changed(
+        "zero_latency",
+        legacy_p50_ms=0.0,
+        legacy_p95_ms=0.0,
+        shadow_p50_ms=0.0,
+        shadow_p95_ms=0.0,
+        shadow_to_legacy_p95_ratio=0.0,
+        target_misses=[],
+    )
+    changed("unknown_top_level_field", extension_field=True)
+    changed("oversized_integer", legacy_p95_ms=10**1000)
+
+    missing_failures = _valid_lexical_v2_payload()
+    del missing_failures["failures"]
+    bad_payloads.append(("missing_failures", missing_failures))
+
+    unhashable_target_miss = _valid_lexical_v2_payload()
+    unhashable_target_miss["target_misses"] = [{"bad": 1}]
+    bad_payloads.append(("unhashable_target_miss", unhashable_target_miss))
+
+    for name, payload in bad_payloads:
+        assert release_check.validate_lexical_benchmark_payload(payload) is False, name
+
+
+def test_release_lexical_v2_accepts_producer_rounding_boundaries() -> None:
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_lexical_v2_rounding"
+    )
+
+    target_boundary = _valid_lexical_v2_payload()
+    target_boundary.update(
+        {
+            "legacy_p50_ms": 90.0,
+            "legacy_p95_ms": 100.0,
+            "shadow_p50_ms": 90.0,
+            "shadow_p95_ms": 100.0,
+            "shadow_to_legacy_p95_ratio": 1.0,
+            "target_misses": [],
+        }
+    )
+    ratio_rounding_boundary = _valid_lexical_v2_payload()
+    ratio_rounding_boundary.update(
+        {
+            "legacy_p50_ms": 0.4,
+            "legacy_p95_ms": 0.500789,
+            "shadow_p50_ms": 0.4,
+            "shadow_p95_ms": 0.410686,
+            "shadow_to_legacy_p95_ratio": 0.820078,
+            "target_misses": [],
+        }
+    )
+
+    assert release_check.validate_lexical_benchmark_payload(target_boundary) is True
+    assert (
+        release_check.validate_lexical_benchmark_payload(ratio_rounding_boundary)
+        is True
+    )

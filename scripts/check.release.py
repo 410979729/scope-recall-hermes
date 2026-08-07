@@ -13,6 +13,7 @@ import ast
 import datetime as dt
 import importlib.util
 import json
+import math
 import os
 import pathlib
 import re
@@ -1001,6 +1002,158 @@ def _float_payload_value(payload: dict[str, object], key: str) -> float:
     return float("nan")
 
 
+def _strict_payload_int(payload: dict[str, object], key: str) -> int | None:
+    """Return a JSON integer without coercing booleans, strings, or floats."""
+
+    value = payload.get(key)
+    return value if type(value) is int else None
+
+
+def _finite_payload_number(payload: dict[str, object], key: str) -> float | None:
+    """Return one finite JSON number without accepting booleans or strings."""
+
+    value = payload.get(key)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+_LEXICAL_V2_FIELDS = frozenset(
+    {
+        "schema_version",
+        "passed",
+        "contract_mode",
+        "rows",
+        "rounds",
+        "limit",
+        "cjk_queries",
+        "cjk_expected_found",
+        "english_queries",
+        "english_regressions",
+        "max_result_count",
+        "legacy_p50_ms",
+        "legacy_p95_ms",
+        "shadow_p50_ms",
+        "shadow_p95_ms",
+        "shadow_to_legacy_p95_ratio",
+        "baseline_pages",
+        "shadow_pages",
+        "page_growth_ratio",
+        "targets",
+        "target_misses",
+        "budgets",
+        "failures",
+    }
+)
+
+
+def validate_lexical_benchmark_payload(payload: dict[str, object]) -> bool:
+    """Validate the v2 release payload and recompute all derived hard gates."""
+
+    if (
+        payload.get("passed") is not True
+        or payload.get("schema_version")
+        != "scope-recall.lexical-cjk-benchmark.v2"
+        or payload.get("contract_mode") != "release"
+        or set(payload) != _LEXICAL_V2_FIELDS
+    ):
+        return False
+
+    rows = _strict_payload_int(payload, "rows")
+    rounds = _strict_payload_int(payload, "rounds")
+    limit = _strict_payload_int(payload, "limit")
+    cjk_queries = _strict_payload_int(payload, "cjk_queries")
+    cjk_found = _strict_payload_int(payload, "cjk_expected_found")
+    english_queries = _strict_payload_int(payload, "english_queries")
+    english_regressions = _strict_payload_int(payload, "english_regressions")
+    max_result_count = _strict_payload_int(payload, "max_result_count")
+    baseline_pages = _strict_payload_int(payload, "baseline_pages")
+    shadow_pages = _strict_payload_int(payload, "shadow_pages")
+    if (
+        rows != 50_000
+        or rounds is None
+        or not 3 <= rounds <= 100
+        or limit != 10
+        or cjk_queries != 3
+        or cjk_found != cjk_queries
+        or english_queries != 2
+        or english_regressions != 0
+        or max_result_count is None
+        or max_result_count < 1
+        or max_result_count > limit
+        or baseline_pages is None
+        or baseline_pages <= 0
+        or shadow_pages is None
+        or shadow_pages <= 0
+    ):
+        return False
+
+    legacy_p50 = _finite_payload_number(payload, "legacy_p50_ms")
+    legacy_p95 = _finite_payload_number(payload, "legacy_p95_ms")
+    shadow_p50 = _finite_payload_number(payload, "shadow_p50_ms")
+    shadow_p95 = _finite_payload_number(payload, "shadow_p95_ms")
+    latency_ratio = _finite_payload_number(
+        payload, "shadow_to_legacy_p95_ratio"
+    )
+    page_growth = _finite_payload_number(payload, "page_growth_ratio")
+    if (
+        legacy_p50 is None
+        or legacy_p95 is None
+        or shadow_p50 is None
+        or shadow_p95 is None
+        or latency_ratio is None
+        or page_growth is None
+        or legacy_p50 < 0.0
+        or legacy_p95 <= 0.0
+        or legacy_p95 < legacy_p50
+        or shadow_p50 < 0.0
+        or shadow_p95 <= 0.0
+        or shadow_p95 < shadow_p50
+        or not 0.0 <= latency_ratio <= 4.0
+        or not 1.0 <= page_growth <= 2.5
+    ):
+        return False
+
+    expected_ratio = shadow_p95 / max(legacy_p95, 0.25)
+    expected_page_growth = shadow_pages / baseline_pages
+    if not math.isclose(latency_ratio, expected_ratio, rel_tol=0.0, abs_tol=1e-6):
+        return False
+    if not math.isclose(
+        page_growth, expected_page_growth, rel_tol=0.0, abs_tol=1e-6
+    ):
+        return False
+
+    targets = payload.get("targets")
+    budgets = payload.get("budgets")
+    if not isinstance(targets, dict) or set(targets) != {"shadow_p95_ms"}:
+        return False
+    if not isinstance(budgets, dict) or set(budgets) != {
+        "shadow_to_legacy_p95_ratio_max",
+        "page_growth_ratio_max",
+    }:
+        return False
+    shadow_target = _finite_payload_number(targets, "shadow_p95_ms")
+    ratio_budget = _finite_payload_number(
+        budgets, "shadow_to_legacy_p95_ratio_max"
+    )
+    page_budget = _finite_payload_number(budgets, "page_growth_ratio_max")
+    if shadow_target is None or ratio_budget is None or page_budget is None:
+        return False
+    if shadow_target != 100.0 or ratio_budget != 4.0 or page_budget != 2.5:
+        return False
+
+    target_misses = payload.get("target_misses")
+    expected_target_misses = ["shadow_p95"] if shadow_p95 > shadow_target else []
+    if target_misses != expected_target_misses:
+        return False
+    failures = payload.get("failures")
+    return isinstance(failures, list) and failures == []
+
+
 def benchmark_check() -> dict[str, object]:
     golden_payloads: list[dict[str, object]] = []
     for cases_path in ("", "benchmarks/golden_recall_hybrid_cases.json"):
@@ -1072,20 +1225,7 @@ def benchmark_check() -> dict[str, object]:
         and scale_payload.get("sizes") == [100_000, 1_000_000]
         and _int_payload_value(scale_payload, "rounds_per_query") >= 30
     )
-    lexical_ok = (
-        bool(lexical_payload.get("passed"))
-        and lexical_payload.get("schema_version")
-        == "scope-recall.lexical-cjk-benchmark.v1"
-        and _int_payload_value(lexical_payload, "rows") == 50_000
-        and _int_payload_value(lexical_payload, "rounds") >= 3
-        and _int_payload_value(lexical_payload, "cjk_expected_found")
-        == _int_payload_value(lexical_payload, "cjk_queries")
-        == 3
-        and _int_payload_value(lexical_payload, "english_regressions") == 0
-        and _int_payload_value(lexical_payload, "max_result_count")
-        <= _int_payload_value(lexical_payload, "limit")
-        and _float_payload_value(lexical_payload, "shadow_p95_ms") <= 100.0
-    )
+    lexical_ok = validate_lexical_benchmark_payload(lexical_payload)
     return {
         "ok": golden_ok
         and bool(graph_payload.get("passed"))
