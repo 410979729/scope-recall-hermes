@@ -57,6 +57,8 @@ from scope_recall_lexical_migration_runtime.sql_store import ensure_schema  # no
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse the bounded lexical migration operator command line."""
+
     parser = argparse.ArgumentParser(
         description="Build or switch the supplemental CJK lexical shadow index"
     )
@@ -111,6 +113,8 @@ def _blocked(
 
 
 def main() -> int:
+    """Execute a dry-run plan or an explicitly confirmed migration operation."""
+
     args = parse_args()
     reconfigure_stdout = getattr(sys.stdout, "reconfigure", None)
     if callable(reconfigure_stdout):
