@@ -138,6 +138,38 @@ def test_nightly_llm_retry_reports_actual_attempt_count_for_non_retryable_errors
     assert "auth after 3 attempt(s)" not in message
 
 
+def test_nightly_llm_retry_treats_http_404_as_non_retryable_endpoint_config(monkeypatch):
+    import scope_recall.nightly_llm as nightly_llm
+
+    calls = {"count": 0}
+
+    def fake_call_llm(*args, **kwargs):  # noqa: ARG001
+        calls["count"] += 1
+        raise RuntimeError("LLM HTTP 404 at https://example.invalid/responses")
+
+    monkeypatch.setattr(nightly_llm, "call_llm", fake_call_llm)
+
+    try:
+        nightly_llm.call_llm_with_retries(
+            "prompt",
+            model="test-model",
+            base_url="https://example.invalid",
+            api_key="",
+            timeout=1,
+            api_mode="codex_responses",
+            max_attempts=3,
+            retry_delay=0,
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+    else:  # pragma: no cover - defensive, fake_call_llm always raises
+        raise AssertionError("call_llm_with_retries should raise after endpoint error")
+
+    assert calls["count"] == 1
+    assert "endpoint_config after 1 attempt(s)" in message
+    assert "after 3 attempt(s)" not in message
+
+
 def test_nightly_llm_resolve_config_accepts_digest_options_shape(tmp_path):
     from scope_recall.nightly_llm import resolve_llm_config
 
@@ -256,3 +288,29 @@ model:
     assert config["api_mode"] == "codex_responses"
     assert config["api_key"] == "codex-oauth-token"
     assert config["api_key"] != "deepseek-should-not-be-used"
+
+
+def test_nightly_llm_default_codex_uses_official_backend_without_explicit_base_url(tmp_path):
+    from scope_recall.nightly_llm import resolve_llm_config
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    (hermes_home / "auth.json").write_text(
+        json.dumps({"credential_pool": {"openai-codex": [{"access_token": "codex-oauth-token"}]}}),
+        encoding="utf-8",
+    )
+    (hermes_home / "config.yaml").write_text(
+        """
+model:
+  provider: openai-codex
+  default: gpt-5.5
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = resolve_llm_config(hermes_home, DigestOptions(hermes_home=hermes_home, digest_date=date(2026, 6, 13)))
+
+    assert config["provider"] == "openai-codex"
+    assert config["api_mode"] == "codex_responses"
+    assert config["base_url"] == "https://chatgpt.com/backend-api/codex"

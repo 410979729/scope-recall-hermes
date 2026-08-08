@@ -160,11 +160,16 @@ def resolve_llm_config(hermes_home: Path, options: Any) -> dict[str, Any]:
         or model_cfg.get("default_model")
         or "gpt-4o-mini"
     )
+    provider_default_base_url = (
+        "https://chatgpt.com/backend-api/codex"
+        if provider.lower() == "openai-codex"
+        else "https://api.openai.com"
+    )
     base_url = getattr(options, "base_url", "") or str(
         nightly_cfg.get("base_url")
         or provider_cfg.get("base_url")
         or model_cfg.get("base_url")
-        or "https://api.openai.com"
+        or provider_default_base_url
     )
     endpoint = getattr(options, "endpoint", "") or str(
         nightly_cfg.get("endpoint")
@@ -533,6 +538,8 @@ def classify_llm_error(exc: Exception) -> tuple[str, bool]:
         return "rate_limit", True
     if any(token in message for token in ("500", "502", "503", "504", "server error", "bad gateway", "service unavailable", "gateway timeout")):
         return "server", True
+    if "404" in message or "not found" in message:
+        return "endpoint_config", False
     if any(token in message for token in ("connection", "network", "temporarily", "reset by peer", "remote end closed")):
         return "network", True
     if any(token in message for token in ("401", "403", "unauthorized", "forbidden", "invalid api key", "permission")):
