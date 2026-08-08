@@ -727,6 +727,61 @@ def test_verified_online_backup_cleans_claimed_placeholder_when_open_fails(
     ))
 
 
+def test_release_owned_artifacts_pins_posix_identity_through_path_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POSIX cleanup must not release an inode before its ownership decision."""
+
+    import scope_recall.sqlite_backup as sqlite_backup
+
+    staging = tmp_path / "backup.sqlite3.scope-recall-stage-test.tmp"
+    descriptor = os.open(staging, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+    identity = sqlite_backup._stat_identity(os.fstat(descriptor))
+    observed_open_identity: list[tuple[int, int]] = []
+
+    def assert_descriptor_pinned(path, owned_identity):  # noqa: ANN001
+        observed_open_identity.append(
+            sqlite_backup._stat_identity(os.fstat(descriptor))
+        )
+        assert path == staging
+        assert owned_identity == identity
+        return []
+
+    monkeypatch.setattr(
+        sqlite_backup,
+        "_UNLINK_OPEN_DESCRIPTOR_SAFE",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        sqlite_backup,
+        "_remove_owned_sqlite_artifacts",
+        assert_descriptor_pinned,
+    )
+
+    try:
+        descriptor_released, cleanup_failures = (
+            sqlite_backup._release_owned_sqlite_artifacts(
+                staging,
+                identity,
+                descriptor,
+            )
+        )
+    finally:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        staging.unlink(missing_ok=True)
+
+    assert descriptor_released is True
+    assert cleanup_failures == []
+    assert observed_open_identity == [identity]
+    with pytest.raises(OSError):
+        os.fstat(descriptor)
+    assert not staging.exists()
+
+
 def test_verified_online_backup_preserves_external_replacement_during_cleanup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

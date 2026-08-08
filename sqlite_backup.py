@@ -22,6 +22,7 @@ from .truth_connection import connect_truth_database
 
 
 _FileIdentity = tuple[int, int]
+_UNLINK_OPEN_DESCRIPTOR_SAFE = os.name != "nt"
 
 
 class SqliteBackupError(RuntimeError):
@@ -139,10 +140,26 @@ def _release_owned_sqlite_artifacts(
     owned_identity: _FileIdentity | None,
     owned_descriptor: int | None,
 ) -> tuple[bool, list[str]]:
-    """Release the reservation handle before identity-aware path cleanup."""
+    """Release one reservation without opening an inode-reuse cleanup race.
+
+    POSIX can unlink an open inode, so cleanup keeps the descriptor pinned until
+    after the path identity decision. Windows must close the reservation first
+    because an open descriptor prevents unlinking the staging file there.
+    """
 
     failures: list[str] = []
     descriptor_released = True
+    if owned_descriptor is not None and _UNLINK_OPEN_DESCRIPTOR_SAFE:
+        try:
+            failures.extend(_remove_owned_sqlite_artifacts(path, owned_identity))
+        finally:
+            descriptor_released, close_failures = _close_descriptor(
+                owned_descriptor,
+                owned_identity,
+            )
+            failures.extend(close_failures)
+        return descriptor_released, failures
+
     if owned_descriptor is not None:
         descriptor_released, close_failures = _close_descriptor(
             owned_descriptor,
