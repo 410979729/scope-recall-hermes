@@ -8,9 +8,11 @@ configuration always wins. Non-Desktop platforms must not use this path.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import re
 import secrets
+import tempfile
 from typing import Any
 
 from .file_lock import advisory_file_lock
@@ -54,17 +56,110 @@ def _normalize_explicit(value: Any) -> str:
 
 
 def _read_principal_file(path: Path) -> str:
-    try:
-        raw = path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
-    if _PRINCIPAL_PATTERN.fullmatch(raw) or _EXPLICIT_PATTERN.fullmatch(raw):
+    raw = path.read_text(encoding="utf-8")
+    if raw.endswith(chr(13) + chr(10)):
+        raw = raw[:-2]
+    elif raw.endswith("\n"):
+        raw = raw[:-1]
+    if _PRINCIPAL_PATTERN.fullmatch(raw):
         return raw
-    return ""
+    raise ValueError("persistent Desktop principal file is empty or invalid")
+
+
+def _existing_principal(path: Path) -> str:
+    try:
+        return _read_principal_file(path)
+    except FileNotFoundError:
+        return ""
+
+
+def _optimistic_existing_principal(path: Path) -> str:
+    """Read before locking, deferring transient sharing denial to a locked retry."""
+
+    try:
+        return _existing_principal(path)
+    except PermissionError:
+        # A concurrent Windows replace can expose the final path before another
+        # thread can open it. The locked read below remains strict: persistent
+        # ACL errors or non-file paths still propagate and are never overwritten.
+        return ""
 
 
 def _mint_opaque_principal() -> str:
     return f"srdesk_{secrets.token_hex(16)}"
+
+
+def _sync_directory(path: Path) -> None:
+    """Flush the parent directory using the strongest available OS primitive."""
+
+    if os.name == "nt":
+        import ctypes
+
+        # Windows has no portable directory fd/fsync. Flush a directory handle
+        # opened with backup semantics and write-through so rename metadata is
+        # pushed through the filesystem before this function returns.
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.argtypes = [
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+        ]
+        kernel32.CreateFileW.restype = ctypes.c_void_p
+        kernel32.FlushFileBuffers.argtypes = [ctypes.c_void_p]
+        kernel32.FlushFileBuffers.restype = ctypes.c_int
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.restype = ctypes.c_int
+        handle = kernel32.CreateFileW(
+            str(path),
+            0x40000000,
+            0x00000007,
+            None,
+            3,
+            0x02000000 | 0x80000000,
+            None,
+        )
+        if handle == ctypes.c_void_p(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            if not kernel32.FlushFileBuffers(handle):
+                raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            kernel32.CloseHandle(handle)
+        return
+
+    directory_fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _persist_principal(path: Path, principal: str) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary = Path(temporary_name)
+    replaced = False
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+            descriptor = -1
+            handle.write(principal + chr(10))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        replaced = True
+        _sync_directory(path.parent)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if not replaced:
+            temporary.unlink(missing_ok=True)
 
 
 def resolve_desktop_principal(
@@ -88,18 +183,16 @@ def resolve_desktop_principal(
     storage = _storage_dir(home)
     storage.mkdir(parents=True, exist_ok=True)
     path = _principal_path(home)
-    existing = _read_principal_file(path)
+    existing = _optimistic_existing_principal(path)
     if existing:
         return existing
 
     with advisory_file_lock(_lock_path(home)):
-        existing = _read_principal_file(path)
+        existing = _existing_principal(path)
         if existing:
             return existing
         principal = _mint_opaque_principal()
-        temporary = path.with_suffix(path.suffix + ".tmp")
-        temporary.write_text(principal + "\n", encoding="utf-8")
-        temporary.replace(path)
+        _persist_principal(path, principal)
         return principal
 
 

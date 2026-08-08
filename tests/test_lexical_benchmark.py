@@ -4,9 +4,22 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+
+from scope_recall.lexical_generation import (
+    LEXICAL_GENERATION_ID,
+    LEXICAL_POSTINGS_TABLE,
+    LEXICAL_SHADOW_TABLE,
+    backfill_generation,
+    create_shadow_generation,
+    ensure_lexical_generation_schema,
+    generation_integrity_report,
+)
+from scope_recall.sql_store import ensure_schema, store_row
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "benchmark.lexical_cjk.py"
@@ -146,3 +159,181 @@ def test_lexical_cjk_benchmark_reports_quality_latency_and_growth():
     assert payload["shadow_to_legacy_p95_ratio"] >= 0.0
     assert payload["page_growth_ratio"] >= 1.0
     assert payload["failures"] == []
+
+
+# Structural performance invariants. These tests pin query-plan shapes instead
+# of wall-clock budgets so they stay stable across hosts.
+
+_POSTINGS_DOCID_INDEX = "idx_lexical_cjk_postings_v1_docid"
+# Unconstrained FTS access path (``INDEX 0:`` with no rowid constraint); a
+# constrained lookup renders as ``INDEX 0:=`` / ``INDEX 0:><`` instead.
+_BLIND_SHADOW_SCAN = re.compile(r"^SCAN \S+ VIRTUAL TABLE INDEX 0:$")
+
+
+def _shadow_fixture(rows: int = 4) -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    ensure_lexical_generation_schema(conn)
+    for index in range(rows):
+        store_row(
+            conn,
+            memory_id=f"memory-{index}",
+            scope_id="scope-a",
+            platform="telegram",
+            user_id="user-a",
+            chat_id="chat-a",
+            thread_id="",
+            gateway_session_key="",
+            agent_identity="aria",
+            agent_workspace="workspace-a",
+            session_id="session-a",
+            source="user",
+            target="memory",
+            content=f"数据库迁移记录 {index}",
+            metadata=json.dumps({"lifecycle": "promoted"}),
+            commit=False,
+            enqueue_vector_intent=False,
+        )
+    conn.commit()
+    create_shadow_generation(conn)
+    while not bool(
+        backfill_generation(conn, LEXICAL_GENERATION_ID, batch_size=2)["complete"]
+    ):
+        conn.commit()
+    conn.commit()
+    return conn
+
+
+def _eqp_details(
+    conn: sqlite3.Connection, sql: str, params: tuple[object, ...] | None = None
+) -> list[str]:
+    if params is None:
+        # EXPLAIN does not execute the statement; placeholder values only need
+        # to satisfy the binding count.
+        params = tuple(None for _ in range(sql.count("?")))
+    return [
+        str(row[3])
+        for row in conn.execute(f"EXPLAIN QUERY PLAN {sql}", params).fetchall()
+    ]
+
+
+def _is_blind_shadow_scan(detail: str) -> bool:
+    """Full virtual-table scan: an unconstrained ``INDEX 0:`` access path."""
+
+    return bool(_BLIND_SHADOW_SCAN.fullmatch(detail.strip()))
+
+
+def test_postings_docid_deletes_use_the_covering_docid_index():
+    conn = _shadow_fixture()
+
+    equality_plan = _eqp_details(
+        conn, f"DELETE FROM {LEXICAL_POSTINGS_TABLE} WHERE docid = ?", (1,)
+    )
+    range_plan = _eqp_details(
+        conn,
+        f"DELETE FROM {LEXICAL_POSTINGS_TABLE} WHERE docid > ? AND docid <= ?",
+        (1, 2),
+    )
+
+    for plan in (equality_plan, range_plan):
+        assert any(
+            f"SEARCH {LEXICAL_POSTINGS_TABLE} USING COVERING INDEX "
+            f"{_POSTINGS_DOCID_INDEX}" in detail
+            for detail in plan
+        ), plan
+        assert not any(
+            detail.strip() == f"SCAN {LEXICAL_POSTINGS_TABLE}" for detail in plan
+        ), plan
+
+
+def test_backfill_page_rebuild_uses_bounded_delete_plans():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    ensure_lexical_generation_schema(conn)
+    for index in range(4):
+        store_row(
+            conn,
+            memory_id=f"memory-{index}",
+            scope_id="scope-a",
+            platform="telegram",
+            user_id="user-a",
+            chat_id="chat-a",
+            thread_id="",
+            gateway_session_key="",
+            agent_identity="aria",
+            agent_workspace="workspace-a",
+            session_id="session-a",
+            source="user",
+            target="memory",
+            content=f"数据库迁移记录 {index}",
+            metadata=json.dumps({"lifecycle": "promoted"}),
+            commit=False,
+            enqueue_vector_intent=False,
+        )
+    conn.commit()
+    create_shadow_generation(conn)
+    backfill_generation(conn, LEXICAL_GENERATION_ID, batch_size=2)
+    conn.commit()
+
+    statements: list[str] = []
+    conn.set_trace_callback(statements.append)
+    backfill_generation(conn, LEXICAL_GENERATION_ID, batch_size=2)
+    conn.set_trace_callback(None)
+    traced = [sql.strip() for sql in statements]
+
+    shadow_delete = next(
+        sql for sql in traced if sql.startswith(f"DELETE FROM {LEXICAL_SHADOW_TABLE}")
+    )
+    postings_delete = next(
+        sql
+        for sql in traced
+        if sql.startswith(f"DELETE FROM {LEXICAL_POSTINGS_TABLE}")
+    )
+    shadow_plan = _eqp_details(conn, shadow_delete)
+    postings_plan = _eqp_details(conn, postings_delete)
+
+    # The FTS docid range delete must be a constrained range access, never a
+    # blind full virtual-table scan.
+    assert shadow_plan
+    assert not any(_is_blind_shadow_scan(detail) for detail in shadow_plan), shadow_plan
+    # The postings page delete must ride the docid-leading covering index.
+    assert any(
+        f"SEARCH {LEXICAL_POSTINGS_TABLE} USING COVERING INDEX "
+        f"{_POSTINGS_DOCID_INDEX}" in detail
+        for detail in postings_plan
+    ), postings_plan
+
+
+def test_integrity_report_has_no_correlated_blind_shadow_scan():
+    conn = _shadow_fixture()
+
+    statements: list[str] = []
+    conn.set_trace_callback(statements.append)
+    report = generation_integrity_report(conn, LEXICAL_GENERATION_ID)
+    conn.set_trace_callback(None)
+    assert report["healthy"] is True
+
+    missing_plans: list[list[str]] = []
+    for sql in statements:
+        text = sql.strip()
+        if not text.startswith(("SELECT", "INSERT", "UPDATE", "DELETE")):
+            # Transaction markers and FTS-internal ``--`` commentary are not
+            # independently explainable statements.
+            continue
+        plan = _eqp_details(conn, text)
+        correlated = any("CORRELATED SCALAR SUBQUERY" in detail for detail in plan)
+        blind = any(_is_blind_shadow_scan(detail) for detail in plan)
+        # The O(n^2) signature: a correlated subquery re-scanning the whole
+        # shadow table once per outer row.
+        assert not (correlated and blind), (sql, plan)
+        if "LEFT JOIN" in sql and LEXICAL_SHADOW_TABLE in sql and "IS NULL" in sql:
+            missing_plans.append(plan)
+
+    # The missing-row check specifically must be a flat rowid anti-join.
+    assert missing_plans
+    for plan in missing_plans:
+        assert not any(
+            "CORRELATED SCALAR SUBQUERY" in detail for detail in plan
+        ), plan

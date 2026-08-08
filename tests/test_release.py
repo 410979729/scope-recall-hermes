@@ -339,6 +339,15 @@ def test_memory_governance_modules_are_release_packaged_and_type_checked():
         assert module not in pyright["missing_pyright_include"]
 
 
+def test_sqlite_backup_module_is_release_packaged_and_type_checked():
+    release_check = _load_release_check_module("scope_recall_check_release_sqlite_backup")
+
+    pyright = release_check.pyright_include_check()
+    assert "sqlite_backup.py" in release_check.REQUIRED_SOURCE_FILES
+    assert "scope_recall/sqlite_backup.py" in release_check.REQUIRED_WHEEL
+    assert "sqlite_backup.py" not in pyright["missing_pyright_include"]
+
+
 def test_required_source_modules_are_pyright_covered():
     release_check = _load_release_check_module("scope_recall_check_release_pyright_coverage")
 
@@ -495,6 +504,21 @@ def test_windows_lane_remains_a_release_gate():
     assert "test_atomic_replace" in windows_command
     assert "test_confirmed_activation_compensation" in windows_command
     assert "test_maintenance_lease.py" in windows_command
+
+    principal_stress = next(
+        step
+        for step in windows_job["steps"]
+        if step.get("name") == "Stress Desktop principal convergence"
+    )
+    stress_command = str(principal_stress["run"])
+    assert principal_stress["shell"] == "pwsh"
+    assert principal_stress["env"]["PYTHONPATH"] == "${{ github.workspace }}"
+    assert "1..20" in stress_command
+    assert (
+        "tests/test_desktop_principal.py::"
+        "test_concurrent_desktop_principal_first_create_converges"
+    ) in stress_command
+    assert "if ($LASTEXITCODE -ne 0)" in stress_command
 
     matrix_job = workflow["jobs"]["test"]
     windows_full = [
@@ -2599,6 +2623,9 @@ def test_release_lexical_v2_payload_validation_fails_closed() -> None:
     )
     changed("inconsistent_page_growth", page_growth_ratio=1.0)
     changed("missing_target_miss", target_misses=[])
+    changed("spurious_target_miss_when_met", shadow_p95_ms=99.0, target_misses=["shadow_p95"], shadow_to_legacy_p95_ratio=1.087231)
+    changed("unknown_target_miss", target_misses=["shadow_p50"])
+    changed("target_misses_not_list", target_misses="shadow_p95")
     changed("passed_string_false", passed="false")
     changed("smoke_contract_mode", contract_mode="smoke")
     changed("duplicate_target_miss", target_misses=["shadow_p95", "shadow_p95"])
@@ -2617,6 +2644,10 @@ def test_release_lexical_v2_payload_validation_fails_closed() -> None:
     )
     changed("unknown_top_level_field", extension_field=True)
     changed("oversized_integer", legacy_p95_ms=10**1000)
+    changed(
+        "contradictory_target_evidence",
+        targets={"shadow_p95_ms": 50.0},
+    )
 
     missing_failures = _valid_lexical_v2_payload()
     del missing_failures["failures"]
@@ -2628,6 +2659,24 @@ def test_release_lexical_v2_payload_validation_fails_closed() -> None:
 
     for name, payload in bad_payloads:
         assert release_check.validate_lexical_benchmark_payload(payload) is False, name
+
+
+def test_release_lexical_v2_absolute_shadow_p95_target_miss_is_not_hard_gate() -> None:
+    """RB-6: absolute shadow_p95<=100 is a cross-host target, not a hard gate."""
+
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_lexical_v2_rb6_target"
+    )
+
+    absolute_miss = _valid_lexical_v2_payload()
+    assert absolute_miss["shadow_p95_ms"] > absolute_miss["targets"]["shadow_p95_ms"]
+    assert absolute_miss["target_misses"] == ["shadow_p95"]
+    assert absolute_miss["shadow_to_legacy_p95_ratio"] <= 4.0
+    assert absolute_miss["page_growth_ratio"] <= 2.5
+    assert absolute_miss["cjk_expected_found"] == absolute_miss["cjk_queries"]
+    assert absolute_miss["english_regressions"] == 0
+    assert absolute_miss["max_result_count"] <= absolute_miss["limit"]
+    assert release_check.validate_lexical_benchmark_payload(absolute_miss) is True
 
 
 def test_release_lexical_v2_accepts_producer_rounding_boundaries() -> None:

@@ -1050,9 +1050,15 @@ _LEXICAL_V2_FIELDS = frozenset(
     }
 )
 
-
 def validate_lexical_benchmark_payload(payload: dict[str, object]) -> bool:
-    """Validate the v2 release payload and recompute all derived hard gates."""
+    """Validate the v2 release payload and recompute all derived hard gates.
+
+    Absolute ``shadow_p95_ms <= 100`` is a cross-host *target* recorded via
+    structured ``target_misses``, not a universal hard gate. Hard gates remain
+    relative latency ratio, page growth, CJK/English correctness, and result caps.
+    The baseline recomputes expected ``target_misses`` and rejects contradictory
+    declarations inline.
+    """
 
     if (
         payload.get("passed") is not True

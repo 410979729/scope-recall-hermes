@@ -103,6 +103,15 @@ jobs:
           python -m pip install ".[lancedb,dev]"
           python .github/scripts/checkout_pinned_hermes.py
           python -m pip install -e .hermes-agent-src
+      - name: Stress Desktop principal convergence
+        shell: pwsh
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          1..20 | ForEach-Object {
+            python -m pytest -q -p no:cacheprovider tests/test_desktop_principal.py::test_concurrent_desktop_principal_first_create_converges
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Exercise Windows install and rollback paths
         shell: pwsh
         env:

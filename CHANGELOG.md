@@ -4,6 +4,12 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- Made Desktop principal recovery fail closed on corrupt/unreadable persisted identity and publish first-create identities with durable atomic replacement under concurrency.
+- Made lexical backfill page replay idempotent, added the docid-leading postings index and health check, and made integrity checks detect rowid/memory-id identity swaps without correlated shadow rescans.
+- Extracted a single-responsibility verified SQLite online-backup/health boundary used by activation receipts (source/backup health + logical fingerprint equivalence, fail closed); ordinary startup still does not create backups.
+- Clarified lexical release RB-6 semantics: absolute `shadow_p95_ms <= 100` is a cross-host target with structured `target_misses` evidence, not a universal hard gate.
+
 ## [1.9.1] - 2026-08-07
 
 This cumulative patch release covers all changes since the last public release, `1.8.7`. It carries forward the full 1.9.0 source candidate while correcting its POSIX release-validation fixture; SQLite remains authoritative and the stable provider/tool identities remain unchanged.
@@ -21,7 +27,7 @@ This cumulative patch release covers all changes since the last public release, 
 - Corrected the lexical-doctor release fixture to create SQLite truth storage through the production truth-connection boundary, preserving the 0700/0600 POSIX permission contract instead of weakening the doctor gate.
 - Bound READY/ACTIVE lexical quality receipts to a strict privacy-safe schema, fixed provenance, source revision, integrity report, and canonical evidence fingerprint; stale or forged receipts now fail closed.
 - Acquired the durable maintenance lease and SQLite DML guard triggers for lexical build/activate/rollback, with backup-first source fencing and explicit release evidence.
-- Mapped shadow FTS rows and bigram postings to truth-row integer docids so trigger and backfill identity maintenance is an indexed rowid operation, and restricted the shadow FTS query to a bounded `rank` candidate window ordered before the outer recency tie-breaker; the strict release gate now proves the 50,000-row shadow contract (`p95 <= 100 ms`) instead of a 2,000-row smoke.
+- Mapped shadow FTS rows and bigram postings to truth-row integer docids so trigger and backfill identity maintenance is an indexed rowid operation, and restricted the shadow FTS query to a bounded `rank` candidate window ordered before the outer recency tie-breaker; the strict release gate now proves the 50,000-row shadow contract with hard gates on relative p95 ratio (`<= 4`), page growth (`<= 2.5`), CJK/English correctness, and result caps, while `shadow_p95_ms <= 100` remains a cross-host target recorded via structured `target_misses` rather than a universal hard fail.
 - Held the lexical maintenance `BEGIN IMMEDIATE` fence across source binding, the online backup copied through a separate reader connection, the post-backup binding compare, and guard-trigger installation, so a raw writer can no longer commit between the compare and guard boundaries and leave the backup inconsistent while the receipt reports `stable`; the backup itself remains free of temporary guard triggers, and all four raw-writer injection boundaries are covered by permanent race tests.
 - Normalized credential query/header keys until percent-decoding is stable (bounded against obfuscation bombs), failing closed on malformed, invalid-UTF-8, or residual escapes and on keys that stay encoded past the decode bound; deeply encoded aliases such as depth-4+ `api_key` are rejected in HTTPS queries and stripped at plaintext-HTTP sinks, while non-credential metadata keys remain allowed.
 - Made the release gate fail closed with structured prerequisite output when Git is missing from `PATH` instead of raising a bare `FileNotFoundError` traceback.
