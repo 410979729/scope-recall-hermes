@@ -174,6 +174,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "curated_memory": {
         "mode": "single-user",
         "allowed_user_ids": [],
+        "auto_recall": True,
+        "include_in_tools": True,
+        "dedupe_candidates": True,
     },
     "shared_pool": {
         "enabled": False,

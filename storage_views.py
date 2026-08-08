@@ -7,7 +7,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from .gating import build_fts_query, compact_text, like_terms, normalized_token_set, retrieval_query_tokens
+from .gating import build_fts_query, compact_text, config_bool, like_terms, normalized_token_set, retrieval_query_tokens
 from .governance import classify_memory
 from .graph import load_metadata
 from .lifecycle_policy import ORDINARY_RECALL_HIDDEN_LIFECYCLE_VALUES, ordinary_recall_lifecycle_visible_sql
@@ -278,8 +278,14 @@ def search_vector_memories(provider: Any, query: str, *, limit: int) -> list[Rec
     return results
 
 
-def _curated_memory_allowed(provider: Any) -> bool:
-    raw_cfg = (provider._config or {}).get("curated_memory", {})
+def curated_memory_policy_allows(
+    runtime_config: dict[str, Any] | None,
+    *,
+    user_id: str = "",
+) -> bool:
+    """Return whether one runtime identity may read profile-global curated files."""
+
+    raw_cfg = (runtime_config or {}).get("curated_memory", {})
     if raw_cfg is False:
         return False
     cfg = raw_cfg if isinstance(raw_cfg, dict) else {}
@@ -287,11 +293,10 @@ def _curated_memory_allowed(provider: Any) -> bool:
     if mode in {"disabled", "off", "false", "none"}:
         return False
 
-    scope = getattr(provider, "_scope", None)
-    user_id = str(getattr(scope, "user_id", "") or "")
+    clean_user_id = str(user_id or "")
     allowed = [str(item).strip() for item in (cfg.get("allowed_user_ids") or []) if str(item).strip()]
     if allowed:
-        return bool(user_id and user_id in allowed)
+        return bool(clean_user_id and clean_user_id in allowed)
     if mode in {"explicit-users", "allow-list", "allowlist"}:
         return False
     if mode in {"shared"}:
@@ -303,7 +308,17 @@ def _curated_memory_allowed(provider: Any) -> bool:
     # Safe default: global curated files may be injected only when Hermes is not
     # running with an explicit gateway user id. Provider-owned SQLite rows remain
     # the scoped durable store for multi-user contexts.
-    return not bool(user_id)
+    return not bool(clean_user_id)
+
+
+def _curated_memory_allowed(provider: Any) -> bool:
+    raw_cfg = (provider._config or {}).get("curated_memory", {})
+    cfg = raw_cfg if isinstance(raw_cfg, dict) else {}
+    if not config_bool(cfg, "include_in_tools", True):
+        return False
+    scope = getattr(provider, "_scope", None)
+    user_id = str(getattr(scope, "user_id", "") or "")
+    return curated_memory_policy_allows(provider._config, user_id=user_id)
 
 
 def search_curated_memories(provider: Any, query: str) -> list[RecallItem]:

@@ -25,7 +25,11 @@ def render_current_turn_recall(provider: Any, query: str) -> str:
     if should_skip_retrieval(normalized_query, int(provider._config_value("auto_recall_min_length", 15))):
         return ""
 
-    results = provider._recall_service.search_memories(normalized_query, limit=provider._retrieve_limit())
+    results = provider._recall_service.search_memories(
+        normalized_query,
+        limit=provider._retrieve_limit(),
+        include_curated=_curated_auto_recall_enabled(provider),
+    )
     results = _drop_recently_recalled(provider, results)
     selected = _select_recall_items(provider, results)
     if not selected:
@@ -67,6 +71,21 @@ def render_current_turn_recall(provider: Any, query: str) -> str:
 
 def _should_attempt_recall(provider: Any) -> bool:
     return config_bool(provider._config, "auto_recall", True) and provider._scope.agent_context == "primary"
+
+
+def _curated_auto_recall_enabled(provider: Any) -> bool:
+    """Return whether Hermes-curated rows may enter the automatic prompt block.
+
+    Tool/profile searches use a separate policy.  This split lets deployments
+    keep USER.md/MEMORY.md as live searchable authority while avoiding a second
+    copy when Hermes already injects those files into the system prompt.
+    """
+
+    raw_config = (provider._config or {}).get("curated_memory", {})
+    if raw_config is False:
+        return False
+    config = raw_config if isinstance(raw_config, dict) else {}
+    return config_bool(config, "auto_recall", True)
 
 
 def _drop_recently_recalled(provider: Any, results: list[RecallItem]) -> list[RecallItem]:

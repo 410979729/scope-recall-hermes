@@ -14,8 +14,9 @@ import uuid
 from typing import Any, Iterable
 
 from .candidate_extraction import ExtractedCandidate
+from .memory_text_merge import curated_entry_covering_candidate
 from .models import RuntimeScope
-from .sql_store import record_governance_audit_event, store_row
+from .sql_store import curated_recall_item_id, record_governance_audit_event, store_row
 
 
 def _candidate_metadata(candidate: ExtractedCandidate) -> dict[str, Any]:
@@ -40,17 +41,25 @@ def store_event_candidates(
     scope_id: str,
     session_id: str,
     dry_run: bool = True,
+    curated_entries: Iterable[tuple[str, str, str]] = (),
 ) -> dict[str, Any]:
     """Store one event-candidate batch atomically when explicitly enabled."""
 
     candidate_list = list(candidates)
+    curated_entry_list = list(curated_entries)
+    curated_matches = [
+        curated_entry_covering_candidate(candidate.content, curated_entry_list)
+        for candidate in candidate_list
+    ]
     report: dict[str, Any] = {
         "ok": True,
         "dry_run": dry_run,
         "planned": len(candidate_list),
         "inserted": 0,
         "updated_existing": 0,
+        "skipped_curated_duplicate": sum(match is not None for match in curated_matches),
         "ids": [],
+        "curated_ids": [],
     }
     if dry_run or not candidate_list:
         return report
@@ -61,7 +70,30 @@ def store_event_candidates(
     savepoint = f"event_candidates_{uuid.uuid4().hex}"
     conn.execute(f"SAVEPOINT {savepoint}")
     try:
-        for candidate in candidate_list:
+        for candidate, curated_match in zip(candidate_list, curated_matches):
+            if curated_match is not None:
+                curated_target, curated_content, _updated_at = curated_match
+                curated_id = curated_recall_item_id(curated_target, curated_content)
+                report["curated_ids"].append(curated_id)
+                record_governance_audit_event(
+                    conn,
+                    event_id=f"event-candidate-audit-{uuid.uuid4().hex}",
+                    event_type="event_candidate",
+                    action="skip_curated_duplicate",
+                    scope_id=scope_id,
+                    target_id=curated_id,
+                    before={},
+                    after={
+                        "target": candidate.target,
+                        "memory_type": candidate.memory_type,
+                        "lifecycle": "candidate_rejected",
+                        "evidence_refs": list(candidate.evidence_refs),
+                    },
+                    reason="curated memory covers candidate",
+                    actor="scope-recall:event-digest",
+                    dry_run=False,
+                )
+                continue
             memory_id = f"event-candidate-{uuid.uuid4().hex}"
             metadata = _candidate_metadata(candidate)
             stored_id, summary, updated_at, inserted = store_row(

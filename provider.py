@@ -75,9 +75,9 @@ from .scope import (
     writable_scope_ids,
 )
 from .source_isolation import scope_is_memory_isolated
-from .sql_store import ensure_schema
+from .sql_store import ensure_schema, iter_curated_entries
 
-from .storage_views import search_curated_memories, search_db_memories, search_vector_memories
+from .storage_views import curated_memory_policy_allows, search_curated_memories, search_db_memories, search_vector_memories
 from .tooling import ScopeRecallToolService
 from .truth_connection import connect_truth_database
 from .vector_bootstrap import bootstrap_fresh_vector_companion
@@ -731,6 +731,17 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 rejected += 1
                 reasons.update(extraction.rejection_reasons)
         with self._lock:
+            curated_config = self._config.get("curated_memory", {})
+            curated_config = curated_config if isinstance(curated_config, dict) else {}
+            curated_entries = (
+                iter_curated_entries(self._hermes_home)
+                if config_bool(curated_config, "dedupe_candidates", True)
+                and curated_memory_policy_allows(
+                    self._config,
+                    user_id=self._scope.user_id,
+                )
+                else []
+            )
             store_report = store_event_candidates(
                 self._require_conn(),
                 candidates=proposed_candidates,
@@ -738,6 +749,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 scope_id=self._scope_id,
                 session_id=self._session_id,
                 dry_run=dry_run,
+                curated_entries=curated_entries,
             )
         report.update(
             {

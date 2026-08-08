@@ -163,7 +163,10 @@
   },
   "curated_memory": {
     "mode": "single-user",
-    "allowed_user_ids": []
+    "allowed_user_ids": [],
+    "auto_recall": true,
+    "include_in_tools": true,
+    "dedupe_candidates": true
   },
   "identity": {
     "cross_platform_shared_scope": false,

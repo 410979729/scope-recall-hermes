@@ -11,6 +11,9 @@ from typing import Any
 _DESCRIPTION_OVERRIDES = {
     "auto_recall": "Enable automatic recall injection at turn start.",
     "auto_capture": "Capture eligible conversation turns into Scope Recall.",
+    "curated_memory.auto_recall": "Include live USER.md/MEMORY.md rows in automatic current-turn recall. Disable this when Hermes already injects curated files into the system prompt.",
+    "curated_memory.include_in_tools": "Keep live USER.md/MEMORY.md rows available to explicit Scope Recall profile/search tools.",
+    "curated_memory.dedupe_candidates": "Reject automatic candidates already strictly covered by live USER.md/MEMORY.md authority while keeping an audit receipt.",
     "memory_isolated_chat_ids": "Runtime-only chat identifiers excluded from prompt recall, tools, capture, journal, and digest surfaces.",
     "journal.max_entries_per_digest": "Maximum journal entries a digest run may review before dynamic backlog expansion.",
     "journal.retention_profile": "Semantic digest detail: light keeps only minimal durable facts, balanced preserves useful rationale and steps, and full preserves detailed durable context while raw transcript evidence remains in the journal.",

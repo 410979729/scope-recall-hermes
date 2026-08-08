@@ -6,6 +6,7 @@ similar assertions.  It exists for explicit/manual merges and audited cleanup.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 
 _SEGMENT_RE = re.compile(r"(?:\s*\n\s*§\s*\n\s*|\s+/\s+)")
 _KEY_RE = re.compile(r"[^a-z0-9\u4e00-\u9fff]+", re.IGNORECASE)
@@ -36,6 +37,23 @@ def automatic_merge_is_safe(existing: str, candidate: str) -> bool:
     if min(len(existing_key), len(candidate_key)) < 12:
         return False
     return existing_key in candidate_key or candidate_key in existing_key
+
+
+def curated_entry_covering_candidate(
+    candidate: str,
+    curated_entries: Iterable[tuple[str, str, str]],
+) -> tuple[str, str, str] | None:
+    """Return the first authoritative curated entry that strictly covers a candidate.
+
+    This deliberately reuses the conservative exact/containment gate above.
+    Semantic similarity alone is not enough to discard an automatic candidate:
+    one changed number, polarity, or timestamp must remain reviewable.
+    """
+
+    for target, content, updated_at in curated_entries:
+        if automatic_merge_is_safe(content, candidate):
+            return str(target), str(content), str(updated_at)
+    return None
 
 
 def deduplicate_memory_text(text: str) -> str:

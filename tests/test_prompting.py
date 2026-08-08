@@ -15,8 +15,16 @@ from scope_recall.provider import ScopeRecallMemoryProvider
 class _RecallService:
     def __init__(self, items: list[RecallItem]) -> None:
         self._items = items
+        self.include_curated: bool | None = None
 
-    def search_memories(self, _query: str, *, limit: int) -> list[RecallItem]:
+    def search_memories(
+        self,
+        _query: str,
+        *,
+        limit: int,
+        include_curated: bool = True,
+    ) -> list[RecallItem]:
+        self.include_curated = include_curated
         return self._items[:limit]
 
 
@@ -109,6 +117,71 @@ def test_prompt_rendering_redacts_legacy_secret_like_summary() -> None:
 
     assert secret not in rendered
     assert "[REDACTED_SECRET]" in rendered
+
+
+def test_prompt_auto_recall_can_exclude_curated_rows_without_disabling_sqlite_recall() -> None:
+    curated = RecallItem(
+        id="curated:user:1",
+        content="User prefers concise reports.",
+        summary="User prefers concise reports.",
+        source="builtin-curated",
+        target="user",
+        score=0.99,
+        updated_at="2026-08-05T00:00:00+00:00",
+        metadata={},
+    )
+    dynamic = RecallItem(
+        id="dynamic-1",
+        content="The active project uses pytest.",
+        summary="The active project uses pytest.",
+        source="tool-store",
+        target="project",
+        score=0.90,
+        updated_at="2026-08-05T00:00:00+00:00",
+        metadata={},
+    )
+    provider = _Provider([dynamic])
+    provider._config["curated_memory"] = {
+        "mode": "profile-global",
+        "auto_recall": False,
+        "include_in_tools": True,
+    }
+
+    rendered = render_current_turn_recall(
+        provider,
+        "Please recall the current project test configuration.",
+    )
+
+    assert provider._recall_service.include_curated is False
+    assert "The active project uses pytest." in rendered
+    assert curated.summary not in rendered
+
+
+def test_prompt_auto_recall_keeps_curated_rows_when_explicitly_enabled() -> None:
+    curated = RecallItem(
+        id="curated:user:1",
+        content="User prefers concise reports.",
+        summary="User prefers concise reports.",
+        source="builtin-curated",
+        target="user",
+        score=0.99,
+        updated_at="2026-08-05T00:00:00+00:00",
+        metadata={},
+    )
+    provider = _Provider([curated])
+    provider._config["curated_memory"] = {
+        "mode": "profile-global",
+        "auto_recall": True,
+        "include_in_tools": True,
+    }
+
+    rendered = render_current_turn_recall(
+        provider,
+        "Please recall the user's report preference.",
+    )
+
+    assert provider._recall_service.include_curated is True
+    assert "User prefers concise reports." in rendered
 
 
 def test_prefetch_recall_failure_is_fail_soft(

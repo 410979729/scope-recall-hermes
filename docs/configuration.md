@@ -61,6 +61,9 @@ This file is generated from the packaged `config.json` registry. It lists every 
 ## `curated_memory`
 
 - `curated_memory.allowed_user_ids` (array; risk: `low`; restart_required: `no`) — Scope Recall configuration key `curated_memory.allowed_user_ids` in the `curated_memory` group. Default: `[]`
+- `curated_memory.auto_recall` (boolean; risk: `low`; restart_required: `no`) — Include live USER.md/MEMORY.md rows in automatic current-turn recall. Disable this when Hermes already injects curated files into the system prompt. Default: `true`
+- `curated_memory.dedupe_candidates` (boolean; risk: `low`; restart_required: `no`) — Reject automatic candidates already strictly covered by live USER.md/MEMORY.md authority while keeping an audit receipt. Default: `true`
+- `curated_memory.include_in_tools` (boolean; risk: `low`; restart_required: `no`) — Keep live USER.md/MEMORY.md rows available to explicit Scope Recall profile/search tools. Default: `true`
 - `curated_memory.mode` (string; risk: `low`; restart_required: `no`; choices: `single-user, explicit-users, profile-global, disabled`) — Scope Recall configuration key `curated_memory.mode` in the `curated_memory` group. Default: `"single-user"`
 
 ## `enable_tools`

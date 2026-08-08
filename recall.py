@@ -163,6 +163,7 @@ class RecallService:
         *,
         limit: int,
         recall_mode: str = "advisory",
+        include_curated: bool = True,
     ) -> list[RecallItem]:
         """Search accessible memory sources and return ranked recall payloads.
 
@@ -209,8 +210,13 @@ class RecallService:
         trace["timings_ms"]["vector"] = self._elapsed_ms(stage_start)
 
         stage_start = time.perf_counter()
-        curated_candidates = self.provider._search_curated_memories(query)
+        curated_candidates = (
+            self.provider._search_curated_memories(query)
+            if include_curated
+            else []
+        )
         trace["stages"]["curated"] = self._trace_stage(curated_candidates)
+        trace["stages"]["curated"]["enabled"] = bool(include_curated)
         trace["timings_ms"]["curated"] = self._elapsed_ms(stage_start)
 
         temporal_candidates: list[RecallItem] = []

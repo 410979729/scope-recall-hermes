@@ -29,6 +29,7 @@ from .fact_evolution import (
 )
 from .gating import clean_text, compact_text, dedup_key
 from .governance import semantic_similarity
+from .memory_text_merge import curated_entry_covering_candidate
 from .maintenance_lease import install_activation_lease_authorizer
 from .models import RuntimeScope, recall_scope_id_for_target
 from .truth_connection import connect_truth_database
@@ -90,7 +91,8 @@ from .journal_store import (
 )
 from .scope import accessible_scope_ids, build_scope_id, build_shared_scope_id, canonical_user_id, normalize_scope_identity, writable_scope_ids
 from .source_isolation import memory_isolated_chat_ids, scope_is_memory_isolated
-from .sql_store import ensure_schema, now_iso, store_row
+from .sql_store import curated_recall_item_id, ensure_schema, iter_curated_entries, now_iso, store_row
+from .storage_views import curated_memory_policy_allows
 from .vector_runtime import replay_vector_outbox, vector_write_replay_limit
 
 # Compatibility surface: tests and operator probes historically monkeypatch
@@ -1006,6 +1008,7 @@ def apply_journal_candidates(
     candidates: list[JournalDigestCandidate],
     dry_run: bool = False,
     runtime_config: dict[str, Any] | None = None,
+    curated_entries: list[tuple[str, str, str]] | None = None,
     _skip_components: bool = False,
     _defer_commits: bool = False,
     _deferred_vector_ops: list[dict[str, Any]] | None = None,
@@ -1021,6 +1024,39 @@ def apply_journal_candidates(
     pollution_counts = Counter()
     actions: list[dict[str, Any]] = []
     processed_entry_ids: set[int] = set()
+    remaining_candidates: list[JournalDigestCandidate] = []
+    curated_entry_list = list(curated_entries or [])
+    for candidate in candidates:
+        curated_match = curated_entry_covering_candidate(
+            candidate.content,
+            curated_entry_list,
+        )
+        if curated_match is None:
+            remaining_candidates.append(candidate)
+            continue
+        curated_target, curated_content, _updated_at = curated_match
+        curated_id = curated_recall_item_id(curated_target, curated_content)
+        counts["skipped"] += 1
+        actions.append(
+            {
+                "action": "skip",
+                "reason": "curated memory covers candidate",
+                "id": curated_id,
+                "entry_ids": candidate.entry_ids,
+            }
+        )
+        processed_entry_ids.update(int(entry_id) for entry_id in candidate.entry_ids)
+        if not dry_run:
+            _record_journal_rejection(
+                conn,
+                run_id=run_id,
+                entry_ids=candidate.entry_ids,
+                reason="curated memory covers candidate",
+                candidate=candidate,
+            )
+            if not _defer_commits:
+                conn.commit()
+    candidates = remaining_candidates
     pollution_assessments = assess_digest_batch(
         candidates,
         batch_evidence=_journal_candidate_source_evidence(conn, candidates),
@@ -1576,6 +1612,17 @@ def run_journal_digest(
                     )
                 except Exception:
                     vector_runtime = None
+            curated_config = runtime_config.get("curated_memory", {})
+            curated_config = curated_config if isinstance(curated_config, dict) else {}
+            candidate_curated_entries = (
+                iter_curated_entries(hermes_home)
+                if _config_bool(curated_config, "dedupe_candidates", True)
+                and curated_memory_policy_allows(
+                    runtime_config,
+                    user_id=active_scope.user_id,
+                )
+                else []
+            )
             applied = apply_journal_candidates(
                 conn,
                 vector_runtime,
@@ -1584,6 +1631,7 @@ def run_journal_digest(
                 candidates=candidates,
                 dry_run=dry_run,
                 runtime_config=runtime_config,
+                curated_entries=candidate_curated_entries,
             )
             counts.update(applied["counts"])
             quarantine_counts.update(applied.get("pollution_counts", {}))
