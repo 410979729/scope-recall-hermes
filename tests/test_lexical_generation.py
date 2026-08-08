@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import sqlite3
 
 import pytest
 
+from scope_recall import lexical_generation
 from scope_recall.lexical_generation import (
     LEXICAL_GENERATION_ID,
+    LEXICAL_POSTINGS_TABLE,
     LEXICAL_QUALITY_PROVENANCE,
     LEXICAL_SHADOW_TABLE,
     LexicalGenerationError,
@@ -326,3 +329,415 @@ def test_activation_rejects_quality_receipt_after_truth_source_changes():
             LEXICAL_GENERATION_ID,
             expected_current="",
         )
+
+
+def _finish_backfill(conn: sqlite3.Connection, *, batch_size: int = 2) -> None:
+    while not bool(
+        backfill_generation(conn, LEXICAL_GENERATION_ID, batch_size=batch_size)[
+            "complete"
+        ]
+    ):
+        conn.commit()
+    conn.commit()
+
+
+def test_backfill_resume_rebuilds_trigger_prewritten_page_rows():
+    conn = _conn()
+    for index in range(6):
+        _store(conn, f"memory-{index}", f"数据库迁移记录 {index}")
+    conn.commit()
+    create_shadow_generation(conn)
+    first = backfill_generation(conn, LEXICAL_GENERATION_ID, batch_size=2)
+    conn.commit()
+    assert first["processed"] == 2
+
+    # The maintenance trigger pre-writes a shadow row and postings beyond the
+    # build watermark. Resumed backfill covers that rowid in its next page.
+    conn.execute(
+        "UPDATE memories SET content=?, summary=? WHERE id=?",
+        ("数据库迁移记录 2 修订稿", "数据库迁移记录 2 修订稿", "memory-2"),
+    )
+    conn.commit()
+
+    statements: list[str] = []
+    conn.set_trace_callback(statements.append)
+    resumed = backfill_generation(conn, LEXICAL_GENERATION_ID, batch_size=2)
+    conn.set_trace_callback(None)
+    conn.commit()
+
+    assert resumed["processed"] == 2
+    traced = [sql.strip() for sql in statements]
+    shadow_delete = next(
+        index
+        for index, sql in enumerate(traced)
+        if sql.startswith(f"DELETE FROM {LEXICAL_SHADOW_TABLE}")
+    )
+    shadow_insert = next(
+        index
+        for index, sql in enumerate(traced)
+        if sql.startswith(f"INSERT INTO {LEXICAL_SHADOW_TABLE}")
+    )
+    postings_delete = next(
+        index
+        for index, sql in enumerate(traced)
+        if sql.startswith(f"DELETE FROM {LEXICAL_POSTINGS_TABLE}")
+    )
+    postings_insert = next(
+        index
+        for index, sql in enumerate(traced)
+        if sql.startswith(f"INSERT OR IGNORE INTO {LEXICAL_POSTINGS_TABLE}")
+    )
+    assert shadow_delete < shadow_insert
+    assert postings_delete < postings_insert
+
+    _finish_backfill(conn)
+    report = generation_integrity_report(conn, LEXICAL_GENERATION_ID)
+    rebuilt = conn.execute(
+        f"SELECT content FROM {LEXICAL_SHADOW_TABLE} WHERE memory_id='memory-2'"
+    ).fetchall()
+    assert [str(row[0]) for row in rebuilt] == ["数据库迁移记录 2 修订稿"]
+    assert report["healthy"] is True
+    assert report["expected_rows"] == 6
+    assert report["indexed_rows"] == 6
+
+
+def test_backfill_replayed_page_is_idempotent():
+    conn = _conn()
+    for index in range(4):
+        _store(conn, f"memory-{index}", f"数据库迁移记录 {index}")
+    conn.commit()
+    create_shadow_generation(conn)
+    first = backfill_generation(conn, LEXICAL_GENERATION_ID, batch_size=2)
+    conn.commit()
+    assert first["processed"] == 2
+
+    before_shadow = conn.execute(
+        f"SELECT COUNT(*) FROM {LEXICAL_SHADOW_TABLE}"
+    ).fetchone()[0]
+    before_postings = conn.execute(
+        f"SELECT COUNT(*) FROM {LEXICAL_POSTINGS_TABLE}"
+    ).fetchone()[0]
+
+    # Rewind the build watermark, replaying the exact same page over rows that
+    # are already indexed. The page must rebuild in place, not collide.
+    conn.execute(
+        "UPDATE lexical_generations SET last_backfilled_rowid=0 WHERE generation_id=?",
+        (LEXICAL_GENERATION_ID,),
+    )
+    conn.commit()
+    replayed = backfill_generation(conn, LEXICAL_GENERATION_ID, batch_size=2)
+    conn.commit()
+
+    assert replayed["processed"] == 2
+    assert (
+        conn.execute(f"SELECT COUNT(*) FROM {LEXICAL_SHADOW_TABLE}").fetchone()[0]
+        == before_shadow
+    )
+    assert (
+        conn.execute(f"SELECT COUNT(*) FROM {LEXICAL_POSTINGS_TABLE}").fetchone()[0]
+        == before_postings
+    )
+
+    _finish_backfill(conn)
+    report = generation_integrity_report(conn, LEXICAL_GENERATION_ID)
+    assert report["healthy"] is True
+    assert report["duplicate_rows"] == 0
+
+
+def test_backfill_page_rolls_back_and_replays_within_caller_transaction():
+    conn = _conn()
+    for index in range(4):
+        _store(conn, f"memory-{index}", f"数据库迁移记录 {index}")
+    conn.commit()
+    create_shadow_generation(conn)
+    first = backfill_generation(conn, LEXICAL_GENERATION_ID, batch_size=2)
+    conn.commit()
+    assert first["processed"] == 2
+
+    # A crash before commit advances neither shadow rows nor the watermark.
+    backfill_generation(conn, LEXICAL_GENERATION_ID, batch_size=2)
+    conn.rollback()
+    manifest = generation_status(conn, LEXICAL_GENERATION_ID)
+    assert int(manifest["last_backfilled_rowid"]) == int(
+        first["last_backfilled_rowid"]
+    )
+    assert (
+        conn.execute(f"SELECT COUNT(*) FROM {LEXICAL_SHADOW_TABLE}").fetchone()[0]
+        == 2
+    )
+
+    replayed = backfill_generation(conn, LEXICAL_GENERATION_ID, batch_size=2)
+    conn.commit()
+    assert replayed["processed"] == 2
+    _finish_backfill(conn)
+    assert generation_integrity_report(conn, LEXICAL_GENERATION_ID)["healthy"] is True
+
+
+_POSTINGS_DOCID_INDEX = "idx_lexical_cjk_postings_v1_docid"
+
+
+def _index_columns(conn: sqlite3.Connection, index: str) -> list[str]:
+    return [
+        str(row[2])
+        for row in conn.execute(f"PRAGMA index_info({index})").fetchall()
+    ]
+
+
+def test_postings_docid_index_covers_new_and_existing_generations():
+    conn = _conn()
+    _store(conn, "memory-1", "数据库迁移方案")
+    conn.commit()
+
+    create_shadow_generation(conn)
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name=?",
+        (_POSTINGS_DOCID_INDEX,),
+    ).fetchone()
+    assert row is not None
+    assert _index_columns(conn, _POSTINGS_DOCID_INDEX) == ["docid", "term"]
+
+    # A generation created before the index existed keeps working: resuming it
+    # must backfill the missing index instead of requiring a rebuild.
+    conn.execute(f"DROP INDEX {_POSTINGS_DOCID_INDEX}")
+    conn.commit()
+    create_shadow_generation(conn)
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name=?",
+        (_POSTINGS_DOCID_INDEX,),
+    ).fetchone()
+    assert row is not None
+    assert _index_columns(conn, _POSTINGS_DOCID_INDEX) == ["docid", "term"]
+
+
+def _indexed_fixture(contents: list[str]) -> sqlite3.Connection:
+    conn = _conn()
+    for index, content in enumerate(contents):
+        _store(conn, f"memory-{index}", content)
+    conn.commit()
+    create_shadow_generation(conn)
+    _finish_backfill(conn)
+    return conn
+
+
+def test_integrity_report_requires_postings_docid_index():
+    conn = _indexed_fixture(["数据库迁移方案", "索引重建记录"])
+
+    baseline = generation_integrity_report(conn, LEXICAL_GENERATION_ID)
+    assert baseline["healthy"] is True
+    assert baseline["postings_docid_index_present"] is True
+
+    conn.execute(f"DROP INDEX {_POSTINGS_DOCID_INDEX}")
+    conn.commit()
+    missing_index = generation_integrity_report(conn, LEXICAL_GENERATION_ID)
+    assert missing_index["postings_docid_index_present"] is False
+    assert missing_index["healthy"] is False
+
+    create_shadow_generation(conn)
+    repaired = generation_integrity_report(conn, LEXICAL_GENERATION_ID)
+    assert repaired["postings_docid_index_present"] is True
+    assert repaired["healthy"] is True
+
+
+def _swap_shadow_identity(
+    conn: sqlite3.Connection, first_id: str, second_id: str
+) -> None:
+    rows = {}
+    for memory_id in (first_id, second_id):
+        row = conn.execute(
+            f"SELECT rowid, content, summary FROM {LEXICAL_SHADOW_TABLE} "
+            "WHERE memory_id=?",
+            (memory_id,),
+        ).fetchone()
+        assert row is not None
+        rows[memory_id] = (int(row[0]), str(row[1]), str(row[2]))
+    conn.execute(
+        f"DELETE FROM {LEXICAL_SHADOW_TABLE} WHERE memory_id IN (?, ?)",
+        (first_id, second_id),
+    )
+    # Content follows the memory_id while the docid now resolves to the other
+    # document: retrieval joins truth on memories.rowid = docid, so a MATCH on
+    # one document's terms silently returns the swapped neighbour.
+    first_rowid, first_content, first_summary = rows[first_id]
+    second_rowid, second_content, second_summary = rows[second_id]
+    conn.execute(
+        f"INSERT INTO {LEXICAL_SHADOW_TABLE}(rowid, memory_id, content, summary)"
+        " VALUES (?, ?, ?, ?)",
+        (second_rowid, first_id, first_content, first_summary),
+    )
+    conn.execute(
+        f"INSERT INTO {LEXICAL_SHADOW_TABLE}(rowid, memory_id, content, summary)"
+        " VALUES (?, ?, ?, ?)",
+        (first_rowid, second_id, second_content, second_summary),
+    )
+    conn.commit()
+
+
+def test_integrity_report_fails_closed_on_swapped_rowid_identity():
+    conn = _indexed_fixture(["数据库迁移方案甲", "索引重建记录乙"])
+
+    _swap_shadow_identity(conn, "memory-0", "memory-1")
+    report = generation_integrity_report(conn, LEXICAL_GENERATION_ID)
+
+    assert report["healthy"] is False
+    assert report["identity_mismatch_rows"] == 2
+    assert report["content_drift_rows"] == 2
+    assert report["missing_rows"] == 0
+    assert report["stale_rows"] == 0
+    assert report["duplicate_rows"] == 0
+
+
+def test_integrity_report_identity_mismatch_fails_closed_when_contents_match():
+    conn = _indexed_fixture(["数据库迁移方案", "索引重建记录"])
+    # Equalize the documents after indexing (triggers keep the shadow in
+    # sync), so a later swap is invisible to every content-level counter.
+    conn.execute(
+        "UPDATE memories SET content=?, summary=? WHERE id IN ('memory-0', 'memory-1')",
+        ("相同的数据库文本", "相同的数据库文本"),
+    )
+    conn.commit()
+
+    baseline = generation_integrity_report(conn, LEXICAL_GENERATION_ID)
+    assert baseline["healthy"] is True
+    assert baseline["identity_mismatch_rows"] == 0
+
+    _swap_shadow_identity(conn, "memory-0", "memory-1")
+    report = generation_integrity_report(conn, LEXICAL_GENERATION_ID)
+
+    # Identical documents keep every content-level counter at zero; only the
+    # docid/memory_id identity check can see the swap, and it must fail closed.
+    assert report["missing_rows"] == 0
+    assert report["stale_rows"] == 0
+    assert report["hidden_rows"] == 0
+    assert report["duplicate_rows"] == 0
+    assert report["content_drift_rows"] == 0
+    assert report["identity_mismatch_rows"] == 2
+    assert report["healthy"] is False
+
+
+def test_integrity_report_keeps_row_level_detectors():
+    contents = ["数据库迁移方案", "索引重建记录", "灰度发布窗口"]
+
+    missing_conn = _indexed_fixture(contents)
+    missing_conn.execute(f"DELETE FROM {LEXICAL_SHADOW_TABLE} WHERE rowid=1")
+    missing_report = generation_integrity_report(missing_conn, LEXICAL_GENERATION_ID)
+    assert missing_report["missing_rows"] == 1
+    assert missing_report["healthy"] is False
+
+    stale_conn = _indexed_fixture(contents)
+    stale_conn.execute(
+        f"INSERT INTO {LEXICAL_SHADOW_TABLE}(rowid, memory_id, content, summary)"
+        " VALUES (99999, 'ghost', '孤儿记录', '孤儿记录')"
+    )
+    stale_report = generation_integrity_report(stale_conn, LEXICAL_GENERATION_ID)
+    assert stale_report["stale_rows"] == 1
+    assert stale_report["healthy"] is False
+
+    hidden_conn = _indexed_fixture(contents)
+    _store(hidden_conn, "hidden-1", "隐藏数据库记录", lifecycle="candidate")
+    hidden_conn.commit()
+    hidden_rowid = int(
+        hidden_conn.execute(
+            "SELECT rowid FROM memories WHERE id='hidden-1'"
+        ).fetchone()[0]
+    )
+    hidden_conn.execute(
+        f"INSERT INTO {LEXICAL_SHADOW_TABLE}(rowid, memory_id, content, summary)"
+        " VALUES (?, 'hidden-1', '隐藏数据库记录', '隐藏数据库记录')",
+        (hidden_rowid,),
+    )
+    hidden_report = generation_integrity_report(hidden_conn, LEXICAL_GENERATION_ID)
+    assert hidden_report["hidden_rows"] == 1
+    assert hidden_report["healthy"] is False
+
+    duplicate_conn = _indexed_fixture(contents)
+    duplicate_conn.execute(
+        f"INSERT INTO {LEXICAL_SHADOW_TABLE}(rowid, memory_id, content, summary)"
+        " VALUES (99998, 'memory-0', '数据库迁移方案', '数据库迁移方案')"
+    )
+    duplicate_report = generation_integrity_report(
+        duplicate_conn, LEXICAL_GENERATION_ID
+    )
+    assert duplicate_report["duplicate_rows"] == 1
+    assert duplicate_report["healthy"] is False
+
+    drift_conn = _indexed_fixture(contents)
+    drift_conn.execute(
+        f"UPDATE {LEXICAL_SHADOW_TABLE} SET content='被篡改的内容' WHERE rowid=1"
+    )
+    drift_report = generation_integrity_report(drift_conn, LEXICAL_GENERATION_ID)
+    assert drift_report["content_drift_rows"] == 1
+    assert drift_report["healthy"] is False
+
+    postings_conn = _indexed_fixture(contents)
+    postings_conn.execute(
+        f"INSERT INTO {LEXICAL_POSTINGS_TABLE}(term, docid) VALUES ('孤儿词', 99997)"
+    )
+    postings_report = generation_integrity_report(
+        postings_conn, LEXICAL_GENERATION_ID
+    )
+    assert postings_report["postings_stale_rows"] == 1
+    assert postings_report["healthy"] is False
+
+
+_PUBLIC_SIGNATURES = {
+    "ensure_lexical_generation_schema": (["conn"], {}, set()),
+    "lexical_schema_status": (["conn"], {}, set()),
+    "current_generation_id": (["conn"], {}, set()),
+    "create_shadow_generation": (
+        ["conn", "generation_id"],
+        {"generation_id": LEXICAL_GENERATION_ID},
+        set(),
+    ),
+    "generation_status": (
+        ["conn", "generation_id"],
+        {"generation_id": LEXICAL_GENERATION_ID},
+        set(),
+    ),
+    "backfill_generation": (
+        ["conn", "generation_id", "batch_size", "reconcile"],
+        {"generation_id": LEXICAL_GENERATION_ID, "batch_size": 500, "reconcile": False},
+        {"batch_size", "reconcile"},
+    ),
+    "generation_integrity_report": (
+        ["conn", "generation_id"],
+        {"generation_id": LEXICAL_GENERATION_ID},
+        set(),
+    ),
+    "lexical_source_binding": (["conn"], {}, set()),
+    "lexical_quality_evidence_fingerprint": (["receipt"], {}, set()),
+    "mark_generation_ready": (
+        ["conn", "generation_id", "quality_receipt"],
+        {"generation_id": LEXICAL_GENERATION_ID},
+        {"quality_receipt"},
+    ),
+    "activate_generation": (
+        ["conn", "generation_id", "expected_current"],
+        {"generation_id": LEXICAL_GENERATION_ID},
+        {"expected_current"},
+    ),
+    "rollback_generation": (["conn", "expected_current"], {}, {"expected_current"}),
+    "supplemental_table_for_search": (
+        ["conn", "generation_override", "allow_unreviewed_override"],
+        {"generation_override": None, "allow_unreviewed_override": False},
+        {"allow_unreviewed_override"},
+    ),
+    "lexical_generation_report": (["conn"], {}, set()),
+}
+
+
+def test_public_generation_interfaces_keep_their_signatures():
+    for name, (parameters, defaults, keyword_only) in _PUBLIC_SIGNATURES.items():
+        signature = inspect.signature(getattr(lexical_generation, name))
+        assert list(signature.parameters) == parameters, name
+        actual_defaults = {
+            key: parameter.default
+            for key, parameter in signature.parameters.items()
+            if parameter.default is not inspect.Parameter.empty
+        }
+        assert actual_defaults == defaults, name
+        actual_keyword_only = {
+            key
+            for key, parameter in signature.parameters.items()
+            if parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        }
+        assert actual_keyword_only == keyword_only, name

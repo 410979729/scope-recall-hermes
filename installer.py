@@ -630,6 +630,8 @@ def _postdeploy_doctor_verify(home: Path, plugin_dir: Path) -> dict[str, Any]:
         completed = subprocess.run(
             [
                 sys.executable,
+                "-X",
+                "utf8",
                 "-I",
                 str(doctor_script),
                 "--source-root",

@@ -582,6 +582,38 @@ def test_postdeploy_doctor_child_output_is_rejected_without_unbounded_capture(tm
     assert "output limit" in " ".join(report["failures"]).lower()
 
 
+def test_postdeploy_doctor_forces_utf8_mode_in_isolated_subprocess(tmp_path):
+    """The Windows doctor child must emit UTF-8 even under ``-I`` isolation."""
+    import scope_recall.installer as installer
+
+    plugin_dir = tmp_path / "candidate"
+    doctor_script = plugin_dir / "scripts" / "doctor.py"
+    doctor_script.parent.mkdir(parents=True)
+    checks = {
+        name: {"ok": True}
+        for name in REQUIRED_POSTDEPLOY_DOCTOR_CHECKS
+    }
+    payload = {
+        "schema_version": "doctor_report.v1",
+        "ok": True,
+        "checks": checks,
+        "runtime": {"encoding_canary": "£"},
+        "recommendations": [],
+    }
+    doctor_script.write_text(
+        "import json, sys\n"
+        "assert sys.flags.utf8_mode == 1, sys.flags.utf8_mode\n"
+        f"print(json.dumps({payload!r}, ensure_ascii=False))\n",
+        encoding="utf-8",
+    )
+
+    report = installer._postdeploy_doctor_verify(tmp_path / "home", plugin_dir)
+
+    assert report["ok"] is True
+    assert report["returncode"] == 0
+    assert report["failed_checks"] == []
+
+
 def test_postdeploy_doctor_output_limit_does_not_cap_doctor_work_files(tmp_path):
     import scope_recall.installer as installer
 

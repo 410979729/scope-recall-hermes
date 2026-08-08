@@ -26,6 +26,7 @@ LEXICAL_MIGRATION_DESCRIPTION = (
 LEXICAL_GENERATION_ID = "cjk-trigram-v1"
 LEXICAL_SHADOW_TABLE = "memories_fts_cjk_v1"
 LEXICAL_POSTINGS_TABLE = "lexical_cjk_postings_v1"
+LEXICAL_POSTINGS_DOCID_INDEX = "idx_lexical_cjk_postings_v1_docid"
 # Recursive-SQL postings extraction is bounded per document; longer documents
 # keep their leading terms, matching the trigger/backfill contract.
 _POSTINGS_MAX_DOCUMENT_CHARS = 1000
@@ -75,6 +76,18 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
         ).fetchone()
         is not None
     )
+
+
+def _postings_docid_index_present(conn: sqlite3.Connection) -> bool:
+    """Return whether the required docid-leading postings index has exact shape."""
+
+    columns = tuple(
+        str(row[2])
+        for row in conn.execute(
+            f"PRAGMA index_info({LEXICAL_POSTINGS_DOCID_INDEX})"
+        ).fetchall()
+    )
+    return columns == ("docid", "term")
 
 
 def _trigger_names(conn: sqlite3.Connection) -> set[str]:
@@ -299,6 +312,15 @@ def create_shadow_generation(
         ) WITHOUT ROWID
         """
     )
+    # Trigger maintenance and page-scoped backfill deletes address postings by
+    # docid; without a docid-leading index each write full-scans the table.
+    # IF NOT EXISTS doubles as the upgrade path for pre-index generations.
+    conn.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS {LEXICAL_POSTINGS_DOCID_INDEX}
+        ON {LEXICAL_POSTINGS_TABLE}(docid, term)
+        """
+    )
     _install_shadow_triggers(conn)
     max_row = int(
         conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM memories").fetchone()[0]
@@ -451,6 +473,19 @@ def backfill_generation(
     last = int(rows[-1][0]) if rows else source_max
     visible_m = ordinary_recall_lifecycle_visible_sql("m")
     if rows:
+        # Page-level idempotent rebuild. Maintenance triggers may already have
+        # written shadow/postings rows inside this rowid range (updates landing
+        # ahead of the build watermark). Clear the page slice inside the
+        # caller's transaction, then rebuild it from truth; replaying the same
+        # page is always safe and never collides on the FTS docid.
+        conn.execute(
+            f"DELETE FROM {LEXICAL_SHADOW_TABLE} WHERE rowid > ? AND rowid <= ?",
+            (start, last),
+        )
+        conn.execute(
+            f"DELETE FROM {LEXICAL_POSTINGS_TABLE} WHERE docid > ? AND docid <= ?",
+            (start, last),
+        )
         # Batched rowid-range inserts replace the old per-row DELETE+INSERT
         # cycle, which scanned the FTS text identity column once per row.
         conn.execute(
@@ -506,7 +541,9 @@ def generation_integrity_report(
             "hidden_rows": 0,
             "duplicate_rows": 0,
             "content_drift_rows": 0,
+            "identity_mismatch_rows": 0,
             "postings_present": False,
+            "postings_docid_index_present": False,
             "postings_rows": 0,
             "postings_stale_rows": 0,
         }
@@ -526,18 +563,21 @@ def generation_integrity_report(
         conn.execute(
             f"""
             SELECT COUNT(*) FROM memories m
-            WHERE {visible_m}
-              AND NOT EXISTS (
-                  SELECT 1 FROM {LEXICAL_SHADOW_TABLE} f WHERE f.memory_id=m.id
-              )
+            LEFT JOIN {LEXICAL_SHADOW_TABLE} f ON f.rowid = m.rowid
+            WHERE {visible_m} AND f.rowid IS NULL
             """
         ).fetchone()[0]
     )
+    # Stale covers both mapping directions: a shadow row whose docid no truth
+    # row owns, or whose memory_id no truth row carries. Both joins probe
+    # indexed truth columns, keeping the check single-pass over the shadow.
     stale = int(
         conn.execute(
             f"""
             SELECT COUNT(*) FROM {LEXICAL_SHADOW_TABLE} f
-            WHERE NOT EXISTS (SELECT 1 FROM memories m WHERE m.id=f.memory_id)
+            LEFT JOIN memories mr ON mr.rowid = f.rowid
+            LEFT JOIN memories mi ON mi.id = f.memory_id
+            WHERE mr.rowid IS NULL OR mi.id IS NULL
             """
         ).fetchone()[0]
     )
@@ -545,7 +585,7 @@ def generation_integrity_report(
         conn.execute(
             f"""
             SELECT COUNT(*) FROM {LEXICAL_SHADOW_TABLE} f
-            JOIN memories m ON m.id=f.memory_id
+            JOIN memories m ON m.rowid = f.rowid
             WHERE NOT ({visible_m})
             """
         ).fetchone()[0]
@@ -554,13 +594,28 @@ def generation_integrity_report(
         conn.execute(
             f"""
             SELECT COUNT(*) FROM {LEXICAL_SHADOW_TABLE} f
-            JOIN memories m ON m.id=f.memory_id
+            JOIN memories m ON m.rowid = f.rowid
             WHERE f.content <> m.content OR f.summary <> m.summary
+            """
+        ).fetchone()[0]
+    )
+    # Fail-closed identity check: retrieval resolves docid = memories.rowid, so
+    # a shadow row whose memory_id belongs to a different truth row serves the
+    # wrong document even when every content counter stays clean.
+    identity_mismatch = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*) FROM {LEXICAL_SHADOW_TABLE} f
+            JOIN memories m ON m.id = f.memory_id
+            WHERE f.rowid <> m.rowid
             """
         ).fetchone()[0]
     )
     duplicates = max(0, indexed - distinct)
     postings_present = _table_exists(conn, LEXICAL_POSTINGS_TABLE)
+    postings_docid_index_present = (
+        postings_present and _postings_docid_index_present(conn)
+    )
     postings_rows = 0
     postings_stale_rows = 0
     if postings_present:
@@ -585,7 +640,9 @@ def generation_integrity_report(
         and hidden == 0
         and duplicates == 0
         and drift == 0
+        and identity_mismatch == 0
         and postings_present
+        and postings_docid_index_present
         and postings_stale_rows == 0
     )
     return {
@@ -600,7 +657,9 @@ def generation_integrity_report(
         "hidden_rows": hidden,
         "duplicate_rows": duplicates,
         "content_drift_rows": drift,
+        "identity_mismatch_rows": identity_mismatch,
         "postings_present": postings_present,
+        "postings_docid_index_present": postings_docid_index_present,
         "postings_rows": postings_rows,
         "postings_stale_rows": postings_stale_rows,
     }

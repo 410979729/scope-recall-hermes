@@ -18,7 +18,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 from .maintenance_lease import (
     acquire_activation_lease,
@@ -32,6 +32,12 @@ from .recovery_commands import (
     restore_file_command,
     restore_symlink_command,
     restore_tree_command,
+)
+from .sqlite_backup import (
+    SqliteBackupError,
+    inspect_sqlite_health,
+    logical_fingerprint as sqlite_logical_fingerprint,
+    verified_online_backup,
 )
 from .truth_connection import connect_truth_database
 
@@ -375,26 +381,138 @@ def _file_state_matches(snapshot: dict[str, Any]) -> bool:
     )
 
 
-def _sqlite_online_backup(source_path: Path, backup_path: Path) -> None:
-    if source_path.is_symlink():
-        raise ActivationSnapshotError(
-            f"refusing activation against symlinked SQLite truth DB: {source_path}"
-        )
-    backup_path.parent.mkdir(parents=True, exist_ok=True)
-    source = connect_truth_database(source_path, mode="ro", timeout=30)
-    destination = connect_truth_database(backup_path, mode="rwc")
+def _sqlite_online_backup(source_path: Path, backup_path: Path) -> dict[str, Any]:
+    """Monkeypatch-compatible wrapper around the verified backup boundary."""
+
     try:
-        source.backup(destination)
-        destination.commit()
-        check = destination.execute("PRAGMA quick_check").fetchone()
-        if check is None or str(check[0]).lower() != "ok":
+        return verified_online_backup(source_path, backup_path)
+    except SqliteBackupError as exc:
+        raise ActivationSnapshotError(str(exc)) from exc
+
+
+def _canonical_sqlite_path(path: Path | str) -> str:
+    return str(Path(os.path.abspath(os.fspath(Path(path).expanduser()))))
+
+
+def _health_evidence_ok(health: Any) -> TypeGuard[dict[str, Any]]:
+    if not isinstance(health, dict) or health.get("ok") is not True:
+        return False
+    if str(health.get("quick_check") or "").lower() != "ok":
+        return False
+    if str(health.get("integrity_check") or "").lower() != "ok":
+        return False
+    if bool(health.get("foreign_key_violation_present")):
+        return False
+    return True
+
+
+def _sqlite_backup_receipt_or_verify(
+    source_path: Path,
+    backup_path: Path,
+    backup_receipt: Any,
+) -> dict[str, Any]:
+    """Accept a structured receipt or rebuild one after a void monkeypatch wrapper.
+
+    Dict receipts must bind exactly to the expected canonical source/backup paths
+    with complete health/fingerprint fields. Path-drifted or incomplete receipts
+    fail closed without treating them as verified evidence.
+    """
+
+    expected_source = _canonical_sqlite_path(source_path)
+    expected_backup = _canonical_sqlite_path(backup_path)
+
+    if isinstance(backup_receipt, dict):
+        receipt_source = str(backup_receipt.get("source_path") or "")
+        receipt_backup = str(backup_receipt.get("backup_path") or "")
+        if (
+            _canonical_sqlite_path(receipt_source) != expected_source
+            or _canonical_sqlite_path(receipt_backup) != expected_backup
+        ):
             raise ActivationSnapshotError(
-                f"SQLite activation backup quick_check failed: {backup_path}"
+                "SQLite activation backup receipt path mismatch: "
+                f"expected source={expected_source} backup={expected_backup}, "
+                f"got source={receipt_source} backup={receipt_backup}"
             )
-    finally:
-        destination.close()
-        source.close()
-    backup_path.chmod(0o600)
+        source_health = backup_receipt.get("source_health")
+        backup_health = backup_receipt.get("backup_health")
+        source_fp = str(backup_receipt.get("source_logical_fingerprint") or "")
+        backup_fp = str(backup_receipt.get("backup_logical_fingerprint") or "")
+        logical_fp = str(
+            backup_receipt.get("logical_fingerprint") or source_fp or backup_fp
+        )
+        logical_equivalent = backup_receipt.get("logical_equivalent") is True
+        required_present = all(
+            key in backup_receipt
+            for key in (
+                "source_path",
+                "backup_path",
+                "source_health",
+                "backup_health",
+                "source_logical_fingerprint",
+                "backup_logical_fingerprint",
+                "logical_fingerprint",
+                "logical_equivalent",
+            )
+        )
+        if (
+            not required_present
+            or not _health_evidence_ok(source_health)
+            or not _health_evidence_ok(backup_health)
+            or not source_fp
+            or not backup_fp
+            or not logical_fp
+            or source_fp != backup_fp
+            or logical_fp != source_fp
+            or not logical_equivalent
+        ):
+            raise ActivationSnapshotError(
+                "SQLite activation backup receipt failed closed on incomplete or "
+                "invalid health/fingerprint evidence"
+            )
+        return {
+            "source_path": expected_source,
+            "backup_path": expected_backup,
+            "source_health": dict(source_health),
+            "backup_health": dict(backup_health),
+            "source_logical_fingerprint": source_fp,
+            "backup_logical_fingerprint": backup_fp,
+            "logical_fingerprint": logical_fp,
+            "logical_equivalent": True,
+        }
+
+    if backup_receipt is not None:
+        raise ActivationSnapshotError(
+            "SQLite activation backup returned an invalid structured receipt"
+        )
+    # Installer tests historically monkeypatch this hook with a void wrapper that
+    # still performs the online backup. Rebuild fail-closed evidence afterward.
+    try:
+        source_health = inspect_sqlite_health(source_path)
+        backup_health = inspect_sqlite_health(backup_path)
+        if not _health_evidence_ok(source_health) or not _health_evidence_ok(
+            backup_health
+        ):
+            raise ActivationSnapshotError(
+                "SQLite activation backup receipt failed closed on health evidence"
+            )
+        source_fp = sqlite_logical_fingerprint(source_path)
+        backup_fp = sqlite_logical_fingerprint(backup_path)
+    except SqliteBackupError as exc:
+        raise ActivationSnapshotError(str(exc)) from exc
+    if source_fp != backup_fp:
+        raise ActivationSnapshotError(
+            "SQLite activation backup logical fingerprint does not match source"
+        )
+    return {
+        "source_path": expected_source,
+        "backup_path": expected_backup,
+        "source_health": source_health,
+        "backup_health": backup_health,
+        "source_logical_fingerprint": source_fp,
+        "backup_logical_fingerprint": backup_fp,
+        "logical_fingerprint": source_fp,
+        "logical_equivalent": True,
+    }
 
 
 def _install_sqlite_activation_guards(path: Path, *, lease_token: str) -> list[str]:
@@ -451,15 +569,10 @@ def _sqlite_state_fingerprint(path: Path) -> str:
 def _sqlite_logical_fingerprint(path: Path) -> str:
     """Hash schema and rows without depending on SQLite page layout."""
 
-    connection = connect_truth_database(path, mode="ro", timeout=30)
     try:
-        digest = hashlib.sha256()
-        for line in connection.iterdump():
-            digest.update(line.encode("utf-8"))
-            digest.update(b"\n")
-        return digest.hexdigest()
-    finally:
-        connection.close()
+        return sqlite_logical_fingerprint(path)
+    except SqliteBackupError as exc:
+        raise ActivationSnapshotError(str(exc)) from exc
 
 
 def refresh_activation_sqlite_epoch(snapshot: dict[str, Any]) -> str:
@@ -599,6 +712,12 @@ def capture_activation_state(
         "guard_count": 0,
         "guards_installed": False,
         "backup_guards_removed": False,
+        "source_health": None,
+        "backup_health": None,
+        "source_logical_fingerprint": "",
+        "backup_logical_fingerprint": "",
+        "logical_fingerprint": "",
+        "logical_equivalent": False,
     }
     if db_path.exists() and not db_path.is_file():
         raise ActivationSnapshotError(f"SQLite truth path is not a file: {db_path}")
@@ -622,10 +741,40 @@ def capture_activation_state(
             )
             sqlite_snapshot["write_epoch"] = 1
             sqlite_backup = backup_root / "memory.sqlite3"
-            _sqlite_online_backup(db_path, sqlite_backup)
+            backup_receipt = _sqlite_backup_receipt_or_verify(
+                db_path,
+                sqlite_backup,
+                _sqlite_online_backup(db_path, sqlite_backup),
+            )
+            source_health = dict(backup_receipt.get("source_health") or {})
+            backup_health = dict(backup_receipt.get("backup_health") or {})
+            source_fp = str(backup_receipt.get("source_logical_fingerprint") or "")
+            backup_fp = str(backup_receipt.get("backup_logical_fingerprint") or "")
+            logical_fp = str(
+                backup_receipt.get("logical_fingerprint") or source_fp or backup_fp
+            )
+            logical_equivalent = bool(backup_receipt.get("logical_equivalent")) and (
+                source_fp == backup_fp == logical_fp
+            )
+            if (
+                not source_health.get("ok")
+                or not backup_health.get("ok")
+                or not logical_equivalent
+                or not logical_fp
+            ):
+                raise ActivationSnapshotError(
+                    "SQLite activation backup receipt failed closed on health or "
+                    "logical equivalence evidence"
+                )
             _remove_sqlite_activation_guards(sqlite_backup)
             sqlite_snapshot["backup_guards_removed"] = True
             sqlite_snapshot["backup_path"] = sqlite_backup
+            sqlite_snapshot["source_health"] = source_health
+            sqlite_snapshot["backup_health"] = backup_health
+            sqlite_snapshot["source_logical_fingerprint"] = source_fp
+            sqlite_snapshot["backup_logical_fingerprint"] = backup_fp
+            sqlite_snapshot["logical_fingerprint"] = logical_fp
+            sqlite_snapshot["logical_equivalent"] = True
             sqlite_snapshot["snapshot_fingerprint"] = _sqlite_state_fingerprint(
                 sqlite_backup
             )
@@ -717,6 +866,16 @@ def _surface_receipt(snapshot: dict[str, Any], *, restored: bool) -> dict[str, A
         "guards_installed": bool(snapshot.get("guards_installed")),
         "guards_removed": bool(snapshot.get("guards_removed")),
         "backup_guards_removed": bool(snapshot.get("backup_guards_removed")),
+        "source_health": snapshot.get("source_health"),
+        "backup_health": snapshot.get("backup_health"),
+        "source_logical_fingerprint": str(
+            snapshot.get("source_logical_fingerprint") or ""
+        ),
+        "backup_logical_fingerprint": str(
+            snapshot.get("backup_logical_fingerprint") or ""
+        ),
+        "logical_fingerprint": str(snapshot.get("logical_fingerprint") or ""),
+        "logical_equivalent": bool(snapshot.get("logical_equivalent")),
         "drift_detected": snapshot.get("drift_detected"),
         "manual_recovery_required": bool(snapshot.get("drift_detected")) and not restored,
     }
