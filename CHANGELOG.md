@@ -68,6 +68,7 @@ The `1.9.0` candidate was pushed to `main` but received no tag, GitHub Release, 
 - Made relation-rebuild debt converge without reopening completed work, and made bounded vector reconciliation serialize, expose an explicit disabled receipt, and stop before outbox writes when the truth header is already invalid.
 - Made Desktop principal recovery fail closed on corrupt or unreadable persisted identity and publish first-create identities with durable atomic replacement under concurrency.
 - Made lexical backfill page replay idempotent, added the docid-leading postings index and health check, and made integrity checks detect rowid/memory-id identity swaps without correlated shadow rescans.
+- Kept POSIX staging reservation descriptors open through identity-aware path cleanup before closing them, preventing immediate inode reuse from misclassifying an external replacement as call-owned; Windows retains close-before-unlink semantics, and identity-bound close retries still refuse reused descriptors.
 
 ### Compatibility
 - Preserved the stable V1 provider ID, public tool names, SQLite truth-source contract, and rebuildable vector/graph companions.
