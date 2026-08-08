@@ -212,7 +212,7 @@ def main() -> int:
     payload["ok"] = contract_ok and all(
         bool(check.get("ok")) for check in checks.values()
     )
-    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    print(json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True))
     return 0 if payload["ok"] else 1
 
 
