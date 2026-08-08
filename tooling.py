@@ -327,8 +327,9 @@ class ScopeRecallToolService:
             relation_sync_status = "completed"
         else:
             relation_sync_status = "not_run"
+        lifecycle = self._stored_lifecycle(memory_id) if inserted else ""
         receipt = self._receipt(
-            "promoted" if inserted else outcome,
+            lifecycle or ("promoted" if inserted else outcome),
             target=target,
             id=memory_id,
             scope_mode=scope_mode,
@@ -346,12 +347,38 @@ class ScopeRecallToolService:
                 "id": memory_id,
                 "target": target,
                 "scope_mode": scope_mode,
+                "lifecycle": lifecycle,
                 "relation_sync_status": relation_sync_status,
                 "recovered": recovered,
                 "retry_count": retry_count,
                 "receipt": receipt,
             }
         )
+
+    def _stored_lifecycle(self, memory_id: str) -> str:
+        """Project the committed lifecycle into the public store receipt.
+
+        Receipt projection is best-effort: a successful store must not be
+        turned into a failed tool call merely because this read-side lookup
+        is unavailable during connection recovery.
+        """
+
+        if not memory_id:
+            return ""
+        try:
+            with self.provider._lock:
+                row = self.provider._require_conn().execute(
+                    "SELECT json_extract(metadata, '$.lifecycle') FROM memories WHERE id = ?",
+                    (memory_id,),
+                ).fetchone()
+        except Exception:
+            logger.warning(
+                "Scope Recall could not project lifecycle for store receipt %s",
+                memory_id,
+                exc_info=True,
+            )
+            return ""
+        return str(row[0] or "").strip().lower() if row is not None else ""
 
     def _recoverable_store_error(self, exc: Exception) -> bool:
         if not isinstance(exc, sqlite3.Error):

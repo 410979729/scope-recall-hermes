@@ -128,6 +128,33 @@ def test_store_and_merge_return_contract_receipts(tmp_path, monkeypatch):
     assert merged["receipt"]["source_candidate_id"] == "tcand-demo"
 
 
+def test_store_receipt_reports_actual_candidate_lifecycle(tmp_path, monkeypatch):
+    monkeypatch.delenv("SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY", raising=False)
+    provider = _provider(tmp_path)
+    try:
+        payload = json.loads(
+            provider.handle_tool_call(
+                "scope_recall_store",
+                {
+                    "content": "Temporary checkpoint: deployment progress is awaiting validation.",
+                    "target": "memory",
+                    "memory_type": "episodic",
+                },
+            )
+        )
+        with provider._lock:
+            row = provider._require_conn().execute(
+                "SELECT json_extract(metadata, '$.lifecycle') FROM memories WHERE id = ?",
+                (payload["id"],),
+            ).fetchone()
+    finally:
+        provider.shutdown()
+
+    assert row[0] == "candidate"
+    assert payload["lifecycle"] == "candidate"
+    assert payload["receipt"]["action"] == "candidate"
+
+
 def test_curated_memory_default_is_not_injected_for_explicit_gateway_user(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     store = MemoryStore()

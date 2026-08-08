@@ -1689,6 +1689,41 @@ def test_builtin_memory_write_round_trips_into_current_turn_recall(provider, mon
     assert "problem-first" in result.lower()
 
 
+def test_promoted_unique_identifier_exact_hit_is_top_one(provider):
+    marker = "ORION-VERIFICATION-104100-C9F4"
+    stored = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_store",
+            {
+                "content": f"Orion Ledger reference {marker} has status green.",
+                "target": "memory",
+                "memory_type": "factual",
+                "importance": 0.4,
+                "entities": [marker, "Orion Ledger"],
+            },
+        )
+    )
+    assert stored["stored"] is True
+
+    with provider._lock:
+        row = provider._require_conn().execute(
+            "SELECT metadata FROM memories WHERE id = ?",
+            (stored["id"],),
+        ).fetchone()
+    metadata = json.loads(row["metadata"])
+    assert metadata["lifecycle"] == "promoted"
+    assert marker.lower() in metadata["entities"]
+
+    searched = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_search",
+            {"query": marker, "limit": 20, "include_trace": True},
+        )
+    )
+
+    assert searched["results"][0]["id"] == stored["id"]
+
+
 def test_short_or_greeting_query_is_gated(provider):
     payload = json.loads(
         provider.handle_tool_call("scope_recall_store", {"content": "Joy prefers concise answers.", "target": "user"})
