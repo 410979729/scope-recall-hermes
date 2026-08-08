@@ -174,6 +174,38 @@ def test_journal_report_fails_when_provider_risk_no_insert_streak_exceeds_thresh
     assert any("no productive writes" in item for item in recommendations)
 
 
+def test_journal_report_fails_when_enabled_background_digest_latest_run_failed(tmp_path):
+    conn = _conn(tmp_path)
+    conn.execute(
+        """
+        INSERT INTO journal_digest_runs(
+            id, started_at, finished_at, status, extractor,
+            processed_entries, inserted, updated, skipped, error, metadata
+        ) VALUES (
+            'run-background-error',
+            '2026-01-05T00:00:00+00:00',
+            '2026-01-05T00:00:01+00:00',
+            'error', 'llm-error', 0, 0, 0, 0,
+            'endpoint_config after 1 attempt',
+            '{"health_flags":["extractor_error"]}'
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+    doctor = _doctor_module()
+
+    payload, check, recommendations = doctor.journal_report(
+        tmp_path,
+        journal_config={"background_digest_enabled": True},
+    )
+
+    assert check["ok"] is False
+    assert payload["digest_health"]["status"] == "degraded"
+    assert any("latest background journal digest run failed" in item for item in check["failures"])
+    assert any("background journal digest" in item.lower() for item in recommendations)
+
+
 def test_journal_risk_streak_resets_after_productive_run(tmp_path):
     conn = _conn(tmp_path)
     risk_metadata = json.dumps(

@@ -372,6 +372,13 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
     digest_health_reasons: list[str] = []
     recent_bad_runs = sum(recent_status_counts.get(status, 0) for status in ("error", "retry_scheduled", "dead_letter"))
     recent_fallback_runs = recent_status_counts.get("ok_with_fallback", 0) + recent_extractor_counts.get("heuristic-fallback", 0)
+    raw_background_digest_enabled = journal_config.get("background_digest_enabled", False)
+    background_digest_enabled = (
+        raw_background_digest_enabled.strip().lower() in {"1", "true", "yes", "on"}
+        if isinstance(raw_background_digest_enabled, str)
+        else bool(raw_background_digest_enabled)
+    )
+    latest_digest_status = str(last_run["status"] or "") if last_run is not None else ""
     recent_quarantine_runs = sum(
         1
         for row in recent_runs
@@ -382,6 +389,13 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
         digest_health_status = "degraded"
         digest_health_reasons.append("recent_digest_failures_or_quarantine")
         recommendations.append("Journal digest recently failed or quarantined LLM batches; inspect retry/dead-letter health before relying on automated summaries.")
+    if background_digest_enabled and latest_digest_status in {"error", "retry_scheduled", "dead_letter"}:
+        failures.append(
+            f"latest background journal digest run failed with status {latest_digest_status}"
+        )
+        recommendations.append(
+            "Fix and rerun the background journal digest before treating automated memory consolidation as healthy."
+        )
     if recent_fallback_runs:
         digest_health_status = "degraded"
         digest_health_reasons.append("recent_heuristic_fallback")
