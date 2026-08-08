@@ -231,11 +231,6 @@ def _is_tool_trace_entity(lowered: str) -> bool:
         return True
     if any(lowered.endswith(suffix) for suffix in _TOOL_TRACE_ENTITY_SUFFIXES):
         return True
-    # Most snake_case tokens from tool logs are implementation/procedure noise,
-    # not durable world entities. Stored legacy metadata can still contain such
-    # rows, so read surfaces also call normalize_entity as a defensive filter.
-    if "_" in lowered:
-        return True
     if lowered.startswith(("/tmp/", "/home/", "file://")):
         return True
     return False
