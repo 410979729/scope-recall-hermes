@@ -266,6 +266,70 @@ def test_generic_chinese_system_question_keeps_strong_semantic_hit():
     assert service.last_funnel_trace["filters"]["entity_scope_mismatch"] == 0
 
 
+def test_answer_bearing_curated_fact_outranks_adjacent_preference():
+    query = "用户的笔记本型号是什么"
+    browser_preference = RecallItem(
+        id="browser-preference",
+        content="用户的幻X 2023笔记本以Chrome为主浏览器，并关注同步稳定性。",
+        summary="笔记本浏览器偏好",
+        source="builtin-curated",
+        target="user",
+        score=0.0,
+        updated_at="2026-08-01T00:00:00+00:00",
+        metadata={
+            "lexical_score": lexical_score(
+                query=query,
+                content="用户的幻X 2023笔记本以Chrome为主浏览器，并关注同步稳定性。",
+                summary="笔记本浏览器偏好",
+                source="builtin-curated",
+                target="user",
+            ),
+            "vector_score": 0.0,
+            "scope_id": "shared-scope",
+            "memory_type": "preference",
+            "trust": 0.92,
+            "importance": 0.86,
+        },
+    )
+    model_fact = RecallItem(
+        id="device-model",
+        content="用户的笔记本是ROG Flow Z13幻X 2023（GZ301VV）。",
+        summary="用户的笔记本是ROG Flow Z13幻X 2023（GZ301VV）。",
+        source="builtin-curated",
+        target="memory",
+        score=0.0,
+        updated_at="2026-08-01T00:00:00+00:00",
+        metadata={
+            "lexical_score": lexical_score(
+                query=query,
+                content="用户的笔记本是ROG Flow Z13幻X 2023（GZ301VV）。",
+                summary="用户的笔记本是ROG Flow Z13幻X 2023（GZ301VV）。",
+                source="builtin-curated",
+                target="memory",
+            ),
+            "vector_score": 0.0,
+            "scope_id": "shared-scope",
+            "memory_type": "factual",
+            "trust": 0.92,
+            "importance": 0.68,
+        },
+    )
+    provider = DummyProvider(
+        {
+            "mode": "hybrid",
+            "include_general": "same-scope",
+            "entity_scope_filter_enabled": True,
+            "min_score": 0.18,
+        },
+        db_items=[],
+        curated_items=[browser_preference, model_fact],
+    )
+
+    results = RecallService(provider).search_memories(query, limit=2)
+
+    assert [item.id for item in results] == ["device-model", "browser-preference"]
+
+
 def test_chinese_location_question_drops_interrogative_fragments():
     assert semantic_query_tokens("玉衡在哪") == ["玉衡"]
     assert semantic_query_tokens("开阳星在哪") == ["开阳星"]

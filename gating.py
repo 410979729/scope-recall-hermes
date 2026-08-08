@@ -88,6 +88,10 @@ _OPERATING_SYSTEM_QUERY_RE = re.compile(
     r"(?:什么|哪个|哪种)(?:操作)?系统)"
 )
 _TIMEZONE_QUERY_RE = re.compile(r"(?:\btime\s*zone\b|\btimezone\b|时区)", re.IGNORECASE)
+_ATTRIBUTE_QUERY_RE = re.compile(
+    r"(?:^|的)(?P<subject>[\u4e00-\u9fffA-Za-z0-9_.-]{2,16})"
+    r"(?P<attribute>型号|版本|名称|名字)(?:是|为)?(?:什么|哪个|哪一个|哪种)?"
+)
 _LOCATION_INTENT_TERMS = ("位置", "地址", "路径", "目录", "主机", "本机", "运行环境")
 _OPERATING_SYSTEM_INTENT_TERMS = (
     "操作系统",
@@ -403,6 +407,15 @@ def matched_query_intent_terms(query: str, document: str) -> List[str]:
         ):
             terms.extend(_TIMEZONE_INTENT_TERMS)
             terms.append(timezone_value.group(0).casefold())
+    attribute_match = _ATTRIBUTE_QUERY_RE.search(normalized_query)
+    if attribute_match is not None:
+        subject = attribute_match.group("subject").casefold()
+        attribute = attribute_match.group("attribute").casefold()
+        answer_relation = re.compile(
+            rf"{re.escape(subject)}(?:的)?(?:型号|版本|名称|名字)?\s*(?:是|为|:|：)"
+        )
+        if subject in normalized_document and answer_relation.search(normalized_document):
+            terms.extend((subject, attribute))
     return [term for term in dict.fromkeys(terms) if term in normalized_document]
 
 
