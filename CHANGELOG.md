@@ -4,17 +4,23 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
-### Fixed
-- Made Desktop principal recovery fail closed on corrupt/unreadable persisted identity and publish first-create identities with durable atomic replacement under concurrency.
-- Made lexical backfill page replay idempotent, added the docid-leading postings index and health check, and made integrity checks detect rowid/memory-id identity swaps without correlated shadow rescans.
-- Extracted a single-responsibility verified SQLite online-backup/health boundary used by activation receipts (source/backup health + logical fingerprint equivalence, fail closed); ordinary startup still does not create backups.
-- Clarified lexical release RB-6 semantics: absolute `shadow_p95_ms <= 100` is a cross-host target with structured `target_misses` evidence, not a universal hard gate.
+## [1.9.1] - 2026-08-08
 
-## [1.9.1] - 2026-08-07
+This cumulative public release covers all changes since the last public release, `1.8.7`. The version path is documented explicitly because `1.8.8` and `1.8.9` were development intervals rather than tagged package candidates, and `1.9.0` reached `main` as a source candidate but was never tagged, released, or uploaded to PyPI. SQLite remains authoritative and the stable provider/tool identities remain unchanged.
 
-This cumulative patch release covers all changes since the last public release, `1.8.7`. It carries forward the full 1.9.0 source candidate while correcting its POSIX release-validation fixture; SQLite remains authoritative and the stable provider/tool identities remain unchanged.
+### 1.8.8 — delivery-pipeline interval (not cut)
+- Immediately after `1.8.7`, release commands were scoped to the repository and PyPI delivery was moved onto the trusted GitHub Actions publishing path, with a manual fallback retained.
+- No `1.8.8` runtime package was cut: this interval repaired release delivery machinery and was carried forward into the next product release instead of publishing another package with unchanged runtime behavior.
 
-### Added
+### 1.8.9 — minor-upgrade interval (not cut)
+- Development then expanded beyond patch-only maintenance into a new CJK lexical shadow generation, indexed two-character postings, Windows long-path-safe rollout and rollback, and a unified fail-closed endpoint policy.
+- No `1.8.9` candidate was cut: that user-visible feature scope warranted a SemVer minor transition, so the work became the `1.9.0` source line rather than another `1.8.x` patch.
+
+### 1.9.0 — source candidate (not published)
+
+The `1.9.0` candidate was pushed to `main` but received no tag, GitHub Release, or PyPI package. It established the feature line below and was superseded after cross-platform CI exposed a POSIX-only release-fixture permission mismatch.
+
+#### Added
 - Consolidated the cumulative Fact Evolution, temporal query, scope routing, evidence authority, provenance-root, idempotency, journal checkpoint, and release-identity guarantees required by the 1.9.1 public release line.
 - Added a release-gated CJK lexical benchmark that records high-interference recall, English non-regression, requested-limit enforcement, p50/p95 latency, and SQLite page growth.
 - Added a backup-first CJK lexical shadow index with resumable bounded backfill, truth-table maintenance triggers, synthetic/live dual-read quality evidence, explicit compare-and-swap activation, read-only doctor health, and pointer-only rollback that retains the legacy index.
@@ -23,8 +29,7 @@ This cumulative patch release covers all changes since the last public release, 
 - Added one endpoint-policy configuration gate across capture, journal/nightly, reflection, OpenAI-compatible embedding, and MiniMax embedding, with explicit CLI opt-in for trusted non-loopback HTTP endpoints.
 - Added a read-only `doctor` endpoint-policy check for enabled capture, LLM journal, reflection, and hosted primary/fallback embedding transports; it resolves the same inherited provider routes and embedding base-URL environment aliases as runtime without reading API keys, and reports only origins plus recognized public API suffixes.
 
-### Fixed
-- Corrected the lexical-doctor release fixture to create SQLite truth storage through the production truth-connection boundary, preserving the 0700/0600 POSIX permission contract instead of weakening the doctor gate.
+#### Fixed
 - Bound READY/ACTIVE lexical quality receipts to a strict privacy-safe schema, fixed provenance, source revision, integrity report, and canonical evidence fingerprint; stale or forged receipts now fail closed.
 - Acquired the durable maintenance lease and SQLite DML guard triggers for lexical build/activate/rollback, with backup-first source fencing and explicit release evidence.
 - Mapped shadow FTS rows and bigram postings to truth-row integer docids so trigger and backfill identity maintenance is an indexed rowid operation, and restricted the shadow FTS query to a bounded `rank` candidate window ordered before the outer recency tie-breaker; the strict release gate now proves the 50,000-row shadow contract with hard gates on relative p95 ratio (`<= 4`), page growth (`<= 2.5`), CJK/English correctness, and result caps, while `shadow_p95_ms <= 100` remains a cross-host target recorded via structured `target_misses` rather than a universal hard fail.
@@ -46,6 +51,28 @@ This cumulative patch release covers all changes since the last public release, 
 - Reworked Experience statistics as scoped relational aggregation instead of expanding every accessible playbook ID into one `IN (...)` list, preserving playbook/run scope checks below reduced SQLite host-parameter limits.
 - Made the release runner force UTF-8 for Python subprocesses and decode captured output explicitly, so non-UTF-8 Windows system locales cannot lose benchmark or package-stage JSON to reader-thread decode failures.
 - Made primary and fallback embedding `base_url_env` valid runtime configuration and ensured a configured non-empty environment value overrides the packaged URL fallback in both runtime construction and doctor checks.
+
+### 1.9.1 — public release finalization
+
+#### Added
+- Added a stable profile-local opaque Desktop principal fallback when Hermes Desktop omits `user_id`; it persists across restarts, remains distinct across profiles, avoids host-account/path PII, permits an explicit override, and leaves non-Desktop runtimes fail closed.
+- Added `vector.startup_reconcile_enabled` as an explicit stop switch plus a cheap SQLite-header preflight, so operators can disable automatic outbox/truth reconciliation and already-corrupt truth storage fails closed before further reconciliation work.
+- Added a single-responsibility verified SQLite online-backup/health boundary for activation receipts, checking source and backup health plus logical fingerprint equivalence; ordinary startup still does not create backups.
+
+#### Changed
+- Propagated optional thinking controls through journal and nightly LLM calls and made the default lifecycle for non-time-sensitive automatic digests configurable while retaining review-first candidate behavior.
+- Made the 50,000-row lexical release contract host-portable: relative p95 latency (`<= 4x`), page growth (`<= 2.5x`), CJK/English correctness, and requested result caps remain hard gates, while absolute `shadow_p95_ms <= 100` is reported as a cross-host target through structured `target_misses`.
+
+#### Fixed
+- Corrected the lexical-doctor release fixture to create SQLite truth storage through the production truth-connection boundary, preserving the 0700/0600 POSIX permission contract instead of weakening the doctor gate.
+- Made relation-rebuild debt converge without reopening completed work, and made bounded vector reconciliation serialize, expose an explicit disabled receipt, and stop before outbox writes when the truth header is already invalid.
+- Made Desktop principal recovery fail closed on corrupt or unreadable persisted identity and publish first-create identities with durable atomic replacement under concurrency.
+- Made lexical backfill page replay idempotent, added the docid-leading postings index and health check, and made integrity checks detect rowid/memory-id identity swaps without correlated shadow rescans.
+
+### Compatibility
+- Preserved the stable V1 provider ID, public tool names, SQLite truth-source contract, and rebuildable vector/graph companions.
+- Preserved opt-in Fact Evolution, temporal current/as-of/history queries, bounded citation-grounded Reflection, scope routing, evidence authority, provenance-root validation, deterministic idempotency, atomic journal checkpoint behavior, and the release-identity contract.
+- Durable `user`, `memory`, `project`, and `ops` targets continue to use governed shared scope; `general` remains local scratch. Optional PGVector and legacy-import paths remain optional and are not runtime dependencies.
 
 ## [1.9.0] - 2026-08-06
 
