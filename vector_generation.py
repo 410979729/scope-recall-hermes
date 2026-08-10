@@ -21,7 +21,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from .capture_filters import sanitize_report_text, sanitize_structured_value
 
@@ -950,22 +950,35 @@ def claim_vector_events(
     limit: int = 100,
     lease_seconds: int = 300,
     timestamp: str = "",
+    event_ids: Sequence[int] | None = None,
 ) -> list[dict[str, Any]]:
-    """Claim pending/retry events and reclaim expired processing leases."""
+    """Claim pending/retry events, optionally restricted to exact durable IDs."""
 
     ensure_vector_generation_schema(conn)
     at = timestamp or now_iso()
     lease_cutoff = _lease_cutoff(at, lease_seconds)
+    restricted_ids = tuple(
+        dict.fromkeys(int(event_id) for event_id in (event_ids or ()) if int(event_id) > 0)
+    )
+    if event_ids is not None and not restricted_ids:
+        return []
+    id_clause = ""
+    parameters: list[Any] = [generation_id]
+    if event_ids is not None:
+        placeholders = ",".join("?" for _ in restricted_ids)
+        id_clause = f" AND id IN ({placeholders})"
+        parameters.extend(restricted_ids)
+    parameters.extend((at, lease_cutoff, max(1, int(limit or 100))))
     rows = conn.execute(
-        """
+        f"""
         SELECT id FROM vector_outbox
-        WHERE generation_id = ? AND (
+        WHERE generation_id = ?{id_clause} AND (
             (status IN ('pending', 'retry') AND julianday(available_at) <= julianday(?))
             OR (status = 'processing' AND julianday(updated_at) <= julianday(?))
         )
         ORDER BY id ASC LIMIT ?
         """,
-        (generation_id, at, lease_cutoff, max(1, int(limit or 100))),
+        parameters,
     ).fetchall()
     claimed: list[dict[str, Any]] = []
     for row in rows:

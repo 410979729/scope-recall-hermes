@@ -8,6 +8,7 @@ import importlib.util
 import sqlite3
 from pathlib import Path
 
+from scope_recall.secret_patterns import contains_secret_like_text
 from scope_recall.sql_store import ensure_schema, store_row
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -99,6 +100,71 @@ def test_doctor_memory_secret_scan_ignores_archived_secret_rows(tmp_path):
     assert payload["samples"] == []
     assert check["ok"] is True
     assert recommendations == []
+
+
+def test_doctor_downgrades_all_component_placeholder_database_uris(tmp_path):
+    conn = _conn(tmp_path)
+    placeholder_uris = [
+        "postgresql://user:" + "pass@host/app",
+        "redis://service:" + "password@redis-host/cache",
+    ]
+    for index, uri in enumerate(placeholder_uris):
+        assert contains_secret_like_text(uri) is True
+        _insert(
+            conn,
+            memory_id=f"placeholder-uri-{index}",
+            content=f"Database URI pattern: {uri}",
+        )
+    conn.close()
+    doctor = _doctor_module()
+
+    payload, check, recommendations = doctor.memory_secret_report(tmp_path)
+
+    assert payload["active_secret_like_count"] == 0
+    assert payload["placeholder_like_uri_count"] == 2
+    assert len(payload["placeholder_like_samples"]) == 2
+    assert check["ok"] is True
+    assert any("placeholder-like" in item for item in recommendations)
+
+
+def test_doctor_keeps_generic_userinfo_on_production_host_actionable(tmp_path):
+    conn = _conn(tmp_path)
+    uri = "postgresql://user:" + "password@db.prod.internal/app"
+    assert contains_secret_like_text(uri) is True
+    _insert(
+        conn,
+        memory_id="generic-userinfo-production-host",
+        content=f"Production database endpoint: {uri}",
+    )
+    conn.close()
+    doctor = _doctor_module()
+
+    payload, check, recommendations = doctor.memory_secret_report(tmp_path)
+
+    assert payload["active_secret_like_count"] == 1
+    assert payload["placeholder_like_uri_count"] == 0
+    assert check["ok"] is False
+    assert recommendations
+
+
+def test_doctor_keeps_one_component_placeholder_uri_actionable(tmp_path):
+    conn = _conn(tmp_path)
+    uri = "postgresql://production-user:" + "password@db.prod.internal/app"
+    assert contains_secret_like_text(uri) is True
+    _insert(
+        conn,
+        memory_id="actionable-uri",
+        content=f"Production database endpoint: {uri}",
+    )
+    conn.close()
+    doctor = _doctor_module()
+
+    payload, check, recommendations = doctor.memory_secret_report(tmp_path)
+
+    assert payload["active_secret_like_count"] == 1
+    assert payload["placeholder_like_uri_count"] == 0
+    assert check["ok"] is False
+    assert recommendations
 
 
 def test_doctor_detects_sensitive_token_prefix_with_metric_suffix(tmp_path):

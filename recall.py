@@ -7,10 +7,12 @@ from __future__ import annotations
 import math
 import re
 import time
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any
 
 from .capture_filters import redact_secret_like_text, sanitize_structured_value
+from .evidence_retrieval import merge_evidence_rankings
 from .gating import (
     matched_query_intent_terms,
     query_intent_terms,
@@ -27,6 +29,7 @@ from .graph import apply_quality_weight, entity_distance_scores, entity_overlap_
 from .lifecycle_policy import ORDINARY_RECALL_HIDDEN_LIFECYCLE_VALUES, ordinary_recall_lifecycle_visible_sql
 from .models import RecallItem
 from .recall_pipeline import build_search_plan, final_trace_payload, initial_trace, merge_recall_candidates, rank_recall_items
+from .schemas import DEFAULT_EVIDENCE_DIVERSITY_DEPTH, MAX_EVIDENCE_DIVERSITY_DEPTH
 from .scoring import combine_scores, reciprocal_rank_fusion
 from .temporal_query import (
     MAX_PRECEDENCE_MEMORY_IDS,
@@ -96,8 +99,21 @@ def _safe_recall_item(item: RecallItem) -> RecallItem:
         metadata=safe_metadata if isinstance(safe_metadata, dict) else {},
     )
 
+
+def _sanitize_recall_window(
+    ranked: list[RecallItem],
+    *,
+    limit: int,
+) -> list[RecallItem]:
+    """Sanitize only items that can cross the recall egress boundary."""
+
+    return [_safe_recall_item(item) for item in ranked[: max(0, int(limit))]]
+
 _ENTITY_SCOPE_STOPWORDS = {
+    "anchors",
     "api",
+    "always",
+    "artifact",
     "base",
     "how",
     "is",
@@ -109,7 +125,9 @@ _ENTITY_SCOPE_STOPWORDS = {
     "likes",
     "our",
     "prod",
+    "project",
     "response",
+    "recovery",
     "releases",
     "rollout",
     "style",
@@ -126,6 +144,7 @@ _ENTITY_SCOPE_STOPWORDS = {
     "runbook",
     "command",
     "production",
+    "procedure",
     "worker",
     "queue",
     "drain",
@@ -141,10 +160,33 @@ _ENTITY_SCOPE_STOPWORDS = {
 }
 
 _CJK_SCOPE_QUERY_SUBJECT_RE = re.compile(
-    r"(?<![\u4e00-\u9fff])([\u4e00-\u9fff]{2,8})"
+    r"(?<![\u4e00-\u9fff])([\u4e00-\u9fff]{2,8}?)"
     r"(?=(?:现在|目前|当前|最近|在哪里|在哪|哪儿|何处|的|是什么|怎么|如何|是否|有没有))"
 )
 _CJK_SCOPE_PRONOUNS = {"我们", "你们", "他们", "她们", "它们", "大家", "自己"}
+_CJK_SCOPE_QUERY_PREFIXES = (
+    "麻烦请告诉我",
+    "麻烦告诉我",
+    "可以告诉我",
+    "请告诉我",
+    "我想知道",
+    "帮我查一下",
+    "能告诉我",
+    "帮我看看",
+    "告诉我",
+    "帮我查",
+    "请问",
+)
+
+
+def _normalize_cjk_scope_subject(value: str) -> str:
+    """Remove conversational prefixes without weakening the named subject."""
+
+    subject = str(value or "").strip()
+    for prefix in _CJK_SCOPE_QUERY_PREFIXES:
+        if subject.startswith(prefix) and len(subject) - len(prefix) >= 2:
+            return subject[len(prefix) :]
+    return subject
 
 
 class RecallService:
@@ -153,9 +195,150 @@ class RecallService:
     The service merges curated file memories, SQLite truth rows, vector hits, relation evidence, and ranking policy. It must stay mutation-free so recall cannot accidentally change durable state."""
     def __init__(self, provider: Any) -> None:
         self.provider = provider
-        self.last_rejected_candidates: list[RecallItem] = []
-        self.last_funnel_trace: dict[str, Any] = {}
-        self.last_temporal_query_diagnostics: dict[str, Any] = {}
+        prefix = f"scope_recall.{id(self)}"
+        self._last_rejected_candidates: ContextVar[list[RecallItem] | None] = ContextVar(
+            f"{prefix}.rejected", default=None
+        )
+        self._last_funnel_trace: ContextVar[dict[str, Any] | None] = ContextVar(
+            f"{prefix}.funnel_trace", default=None
+        )
+        self._last_evidence_set_trace: ContextVar[dict[str, Any] | None] = ContextVar(
+            f"{prefix}.evidence_set_trace", default=None
+        )
+        self._last_temporal_query_diagnostics: ContextVar[
+            dict[str, Any] | None
+        ] = ContextVar(f"{prefix}.temporal_diagnostics", default=None)
+
+    @property
+    def last_rejected_candidates(self) -> list[RecallItem]:
+        return list(self._last_rejected_candidates.get() or [])
+
+    @last_rejected_candidates.setter
+    def last_rejected_candidates(self, value: list[RecallItem]) -> None:
+        self._last_rejected_candidates.set(list(value or []))
+
+    @property
+    def last_funnel_trace(self) -> dict[str, Any]:
+        return dict(self._last_funnel_trace.get() or {})
+
+    @last_funnel_trace.setter
+    def last_funnel_trace(self, value: dict[str, Any]) -> None:
+        self._last_funnel_trace.set(dict(value or {}))
+
+    @property
+    def last_evidence_set_trace(self) -> dict[str, Any]:
+        return dict(self._last_evidence_set_trace.get() or {})
+
+    @last_evidence_set_trace.setter
+    def last_evidence_set_trace(self, value: dict[str, Any]) -> None:
+        self._last_evidence_set_trace.set(dict(value or {}))
+
+    @property
+    def last_temporal_query_diagnostics(self) -> dict[str, Any]:
+        return dict(self._last_temporal_query_diagnostics.get() or {})
+
+    @last_temporal_query_diagnostics.setter
+    def last_temporal_query_diagnostics(self, value: dict[str, Any]) -> None:
+        self._last_temporal_query_diagnostics.set(dict(value or {}))
+
+    def search_evidence_set(
+        self,
+        query: str,
+        *,
+        query_variants: list[str],
+        limit: int,
+        per_query_limit: int | None = None,
+        diversity_depth: int = DEFAULT_EVIDENCE_DIVERSITY_DEPTH,
+        recall_mode: str = "advisory",
+    ) -> list[RecallItem]:
+        """Retrieve and fuse a bounded set of explicit query variants.
+
+        Query generation belongs to the caller; Scope Recall only performs
+        deterministic, read-only evidence fusion. The ordinary single-query
+        path is untouched when no variants are supplied.
+        """
+
+        queries: list[str] = []
+        seen: set[str] = set()
+        for raw_query in [query, *list(query_variants or [])]:
+            candidate = str(raw_query or "").strip()
+            normalized = candidate.casefold()
+            if not candidate or normalized in seen:
+                continue
+            seen.add(normalized)
+            queries.append(candidate[:1000])
+            if len(queries) >= 8:
+                break
+        bounded_limit = max(1, min(50, int(limit or 1)))
+        bounded_per_query = max(
+            1,
+            min(50, int(per_query_limit or bounded_limit)),
+        )
+        rankings: list[tuple[str, list[RecallItem]]] = []
+        query_traces: list[dict[str, Any]] = []
+        query_vectors: list[list[float]] = []
+        embed_query_variants = getattr(
+            self.provider,
+            "_embed_query_variants",
+            None,
+        )
+        if callable(embed_query_variants):
+            try:
+                embedded_raw: Any = embed_query_variants(queries)
+                embedded = list(embedded_raw or [])
+                if len(embedded) == len(queries):
+                    query_vectors = embedded
+            except Exception:
+                # Batch embedding is an optimization only. The ordinary
+                # per-query path remains the compatibility fallback.
+                query_vectors = []
+        for index, variant in enumerate(queries):
+            search_kwargs: dict[str, Any] = {
+                "limit": bounded_per_query,
+                "recall_mode": recall_mode,
+                "sanitize_output": False,
+            }
+            if query_vectors:
+                search_kwargs["query_vector"] = query_vectors[index]
+            results = self._search_memories_internal(variant, **search_kwargs)
+            rankings.append((variant, results))
+            query_traces.append(
+                {
+                    "query": variant,
+                    "returned_ids": [item.id for item in results],
+                    "funnel_trace": dict(self.last_funnel_trace or {}),
+                }
+            )
+        bounded_diversity_depth = max(
+            1,
+            min(
+                MAX_EVIDENCE_DIVERSITY_DEPTH,
+                int(diversity_depth or DEFAULT_EVIDENCE_DIVERSITY_DEPTH),
+            ),
+        )
+        merged_ranked = merge_evidence_rankings(
+            rankings,
+            limit=bounded_limit,
+            diversity_depth=bounded_diversity_depth,
+        )
+        merged = _sanitize_recall_window(merged_ranked, limit=bounded_limit)
+        self.last_funnel_trace = (
+            dict(query_traces[0]["funnel_trace"] or {})
+            if query_traces
+            else {}
+        )
+        self.last_evidence_set_trace = {
+            "strategy": "multi_query_rrf_diversity",
+            "primary_query": queries[0] if queries else "",
+            "query_count": len(queries),
+            "queries": queries,
+            "per_query_limit": bounded_per_query,
+            "diversity_depth": bounded_diversity_depth,
+            "limit": bounded_limit,
+            "query_traces": query_traces,
+            "returned_ids": [item.id for item in merged],
+        }
+        return merged
 
     def search_memories(
         self,
@@ -163,6 +346,24 @@ class RecallService:
         *,
         limit: int,
         recall_mode: str = "advisory",
+    ) -> list[RecallItem]:
+        """Search accessible memory sources through the sanitized egress."""
+
+        return self._search_memories_internal(
+            query,
+            limit=limit,
+            recall_mode=recall_mode,
+            sanitize_output=True,
+        )
+
+    def _search_memories_internal(
+        self,
+        query: str,
+        *,
+        limit: int,
+        recall_mode: str = "advisory",
+        query_vector: list[float] | None = None,
+        sanitize_output: bool = True,
     ) -> list[RecallItem]:
         """Search accessible memory sources and return ranked recall payloads.
 
@@ -202,7 +403,16 @@ class RecallService:
         trace["timings_ms"]["lexical"] = self._elapsed_ms(stage_start)
 
         stage_start = time.perf_counter()
-        raw_vector_candidates = self.provider._search_vector_memories(query, limit=candidate_pool)
+        if query_vector is None:
+            raw_vector_candidates = self.provider._search_vector_memories(
+                query,
+                limit=candidate_pool,
+            )
+        else:
+            raw_vector_candidates = self.provider._search_vector_memories_with_vector(
+                query_vector,
+                limit=candidate_pool,
+            )
         vector_candidates = self._filter_recall_lifecycle(raw_vector_candidates)
         trace["filters"]["lifecycle_removed"] += max(0, len(raw_vector_candidates) - len(vector_candidates))
         trace["stages"]["vector"] = self._trace_stage(vector_candidates, raw_count=len(raw_vector_candidates))
@@ -483,7 +693,7 @@ class RecallService:
         ]
         self.last_rejected_candidates = ranked_rejected
 
-        ranked = [_safe_recall_item(item) for item in rank_recall_items(filtered)]
+        ranked = rank_recall_items(filtered)
         current_positions = [
             index
             for index, item in enumerate(ranked)
@@ -511,7 +721,11 @@ class RecallService:
             )
         if ranking_warnings:
             trace["ranking_warnings"] = ranking_warnings
-        returned = ranked[:bounded_limit]
+        returned = (
+            _sanitize_recall_window(ranked, limit=bounded_limit)
+            if sanitize_output
+            else ranked[:bounded_limit]
+        )
         trace["stages"]["ranked"] = self._trace_stage(ranked)
         trace["final"] = final_trace_payload(returned=returned, ranked_rejected=ranked_rejected)
         trace["timings_ms"]["total"] = self._elapsed_ms(started_at)
@@ -628,7 +842,7 @@ class RecallService:
 
     def _project_entities(self, text: str) -> set[str]:
         output: set[str] = set()
-        for match in re.finditer(r"\bproject\s+([a-z0-9][a-z0-9_-]{1,40})\b", str(text or ""), flags=re.IGNORECASE):
+        for match in re.finditer(r"\bproject[ \t]+([a-z0-9][a-z0-9_-]{1,40})\b", str(text or ""), flags=re.IGNORECASE):
             output.add(f"project:{match.group(1).lower()}")
         return output
 
@@ -644,6 +858,23 @@ class RecallService:
             output.add(normalized)
         return output
 
+    @staticmethod
+    def _query_mentions_scope_entity(query: str, entity: str) -> bool:
+        """Match a normalized entity case-insensitively without substring bleed."""
+
+        normalized = str(entity or "").casefold()
+        if not normalized:
+            return False
+        query_text = str(query or "").casefold()
+        if re.search(r"[\u4e00-\u9fff]", normalized):
+            return normalized in query_text
+        return bool(
+            re.search(
+                rf"(?<![a-z0-9_]){re.escape(normalized)}(?![a-z0-9_])",
+                query_text,
+            )
+        )
+
     def _explicit_query_scope_entities(self, query: str) -> set[str]:
         raw = str(query or "")
         values = [
@@ -655,9 +886,10 @@ class RecallService:
             for match in re.finditer(r"`([\u4e00-\u9fff]{2,12})`", raw)
         )
         values.extend(
-            subject
+            normalized_subject
             for subject in _CJK_SCOPE_QUERY_SUBJECT_RE.findall(raw)
-            if subject not in _CJK_SCOPE_PRONOUNS
+            if (normalized_subject := _normalize_cjk_scope_subject(subject))
+            not in _CJK_SCOPE_PRONOUNS
         )
         return self._scope_entities(values)
 
@@ -670,8 +902,14 @@ class RecallService:
             match.group(0)
             for match in re.finditer(r"\b[A-Z][A-Za-z0-9_.:/#-]{2,63}\b", content)
         ]
-        for match in re.finditer(r"[\u4e00-\u9fff]{2,24}", content):
-            values.append(match.group(0)[:2])
+        values.extend(
+            match.group(1)
+            for match in re.finditer(r"`([\u4e00-\u9fff]{2,12})`", content)
+        )
+        # Arbitrary CJK prose prefixes are not entity declarations. Deriving a
+        # hard scope from the first two characters (for example 当前 from
+        # 当前配置) rejects otherwise relevant memories. Explicit backticks and
+        # structured/heuristically extracted metadata remain available below.
         return self._scope_entities(values)
 
     def _entity_scope_mismatch(self, query: str, item: RecallItem, meta: dict[str, Any]) -> bool:
@@ -681,39 +919,98 @@ class RecallService:
             enabled = enabled.strip().lower() in {"1", "true", "yes", "on"}
         if not enabled:
             return False
-        # Project-prefixed entities are a hard isolation signal; generic named
-        # entities are a conservative fallback. Do not collapse this to token
-        # overlap only, or shared terms like API/deploy/rollback will bleed
-        # memories across projects.
+
+        raw_declared_entities = meta.get("entities")
+        if isinstance(raw_declared_entities, list):
+            declared_values = [str(value) for value in raw_declared_entities]
+        elif raw_declared_entities:
+            declared_values = [str(raw_declared_entities)]
+        else:
+            declared_values = []
+        explicit_item_entities = self._explicit_item_scope_entities(item)
+        declared_entities = self._scope_entities(declared_values)
+        raw_claim = meta.get("claim")
+        claim_entities = self._scope_entities(
+            [str(raw_claim.get("subject") or "")]
+            if isinstance(raw_claim, dict) and raw_claim.get("subject")
+            else []
+        )
+        declared_projects = self._project_entities("\n".join(declared_values))
+        if claim_entities:
+            structured_entities = claim_entities
+        elif declared_projects:
+            project_names = {
+                project.split(":", 1)[1]
+                for project in declared_projects
+                if ":" in project
+            }
+            structured_entities = self._scope_entities(
+                [
+                    entity
+                    for name in sorted(project_names)
+                    for entity in (name, f"project {name}")
+                ]
+            )
+        elif len(declared_entities) <= 3:
+            # Small lists are explicit tool input. Larger lists are commonly
+            # auto-expanded storage metadata, so keep only proper-name evidence
+            # also visible in prose instead of treating every keyword as scope.
+            structured_entities = declared_entities
+        else:
+            structured_entities = declared_entities & explicit_item_entities
         query_projects = self._project_entities(query)
+        item_projects = self._project_entities("\n".join([item.content, item.summary]))
+
+        if structured_entities:
+            # Structured entities own scope regardless of casing. Prose and
+            # Project mentions can reveal a conflicting scoped query, but they
+            # can never rescue a memory whose declared subject does not match.
+            if any(
+                self._query_mentions_scope_entity(query, entity)
+                for entity in structured_entities
+            ):
+                return False
+            if query_projects & declared_projects:
+                return False
+            conflicting_prose_entities = explicit_item_entities | item_projects
+            if query_projects or any(
+                self._query_mentions_scope_entity(query, entity)
+                for entity in conflicting_prose_entities
+            ):
+                return True
+            return bool(self._explicit_query_scope_entities(query))
+
+        # Without a structured subject, Project-prefixed entities remain a hard
+        # isolation signal and prose proper names are a conservative fallback.
         entity_text = "\n".join(str(entity) for entity in metadata_entities(meta))
-        item_projects = self._project_entities("\n".join([entity_text, item.content, item.summary]))
+        item_projects |= self._project_entities(entity_text)
         if query_projects:
             if not item_projects:
                 return False
             return not bool(query_projects & item_projects)
-        query_lower = str(query or "").lower()
-        explicit_item_entities = self._explicit_item_scope_entities(item)
-        if explicit_item_entities:
-            for entity in explicit_item_entities:
-                minimum_length = 2 if re.search(r"[\u4e00-\u9fff]", entity) else 3
-                if len(entity) >= minimum_length and entity in query_lower:
-                    return False
-            explicit_query_entities = self._explicit_query_scope_entities(query)
-            if explicit_query_entities:
-                return not bool(explicit_query_entities & explicit_item_entities)
+
         explicit_query_entities = self._explicit_query_scope_entities(query)
-        item_scope_entities = self._scope_entities(metadata_entities(meta, item.content, item.target))
-        if not item_scope_entities:
+        hard_item_entities = explicit_item_entities
+        if any(
+            self._query_mentions_scope_entity(query, entity)
+            for entity in hard_item_entities
+        ):
             return False
-        query_lower = str(query or "").lower()
-        for entity in item_scope_entities:
-            minimum_length = 2 if re.search(r"[\u4e00-\u9fff]", entity) else 3
-            if len(entity) >= minimum_length and entity in query_lower:
+        if explicit_query_entities and hard_item_entities:
+            return True
+
+        item_scope_entities = self._scope_entities(
+            metadata_entities(meta, item.content, item.target)
+        )
+        candidate_scope_entities = hard_item_entities | item_scope_entities
+        if not candidate_scope_entities:
+            return False
+        for entity in candidate_scope_entities:
+            if self._query_mentions_scope_entity(query, entity):
                 explicit_query_entities.add(entity)
         if not explicit_query_entities:
             return False
-        return not bool(explicit_query_entities & item_scope_entities)
+        return not bool(explicit_query_entities & candidate_scope_entities)
 
     @staticmethod
     def _current_state_rank(

@@ -246,6 +246,63 @@ def test_openai_compatible_embedder_sends_dimensions_and_separates_query_documen
     assert embedder.describe()["prompt_profile"] == "gemini-retrieval-v1"
 
 
+def test_openai_compatible_embedder_batches_query_prompts(monkeypatch):
+    fake_client = _FakeOpenAIClient()
+    monkeypatch.setattr(
+        OpenAICompatibleEmbedder,
+        "_client_or_raise",
+        lambda self: fake_client,
+    )
+    embedder = OpenAICompatibleEmbedder(
+        model="gemini-embedding-001",
+        api_key="pk-test",
+        base_url="https://example.invalid/v1",
+        dimensions=3,
+        document_prefix="document: ",
+        query_prefix="query: ",
+    )
+
+    vectors = embedder.embed_queries(["alpha", "beta"])
+
+    assert vectors == [[0.1, 0.2, 0.3], [0.1, 0.2, 0.3]]
+    assert fake_client.embeddings.calls == [2]
+    assert fake_client.embeddings.inputs == [["query: alpha", "query: beta"]]
+
+
+def test_openai_compatible_embedder_restores_indexed_response_order(monkeypatch):
+    class IndexedAPI:
+        @staticmethod
+        def create(**_kwargs):
+            class Item:
+                def __init__(self, index, embedding):
+                    self.index = index
+                    self.embedding = embedding
+
+            class Response:
+                data = [
+                    Item(1, [0.0, 1.0, 0.0]),
+                    Item(0, [1.0, 0.0, 0.0]),
+                ]
+
+            return Response()
+
+    class IndexedClient:
+        embeddings = IndexedAPI()
+
+    embedder = OpenAICompatibleEmbedder(
+        model="gemini-embedding-001",
+        api_key="pk-test",
+        base_url="https://example.invalid/v1",
+        dimensions=3,
+    )
+    monkeypatch.setattr(embedder, "_client_or_raise", lambda: IndexedClient())
+
+    assert embedder.embed_queries(["alpha", "beta"]) == [
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+    ]
+
+
 def test_openai_compatible_embedder_rejects_response_count_and_dimension_mismatch(monkeypatch):
     class BadAPI:
         def __init__(self, vectors):

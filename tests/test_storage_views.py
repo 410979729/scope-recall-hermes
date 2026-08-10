@@ -7,7 +7,11 @@ from __future__ import annotations
 import sqlite3
 
 from scope_recall.sql_store import ensure_schema, store_row
-from scope_recall.storage_views import search_db_memories, search_vector_memories
+from scope_recall.storage_views import (
+    search_curated_memories,
+    search_db_memories,
+    search_vector_memories,
+)
 
 
 class FakeProvider:
@@ -95,6 +99,42 @@ def test_search_db_memories_keeps_relevant_lexical_hits():
     results = search_db_memories(provider, "OpenClaw gateway 天璇", limit=5)
 
     assert [item.id for item in results] == ["ops-openclaw"]
+
+
+def test_search_curated_memories_rejects_source_prior_only_noise(tmp_path):
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    (memories_dir / "USER.md").write_text(
+        "User prefers concise Chinese release reports.\n",
+        encoding="utf-8",
+    )
+    provider = FakeProvider(_conn())
+    provider._config = {}
+    provider._scope = type("Scope", (), {"user_id": ""})()
+    provider._hermes_home = tmp_path
+
+    results = search_curated_memories(provider, "quasar xylophone 7f3a9c")
+
+    assert results == []
+
+
+def test_search_curated_memories_keeps_relevant_prior_ranked_hits(tmp_path):
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    (memories_dir / "USER.md").write_text(
+        "User prefers concise Chinese release reports.\n",
+        encoding="utf-8",
+    )
+    provider = FakeProvider(_conn())
+    provider._config = {}
+    provider._scope = type("Scope", (), {"user_id": ""})()
+    provider._hermes_home = tmp_path
+
+    results = search_curated_memories(provider, "concise release reports")
+
+    assert len(results) == 1
+    assert results[0].source == "builtin-curated"
+    assert results[0].score >= 0.18
 
 
 def test_search_db_memories_finds_alias_expanded_lexical_hits_without_recent_backfill():

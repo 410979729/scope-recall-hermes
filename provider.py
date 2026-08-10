@@ -81,13 +81,19 @@ from .scope import (
     writable_scope_ids,
 )
 from .source_isolation import scope_is_memory_isolated
+from .sqlite_recovery import is_sqlite_lock_contention as _is_sqlite_lock_contention
 from .sql_store import ensure_schema
 
-from .storage_views import search_curated_memories, search_db_memories, search_vector_memories
+from .storage_views import (
+    search_curated_memories,
+    search_db_memories,
+    search_vector_memories,
+    search_vector_memories_with_vector,
+)
 from .tooling import ScopeRecallToolService
 from .truth_connection import connect_truth_database
 from .vector_bootstrap import bootstrap_fresh_vector_companion
-from .vector_runtime import setup_vector_layer
+from .vector_runtime import replay_vector_outbox, setup_vector_layer, vector_write_replay_limit
 from .experience_preflight import experience_preflight
 from .experience_promotion import promote_experiences
 from .experience_store import backfill_skill_anchors
@@ -104,23 +110,11 @@ _PROVIDER_REGISTRY_LOCK = threading.RLock()
 _PROVIDER_REGISTRY: weakref.WeakSet[Any] = weakref.WeakSet()
 
 
-def _is_sqlite_lock_contention(exc: sqlite3.OperationalError) -> bool:
-    """Return whether one SQLite operational failure is safe to defer at startup."""
-
-    error_code = getattr(exc, "sqlite_errorcode", None)
-    if isinstance(error_code, int) and (error_code & 0xFF) in {
-        sqlite3.SQLITE_BUSY,
-        sqlite3.SQLITE_LOCKED,
-    }:
-        return True
-    message = str(exc).strip().lower()
-    return "database is locked" in message or "database table is locked" in message
-
-
 class ScopeRecallMemoryProvider(MemoryProvider):
     """Hermes memory-provider runtime for Scope Recall.
 
     This class is the lifecycle boundary: it opens SQLite truth, configures scope visibility, starts background capture/digest work, and exposes tool schemas. Domain decisions live in helper modules so startup and shutdown remain auditable."""
+
     def __init__(self) -> None:
         self._config: dict[str, Any] = {}
         self._retrieval_config: dict[str, Any] = {}
@@ -795,6 +789,30 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 session_id=self._session_id,
                 dry_run=dry_run,
             )
+        vector_replay: dict[str, Any] | None = None
+        stored_count = int(store_report.get("inserted") or 0) + int(
+            store_report.get("updated_existing") or 0
+        )
+        if not dry_run and stored_count:
+            try:
+                vector_replay = replay_vector_outbox(
+                    self,
+                    limit=vector_write_replay_limit(self),
+                )
+            except Exception as exc:
+                # SQLite is authoritative. A derived-index failure must remain
+                # visible and replayable without turning a committed candidate
+                # write into a false transaction failure.
+                vector_replay = {
+                    "claimed": 0,
+                    "completed": 0,
+                    "failed": 1,
+                    "error_type": type(exc).__name__,
+                }
+                logger.warning(
+                    "Scope Recall event candidate vector replay deferred (%s)",
+                    type(exc).__name__,
+                )
         report.update(
             {
                 "events_seen": seen,
@@ -804,6 +822,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 "store": store_report,
             }
         )
+        if vector_replay is not None:
+            report["vector_replay"] = vector_replay
         self._last_event_digest_report = report
         return report
 
@@ -1069,22 +1089,40 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 self._last_journal_digest_error = "source-isolated chat"
                 self._last_journal_digest_finished = time.time()
             return
-        if self._hermes_home is None:
+        hermes_home = self._hermes_home
+        if hermes_home is None:
             with self._journal_digest_lock:
                 self._last_journal_digest_status = "skipped"
                 self._last_journal_digest_error = "missing hermes_home"
                 self._last_journal_digest_finished = time.time()
             return
         extractor = str(journal_config.get("extractor") or "llm").strip().lower()
-        try:
-            result = run_journal_digest(
-                hermes_home=self._hermes_home,
+
+        def run_once() -> dict[str, Any]:
+            return run_journal_digest(
+                hermes_home=hermes_home,
                 extractor=extractor,
                 scope=self._background_digest_scope(),
                 interval_label=f"background-{journal_config.get('digest_interval_hours', 2)}h",
                 limit_entries=None,
                 dry_run=False,
             )
+
+        try:
+            try:
+                result = run_once()
+            except sqlite3.OperationalError as exc:
+                if not _is_sqlite_lock_contention(exc):
+                    raise
+                recovery = self._recover_sqlite_connection_after_error(
+                    "background journal digest lock contention"
+                )
+                if not bool(recovery.get("recovered")):
+                    raise
+                logger.warning(
+                    "Scope Recall recovered SQLite lock contention; retrying background journal digest once"
+                )
+                result = run_once()
             ok = bool(result.get("ok", result.get("status") == "ok"))
             status = "ok" if ok else str(result.get("status") or "error")
             error = "" if ok else compact_text(sanitize_report_text(str(result.get("error") or result.get("message") or result)), 240)
@@ -1402,8 +1440,23 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             prompt_budget_chars=prompt_budget_chars,
         )
 
+    def _embed_query_variants(self, queries: List[str]) -> List[List[float]]:
+        """Batch query embeddings when the active vector generation is ready."""
+
+        if not self._vector_ready or self._embedder is None:
+            return []
+        return self._embedder.embed_queries(queries)
+
     def _search_vector_memories(self, query: str, *, limit: int) -> List[RecallItem]:
         return search_vector_memories(self, query, limit=limit)
+
+    def _search_vector_memories_with_vector(
+        self,
+        query_vector: List[float],
+        *,
+        limit: int,
+    ) -> List[RecallItem]:
+        return search_vector_memories_with_vector(self, query_vector, limit=limit)
 
     def _search_curated_memories(self, query: str) -> List[RecallItem]:
         return search_curated_memories(self, query)
@@ -1419,6 +1472,19 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         max_items = int(self._config_value("auto_recall_max_items", 3))
         max_per_turn = int(self._config_value("max_recall_per_turn", 10))
         return max(1, min(max_items * 3, max_per_turn * 2, 20))
+
+    def _quarantine_sqlite_connection(self, conn: Any, context: str) -> None:
+        """Detach and close a connection whose transactional state is untrusted."""
+
+        if self._conn is conn:
+            self._conn = None
+        try:
+            conn.close()
+        except Exception:
+            logger.exception(
+                "Scope Recall SQLite close failed while quarantining after %s",
+                context,
+            )
 
     def _rollback_conn_after_error(self, context: str) -> None:
         """Clear a dirty shared SQLite transaction after an exception boundary.
@@ -1445,6 +1511,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 conn.rollback()
             except Exception:
                 logger.exception("Scope Recall SQLite rollback failed after %s", context)
+                self._quarantine_sqlite_connection(conn, context)
 
     def _rollback_peer_provider_transactions(self, context: str) -> dict[str, int]:
         """Rollback dirty same-process peer providers that share this SQLite DB.
@@ -1455,7 +1522,12 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         peer dirty transactions before probing/reopening the current connection.
         """
         db_path = self._db_path
-        result = {"peer_providers_checked": 0, "peer_rollbacks": 0, "peer_rollback_errors": 0}
+        result = {
+            "peer_providers_checked": 0,
+            "peer_rollbacks": 0,
+            "peer_rollback_errors": 0,
+            "peer_busy_skipped": 0,
+        }
         if db_path is None:
             return result
         with _PROVIDER_REGISTRY_LOCK:
@@ -1466,9 +1538,18 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 continue
             result["peer_providers_checked"] += 1
             peer_lock = getattr(peer, "_lock", None)
-            if peer_lock is None:
+            acquire = getattr(peer_lock, "acquire", None)
+            release = getattr(peer_lock, "release", None)
+            if not callable(acquire) or not callable(release):
                 continue
-            with peer_lock:
+            try:
+                acquired = bool(acquire(blocking=False))
+            except TypeError:
+                acquired = bool(acquire(False))
+            if not acquired:
+                result["peer_busy_skipped"] += 1
+                continue
+            try:
                 peer_conn = getattr(peer, "_conn", None)
                 if peer_conn is None or not getattr(peer_conn, "in_transaction", False):
                     continue
@@ -1478,14 +1559,20 @@ class ScopeRecallMemoryProvider(MemoryProvider):
                 except Exception:
                     result["peer_rollback_errors"] += 1
                     logger.exception("Scope Recall peer SQLite rollback failed after %s", context)
+                    quarantine = getattr(peer, "_quarantine_sqlite_connection", None)
+                    if callable(quarantine):
+                        quarantine(peer_conn, f"peer recovery: {context}")
+            finally:
+                release()
         return result
 
     def _recover_sqlite_connection_after_error(self, context: str) -> dict[str, Any]:
         """Rollback/probe/reopen the provider SQLite connection after lock errors.
 
-        This is intentionally conservative and is used only by `scope_recall_store`
-        for SQLite lock/transaction errors. Non-SQLite exceptions still surface as
-        errors so business-logic failures are not hidden by a retry.
+        This is intentionally conservative and is used only at explicit
+        idempotent retry boundaries such as `scope_recall_store` and background
+        journal digest. Non-SQLite exceptions still surface so business-logic
+        failures are not hidden by a retry.
         """
         payload: dict[str, Any] = {
             "recovered": False,
@@ -1499,23 +1586,27 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             conn = self._conn
             if conn is None:
                 return payload
+            rollback_failed = False
             if conn.in_transaction:
                 try:
                     conn.rollback()
                     payload["rolled_back"] = True
                 except Exception:
                     logger.exception("Scope Recall SQLite rollback failed during recovery after %s", context)
-            if self._sqlite_write_probe(conn):
+                    self._quarantine_sqlite_connection(conn, context)
+                    rollback_failed = True
+            if not rollback_failed and self._sqlite_write_probe(conn):
                 payload["recovered"] = True
                 payload["write_probe"] = True
                 return payload
             if self._db_path is None:
                 return payload
-            self._conn = None
-            try:
-                conn.close()
-            except Exception:
-                logger.exception("Scope Recall SQLite close failed during recovery after %s", context)
+            if not rollback_failed:
+                self._conn = None
+                try:
+                    conn.close()
+                except Exception:
+                    logger.exception("Scope Recall SQLite close failed during recovery after %s", context)
             try:
                 reopened = self._open_runtime_connection()
                 self._conn = reopened

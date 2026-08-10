@@ -255,15 +255,53 @@ def connect_truth_database(
 SQLITE_HEADER_PREFIX = b"SQLite format 3\x00"
 
 
-def probe_truth_database_header(path: str | Path) -> dict[str, Any]:
-    """Cheap fail-closed preflight for SQLite header corruption.
+def probe_truth_database_connection(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Probe the live SQLite pager without raw-opening its database file.
 
-    This reads at most the first 16 bytes and never opens a SQLite pager or runs
-    PRAGMA integrity_check / full-database snapshots. Bounded maintenance can
-    refuse to touch outbox or truth reconciliation when the on-disk header is
-    already invalid.
+    On POSIX, closing any raw file descriptor for a SQLite database can cancel
+    advisory locks held by the same process. Live health checks therefore stay
+    on the provider-owned pager connection. ``PRAGMA schema_version`` is a cheap
+    page-1 read that detects an unreadable or non-SQLite truth store without
+    disturbing lock ownership.
     """
 
+    try:
+        row = conn.execute("PRAGMA schema_version").fetchone()
+    except sqlite3.DatabaseError:
+        return {
+            "ok": False,
+            "status": "corrupt_or_unreadable",
+            "error": "SQLite truth database is corrupt or unreadable",
+        }
+    if row is None:
+        return {
+            "ok": False,
+            "status": "unreadable",
+            "error": "SQLite truth database schema header is unreadable",
+        }
+    return {"ok": True, "status": "ok"}
+
+
+def probe_truth_database_header(
+    path: str | Path,
+    *,
+    connections_quiesced: bool = False,
+) -> dict[str, Any]:
+    """Read an offline SQLite header only after all connections are quiesced.
+
+    Raw open/close probes are unsafe while the same process owns SQLite pager
+    locks on POSIX. Callers handling a live provider must use
+    :func:`probe_truth_database_connection` instead. The explicit gate prevents
+    future maintenance code from accidentally reintroducing that lock-canceling
+    pattern.
+    """
+
+    if not connections_quiesced:
+        return {
+            "ok": False,
+            "status": "unsafe_live_probe_refused",
+            "error": "raw SQLite header probes require quiesced connections",
+        }
     raw_path = os.fspath(path)
     if raw_path == ":memory:":
         return {"ok": True, "status": "memory"}
@@ -300,6 +338,7 @@ __all__ = [
     "TruthDatabaseConnectionError",
     "TruthDatabaseMode",
     "connect_truth_database",
+    "probe_truth_database_connection",
     "probe_truth_database_header",
     "require_foreign_keys",
     "require_query_only",

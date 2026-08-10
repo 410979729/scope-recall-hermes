@@ -33,7 +33,7 @@ COMMON_SECRET_PATTERNS: dict[str, re.Pattern[str]] = {
     # closed even when the corresponding END marker is missing.
     "pem_private_key_begin": PEM_PRIVATE_KEY_BEGIN_RE,
     "database_uri_with_password": re.compile(
-        r"\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis(?:s)?|"
+        r"(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis(?:s)?|"
         r"amqp(?:s)?|mssql)://[^/\s:@]*:[^@\s/]+@[^\s]+",
         re.IGNORECASE,
     ),

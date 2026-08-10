@@ -509,17 +509,22 @@ def test_startup_reconcile_disabled_skips_outbox_and_truth_planning(
 def test_corrupt_sqlite_header_blocks_reconciliation_without_outbox_writes(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """Cheap header probe must fail closed before outbox/truth reconciliation work."""
+    """Live pager probe must fail closed before outbox/truth reconciliation work."""
 
-    db_path = tmp_path / "corrupt-header.sqlite3"
-    db_path.write_bytes(b"NOT A SQLITE HEADER!!!!!!!!")
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     ensure_schema(conn)
     generation_id = _generation(conn)
     provider = _Provider(conn, generation_id, page_size=2, outbox_limit=2)
-    provider._db_path = db_path
     provider._storage_dir = tmp_path
+    monkeypatch.setattr(
+        "scope_recall.vector_runtime.probe_truth_database_connection",
+        lambda _conn: {
+            "ok": False,
+            "status": "corrupt_or_unreadable",
+            "error": "SQLite truth database probe failed",
+        },
+    )
 
     calls: list[str] = []
 
@@ -536,9 +541,7 @@ def test_corrupt_sqlite_header_blocks_reconciliation_without_outbox_writes(
 
     assert result["status"] == "failed"
     assert result["failed"] == 1
-    assert "header" in str(result.get("error") or "").lower() or "corrupt" in str(
-        result.get("error") or ""
-    ).lower()
+    assert "probe" in str(result.get("error") or "").lower()
     assert result["claimed"] == 0
     assert result["planned"] == 0
     assert calls == []
@@ -546,20 +549,25 @@ def test_corrupt_sqlite_header_blocks_reconciliation_without_outbox_writes(
 
 
 def test_corrupt_sqlite_header_warns_background_maintenance(
-    tmp_path: Path, caplog
+    tmp_path: Path, caplog, monkeypatch
 ) -> None:
-    """The writer must surface a failed header preflight instead of staying silent."""
+    """The writer must surface a failed pager preflight instead of staying silent."""
 
-    db_path = tmp_path / "corrupt-background.sqlite3"
-    db_path.write_bytes(b"NOT A SQLITE HEADER!!!!!!!!")
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     ensure_schema(conn)
     generation_id = _generation(conn)
     provider = _Provider(conn, generation_id, page_size=2, outbox_limit=2)
-    provider._db_path = db_path
     provider._storage_dir = tmp_path
     provider._config = {"relation_extraction_enabled": True}
+    monkeypatch.setattr(
+        "scope_recall.vector_runtime.probe_truth_database_connection",
+        lambda _conn: {
+            "ok": False,
+            "status": "corrupt_or_unreadable",
+            "error": "SQLite truth database probe failed",
+        },
+    )
     caplog.set_level("WARNING", logger=capture.__name__)
 
     capture._drain_relation_rebuild_debt(provider)

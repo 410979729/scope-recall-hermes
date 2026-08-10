@@ -130,7 +130,7 @@ def test_distribution_metadata_exposes_official_standalone_install_shape():
     pyproject = tomllib.loads((PLUGIN_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert pyproject["project"]["name"] == "hermes-scope-recall"
-    assert pyproject["project"]["version"] == "1.9.1"
+    assert pyproject["project"]["version"] == "1.9.2"
     assert pyproject["project"]["scripts"] == {
         "hermes-scope-recall": "scope_recall.cli:main"
     }
@@ -1764,14 +1764,14 @@ def test_installer_upgrade_backs_up_existing_plugin_and_reports_versions(tmp_pat
     assert result["installed"] is True
     assert result["previous_plugin_existed"] is True
     assert result["previous_version"] == "0.9.0"
-    assert result["manifest_version"] == "1.9.1"
-    assert result["new_version"] == "1.9.1"
+    assert result["manifest_version"] == "1.9.2"
+    assert result["new_version"] == "1.9.2"
     backup_path = Path(result["backup_path"])
     assert backup_path.is_dir()
     assert tmp_path in backup_path.parents
     assert "version: 0.9.0" in (backup_path / "plugin.yaml").read_text(encoding="utf-8")
     assert "previous plugin" in (backup_path / "__init__.py").read_text(encoding="utf-8")
-    assert "version: 1.9.1" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.9.2" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
     assert any("restart" in step.lower() for step in result["next_steps"])
     assert any("doctor" in step for step in result["next_steps"])
     assert result["rollback_command"].endswith(str(backup_path))
@@ -1783,7 +1783,7 @@ def test_installer_rollback_restores_backup_and_backs_up_current_plugin(tmp_path
     plugin_dir = tmp_path / "plugins" / PLUGIN_NAME
     _write_installed_plugin(plugin_dir, version="0.9.0", marker="previous plugin")
     upgrade = installer.install(hermes_home=tmp_path)
-    assert "version: 1.9.1" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.9.2" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
 
     rollback = installer.rollback(hermes_home=tmp_path, backup_dir=upgrade["backup_path"])
 
@@ -1791,10 +1791,10 @@ def test_installer_rollback_restores_backup_and_backs_up_current_plugin(tmp_path
     assert rollback["dry_run"] is False
     assert rollback["restored"] is True
     assert rollback["restored_version"] == "0.9.0"
-    assert rollback["replaced_version"] == "1.9.1"
+    assert rollback["replaced_version"] == "1.9.2"
     current_backup = Path(rollback["current_backup_path"])
     assert current_backup.is_dir()
-    assert "version: 1.9.1" in (current_backup / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.9.2" in (current_backup / "plugin.yaml").read_text(encoding="utf-8")
     assert "version: 0.9.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
     assert "previous plugin" in (plugin_dir / "__init__.py").read_text(encoding="utf-8")
 
@@ -1871,7 +1871,7 @@ def test_installer_cli_upgrade_dry_run_and_rollback_are_routed_by_product_cli(tm
 
     upgrade = installer.install(hermes_home=tmp_path)
     assert cli.main(["rollback", "--hermes-home", str(tmp_path), "--backup-dir", upgrade["backup_path"], "--dry-run", "--json"]) == 0
-    assert "version: 1.9.1" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 1.9.2" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
 
 
 def test_installer_runtime_verify_reports_missing_memory_setup(tmp_path):
@@ -2295,8 +2295,13 @@ def test_nested_clone_build_and_fresh_venv_ignore_polluted_parent(tmp_path):
         if os.name == "nt"
         else venv_dir / "bin" / "python"
     )
+    clean_env = dict(os.environ)
+    clean_env["PYTHONNOUSERSITE"] = "1"
+    clean_env.pop("PYTHONPATH", None)
+    clean_env.pop("PYTHONHOME", None)
     install = subprocess.run(
         [str(venv_python), "-m", "pip", "install", "--no-deps", str(wheels[0])],
+        env=clean_env,
         text=True,
         capture_output=True,
         timeout=180,
@@ -2304,10 +2309,6 @@ def test_nested_clone_build_and_fresh_venv_ignore_polluted_parent(tmp_path):
     assert install.returncode == 0, install.stderr + install.stdout
     outside = tmp_path / "fresh-outside-cwd"
     outside.mkdir()
-    clean_env = dict(os.environ)
-    clean_env["PYTHONNOUSERSITE"] = "1"
-    clean_env.pop("PYTHONPATH", None)
-    clean_env.pop("PYTHONHOME", None)
     probe = subprocess.run(
         [
             str(venv_python),

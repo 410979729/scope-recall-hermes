@@ -348,6 +348,11 @@ class BaseEmbedder:
     def embed_query(self, text: str) -> list[float]:
         return self.embed(text)
 
+    def embed_queries(self, texts: Iterable[str]) -> list[list[float]]:
+        """Embed retrieval queries while preserving adapter query semantics."""
+
+        return [self.embed_query(text) for text in texts]
+
     def embed_texts(self, texts: Iterable[str]) -> list[list[float]]:
         raise NotImplementedError
 
@@ -522,6 +527,44 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
             current = current.__cause__ or current.__context__
         return False
 
+    def _ordered_embedding_response_rows(
+        self,
+        rows: list[Any],
+        *,
+        expected_count: int,
+    ) -> list[Any]:
+        """Restore input order when a compatible API supplies row indices.
+
+        Some OpenAI-compatible servers omit ``index`` entirely; those retain
+        their historical response-order behavior. Partially indexed or invalid
+        responses fail closed because silent query/vector misalignment corrupts
+        multi-query retrieval.
+        """
+
+        indices = [getattr(row, "index", None) for row in rows]
+        if all(index is None for index in indices):
+            return rows
+        if any(index is None for index in indices):
+            raise RuntimeError(
+                f"{self.provider} embedding response mixes indexed and unindexed rows"
+            )
+        by_index: dict[int, Any] = {}
+        for row, raw_index in zip(rows, indices, strict=True):
+            if isinstance(raw_index, bool) or not isinstance(raw_index, int):
+                raise RuntimeError(
+                    f"{self.provider} embedding response contains a non-integer index"
+                )
+            if raw_index < 0 or raw_index >= expected_count or raw_index in by_index:
+                raise RuntimeError(
+                    f"{self.provider} embedding response contains an invalid or duplicate index"
+                )
+            by_index[raw_index] = row
+        if len(by_index) != expected_count:
+            raise RuntimeError(
+                f"{self.provider} embedding response indices do not cover the input batch"
+            )
+        return [by_index[index] for index in range(expected_count)]
+
     def _embed_with_prefix(self, texts: Iterable[str], *, prefix: str) -> list[list[float]]:
         items = [clean_text(f"{prefix}{clean_text(text)}") or " " for text in texts]
         if not items:
@@ -574,6 +617,10 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
                 raise RuntimeError(
                     f"{self.provider} embedding response count {len(response_rows)} does not match input count {len(batch)}"
                 )
+            response_rows = self._ordered_embedding_response_rows(
+                response_rows,
+                expected_count=len(batch),
+            )
             for offset, row in enumerate(response_rows):
                 vector = [float(value) for value in row.embedding]
                 if len(vector) != self.dimensions:
@@ -592,7 +639,10 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
         return self._embed_with_prefix(texts, prefix=self._document_prefix)
 
     def embed_query(self, text: str) -> list[float]:
-        return self._embed_with_prefix([text], prefix=self._query_prefix)[0]
+        return self.embed_queries([text])[0]
+
+    def embed_queries(self, texts: Iterable[str]) -> list[list[float]]:
+        return self._embed_with_prefix(texts, prefix=self._query_prefix)
 
 
 class OpenAIEmbedder(OpenAICompatibleEmbedder):

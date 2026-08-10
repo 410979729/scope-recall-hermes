@@ -4,6 +4,8 @@ Schema changes must stay synchronized with migration ledger constants and releas
 
 MAX_MEMORY_IDS_PER_REQUEST = 1000
 MAX_MEMORY_ID_LENGTH = 512
+DEFAULT_EVIDENCE_DIVERSITY_DEPTH = 3
+MAX_EVIDENCE_DIVERSITY_DEPTH = 6
 
 FACT_CLAIM_HINT_SCHEMA = {
     "type": "object",
@@ -322,10 +324,29 @@ SCOPE_RECALL_SEARCH_SCHEMA = {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "Search query."},
+            "query_variants": {
+                "type": "array",
+                "maxItems": 7,
+                "items": {"type": "string", "maxLength": 1000},
+                "description": (
+                    "Optional explicit query variants for deterministic multi-hop "
+                    "evidence-set fusion. The primary query is always included."
+                ),
+            },
+            "evidence_diversity_depth": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": MAX_EVIDENCE_DIVERSITY_DEPTH,
+                "default": DEFAULT_EVIDENCE_DIVERSITY_DEPTH,
+                "description": (
+                    "Per-query specialist hits protected before global RRF fill. "
+                    "Use 4-6 only for broad multi-hop or open-domain evidence sets."
+                ),
+            },
             "limit": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 20,
+                "maximum": 50,
                 "description": "Max results.",
             },
             "recall_mode": {
