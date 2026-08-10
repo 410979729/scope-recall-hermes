@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -91,8 +92,15 @@ from .journal_store import (
 )
 from .scope import accessible_scope_ids, build_scope_id, build_shared_scope_id, canonical_user_id, normalize_scope_identity, writable_scope_ids
 from .source_isolation import memory_isolated_chat_ids, scope_is_memory_isolated
+from .sqlite_recovery import rollback_if_active
 from .sql_store import ensure_schema, now_iso, store_row
-from .vector_runtime import replay_vector_outbox, vector_write_replay_limit
+from .vector_runtime import (
+    replay_vector_outbox,
+    replay_vector_outbox_events,
+    vector_write_replay_limit,
+)
+
+logger = logging.getLogger(__name__)
 
 # Compatibility surface: tests and operator probes historically monkeypatch
 # ``scope_recall.journal.call_llm`` before calling the journal retry helper.
@@ -841,17 +849,54 @@ def _apply_structured_journal_fact_component_atomically(
         raise
 
 
+def _latest_current_vector_event_id(
+    conn: sqlite3.Connection,
+    memory_id: str,
+) -> int:
+    """Return the newest causal event for one memory in the current generation."""
+
+    try:
+        row = conn.execute(
+            """
+            SELECT id
+            FROM vector_outbox
+            WHERE memory_id = ?
+              AND generation_id = (
+                  SELECT value FROM vector_generation_state
+                  WHERE key = 'current_generation'
+              )
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (str(memory_id),),
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).casefold():
+            return 0
+        raise
+    return int(row[0]) if row is not None else 0
+
+
 def _replay_or_defer_journal_vector(
     vector_runtime: Any,
     deferred_vector_ops: list[dict[str, Any]] | None,
     payload: dict[str, Any],
-) -> None:
+) -> dict[str, int]:
     if vector_runtime is None:
-        return
+        return {"claimed": 0, "completed": 0, "failed": 0}
     if deferred_vector_ops is not None:
         deferred_vector_ops.append(payload)
-        return
-    replay_vector_outbox(vector_runtime, limit=vector_write_replay_limit(vector_runtime))
+        return {"claimed": 0, "completed": 0, "failed": 0}
+    event_id = int(payload.get("event_id") or 0)
+    if event_id > 0:
+        return replay_vector_outbox_events(
+            vector_runtime,
+            event_ids=[event_id],
+        )
+    return replay_vector_outbox(
+        vector_runtime,
+        limit=vector_write_replay_limit(vector_runtime),
+    )
 
 
 def _apply_mixed_journal_component_atomically(
@@ -959,9 +1004,14 @@ def _apply_mixed_journal_component_atomically(
                 if action.get("status") == "applied_pending_outer_commit":
                     action["status"] = "applied"
             if deferred_vector_ops:
-                replay_vector_outbox(
+                event_ids = [
+                    int(payload.get("event_id") or 0)
+                    for payload in deferred_vector_ops
+                    if int(payload.get("event_id") or 0) > 0
+                ]
+                result["vector_replay"] = replay_vector_outbox_events(
                     vector_runtime,
-                    limit=len(deferred_vector_ops),
+                    event_ids=event_ids,
                 )
         return result
     except Exception:
@@ -1248,10 +1298,12 @@ def apply_journal_candidates(
                 if not _defer_commits:
                     conn.commit()
                 processed_entry_ids.update(int(entry_id) for entry_id in candidate.entry_ids)
-                _replay_or_defer_journal_vector(
+                vector_event_id = _latest_current_vector_event_id(conn, stored_id)
+                vector_replay = _replay_or_defer_journal_vector(
                     vector_runtime,
                     _deferred_vector_ops,
                     {
+                        "event_id": vector_event_id,
                         "id": stored_id,
                         "source": "journal-digest",
                         "target": candidate.target,
@@ -1261,6 +1313,10 @@ def apply_journal_candidates(
                         "scope_id": candidate_scope_id,
                     },
                 )
+                if vector_event_id > 0:
+                    actions[-1]["vector_event_id"] = vector_event_id
+                    if _deferred_vector_ops is None:
+                        actions[-1]["vector_replay"] = vector_replay
             else:
                 counts["inserted"] -= 1
                 counts["updated"] += 1
@@ -1390,6 +1446,37 @@ def _open_digest_connection(db_path: Path, *, dry_run: bool) -> sqlite3.Connecti
     conn = connect_truth_database(db_path, mode="rwc", timeout=30)
     install_activation_lease_authorizer(conn, db_path)
     return conn
+
+
+def _record_journal_digest_failure(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    started_at: str,
+    extractor: str,
+    interval_label: str,
+    error: BaseException,
+) -> None:
+    """Reset a failed transaction before persisting one best-effort receipt."""
+
+    rollback_if_active(conn)
+    ensure_journal_schema(conn)
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO journal_digest_runs(
+            id, started_at, finished_at, status, extractor, interval_label, error
+        ) VALUES (?, ?, ?, 'error', ?, ?, ?)
+        """,
+        (
+            run_id,
+            started_at,
+            now_iso(),
+            extractor,
+            interval_label,
+            sanitize_report_text(str(error))[:1000],
+        ),
+    )
+    conn.commit()
 
 
 
@@ -1787,16 +1874,29 @@ def run_journal_digest(
             result["error"] = run_error
         return result
     except Exception as exc:
-        if not dry_run:
-            ensure_journal_schema(conn)
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO journal_digest_runs(id, started_at, finished_at, status, extractor, interval_label, error)
-                VALUES (?, ?, ?, 'error', ?, ?, ?)
-                """,
-                (run_id, started_at, now_iso(), requested_extractor, interval_label, sanitize_report_text(str(exc)[:1000])),
+        try:
+            if dry_run:
+                rollback_if_active(conn)
+            else:
+                _record_journal_digest_failure(
+                    conn,
+                    run_id=run_id,
+                    started_at=started_at,
+                    extractor=requested_extractor,
+                    interval_label=interval_label,
+                    error=exc,
+                )
+        except Exception as receipt_exc:
+            # Preserve the triggering exception even when SQLite is still too
+            # contended to persist its failure receipt.
+            try:
+                rollback_if_active(conn)
+            except Exception:
+                pass
+            logger.warning(
+                "Scope Recall journal digest failure receipt could not be persisted (%s)",
+                type(receipt_exc).__name__,
             )
-            conn.commit()
         raise
     finally:
         if vector_runtime is not None:

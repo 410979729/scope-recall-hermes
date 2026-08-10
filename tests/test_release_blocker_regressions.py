@@ -237,13 +237,19 @@ def test_lancedb_fallback_registers_actual_sqlite_generation(tmp_path, monkeypat
 
 
 def test_corrupt_truth_header_degrades_vector_startup(tmp_path, monkeypatch):
-    """A failed truth-header preflight must keep the vector companion non-ready."""
+    """A failed live pager probe must keep the vector companion non-ready."""
 
     conn = _conn(tmp_path / "memory.sqlite3")
-    corrupt_path = tmp_path / "corrupt-truth.sqlite3"
-    corrupt_path.write_bytes(b"NOT A SQLITE HEADER!!!!!!!!")
     provider = _VectorProvider(conn, tmp_path)
-    provider._db_path = corrupt_path
+    monkeypatch.setattr(
+        vector_runtime,
+        "probe_truth_database_connection",
+        lambda _conn: {
+            "ok": False,
+            "status": "corrupt_or_unreadable",
+            "error": "SQLite truth database probe failed",
+        },
+    )
     monkeypatch.setattr(vector_runtime.LanceVectorStore, "is_available", lambda self: False)
 
     vector_runtime.setup_vector_layer(provider)
@@ -253,7 +259,7 @@ def test_corrupt_truth_header_degrades_vector_startup(tmp_path, monkeypatch):
     assert provider._vector_store is None
     assert provider._vector_reconciliation["status"] == "failed"
     assert provider._vector_reconciliation["failed"] == 1
-    assert "header" in provider._vector_message.lower()
+    assert "probe" in provider._vector_message.lower()
     conn.close()
 
 

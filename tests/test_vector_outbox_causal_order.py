@@ -607,3 +607,75 @@ def test_snapshot_drift_reembeds_only_outside_the_sqlite_writer_fence(
     finally:
         writer_conn.close()
         conn.close()
+
+
+def test_targeted_replay_bypasses_unrelated_older_backlog(
+    tmp_path: Path,
+    _identity: GenerationIdentity,
+) -> None:
+    conn = _connect(tmp_path / "targeted.sqlite3")
+    try:
+        ensure_schema(conn)
+        manifest = bootstrap_legacy_generation(
+            conn,
+            identity=_identity,
+            storage_path="vector-generations/targeted",
+        )
+        generation_id = str(manifest["generation_id"])
+        _store_memory(
+            conn,
+            content="older unrelated backlog",
+            updated_at="2026-08-10T00:00:00+00:00",
+        )
+        store_row(
+            conn,
+            memory_id="memory-target",
+            scope_id="scope-a",
+            platform="test",
+            user_id="joy",
+            chat_id="",
+            thread_id="",
+            gateway_session_key="",
+            agent_identity="yuheng",
+            agent_workspace="test",
+            session_id="session-a",
+            source="fixture",
+            target="memory",
+            content="targeted journal memory",
+            metadata="{}",
+            allow_duplicate=True,
+            timestamp="2026-08-10T00:00:01+00:00",
+        )
+        conn.commit()
+        rows = conn.execute(
+            "SELECT id, memory_id FROM vector_outbox ORDER BY id"
+        ).fetchall()
+        target_event_id = int(
+            next(row["id"] for row in rows if row["memory_id"] == "memory-target")
+        )
+        store = _RecordingStore()
+
+        result = replay_committed_vector_events(
+            conn,
+            generation_id=generation_id,
+            vector_store=store,
+            embedder=_Embedder(),
+            vector_text=lambda summary, content: f"{summary}\n{content}".strip(),
+            should_index_row=lambda _target, _metadata: True,
+            default_scope_id="scope-a",
+            mutation_context=nullcontext,
+            event_ids=[target_event_id],
+            limit=1,
+        )
+
+        assert result == {"claimed": 1, "completed": 1, "failed": 0}
+        assert store.calls == [("upsert", "memory-target")]
+        statuses = {
+            str(row["memory_id"]): str(row["status"])
+            for row in conn.execute(
+                "SELECT memory_id, status FROM vector_outbox ORDER BY id"
+            ).fetchall()
+        }
+        assert statuses == {"memory-1": "pending", "memory-target": "completed"}
+    finally:
+        conn.close()

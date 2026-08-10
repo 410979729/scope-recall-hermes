@@ -41,6 +41,32 @@ def test_reciprocal_rank_fusion_does_not_boost_single_signal_items_by_default():
     assert fused == []
 
 
+def test_entity_distance_scores_normalizes_each_unique_entity_once(monkeypatch):
+    import scope_recall.graph as graph_module
+
+    real_normalize = graph_module.normalize_entity
+    calls = []
+
+    def counted(value):
+        calls.append(value)
+        return real_normalize(value)
+
+    monkeypatch.setattr(graph_module, "normalize_entity", counted)
+
+    scores = graph_module.entity_distance_scores(
+        ["alpha", "alpha"],
+        {
+            "direct": ["alpha", "beta", "beta"],
+            "unrelated": ["gamma", "gamma"],
+        },
+        {"alpha": ["beta", "beta"]},
+        max_depth=2,
+    )
+
+    assert scores == {"direct": 1.0}
+    assert sorted(calls) == ["alpha", "beta", "gamma"]
+
+
 def test_entity_distance_scores_prefers_neighboring_memories_over_unrelated_entities():
     query_entities = ["joy", "scope-recall"]
     memory_entities = {

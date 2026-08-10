@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from contextlib import AbstractContextManager, contextmanager
 import sqlite3
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Sequence
 import uuid
 
 from .capture_filters import sanitize_report_text
@@ -111,6 +111,7 @@ def replay_committed_vector_events(
     db_lock: Any = None,
     mutation_context: Callable[[], AbstractContextManager[Any]],
     limit: int = 200,
+    event_ids: Sequence[int] | None = None,
     worker_id: str = "",
     on_failure: Callable[[str], None] | None = None,
     after_replay: Callable[[], Any] | None = None,
@@ -146,6 +147,7 @@ def replay_committed_vector_events(
                 generation_id=resolved_generation,
                 worker_id=resolved_worker,
                 limit=1,
+                event_ids=event_ids,
             )
             conn.commit()
         if not events:

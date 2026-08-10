@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-scope-recall"
-version = "1.9.1"
+version = "1.9.2"
 description = "Hermes scoped memory provider with journal-first capture, SQLite truth, vector companions, and hybrid RRF retrieval."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -76,6 +76,7 @@ package-dir = {"scope_recall" = "."}
   "MANIFEST.in",
   ".env.example",
   "docs/*.md",
+  "docs/benchmarks/*.md",
   "scripts/*.py",
   "scripts/*.json",
   "benchmarks/*.json",
@@ -124,6 +125,7 @@ include = [
   "doctor_vector.py",
   "doctor_event_digest.py",
   "embedders.py",
+  "evidence_retrieval.py",
   "event_digest.py",
   "experience_bootstrap.py",
   "experience_classification.py",

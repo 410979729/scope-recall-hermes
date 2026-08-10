@@ -9,6 +9,7 @@ import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 try:
     from .doctor_common import contains_secret_like_text, sanitize_report_text
@@ -21,6 +22,7 @@ try:
     from .operator_ledger import operator_ledger_report
     from .relation_frequency_maintenance import relation_frequency_index_report
     from .relation_rebuild_queue import relation_rebuild_queue_report
+    from .secret_patterns import scan_secret_like_text
     from .sql_store import fts_integrity_report, schema_migration_status
     from .truth_connection import connect_truth_database, truth_storage_permissions
 except ImportError:  # pragma: no cover - direct source-script execution fallback
@@ -34,6 +36,7 @@ except ImportError:  # pragma: no cover - direct source-script execution fallbac
     from operator_ledger import operator_ledger_report
     from relation_frequency_maintenance import relation_frequency_index_report
     from relation_rebuild_queue import relation_rebuild_queue_report
+    from secret_patterns import scan_secret_like_text
     from sql_store import fts_integrity_report, schema_migration_status
     from truth_connection import connect_truth_database, truth_storage_permissions
 
@@ -387,20 +390,85 @@ def memory_quality_lint_report(hermes_home: Path, *, sample_limit: int = 8) -> t
     return payload, {"ok": not failures, "failures": failures}, recommendations
 
 
+_PLACEHOLDER_URI_USERS = {
+    "default",
+    "demo",
+    "example",
+    "service",
+    "test",
+    "user",
+    "username",
+}
+_PLACEHOLDER_URI_PASSWORDS = {
+    "changeme",
+    "demo",
+    "example",
+    "pass",
+    "passwd",
+    "password",
+    "placeholder",
+    "secret",
+    "test",
+}
+_PLACEHOLDER_URI_HOSTS = {
+    "db-host",
+    "example.com",
+    "host",
+    "hostname",
+    "redis-host",
+}
+
+
+def _is_placeholder_like_database_uri_only(value: str) -> bool:
+    """Classify ambiguous URI examples without weakening canonical scanning.
+
+    A row is review-only only when every secret match is a database URI and
+    every URI uses explicit placeholder values for username, password, and
+    host. Any production-like component remains actionable because weak or
+    default credentials can still be real deployment secrets.
+    """
+
+    matches = scan_secret_like_text(value)
+    if not matches or any(match.name != "database_uri_with_password" for match in matches):
+        return False
+    for match in matches:
+        try:
+            parsed = urlsplit(match.text)
+            placeholder_components = (
+                str(parsed.username or "").casefold() in _PLACEHOLDER_URI_USERS,
+                str(parsed.password or "").casefold() in _PLACEHOLDER_URI_PASSWORDS,
+                str(parsed.hostname or "").casefold() in _PLACEHOLDER_URI_HOSTS,
+            )
+        except ValueError:
+            return False
+        if not all(placeholder_components):
+            return False
+    return True
+
+
 def memory_secret_report(hermes_home: Path, *, sample_limit: int = 10) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     recommendations: list[str] = []
     db_path = hermes_home / "scope-recall" / "memory.sqlite3"
     if not db_path.exists():
-        return {"status": "missing", "path": str(db_path), "active_secret_like_count": 0, "samples": []}, {"ok": True, "failures": []}, recommendations
+        return {"status": "missing", "path": str(db_path), "active_secret_like_count": 0, "placeholder_like_uri_count": 0, "samples": [], "placeholder_like_samples": []}, {"ok": True, "failures": []}, recommendations
     samples: list[dict[str, Any]] = []
+    placeholder_like_samples: list[dict[str, Any]] = []
     active_secret_like_count = 0
+    placeholder_like_uri_count = 0
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         try:
             tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if "memories" not in tables:
-                return {"status": "schema_missing", "path": str(db_path), "active_secret_like_count": 0, "samples": []}, {"ok": True, "failures": []}, recommendations
+                return {
+                    "status": "schema_missing",
+                    "path": str(db_path),
+                    "active_secret_like_count": 0,
+                    "placeholder_like_uri_count": 0,
+                    "samples": [],
+                    "placeholder_like_samples": [],
+                }, {"ok": True, "failures": []}, recommendations
             for row in conn.execute("SELECT id, scope_id, source, target, content, summary, updated_at, metadata FROM memories"):
                 try:
                     metadata = json.loads(str(row["metadata"] or "{}"))
@@ -411,25 +479,48 @@ def memory_secret_report(hermes_home: Path, *, sample_limit: int = 10) -> tuple[
                 content = str(row["content"] or "")
                 if not contains_secret_like_text(content):
                     continue
+                sample = {
+                    "id": str(row["id"]),
+                    "scope_id": str(row["scope_id"] or ""),
+                    "source": str(row["source"] or ""),
+                    "target": str(row["target"] or ""),
+                    "updated_at": str(row["updated_at"] or ""),
+                    "preview": sanitize_report_text(content)[:220],
+                }
+                if _is_placeholder_like_database_uri_only(content):
+                    placeholder_like_uri_count += 1
+                    if len(placeholder_like_samples) < max(0, int(sample_limit)):
+                        placeholder_like_samples.append(sample)
+                    continue
                 active_secret_like_count += 1
                 if len(samples) < max(0, int(sample_limit)):
-                    samples.append(
-                        {
-                            "id": str(row["id"]),
-                            "scope_id": str(row["scope_id"] or ""),
-                            "source": str(row["source"] or ""),
-                            "target": str(row["target"] or ""),
-                            "updated_at": str(row["updated_at"] or ""),
-                            "preview": sanitize_report_text(content)[:220],
-                        }
-                    )
+                    samples.append(sample)
         finally:
             conn.close()
     except Exception as exc:
         recommendations.append("Repair or restore the SQLite truth DB before trusting memory secret-scan status.")
-        return {"status": "error", "path": str(db_path), "error": str(exc), "active_secret_like_count": 0, "samples": []}, {"ok": False, "failures": [f"memory secret scan error: {exc}"]}, recommendations
+        return {
+            "status": "error",
+            "path": str(db_path),
+            "error": str(exc),
+            "active_secret_like_count": 0,
+            "placeholder_like_uri_count": 0,
+            "samples": [],
+            "placeholder_like_samples": [],
+        }, {"ok": False, "failures": [f"memory secret scan error: {exc}"]}, recommendations
 
-    payload = {"status": "ready", "path": str(db_path), "active_secret_like_count": active_secret_like_count, "samples": samples}
+    payload = {
+        "status": "ready",
+        "path": str(db_path),
+        "active_secret_like_count": active_secret_like_count,
+        "placeholder_like_uri_count": placeholder_like_uri_count,
+        "samples": samples,
+        "placeholder_like_samples": placeholder_like_samples,
+    }
     if active_secret_like_count:
         recommendations.append("Active memory rows contain plaintext secret-like content; archive or hard-delete them and store only secret indexes/vault refs.")
+    if placeholder_like_uri_count:
+        recommendations.append(
+            "Active memory contains placeholder-like database URI patterns; review them manually. Canonical capture/store secret filtering remains fail-closed."
+        )
     return payload, {"ok": active_secret_like_count == 0, "failures": [f"active plaintext secret-like memory rows: {active_secret_like_count}"] if active_secret_like_count else []}, recommendations

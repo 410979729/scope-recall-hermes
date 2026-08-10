@@ -33,6 +33,20 @@ def test_lexical_score_does_not_double_count_alias_overlap():
     assert round(score, 2) == 0.70
 
 
+def test_lexical_score_requires_query_evidence_before_source_priors():
+    """Source and target trust must rank evidence, not fabricate relevance."""
+
+    score = lexical_score(
+        query="quasar xylophone 7f3a9c",
+        content="User prefers concise Chinese release reports.",
+        summary="",
+        source="builtin-curated",
+        target="user",
+    )
+
+    assert score == 0.0
+
+
 
 def test_freshness_substrings_do_not_trigger_recency_bonus(tmp_path):
     config_path = tmp_path / "scope-recall" / "config.json"
@@ -93,7 +107,9 @@ def test_freshness_substrings_do_not_trigger_recency_bonus(tmp_path):
             target="ops",
             score=0.8,
             updated_at="2026-07-16T00:00:00+00:00",
-            metadata={"entities": ["Titan"]},
+            metadata={
+                "entities": ["Titan", "recovery", "procedure", "runs", "only"]
+            },
         )
         assert service._entity_scope_mismatch(
             "云舟现在的生产端口是什么？", chinese, chinese.metadata
@@ -101,5 +117,31 @@ def test_freshness_substrings_do_not_trigger_recency_bonus(tmp_path):
         assert service._entity_scope_mismatch(
             "What must be verified before Quartz recovery?", titan, titan.metadata
         ) is True
+        owner_policy = RecallItem(
+            id="owner-policy",
+            content="owner policy alpha",
+            summary="owner policy",
+            source="test",
+            target="project",
+            score=0.8,
+            updated_at="2026-07-16T00:00:00+00:00",
+            metadata={"entities": ["owner"]},
+        )
+        alice_policy = RecallItem(
+            id="alice-policy",
+            content="Alice policy is alpha.",
+            summary="Alice policy",
+            source="test",
+            target="project",
+            score=0.8,
+            updated_at="2026-07-16T00:00:00+00:00",
+            metadata={"entities": ["Alice"]},
+        )
+        assert service._entity_scope_mismatch(
+            "what is owner's policy?", owner_policy, owner_policy.metadata
+        ) is False
+        assert service._entity_scope_mismatch(
+            "What is Alice's policy?", alice_policy, alice_policy.metadata
+        ) is False
     finally:
         plugin.shutdown()

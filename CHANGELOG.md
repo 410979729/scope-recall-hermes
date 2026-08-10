@@ -4,6 +4,31 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.2] - 2026-08-09
+
+This cumulative patch release covers runtime reliability and recall-precision fixes since the last public release, `1.9.1`. SQLite remains authoritative, derived vector state remains replayable, and the stable provider/tool identities are unchanged.
+
+### Added
+- Added explicit `query_variants` evidence-set retrieval with bounded per-query search, round-robin specialist evidence slots, global RRF fill, per-query rank provenance, an opt-in `evidence_diversity_depth=1..6` (default `3`), and an opt-in Top-50 public search ceiling while preserving the compact default. Indexed OpenAI-compatible batch responses are restored to input order, and the standard funnel trace remains bound to the primary query.
+- Added a resumable isolated LoCoMo runner that preserves dialogue/image/time provenance, records source/config/dataset hashes and Recall@K evidence, separates invalid model or judge calls from wrong answers, and always shuts providers down before advancing. External dataset, Hermes source, and auth paths must be supplied explicitly. Path-free source receipts bind the HEAD tree, index entries, raw tracked worktree bytes/modes/symlinks, and untracked bytes without depending on Git diff rendering; execution receipts also bind workers, model rounds, timeout, and a secret-free model route. Retrieval, query-plan, and result checkpoints must match canonical identity and exact row types before resume, scoring, or official reporting, and every model call revalidates route identity while allowing same-route token refresh. Judge labels accept only exact-case JSON/token contracts without undeclared or duplicate fields, and the official-comparability flag additionally requires the canonical dataset/questions/category composition, retrieved rather than oracle evidence, validated checkpoint sets, complete scoring/retrieval metrics, and a valid model-route receipt.
+
+### Fixed
+- Replayed committed event-digest candidate vector intent immediately after the SQLite transaction and outside the provider database lock. Replay targets the causal outbox event IDs rather than allowing unrelated older backlog to consume the bound, reports pending/failed companion work explicitly, and preserves durable outbox recovery when embedding is unavailable.
+- Replaced live reconciliation's raw `open()/close()` header read with a pager-native `PRAGMA schema_version` probe on the provider-owned connection. Raw file-header probes now require an explicit quiesced-connection declaration, preventing same-process POSIX advisory-lock cancellation while preserving fail-closed corruption receipts.
+- Prevented curated source and target priors from manufacturing lexical relevance for unrelated queries; pure-noise queries now return no curated fallback unless lexical, phrase, intent, or independently qualified vector evidence exists.
+- Rolled back failed journal transactions before persisting error receipts, sanitized the full exception before applying the receipt length cap, preserved the triggering exception when receipt storage is also contended, recovered only idle same-process SQLite peers without waiting on active work, quarantined connections whose rollback fails, retried one bounded background digest, and retried optional completed-outbox retention once without weakening truth-write failure semantics.
+- Downgraded database URI examples to manual review only when username, password, and host are all explicit placeholder values; production-like hosts remain actionable even with weak `user/password` credentials. Canonical URI scanning no longer depends on a leading word boundary, and capture/durable-store filtering remains fail-closed.
+- Made funnel, evidence-set, rejected-candidate, and temporal diagnostics request-local via context variables, so concurrent calls on one provider cannot return another request's trace.
+- Stopped treating the first two characters of arbitrary CJK prose or common polite query prefixes as hard entity declarations. Declared entities and factual claim subjects are now case-folded and own scope before incidental prose or `Project` mentions; explicit proper-name conflicts outrank shared generic terms such as `recovery`, and unrelated Latin names cannot suppress a matching Chinese subject.
+
+### Packaging
+- Added the shared SQLite contention/recovery module to source, wheel, sdist, and Pyright coverage, and advanced package, plugin, benchmark, readiness, and release-gate identity together.
+- Made GitHub Release publish hand PyPI delivery off through an explicit `repository_dispatch`, with tag/version revalidation, the existing OIDC `pypi` environment, and fail-loud duplicate uploads; manual tagged recovery remains available.
+
+### Compatibility
+- Preserved Fact Evolution, temporal queries, bounded Reflection, scope routing, evidence authority, provenance-root validation, idempotency, journal checkpoint ownership, release-identity checks, stable tool names, and the SQLite truth-source contract.
+- WAL runtime safety depends on the SQLite library linked into Python: use `3.51.3+` or fixed backports `3.50.7`/`3.44.6`. The plugin now avoids same-process raw file probes on live truth databases but does not replace the host SQLite runtime.
+
 ## [1.9.1] - 2026-08-08
 
 This cumulative public release covers all changes since the last public release, `1.8.7`. The version path is documented explicitly because `1.8.8` and `1.8.9` were development intervals rather than tagged package candidates, and `1.9.0` reached `main` as a source candidate but was never tagged, released, or uploaded to PyPI. SQLite remains authoritative and the stable provider/tool identities remain unchanged.

@@ -9,7 +9,9 @@ from dataclasses import replace
 import hashlib
 import logging
 from pathlib import Path
-from typing import Any, Sequence
+import sqlite3
+import time
+from typing import Any, Sequence, cast
 
 from .capture_filters import sanitize_report_text
 from .embedders import build_embedder
@@ -35,7 +37,8 @@ from .vector_reconciliation import (
     vector_reconciliation_state,
 )
 from .vector_mutation_guard import vector_mutation_guard
-from .truth_connection import probe_truth_database_header
+from .truth_connection import probe_truth_database_connection
+from .sqlite_recovery import is_sqlite_lock_contention, rollback_if_active
 from .vector_store import (
     LanceVectorStore,
     VectorStoreCompatibilityError,
@@ -131,25 +134,24 @@ def _empty_reconciliation_result(status: str, **extra: Any) -> dict[str, Any]:
 
 
 def _truth_header_preflight(provider: Any) -> dict[str, Any] | None:
-    """Return a failed receipt when the on-disk SQLite header is already corrupt."""
+    """Return a failed receipt when the live SQLite pager is unreadable."""
 
-    db_path = getattr(provider, "_db_path", None)
-    if db_path is None:
+    require_conn = getattr(provider, "_require_conn", None)
+    lock = getattr(provider, "_lock", None)
+    if not callable(require_conn) or lock is None:
+        # Unit doubles without a provider-owned pager are outside this runtime
+        # preflight. Production providers always expose both boundaries.
         return None
-    raw = str(db_path)
-    if raw == ":memory:":
-        return None
-    probe = probe_truth_database_header(db_path)
+    with lock:
+        conn = cast(sqlite3.Connection, require_conn())
+        probe = probe_truth_database_connection(conn)
     if probe.get("ok"):
-        return None
-    # Missing on-disk paths are skipped: unit doubles and :memory:-backed
-    # runtimes may expose a db_path that is not the live pager file.
-    if str(probe.get("status") or "") == "missing":
         return None
     return _empty_reconciliation_result(
         "failed",
-        error=str(probe.get("error") or "SQLite truth database header is corrupt"),
-        header_status=str(probe.get("status") or "corrupt_header"),
+        error=str(probe.get("error") or "SQLite truth database is unreadable"),
+        header_status=str(probe.get("status") or "corrupt_or_unreadable"),
+        probe_method="sqlite_connection",
     )
 
 
@@ -180,32 +182,58 @@ def _prune_completed_outbox(
     retention_days: int,
     keep_per_generation: int,
 ) -> dict[str, Any]:
-    """Run one isolated terminal-event retention transaction."""
+    """Run retention with one bounded retry for transient SQLite contention."""
 
-    with provider._lock:
-        conn.execute("SAVEPOINT scope_recall_vector_outbox_retention")
-        try:
-            receipt = prune_completed_vector_outbox(
-                conn,
-                retention_days=retention_days,
-                keep_per_generation=keep_per_generation,
-            )
-            conn.execute("RELEASE SAVEPOINT scope_recall_vector_outbox_retention")
-        except Exception as exc:
-            conn.execute("ROLLBACK TO SAVEPOINT scope_recall_vector_outbox_retention")
-            conn.execute("RELEASE SAVEPOINT scope_recall_vector_outbox_retention")
-            safe_error = _sanitize_vector_message(exc)
-            logger.warning("Scope Recall vector outbox retention failed: %s", safe_error)
-            return {
-                "status": "failed",
-                "enabled": retention_days > 0,
-                "deleted": 0,
-                "error": safe_error,
-            }
-    return {
-        "status": "pruned" if int(receipt.get("deleted") or 0) else "unchanged",
-        **receipt,
-    }
+    max_attempts = 2
+    for attempt in range(1, max_attempts + 1):
+        failure: BaseException | None = None
+        with provider._lock:
+            savepoint_started = False
+            try:
+                conn.execute("SAVEPOINT scope_recall_vector_outbox_retention")
+                savepoint_started = True
+                receipt = prune_completed_vector_outbox(
+                    conn,
+                    retention_days=retention_days,
+                    keep_per_generation=keep_per_generation,
+                )
+                conn.execute("RELEASE SAVEPOINT scope_recall_vector_outbox_retention")
+                return {
+                    "status": "pruned" if int(receipt.get("deleted") or 0) else "unchanged",
+                    "attempts": attempt,
+                    **receipt,
+                }
+            except Exception as exc:
+                failure = exc
+                cleanup_failed = False
+                if savepoint_started:
+                    try:
+                        conn.execute("ROLLBACK TO SAVEPOINT scope_recall_vector_outbox_retention")
+                    except Exception:
+                        cleanup_failed = True
+                    try:
+                        conn.execute("RELEASE SAVEPOINT scope_recall_vector_outbox_retention")
+                    except Exception:
+                        cleanup_failed = True
+                if cleanup_failed:
+                    try:
+                        rollback_if_active(conn)
+                    except Exception:
+                        pass
+        assert failure is not None
+        if is_sqlite_lock_contention(failure) and attempt < max_attempts:
+            time.sleep(0.05 * attempt)
+            continue
+        safe_error = _sanitize_vector_message(failure)
+        logger.warning("Scope Recall vector outbox retention failed: %s", safe_error)
+        return {
+            "status": "failed",
+            "enabled": retention_days > 0,
+            "deleted": 0,
+            "attempts": attempt,
+            "error": safe_error,
+        }
+    raise AssertionError("unreachable vector retention retry state")
 
 
 def _sanitize_vector_message(value: Exception | str, *, limit: int = _VECTOR_STATUS_MESSAGE_LIMIT) -> str:
@@ -1045,6 +1073,34 @@ def enqueue_vector_repair_event(
         return False
 
 
+def replay_vector_outbox_events(
+    provider: Any,
+    *,
+    event_ids: Sequence[int],
+    refresh_audit_after: bool = True,
+) -> dict[str, int]:
+    """Replay exact committed outbox IDs without draining unrelated backlog first."""
+
+    resolved_ids = tuple(
+        dict.fromkeys(int(event_id) for event_id in event_ids if int(event_id) > 0)
+    )
+    generation_id = str(getattr(provider, "_vector_generation_id", "") or "")
+    if (
+        not resolved_ids
+        or not generation_id
+        or not provider._vector_store
+        or not provider._embedder
+    ):
+        return {"claimed": 0, "completed": 0, "failed": 0}
+    with _vector_mutation_lock(provider):
+        return _replay_vector_outbox_guarded(
+            provider,
+            limit=len(resolved_ids),
+            event_ids=resolved_ids,
+            refresh_audit_after=refresh_audit_after,
+        )
+
+
 def replay_vector_outbox(
     provider: Any,
     *,
@@ -1068,6 +1124,7 @@ def _replay_vector_outbox_guarded(
     provider: Any,
     *,
     limit: int = 200,
+    event_ids: Sequence[int] | None = None,
     refresh_audit_after: bool = True,
 ) -> dict[str, int]:
     """Replay committed intent through the shared single-writer executor."""
@@ -1097,6 +1154,7 @@ def _replay_vector_outbox_guarded(
         db_lock=getattr(provider, "_lock", None),
         mutation_context=lambda: _vector_mutation_lock(provider),
         limit=limit,
+        event_ids=event_ids,
         on_failure=on_failure,
         after_replay=(
             (lambda: refresh_vector_audit(provider))

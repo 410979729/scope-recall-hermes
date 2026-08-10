@@ -39,8 +39,8 @@ if str(ROOT) not in sys.path:
 from secret_patterns import scan_secret_like_text, secret_scan_shadow  # noqa: E402
 from scripts.release_changelog import extract_version_section  # noqa: E402
 
-PACKAGE_VERSION = "1.9.1"
-PUBLIC_RELEASE_BASELINE = "1.8.7"
+PACKAGE_VERSION = "1.9.2"
+PUBLIC_RELEASE_BASELINE = "1.9.1"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 RELEASE_READINESS_DOC = f"docs/release-readiness.{PACKAGE_VERSION}.md"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
@@ -223,6 +223,7 @@ REQUIRED_SOURCE_FILES = {
     "docs/contract.matrix.md",
     "docs/upstream-recommendation.md",
     "docs/benchmark.golden.md",
+    "docs/benchmarks/locomo-2026-08.md",
     "docs/governance.cleanup.md",
     "docs/memory-quality-kernel.md",
     "docs/configuration.md",
@@ -420,6 +421,7 @@ REQUIRED_WHEEL = {
     "scope_recall/temporal_facts.py",
     "scope_recall/temporal_query.py",
     "scope_recall/truth_connection.py",
+    "scope_recall/sqlite_recovery.py",
     "scope_recall/sqlite_schema.py",
     "scope_recall/reflection.py",
     "scope_recall/reflection_llm.py",

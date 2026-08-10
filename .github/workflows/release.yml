@@ -134,3 +134,12 @@ jobs:
               --notes-file release-assets/release-notes.md \
               --verify-tag
           fi
+      - name: Trigger PyPI publish workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+        run: |
+          gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/dispatches" \
+            -f event_type=scope-recall-pypi-publish \
+            -f "client_payload[tag]=${RELEASE_TAG}"

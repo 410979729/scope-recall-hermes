@@ -149,6 +149,11 @@ def test_bounded_reconciliation_serializes_schema_bookkeeping_for_shared_db(
 
     monkeypatch.setattr(
         vector_runtime,
+        "probe_truth_database_connection",
+        lambda _conn: {"ok": True, "status": "ok"},
+    )
+    monkeypatch.setattr(
+        vector_runtime,
         "replay_vector_outbox",
         lambda *args, **kwargs: {
             "claimed": 0,

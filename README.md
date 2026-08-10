@@ -31,11 +31,23 @@ In August 2026 we ran Scope Recall's current development line (the upcoming `1.9
 - Open-domain inference: 45.83%
 - Retrieval side: Top-50 evidence any-hit recall **97.66%**, all-hit recall **90.63%**
 
-The run used `gemini-embedding-001` for retrieval and `gpt-5.4-mini` as answerer, judge, and query planner. Every per-question result and the run manifest are hash-pinned, and the final score was recomputed independently from the raw rows. The benchmark harness (`scripts/benchmark.locomo.py`) is part of the `1.9.2` development line so the evaluation stays reproducible.
+The run used `gemini-embedding-001` for retrieval and `gpt-5.4-mini` as answerer, judge, and query planner. Every per-question result and the run manifest are hash-pinned, and the final score was recomputed independently from the raw rows; the public, path-free receipt is [`docs/benchmarks/locomo-2026-08.md`](docs/benchmarks/locomo-2026-08.md). The benchmark harness (`scripts/benchmark.locomo.py`) is part of the `1.9.2` development line so the evaluation stays reproducible.
 
-The three categories near 50% are exactly where active optimization is focused: multi-hop evidence completeness (retrieving every hop of a reasoning chain, not just the first), temporal evidence presentation (separating message send time from the referenced event time), and open-domain synthesis. We do not claim a cross-vendor ranking, because public LoCoMo evaluations use materially different models, judges, prompts, and dataset variants.
+The August run predates the harness's secret-free model-route receipt and stricter official-comparability checklist. It is therefore **legacy local evidence**, not a run for which the current `official_comparable_categories_1_to_4` flag may be asserted.
 
-Version `1.9.1` is the cumulative patch release since `1.8.7`. It carries forward the 1.9.0 CJK lexical shadow generation, backup-first compare-and-swap activation and rollback, Windows extended-length rollout safety, and fail-closed endpoint transport policy while correcting cross-platform release validation without weakening owner-only SQLite permissions.
+The runner has no machine-specific dataset, source-tree, or auth defaults. Supply the external paths explicitly, keep the run directory outside the source checkout, and add `--auth-path` only for model-backed phases:
+
+```bash
+python scripts/benchmark.locomo.py \
+  --dataset /path/to/locomo.json \
+  --run-dir /path/outside/the/checkout/locomo-run \
+  --hermes-agent-root /path/to/hermes-agent \
+  --phase retrieve
+```
+
+The three categories near 50% remain the clearest future improvement areas: multi-hop evidence completeness, temporal evidence presentation, and open-domain synthesis. We do not claim a cross-vendor ranking, because public LoCoMo evaluations use materially different models, judges, prompts, and dataset variants.
+
+Version `1.9.2` is the compatibility-preserving patch candidate since `1.9.1`. It closes event-digest vector replay, zero-relevance curated fallback, recoverable journal/outbox SQLite contention, and doctor placeholder-URI classification gaps without changing the stable provider/tool identities or SQLite authority.
 
 The `1.8.6` patch hardened legacy fact-freshness maintenance, Unicode secret filtering, operator portability, truth-connection ownership, lifecycle relation restore, and semantic deduplication. It preserves the 1.8.5 Windows activation-lease PID fix and includes the 1.8.4 deep-audit closure for deterministic freshness, validator, truth-store permission, operator recovery, secret scanning, and cross-platform release gates. Its 1.8.3 predecessor hardened current-state recall, canonical chat identity boundaries, Windows repair and rollback, bounded vector-outbox history, and model-calibrated vector-only filtering. The `1.8.2` release made memory startup honest and local-model tool use reliable. If a configured local embedding model cannot actually load, Scope Recall now reports the degradation and uses a compatible fallback only for a fresh generation; it never opens an existing generation with a different embedding space. It also adds `light`, `balanced`, and `full` semantic retention profiles and fixes LM Studio/llama.cpp grammar initialization without deleting structured claim, freshness, or evolution capabilities. Durable `user`, `memory`, `project`, and `ops` fact actions resolve to shared durable scope, while `general` remains local scratch on every integration path. Existing ordinary-memory behavior remains the default because the new evolution, temporal-query, and Reflection surfaces are opt-in. The `1.7.2` release published a compatibility-preserving storage and governance hardening patch: ordinary recall uses one lifecycle policy across journal, nightly, deduplication, and vector paths; vector rebuilds support immutable generations and explicit compare-and-swap activation; metadata and import provenance are sanitized before durable or operator-visible sinks; candidate, freshness, and config mutations fail closed; and folded inline data URLs are removed without losing surrounding prose. It builds on version 1.7.1's runtime-config, candidate-browser, external-bridge, and release-gate fixes. Version 1.7.0 published the productization feature set on the stable V1 release line: event-digest evidence packets, reviewable candidate extraction, read-only memory browsing, candidate governance commands, Experience-to-skill bridge helpers, optional PGVector companion support, external shared-memory bridge contracts, explicit sensitivity governance, release-gate progress output, and same-process peer-provider SQLite lock recovery for `scope_recall_store`. Version 1.6.3 closed issue #25 with conservative SQLite lock recovery and a single safe retry for `scope_recall_store` while keeping non-SQLite business errors non-retryable. Version 1.6.2 added graph-relation backfill/benchmark visibility and hardened Experience review and journal-digest bookkeeping without changing the stable V1 runtime contract. Version 1.6.1 published documentation, packaging, and release-provenance updates without changing the stable V1 runtime contract. The 1.6.0 release packages a compatibility-preserving refactor of the doctor, graph-hygiene, maintenance, digest-result, recall-pipeline, and provider-schema internals while keeping the stable V1 commercial-governance line introduced in 1.5.0. The 1.5 line includes promoted-only profile lifecycle safety, candidate-memory promotion planning, graph-hygiene repair, fail-closed vector-repair fallback handling, governance cleanup, journal recovery, an operator dashboard, repository-owned golden benchmarks, stricter release gates, fail-closed hard-delete safety, packaged benchmark fixtures, Recall Funnel observability, synthetic retrieval-regression benchmarking, and default-safe vector fallback behavior. Runtime Experience packet injection is enabled by default through `experience.prefetch_enabled=true` and can be disabled with `experience.prefetch_enabled=false`; background automatic promotion remains an explicit operator opt-in through `experience.auto_promotion_enabled=true`, and low-risk auto-promotion remains a second explicit opt-in through `experience.auto_promote_low_risk=true`. By default, successful low-risk scans create candidate playbooks, high-risk playbooks stay review-gated, and final-failure or low-signal traces are not promoted. It keeps the `scope_recall_profile` surface added in v1.3.0, compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, inline attachment-marker sanitization, the supported standalone install shape added in v1.1.0, and native-safe LanceDB probing with fresh-bootstrap SQLite vector fallback for non-AVX hosts.
 
@@ -59,6 +71,8 @@ This replaces the old `lancepro` naming, which was misleading because the earlie
 ### Deployment boundaries
 
 `scope-recall` is the local per-Hermes recall layer. In multi-agent deployments that already run a central shared backend such as PostgreSQL, keep that backend as the cross-agent source of truth and connect it to `scope-recall` through explicit import/export/tool boundaries.
+
+**SQLite runtime safety:** WAL deployments should run SQLite `3.51.3+` or a fixed backport (`3.50.7` or `3.44.6`). SQLite documents a rare WAL-reset corruption race in the otherwise affected `3.7.0`–`3.51.2` range when separate connections overlap writes/checkpoints; see [SQLite's WAL-reset documentation](https://sqlite.org/wal.html#walresetbug). Scope Recall keeps live probes on pager connections, but the plugin cannot replace the SQLite library linked into Python.
 
 The V1 shape is intentionally simple:
 
@@ -685,11 +699,12 @@ Default hybrid weights:
 Default result sizing:
 
 - `retrieval.candidate_pool` controls how many lexical/vector candidates each source may feed into the ranking funnel before merge, filters, graph/entity bonuses, and final slicing.
-- `retrieval.top_k` controls the default tool result limit when a caller does not pass an explicit `limit`; explicit per-call `limit` still wins.
+- `retrieval.top_k` controls the default tool result limit when a caller does not pass an explicit `limit`; explicit per-call `limit` still wins up to the bounded search maximum of `50`.
 
 Recall observability:
 
 - `scope_recall_search(..., include_trace=true)` returns the structured Recall Funnel for that query.
+- `scope_recall_search(..., query_variants=[...])` deterministically fuses the primary query plus up to seven explicit variants. It reserves round-robin evidence slots per variant before global RRF fill, so one broad rewrite cannot erase a specialist hit; no LLM is called inside the provider. `evidence_diversity_depth=1..6` controls how many specialist hits each variant may protect: the backwards-compatible default is `3`, while broad multi-hop or open-domain evidence sets may opt into `4..6`.
 - `scope_recall_explain` includes the same `funnel_trace` alongside rank-aligned scoring components and rejected candidates.
 - `scope_recall_benchmark(..., include_trace=true, prompt_budget_chars=N)` reports per-case traces plus aggregate latency, known-answer recall, top-k accuracy, forbidden-id violations, filter counts, and prompt-budget hit rate.
 
@@ -809,7 +824,18 @@ Schema-surface targets after the compact-profile change:
 - standard profile: 20 tools, about 10.6 KB
 - maintenance/secret schema surfaces still require their explicit safety flags
 
-Release `1.9.1` is the cumulative compatibility-preserving patch release since `1.8.7`:
+Release `1.9.2` is the compatibility-preserving patch candidate since `1.9.1`:
+
+- Event-digest candidates trigger bounded vector outbox replay only after the SQLite transaction commits and the provider database lock is released.
+- Live reconciliation checks SQLite readability through the provider-owned pager connection; raw header reads are restricted to explicitly quiesced offline paths so same-process POSIX locks are not canceled.
+- Curated source and target priors rank relevant evidence but cannot manufacture matches for pure-noise queries.
+- Journal failure receipts and optional vector-outbox retention recover from transient SQLite contention through bounded, observable retry paths.
+- Doctor reports ambiguous placeholder-like database URI examples for review without treating them as confirmed credentials; canonical capture and durable-store filtering remain fail-closed.
+- Explicit multi-query evidence-set retrieval preserves per-query rank provenance, reserves specialist evidence before global RRF fill, and allows an explicit Top-50 search without changing the compact default.
+- CJK prose prefixes and unrelated Latin proper nouns no longer become premature hard scope mismatches before structured/shared entities are considered.
+- A resumable isolated LoCoMo runner records source/config/data hashes, retrieval evidence, Recall@K, model/judge failures, and provider shutdown receipts without touching a live Hermes memory home.
+
+Release `1.9.1` is the cumulative compatibility-preserving public release since `1.8.7`:
 
 - Chinese lexical recall can build and validate a supplemental trigram generation without replacing the legacy index; activation is an explicit compare-and-swap, and rollback only changes the pointer.
 - Two-character Chinese concepts use one bounded ranked fallback scan, while legacy English FTS/LIKE/alias candidates remain present and are protected by release regressions.
@@ -1076,7 +1102,7 @@ Example `scope_recall_stats` shape:
 | Tool | Purpose |
 | --- | --- |
 | `scope_recall_store` | Compact default: store a provider-owned memory row after deterministic governance checks |
-| `scope_recall_search` | Compact default: search local scratch plus shared durable scope; pass `include_trace=true` for Recall Funnel evidence |
+| `scope_recall_search` | Compact default: search local scratch plus shared durable scope; optional `query_variants` enables deterministic multi-query evidence fusion, `evidence_diversity_depth=1..6` tunes specialist-hit protection (default `3`), and `include_trace=true` returns both funnel and evidence-set provenance |
 | `scope_recall_context` | Compact default: render a task-relevant memory context block plus structured evidence |
 | `scope_recall_profile` | Compact default: render a bounded high-level profile/context surface |
 | `scope_recall_memory` | Compact default: dispatch exact-id `inspect`, `feedback`, `update`, `merge`, and `forget` operations |

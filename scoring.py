@@ -97,9 +97,15 @@ def lexical_score(*, query: str, content: str, summary: str, source: str, target
 
     phrase_bonus = 0.35 if normalized_query and normalized_query in haystack else 0.0
     intent_bonus = 0.18 if matched_query_intent_terms(query, haystack) else 0.0
+    relevance_score = overlap * 0.72 + phrase_bonus + intent_bonus
+    if relevance_score <= 0.0:
+        # Source trust and target priority are ranking priors. They may
+        # distinguish relevant evidence, but must never manufacture relevance
+        # for a query that shares no lexical, phrase, or intent signal.
+        return 0.0
     source_bonus = 0.18 if source == "builtin-curated" else 0.08 if source.startswith("tool") else 0.02
     target_bonus = TARGET_PRIORITY_BONUS.get(target, 0.0)
-    return max(0.0, min(1.0, overlap * 0.72 + phrase_bonus + intent_bonus + source_bonus + target_bonus))
+    return max(0.0, min(1.0, relevance_score + source_bonus + target_bonus))
 
 
 

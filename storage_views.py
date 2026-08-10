@@ -328,13 +328,29 @@ def search_db_memories(
 
 
 def search_vector_memories(provider: Any, query: str, *, limit: int) -> list[RecallItem]:
-    """Search vector companion state and return recall candidates that still pass SQLite visibility checks.
+    """Embed one query, then search the active vector companion."""
 
-    Vector hits are suggestions only; final access and lifecycle validation remains anchored to truth rows."""
     if not provider._vector_ready or not provider._vector_store or not provider._embedder:
         return []
     try:
         query_vector = provider._embedder.embed_query(query)
+    except Exception as exc:
+        mark_vector_needs_repair(provider, exc)
+        return []
+    return search_vector_memories_with_vector(provider, query_vector, limit=limit)
+
+
+def search_vector_memories_with_vector(
+    provider: Any,
+    query_vector: list[float],
+    *,
+    limit: int,
+) -> list[RecallItem]:
+    """Search a precomputed vector while preserving SQLite truth checks."""
+
+    if not provider._vector_ready or not provider._vector_store:
+        return []
+    try:
         top_k = max(limit, int((provider._vector_config or {}).get("top_k") or limit))
         rows = []
         for scope_id in provider._accessible_scope_ids:

@@ -22,7 +22,12 @@ from .gating import config_bool
 from .graph import clamp_float
 from .models import resolve_store_scope_mode
 from .scope import accessible_scope_ids as runtime_accessible_scope_ids
-from .schemas import MAX_MEMORY_ID_LENGTH, MAX_MEMORY_IDS_PER_REQUEST
+from .schemas import (
+    DEFAULT_EVIDENCE_DIVERSITY_DEPTH,
+    MAX_EVIDENCE_DIVERSITY_DEPTH,
+    MAX_MEMORY_ID_LENGTH,
+    MAX_MEMORY_IDS_PER_REQUEST,
+)
 from .tool_validation import validate_tool_arguments
 from .experience_preflight import experience_preflight
 from .experience_promotion import promote_experiences
@@ -430,11 +435,22 @@ class ScopeRecallToolService:
         recall_mode = str(args.get("recall_mode") or "advisory").strip().lower()
         if recall_mode not in {"advisory", "strict"}:
             return tool_error("recall_mode must be advisory or strict")
-        results = self.provider._recall_service.search_memories(
-            query,
-            limit=limit,
-            recall_mode=recall_mode,
-        )
+        query_variants = self._query_variants(args)
+        if query_variants:
+            results = self.provider._recall_service.search_evidence_set(
+                query,
+                query_variants=query_variants,
+                limit=limit,
+                per_query_limit=limit,
+                diversity_depth=self._evidence_diversity_depth(args),
+                recall_mode=recall_mode,
+            )
+        else:
+            results = self.provider._recall_service.search_memories(
+                query,
+                limit=limit,
+                recall_mode=recall_mode,
+            )
         payload: dict[str, Any] = {
             "count": len(results),
             "results": [self._serialize_recall_item(item) for item in results],
@@ -453,6 +469,15 @@ class ScopeRecallToolService:
             payload["funnel_trace"] = dict(
                 getattr(self.provider._recall_service, "last_funnel_trace", {}) or {}
             )
+            if query_variants:
+                payload["evidence_set_trace"] = dict(
+                    getattr(
+                        self.provider._recall_service,
+                        "last_evidence_set_trace",
+                        {},
+                    )
+                    or {}
+                )
         return self._json(payload)
 
     def _handle_context(self, args: dict[str, Any]) -> str:
@@ -1261,6 +1286,21 @@ class ScopeRecallToolService:
             int(self.provider._config_value("query_char_limit", 1000)),
         )
 
+    def _query_variants(self, args: dict[str, Any]) -> list[str]:
+        raw = args.get("query_variants")
+        if not isinstance(raw, list):
+            return []
+        variants: list[str] = []
+        seen: set[str] = set()
+        for value in raw[:7]:
+            query = self.provider._normalize_query(str(value or ""), 1000).strip()
+            normalized = query.casefold()
+            if not query or normalized in seen:
+                continue
+            seen.add(normalized)
+            variants.append(query)
+        return variants
+
     def _limit(self, args: dict[str, Any]) -> int:
         return max(1, min(20, int(args.get("limit") or 5)))
 
@@ -1271,7 +1311,21 @@ class ScopeRecallToolService:
             ) or 5
         else:
             default_limit = args.get("limit")
-        return max(1, min(20, int(default_limit or 5)))
+        return max(1, min(50, int(default_limit or 5)))
+
+    def _evidence_diversity_depth(self, args: dict[str, Any]) -> int:
+        """Return the bounded per-query protection depth for evidence fusion."""
+
+        return max(
+            1,
+            min(
+                MAX_EVIDENCE_DIVERSITY_DEPTH,
+                int(
+                    args.get("evidence_diversity_depth")
+                    or DEFAULT_EVIDENCE_DIVERSITY_DEPTH
+                ),
+            ),
+        )
 
     def _targets_arg(self, args: dict[str, Any]) -> list[str] | None:
         raw_targets = args.get("targets")
@@ -1360,6 +1414,15 @@ class ScopeRecallToolService:
             "memory_type": str(metadata.get("memory_type") or ""),
             "trust": self._rounded_metadata(metadata, "trust"),
             "importance": self._rounded_metadata(metadata, "importance"),
+            "evidence_rrf_score": self._rounded_metadata(
+                metadata, "evidence_rrf_score"
+            ),
+            "evidence_query_hits": int(
+                metadata.get("evidence_query_hits") or 0
+            ),
+            "evidence_query_ranks": metadata.get("evidence_query_ranks")
+            if isinstance(metadata.get("evidence_query_ranks"), dict)
+            else {},
             "entities": metadata.get("entities")
             if isinstance(metadata.get("entities"), list)
             else [],

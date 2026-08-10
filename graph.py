@@ -420,13 +420,29 @@ def entity_distance_scores(
     unrelated memories receive no graph-distance score.
     """
 
-    frontier = {normalize_entity(entity) for entity in query_entities if normalize_entity(entity)}
+    normalized_cache: dict[str, str] = {}
+
+    def normalized_entity(value: str) -> str:
+        cache_key = str(value or "")
+        if cache_key not in normalized_cache:
+            normalized_cache[cache_key] = normalize_entity(cache_key)
+        return normalized_cache[cache_key]
+
+    frontier = {
+        normalized
+        for entity in query_entities
+        if (normalized := normalized_entity(entity))
+    }
     if not frontier:
         return {}
     distance: dict[str, int] = {entity: 0 for entity in frontier}
     current = set(frontier)
     normalized_relations = {
-        normalize_entity(key): [normalize_entity(value) for value in values if normalize_entity(value)]
+        normalized_entity(key): [
+            normalized
+            for value in values
+            if (normalized := normalized_entity(value))
+        ]
         for key, values in (relations or {}).items()
     }
     for depth in range(1, max(1, int(max_depth)) + 1):
@@ -444,7 +460,7 @@ def entity_distance_scores(
     for memory_id, entities in (memory_entities or {}).items():
         best: float = 0.0
         for entity in entities:
-            normalized = normalize_entity(entity)
+            normalized = normalized_entity(entity)
             if normalized not in distance:
                 continue
             # depth 0 => 1.0, depth 1 => 0.5, depth 2 => 0.333...

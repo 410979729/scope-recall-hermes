@@ -55,6 +55,144 @@ def _open_memory_db(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def test_journal_failure_receipt_redacts_before_truncating():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    ensure_journal_schema(conn)
+    password_word = "pass" + "word"
+    secret_uri = "postgresql://" + "user:" + password_word + "@db.prod.internal/app"
+    prefix = "x" * (1000 - len("postgresql://user:" + password_word))
+
+    journal_module._record_journal_digest_failure(
+        conn,
+        run_id="redaction-boundary",
+        started_at="2026-08-10T00:00:00Z",
+        extractor="llm",
+        interval_label="manual",
+        error=RuntimeError(prefix + secret_uri),
+    )
+
+    stored = str(
+        conn.execute(
+            "SELECT error FROM journal_digest_runs WHERE id='redaction-boundary'"
+        ).fetchone()[0]
+    )
+    conn.close()
+    assert len(stored) <= 1000
+    assert "password" not in stored
+    assert "db.prod.internal" not in stored
+    assert "[REDACTED_SECRET]" in stored
+
+
+def test_journal_vector_replay_targets_its_causal_event(monkeypatch):
+    calls: list[tuple[object, list[int]]] = []
+    runtime = object()
+
+    def targeted(provider, *, event_ids, refresh_audit_after=True):
+        del refresh_audit_after
+        calls.append((provider, list(event_ids)))
+        return {"claimed": 1, "completed": 1, "failed": 0}
+
+    monkeypatch.setattr(journal_module, "replay_vector_outbox_events", targeted)
+    monkeypatch.setattr(
+        journal_module,
+        "replay_vector_outbox",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("generic backlog replay must not run")
+        ),
+    )
+
+    result = journal_module._replay_or_defer_journal_vector(
+        runtime,
+        None,
+        {"event_id": 42, "id": "memory-42"},
+    )
+
+    assert result == {"claimed": 1, "completed": 1, "failed": 0}
+    assert calls == [(runtime, [42])]
+
+
+def test_journal_digest_rolls_back_before_recording_primary_failure(
+    tmp_path,
+    monkeypatch,
+):
+    """Failure-receipt cleanup must not replace the triggering lock error."""
+
+    inner = sqlite3.connect(":memory:")
+    inner.row_factory = sqlite3.Row
+    ensure_schema(inner)
+    ensure_journal_schema(inner)
+    inner.commit()
+
+    class PoisonedConnection:
+        def __init__(self, connection):
+            self.connection = connection
+            self.poisoned = False
+            self.rollback_count = 0
+            self.closed = False
+
+        @property
+        def row_factory(self):
+            return self.connection.row_factory
+
+        @row_factory.setter
+        def row_factory(self, value):
+            self.connection.row_factory = value
+
+        @property
+        def in_transaction(self):
+            return self.connection.in_transaction
+
+        def execute(self, *args, **kwargs):
+            if self.poisoned:
+                raise sqlite3.OperationalError("database is locked: cleanup")
+            return self.connection.execute(*args, **kwargs)
+
+        def rollback(self):
+            self.rollback_count += 1
+            self.connection.rollback()
+            self.poisoned = False
+
+        def close(self):
+            self.closed = True
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+    proxy = PoisonedConnection(inner)
+    primary_error = sqlite3.OperationalError("database is locked: primary")
+
+    def fail_schema(connection):
+        connection.execute("BEGIN IMMEDIATE")
+        proxy.poisoned = True
+        raise primary_error
+
+    monkeypatch.setattr(
+        journal_module,
+        "_open_digest_connection",
+        lambda _db_path, *, dry_run: proxy,
+    )
+    monkeypatch.setattr(journal_module, "ensure_schema", fail_schema)
+
+    with pytest.raises(sqlite3.OperationalError) as captured:
+        run_journal_digest(
+            hermes_home=tmp_path / "hermes",
+            extractor="heuristic",
+            interval_label="test-lock-receipt",
+        )
+
+    assert captured.value is primary_error
+    assert proxy.rollback_count == 1
+    receipt = inner.execute(
+        "SELECT status, error FROM journal_digest_runs ORDER BY started_at DESC LIMIT 1"
+    ).fetchone()
+    assert receipt["status"] == "error"
+    assert "primary" in receipt["error"]
+    assert proxy.closed is True
+    inner.close()
+
+
 def test_journal_entries_are_provenance_not_durable_memory(tmp_path):
     conn = _open_memory_db(tmp_path / "memory.sqlite3")
     scope = _scope()

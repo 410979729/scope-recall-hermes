@@ -348,6 +348,15 @@ def test_sqlite_backup_module_is_release_packaged_and_type_checked():
     assert "sqlite_backup.py" not in pyright["missing_pyright_include"]
 
 
+def test_sqlite_recovery_module_is_release_packaged_and_type_checked():
+    release_check = _load_release_check_module("scope_recall_check_release_sqlite_recovery")
+
+    pyright = release_check.pyright_include_check()
+    assert "sqlite_recovery.py" in release_check.REQUIRED_SOURCE_FILES
+    assert "scope_recall/sqlite_recovery.py" in release_check.REQUIRED_WHEEL
+    assert "sqlite_recovery.py" not in pyright["missing_pyright_include"]
+
+
 def test_required_source_modules_are_pyright_covered():
     release_check = _load_release_check_module("scope_recall_check_release_pyright_coverage")
 
@@ -607,11 +616,11 @@ def test_release_identity_requires_version_newer_than_latest_tag():
     assert "mutually exclusive" in conflicting_modes["error"]
 
 
-def test_v191_release_candidate_identity_surfaces_are_consistent():
+def test_v192_release_candidate_identity_surfaces_are_consistent():
     """Bind the patch release to every authoritative version surface."""
 
-    expected_version = "1.9.1"
-    release_check = _load_release_check_module("scope_recall_check_release_v191_identity")
+    expected_version = "1.9.2"
+    release_check = _load_release_check_module("scope_recall_check_release_v192_identity")
     lexical_generation = importlib.import_module(
         f"{PACKAGE_NAME}.lexical_generation"
     )
@@ -623,7 +632,7 @@ def test_v191_release_candidate_identity_surfaces_are_consistent():
     assert _package_version() == expected_version
     assert f"version: {expected_version}" in plugin_manifest
     assert release_check.PACKAGE_VERSION == expected_version
-    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.9.1.md"
+    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.9.2.md"
     assert (PLUGIN_ROOT / release_check.RELEASE_READINESS_DOC).is_file()
     assert f"## [{expected_version}]" in changelog
     assert f"Version `{expected_version}`" in readme
@@ -632,24 +641,24 @@ def test_v191_release_candidate_identity_surfaces_are_consistent():
     assert lexical_generation.LEXICAL_MIGRATION_PLUGIN_VERSION == "1.9.0"
 
     identity = release_check.release_version_identity_check(
-        tags=["v1.8.0", "v1.8.2", "v1.8.7"]
+        tags=["v1.8.0", "v1.8.7", "v1.9.1"]
     )
     assert identity["ok"] is True
     assert identity["release_eligible"] is True
-    assert identity["expected_release_tag"] == "v1.9.1"
+    assert identity["expected_release_tag"] == "v1.9.2"
 
 
-def test_v191_changelog_is_cumulative_from_last_public_release():
-    release_check = _load_release_check_module("scope_recall_check_release_v191_changelog")
+def test_v192_changelog_is_cumulative_from_last_public_release():
+    release_check = _load_release_check_module("scope_recall_check_release_v192_changelog")
 
-    assert release_check.PACKAGE_VERSION == "1.9.1"
-    assert release_check.PUBLIC_RELEASE_BASELINE == "1.8.7"
+    assert release_check.PACKAGE_VERSION == "1.9.2"
+    assert release_check.PUBLIC_RELEASE_BASELINE == "1.9.1"
     section = release_check.changelog_section(
         (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8"),
-        "1.9.1",
+        "1.9.2",
     )
-    assert "since the last public release, `1.8.7`" in section
-    for term in ("endpoint", "lexical", "Windows", "SQLite", "credentials", "Experience"):
+    assert "since the last public release, `1.9.1`" in section
+    for term in ("event-digest", "curated", "journal", "SQLite", "credentials", "vector"):
         assert term.lower() in section.lower(), term
 
 
@@ -1675,7 +1684,11 @@ def test_pypi_workflow_runs_release_gate_before_publish():
     assert pypi_workflow.index("scripts/check.release.py") < pypi_workflow.index("pypa/gh-action-pypi-publish")
     assert "  release:" in pypi_workflow
     assert "types: [published]" in pypi_workflow
+    assert "repository_dispatch:" in pypi_workflow
+    assert "scope-recall-pypi-publish" in pypi_workflow
     assert "workflow_dispatch:" in pypi_workflow
+    assert "release_tag:" in pypi_workflow
+    assert "skip-existing" not in pypi_workflow
     assert "PyPI publish" in pypi_workflow
     assert "Invalid release tag" in pypi_workflow
     assert "Verify tag matches package version" in pypi_workflow
@@ -1686,6 +1699,9 @@ def test_pypi_workflow_runs_release_gate_before_publish():
     assert "pypa/gh-action-pypi-publish" not in release_workflow
     assert "id-token: write" not in release_workflow
     assert "Upload release distributions" in release_workflow
+    assert "Trigger PyPI publish workflow" in release_workflow
+    assert "scope-recall-pypi-publish" in release_workflow
+    assert "repos/${GITHUB_REPOSITORY}/dispatches" in release_workflow
     assert "continue-on-error: true" not in release_workflow
     assert "Invalid release tag" in release_workflow
     assert "Verify tag matches package version" in release_workflow

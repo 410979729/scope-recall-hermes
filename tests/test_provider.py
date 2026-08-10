@@ -171,6 +171,32 @@ def test_failed_sqlite_reopen_is_retried_by_next_connection_requirement(
     provider._maintenance_stop.clear()
 
 
+def test_rollback_failure_quarantines_provider_connection(provider, monkeypatch):
+    original = provider._require_conn()
+
+    class RollbackFailureConnection:
+        in_transaction = True
+
+        def __init__(self):
+            self.closed = False
+
+        def rollback(self):
+            raise sqlite3.OperationalError("synthetic rollback failure")
+
+        def close(self):
+            self.closed = True
+
+    failed = RollbackFailureConnection()
+    provider._conn = failed
+    monkeypatch.setattr(provider, "_open_runtime_connection", lambda: original)
+
+    provider._rollback_conn_after_error("rollback quarantine regression")
+
+    assert failed.closed is True
+    assert provider._conn is None
+    assert provider._require_conn() is original
+
+
 def test_provider_store_rolls_back_open_sqlite_transaction(provider, monkeypatch):
     def broken_store_memory_now(provider_arg, **kwargs):
         del kwargs
@@ -313,6 +339,57 @@ def test_scope_recall_store_recovers_peer_provider_dirty_transaction(tmp_path, m
             assert provider_a._require_conn().in_transaction is False
         _assert_sqlite_writer_released(provider_b)
     finally:
+        provider_b.shutdown()
+        provider_a.shutdown()
+
+
+def test_peer_recovery_skips_an_active_peer_transaction(tmp_path):
+    _write_scope_recall_config(tmp_path, {"vector": {"enabled": False}})
+    provider_a = load_memory_provider("scope-recall")
+    provider_b = load_memory_provider("scope-recall")
+    assert provider_a is not None
+    assert provider_b is not None
+    lock_held = threading.Event()
+    release_peer = threading.Event()
+    recovery_done = threading.Event()
+    recovery_report: dict[str, object] = {}
+
+    def hold_peer_transaction():
+        with provider_a._lock:
+            conn = provider_a._require_conn()
+            conn.execute("BEGIN IMMEDIATE")
+            lock_held.set()
+            release_peer.wait(timeout=5.0)
+            conn.rollback()
+
+    def recover_other_provider():
+        recovery_report.update(
+            provider_b._rollback_peer_provider_transactions("busy peer regression")
+        )
+        recovery_done.set()
+
+    holder = threading.Thread(target=hold_peer_transaction, daemon=True)
+    recovery = threading.Thread(target=recover_other_provider, daemon=True)
+    try:
+        for index, plugin in enumerate((provider_a, provider_b), start=1):
+            plugin.initialize(
+                f"session-busy-peer-{index}",
+                hermes_home=str(tmp_path),
+                platform="cli",
+                agent_context="primary",
+                agent_identity="yuheng",
+                agent_workspace="hermes",
+            )
+        holder.start()
+        assert lock_held.wait(timeout=2.0)
+        recovery.start()
+        assert recovery_done.wait(timeout=0.5), "recovery blocked on an active peer"
+        assert recovery_report["peer_rollbacks"] == 0
+        assert recovery_report["peer_busy_skipped"] == 1
+    finally:
+        release_peer.set()
+        holder.join(timeout=2.0)
+        recovery.join(timeout=2.0)
         provider_b.shutdown()
         provider_a.shutdown()
 
@@ -654,6 +731,56 @@ def test_append_session_tool_journal_skips_session_message_dumps(provider):
     with provider._lock:
         row = provider._require_conn().execute("SELECT COUNT(*) FROM journal_entries WHERE role = 'tool'").fetchone()
     assert row[0] == 0
+
+
+def test_background_journal_digest_recovers_and_retries_one_lock(provider, monkeypatch):
+    calls = {"digest": 0, "recovery": 0}
+    live_provider_module = importlib.import_module(provider.__class__.__module__)
+
+    def flaky_digest(**_kwargs):
+        calls["digest"] += 1
+        if calls["digest"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return {"ok": True, "status": "ok", "processed_entries": 1}
+
+    def recover(_context):
+        calls["recovery"] += 1
+        return {"recovered": True}
+
+    monkeypatch.setattr(live_provider_module, "run_journal_digest", flaky_digest)
+    monkeypatch.setattr(provider, "_recover_sqlite_connection_after_error", recover)
+
+    provider._run_background_journal_digest(
+        {"extractor": "heuristic", "digest_interval_hours": 2}
+    )
+
+    assert calls == {"digest": 2, "recovery": 1}
+    assert provider._last_journal_digest_status == "ok"
+    assert provider._journal_digest_consecutive_failures == 0
+
+
+def test_background_journal_digest_does_not_retry_non_lock_error(provider, monkeypatch):
+    calls = {"digest": 0, "recovery": 0}
+    live_provider_module = importlib.import_module(provider.__class__.__module__)
+
+    def failed_digest(**_kwargs):
+        calls["digest"] += 1
+        raise RuntimeError("synthetic extractor failure")
+
+    def recover(_context):
+        calls["recovery"] += 1
+        return {"recovered": True}
+
+    monkeypatch.setattr(live_provider_module, "run_journal_digest", failed_digest)
+    monkeypatch.setattr(provider, "_recover_sqlite_connection_after_error", recover)
+
+    provider._run_background_journal_digest(
+        {"extractor": "heuristic", "digest_interval_hours": 2}
+    )
+
+    assert calls == {"digest": 1, "recovery": 0}
+    assert provider._last_journal_digest_status == "error"
+    assert provider._journal_digest_consecutive_failures == 1
 
 
 def test_background_journal_digest_allows_dynamic_limit_when_not_overridden(tmp_path, monkeypatch):
@@ -1573,10 +1700,19 @@ def test_on_pre_compress_writes_event_candidates_only_when_enabled(provider, mon
     assert report["write_candidates"] is True
     assert report["dry_run"] is False
     assert report["store"]["inserted"] == 1
+    assert report["vector_replay"]["completed"] == 1
     with provider._lock:
         conn = provider._require_conn()
         row = conn.execute("SELECT target, source, metadata FROM memories").fetchone()
         audit = conn.execute("SELECT event_type, action, target_id FROM governance_audit_events").fetchone()
+        outbox = conn.execute(
+            """
+            SELECT vector_outbox.status, memories.source AS memory_source
+            FROM vector_outbox
+            JOIN memories ON memories.id = vector_outbox.memory_id
+            WHERE memories.source = 'event-digest'
+            """
+        ).fetchone()
     metadata = json.loads(row["metadata"])
     assert row["target"] == "user"
     assert row["source"] == "event-digest"
@@ -1584,6 +1720,54 @@ def test_on_pre_compress_writes_event_candidates_only_when_enabled(provider, mon
     assert metadata["event_digest"] is True
     assert audit["event_type"] == "event_candidate"
     assert audit["action"] == "insert_candidate"
+    assert outbox["status"] == "completed"
+    assert outbox["memory_source"] == "event-digest"
+
+
+def test_event_candidate_write_replays_vector_outbox_after_commit(provider, monkeypatch):
+    """Candidate writes must not leave zero-attempt vector events stranded."""
+
+    monkeypatch.setattr(provider, "_maybe_start_background_journal_digest", lambda: None)
+    provider._config["event_digest"] = {
+        "enabled": True,
+        "write_candidates": True,
+        "dry_run_log": True,
+    }
+    live_provider_module = importlib.import_module(provider.__class__.__module__)
+    replay_calls: list[int] = []
+
+    def record_replay(runtime_provider, *, limit):
+        assert runtime_provider is provider
+        assert not provider._lock._is_owned(), (
+            "vector replay must run after the provider SQLite critical section"
+        )
+        assert provider._require_conn().in_transaction is False
+        replay_calls.append(int(limit))
+        return {"claimed": 1, "completed": 1, "failed": 0}
+
+    monkeypatch.setattr(
+        live_provider_module,
+        "replay_vector_outbox",
+        record_replay,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        live_provider_module,
+        "vector_write_replay_limit",
+        lambda _provider: 17,
+        raising=False,
+    )
+
+    provider.on_pre_compress(
+        [
+            {
+                "role": "user",
+                "content": "User prefers concise Chinese release reports with exact verification outputs.",
+            }
+        ]
+    )
+
+    assert replay_calls == [17]
 
 
 def test_event_candidate_store_holds_provider_sqlite_lock(provider, monkeypatch):
@@ -3710,8 +3894,16 @@ def test_merge_tool_rejects_shared_local_scope_mixing(tmp_path):
         assert result["merged"] is False
         assert result["deleted"] == 0
         assert "shared durable and local scratch" in result["error"]
-        assert p1._require_conn().execute("SELECT id FROM memories WHERE id = ?", (local["id"],)).fetchone() is not None
-        assert p2._require_conn().execute("SELECT id FROM memories WHERE id = ?", (shared["id"],)).fetchone() is not None
+        with p1._lock:
+            local_row = p1._require_conn().execute(
+                "SELECT id FROM memories WHERE id = ?", (local["id"],)
+            ).fetchone()
+        with p2._lock:
+            shared_row = p2._require_conn().execute(
+                "SELECT id FROM memories WHERE id = ?", (shared["id"],)
+            ).fetchone()
+        assert local_row is not None
+        assert shared_row is not None
     finally:
         p1.shutdown()
         p2.shutdown()
@@ -3751,10 +3943,16 @@ def test_merge_tool_cannot_read_or_delete_local_memory_from_another_scope(tmp_pa
         assert result["deleted"] == 0
         assert result["missing_source_ids"] == [b["id"]]
         assert "not accessible" in result["error"]
-        other_row = p2._require_conn().execute("SELECT content FROM memories WHERE id = ?", (b["id"],)).fetchone()
+        with p2._lock:
+            other_row = p2._require_conn().execute(
+                "SELECT content FROM memories WHERE id = ?", (b["id"],)
+            ).fetchone()
         assert other_row is not None
         assert other_row["content"] == "Group two source note."
-        own_row = p1._require_conn().execute("SELECT content FROM memories WHERE id = ?", (a["id"],)).fetchone()
+        with p1._lock:
+            own_row = p1._require_conn().execute(
+                "SELECT content FROM memories WHERE id = ?", (a["id"],)
+            ).fetchone()
         assert own_row is not None
         assert own_row["content"] == "Group one target note."
     finally:
@@ -3805,8 +4003,14 @@ def test_merge_tool_rejects_inaccessible_source_even_with_explicit_content(tmp_p
         assert result["merged"] is False
         assert result["deleted"] == 0
         assert result["missing_source_ids"] == [b["id"]]
-        own_row = p1._require_conn().execute("SELECT content FROM memories WHERE id = ?", (a["id"],)).fetchone()
-        other_row = p2._require_conn().execute("SELECT content FROM memories WHERE id = ?", (b["id"],)).fetchone()
+        with p1._lock:
+            own_row = p1._require_conn().execute(
+                "SELECT content FROM memories WHERE id = ?", (a["id"],)
+            ).fetchone()
+        with p2._lock:
+            other_row = p2._require_conn().execute(
+                "SELECT content FROM memories WHERE id = ?", (b["id"],)
+            ).fetchone()
         assert own_row is not None and own_row["content"] == "Group one merge target stays intact."
         assert other_row is not None and other_row["content"] == "Group two inaccessible source stays intact."
     finally:

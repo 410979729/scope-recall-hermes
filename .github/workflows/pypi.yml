@@ -1,10 +1,19 @@
 name: Publish to PyPI
-run-name: PyPI publish ${{ github.event.release.tag_name || github.ref_name }}
+run-name: >-
+  PyPI publish ${{ github.event.release.tag_name ||
+  github.event.client_payload.tag || inputs.release_tag }}
 
 on:
   release:
     types: [published]
+  repository_dispatch:
+    types: [scope-recall-pypi-publish]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing v<package-version> tag to publish"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -22,20 +31,31 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
+          ref: >-
+            ${{ github.event.release.tag_name ||
+            github.event.client_payload.tag || inputs.release_tag }}
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
           cache: pip
       - name: Validate release tag
+        env:
+          RELEASE_TAG: >-
+            ${{ github.event.release.tag_name ||
+            github.event.client_payload.tag || inputs.release_tag }}
         run: |
-          if [ "${GITHUB_REF_TYPE}" != "tag" ] || ! [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if ! [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Invalid release tag: expected a v<major>.<minor>.<patch> tag ref" >&2
             exit 1
           fi
       - name: Verify tag matches package version
+        env:
+          RELEASE_TAG: >-
+            ${{ github.event.release.tag_name ||
+            github.event.client_payload.tag || inputs.release_tag }}
         run: |
           expected="v$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
-          test "${GITHUB_REF_NAME}" = "${expected}"
+          test "${RELEASE_TAG}" = "${expected}"
           test "$(git tag --points-at HEAD | grep -Fx "${expected}")" = "${expected}"
       - name: Install release dependencies
         run: |

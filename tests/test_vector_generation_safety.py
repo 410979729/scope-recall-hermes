@@ -18,6 +18,7 @@ from scope_recall.embedders import LocalHashEmbedder
 from scope_recall.provider import MemoryProvider
 from scope_recall.sql_store import ensure_schema
 from scope_recall.sqlite_vector_store import SQLiteBruteForceVectorStore
+from scope_recall.truth_connection import probe_truth_database_header
 from scope_recall.vector_generation import (
     GenerationCompatibilityError,
     GenerationIdentity,
@@ -38,9 +39,71 @@ from scope_recall.vector_generation import (
     start_migration_receipt,
     validate_generation_compatibility,
 )
-from scope_recall.vector_runtime import _open_vector_store, replay_vector_outbox, setup_vector_layer
+from scope_recall.vector_runtime import (
+    _open_vector_store,
+    _prune_completed_outbox,
+    _truth_header_preflight,
+    replay_vector_outbox,
+    setup_vector_layer,
+)
 from scope_recall.vector_migration import build_vector_generation
 from scope_recall.vector_store import LanceVectorStore
+
+
+def test_live_truth_preflight_never_raw_opens_the_pager_file(tmp_path, monkeypatch):
+    db_path = tmp_path / "memory.sqlite3"
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn.execute("CREATE TABLE sentinel(value TEXT)")
+    conn.commit()
+    provider = SimpleNamespace(
+        _db_path=db_path,
+        _lock=threading.RLock(),
+        _require_conn=lambda: conn,
+    )
+
+    def forbid_raw_open(*_args, **_kwargs):
+        raise AssertionError("live SQLite pager files must not be raw-opened")
+
+    monkeypatch.setattr(type(db_path), "open", forbid_raw_open)
+    try:
+        assert _truth_header_preflight(provider) is None
+    finally:
+        conn.close()
+
+
+def test_offline_truth_header_probe_requires_quiesced_declaration(tmp_path):
+    db_path = tmp_path / "memory.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE sentinel(value TEXT)")
+    conn.commit()
+    conn.close()
+
+    refused = probe_truth_database_header(db_path)
+    assert refused["ok"] is False
+    assert refused["status"] == "unsafe_live_probe_refused"
+
+    allowed = probe_truth_database_header(db_path, connections_quiesced=True)
+    assert allowed == {"ok": True, "status": "ok"}
+
+
+def test_live_truth_preflight_fails_closed_on_pager_database_error():
+    class BrokenConnection:
+        @staticmethod
+        def execute(_statement):
+            raise sqlite3.DatabaseError("file is not a database")
+
+    provider = SimpleNamespace(
+        _lock=threading.RLock(),
+        _require_conn=lambda: BrokenConnection(),
+    )
+
+    result = _truth_header_preflight(provider)
+
+    assert result is not None
+    assert result["status"] == "failed"
+    assert result["header_status"] == "corrupt_or_unreadable"
+    assert result["probe_method"] == "sqlite_connection"
+    assert "file is not a database" not in result["error"]
 
 
 def _sentinel_row(dimensions: int) -> dict[str, object]:
@@ -938,6 +1001,51 @@ def test_completed_vector_outbox_pruning_can_be_disabled_without_mutation():
     assert receipt["deleted"] == 0
     assert conn.in_transaction is False
     assert conn.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0] == 1
+
+
+def test_vector_outbox_retention_retries_one_transient_lock(monkeypatch):
+    import scope_recall.vector_runtime as vector_runtime_module
+
+    conn = sqlite3.connect(":memory:")
+    provider = type(
+        "Provider",
+        (),
+        {"_lock": __import__("threading").RLock()},
+    )()
+    calls = {"count": 0}
+
+    def flaky_prune(_conn, *, retention_days, keep_per_generation):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return {
+            "enabled": True,
+            "retention_days": retention_days,
+            "keep_per_generation": keep_per_generation,
+            "generations_scanned": 1,
+            "deleted": 2,
+            "completed_remaining": 3,
+        }
+
+    monkeypatch.setattr(
+        vector_runtime_module,
+        "prune_completed_vector_outbox",
+        flaky_prune,
+    )
+
+    receipt = _prune_completed_outbox(
+        provider,
+        conn,
+        retention_days=30,
+        keep_per_generation=5000,
+    )
+
+    assert calls["count"] == 2
+    assert receipt["status"] == "pruned"
+    assert receipt["deleted"] == 2
+    assert receipt["attempts"] == 2
+    assert conn.in_transaction is False
+    conn.close()
 
 
 def test_vector_outbox_payload_is_allowlisted_and_redacted_at_storage_boundary():

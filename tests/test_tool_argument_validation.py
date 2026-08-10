@@ -102,3 +102,41 @@ def test_required_and_integer_constraints_are_enforced_on_direct_calls(tmp_path)
         assert below_minimum["constraint"] == "minimum"
     finally:
         plugin.shutdown()
+
+
+def test_evidence_set_search_bounds_are_enforced_on_direct_calls(tmp_path):
+    plugin = _provider(tmp_path)
+    try:
+        cases = [
+            ({"query": "validation", "limit": 51}, "limit", "maximum"),
+            (
+                {"query": "validation", "evidence_diversity_depth": 0},
+                "evidence_diversity_depth",
+                "minimum",
+            ),
+            (
+                {"query": "validation", "evidence_diversity_depth": 7},
+                "evidence_diversity_depth",
+                "maximum",
+            ),
+            (
+                {"query": "validation", "query_variants": [f"variant-{i}" for i in range(8)]},
+                "query_variants",
+                "maxItems",
+            ),
+            (
+                {"query": "validation", "query_variants": ["x" * 1001]},
+                "query_variants.0",
+                "maxLength",
+            ),
+        ]
+
+        for arguments, field, constraint in cases:
+            payload = json.loads(
+                plugin.handle_tool_call("scope_recall_search", arguments)
+            )
+            assert payload["invalid_arguments"] is True
+            assert payload["field"] == field
+            assert payload["constraint"] == constraint
+    finally:
+        plugin.shutdown()
