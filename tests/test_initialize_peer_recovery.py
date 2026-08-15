@@ -31,6 +31,7 @@ from plugins.memory import load_memory_provider
 
 import scope_recall.provider as provider_module
 import writer_lease as writer_lease_module
+from scope_recall.truth_connection import TruthDatabaseConnectionError
 from writer_lease import TruthWriterLease
 
 READ_ONLY_STATUS = "active_read_only"
@@ -958,7 +959,12 @@ def test_reader_does_not_promote_when_shutdown_requested(tmp_path, monkeypatch):
 
 
 def _alias_storage_directory(real_storage: Path, alias_storage: Path) -> Path:
-    """Create a junction or symlink so the same DB is visible under another path."""
+    """Create a same-directory alias for the live truth storage path.
+
+    Windows junctions are the supported same-file alias. POSIX directory
+    symlinks are rejected by ``truth_connection._harden_mutable_truth_path``
+    and exist here only so tests can prove that fail-closed contract.
+    """
 
     alias_storage.parent.mkdir(parents=True, exist_ok=True)
     if os.name == "nt":
@@ -1143,6 +1149,14 @@ def test_concurrent_initialize_publishes_one_runtime_and_does_not_leak_lease(tmp
         assert provider not in runtime_module._PROVIDER_REGISTRY
 
 
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason=(
+        "Windows junctions are the supported same-file alias for initialize "
+        "peer recovery; POSIX directory symlinks are rejected by "
+        "truth_connection._harden_mutable_truth_path"
+    ),
+)
 def test_initialize_recovers_same_file_alias_peer(tmp_path, monkeypatch):
     real_home = tmp_path / "real-home"
     alias_home = tmp_path / "alias-home"
@@ -1163,6 +1177,7 @@ def test_initialize_recovers_same_file_alias_peer(tmp_path, monkeypatch):
         alias_db = alias_storage / "memory.sqlite3"
         assert Path(real_db) != Path(alias_db)
         assert os.path.samefile(real_db, alias_db)
+        assert not alias_storage.is_symlink()
         with owner._lock:
             conn = owner._require_conn()
             conn.execute("BEGIN IMMEDIATE")
@@ -1180,6 +1195,47 @@ def test_initialize_recovers_same_file_alias_peer(tmp_path, monkeypatch):
             assert owner._require_conn().in_transaction is False
     finally:
         for item in (peer, owner):
+            try:
+                item.shutdown()
+            except Exception:
+                pass
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="POSIX directory-symlink fail-closed contract",
+)
+def test_initialize_rejects_posix_directory_symlink_storage_alias(tmp_path):
+    """Parent-directory symlinks are not a supported same-file alias on POSIX."""
+
+    real_home = tmp_path / "real-home"
+    alias_home = tmp_path / "alias-home"
+    _write_config(real_home, {"vector": {"enabled": False}})
+    real_storage = real_home / "scope-recall"
+    alias_storage = _alias_storage_directory(
+        real_storage, alias_home / "scope-recall"
+    )
+    alias_db = alias_storage / "memory.sqlite3"
+    assert alias_storage.is_symlink()
+    assert alias_db.parent.is_symlink()
+
+    peer = _provider()
+    owner = _provider()
+    try:
+        with pytest.raises(
+            TruthDatabaseConnectionError,
+            match="SQLite truth storage cannot use symlink paths",
+        ):
+            _initialize(peer, alias_home, "alias-peer")
+        assert peer.runtime_status != "active"
+        assert peer._truth_writer_role == "unknown"
+        assert peer._truth_writer_lease is None
+
+        _initialize(owner, real_home, "real-owner")
+        assert owner.runtime_status == "active"
+        assert owner._truth_writer_role == "owner"
+    finally:
+        for item in (owner, peer):
             try:
                 item.shutdown()
             except Exception:
