@@ -46,7 +46,7 @@ class _BlockingStore:
         if self.conn is not None:
             self.transaction_states.append(self.conn.in_transaction)
         self.mutation_started.set()
-        if not self.allow_mutation.wait(timeout=5):
+        if not self.allow_mutation.wait(timeout=15):
             raise RuntimeError("timed out waiting to release physical mutation")
 
     def delete_by_ids(self, ids: list[str]) -> None:
@@ -234,8 +234,19 @@ def _run_race(
     writer_thread.start()
     assert writer_attempted.wait(timeout=3)
 
+    writer_committed_while_old_physical_mutation_blocked = False
+    order_while_old_physical_mutation_blocked: list[str] = []
+    allow_mutation_still_blocked = False
     try:
-        writer_committed_while_old_physical_mutation_blocked = writer_done.wait(timeout=0.3)
+        # The old physical mutation stays blocked until allow_mutation is set.
+        # Wait long enough for a slow CI writer, then snapshot causal state
+        # before unblocking. This is not a 300ms performance SLA.
+        assert not store.allow_mutation.is_set()
+        writer_committed_while_old_physical_mutation_blocked = writer_done.wait(
+            timeout=5
+        )
+        order_while_old_physical_mutation_blocked = list(store.order)
+        allow_mutation_still_blocked = not store.allow_mutation.is_set()
     finally:
         store.allow_mutation.set()
         worker_thread.join(timeout=5)
@@ -246,6 +257,8 @@ def _run_race(
     assert worker_errors == []
     assert writer_errors == []
     assert writer_committed_while_old_physical_mutation_blocked is True
+    assert allow_mutation_still_blocked is True
+    assert order_while_old_physical_mutation_blocked == ["truth-commit"]
     assert worker_result == {"claimed": 1, "completed": 1, "failed": 0}
     assert store.order[-2:] == ["truth-commit", f"physical-{old_operation}"]
     assert store.transaction_states == [False]
