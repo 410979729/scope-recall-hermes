@@ -559,6 +559,12 @@ def test_corrupt_sqlite_header_warns_background_maintenance(
     generation_id = _generation(conn)
     provider = _Provider(conn, generation_id, page_size=2, outbox_limit=2)
     provider._storage_dir = tmp_path
+    # This node exercises the writer's idle-maintenance entrypoint. Declare the
+    # positive authority contract explicitly; a provider without an owner role
+    # is correctly rejected before vector maintenance begins.
+    provider._writer_lifecycle_lock = threading.RLock()
+    provider._shutdown_requested = threading.Event()
+    provider._truth_writer_role = "owner"
     provider._config = {"relation_extraction_enabled": True}
     monkeypatch.setattr(
         "scope_recall.vector_runtime.probe_truth_database_connection",

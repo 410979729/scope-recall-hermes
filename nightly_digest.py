@@ -64,7 +64,9 @@ from .retention_profiles import normalize_retention_profile, retention_profile_i
 from .scope import accessible_scope_ids, build_scope_id, build_shared_scope_id, canonical_user_id, normalize_scope_identity, writable_scope_ids
 from .sql_store import ensure_schema, exact_duplicate_groups, store_row
 from .sqlite_schema import execute_script_transaction_neutral
+from .transaction_guard import prepare_network_boundary
 from .truth_connection import connect_truth_database
+from .writer_lease import TruthWriterBusyError, TruthWriterLease
 from .vector_runtime import (
     mark_vector_needs_repair,
     replay_vector_outbox,
@@ -1725,10 +1727,14 @@ def collect_candidates(
     allowed_target_ids: set[str] | None = None,
     allowed_target_ids_by_scope: Mapping[str, set[str]] | None = None,
     fallback_events: list[dict[str, Any]] | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> list[DigestCandidate]:
     """Collect digest candidates from session bundles using configured extractor strategy.
 
-    The result includes fallback/status metadata so later apply steps can explain why candidates were or were not produced."""
+    Snapshot reads belong to the caller. When ``conn`` is provided, any leftover
+    truth transaction is released before each network call so a peer can
+    ``BEGIN IMMEDIATE``. Apply stays in a later short transaction.
+    """
     candidates: list[DigestCandidate] = []
     fallback_events = fallback_events if fallback_events is not None else []
     for bundle in bundles:
@@ -1741,6 +1747,7 @@ def collect_candidates(
         for chunk in session_chunks(bundle, chunk_chars=options.chunk_chars, max_session_chars=options.max_session_chars):
             prompt = build_prompt(bundle, chunk, existing_context)
             try:
+                prepare_network_boundary(conn, "nightly.collect_candidates.llm")
                 raw = _call_llm_with_retries(
                     prompt,
                     model=llm_config["model"],
@@ -1833,37 +1840,53 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
         return {"ok": True, "status": "no_messages", "digest_date": str(options.digest_date), "source_db": str(db_path), "sessions": 0}
 
     storage_dir = hermes_home / "scope-recall"
-    if not options.dry_run:
-        storage_dir.mkdir(parents=True, exist_ok=True)
-    memory_db = storage_dir / "memory.sqlite3"
-    if options.dry_run and memory_db.exists():
-        conn = connect_truth_database(memory_db, mode="ro", timeout=30)
-    elif options.dry_run:
-        conn = connect_truth_database(":memory:", mode="rwc")
-    else:
-        storage_dir.mkdir(parents=True, exist_ok=True)
-        conn = connect_truth_database(memory_db, mode="rwc", timeout=30)
-        install_activation_lease_authorizer(conn, memory_db)
-    if not options.dry_run:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        ensure_schema(conn)
-        ensure_digest_schema(conn)
-    elif not memory_db.exists():
-        ensure_schema(conn)
-
-    run_id = uuid.uuid4().hex
-    started_at = datetime.now(timezone.utc).isoformat()
-    llm_config = resolve_llm_config(hermes_home, options)
-    runtime_config = load_runtime_config(Path(__file__).resolve().parent, storage_dir)
-    fallback_platform = next((bundle.source for bundle in bundles if bundle.source), "cli")
-    fallback_user_id = next((bundle.user_id for bundle in bundles if bundle.user_id), "")
-    scope = infer_scope(conn, fallback_platform=fallback_platform, fallback_user_id=fallback_user_id, runtime_config=runtime_config)
+    writer_lease: TruthWriterLease | None = None
+    conn: sqlite3.Connection | None = None
     vector_runtime: DigestVectorRuntime | None = None
+    if not options.dry_run:
+        storage_dir.mkdir(parents=True, exist_ok=True)
+        writer_lease = TruthWriterLease(storage_dir, role="nightly_digest")
+        lease_result = writer_lease.acquire()
+        if lease_result.get("status") != "acquired":
+            owner = lease_result.get("owner")
+            raise TruthWriterBusyError(
+                role="nightly_digest",
+                scope=str(lease_result.get("scope") or ""),
+                owner=owner if isinstance(owner, dict) else {},
+            )
+    memory_db = storage_dir / "memory.sqlite3"
+    run_id = ""
+    started_at = ""
+    llm_config: dict[str, Any] = {}
     try:
+        # Cleanup ownership starts here: config/schema/init failures and early
+        # returns must close vector, conn, then lease.
+        if options.dry_run and memory_db.exists():
+            conn = connect_truth_database(memory_db, mode="ro", timeout=30)
+        elif options.dry_run:
+            conn = connect_truth_database(":memory:", mode="rwc")
+        else:
+            storage_dir.mkdir(parents=True, exist_ok=True)
+            conn = connect_truth_database(memory_db, mode="rwc", timeout=30)
+            install_activation_lease_authorizer(conn, memory_db)
+        run_id = uuid.uuid4().hex
+        started_at = datetime.now(timezone.utc).isoformat()
+        llm_config = resolve_llm_config(hermes_home, options)
+        runtime_config = load_runtime_config(Path(__file__).resolve().parent, storage_dir)
+        fallback_platform = next((bundle.source for bundle in bundles if bundle.source), "cli")
+        fallback_user_id = next((bundle.user_id for bundle in bundles if bundle.user_id), "")
+        if not options.dry_run:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            ensure_schema(conn)
+            ensure_digest_schema(conn)
+        elif not memory_db.exists():
+            ensure_schema(conn)
+        scope = infer_scope(conn, fallback_platform=fallback_platform, fallback_user_id=fallback_user_id, runtime_config=runtime_config)
         vector_runtime = None if options.dry_run else DigestVectorRuntime(hermes_home=hermes_home, conn=conn, scope=scope)
         existing = existing_memory_context(conn, scope)
         fallback_events: list[dict[str, Any]] = []
+        prepare_network_boundary(conn, "nightly.run_digest.snapshot")
         candidates = collect_candidates(
             bundles,
             options=options,
@@ -1877,6 +1900,7 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
                 scope,
             ),
             fallback_events=fallback_events,
+            conn=conn,
         )
         batch_evidence = {
             bundle.id: [
@@ -1967,33 +1991,50 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
             conn.commit()
         return result
     except Exception as exc:
-        if not options.dry_run:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO nightly_digest_runs(
-                    id, digest_date, source_db, started_at, finished_at, extractor, model, dry_run,
-                    status, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    run_id,
-                    str(options.digest_date),
-                    str(db_path),
-                    started_at,
-                    datetime.now(timezone.utc).isoformat(),
-                    options.extractor,
-                    llm_config.get("model", ""),
-                    0,
-                    "error",
-                    redact_sensitive(str(exc)[:1000]),
-                ),
-            )
-            conn.commit()
+        if conn is not None and not options.dry_run:
+            try:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO nightly_digest_runs(
+                        id, digest_date, source_db, started_at, finished_at, extractor, model, dry_run,
+                        status, error
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        str(options.digest_date),
+                        str(db_path),
+                        started_at,
+                        datetime.now(timezone.utc).isoformat(),
+                        options.extractor,
+                        llm_config.get("model", ""),
+                        0,
+                        "error",
+                        redact_sensitive(str(exc)[:1000]),
+                    ),
+                )
+                conn.commit()
+            except Exception:
+                # Keep the triggering exception when the receipt table is not ready yet.
+                pass
         raise
     finally:
+        vector_close_error: Exception | None = None
         if vector_runtime is not None:
-            vector_runtime.close()
-        conn.close()
+            try:
+                vector_runtime.close()
+            except Exception as exc:
+                vector_close_error = exc
+        # Vector is rebuildable. Truth SQLite close is authoritative: a close
+        # failure must surface and must not reach lease release while a
+        # writable pager may still be live. After truth and lease succeed,
+        # a captured vector close error is still raised so teardown is visible.
+        if conn is not None:
+            conn.close()
+        if writer_lease is not None:
+            writer_lease.release()
+        if vector_close_error is not None:
+            raise vector_close_error
 
 
 def build_arg_parser() -> argparse.ArgumentParser:

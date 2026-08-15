@@ -74,6 +74,9 @@ class ReflectionToolProvider:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys=ON")
         ensure_schema(self._conn)
+        # Test-only owner: this fixture holds the writable in-memory pager.
+        # Production still fail-closes unless the live provider role is owner.
+        self._truth_writer_role = "owner"
         self.items: list[RecallItem] = []
         self.queries: list[str] = []
         self._reflection_transport: Callable[[str], str] | None = None

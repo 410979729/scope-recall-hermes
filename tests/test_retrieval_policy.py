@@ -557,7 +557,7 @@ def test_chinese_location_intent_ranks_current_host_above_operator_noise():
     )
     current_host = RecallItem(
         id="current-windows-host",
-        content="玉衡在新家 Windows 本机，live 根位于 E:/Agents/runtime/windows/hermes-yuheng。",
+        content="玉衡在新家 Windows 本机，当前 live 根位于本机工作区。",
         summary="玉衡当前所在主机和 live 根",
         source="builtin-curated",
         target="user",
@@ -566,7 +566,7 @@ def test_chinese_location_intent_ranks_current_host_above_operator_noise():
         metadata={
             "lexical_score": lexical_score(
                 query=query,
-                content="玉衡在新家 Windows 本机，live 根位于 E:/Agents/runtime/windows/hermes-yuheng。",
+                content="玉衡在新家 Windows 本机，当前 live 根位于本机工作区。",
                 summary="玉衡当前所在主机和 live 根",
                 source="builtin-curated",
                 target="user",

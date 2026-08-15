@@ -31,6 +31,7 @@ from .nightly_digest import (
     session_chunks,
 )
 from .scope import accessible_scope_ids, build_scope_id, build_shared_scope_id, normalize_scope_identity
+from .transaction_guard import prepare_network_boundary
 
 __all__ = [
     "_coerce_nonnegative_float",
@@ -230,7 +231,11 @@ def llm_journal_candidates(
 ) -> list[JournalDigestCandidate]:
     """Extract journal candidates with an LLM and return status-rich results.
 
-    The function preserves quarantine/fallback information so failed model calls remain visible operational debt."""
+    Snapshot reads finish and release any leftover truth transaction before
+    each network call. Durable writes happen later in a short apply
+    transaction. Failed model calls stay visible as quarantine or fallback
+    debt so source journal rows remain retryable.
+    """
     runtime_config = _runtime_config(hermes_home)
     options = DigestOptions(
         hermes_home=hermes_home,
@@ -266,6 +271,7 @@ def llm_journal_candidates(
     existing = existing_memory_context(conn, profile)
     allowed_target_ids = _existing_context_target_ids(existing)
     allowed_target_ids_by_scope = _existing_context_target_ids_by_scope(conn, profile)
+    prepare_network_boundary(conn, "journal.llm_journal_candidates.snapshot")
     output: list[JournalDigestCandidate] = []
     reviewed_entry_ids: set[int] = set()
     unresolved_entry_ids: set[int] = set()
@@ -297,6 +303,7 @@ def llm_journal_candidates(
                 retention_profile=str(journal_config.get("retention_profile") or "balanced"),
             )
             try:
+                prepare_network_boundary(conn, "journal.llm_journal_candidates.llm")
                 raw = _call_llm_with_retries(
                     prompt,
                     model=llm_config["model"],

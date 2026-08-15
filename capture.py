@@ -11,8 +11,8 @@ import sqlite3
 import threading
 import time
 import uuid
-from contextlib import nullcontext
-from typing import Any, Callable
+from contextlib import contextmanager, nullcontext
+from typing import Any, Callable, Iterator
 
 from .capture_filters import should_capture_text
 from .models import recall_scope_mode
@@ -30,6 +30,8 @@ from .vector_runtime import replay_vector_outbox
 
 logger = logging.getLogger(__name__)
 
+WRITE_AUTHORITY_BUSY = "truth_writer_busy"
+
 
 def _writer_lifecycle_lock(provider: Any):
     """Return the provider's enqueue/shutdown gate, with legacy-test fallback."""
@@ -37,9 +39,63 @@ def _writer_lifecycle_lock(provider: Any):
     return getattr(provider, "_writer_lifecycle_lock", None) or nullcontext()
 
 
-def _drain_relation_rebuild_debt(provider: Any) -> None:
-    """Use the existing writer thread to process one bounded relation chunk."""
+def has_positive_write_authority(provider: Any) -> bool:
+    """Return whether a new durable write unit may start.
 
+    Positive authority is exactly owner role with no shutdown request. Read
+    connection reuse is intentionally not part of this predicate so followers
+    can still recall through ``_require_conn``.
+    """
+
+    blocked = getattr(provider, "_truth_writes_blocked", None)
+    if callable(blocked):
+        return not bool(blocked())
+    shutdown = getattr(provider, "_shutdown_requested", None)
+    if shutdown is not None and shutdown.is_set():
+        return False
+    return getattr(provider, "_truth_writer_role", None) == "owner"
+
+
+def require_positive_write_authority(provider: Any) -> None:
+    """Reject a new durable write unit with a single sanitized busy error."""
+
+    if not has_positive_write_authority(provider):
+        raise RuntimeError(WRITE_AUTHORITY_BUSY)
+
+
+@contextmanager
+def hold_positive_write_authority(provider: Any) -> Iterator[None]:
+    """Hold lifecycle from the authority check through the caller's durable unit.
+
+    Shutdown publishes ``_shutdown_requested`` only while this same RLock is
+    held. A unit that already passed the check can therefore commit before the
+    flag becomes visible, and a later unit cannot start DML after the flag is
+    set. Nested callers may re-enter because the gate is an RLock. Lock order
+    stays lifecycle first, then ``provider._lock`` / SQLite.
+    """
+
+    with _writer_lifecycle_lock(provider):
+        require_positive_write_authority(provider)
+        yield
+
+
+def _drain_relation_rebuild_debt(provider: Any) -> None:
+    """Use the existing writer thread to process one bounded relation chunk.
+
+    Each idle unit rechecks shutdown/role under the lifecycle lock before any
+    durable work. Returning here is fail-closed: a blocked writer must not
+    start or continue a bounded mutation after the flag is visible.
+    """
+
+    with _writer_lifecycle_lock(provider):
+        _drain_relation_rebuild_debt_locked(provider)
+
+
+def _drain_relation_rebuild_debt_locked(provider: Any) -> None:
+    """Run one idle maintenance tick while the caller holds lifecycle."""
+
+    if not has_positive_write_authority(provider):
+        return
     maintenance_stop = getattr(provider, "_maintenance_stop", None)
     if maintenance_stop is not None and maintenance_stop.is_set():
         return
@@ -72,6 +128,8 @@ def _drain_relation_rebuild_debt(provider: Any) -> None:
                 exc_info=True,
             )
     if maintenance_stop is not None and maintenance_stop.is_set():
+        return
+    if not has_positive_write_authority(provider):
         return
     with provider._lock:
         conn = provider._require_conn()
@@ -261,60 +319,64 @@ def store_now(
 ) -> tuple[str, bool, dict[str, Any] | None]:
     """Synchronously store one capture row through the provider database.
 
-    This is the direct write path used by tests and queue workers, so it must preserve duplicate checks and metadata hygiene."""
+    Queue workers call this after dequeue, so the lifecycle gate is acquired
+    here independently. The same RLock spans the authority check through
+    commit so a concurrent shutdown setter cannot publish the flag mid-unit.
+    """
     if not should_capture_text(content, provider._config).allowed:
         return "", False, None
-    conn = provider._require_conn()
-    memory_id = uuid.uuid4().hex
-    requested_scope_mode = str(scope_mode or "").strip().lower()
-    if requested_scope_mode not in {"shared", "local", "shared_pool"}:
-        requested_scope_mode = recall_scope_mode(target, source)
-    row_scope_id = provider._scope_id
-    if requested_scope_mode == "shared":
-        row_scope_id = provider._shared_scope_id
-    elif requested_scope_mode == "shared_pool":
-        row_scope_id = provider._shared_pool_scope_id
-    metadata_payload = dict(metadata or {})
-    metadata_payload.setdefault("scope_mode", requested_scope_mode)
-    metadata_payload.setdefault("runtime_scope_id", provider._scope_id)
-    metadata_payload.setdefault("shared_scope_id", provider._shared_scope_id)
-    metadata_payload.setdefault("raw_platform", provider._scope.platform)
-    metadata_payload.setdefault("raw_user_id", provider._scope.user_id)
-    canonical = canonical_user_id(provider._scope, provider._config)
-    if canonical:
-        metadata_payload.setdefault("canonical_user", canonical)
-        metadata_payload.setdefault("scope_identity_mode", "canonical")
-    metadata_json = json.dumps(metadata_payload, ensure_ascii=False, sort_keys=True)
-    companion_result: dict[str, Any] | None = None
-    with provider._lock:
-        try:
-            memory_id, _summary, _updated_at, inserted = store_row(
-                conn,
-                memory_id=memory_id,
-                scope_id=row_scope_id,
-                platform=provider._scope.platform,
-                user_id=provider._scope.user_id,
-                chat_id=provider._scope.chat_id,
-                thread_id=provider._scope.thread_id,
-                gateway_session_key=provider._scope.gateway_session_key,
-                agent_identity=provider._scope.agent_identity,
-                agent_workspace=provider._scope.agent_workspace,
-                session_id=session_id,
-                source=source,
-                target=target,
-                content=content,
-                metadata=metadata_json,
-                allow_duplicate=allow_duplicate
-                or str(source).startswith("legacy-"),
-                commit=False,
-            )
-            if inserted:
-                if before_commit is not None:
-                    companion_result = before_commit(conn, memory_id)
-            conn.commit()
-        except BaseException:
-            if conn.in_transaction:
-                conn.rollback()
-            raise
-    replay_vector_outbox(provider)
-    return memory_id, inserted, companion_result
+    with hold_positive_write_authority(provider):
+        conn = provider._require_conn()
+        memory_id = uuid.uuid4().hex
+        requested_scope_mode = str(scope_mode or "").strip().lower()
+        if requested_scope_mode not in {"shared", "local", "shared_pool"}:
+            requested_scope_mode = recall_scope_mode(target, source)
+        row_scope_id = provider._scope_id
+        if requested_scope_mode == "shared":
+            row_scope_id = provider._shared_scope_id
+        elif requested_scope_mode == "shared_pool":
+            row_scope_id = provider._shared_pool_scope_id
+        metadata_payload = dict(metadata or {})
+        metadata_payload.setdefault("scope_mode", requested_scope_mode)
+        metadata_payload.setdefault("runtime_scope_id", provider._scope_id)
+        metadata_payload.setdefault("shared_scope_id", provider._shared_scope_id)
+        metadata_payload.setdefault("raw_platform", provider._scope.platform)
+        metadata_payload.setdefault("raw_user_id", provider._scope.user_id)
+        canonical = canonical_user_id(provider._scope, provider._config)
+        if canonical:
+            metadata_payload.setdefault("canonical_user", canonical)
+            metadata_payload.setdefault("scope_identity_mode", "canonical")
+        metadata_json = json.dumps(metadata_payload, ensure_ascii=False, sort_keys=True)
+        companion_result: dict[str, Any] | None = None
+        with provider._lock:
+            try:
+                memory_id, _summary, _updated_at, inserted = store_row(
+                    conn,
+                    memory_id=memory_id,
+                    scope_id=row_scope_id,
+                    platform=provider._scope.platform,
+                    user_id=provider._scope.user_id,
+                    chat_id=provider._scope.chat_id,
+                    thread_id=provider._scope.thread_id,
+                    gateway_session_key=provider._scope.gateway_session_key,
+                    agent_identity=provider._scope.agent_identity,
+                    agent_workspace=provider._scope.agent_workspace,
+                    session_id=session_id,
+                    source=source,
+                    target=target,
+                    content=content,
+                    metadata=metadata_json,
+                    allow_duplicate=allow_duplicate
+                    or str(source).startswith("legacy-"),
+                    commit=False,
+                )
+                if inserted:
+                    if before_commit is not None:
+                        companion_result = before_commit(conn, memory_id)
+                conn.commit()
+            except BaseException:
+                if conn.in_transaction:
+                    conn.rollback()
+                raise
+        replay_vector_outbox(provider)
+        return memory_id, inserted, companion_result

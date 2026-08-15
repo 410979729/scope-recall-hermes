@@ -3,8 +3,15 @@
 SQLite foreign-key enforcement is connection-local and defaults to disabled.
 Every Scope Recall connection that can read or mutate the authoritative memory
 SQLite database must cross this module before schema, transactions, migrations,
-or activation authorizers are installed. Vector companion databases are not
-truth stores and intentionally use their own connection boundary.
+or activation authorizers are installed. Writable FILE-backed connections
+classified as live truth acquire a connection-level truth writer lease on the
+storage directory before the SQLite pager opens. Live truth is the
+ASCII-case-insensitive ``memory.sqlite3`` basename, plus any existing
+same-directory filesystem alias or hardlink that ``os.path.samefile``
+identifies with sibling ``memory.sqlite3``. ``:memory:``, read-only
+connections, and backup/staging/vector filenames that are not same-file
+aliases do not take that lease. Vector companion databases are not truth
+stores and intentionally use their own connection boundary.
 """
 
 from __future__ import annotations
@@ -12,8 +19,15 @@ from __future__ import annotations
 import os
 import sqlite3
 import stat
+import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
+
+if __package__:
+    from .writer_lease import TruthWriterBusyError, TruthWriterLease
+else:
+    from writer_lease import TruthWriterBusyError, TruthWriterLease
 
 
 TruthDatabaseMode = Literal["ro", "rw", "rwc"]
@@ -24,8 +38,85 @@ class TruthDatabaseConnectionError(RuntimeError):
     """A SQLite truth connection could not satisfy mandatory invariants."""
 
 
+class TruthDatabaseCleanupError(TruthDatabaseConnectionError):
+    """Setup failed and the leased connection/lease still needs cleanup.
+
+    The public message, ``str``, and ``repr`` stay generic so a path or live
+    connection cannot leak through diagnostics. The bound cleanup callable is
+    private. ``retry_cleanup`` is serialized so two callers cannot
+    double-release; a successful retry is idempotent, and a failed retry
+    keeps the callable for another attempt.
+    """
+
+    def __init__(self, *, cleanup: Callable[[], None]) -> None:
+        super().__init__(
+            "truth database cleanup is pending after a connection setup failure"
+        )
+        self._cleanup: Callable[[], None] | None = cleanup
+        self._cleanup_lock = threading.Lock()
+        self._cleanup_pending = True
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(cleanup_pending={self.cleanup_pending!r})"
+
+    @property
+    def cleanup_pending(self) -> bool:
+        return self._cleanup_pending
+
+    def retry_cleanup(self) -> None:
+        """Retry the retained close/release. Success clears the owner."""
+
+        with self._cleanup_lock:
+            if not self._cleanup_pending:
+                return
+            cleanup = self._cleanup
+            if cleanup is None:
+                self._cleanup_pending = False
+                return
+            cleanup()
+            self._cleanup = None
+            self._cleanup_pending = False
+
+
 TRUTH_DIRECTORY_MODE = 0o700
 TRUTH_DATABASE_MODE = 0o600
+CANONICAL_LIVE_TRUTH_FILENAME = "memory.sqlite3"
+
+
+def is_live_truth_database_path(path: str | Path) -> bool:
+    """Return whether *path* names the live SQLite truth database.
+
+    ``connect_truth_database`` uses this classifier before acquiring a
+    connection-level writer lease. The rule is conservative: extra leasing
+    of a distinct case-sensitive ``MEMORY.SQLITE3`` file is acceptable;
+    missing authority on a case or filesystem alias is not.
+
+    A path is live truth when:
+
+    - it is not the SQLite ``:memory:`` URI
+    - its basename is ASCII-case-insensitive ``memory.sqlite3`` (via
+      ``str.casefold``), even if the file is missing
+    - or the existing file is ``os.path.samefile`` with the sibling
+      canonical ``memory.sqlite3``
+
+    ``OSError`` from ``samefile`` (missing path, permission, or an
+    unsupported comparison) fails safe to "not an alias" and never
+    overrides a canonical basename match. This function does not resolve
+    symlinks and does not replace symlink/path hardening in
+    ``connect_truth_database``.
+    """
+
+    raw_path = os.fspath(path)
+    if raw_path == ":memory:":
+        return False
+    candidate = Path(os.path.abspath(os.fspath(Path(path).expanduser())))
+    if candidate.name.casefold() == CANONICAL_LIVE_TRUTH_FILENAME.casefold():
+        return True
+    sibling = candidate.parent / CANONICAL_LIVE_TRUTH_FILENAME
+    try:
+        return bool(os.path.samefile(os.fspath(candidate), os.fspath(sibling)))
+    except OSError:
+        return False
 
 
 def _descriptor_permissions_supported() -> bool:
@@ -185,6 +276,39 @@ def require_query_only(conn: sqlite3.Connection) -> None:
         )
 
 
+class _LeasedTruthConnection(sqlite3.Connection):
+    """SQLite connection that owns a connection-level truth writer lease.
+
+    The lease is acquired before this pager opens. ``close()`` runs SQLite
+    close first and releases the lease only after that succeeds, so a leaked
+    helper-local connection still holds process authority. If SQLite close
+    raises, the lease stays attached. If lease release raises while still
+    acquired, the lease stays attached for a close retry; if authority was
+    actually released, the lease is detached and the error still surfaces.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._truth_writer_lease: TruthWriterLease | None = None
+
+    def close(self) -> None:
+        try:
+            super().close()
+        except BaseException:
+            raise
+        lease = self._truth_writer_lease
+        if lease is None:
+            return
+        try:
+            lease.release()
+        except BaseException:
+            if lease.acquired:
+                raise
+            self._truth_writer_lease = None
+            raise
+        self._truth_writer_lease = None
+
+
 def connect_truth_database(
     path: str | Path,
     *,
@@ -197,8 +321,14 @@ def connect_truth_database(
     """Open one authoritative SQLite truth connection and verify FK=ON.
 
     ``mode='ro'`` and ``mode='rw'`` require an existing database; ``rwc`` may
-    create it. The returned connection is ready for callers to install the
-    activation authorizer and configure WAL/synchronous policy.
+    create it. A FILE-backed writable open classified as live truth by
+    :func:`is_live_truth_database_path` acquires a connection-level
+    ``TruthWriterLease`` on the parent directory before ``sqlite3.connect``
+    opens the pager. ``:memory:``, read-only mode, and backup/staging/vector
+    names that are not same-file aliases do not take that lease. The
+    returned connection remains a ``sqlite3.Connection`` ready for callers
+    to install the activation authorizer and configure WAL/synchronous
+    policy.
     """
 
     normalized_mode = str(mode)
@@ -212,6 +342,8 @@ def connect_truth_database(
     if isolation_level is not _DEFAULT_ISOLATION_LEVEL:
         kwargs["isolation_level"] = isolation_level
     raw_path = os.fspath(path)
+    lease: TruthWriterLease | None = None
+    conn: sqlite3.Connection | None = None
     if raw_path == ":memory:":
         if normalized_mode != "rwc":
             raise ValueError("SQLite :memory: truth databases require mode='rwc'")
@@ -240,15 +372,53 @@ def connect_truth_database(
             database = db_path
         else:
             database = f"{db_path.as_uri()}?mode={normalized_mode}"
-    conn = sqlite3.connect(database, **kwargs)
+        if normalized_mode in {"rw", "rwc"} and is_live_truth_database_path(db_path):
+            lease = TruthWriterLease(db_path.parent, role="truth_connection")
+            result = lease.acquire()
+            if result.get("status") != "acquired":
+                owner = result.get("owner")
+                raise TruthWriterBusyError(
+                    role="truth_connection",
+                    scope=str(result.get("scope") or ""),
+                    owner=owner if isinstance(owner, dict) else {},
+                )
     try:
+        if lease is not None:
+            kwargs["factory"] = _LeasedTruthConnection
+        conn = sqlite3.connect(database, **kwargs)
+        if lease is not None:
+            if not isinstance(conn, _LeasedTruthConnection):
+                raise TruthDatabaseConnectionError(
+                    "SQLite truth connection factory did not bind the writer lease"
+                )
+            conn._truth_writer_lease = lease
+            lease = None
         require_foreign_keys(conn)
         if normalized_mode == "ro":
             require_query_only(conn)
         conn.row_factory = row_factory
         return conn
-    except BaseException:
-        conn.close()
+    except BaseException as original:
+        if conn is not None:
+            pending_conn = conn
+            try:
+                pending_conn.close()
+            except BaseException:
+                # Look up close at retry time so a later injection removal can
+                # succeed. Never treat a failed close as a released lease.
+                def _retry_close() -> None:
+                    pending_conn.close()
+
+                raise TruthDatabaseCleanupError(cleanup=_retry_close) from original
+        elif lease is not None:
+            pending_lease = lease
+            try:
+                pending_lease.release()
+            except BaseException:
+                def _retry_release() -> None:
+                    pending_lease.release()
+
+                raise TruthDatabaseCleanupError(cleanup=_retry_release) from original
         raise
 
 
@@ -332,12 +502,15 @@ def probe_truth_database_header(
 
 
 __all__ = [
+    "CANONICAL_LIVE_TRUTH_FILENAME",
     "SQLITE_HEADER_PREFIX",
     "TRUTH_DATABASE_MODE",
     "TRUTH_DIRECTORY_MODE",
+    "TruthDatabaseCleanupError",
     "TruthDatabaseConnectionError",
     "TruthDatabaseMode",
     "connect_truth_database",
+    "is_live_truth_database_path",
     "probe_truth_database_connection",
     "probe_truth_database_header",
     "require_foreign_keys",

@@ -616,11 +616,11 @@ def test_release_identity_requires_version_newer_than_latest_tag():
     assert "mutually exclusive" in conflicting_modes["error"]
 
 
-def test_v192_release_candidate_identity_surfaces_are_consistent():
+def test_v193_release_candidate_identity_surfaces_are_consistent():
     """Bind the patch release to every authoritative version surface."""
 
-    expected_version = "1.9.2"
-    release_check = _load_release_check_module("scope_recall_check_release_v192_identity")
+    expected_version = "1.9.3"
+    release_check = _load_release_check_module("scope_recall_check_release_v193_identity")
     lexical_generation = importlib.import_module(
         f"{PACKAGE_NAME}.lexical_generation"
     )
@@ -632,7 +632,7 @@ def test_v192_release_candidate_identity_surfaces_are_consistent():
     assert _package_version() == expected_version
     assert f"version: {expected_version}" in plugin_manifest
     assert release_check.PACKAGE_VERSION == expected_version
-    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.9.2.md"
+    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.9.3.md"
     assert (PLUGIN_ROOT / release_check.RELEASE_READINESS_DOC).is_file()
     assert f"## [{expected_version}]" in changelog
     assert f"Version `{expected_version}`" in readme
@@ -641,24 +641,24 @@ def test_v192_release_candidate_identity_surfaces_are_consistent():
     assert lexical_generation.LEXICAL_MIGRATION_PLUGIN_VERSION == "1.9.0"
 
     identity = release_check.release_version_identity_check(
-        tags=["v1.8.0", "v1.8.7", "v1.9.1"]
+        tags=["v1.8.0", "v1.8.7", "v1.9.1", "v1.9.2"]
     )
     assert identity["ok"] is True
     assert identity["release_eligible"] is True
-    assert identity["expected_release_tag"] == "v1.9.2"
+    assert identity["expected_release_tag"] == "v1.9.3"
 
 
-def test_v192_changelog_is_cumulative_from_last_public_release():
-    release_check = _load_release_check_module("scope_recall_check_release_v192_changelog")
+def test_v193_changelog_is_cumulative_from_last_public_release():
+    release_check = _load_release_check_module("scope_recall_check_release_v193_changelog")
 
-    assert release_check.PACKAGE_VERSION == "1.9.2"
-    assert release_check.PUBLIC_RELEASE_BASELINE == "1.9.1"
+    assert release_check.PACKAGE_VERSION == "1.9.3"
+    assert release_check.PUBLIC_RELEASE_BASELINE == "1.9.2"
     section = release_check.changelog_section(
         (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8"),
-        "1.9.2",
+        "1.9.3",
     )
-    assert "since the last public release, `1.9.1`" in section
-    for term in ("event-digest", "curated", "journal", "SQLite", "credentials", "vector"):
+    assert "since the last public release, `1.9.2`" in section
+    for term in ("writer", "read-only", "journal", "SQLite", "lease", "transaction"):
         assert term.lower() in section.lower(), term
 
 
@@ -802,6 +802,24 @@ Current read-only snapshot from /home/operator/.hermes:
         "embedded_dead_letter_counter",
         "embedded_private_path",
     }
+
+
+def test_release_scan_rejects_forward_slash_windows_private_agent_root(
+    tmp_path, monkeypatch
+):
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_forward_slash_agent_root"
+    )
+    drive = "E:"
+    leaked = drive + "/" + "/".join(("Agents", "runtime", "windows", "hermes-yuheng"))
+    (tmp_path / "notes.md").write_text("live root " + leaked + "\n", encoding="utf-8")
+    monkeypatch.setattr(release_check, "ROOT", tmp_path)
+
+    findings = release_check.scan_tree()
+
+    assert findings["private_paths"] == ["notes.md:1"]
+    joined = "\n".join(findings["private_paths"])
+    assert leaked not in joined
 
 
 def test_distribution_hygiene_blocks_plan_artifacts():

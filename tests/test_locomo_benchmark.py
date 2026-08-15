@@ -121,7 +121,9 @@ def test_runner_requires_explicit_external_paths(tmp_path, monkeypatch) -> None:
 
     source = Path(module.__file__).read_text(encoding="utf-8")
     assert "hermes-tianji" not in source
-    assert r"E:\\Agents\\runtime" not in source
+    source_separator = "\\" * 2
+    forbidden_root = source_separator.join(("E:", "Agents", "runtime"))
+    assert forbidden_root not in source
 
 
 def test_model_route_fingerprint_binds_nonsecret_identity_without_leaking(tmp_path) -> None:
