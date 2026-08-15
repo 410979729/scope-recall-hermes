@@ -59,6 +59,7 @@ from .sql_store import (
 from .sqlite_params import chunked_sql_parameters
 from .storage_views import _curated_memory_allowed
 from .vector_generation import enqueue_current_vector_event
+from .writer_lease import sanitized_truth_writer_owner
 from .vector_runtime import (
     mark_vector_needs_repair,
     refresh_vector_audit,
@@ -2325,6 +2326,12 @@ def stats_payload(provider: Any) -> dict[str, Any]:
         "operator_ledger": operator_ledger,
         "curated_memories": len(iter_curated_entries(provider._hermes_home)),
         "migration": dict(provider._migration_info),
+        "truth_writer": {
+            "role": str(getattr(provider, "_truth_writer_role", "unknown") or "unknown"),
+            "owner": sanitized_truth_writer_owner(
+                getattr(provider, "_truth_writer_owner", {})
+            ),
+        },
         "background_writer": {
             "thread_alive": bool(
                 getattr(provider, "_writer_thread", None) is not None

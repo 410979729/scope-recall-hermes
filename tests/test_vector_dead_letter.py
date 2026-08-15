@@ -20,6 +20,7 @@ from scope_recall.vector_generation import (
     enqueue_vector_event,
     fail_vector_event,
 )
+from writer_lease import TruthWriterLease
 
 
 def _connection() -> sqlite3.Connection:
@@ -251,3 +252,72 @@ def test_dead_letter_operator_script_runs_dry_run_backup_apply_and_receipt(tmp_p
         check.close()
     assert status == ("pending", 0)
     assert receipt_state == "mirrored"
+
+
+def test_requeue_apply_fails_closed_while_parent_holds_writer_lease(tmp_path):
+    event_marker = "event-marker-not-for-output-42"
+    home = tmp_path / "hermes-home"
+    storage = home / "scope-recall"
+    storage.mkdir(parents=True)
+    db_path = storage / "memory.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        event_id = _dead_letter_event(conn, event_key=event_marker)
+    finally:
+        conn.close()
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "requeue.vector_dead_letter.py"
+    apply_cmd = [
+        sys.executable,
+        str(script),
+        "--hermes-home",
+        str(home),
+        "--event-id",
+        str(event_id),
+        "--apply",
+        "--maintenance-confirmed",
+        "--operation-id",
+        "lease-blocked-requeue-001",
+        "--reason",
+        "operator repaired the vector dependency",
+    ]
+    parent = TruthWriterLease(storage, role="provider")
+    assert parent.acquire()["status"] == "acquired"
+    try:
+        blocked = subprocess.run(apply_cmd, text=True, capture_output=True, check=False)
+        probe = sqlite3.connect(db_path)
+        try:
+            row = probe.execute(
+                "SELECT status, attempts FROM vector_outbox WHERE id = ?",
+                (event_id,),
+            ).fetchone()
+        finally:
+            probe.close()
+    finally:
+        parent.release()
+
+    combined = (blocked.stdout or "") + (blocked.stderr or "")
+    assert blocked.returncode != 0
+    assert row == ("dead_letter", 2)
+    assert str(home) not in combined
+    assert str(db_path) not in combined
+    assert "memory.sqlite3" not in combined
+    assert event_marker not in combined
+    assert "truth_writer_busy" in combined
+
+    applied = subprocess.run(apply_cmd, text=True, capture_output=True, check=False)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    payload = json.loads(applied.stdout)
+    assert payload["status"] == "requeued"
+    assert payload["requeued"] == 1
+    check = sqlite3.connect(db_path)
+    try:
+        status = check.execute(
+            "SELECT status, attempts FROM vector_outbox WHERE id = ?",
+            (event_id,),
+        ).fetchone()
+    finally:
+        check.close()
+    assert status == ("pending", 0)

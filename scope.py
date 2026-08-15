@@ -10,6 +10,7 @@ from .models import RuntimeScope
 
 
 RUNTIME_STATUS_ACTIVE = "active"
+RUNTIME_STATUS_ACTIVE_READ_ONLY = "active_read_only"
 RUNTIME_STATUS_DISABLED_MISSING_PRINCIPAL = "disabled_missing_principal"
 
 

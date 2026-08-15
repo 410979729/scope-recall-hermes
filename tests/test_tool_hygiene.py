@@ -260,3 +260,52 @@ def test_tool_merge_uses_capture_filter_for_runtime_wrappers(provider):
     recalled = provider.prefetch("What memory facts does Joy prefer?")
     assert "stable memory facts" in recalled.lower()
     assert "context compaction" not in recalled.lower()
+
+
+def test_writer_unknown_tool_does_not_echo_private_path_or_token():
+    class _Owner:
+        _truth_writer_role = "owner"
+
+    service = ScopeRecallToolService(_Owner())
+    adversarial_tool = (
+        r"C:\Users\Administrator\token-"
+        + "ghp_"
+        + "abcdefghijklmnopqrstuvwxyz012345"
+        + r"\scope_recall_store"
+    )
+
+    payload = json.loads(service.handle(adversarial_tool, {"content": "must not echo"}))
+    serialized = json.dumps(payload)
+
+    assert payload.get("error") == "unknown scope-recall tool"
+    assert adversarial_tool not in serialized
+    assert "Administrator" not in serialized
+    assert "ghp_" not in serialized
+    assert "C:\\Users" not in serialized
+    assert r"C:\Users" not in serialized
+    assert "truth_writer_busy" not in serialized
+
+
+def test_unknown_role_cannot_invoke_durable_write_handler(monkeypatch):
+    class _UnknownRole:
+        _truth_writer_role = "unknown"
+
+    service = ScopeRecallToolService(_UnknownRole())
+    called: list[dict] = []
+    monkeypatch.setattr(
+        service,
+        "_handle_store",
+        lambda args: called.append(args) or json.dumps({"stored": True}),
+    )
+
+    payload = json.loads(
+        service.handle(
+            "scope_recall_store",
+            {"content": "must not store from an unknown role", "target": "ops"},
+        )
+    )
+
+    assert called == []
+    assert "truth_writer_busy" in str(payload.get("error") or "")
+    serialized = json.dumps(payload)
+    assert "must not store from an unknown role" not in serialized

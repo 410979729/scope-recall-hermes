@@ -267,6 +267,7 @@ def _insert_journal_entry(
             """,
             (scope_id, session_id, int(turn_number or 0), role, content_hash),
         ).fetchone()
+        conn.commit()
         return int(row["id"] if row else 0)
     conn.commit()
     return int(cur.lastrowid or 0)

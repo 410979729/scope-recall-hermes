@@ -266,6 +266,49 @@ def test_scope_recall_store_recovers_and_retries_after_sqlite_lock(provider, mon
     _assert_sqlite_writer_released(provider)
 
 
+def test_scope_recall_store_does_not_recover_nested_transaction_error(
+    provider, monkeypatch
+):
+    store_calls: list[str] = []
+    recover_calls: list[str] = []
+
+    def nested_transaction_store(**kwargs):
+        del kwargs
+        store_calls.append("store")
+        raise sqlite3.OperationalError(
+            "cannot start a transaction within a transaction"
+        )
+
+    def counting_recover(context: str) -> dict[str, object]:
+        recover_calls.append(context)
+        return {"recovered": True}
+
+    monkeypatch.setattr(provider, "_store_now", nested_transaction_store)
+    monkeypatch.setattr(
+        provider, "_recover_sqlite_connection_after_error", counting_recover
+    )
+
+    payload = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_store",
+            {
+                "content": "nested transaction errors must not replay a store",
+                "target": "ops",
+            },
+        )
+    )
+
+    assert store_calls == ["store"]
+    assert recover_calls == []
+    assert payload.get("recovered") not in {True}
+    assert payload.get("retry_count") in {None, 0}
+    assert "error" in payload
+    serialized = json.dumps(payload)
+    assert "cannot start a transaction within a transaction" in serialized.lower()
+    assert payload["error"]
+    _assert_sqlite_writer_released(provider)
+
+
 def test_scope_recall_store_recovers_peer_provider_dirty_transaction(tmp_path, monkeypatch):
     _write_scope_recall_config(
         tmp_path,

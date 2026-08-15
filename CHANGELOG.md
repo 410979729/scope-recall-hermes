@@ -4,6 +4,20 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.3] - 2026-08-14
+
+This compatibility-preserving patch release covers the highest-priority open SQLite contention and writer-ownership risks since the last public release, `1.9.2`. SQLite remains authoritative, additional processes fail closed to read-only follower mode, and the stable provider/tool identities are unchanged.
+
+### Fixed
+- Enforced one write-capable Scope Recall process per truth database across gateway, CLI, and other runtimes. Provider instances in the writer process share its lease; a provider in another process opens as a read-only follower, refuses mutation tools, and may take over only after the writer exits and the operating system releases the lease.
+- Made same-process lease reuse atomic across threads and import aliases, normalized Windows case and junction paths, and released lease handles on journal/nightly configuration failures and every provider shutdown path.
+- Moved journal and nightly model/network work outside authoritative SQLite write transactions. Per-scope results and checkpoints now commit in short bounded transactions so vector retention and other writers are not blocked for the duration of a model call.
+- Recovered one idle same-process dirty peer during initialization only after a real SQLite lock error, while preserving non-lock failures, active work, cross-process ownership, and read-only follower boundaries.
+- Sanitized writer-owner sidecars, status output, and busy diagnostics before they reach operator-visible surfaces; unknown tool names can no longer inject path- or credential-like text into lock errors.
+
+### Compatibility
+- Preserved the stable V1 provider ID, public tool names, package/install shape, SQLite truth-source contract, rebuildable vector/graph companions, scope routing, evidence authority, provenance-root validation, deterministic idempotency, release-identity checks, Fact Evolution, temporal queries, Reflection, and existing journal checkpoint semantics.
+
 ## [1.9.2] - 2026-08-09
 
 This cumulative patch release covers runtime reliability and recall-precision fixes since the last public release, `1.9.1`. SQLite remains authoritative, derived vector state remains replayable, and the stable provider/tool identities are unchanged.

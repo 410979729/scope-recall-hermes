@@ -6,12 +6,12 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Callable, cast
 
 from tools.registry import tool_error
 
+from .capture import has_positive_write_authority, _writer_lifecycle_lock
 from .capture_filters import (
     CaptureFilterResult,
     sanitize_report_text,
@@ -50,6 +50,7 @@ from .fact_tooling import (
 from .forgetting import build_forgetting_report, run_forgetting
 from .reflection_tooling import run_reflection_tool
 from .secret_index import build_secret_index
+from .sqlite_recovery import is_sqlite_lock_contention
 from .temporal_query import query_fact_views
 from .vector_runtime import mark_vector_needs_repair
 
@@ -87,8 +88,57 @@ class ScopeRecallToolService:
     def normalize_tool_name(self, tool_name: str) -> str:
         return TOOL_ALIASES.get(tool_name, tool_name)
 
+    _TRUTH_READ_ONLY_TOOLS = frozenset(
+        {
+            "scope_recall_search",
+            "scope_recall_context",
+            "scope_recall_profile",
+            "scope_recall_fact",
+            "scope_recall_stats",
+            "scope_recall_inspect",
+            "scope_recall_explain",
+            "scope_recall_related",
+            "scope_recall_entity",
+            "scope_recall_probe",
+            "scope_recall_export",
+            "scope_recall_hygiene",
+            "scope_recall_forgetting_report",
+            "scope_recall_playbook_search",
+            "scope_recall_playbook_inspect",
+            "scope_recall_experience_stats",
+            "scope_recall_benchmark",
+        }
+    )
+
+    def _truth_write_blocked_error(self, tool_name: str) -> str:
+        # Never echo the caller-supplied name; it can carry paths or tokens.
+        del tool_name
+        return tool_error(
+            "truth_writer_busy: this tool is unavailable because another "
+            "Scope Recall process holds the truth-database writer lease. "
+            "Recall/search remain available; durable writes must go through "
+            "the writer process."
+        )
+
+    def _reader_tool_allowed(self, tool_name: str, args: dict[str, Any]) -> bool:
+        """Return whether a read-only follower may run this tool/mode."""
+
+        if tool_name in self._TRUTH_READ_ONLY_TOOLS:
+            return True
+        if tool_name == "scope_recall_memory":
+            action = str((args or {}).get("action") or "").strip().lower()
+            action = action.replace("-", "_")
+            aliases = {"rate": "feedback", "delete": "forget", "remove": "forget", "get": "inspect"}
+            return aliases.get(action, action) == "inspect"
+        if tool_name == "scope_recall_reflect":
+            return not self._bool_arg(args or {}, "propose_memory", False)
+        if tool_name == "scope_recall_experience_preflight":
+            return not self._bool_arg(args or {}, "record_run", False)
+        return False
+
     def handle(self, tool_name: str, args: dict[str, Any]) -> str:
         normalized = self.normalize_tool_name(tool_name)
+        payload = args or {}
         handlers: dict[str, Callable[[dict[str, Any]], str]] = {
             "scope_recall_store": self._handle_store,
             "scope_recall_store_secret_index": self._handle_store_secret_index,
@@ -127,8 +177,25 @@ class ScopeRecallToolService:
             "scope_recall_forgetting_run": self._handle_forgetting_run,
         }
         handler = handlers.get(normalized)
+        if self._reader_tool_allowed(normalized, payload):
+            return self._invoke_handler(tool_name, normalized, handler, payload)
+        # Recheck authority under the same lock the handler holds so shutdown
+        # cannot slip between the public write gate and the durable unit.
+        with _writer_lifecycle_lock(self.provider):
+            if not has_positive_write_authority(self.provider):
+                return self._truth_write_blocked_error(normalized)
+            return self._invoke_handler(tool_name, normalized, handler, payload)
+
+    def _invoke_handler(
+        self,
+        tool_name: str,
+        normalized: str,
+        handler: Callable[[dict[str, Any]], str] | None,
+        args: dict[str, Any],
+    ) -> str:
+        """Validate and run one handler after the caller has finished gating."""
         if handler is None:
-            return tool_error(f"unknown scope-recall tool: {tool_name}")
+            return tool_error("unknown scope-recall tool")
         issue = validate_tool_arguments(normalized, args)
         if issue is not None:
             return tool_error(
@@ -369,10 +436,7 @@ class ScopeRecallToolService:
         )
 
     def _recoverable_store_error(self, exc: Exception) -> bool:
-        if not isinstance(exc, sqlite3.Error):
-            return False
-        message = str(exc).lower()
-        return "locked" in message or "transaction" in message
+        return is_sqlite_lock_contention(exc)
 
     def _handle_store_secret_index(self, args: dict[str, Any]) -> str:
         if not config_bool(self.provider._config, "secret_index_tools_enabled", False):

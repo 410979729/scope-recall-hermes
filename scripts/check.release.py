@@ -39,8 +39,8 @@ if str(ROOT) not in sys.path:
 from secret_patterns import scan_secret_like_text, secret_scan_shadow  # noqa: E402
 from scripts.release_changelog import extract_version_section  # noqa: E402
 
-PACKAGE_VERSION = "1.9.2"
-PUBLIC_RELEASE_BASELINE = "1.9.1"
+PACKAGE_VERSION = "1.9.3"
+PUBLIC_RELEASE_BASELINE = "1.9.2"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 RELEASE_READINESS_DOC = f"docs/release-readiness.{PACKAGE_VERSION}.md"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
@@ -574,11 +574,44 @@ RELEASE_READINESS_LOCAL_STATE_PATTERNS = {
     "embedded_severity_counter": re.compile(r"\bseverity=(?:ok|degraded|blocked)\b", re.I),
     "embedded_journal_counter": re.compile(r"\bjournal_(?:unprocessed|dead_letter_replay_candidates|llm_quarantine_runs)=", re.I),
     "embedded_dead_letter_counter": re.compile(r"\bdead-letter:[a-z_-]+=", re.I),
-    "embedded_private_path": re.compile(r"(?:^|[\s`'\"])(?:~[/\\]\.hermes-[A-Za-z0-9_.-]+|/home/|/Users/|/root/|[A-Za-z]:[\\/](?:Users|Documents)[\\/])"),
+    "embedded_private_path": re.compile(r"(?:^|[\s`'\"])(?:~[/\\]\.hermes-[A-Za-z0-9_.-]+|/home/|/Users/|/root/|[A-Za-z]:[\\/](?:Users|Documents|Agents)[\\/])"),
 }
 PRIVATE_TILDE_INSTANCE_HOME_RE = re.compile(
     r"(?:^|[\s`'\"])~[/\\]\.hermes-[A-Za-z0-9_.-]+"
 )
+WINDOWS_PRIVATE_AGENT_ROOT_RE = re.compile(
+    r"(?:^|[\s`'\"=(])[A-Za-z]:[/\\]+Agents[/\\]",
+    re.IGNORECASE,
+)
+
+
+def _private_path_markers() -> tuple[str, ...]:
+    """Return home markers plus slash-reversed Windows variants."""
+
+    home = pathlib.Path.home()
+    raw = {
+        str(home / ".hermes-yuheng"),
+        str(home) + os.sep,
+        str(home) + "/",
+    }
+    markers: set[str] = set()
+    for item in raw:
+        if not item or item in {"/", "\\"}:
+            continue
+        markers.add(item)
+        markers.add(item.replace("\\", "/"))
+        markers.add(item.replace("/", "\\"))
+    return tuple(sorted(markers, key=len, reverse=True))
+
+
+def _line_has_private_path(line: str, markers: tuple[str, ...]) -> bool:
+    """Return whether one source line embeds a private home or agent root."""
+
+    if any(marker in line for marker in markers):
+        return True
+    if PRIVATE_TILDE_INSTANCE_HOME_RE.search(line):
+        return True
+    return WINDOWS_PRIVATE_AGENT_ROOT_RE.search(line) is not None
 
 
 def run(
@@ -2162,22 +2195,11 @@ def _scan_sensitive_text(rel: pathlib.Path, text: str, *, display_path: str = ""
             f"{label}:{line_no}: personal_numeric_id: [REDACTED_ID]"
         )
 
-    home = pathlib.Path.home()
-    private_markers = tuple(
-        marker
-        for marker in {
-            str(home / ".hermes-yuheng"),
-            str(home) + os.sep,
-        }
-        if marker and marker != os.sep
-    )
+    private_markers = _private_path_markers()
     private_path_lines = [
         line_no
         for line_no, line in enumerate(lines, 1)
-        if (
-            any(marker in line for marker in private_markers)
-            or PRIVATE_TILDE_INSTANCE_HOME_RE.search(line)
-        )
+        if _line_has_private_path(line, private_markers)
         and not _is_synthetic_test_fixture_line(rel, line)
     ]
     if private_path_lines:

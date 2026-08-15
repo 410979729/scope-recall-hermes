@@ -33,7 +33,9 @@ from .governance import semantic_similarity
 from .http_utils import explicit_insecure_endpoint_opt_in
 from .maintenance_lease import install_activation_lease_authorizer
 from .models import RuntimeScope, recall_scope_id_for_target
+from .transaction_guard import prepare_network_boundary
 from .truth_connection import connect_truth_database
+from .writer_lease import TruthWriterBusyError, TruthWriterLease
 from .lifecycle_policy import durable_lifecycle_visible_sql
 from .nightly_digest import call_llm
 from .journal_candidates import (
@@ -1434,18 +1436,27 @@ def _unprocessed_scopes(
 
 
 def _open_digest_connection(db_path: Path, *, dry_run: bool) -> sqlite3.Connection:
+    """Open the digest SQLite connection without installing fallible setup.
+
+    Caller ownership starts at the returned connection. Dry-run copies into a
+    fresh in-memory destination; if that copy fails, the destination is closed
+    before the error is re-raised so it cannot outlive this helper.
+    """
+
     if dry_run:
         conn = connect_truth_database(":memory:", mode="rwc")
-        if db_path.exists():
-            source = connect_truth_database(db_path, mode="ro")
-            try:
-                source.backup(conn)
-            finally:
-                source.close()
-        return conn
-    conn = connect_truth_database(db_path, mode="rwc", timeout=30)
-    install_activation_lease_authorizer(conn, db_path)
-    return conn
+        try:
+            if db_path.exists():
+                source = connect_truth_database(db_path, mode="ro")
+                try:
+                    source.backup(conn)
+                finally:
+                    source.close()
+            return conn
+        except Exception:
+            conn.close()
+            raise
+    return connect_truth_database(db_path, mode="rwc", timeout=30)
 
 
 def _record_journal_digest_failure(
@@ -1525,42 +1536,61 @@ def run_journal_digest(
     Digest extraction may use heuristic or LLM paths, but every failure mode should become a structured status, dead-letter, or quarantine signal instead of disappearing as empty output."""
     hermes_home = hermes_home.expanduser().resolve()
     storage_dir = hermes_home / "scope-recall"
+    writer_lease: TruthWriterLease | None = None
+    conn: sqlite3.Connection | None = None
+    vector_runtime = None
     if not dry_run:
         storage_dir.mkdir(parents=True, exist_ok=True)
+        writer_lease = TruthWriterLease(storage_dir, role="journal_digest")
+        lease_result = writer_lease.acquire()
+        if lease_result.get("status") != "acquired":
+            owner = lease_result.get("owner")
+            raise TruthWriterBusyError(
+                role="journal_digest",
+                scope=str(lease_result.get("scope") or ""),
+                owner=owner if isinstance(owner, dict) else {},
+            )
     db_path = storage_dir / "memory.sqlite3"
-    conn = _open_digest_connection(db_path, dry_run=dry_run)
-    conn.row_factory = sqlite3.Row
-    run_id = uuid.uuid4().hex
-    started_at = now_iso()
-    vector_runtime = None
-    runtime_config = _runtime_config(hermes_home)
-    excluded_chat_ids = memory_isolated_chat_ids(runtime_config)
-    raw_journal = runtime_config.get("journal")
-    journal_config = dict(raw_journal) if isinstance(raw_journal, dict) else {}
-    llm_overrides = {
-        "provider": llm_provider,
-        "model": llm_model,
-        "api_mode": llm_api_mode,
-        "base_url": llm_base_url,
-        "endpoint": llm_endpoint,
-        "key_env": llm_key_env,
-        "api_key": llm_api_key,
-    }
-    for key, value in llm_overrides.items():
-        if str(value or "").strip():
-            journal_config[key] = str(value).strip()
-    if llm_append_v1 is not None:
-        journal_config["append_v1"] = bool(llm_append_v1)
-    if llm_allow_insecure_endpoint is not None:
-        journal_config["allow_insecure_endpoint"] = (
-            explicit_insecure_endpoint_opt_in(llm_allow_insecure_endpoint)
-        )
-    configured_limit = _coerce_positive_int(journal_config.get("max_entries_per_digest"), 500)
-    effective_limit = _coerce_positive_int(limit_entries, configured_limit) if limit_entries is not None else configured_limit
-    retention_days = int(journal_config.get("retention_days") or 0)
-    requested_extractor = str(extractor or journal_config.get("extractor") or "llm").strip().lower()
-    extractor_used = requested_extractor
     try:
+        # Cleanup ownership starts here: every later config/schema/init
+        # exception and every early return must close vector, conn, then lease.
+        # Assign the opened connection before any fallible authorizer/schema
+        # step so a later raise cannot leak a writable pager past lease release.
+        conn = _open_digest_connection(db_path, dry_run=dry_run)
+        if not dry_run:
+            install_activation_lease_authorizer(conn, db_path)
+        conn.row_factory = sqlite3.Row
+        run_id = uuid.uuid4().hex
+        started_at = now_iso()
+        requested_extractor = str(extractor or "llm").strip().lower()
+        extractor_used = requested_extractor
+        runtime_config = _runtime_config(hermes_home)
+        excluded_chat_ids = memory_isolated_chat_ids(runtime_config)
+        raw_journal = runtime_config.get("journal")
+        journal_config = dict(raw_journal) if isinstance(raw_journal, dict) else {}
+        llm_overrides = {
+            "provider": llm_provider,
+            "model": llm_model,
+            "api_mode": llm_api_mode,
+            "base_url": llm_base_url,
+            "endpoint": llm_endpoint,
+            "key_env": llm_key_env,
+            "api_key": llm_api_key,
+        }
+        for key, value in llm_overrides.items():
+            if str(value or "").strip():
+                journal_config[key] = str(value).strip()
+        if llm_append_v1 is not None:
+            journal_config["append_v1"] = bool(llm_append_v1)
+        if llm_allow_insecure_endpoint is not None:
+            journal_config["allow_insecure_endpoint"] = (
+                explicit_insecure_endpoint_opt_in(llm_allow_insecure_endpoint)
+            )
+        configured_limit = _coerce_positive_int(journal_config.get("max_entries_per_digest"), 500)
+        effective_limit = _coerce_positive_int(limit_entries, configured_limit) if limit_entries is not None else configured_limit
+        retention_days = int(journal_config.get("retention_days") or 0)
+        requested_extractor = str(extractor or journal_config.get("extractor") or "llm").strip().lower()
+        extractor_used = requested_extractor
         ensure_schema(conn)
         ensure_journal_schema(conn)
         if scope is not None and scope_is_memory_isolated(scope, runtime_config):
@@ -1620,6 +1650,7 @@ def run_journal_digest(
             if not entries:
                 continue
             total_loaded_entries += len(entries)
+            prepare_network_boundary(conn, "journal.run_journal_digest.snapshot")
             try:
                 collected: Any = _collect_journal_candidates(
                     conn,
@@ -1745,13 +1776,18 @@ def run_journal_digest(
                             entry_ids=reviewed_without_candidate_ids,
                         ),
                     )
-            processed_entry_ids.extend(sorted(applied_entry_ids | set(reviewed_without_candidate_ids)))
+            scope_done_ids = sorted(applied_entry_ids | set(reviewed_without_candidate_ids))
+            processed_entry_ids.extend(scope_done_ids)
+            if not dry_run and scope_done_ids:
+                mark_entries_processed(
+                    conn, entry_ids=scope_done_ids, run_id=run_id
+                )
             actions.extend(applied["actions"])
             if vector_runtime is not None:
-                try:
-                    vector_runtime.close()
-                except Exception:
-                    pass
+                # Do not swallow companion teardown. A close failure must enter
+                # the outer handler so final cleanup can still close truth and
+                # release the lease, then surface the vector error.
+                vector_runtime.close()
                 vector_runtime = None
 
         if total_loaded_entries == 0:
@@ -1874,37 +1910,48 @@ def run_journal_digest(
             result["error"] = run_error
         return result
     except Exception as exc:
-        try:
-            if dry_run:
-                rollback_if_active(conn)
-            else:
-                _record_journal_digest_failure(
-                    conn,
-                    run_id=run_id,
-                    started_at=started_at,
-                    extractor=requested_extractor,
-                    interval_label=interval_label,
-                    error=exc,
-                )
-        except Exception as receipt_exc:
-            # Preserve the triggering exception even when SQLite is still too
-            # contended to persist its failure receipt.
+        if conn is not None:
             try:
-                rollback_if_active(conn)
-            except Exception:
-                pass
-            logger.warning(
-                "Scope Recall journal digest failure receipt could not be persisted (%s)",
-                type(receipt_exc).__name__,
-            )
+                if dry_run:
+                    rollback_if_active(conn)
+                else:
+                    _record_journal_digest_failure(
+                        conn,
+                        run_id=run_id,
+                        started_at=started_at,
+                        extractor=requested_extractor,
+                        interval_label=interval_label,
+                        error=exc,
+                    )
+            except Exception as receipt_exc:
+                # Preserve the triggering exception even when SQLite is still too
+                # contended to persist its failure receipt.
+                try:
+                    rollback_if_active(conn)
+                except Exception:
+                    pass
+                logger.warning(
+                    "Scope Recall journal digest failure receipt could not be persisted (%s)",
+                    type(receipt_exc).__name__,
+                )
         raise
     finally:
+        vector_close_error: Exception | None = None
         if vector_runtime is not None:
             try:
                 vector_runtime.close()
-            except Exception:
-                pass
-        conn.close()
+            except Exception as exc:
+                vector_close_error = exc
+        # Vector is rebuildable. Truth SQLite close is authoritative: a close
+        # failure must surface and must not reach lease release while a
+        # writable pager may still be live. After truth and lease succeed,
+        # a captured vector close error is still raised so teardown is visible.
+        if conn is not None:
+            conn.close()
+        if writer_lease is not None:
+            writer_lease.release()
+        if vector_close_error is not None:
+            raise vector_close_error
 
 
 def build_arg_parser() -> argparse.ArgumentParser:

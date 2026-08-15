@@ -88,6 +88,87 @@ def test_enqueue_after_writer_shutdown_fails_instead_of_silently_losing_write() 
         )
 
 
+def test_idle_maintenance_skips_durable_unit_after_shutdown_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _Provider()
+    provider._truth_writer_role = "owner"
+    provider._conn = object()
+    provider._require_conn = lambda: provider._conn
+    mutations: list[str] = []
+    monkeypatch.setattr(capture, "relation_frequency_debt_exists", lambda _conn: True)
+    monkeypatch.setattr(
+        capture,
+        "drain_relation_frequency_work",
+        lambda *_args, **_kwargs: mutations.append("frequency") or {},
+    )
+    monkeypatch.setattr(capture, "relation_rebuild_debt_exists", lambda _conn: False)
+
+    provider._shutdown_requested.set()
+    capture._drain_relation_rebuild_debt(provider)
+
+    assert mutations == []
+
+
+def test_idle_maintenance_unit_holds_lifecycle_against_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _Provider()
+    provider._truth_writer_role = "owner"
+    provider._conn = object()
+    provider._require_conn = lambda: provider._conn
+    entered_unit = threading.Event()
+    release_unit = threading.Event()
+    setter_started = threading.Event()
+    setter_finished = threading.Event()
+    mutations: list[str] = []
+
+    def pausing_frequency_work(*_args, **_kwargs):
+        entered_unit.set()
+        assert release_unit.wait(timeout=2.0)
+        mutations.append("frequency")
+        return {}
+
+    monkeypatch.setattr(capture, "relation_frequency_debt_exists", lambda _conn: True)
+    monkeypatch.setattr(capture, "drain_relation_frequency_work", pausing_frequency_work)
+    monkeypatch.setattr(capture, "relation_rebuild_debt_exists", lambda _conn: False)
+
+    def run_drain() -> None:
+        capture._drain_relation_rebuild_debt(provider)
+
+    def run_shutdown_setter() -> None:
+        setter_started.set()
+        with provider._writer_lifecycle_lock:
+            provider._shutdown_requested.set()
+        setter_finished.set()
+
+    worker = threading.Thread(target=run_drain, name="idle-maintenance")
+    worker.start()
+    assert entered_unit.wait(timeout=2.0)
+
+    setter = threading.Thread(target=run_shutdown_setter, name="maintenance-shutdown-setter")
+    setter.start()
+    assert setter_started.wait(timeout=2.0)
+    acquired = provider._writer_lifecycle_lock.acquire(blocking=False)
+    if acquired:
+        provider._writer_lifecycle_lock.release()
+    assert acquired is False
+    assert setter_finished.is_set() is False
+    assert provider._shutdown_requested.is_set() is False
+
+    release_unit.set()
+    worker.join(timeout=2.0)
+    setter.join(timeout=2.0)
+    assert worker.is_alive() is False
+    assert setter.is_alive() is False
+    assert mutations == ["frequency"]
+    assert setter_finished.is_set()
+    assert provider._shutdown_requested.is_set()
+
+    capture._drain_relation_rebuild_debt(provider)
+    assert mutations == ["frequency"]
+
+
 def test_flush_rejects_dead_writer_with_pending_work() -> None:
     provider = _Provider()
     worker = threading.Thread(target=lambda: None)
