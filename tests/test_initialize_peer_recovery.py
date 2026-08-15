@@ -31,7 +31,6 @@ from plugins.memory import load_memory_provider
 
 import scope_recall.provider as provider_module
 import writer_lease as writer_lease_module
-from scope_recall.truth_connection import TruthDatabaseConnectionError
 from writer_lease import TruthWriterLease
 
 READ_ONLY_STATUS = "active_read_only"
@@ -57,6 +56,21 @@ def _provider():
     assert provider is not None
     _assert_workspace_provider(provider)
     return provider
+
+
+def _truth_connection_error_type(provider):
+    """Resolve the exception class from the connector this provider actually calls.
+
+    Hermes intentionally loads plugins under an isolated module namespace, so the
+    live class is not identical to a second import through ``scope_recall``.
+    """
+
+    live_module = sys.modules[type(provider).__module__]
+    connector = live_module.connect_truth_database
+    error_type = connector.__globals__["TruthDatabaseConnectionError"]
+    assert isinstance(error_type, type)
+    assert issubclass(error_type, RuntimeError)
+    return error_type
 
 
 def _write_config(hermes_home: Path, payload: dict) -> None:
@@ -1201,6 +1215,21 @@ def test_initialize_recovers_same_file_alias_peer(tmp_path, monkeypatch):
                 pass
 
 
+def test_truth_connection_error_type_follows_live_provider_namespace():
+    """Exception identity must follow the isolated plugin module under test."""
+
+    provider = _provider()
+    try:
+        live_module = sys.modules[type(provider).__module__]
+        error_type = _truth_connection_error_type(provider)
+        assert error_type is live_module.connect_truth_database.__globals__[
+            "TruthDatabaseConnectionError"
+        ]
+        assert error_type.__name__ == "TruthDatabaseConnectionError"
+    finally:
+        provider.shutdown()
+
+
 @pytest.mark.skipif(
     os.name == "nt",
     reason="POSIX directory-symlink fail-closed contract",
@@ -1223,7 +1252,7 @@ def test_initialize_rejects_posix_directory_symlink_storage_alias(tmp_path):
     owner = _provider()
     try:
         with pytest.raises(
-            TruthDatabaseConnectionError,
+            _truth_connection_error_type(peer),
             match="SQLite truth storage cannot use symlink paths",
         ):
             _initialize(peer, alias_home, "alias-peer")
