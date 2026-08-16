@@ -154,6 +154,7 @@ def extract_capture_candidates(
     )
     timeout = float(llm_config.get("timeout", 15.0))
     max_tokens = int(llm_config.get("max_tokens_per_turn", 2000))
+    thinking = llm_config.get("thinking")
 
     api_key = _resolve_api_key(llm_config)
     if not api_key:
@@ -196,6 +197,7 @@ def extract_capture_candidates(
             endpoint=endpoint,
             append_v1=append_v1,
             allow_insecure_endpoint=allow_insecure_endpoint,
+            thinking=thinking,
         )
     except UnsafeEndpointError:
         logger.warning(
@@ -258,6 +260,7 @@ def _call_openai_compatible(
     endpoint: str = "",
     append_v1: bool = True,
     allow_insecure_endpoint: bool = False,
+    thinking: Any = None,
 ) -> str:
     """Call an OpenAI-compatible chat completions endpoint."""
     url = chat_completions_endpoint(
@@ -266,13 +269,16 @@ def _call_openai_compatible(
         append_v1=append_v1,
         allow_insecure_endpoint=allow_insecure_endpoint,
     )
+    body_dict: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.1,
+    }
+    if thinking is not None:
+        body_dict["thinking"] = thinking
     body = json.dumps(
-        {
-            "model": model,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": 0.1,
-        },
+        body_dict,
         ensure_ascii=False,
     ).encode("utf-8")
 
