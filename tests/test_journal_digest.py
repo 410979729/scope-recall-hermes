@@ -30,8 +30,15 @@ from scope_recall.journal import (
     load_unprocessed_journal_entries,
     run_journal_digest,
     _call_llm_with_retries,
-    _insert_journal_entry,
+    _insert_journal_entry as _insert_journal_entry_raw,
 )
+
+
+def _insert_journal_entry(conn, **kwargs):
+    inserted = _insert_journal_entry_raw(conn, **kwargs)
+    if conn.in_transaction:
+        conn.commit()
+    return inserted
 
 
 def _scope() -> RuntimeScope:
@@ -465,7 +472,8 @@ def test_journal_digest_rejects_ephemeral_release_issue_state_candidates(tmp_pat
     result = apply_journal_candidates(conn, None, scope, run_id="release-state-filter", candidates=[candidate])
 
     assert result["counts"]["quarantined"] == 1
-    assert result["processed_entry_ids"] == [entry_id]
+    assert result["processed_entry_ids"] == []
+    assert result["pollution_entry_ids"] == [entry_id]
     assert result["actions"][0]["action"] == "quarantine"
     rejection = conn.execute("SELECT reason FROM journal_rejections WHERE journal_entry_id = ?", (entry_id,)).fetchone()
     assert rejection["reason"].startswith("digest pollution:")
@@ -1516,7 +1524,7 @@ def test_tool_only_journal_digest_marks_entries_processed_without_calling_llm(tm
     row = conn.execute("SELECT processed_run_id FROM journal_entries WHERE id = ?", (entry_id,)).fetchone()
     assert row["processed_run_id"] == result["run_id"]
     rejection = conn.execute("SELECT reason FROM journal_rejections WHERE journal_entry_id = ?", (entry_id,)).fetchone()
-    assert rejection["reason"] == "no durable memory candidate"
+    assert rejection["reason"] == "admission:tool_noise"
 
 
 def test_journal_digest_marks_reviewed_entries_without_candidates_processed(tmp_path, monkeypatch):
@@ -1548,7 +1556,7 @@ def test_journal_digest_marks_reviewed_entries_without_candidates_processed(tmp_
     row = conn.execute("SELECT processed_run_id FROM journal_entries WHERE id = ?", (entry_id,)).fetchone()
     assert row["processed_run_id"] == result["run_id"]
     rejection = conn.execute("SELECT reason FROM journal_rejections WHERE journal_entry_id = ?", (entry_id,)).fetchone()
-    assert rejection["reason"] == "no durable memory candidate"
+    assert rejection["reason"] == "admission:tool_noise"
 
 
 def test_llm_digest_filtered_output_remains_pending_without_dead_letter(tmp_path, monkeypatch):
@@ -2005,6 +2013,23 @@ def test_journal_digest_dynamic_limit_scales_up_when_backlog_is_large(tmp_path, 
     assert metadata["backlog_delta"] == -5
     assert metadata["productive_writes"] == 0
     assert metadata["no_insert_reason"] == "explicit_skip"
+
+
+def test_dynamic_limit_ignores_stale_2000_threshold_on_small_window():
+    class _CountConn:
+        def execute(self, *_args, **_kwargs):
+            return type("Row", (), {"fetchone": lambda self: (999,)})()
+
+    scaled = journal_module._dynamic_journal_digest_limit(
+        _CountConn(),
+        configured_limit=80,
+        journal_config={
+            "dynamic_max_entries_enabled": True,
+            "dynamic_backlog_threshold": 2000,
+            "max_entries_per_digest_ceiling": 1200,
+        },
+    )
+    assert scaled == 640
 
 
 def test_journal_capture_keeps_long_english_text_that_only_looks_base64ish(tmp_path):

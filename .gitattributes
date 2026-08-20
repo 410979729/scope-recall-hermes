@@ -1,0 +1,3 @@
+# Windows working trees may use CRLF. Treat CR as a line terminator while
+# preserving trailing-space, blank-at-EOF, and space-before-tab checks.
+* whitespace=trailing-space,space-before-tab,cr-at-eol

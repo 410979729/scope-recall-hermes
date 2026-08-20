@@ -368,7 +368,8 @@ def test_journal_apply_uses_same_pollution_gate_and_rejection_receipt():
     )
 
     assert result["counts"]["quarantined"] == 1
-    assert result["processed_entry_ids"] == [77]
+    assert result["processed_entry_ids"] == []
+    assert result["pollution_entry_ids"] == [77]
     assert result["actions"][0]["action"] == "quarantine"
     assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
     rejection = conn.execute(

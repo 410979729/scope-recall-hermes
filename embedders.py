@@ -40,7 +40,7 @@ except Exception:  # pragma: no cover - optional dependency of OpenAI adapters
     _httpx = None
 
 try:
-    from sentence_transformers import SentenceTransformer
+    from sentence_transformers import SentenceTransformer  # type: ignore[reportMissingImports]
 except Exception:  # pragma: no cover - optional dependency
     SentenceTransformer = None
 

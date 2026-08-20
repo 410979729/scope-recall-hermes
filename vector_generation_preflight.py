@@ -3,7 +3,9 @@
 The generation manifest lives in SQLite, while vectors live in a separately
 addressable companion.  A READY manifest is not activation evidence by itself:
 this module verifies the immutable build receipt and opens the existing store
-without creating any directory, table, schema, or metadata.
+without creating any directory, table, schema, or metadata. Outward reports
+sanitize generation identifiers; raw identity stays on the manifest used for
+database and filesystem lookup.
 """
 
 from __future__ import annotations
@@ -29,6 +31,87 @@ from .vector_store import build_vector_store, normalize_vector_backend
 
 PREFLIGHT_RECEIPT_FILENAME = ".generation-preflight.json"
 PREFLIGHT_RECEIPT_SCHEMA = "scope-recall.vector-generation-preflight.v2"
+_READY_PREFLIGHT_TEXT_LIMIT = 300
+_REDACTED_GENERATION_PREFIX = "redacted-generation"
+_GENERIC_REDACTION_MARKERS = (
+    "[REDACTED_PATH]",
+    "[REDACTED_SECRET]",
+    "[REDACTED_KEY]",
+    "[REDACTED]",
+)
+_UNSAFE_GENERATION_ID_MARKERS = (
+    ":\\",
+    ":/",
+    "\\\\",
+    "/home/",
+    "/users/",
+    "/tmp/",
+    "image_cache",
+    "[screenshot]",
+    "[image attached",
+    "sk-",
+)
+
+
+def _unsafe_generation_id_text(text: str) -> bool:
+    lowered = str(text or "").casefold()
+    if not lowered:
+        return False
+    if any(token in lowered for token in _UNSAFE_GENERATION_ID_MARKERS):
+        return True
+    return "\\" in lowered or lowered.startswith("/")
+
+
+def _is_generic_redaction_only(text: str) -> bool:
+    leftover = str(text or "").strip()
+    if not leftover:
+        return True
+    for marker in _GENERIC_REDACTION_MARKERS:
+        leftover = leftover.replace(marker, "")
+    return leftover.strip() == ""
+
+
+def sanitize_generation_identifier(raw: str) -> str:
+    """Return one secret-free, collision-resistant outward generation id.
+
+    Safe unique identifiers pass through. Empty, generic-redaction-only, or
+    still-unsafe text becomes ``redacted-generation-<bounded sha256>`` of the
+    original value. The hash is taken from the raw identifier so two different
+    paths that both redact to ``[REDACTED_PATH]`` stay distinct.
+    """
+
+    text = str(raw or "")
+    if not text:
+        return ""
+    cleaned = sanitize_report_text(text)[:_READY_PREFLIGHT_TEXT_LIMIT]
+    if (
+        cleaned
+        and not _is_generic_redaction_only(cleaned)
+        and not _unsafe_generation_id_text(cleaned)
+    ):
+        return cleaned
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    return f"{_REDACTED_GENERATION_PREFIX}-{digest}"
+
+
+def sanitize_outward_preflight_report(
+    report: Mapping[str, Any],
+    *,
+    raw_generation_id: str = "",
+) -> dict[str, Any]:
+    """Sanitize one serialized preflight report without changing lookup inputs."""
+
+    raw = str(raw_generation_id or report.get("generation_id") or "")
+    safe = sanitize_generation_identifier(raw)
+    outward = dict(report)
+    outward["generation_id"] = safe
+    if not raw:
+        return outward
+    for key, value in list(outward.items()):
+        if key == "generation_id" or not isinstance(value, str) or raw not in value:
+            continue
+        outward[key] = value.replace(raw, safe)
+    return outward
 
 
 def _manifest_identity(manifest: Mapping[str, Any]) -> GenerationIdentity:
@@ -220,20 +303,23 @@ def validate_generation_physical_store(
         if require_receipt:
             receipt = _load_generation_preflight_receipt(generation_root)
             _validate_receipt_binding(receipt, manifest, audit)
-        return {
-            "ok": True,
-            "generation_id": generation_id,
-            "storage_path": str(manifest.get("storage_path") or ""),
-            "backend": backend,
-            "table_name": identity.table_name,
-            "dimensions": identity.dimensions,
-            "identity_hash": identity.fingerprint,
-            "physical_rows": physical_rows,
-            "unique_ids": unique_ids,
-            "duplicate_rows": duplicate_rows,
-            "physical_records_sha256": record_hash,
-            "receipt_sha256": str((receipt or {}).get("receipt_sha256") or ""),
-        }
+        return sanitize_outward_preflight_report(
+            {
+                "ok": True,
+                "generation_id": generation_id,
+                "storage_path": str(manifest.get("storage_path") or ""),
+                "backend": backend,
+                "table_name": identity.table_name,
+                "dimensions": identity.dimensions,
+                "identity_hash": identity.fingerprint,
+                "physical_rows": physical_rows,
+                "unique_ids": unique_ids,
+                "duplicate_rows": duplicate_rows,
+                "physical_records_sha256": record_hash,
+                "receipt_sha256": str((receipt or {}).get("receipt_sha256") or ""),
+            },
+            raw_generation_id=generation_id,
+        )
     except GenerationCompatibilityError:
         raise
     except Exception as exc:

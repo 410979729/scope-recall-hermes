@@ -8,13 +8,31 @@ candidate apply.
 
 Release rolls back only leftover, contractually disposable snapshot state.
 Callers must commit known legitimate DML before invoking the boundary helper.
+
+Write transactions are also measured so long holders are visible in receipts
+and logs instead of being discovered through another process's
+``database is locked`` noise.
 """
 
 from __future__ import annotations
 
+import logging
 import sqlite3
+import time
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 from .sqlite_recovery import rollback_if_active
+
+logger = logging.getLogger(__name__)
+
+SLOW_TRUTH_TRANSACTION_SECONDS = 5.0
+
+_LAST_TRANSACTION_STATS: dict[str, Any] = {
+    "max_ms": 0.0,
+    "max_context": "",
+    "slow_count": 0,
+}
 
 
 class OpenTransactionAtNetworkBoundaryError(RuntimeError):
@@ -52,9 +70,68 @@ def prepare_network_boundary(conn: sqlite3.Connection | None, context: str) -> N
     assert_no_open_transaction(conn, context)
 
 
+def _record_transaction_duration(context: str, started_monotonic: float) -> None:
+    elapsed_ms = (time.perf_counter() - started_monotonic) * 1000.0
+    if elapsed_ms > _LAST_TRANSACTION_STATS["max_ms"]:
+        _LAST_TRANSACTION_STATS["max_ms"] = round(elapsed_ms, 2)
+        _LAST_TRANSACTION_STATS["max_context"] = context
+    if elapsed_ms >= SLOW_TRUTH_TRANSACTION_SECONDS * 1000.0:
+        _LAST_TRANSACTION_STATS["slow_count"] = (
+            int(_LAST_TRANSACTION_STATS["slow_count"]) + 1
+        )
+        logger.warning(
+            "Scope Recall truth write transaction held for %.1fms (%s); "
+            "budget is %.0fs",
+            elapsed_ms,
+            context,
+            SLOW_TRUTH_TRANSACTION_SECONDS,
+        )
+
+
+class TruthTransactionTimer:
+    """Idempotent duration probe for one truth write transaction."""
+
+    def __init__(self, context: str) -> None:
+        self._context = context
+        self._started = time.perf_counter()
+        self._stopped = False
+
+    def stop(self) -> None:
+        if self._stopped:
+            return
+        self._stopped = True
+        _record_transaction_duration(self._context, self._started)
+
+
+@contextmanager
+def timed_truth_transaction(context: str) -> Iterator[None]:
+    """Measure one truth write transaction and surface slow holders."""
+
+    timer = TruthTransactionTimer(context)
+    try:
+        yield
+    finally:
+        timer.stop()
+
+
+def transaction_duration_stats() -> dict[str, Any]:
+    """Expose process-lifetime write-transaction duration highlights."""
+
+    return dict(_LAST_TRANSACTION_STATS)
+
+
+def reset_transaction_duration_stats() -> None:
+    _LAST_TRANSACTION_STATS.update({"max_ms": 0.0, "max_context": "", "slow_count": 0})
+
+
 __all__ = [
     "OpenTransactionAtNetworkBoundaryError",
+    "SLOW_TRUTH_TRANSACTION_SECONDS",
+    "TruthTransactionTimer",
     "assert_no_open_transaction",
     "prepare_network_boundary",
     "release_snapshot_transaction",
+    "reset_transaction_duration_stats",
+    "timed_truth_transaction",
+    "transaction_duration_stats",
 ]

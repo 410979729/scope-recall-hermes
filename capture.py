@@ -11,10 +11,10 @@ import sqlite3
 import threading
 import time
 import uuid
-from contextlib import contextmanager, nullcontext
-from typing import Any, Callable, Iterator
+from typing import Any, Callable
 
 from .capture_filters import should_capture_text
+from .memory_mutation import MemoryMutationService
 from .models import recall_scope_mode
 from .relation_frequency_maintenance import (
     drain_relation_frequency_work,
@@ -27,56 +27,22 @@ from .relation_rebuild_queue import (
 from .scope import canonical_user_id
 from .sql_store import store_row
 from .vector_runtime import replay_vector_outbox
+from . import write_kernel as write_kernel_mod
+from .write_kernel import (
+    WRITE_AUTHORITY_BUSY,
+    _writer_lifecycle_lock,
+    has_positive_write_authority,
+    hold_positive_write_authority,
+    require_positive_write_authority,
+)
+
+_WRITE_KERNEL_REEXPORT_COMPAT = (
+    WRITE_AUTHORITY_BUSY,
+    hold_positive_write_authority,
+    require_positive_write_authority,
+)
 
 logger = logging.getLogger(__name__)
-
-WRITE_AUTHORITY_BUSY = "truth_writer_busy"
-
-
-def _writer_lifecycle_lock(provider: Any):
-    """Return the provider's enqueue/shutdown gate, with legacy-test fallback."""
-
-    return getattr(provider, "_writer_lifecycle_lock", None) or nullcontext()
-
-
-def has_positive_write_authority(provider: Any) -> bool:
-    """Return whether a new durable write unit may start.
-
-    Positive authority is exactly owner role with no shutdown request. Read
-    connection reuse is intentionally not part of this predicate so followers
-    can still recall through ``_require_conn``.
-    """
-
-    blocked = getattr(provider, "_truth_writes_blocked", None)
-    if callable(blocked):
-        return not bool(blocked())
-    shutdown = getattr(provider, "_shutdown_requested", None)
-    if shutdown is not None and shutdown.is_set():
-        return False
-    return getattr(provider, "_truth_writer_role", None) == "owner"
-
-
-def require_positive_write_authority(provider: Any) -> None:
-    """Reject a new durable write unit with a single sanitized busy error."""
-
-    if not has_positive_write_authority(provider):
-        raise RuntimeError(WRITE_AUTHORITY_BUSY)
-
-
-@contextmanager
-def hold_positive_write_authority(provider: Any) -> Iterator[None]:
-    """Hold lifecycle from the authority check through the caller's durable unit.
-
-    Shutdown publishes ``_shutdown_requested`` only while this same RLock is
-    held. A unit that already passed the check can therefore commit before the
-    flag becomes visible, and a later unit cannot start DML after the flag is
-    set. Nested callers may re-enter because the gate is an RLock. Lock order
-    stays lifecycle first, then ``provider._lock`` / SQLite.
-    """
-
-    with _writer_lifecycle_lock(provider):
-        require_positive_write_authority(provider)
-        yield
 
 
 def _drain_relation_rebuild_debt(provider: Any) -> None:
@@ -325,8 +291,7 @@ def store_now(
     """
     if not should_capture_text(content, provider._config).allowed:
         return "", False, None
-    with hold_positive_write_authority(provider):
-        conn = provider._require_conn()
+    with write_kernel_mod.hold_positive_write_authority(provider):
         memory_id = uuid.uuid4().hex
         requested_scope_mode = str(scope_mode or "").strip().lower()
         if requested_scope_mode not in {"shared", "local", "shared_pool"}:
@@ -348,8 +313,12 @@ def store_now(
             metadata_payload.setdefault("scope_identity_mode", "canonical")
         metadata_json = json.dumps(metadata_payload, ensure_ascii=False, sort_keys=True)
         companion_result: dict[str, Any] | None = None
-        with provider._lock:
-            try:
+        inserted = False
+        from .transaction_guard import TruthTransactionTimer
+
+        store_transaction_timer = TruthTransactionTimer(f"capture store ({source})")
+        try:
+            with MemoryMutationService(provider).transaction() as conn:
                 memory_id, _summary, _updated_at, inserted = store_row(
                     conn,
                     memory_id=memory_id,
@@ -370,13 +339,141 @@ def store_now(
                     or str(source).startswith("legacy-"),
                     commit=False,
                 )
-                if inserted:
-                    if before_commit is not None:
-                        companion_result = before_commit(conn, memory_id)
-                conn.commit()
-            except BaseException:
-                if conn.in_transaction:
-                    conn.rollback()
-                raise
+                if inserted and before_commit is not None:
+                    companion_result = before_commit(conn, memory_id)
+        finally:
+            store_transaction_timer.stop()
         replay_vector_outbox(provider)
         return memory_id, inserted, companion_result
+
+
+def capture_turn_llm_candidates(
+    provider: Any,
+    *,
+    clean_user: str,
+    clean_assistant: str,
+    user_allowed: bool,
+    assistant_allowed: bool,
+    extract_fn: Callable[..., Any],
+) -> tuple[bool, bool]:
+    """Run optional turn LLM capture. Returns (extracted, policy_blocked)."""
+
+    from .http_utils import UnsafeEndpointError
+    from .write_kernel import prepare_network_boundary, release_snapshot_transaction
+
+    capture_llm_config = provider._config.get("capture_llm")
+    if not isinstance(capture_llm_config, dict) or (
+        capture_llm_config.get("enabled") not in (True, "true", "1", "yes", "on")
+    ):
+        return False, False
+    min_user = int(capture_llm_config.get("min_user_chars", 20))
+    min_asst = int(capture_llm_config.get("min_assistant_chars", 30))
+    if not (
+        user_allowed
+        and len(clean_user) >= min_user
+        and assistant_allowed
+        and len(clean_assistant) >= min_asst
+    ):
+        return False, False
+    try:
+        with provider._lock:
+            release_snapshot_transaction(provider._conn)
+            prepare_network_boundary(provider._conn, "provider.sync_turn.capture_llm")
+        candidates = extract_fn(clean_user, clean_assistant, provider._config)
+    except UnsafeEndpointError:
+        logger.warning(
+            "Scope Recall capture blocked by endpoint policy; "
+            "durable capture fallbacks disabled for this turn"
+        )
+        return False, True
+    except Exception:
+        logger.exception("Scope Recall capture LLM extraction failed")
+        return False, False
+    extracted = False
+    for candidate in candidates:
+        if len(candidate.content) < 12:
+            continue
+        enqueue_store(
+            provider,
+            content=candidate.content,
+            source="turn-llm-extracted",
+            target=candidate.target,
+            session_id=provider._session_id,
+            metadata={
+                "category": candidate.memory_type,
+                "confidence": candidate.confidence,
+                "entities": candidate.entities,
+                "tags": candidate.tags,
+            },
+        )
+        extracted = True
+    return extracted, False
+
+
+def capture_turn_fallbacks(
+    provider: Any,
+    *,
+    clean_user: str,
+    clean_assistant: str,
+    user_allowed: bool,
+    assistant_allowed: bool,
+    llm_extracted: bool,
+    capture_policy_blocked: bool,
+    min_capture: int,
+    extract_candidates_fn: Callable[..., Any],
+) -> None:
+    """Legacy regex/raw capture fallbacks after LLM capture."""
+
+    from .gating import config_bool
+
+    extracted = False
+    per_turn_cfg = provider._config.get("per_turn_extraction") if isinstance(provider._config.get("per_turn_extraction"), dict) else {}
+    per_turn_regex_enabled = config_bool(per_turn_cfg, "enabled", False) if isinstance(per_turn_cfg, dict) else False
+    if (
+        not llm_extracted
+        and not capture_policy_blocked
+        and per_turn_regex_enabled
+        and user_allowed
+    ):
+        for candidate in extract_candidates_fn(clean_user):
+            candidate_min_capture = min(min_capture, 24) if candidate.target in {"user", "ops", "project"} else min_capture
+            if len(candidate.content) < candidate_min_capture:
+                continue
+            enqueue_store(
+                provider,
+                content=candidate.content,
+                source="turn-extracted",
+                target=candidate.target,
+                session_id=provider._session_id,
+                metadata={"category": candidate.category, "confidence": candidate.confidence},
+            )
+            extracted = True
+    if (
+        not llm_extracted
+        and not capture_policy_blocked
+        and config_bool(provider._config, "capture_raw_user", False)
+        and user_allowed
+        and len(clean_user) >= min_capture
+        and not extracted
+    ):
+        enqueue_store(
+            provider,
+            content=clean_user,
+            source="turn-user",
+            target="general",
+            session_id=provider._session_id,
+        )
+    if (
+        not llm_extracted
+        and not capture_policy_blocked
+        and config_bool(provider._config, "capture_assistant", False)
+        and assistant_allowed
+        and len(clean_assistant) >= min_capture
+    ):
+        enqueue_store(
+            provider,
+            content=clean_assistant,
+            source="turn-assistant",
+            target="general",
+            session_id=provider._session_id,
+        )

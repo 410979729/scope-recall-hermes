@@ -20,6 +20,7 @@ import scope_recall.journal as journal
 import scope_recall.lifecycle_service as lifecycle_service_module
 import scope_recall.memory_ops as memory_ops_module
 import scope_recall.nightly_digest as nightly_digest
+from _scope_recall_public_memory_port import attach_public_truth_ports
 from scope_recall.journal import JournalDigestCandidate, JournalEntry, apply_journal_candidates, ensure_journal_schema, heuristic_journal_candidates
 from scope_recall.memory_ops import archive_memories, dedupe_memories, delete_memories, govern_memories, update_memory
 from scope_recall.models import RuntimeScope
@@ -207,6 +208,7 @@ class _FakeProvider:
         self._vector_ready = True
         self._vector_status = "ready"
         self._vector_message = ""
+        attach_public_truth_ports(self)
 
     def _require_conn(self) -> sqlite3.Connection:
         return self._conn
@@ -362,6 +364,7 @@ def test_missing_writable_scope_list_fails_closed_for_deletes():
             self._conn = conn
             self._lock = threading.RLock()
             self._accessible_scope_ids = ["legacy-readable-scope"]
+            attach_public_truth_ports(self)
 
         def _require_conn(self) -> sqlite3.Connection:
             return self._conn
@@ -650,6 +653,10 @@ def test_scope_recall_forget_soft_archive_commit_failure_keeps_durable_sql_unarc
         def __init__(self, path: Path) -> None:
             self.raw = sqlite3.connect(path)
             self.raw.row_factory = sqlite3.Row
+
+        @property
+        def in_transaction(self) -> bool:
+            return bool(self.raw.in_transaction)
 
         def execute(self, *args, **kwargs):
             return self.raw.execute(*args, **kwargs)

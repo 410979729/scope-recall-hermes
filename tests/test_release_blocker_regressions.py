@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from _scope_recall_public_memory_port import attach_public_truth_ports
 from scope_recall.lifecycle_service import hard_delete_memories, transition_memory_lifecycle
 from scope_recall.memory_ops import dedupe_memories
 from scope_recall.sql_store import ensure_schema, store_row
@@ -90,6 +91,7 @@ class _MemoryProvider:
         self._vector_message = ""
         self._writable_scope_ids = ["scope-a"]
         self._accessible_scope_ids = ["scope-a"]
+        attach_public_truth_ports(self)
 
     def _require_conn(self) -> sqlite3.Connection:
         return self._conn

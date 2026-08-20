@@ -16,6 +16,7 @@ from scope_recall import activation_transaction
 from scope_recall.maintenance_lease import ACTIVATION_GUARD_TRIGGER_PREFIX
 from scope_recall.sqlite_backup import (
     SqliteBackupError,
+    _normalize_standalone_staging_journal,
     inspect_sqlite_health,
     logical_fingerprint,
     verified_online_backup,
@@ -33,6 +34,42 @@ def _write_truth_db(path: Path, *, marker: str = "alpha") -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def _write_wal_truth_db(path: Path, *, marker: str = "wal-source") -> None:
+    """Create a real WAL-mode truth DB so online backup copies WAL into staging."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = connect_truth_database(path, mode="rwc")
+    try:
+        mode_row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
+        mode = "" if mode_row is None else str(mode_row[0]).lower()
+        if mode != "wal":
+            raise RuntimeError(f"unable to create WAL-mode source: {mode or 'unknown'}")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS probe(id INTEGER PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        conn.execute("DELETE FROM probe")
+        conn.execute("INSERT INTO probe(value) VALUES (?)", (marker,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _existing_sqlite_sidecars(path: Path) -> list[Path]:
+    return [
+        sidecar
+        for sidecar in (
+            Path(f"{path}-wal"),
+            Path(f"{path}-shm"),
+            Path(f"{path}-journal"),
+        )
+        if sidecar.exists() or sidecar.is_symlink()
+    ]
+
+
+def _staging_leftovers(destination: Path) -> list[Path]:
+    return sorted(destination.parent.glob(f"{destination.name}.scope-recall-stage-*"))
 
 
 def test_verified_online_backup_healthy_path_records_health_and_logical_equivalence(
@@ -68,6 +105,54 @@ def test_verified_online_backup_healthy_path_records_health_and_logical_equivale
     with sqlite3.connect(backup) as conn:
         value = conn.execute("SELECT value FROM probe").fetchone()[0]
     assert value == "healthy"
+
+
+def test_verified_online_backup_wal_source_publishes_standalone_without_sidecars(
+    tmp_path: Path,
+) -> None:
+    """WAL source backup must publish a sidecar-free standalone destination.
+
+    Reopening WAL-mode staging read-only for health/iterdump creates tmp-wal
+    and tmp-shm. Cleanup correctly refuses those as unowned; the backup must
+    therefore leave staging in DELETE mode before that reopen, not delete
+    unowned sidecars later.
+    """
+
+    source = tmp_path / "memory.sqlite3"
+    destination = tmp_path / "backup.sqlite3"
+    _write_wal_truth_db(source, marker="wal-row")
+
+    source_conn = connect_truth_database(source, mode="ro")
+    try:
+        source_mode = source_conn.execute("PRAGMA journal_mode").fetchone()
+    finally:
+        source_conn.close()
+    assert source_mode is not None
+    assert str(source_mode[0]).lower() == "wal"
+
+    receipt = verified_online_backup(source, destination)
+
+    assert destination.is_file()
+    assert receipt["logical_equivalent"] is True
+    assert receipt["backup_health"]["ok"] is True
+    assert str(receipt["backup_health"]["quick_check"]).lower() == "ok"
+    assert receipt["backup_health"]["foreign_key_violation_present"] is False
+    assert logical_fingerprint(source) == logical_fingerprint(destination)
+    assert _existing_sqlite_sidecars(destination) == []
+    assert _staging_leftovers(destination) == []
+
+    dest_conn = connect_truth_database(destination, mode="ro")
+    try:
+        dest_mode = dest_conn.execute("PRAGMA journal_mode").fetchone()
+        value = dest_conn.execute("SELECT value FROM probe").fetchone()
+    finally:
+        dest_conn.close()
+    assert dest_mode is not None
+    assert str(dest_mode[0]).lower() == "delete"
+    assert value is not None
+    assert value[0] == "wal-row"
+    assert _existing_sqlite_sidecars(destination) == []
+    assert _staging_leftovers(destination) == []
 
 
 def test_logical_fingerprint_keeps_normal_trigger_with_reserved_text(
@@ -953,6 +1038,68 @@ def test_activation_wrapper_remains_monkeypatchable_and_surfaces_receipt_fields(
         == surfaced["backup_logical_fingerprint"]
         == surfaced["logical_fingerprint"]
     )
+    assert surfaced["drift_detected"] is False
+    assert type(surfaced["drift_detected"]) is bool
+    assert surfaced["manual_recovery_required"] is False
+    assert type(surfaced["manual_recovery_required"]) is bool
+
+
+def test_committed_sqlite_surface_uses_typed_false_transactional_booleans(
+    tmp_path: Path,
+) -> None:
+    """A successful commit must emit typed JSON booleans, not null drift."""
+
+    home = tmp_path / "hermes-home"
+    storage = home / "scope-recall"
+    storage.mkdir(parents=True)
+    _write_truth_db(storage / "memory.sqlite3", marker="committed-bools")
+    (home / "config.yaml").write_text("model: test\n", encoding="utf-8")
+    (storage / "config.json").write_text("{}", encoding="utf-8")
+
+    snapshot = activation_transaction.capture_activation_state(
+        home, writer_quiesced=True
+    )
+    receipt = activation_transaction.committed_activation_receipt(
+        snapshot,
+        plugin_dir=home / "plugins" / "scope-recall",
+        previous_plugin_existed=False,
+        plugin_backup_path="",
+        plugin_replaced=False,
+    )
+    surfaced = receipt["sqlite"]
+    assert surfaced["drift_detected"] is False
+    assert type(surfaced["drift_detected"]) is bool
+    assert surfaced["manual_recovery_required"] is False
+    assert type(surfaced["manual_recovery_required"]) is bool
+
+
+def test_surface_receipt_preserves_typed_true_when_drift_detected() -> None:
+    drifted = activation_transaction._surface_receipt(
+        {"path": "memory.sqlite3", "drift_detected": True},
+        restored=False,
+    )
+    assert drifted["drift_detected"] is True
+    assert type(drifted["drift_detected"]) is bool
+    assert drifted["manual_recovery_required"] is True
+    assert type(drifted["manual_recovery_required"]) is bool
+
+    restored = activation_transaction._surface_receipt(
+        {"path": "memory.sqlite3", "drift_detected": True},
+        restored=True,
+    )
+    assert restored["drift_detected"] is True
+    assert type(restored["drift_detected"]) is bool
+    assert restored["manual_recovery_required"] is False
+    assert type(restored["manual_recovery_required"]) is bool
+
+    clean = activation_transaction._surface_receipt(
+        {"path": "memory.sqlite3", "drift_detected": False},
+        restored=False,
+    )
+    assert clean["drift_detected"] is False
+    assert type(clean["drift_detected"]) is bool
+    assert clean["manual_recovery_required"] is False
+    assert type(clean["manual_recovery_required"]) is bool
 
 
 def test_activation_backup_failure_fail_closed_leaves_no_usable_snapshot(
@@ -1011,6 +1158,25 @@ def test_sqlite_backup_receipt_rejects_nonboolean_logical_equivalent(
             destination,
             receipt,
         )
+
+
+@pytest.mark.parametrize("pragma_row", [("wal",), ("TRUNCATE",), ("",), None])
+def test_normalize_standalone_staging_journal_refuses_non_delete_or_empty_row(
+    pragma_row: tuple[str, ...] | None,
+) -> None:
+    """PRAGMA journal_mode=DELETE must return delete; any other/empty row fails closed."""
+
+    class _Cursor:
+        def fetchone(self) -> tuple[str, ...] | None:
+            return pragma_row
+
+    class _Connection:
+        def execute(self, sql: str) -> _Cursor:
+            assert "journal_mode=DELETE" in "".join(sql.split())
+            return _Cursor()
+
+    with pytest.raises(SqliteBackupError, match="DELETE journal mode"):
+        _normalize_standalone_staging_journal(_Connection())  # type: ignore[arg-type]
 
 
 def test_sqlite_backup_module_is_activation_boundary_not_startup_import() -> None:

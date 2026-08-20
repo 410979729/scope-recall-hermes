@@ -12,11 +12,19 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import pytest
+
 import scope_recall.journal as journal_module
 import scope_recall.journal_extractors as journal_extractors
 from datetime import date
 
 import scope_recall.nightly_digest as nightly_digest
+from scope_recall.fact_actions import (
+    ClaimDraft,
+    EvidenceReference,
+    EvolutionAction,
+    EvolutionProposal,
+)
 from scope_recall.journal import (
     JournalDigestCandidate,
     append_journal_entry,
@@ -503,6 +511,210 @@ def test_apply_journal_candidates_releases_before_vector_embed(tmp_path, monkeyp
     conn.close()
 
 
+def test_apply_journal_candidates_caller_owned_rollback_leaves_no_durable_truth(
+    tmp_path, monkeypatch
+):
+    """Caller-owned BEGIN IMMEDIATE must survive apply; rollback undoes the UoW.
+
+    Status stays applied_pending_outer_commit. The helper must not commit or
+    drain derived vector work as if that pending contract were already durable.
+    """
+
+    from scope_recall.vector_generation import ensure_vector_generation_schema
+
+    db_path = tmp_path / "memory.sqlite3"
+    conn = _open_memory_db(db_path)
+    ensure_vector_generation_schema(conn)
+    conn.execute(
+        "INSERT OR REPLACE INTO vector_generation_state(key, value, updated_at) VALUES (?, ?, ?)",
+        ("current_generation", "gen-caller-owned", "2026-08-18T00:00:00+00:00"),
+    )
+    conn.commit()
+    scope = _scope()
+    local_scope_id = build_scope_id(scope)
+    shared_scope_id = build_shared_scope_id(scope)
+    entry_id = append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=local_scope_id,
+        shared_scope_id=shared_scope_id,
+        session_id="caller-owned-rollback",
+        turn_number=1,
+        role="user",
+        content="I now live in Bangalore; please keep this current.",
+    )
+    baseline = {
+        "memories": conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0],
+        "receipts": conn.execute("SELECT COUNT(*) FROM fact_action_receipts").fetchone()[0],
+        "outbox": conn.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0],
+        "watermark": conn.execute(
+            "SELECT processed_run_id FROM journal_entries WHERE id = ?",
+            (entry_id,),
+        ).fetchone()[0],
+    }
+    drain_calls: list[int] = []
+
+    def tracking_drain(vector_runtime, deferred_vector_ops):
+        del vector_runtime
+        drain_calls.append(len(deferred_vector_ops or []))
+        return {"claimed": 0, "completed": 0, "failed": 0}
+
+    monkeypatch.setattr(journal_module, "_drain_deferred_journal_vector", tracking_drain)
+    candidate = JournalDigestCandidate(
+        content="Benchmark User currently lives in Bangalore.",
+        target="user",
+        memory_type="factual",
+        importance=0.9,
+        confidence=0.99,
+        reason="caller-owned journal rollback regression",
+        entry_ids=[entry_id],
+        session_ids=["caller-owned-rollback"],
+        evolution=EvolutionProposal(
+            action=EvolutionAction.ADD,
+            raw_action="add",
+            claim=ClaimDraft.from_parts(
+                subject="Benchmark User",
+                predicate="lives in",
+                value="Bangalore",
+                scope_id=local_scope_id,
+                cardinality="single",
+                valid_from="2026-07-01T00:00:00+00:00",
+            ),
+            evidence_refs=(
+                EvidenceReference(
+                    source_type="user_message",
+                    source_id="caller-owned-journal-message",
+                    quote="I now live in Bangalore; please keep this current.",
+                    speaker_subject="Benchmark User",
+                ),
+            ),
+            confidence=0.99,
+            reason="caller-owned journal rollback regression",
+            source="journal-digest",
+        ),
+    )
+    runtime_config = {
+        "fact_evolution": {
+            "enabled": True,
+            "mode": "auto_apply",
+            "journal_mode": "auto_apply",
+        }
+    }
+
+    conn.execute("BEGIN IMMEDIATE")
+    pending = apply_journal_candidates(
+        conn,
+        object(),
+        scope,
+        run_id="caller-owned-rollback",
+        candidates=[candidate],
+        runtime_config=runtime_config,
+    )
+    assert pending["actions"][0]["status"] == "applied_pending_outer_commit"
+    assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == baseline["memories"] + 1
+    assert (
+        conn.execute("SELECT COUNT(*) FROM fact_action_receipts").fetchone()[0]
+        == baseline["receipts"] + 1
+    )
+    assert (
+        conn.execute(
+            "SELECT processed_run_id FROM journal_entries WHERE id = ?",
+            (entry_id,),
+        ).fetchone()[0]
+        == "caller-owned-rollback"
+    )
+    assert conn.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0] > baseline["outbox"]
+    assert drain_calls == []
+    conn.rollback()
+
+    assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == baseline["memories"]
+    assert (
+        conn.execute("SELECT COUNT(*) FROM fact_action_receipts").fetchone()[0]
+        == baseline["receipts"]
+    )
+    assert (
+        conn.execute(
+            "SELECT processed_run_id FROM journal_entries WHERE id = ?",
+            (entry_id,),
+        ).fetchone()[0]
+        == baseline["watermark"]
+    )
+    assert conn.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0] == baseline["outbox"]
+    assert drain_calls == []
+    conn.close()
+
+
+def test_apply_journal_candidates_vector_replay_failure_keeps_committed_truth_and_replayable_outbox(
+    tmp_path, monkeypatch
+):
+    from scope_recall.vector_generation import ensure_vector_generation_schema
+
+    db_path = tmp_path / "memory.sqlite3"
+    conn = _open_memory_db(db_path)
+    ensure_vector_generation_schema(conn)
+    conn.execute(
+        "INSERT OR REPLACE INTO vector_generation_state(key, value, updated_at) VALUES (?, ?, ?)",
+        ("current_generation", "gen-c1", "2026-08-18T00:00:00+00:00"),
+    )
+    conn.commit()
+    scope = _scope()
+    first_id = append_journal_entry(
+        conn,
+        scope=scope,
+        scope_id=build_scope_id(scope),
+        shared_scope_id=build_shared_scope_id(scope),
+        session_id="apply-vector-fail",
+        turn_number=1,
+        role="user",
+        content="Vector replay failure must not roll back already committed truth rows.",
+    )
+
+    def boom_replay(vector_runtime, deferred_vector_ops, payload):
+        del vector_runtime, deferred_vector_ops, payload
+        raise RuntimeError("injected vector replay failure")
+
+    monkeypatch.setattr(journal_module, "_replay_or_defer_journal_vector", boom_replay)
+
+    with pytest.raises(RuntimeError, match="injected vector replay failure"):
+        apply_journal_candidates(
+            conn,
+            object(),
+            scope,
+            run_id="apply-vector-fail",
+            candidates=[
+                JournalDigestCandidate(
+                    content=(
+                        "scope-recall digest vector-fail must persist as a durable "
+                        "candidate even when the later vector drain raises."
+                    ),
+                    target="memory",
+                    memory_type="procedure",
+                    importance=0.9,
+                    confidence=0.86,
+                    entities=["scope-recall", "vector-fail"],
+                    tags=["digest-boundary", "vector-fail"],
+                    reason="vector fail candidate",
+                    entry_ids=[first_id],
+                    session_ids=["apply-vector-fail"],
+                )
+            ],
+        )
+    conn.close()
+
+    verify = sqlite3.connect(db_path)
+    try:
+        memories = verify.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+        sources = verify.execute("SELECT COUNT(*) FROM memory_journal_sources").fetchone()[0]
+        outbox = verify.execute(
+            "SELECT COUNT(*) FROM vector_outbox WHERE status = 'pending'"
+        ).fetchone()[0]
+    finally:
+        verify.close()
+    assert memories >= 1
+    assert sources >= 1
+    assert outbox >= 1
+
+
 def test_run_journal_digest_multi_scope_commits_rejection_before_next_network(
     tmp_path, monkeypatch
 ):
@@ -644,9 +856,11 @@ def test_run_journal_digest_multi_scope_commits_rejection_before_next_network(
     assert all(item["in_transaction"] is False for item in seen), seen
     assert all(item["peer_begin_immediate"] is True for item in seen), seen
     assert all(
-        item["rejection_reason"] == "no durable memory candidate" for item in seen
+        item["rejection_reason"] == "admission:tool_noise" for item in seen
     ), seen
     assert all(item["checkpoint"] for item in seen), seen
+    assert seen[0]["rejection_reason"] == "admission:tool_noise"
+    assert seen[0]["checkpoint"]
     verify = sqlite3.connect(db_path)
     try:
         first_row = verify.execute(
@@ -660,7 +874,7 @@ def test_run_journal_digest_multi_scope_commits_rejection_before_next_network(
     finally:
         verify.close()
     assert first_row[0] == result["run_id"]
-    assert rejection[0] == "no durable memory candidate"
+    assert rejection[0] == "admission:tool_noise"
 
 
 def test_sync_turn_capture_llm_releases_duplicate_journal_transaction(

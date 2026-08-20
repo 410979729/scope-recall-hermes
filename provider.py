@@ -5,34 +5,37 @@ The provider owns runtime lifecycle, scope resolution, vector setup, journal cap
 from __future__ import annotations
 
 import logging
-import json
 import os
 import queue
 import sqlite3
 import threading
-import time
-import weakref
-from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from agent.memory_provider import MemoryProvider
+from agent.memory_provider import MemoryProvider  # type: ignore[reportMissingImports]
 
 from .capture import (
-    enqueue_store,
+    capture_turn_fallbacks,
+    capture_turn_llm_candidates,
     flush_writer,
-    hold_positive_write_authority,
     shutdown_writer,
     start_writer,
 )
-from .candidate_extraction import extract_candidates_from_packet
-from .candidate_store import store_event_candidates
-from .capture_filters import contains_secret_like_text, redact_secret_like_text, sanitize_capture_text, sanitize_report_text, should_capture_text
+from .write_kernel import (
+    TruthWriterLease,
+    hold_positive_write_authority,  # noqa: F401
+    holding_truth_writer_lease,
+    sanitized_truth_writer_owner,
+)
+from .capture_filters import sanitize_capture_text, should_capture_text
 from .capture_llm import extract_capture_candidates
 from .config import load_runtime_config, save_runtime_config
-from .event_digest import MemoryEvent, build_evidence_packet
-from .journal import append_journal_entry, ensure_journal_schema, run_journal_digest
-from .http_utils import UnsafeEndpointError
+from .journal import ensure_journal_schema, run_journal_digest
+from ._internal.runtime.composition import RuntimeComposition, assemble_runtime
+from ._internal.runtime import peer_recovery as _peer_recovery
+from ._internal.runtime.truth_session import TruthSession
+from ._internal.runtime.background import BackgroundWork
+
 from .maintenance_lease import (
     MaintenanceLeaseError,
     activation_lease_status,
@@ -40,30 +43,39 @@ from .maintenance_lease import (
     install_activation_lease_authorizer,
 )
 from .embedders import BaseEmbedder
-from .gating import clean_text, compact_text, config_bool, dedup_key, normalize_query, should_skip_retrieval
+from .gating import clean_text, config_bool, dedup_key, normalize_query, should_skip_retrieval
 from .governance import extract_candidates
+from ._internal.runtime.kernel import KERNEL
+from ._internal.runtime.hooks import observe_memory_write
+from ._internal.runtime.storage import (
+    configure_published_writer_connection,
+    finish_writer_schema_setup,
+    open_configured_truth_connection,
+    open_readonly_truth_connection,
+    prepare_truth_schema,  # noqa: F401
+    truth_has_unprocessed_journal,
+)
+from ._internal.experience.runtime import (
+    run_experience_preflight,
+)
+from ._internal.journal.runtime import (
+    append_session_tool_journal_entries,
+    append_turn_journal_entries,
+    stage_pre_compress_journal_entries,
+)
+from ._internal.journal.tool_trace import tool_journal_content
 from .memory_ops import (
-    context_payload,
-    profile_payload,
-    archive_memories,
-    benchmark_queries,
-    dedupe_memories,
-    delete_memories,
-    explain_query,
-    export_memories,
-    feedback_memory,
+    archive_memories,  # noqa: F401
+    dedupe_memories,  # noqa: F401
+    delete_memories,  # noqa: F401
+    feedback_memory,  # noqa: F401
     fact_owned_memory_ids,
     find_semantic_merge_candidate,
-    govern_memories,
-    hygiene_report,
-    inspect_memory,
-    merge_memories,
-    probe_entity,
-    repair_vector,
-    related_entities,
-    stats_payload,
+    govern_memories,  # noqa: F401
+    merge_memories,  # noqa: F401
+    repair_vector,  # noqa: F401
     store_memory_now,
-    update_memory,
+    update_memory,  # noqa: F401
 )
 from .migration import migrate_legacy_scope_recall_storage
 from .models import RecallItem, RuntimeScope, recall_scope_mode
@@ -90,7 +102,6 @@ from .scope import (
 from .source_isolation import scope_is_memory_isolated
 from .sqlite_recovery import is_sqlite_lock_contention as _is_sqlite_lock_contention
 from .sql_store import ensure_schema
-
 from .storage_views import (
     search_curated_memories,
     search_db_memories,
@@ -99,79 +110,66 @@ from .storage_views import (
 )
 from .tooling import ScopeRecallToolService
 from .truth_connection import connect_truth_database
-from .transaction_guard import prepare_network_boundary
-from .writer_lease import (
-    TruthWriterLease,
-    holding_truth_writer_lease,
-    sanitized_truth_writer_owner,
-)
 from .vector_bootstrap import bootstrap_fresh_vector_companion
-from .vector_runtime import replay_vector_outbox, setup_vector_layer, vector_write_replay_limit
-from .experience_preflight import experience_preflight
-from .experience_promotion import promote_experiences
+from .vector_runtime import setup_vector_layer
 from .experience_store import backfill_skill_anchors
 from .freshness import backfill_untracked_memory_freshness
 
 logger = logging.getLogger(__name__)
 
+# Monkeypatch anchors. Composition/bootstrap/prefetch resolve these at call time.
+_COMPOSITION_RUNTIME_HOOKS = (
+    setup_vector_layer,
+    start_writer,
+)
+_BOOTSTRAP_RUNTIME_HOOKS = (
+    holding_truth_writer_lease,
+    save_runtime_config,
+    open_configured_truth_connection,
+    configure_published_writer_connection,
+    bootstrap_fresh_vector_companion,
+    activation_lease_status,
+    MaintenanceLeaseError,
+    install_activation_lease_authorizer,
+)
+_INITIALIZE_RUNTIME_HOOKS = (
+    TruthWriterLease,
+    sanitized_truth_writer_owner,
+    desktop_principal_from_config,
+    is_desktop_platform,
+    resolve_desktop_principal,
+    runtime_principal_status,
+    migrate_legacy_scope_recall_storage,
+    normalize_scope_identity,
+    build_scope_id,
+    build_shared_scope_id,
+    accessible_scope_ids,
+    writable_scope_ids,
+    build_shared_pool_scope_id,
+    _is_sqlite_lock_contention,
+    backfill_untracked_memory_freshness,
+    backfill_skill_anchors,
+    finish_writer_schema_setup,
+    ensure_schema,
+    ensure_journal_schema,
+    ensure_activation_guard_triggers,
+    open_readonly_truth_connection,
+    connect_truth_database,
+    shutdown_writer,
+    RUNTIME_STATUS_ACTIVE,
+    RUNTIME_STATUS_ACTIVE_READ_ONLY,
+)
+_PREFETCH_RUNTIME_HOOKS = (
+    render_current_turn_recall,
+    run_experience_preflight,
+    config_bool,
+    logger,
+)
+
 SQLITE_BUSY_TIMEOUT_SECONDS = 10.0
 STARTUP_FRESHNESS_BACKFILL_LIMIT = 500
 
-DEFAULT_TOOL_TRACE_SKIP_NAMES = {"todo", "skill_view", "skills_list"}
-DEFAULT_TOOL_TRACE_SKIP_NAME_FRAGMENTS = {"session_messages"}
-_PROVIDER_REGISTRY_LOCK = threading.RLock()
-_PROVIDER_REGISTRY: weakref.WeakSet[Any] = weakref.WeakSet()
-
-
-def _same_truth_database_path(left: Any, right: Any) -> bool:
-    """Return whether two provider DB paths name the same existing file.
-
-    Prefer ``os.path.samefile`` so hardlinks and junction aliases match.
-    ``OSError`` (including nonexistent paths) falls back to canonical
-    realpath/normcase comparison only.
-    """
-
-    if left is None or right is None:
-        return False
-    left_text = os.fspath(left)
-    right_text = os.fspath(right)
-    try:
-        return os.path.samefile(left_text, right_text)
-    except OSError:
-        left_key = os.path.normcase(os.path.realpath(left_text))
-        right_key = os.path.normcase(os.path.realpath(right_text))
-        return left_key == right_key
-
-
-def _provider_shutdown_requested(peer: Any) -> bool:
-    """Return whether a peer has entered its fail-closed shutdown boundary."""
-
-    shutdown = getattr(peer, "_shutdown_requested", None)
-    is_set = getattr(shutdown, "is_set", None)
-    return bool(is_set()) if callable(is_set) else False
-
-
-def _try_acquire_nonblocking(lock: Any) -> bool:
-    """Acquire ``lock`` without waiting. Invalid locks are not acquired."""
-
-    acquire = getattr(lock, "acquire", None)
-    if not callable(acquire):
-        return False
-    try:
-        return bool(acquire(blocking=False))
-    except TypeError:
-        return bool(acquire(False))
-
-
-def _peer_writer_lifecycle_lock(peer: Any) -> Any | None:
-    """Return a peer lifecycle lock that can be acquired and released, if any."""
-
-    lock = getattr(peer, "_writer_lifecycle_lock", None)
-    acquire = getattr(lock, "acquire", None)
-    release = getattr(lock, "release", None)
-    if callable(acquire) and callable(release):
-        return lock
-    return None
+_COMPOSITION_BIND_LOCK = threading.Lock()
 
 
 class ScopeRecallMemoryProvider(MemoryProvider):
@@ -183,7 +181,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._config: dict[str, Any] = {}
         self._retrieval_config: dict[str, Any] = {}
         self._vector_config: dict[str, Any] = {}
-        self._conn: sqlite3.Connection | None = None
+        self._composition = assemble_runtime(self)
+        self._truth = self._composition.truth
         self._lock = threading.RLock()
         self._write_queue: queue.Queue[Any] = queue.Queue()
         self._writer_thread: threading.Thread | None = None
@@ -232,17 +231,17 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             "truncated": False,
             "ids": [],
         }
+        self._truth_writer_lease: TruthWriterLease | None = None
+        self._truth_writer_role = "unknown"
+        self._truth_writer_owner: dict[str, Any] = {}
+        self._last_adjudication_at = 0.0
+        self._last_adjudication_report: dict[str, Any] = {}
         self._recall_service = RecallService(self)
-        self._tool_service = ScopeRecallToolService(self)
+        self._tool_service = ScopeRecallToolService(self._composition.tool_port)
         self._shutdown_requested = threading.Event()
         self._writer_lifecycle_lock = threading.RLock()
-        self._journal_digest_thread: threading.Thread | None = None
-        self._journal_digest_lock = threading.RLock()
-        self._last_journal_digest_started = 0.0
-        self._last_journal_digest_finished = 0.0
-        self._last_journal_digest_status = "never_run"
-        self._last_journal_digest_error = ""
-        self._journal_digest_consecutive_failures = 0
+        self._background = self._composition.background
+        self._foreground_busy_count = 0
         self._last_event_digest_report: dict[str, Any] = {
             "enabled": False,
             "dry_run": True,
@@ -252,9 +251,6 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             "candidates_rejected": 0,
             "rejection_reasons": {},
         }
-        self._truth_writer_lease: TruthWriterLease | None = None
-        self._truth_writer_role = "unknown"
-        self._truth_writer_owner: dict[str, Any] = {}
 
     @property
     def name(self) -> str:
@@ -279,13 +275,11 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         *,
         activation_lease_token: str = "",
     ) -> None:
-        storage_dir = Path(hermes_home).expanduser() / "scope-recall"
-        with holding_truth_writer_lease(storage_dir, role="save_config"):
-            save_runtime_config(values or {}, hermes_home)
-            self._bootstrap_storage(
-                hermes_home,
-                activation_lease_token=activation_lease_token,
-            )
+        return self._bind_composition().bootstrap.save_config(
+            values,
+            hermes_home,
+            activation_lease_token=activation_lease_token,
+        )
 
     def _bootstrap_storage(
         self,
@@ -293,47 +287,10 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         *,
         activation_lease_token: str = "",
     ) -> None:
-        """Create the empty SQLite truth/journal schema during `hermes memory setup`.
-
-        Gateway sessions can lazily construct agents only after the first user
-        message. Bootstrapping here gives operators an immediate, visible setup
-        artifact instead of a false-negative "no database yet" verification gap.
-        """
-        storage_dir = Path(hermes_home).expanduser() / "scope-recall"
-        storage_dir.mkdir(parents=True, exist_ok=True)
-        db_path = storage_dir / "memory.sqlite3"
-        conn = connect_truth_database(
-            db_path,
-            mode="rwc",
-            check_same_thread=False,
-            timeout=SQLITE_BUSY_TIMEOUT_SECONDS,
+        return self._bind_composition().bootstrap.bootstrap_storage(
+            hermes_home,
+            activation_lease_token=activation_lease_token,
         )
-        try:
-            install_activation_lease_authorizer(
-                conn,
-                db_path,
-                lease_token=activation_lease_token,
-            )
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            ensure_schema(conn, commit=False)
-            ensure_journal_schema(conn, commit=False)
-            ensure_activation_guard_triggers(
-                conn,
-                db_path,
-                lease_token=activation_lease_token,
-            )
-            conn.commit()
-            runtime_config = load_runtime_config(self._plugin_dir, storage_dir)
-            self._bootstrap_vector_companion(
-                storage_dir,
-                runtime_config,
-                truth_conn=conn,
-            )
-            conn.commit()
-        finally:
-            conn.close()
 
     def _bootstrap_vector_companion(
         self,
@@ -342,474 +299,51 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         *,
         truth_conn: sqlite3.Connection,
     ) -> dict[str, Any]:
-        """Delegate fresh primary/fallback selection to the bootstrap policy."""
-
-        result = bootstrap_fresh_vector_companion(
+        return self._bind_composition().bootstrap.bootstrap_vector_companion(
             storage_dir,
             runtime_config,
             truth_conn=truth_conn,
         )
-        self._last_vector_bootstrap = result
-        return result
 
     def _open_runtime_connection(self) -> sqlite3.Connection:
-        """Open and fully configure one live provider-owned SQLite connection.
-
-        The connection is published to ``self._conn`` immediately after
-        ``connect_truth_database`` returns, before authorizer/PRAGMA/schema
-        setup. Setup failure rolls back and closes; ``self._conn`` is cleared
-        only after close succeeds. A close failure retains the exact handle
-        and surfaces the close error with the setup error as context.
-        """
-
-        if self._db_path is None:
-            raise RuntimeError("Scope Recall database path is not initialized")
-        lease_status = activation_lease_status(self._db_path)
-        if lease_status["status"] == "stale":
-            raise MaintenanceLeaseError(
-                "stale activation maintenance lease blocks startup; inspect with "
-                "python scripts/recover.activation_lease.py --dry-run"
-            )
-        if lease_status["status"] == "active":
-            raise MaintenanceLeaseError(
-                "Scope Recall startup is blocked by an active activation maintenance lease"
-            )
-        conn = connect_truth_database(
-            self._db_path,
-            mode="rwc",
-            check_same_thread=False,
-            timeout=SQLITE_BUSY_TIMEOUT_SECONDS,
-        )
-        self._conn = conn
-        try:
-            install_activation_lease_authorizer(conn, self._db_path)
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            ensure_schema(conn, commit=False)
-            ensure_journal_schema(conn, commit=False)
-            ensure_activation_guard_triggers(conn, self._db_path)
-            conn.commit()
-        except BaseException as setup_error:
-            try:
-                if bool(getattr(conn, "in_transaction", False)):
-                    conn.rollback()
-            except Exception:
-                logger.exception(
-                    "Scope Recall SQLite rollback failed during runtime connection setup"
-                )
-            try:
-                conn.close()
-            except BaseException as close_error:
-                raise close_error from setup_error
-            if self._conn is conn:
-                self._conn = None
-            raise
-        return conn
+        return self._bind_composition().bootstrap.open_runtime_connection()
 
     def initialize(self, session_id: str, **kwargs) -> None:
-        """Serialize the full initialize lifecycle on the writer lifecycle lock."""
-
-        with self._writer_lifecycle_lock:
-            self._initialize_under_lifecycle_lock(session_id, **kwargs)
+        return self._bind_composition().initialize(session_id, **kwargs)
 
     def _has_live_initialize_runtime(self) -> bool:
-        """Return whether this instance still owns a live initialize role or resource.
-
-        Owner and reader roles, a published connection, an acquired writer
-        lease, or a live capture-writer thread all require shutdown before
-        another initialize. Disabled-missing-principal and fully cleaned
-        failed initialization have none of those and may be retried.
-        """
-
-        if self._truth_writer_role in {"owner", "reader"}:
-            return True
-        if self._conn is not None:
-            return True
-        lease = self._truth_writer_lease
-        if lease is not None and bool(getattr(lease, "acquired", False)):
-            return True
-        thread = self._writer_thread
-        return bool(thread is not None and thread.is_alive())
+        return self._bind_composition().lifecycle.has_live_initialize_runtime(self)
 
     def _initialize_under_lifecycle_lock(self, session_id: str, **kwargs) -> None:
-        """Run initialize while ``_writer_lifecycle_lock`` is already held.
-
-        Fail closed before clearing shutdown state or mutating fields when
-        this same provider still has a live runtime. The existing RLock keeps
-        initialize, shutdown, and promotion from deadlocking.
-        """
-
-        if self._has_live_initialize_runtime():
-            raise RuntimeError(
-                "Scope Recall provider must complete shutdown before initialize"
-            )
-        self._shutdown_requested.clear()
-        self._session_id = session_id
-        self._current_turn = 0
-        self._last_recall_turns = {}
-        self._config = {}
-        self._retrieval_config = {}
-        self._vector_config = {}
-        self._scope_id = ""
-        self._shared_scope_id = ""
-        self._shared_pool_enabled = False
-        self._shared_pool_write_enabled = False
-        self._shared_pool_id = ""
-        self._shared_pool_scope_id = ""
-        self._accessible_scope_ids = []
-        self._writable_scope_ids = []
-
-        raw_scope = RuntimeScope(
-            platform=str(kwargs.get("platform") or "cli").strip().lower() or "cli",
-            user_id=str(kwargs.get("user_id") or "").strip(),
-            chat_id=str(kwargs.get("chat_id") or "").strip(),
-            thread_id=str(kwargs.get("thread_id") or "").strip(),
-            gateway_session_key=str(kwargs.get("gateway_session_key") or "").strip(),
-            agent_identity=str(kwargs.get("agent_identity") or "").strip(),
-            agent_workspace=str(kwargs.get("agent_workspace") or "").strip(),
-            agent_context=str(kwargs.get("agent_context") or "primary").strip() or "primary",
+        return self._bind_composition().lifecycle.initialize_under_lifecycle_lock(
+            self, session_id, **kwargs
         )
-        self._hermes_home = Path(
-            kwargs.get("hermes_home") or "~/.hermes"
-        ).expanduser()
-        self._storage_dir = None
-        self._db_path = None
-        # Desktop is a single-operator surface and often omits user_id. Resolve a
-        # profile-local opaque principal before the fail-closed principal gate so
-        # non-Desktop platforms still refuse activation without storage side effects.
-        if not raw_scope.user_id and is_desktop_platform(raw_scope.platform):
-            storage_dir = self._hermes_home / "scope-recall"
-            early_config = load_runtime_config(self._plugin_dir, storage_dir)
-            try:
-                explicit = desktop_principal_from_config(early_config)
-            except ValueError:
-                logger.error(
-                    "Scope Recall disabled: identity.desktop_principal is invalid"
-                )
-                self._scope = raw_scope
-                self._runtime_status = RUNTIME_STATUS_DISABLED_MISSING_PRINCIPAL
-                return
-            principal = resolve_desktop_principal(
-                hermes_home=self._hermes_home,
-                explicit=explicit,
-            )
-            raw_scope = RuntimeScope(
-                platform=raw_scope.platform,
-                user_id=principal,
-                chat_id=raw_scope.chat_id,
-                thread_id=raw_scope.thread_id,
-                gateway_session_key=raw_scope.gateway_session_key,
-                agent_identity=raw_scope.agent_identity,
-                agent_workspace=raw_scope.agent_workspace,
-                agent_context=raw_scope.agent_context,
-            )
-        self._scope = raw_scope
-        self._runtime_status = runtime_principal_status(raw_scope)
-        if self._runtime_status == RUNTIME_STATUS_DISABLED_MISSING_PRINCIPAL:
-            logger.error(
-                "Scope Recall disabled: trusted non-CLI user principal is missing"
-            )
-            return
-
-        self._runtime_status = "initializing"
-        self._storage_dir = self._hermes_home / "scope-recall"
-        self._storage_dir.mkdir(parents=True, exist_ok=True)
-        self._db_path = self._storage_dir / "memory.sqlite3"
-        self._config = load_runtime_config(self._plugin_dir, self._storage_dir)
-        self._retrieval_config = dict(self._config.get("retrieval") or {})
-        self._vector_config = dict(self._config.get("vector") or {})
-        self._scope = normalize_scope_identity(raw_scope, self._config)
-        self._scope_id = build_scope_id(self._scope, self._config)
-        self._shared_scope_id = build_shared_scope_id(self._scope, self._config)
-        self._accessible_scope_ids = accessible_scope_ids(self._scope, self._config)
-        self._writable_scope_ids = writable_scope_ids(self._scope, self._config)
-        raw_shared_pool_config = self._config.get("shared_pool")
-        shared_pool_config = raw_shared_pool_config if isinstance(raw_shared_pool_config, dict) else {}
-        self._shared_pool_enabled = config_bool(shared_pool_config, "enabled", False)
-        self._shared_pool_write_enabled = self._shared_pool_enabled and config_bool(shared_pool_config, "write_enabled", False)
-        self._shared_pool_id = str(shared_pool_config.get("pool_id") or "default") if self._shared_pool_enabled else ""
-        self._shared_pool_scope_id = build_shared_pool_scope_id(self._scope, self._shared_pool_id) if self._shared_pool_enabled else ""
-        if self._shared_pool_scope_id and self._shared_pool_scope_id not in self._accessible_scope_ids:
-            self._accessible_scope_ids.append(self._shared_pool_scope_id)
-        if self._shared_pool_write_enabled and self._shared_pool_scope_id and self._shared_pool_scope_id not in self._writable_scope_ids:
-            self._writable_scope_ids.append(self._shared_pool_scope_id)
-        self._current_turn = 0
-        self._last_recall_turns = {}
-
-        lease = TruthWriterLease(self._storage_dir, role="provider")
-        lease_result = lease.acquire()
-        if lease_result.get("status") != "acquired":
-            self._truth_writer_role = "reader"
-            self._truth_writer_owner = sanitized_truth_writer_owner(
-                lease_result.get("owner")
-            )
-            logger.warning(
-                "Scope Recall truth writer lease is held by another process; "
-                "continuing in read-only recall mode"
-            )
-            self._initialize_read_only_runtime()
-            return
-        self._truth_writer_lease = lease
-        self._truth_writer_role = "owner"
-        self._truth_writer_owner = {}
-        try:
-            self._initialize_writer_runtime()
-        except BaseException:
-            self._cleanup_failed_writer_initialization()
-            raise
 
     def _initialize_writer_runtime(self) -> None:
-        """Writer-role initialization: schema, backfills, vector, and writer.
+        return self._bind_composition().lifecycle.initialize_writer_runtime(self)
 
-        A first-open SQLite BUSY/LOCKED error retries once only when peer
-        recovery rolled back at least one idle owner peer and left no busy or
-        failed peer. Reader and other non-owner peers are not rolled back and
-        cannot enable retry. Any remaining busy peer or rollback error stays
-        fail-closed on the original lock error.
-        """
-
-        if self._hermes_home is None or self._storage_dir is None or self._db_path is None:
-            raise RuntimeError("Scope Recall storage path is not initialized")
-        self._migration_info = migrate_legacy_scope_recall_storage(
-            self._hermes_home, self._storage_dir
+    def _cleanup_failed_writer_initialization(
+        self, *, reraise_companion_errors: bool = False
+    ) -> bool:
+        return self._bind_composition().lifecycle.cleanup_failed_writer_initialization(
+            self, reraise_companion_errors=reraise_companion_errors
         )
-        try:
-            conn = self._open_runtime_connection()
-        except sqlite3.OperationalError as exc:
-            if not _is_sqlite_lock_contention(exc):
-                raise
-            recovery = self._rollback_peer_provider_transactions("initialize")
-            # Retry once only after a successful idle-peer rollback. A still-
-            # busy peer or rollback error leaves a writer race, so startup
-            # stays fail-closed on the original lock error.
-            rollbacks = int(recovery.get("peer_rollbacks", 0) or 0)
-            busy = int(recovery.get("peer_busy_skipped", 0) or 0)
-            errors = int(recovery.get("peer_rollback_errors", 0) or 0)
-            if rollbacks <= 0 or busy > 0 or errors > 0:
-                raise
-            logger.warning(
-                "Scope Recall initialize recovered from same-process peer "
-                "SQLite lock contention; retrying startup once"
-            )
-            conn = self._open_runtime_connection()
-        self._conn = conn
-        try:
-            self._freshness_backfill = backfill_untracked_memory_freshness(
-                conn,
-                apply=True,
-                limit=STARTUP_FRESHNESS_BACKFILL_LIMIT,
-            )
-        except sqlite3.OperationalError as exc:
-            if not _is_sqlite_lock_contention(exc):
-                try:
-                    self._close_published_connection(
-                        conn, context="startup freshness backfill"
-                    )
-                except BaseException as close_error:
-                    raise close_error from exc
-                raise
-            self._rollback_conn_after_error("startup freshness backfill contention")
-            self._freshness_backfill = {
-                "apply": True,
-                "status": "deferred_error",
-                "error_type": type(exc).__name__,
-            }
-            logger.warning(
-                "Scope Recall startup freshness backfill deferred after SQLite lock contention"
-            )
-        except BaseException as exc:
-            try:
-                self._close_published_connection(
-                    conn, context="startup freshness backfill"
-                )
-            except BaseException as close_error:
-                raise close_error from exc
-            raise
-        try:
-            backfill_skill_anchors(conn)
-        except Exception:
-            self._rollback_conn_after_error("skill-anchor backfill")
-            logger.exception("Scope Recall skill-anchor backfill failed")
-        ensure_journal_schema(conn, commit=False)
-        ensure_activation_guard_triggers(conn, self._db_path)
-        conn.commit()
-        setup_vector_layer(self)
-        start_writer(self)
-        self._register_provider_instance()
-        self._runtime_status = RUNTIME_STATUS_ACTIVE
 
     def _initialize_read_only_runtime(self) -> None:
-        """Finish initialization as a read-only recall peer.
-
-        Another process holds the writer lease. Opening a second write pager
-        here is the issue #39 overlap, so this runtime keeps recall on a
-        ``mode='ro'`` + ``PRAGMA query_only`` connection and disables capture,
-        journal, digest, vector mutation, and write tools.
-        """
-
-        self._truth_writer_lease = None
-        try:
-            if self._db_path is not None and Path(self._db_path).is_file():
-                self._conn = connect_truth_database(
-                    self._db_path,
-                    mode="ro",
-                    check_same_thread=False,
-                    timeout=SQLITE_BUSY_TIMEOUT_SECONDS,
-                )
-            else:
-                self._conn = None
-        except Exception:
-            logger.exception(
-                "Scope Recall read-only runtime could not open the truth database"
-            )
-            self._conn = None
-        self._vector_enabled = False
-        self._vector_ready = False
-        self._vector_status = "reader_mode"
-        self._vector_message = "vector companion is owned by the writer process"
-        self._register_provider_instance()
-        self._runtime_status = RUNTIME_STATUS_ACTIVE_READ_ONLY
+        return self._bind_composition().lifecycle.initialize_read_only_runtime(self)
 
     def _truth_writes_blocked(self) -> bool:
-        """Return whether durable write surfaces must stay disabled.
-
-        A shutdown request blocks durable tools immediately even while this
-        process still owns the writer role and OS lease. Reader, unknown,
-        and failed roles also fail closed. Promotion remains impossible
-        after shutdown because ``_maybe_promote_to_writer`` checks the flag
-        first.
-        """
+        """Return whether durable write surfaces must stay disabled."""
 
         return (
             self._shutdown_requested.is_set() or self._truth_writer_role != "owner"
         )
 
     def _register_provider_instance(self) -> None:
-        """Register this live provider for same-process SQLite lock recovery."""
-        with _PROVIDER_REGISTRY_LOCK:
-            _PROVIDER_REGISTRY.add(self)
+        _peer_recovery.register_provider_instance(self)
 
     def _unregister_provider_instance(self) -> None:
-        with _PROVIDER_REGISTRY_LOCK:
-            _PROVIDER_REGISTRY.discard(self)
-
-    def _cleanup_failed_writer_initialization(
-        self, *, reraise_companion_errors: bool = False
-    ) -> bool:
-        """Abandon a partial writer without hiding the original error.
-
-        ``initialize`` and writer promotion can open a writable SQLite
-        connection, start the capture writer, open a vector companion, or
-        register this instance before a later step raises. Writer and digest
-        threads must be stopped and the truth connection must be closed before
-        the OS writer lease is released; dropping the lease first lets another
-        process become a second writer.
-
-        A vector companion close failure is detached and logged so it cannot
-        strand the lease. SQLite close failure keeps ``self._conn`` and the
-        lease. Returns True only when workers are stopped, the truth connection
-        is closed or was already absent, and the lease has been released.
-        Incomplete cleanup leaves the instance fail-closed (non-owner).
-        Cleanup failures are logged so the original initialization exception
-        remains the raised cause unless ``reraise_companion_errors`` asks
-        shutdown to surface a companion close after truth cleanup.
-
-        Role transitions here are not wrapped in a second lifecycle acquire.
-        ``initialize`` and promotion already hold ``_writer_lifecycle_lock``,
-        and shutdown calls this helper only after writer/digest workers have
-        stopped. Cleanup then takes ``self._lock`` to close the pager; taking
-        lifecycle inside that DB section would invert the mandatory
-        lifecycle-then-SQLite order.
-        """
-
-        writer_stopped = True
-        try:
-            shutdown_writer(self, timeout=3.0)
-        except Exception:
-            logger.exception(
-                "Scope Recall failed-initialization writer quiesce failed"
-            )
-            thread = self._writer_thread
-            writer_stopped = thread is None or not thread.is_alive()
-
-        try:
-            digest = self._journal_digest_thread
-            if (
-                digest is not None
-                and digest.is_alive()
-                and digest is not threading.current_thread()
-            ):
-                digest.join(timeout=3.0)
-        except Exception:
-            logger.exception(
-                "Scope Recall failed-initialization digest join failed"
-            )
-        digest = self._journal_digest_thread
-        digest_stopped = digest is None or not digest.is_alive()
-        if not writer_stopped or not digest_stopped:
-            self._truth_writer_role = "unknown"
-            return False
-
-        vector_error: Exception | None = None
-        vector = self._vector_store
-        if vector is not None:
-            try:
-                vector.close()
-            except Exception as exc:
-                logger.exception(
-                    "Scope Recall failed-initialization vector close failed"
-                )
-                vector_error = exc
-            self._vector_store = None
-
-        try:
-            with self._lock:
-                conn = self._conn
-                if conn is not None:
-                    try:
-                        if bool(getattr(conn, "in_transaction", False)):
-                            conn.rollback()
-                    except Exception:
-                        logger.exception(
-                            "Scope Recall failed-initialization SQLite rollback failed"
-                        )
-                    conn.close()
-                    self._conn = None
-        except Exception:
-            logger.exception(
-                "Scope Recall failed-initialization SQLite close failed"
-            )
-
-        try:
-            self._unregister_provider_instance()
-        except Exception:
-            logger.exception(
-                "Scope Recall failed-initialization registry clear failed"
-            )
-
-        completed = False
-        if self._conn is not None:
-            self._truth_writer_role = "unknown"
-        else:
-            lease = self._truth_writer_lease
-            if lease is None:
-                self._truth_writer_role = "unknown"
-                completed = True
-            else:
-                try:
-                    lease.release()
-                except Exception:
-                    logger.exception(
-                        "Scope Recall failed-initialization writer-lease release failed"
-                    )
-                    self._truth_writer_role = "unknown"
-                else:
-                    self._truth_writer_lease = None
-                    self._truth_writer_role = "unknown"
-                    completed = True
-        if reraise_companion_errors and completed and vector_error is not None:
-            raise vector_error
-        return completed
+        _peer_recovery.unregister_provider_instance(self)
 
     def _runtime_memory_disabled(self) -> bool:
         return self._runtime_status == RUNTIME_STATUS_DISABLED_MISSING_PRINCIPAL
@@ -839,9 +373,10 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             return (
                 "# Scope Recall Memory\n"
                 "Active in read-only recall mode: another Scope Recall process "
-                "currently owns the truth-database writer lease. Recall/search "
-                "works, but do not attempt to store, update, merge, or forget "
-                "memories from this runtime."
+                "(usually the gateway) currently owns the truth-database writer "
+                "lease. Recall/search works, but do not attempt to store, "
+                "update, merge, or forget memories from this runtime; durable "
+                "writes belong to the writer process."
             )
         suffix = ""
         if self._vector_enabled and self._vector_ready:
@@ -869,104 +404,34 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._current_turn = int(turn_number or 0)
         if self._truth_writes_blocked():
             self._maybe_promote_to_writer()
+            return
 
     def _maybe_promote_to_writer(self) -> None:
-        """Rebind a read-only runtime as the writer once the lease frees.
-
-        Check, acquire, publish, old-reader close, and writer initialize or
-        cleanup stay under ``_writer_lifecycle_lock`` so two reader threads
-        cannot each take a same-process lease ref. A shutdown request already
-        set must not probe or promote: ``start_writer`` would otherwise clear
-        that flag. The acquired lease is published before the fallible reader
-        close so cleanup can retain it fail-closed.
-        """
-
-        with self._writer_lifecycle_lock:
-            if self._shutdown_requested.is_set():
-                return
-            if self._truth_writer_role != "reader" or self._storage_dir is None:
-                return
-            lease = TruthWriterLease(self._storage_dir, role="provider")
-            try:
-                result = lease.acquire()
-            except Exception:
-                logger.exception("Scope Recall writer-lease promotion probe failed")
-                return
-            if result.get("status") != "acquired":
-                return
-            logger.info(
-                "Scope Recall truth writer lease became available; promoting this "
-                "read-only runtime to the writer role"
-            )
-            try:
-                # Publish ownership before the fallible read-only close so shared
-                # cleanup can retain or release the acquired lease on every path.
-                self._truth_writer_lease = lease
-                self._truth_writer_role = "owner"
-                self._truth_writer_owner = {}
-                with self._lock:
-                    if self._conn is not None:
-                        self._conn.close()
-                        self._conn = None
-                self._initialize_writer_runtime()
-            except BaseException:
-                cleaned = self._cleanup_failed_writer_initialization()
-                logger.exception(
-                    "Scope Recall writer promotion failed; staying in read-only mode"
-                )
-                if not cleaned:
-                    return
-                self._truth_writer_role = "reader"
-                self._initialize_read_only_runtime()
+        return self._bind_composition().promote_to_writer()
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         del query, session_id
         return None
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        del session_id
-        if self._memory_isolated_for_scope():
-            return ""
-        if self._truth_writes_blocked() and self._conn is None:
-            return ""
-        try:
-            recall_block = render_current_turn_recall(self, query)
-        except Exception:
-            self._rollback_conn_after_error("current-turn recall prefetch")
-            logger.exception("Scope Recall current-turn recall prefetch failed")
-            recall_block = ""
-        raw_experience_config = self._config.get("experience")
-        experience_config = raw_experience_config if isinstance(raw_experience_config, dict) else {}
-        if not config_bool(experience_config, "enabled", True):
-            return recall_block
-        if not config_bool(experience_config, "prefetch_enabled", False):
-            return recall_block
-        if self._truth_writes_blocked():
-            return recall_block
-        try:
-            with self._lock:
-                packet = experience_preflight(
-                    self._require_conn(),
-                    query=query,
-                    accessible_scope_ids=self._accessible_scope_ids,
-                    config=self._config,
-                    record_run=True,
-                    scope_id=self._scope_id,
-                ).get("packet", "")
-        except Exception:
-            self._rollback_conn_after_error("experience preflight")
-            logger.exception("Scope Recall experience preflight failed")
-            packet = ""
-        if not packet:
-            return recall_block
-        return f"{recall_block}\n\n{packet}" if recall_block else str(packet)
+        return self._recall_service.prefetch_prompt(query, session_id=session_id)
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "", messages: list[dict[str, Any]] | None = None) -> None:
         """Synchronize one Hermes turn into capture, journal, recall, and prompt context state.
 
-        This method is on the hot path, so it avoids heavyweight repair work and records failures as sanitized diagnostics instead of blocking the main agent loop."""
+        This method is on the hot path, so it avoids heavyweight repair work and records failures as sanitized diagnostics instead of blocking the main agent loop.
+        """
+        self._foreground_busy_count = int(getattr(self, "_foreground_busy_count", 0) or 0) + 1
+        try:
+            self._sync_turn_unlocked(user_content, assistant_content, session_id=session_id, messages=messages)
+        finally:
+            self._foreground_busy_count = max(0, int(getattr(self, "_foreground_busy_count", 0) or 0) - 1)
+
+    def _sync_turn_unlocked(self, user_content: str, assistant_content: str, *, session_id: str = "", messages: list[dict[str, Any]] | None = None) -> None:
         del session_id
-        if self._memory_isolated_for_scope() or self._truth_writes_blocked():
+        if self._memory_isolated_for_scope():
+            return
+        if self._truth_writes_blocked():
             return
         if messages:
             self._append_session_tool_journal(messages)
@@ -984,318 +449,52 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         journal_filter_config["capture_hard_max_chars"] = -1
         journal_user_filter = should_capture_text(clean_user, journal_filter_config)
         journal_assistant_filter = should_capture_text(clean_assistant, journal_filter_config)
-
-        # Journal-first provenance capture: raw turns go to a staging journal,
-        # not durable recall rows or vector indexes. Background journal digest
-        # later groups, extracts, and merge-upserts high-density memories.
-        raw_journal_cfg = self._config.get("journal")
-        journal_cfg = raw_journal_cfg if isinstance(raw_journal_cfg, dict) else {}
-        journal_enabled = journal_cfg.get("enabled", True)
-        if isinstance(journal_enabled, str):
-            journal_enabled = journal_enabled.strip().lower() in {"1", "true", "yes", "on"}
-        if journal_enabled and (journal_user_filter.allowed or journal_assistant_filter.allowed):
-            journal_appended = False
-            with self._lock:
-                ensure_journal_schema(self._require_conn())
-                if journal_user_filter.allowed and clean_user:
-                    journal_appended = bool(
-                        append_journal_entry(
-                            self._require_conn(),
-                            scope=self._scope,
-                            scope_id=self._scope_id,
-                            shared_scope_id=self._shared_scope_id,
-                            session_id=self._session_id,
-                            turn_number=self._current_turn,
-                            role="user",
-                            content=clean_user,
-                        )
-                    ) or journal_appended
-                if journal_assistant_filter.allowed and clean_assistant:
-                    journal_appended = bool(
-                        append_journal_entry(
-                            self._require_conn(),
-                            scope=self._scope,
-                            scope_id=self._scope_id,
-                            shared_scope_id=self._shared_scope_id,
-                            session_id=self._session_id,
-                            turn_number=self._current_turn,
-                            role="assistant",
-                            content=clean_assistant,
-                        )
-                    ) or journal_appended
-            if journal_appended:
+        if journal_user_filter.allowed or journal_assistant_filter.allowed:
+            if append_turn_journal_entries(
+                self,
+                clean_user=clean_user,
+                clean_assistant=clean_assistant,
+                user_allowed=journal_user_filter.allowed,
+                assistant_allowed=journal_assistant_filter.allowed,
+            ):
                 self._maybe_start_background_journal_digest()
 
         # ── LLM semantic extraction (preferred when explicitly enabled) ──
-        llm_extracted = False
-        capture_policy_blocked = False
-        capture_llm_config = self._config.get("capture_llm")
-        if isinstance(capture_llm_config, dict) and (
-            capture_llm_config.get("enabled") in (True, "true", "1", "yes", "on")
-        ):
-            min_user = int(capture_llm_config.get("min_user_chars", 20))
-            min_asst = int(capture_llm_config.get("min_assistant_chars", 30))
-            if (
-                user_filter.allowed
-                and len(clean_user) >= min_user
-                and assistant_filter.allowed
-                and len(clean_assistant) >= min_asst
-            ):
-                try:
-                    with self._lock:
-                        prepare_network_boundary(
-                            self._conn, "provider.sync_turn.capture_llm"
-                        )
-                    candidates = extract_capture_candidates(
-                        clean_user,
-                        clean_assistant,
-                        self._config,
-                    )
-                except UnsafeEndpointError:
-                    capture_policy_blocked = True
-                    logger.warning(
-                        "Scope Recall capture blocked by endpoint policy; "
-                        "durable capture fallbacks disabled for this turn"
-                    )
-                except Exception:
-                    logger.exception("Scope Recall capture LLM extraction failed")
-                else:
-                    for candidate in candidates:
-                        if len(candidate.content) < 12:
-                            continue
-                        enqueue_store(
-                            self,
-                            content=candidate.content,
-                            source="turn-llm-extracted",
-                            target=candidate.target,
-                            session_id=self._session_id,
-                            metadata={
-                                "category": candidate.memory_type,
-                                "confidence": candidate.confidence,
-                                "entities": candidate.entities,
-                                "tags": candidate.tags,
-                            },
-                        )
-                        llm_extracted = True
-
-        # ── Regex extraction (legacy hot-path fallback; disabled by default) ──
-        extracted = False
-        per_turn_cfg = self._config.get("per_turn_extraction") if isinstance(self._config.get("per_turn_extraction"), dict) else {}
-        per_turn_regex_enabled = False
-        if isinstance(per_turn_cfg, dict):
-            per_turn_regex_enabled = config_bool(per_turn_cfg, "enabled", False)
-        if (
-            not llm_extracted
-            and not capture_policy_blocked
-            and per_turn_regex_enabled
-            and user_filter.allowed
-        ):
-            for candidate in extract_candidates(clean_user):
-                candidate_min_capture = min(min_capture, 24) if candidate.target in {"user", "ops", "project"} else min_capture
-                if len(candidate.content) < candidate_min_capture:
-                    continue
-                enqueue_store(
-                    self,
-                    content=candidate.content,
-                    source="turn-extracted",
-                    target=candidate.target,
-                    session_id=self._session_id,
-                    metadata={"category": candidate.category, "confidence": candidate.confidence},
-                )
-                extracted = True
-
-        # ── Raw user capture (last-resort fallback) ──
-        if (
-            not llm_extracted
-            and not capture_policy_blocked
-            and config_bool(self._config, "capture_raw_user", False)
-            and user_filter.allowed
-            and len(clean_user) >= min_capture
-            and not extracted
-        ):
-            enqueue_store(
-                self,
-                content=clean_user,
-                source="turn-user",
-                target="general",
-                session_id=self._session_id,
-            )
-
-        # ── Raw assistant capture (legacy, only when LLM not used) ──
-        if (
-            not llm_extracted
-            and not capture_policy_blocked
-            and config_bool(self._config, "capture_assistant", False)
-            and assistant_filter.allowed
-            and len(clean_assistant) >= min_capture
-        ):
-            enqueue_store(
-                self,
-                content=clean_assistant,
-                source="turn-assistant",
-                target="general",
-                session_id=self._session_id,
-            )
+        llm_extracted, capture_policy_blocked = capture_turn_llm_candidates(
+            self,
+            clean_user=clean_user,
+            clean_assistant=clean_assistant,
+            user_allowed=user_filter.allowed,
+            assistant_allowed=assistant_filter.allowed,
+            extract_fn=extract_capture_candidates,
+        )
+        capture_turn_fallbacks(
+            self,
+            clean_user=clean_user,
+            clean_assistant=clean_assistant,
+            user_allowed=user_filter.allowed,
+            assistant_allowed=assistant_filter.allowed,
+            llm_extracted=llm_extracted,
+            capture_policy_blocked=capture_policy_blocked,
+            min_capture=min_capture,
+            extract_candidates_fn=extract_candidates,
+        )
 
     def _event_digest_config(self) -> dict[str, Any]:
         raw = self._config.get("event_digest")
         return raw if isinstance(raw, dict) else {}
 
     def _dry_run_event_candidates(self, *, kind: str, messages: List[Dict[str, Any]]) -> dict[str, Any]:
-        event_config = self._event_digest_config()
-        enabled = config_bool(event_config, "enabled", True)
-        write_candidates = config_bool(event_config, "write_candidates", False)
-        dry_run = not write_candidates
-        report: dict[str, Any] = {
-            "enabled": enabled,
-            "dry_run": dry_run,
-            "dry_run_log": config_bool(event_config, "dry_run_log", True),
-            "write_candidates": write_candidates,
-            "event_kind": kind,
-            "events_seen": 0,
-            "candidates_proposed": 0,
-            "candidates_rejected": 0,
-            "rejection_reasons": {},
-            "store": {"planned": 0, "inserted": 0, "updated_existing": 0, "ids": []},
-        }
-        if not enabled or self._scope.agent_context != "primary":
-            self._last_event_digest_report = report
-            return report
-        max_events = int(event_config.get("max_events_per_turn") or 3)
-        if max_events <= 0:
-            max_events = 3
-        reasons: Counter[str] = Counter()
-        proposed_candidates = []
-        seen = 0
-        proposed = 0
-        rejected = 0
-        for index, message in enumerate(messages, start=1):
-            if seen >= max_events:
-                break
-            if not isinstance(message, dict):
-                continue
-            role = str(message.get("role") or message.get("type") or "").strip().lower()
-            if role not in {"user", "assistant"}:
-                continue
-            content = sanitize_report_text(self._clean_text(message.get("content")))
-            if not content:
-                continue
-            event = MemoryEvent(
-                kind=kind,
-                scope_id=self._scope_id,
-                session_id=self._session_id,
-                turn_number=index,
-                content=content,
-                metadata={"source": "provider-hook", "role": role},
-            )
-            packet = build_evidence_packet(event)
-            extraction = extract_candidates_from_packet(packet, dry_run=True)
-            seen += 1
-            proposed += len(extraction.candidates)
-            proposed_candidates.extend(extraction.candidates)
-            if extraction.rejection_reasons:
-                rejected += 1
-                reasons.update(extraction.rejection_reasons)
-        with self._lock:
-            store_report = store_event_candidates(
-                self._require_conn(),
-                candidates=proposed_candidates,
-                scope=self._scope,
-                scope_id=self._scope_id,
-                session_id=self._session_id,
-                dry_run=dry_run,
-            )
-        vector_replay: dict[str, Any] | None = None
-        stored_count = int(store_report.get("inserted") or 0) + int(
-            store_report.get("updated_existing") or 0
-        )
-        if not dry_run and stored_count:
-            try:
-                vector_replay = replay_vector_outbox(
-                    self,
-                    limit=vector_write_replay_limit(self),
-                )
-            except Exception as exc:
-                # SQLite is authoritative. A derived-index failure must remain
-                # visible and replayable without turning a committed candidate
-                # write into a false transaction failure.
-                vector_replay = {
-                    "claimed": 0,
-                    "completed": 0,
-                    "failed": 1,
-                    "error_type": type(exc).__name__,
-                }
-                logger.warning(
-                    "Scope Recall event candidate vector replay deferred (%s)",
-                    type(exc).__name__,
-                )
-        report.update(
-            {
-                "events_seen": seen,
-                "candidates_proposed": proposed,
-                "candidates_rejected": rejected,
-                "rejection_reasons": dict(sorted(reasons.items())),
-                "store": store_report,
-            }
-        )
-        if vector_replay is not None:
-            report["vector_replay"] = vector_replay
-        self._last_event_digest_report = report
-        return report
+        from .event_digest import run_provider_event_candidate_pass
+
+        return run_provider_event_candidate_pass(self, kind=kind, messages=messages)
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         """Provide recall context before Hermes compresses the conversation.
 
-        The hook should be compact and safe because it is injected into compression prompts, not treated as new user truth."""
-        if self._memory_isolated_for_scope() or not messages or not config_bool(self._config, "auto_capture", True):
-            return ""
-        if self._truth_writes_blocked():
-            return ""
-        if self._scope.agent_context != "primary":
-            return ""
-        journal_config = self._journal_config()
-        if not config_bool(journal_config, "enabled", True):
-            return ""
-
-        filter_config = dict(self._config)
-        filter_config["capture_hard_max_chars"] = -1
-        appended = 0
-        roles: set[str] = set()
-        with self._lock:
-            conn = self._require_conn()
-            ensure_journal_schema(conn)
-            for index, message in enumerate(messages, start=1):
-                if not isinstance(message, dict):
-                    continue
-                role = str(message.get("role") or message.get("type") or "").strip().lower()
-                # Tool traces are handled by on_session_end with explicit
-                # provenance. Do not stage raw tool/system wrapper content at
-                # compression boundaries.
-                if role not in {"user", "assistant"}:
-                    continue
-                content = sanitize_capture_text(self._clean_text(message.get("content")))
-                if not content:
-                    continue
-                if not should_capture_text(content, filter_config).allowed:
-                    continue
-                inserted_id = append_journal_entry(
-                    conn,
-                    scope=self._scope,
-                    scope_id=self._scope_id,
-                    shared_scope_id=self._shared_scope_id,
-                    session_id=self._session_id,
-                    turn_number=index,
-                    role=role,
-                    content=content,
-                    metadata={
-                        "source": "pre-compression",
-                        "compression_boundary": True,
-                        "message_index": index,
-                    },
-                )
-                if inserted_id:
-                    appended += 1
-                    roles.add(role)
+        The hook should be compact and safe because it is injected into compression prompts, not treated as new user truth.
+        """
+        appended, roles = stage_pre_compress_journal_entries(self, messages)
         if not appended:
             return ""
         self._dry_run_event_candidates(kind="pre_compress", messages=messages)
@@ -1322,13 +521,18 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         replace/remove operations. The hook is kept as an explicit no-op so
         Hermes can notify the provider without changing storage ownership.
         """
-        del action, target, content, metadata
-        if self._scope.agent_context != "primary":
-            return
-        return
+        observe_memory_write(
+            agent_context=self._scope.agent_context,
+            action=action,
+            target=target,
+            content=content,
+            metadata=metadata,
+        )
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        if self._memory_isolated_for_scope() or self._truth_writes_blocked():
+        if self._memory_isolated_for_scope():
+            return
+        if self._truth_writes_blocked():
             return
         self._append_session_tool_journal(messages)
         flush_writer(self, timeout=3.0)
@@ -1339,100 +543,16 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         return raw_journal if isinstance(raw_journal, dict) else {}
 
     def _append_session_tool_journal(self, messages: List[Dict[str, Any]]) -> None:
-        if self._memory_isolated_for_scope() or not messages or self._scope.agent_context != "primary":
-            return
-        journal_config = self._journal_config()
-        if not config_bool(journal_config, "enabled", True):
-            return
-        with self._lock:
-            ensure_journal_schema(self._require_conn())
-            for index, message in enumerate(messages, start=1):
-                if not isinstance(message, dict):
-                    continue
-                role = str(message.get("role") or message.get("type") or "").strip().lower()
-                if role != "tool":
-                    continue
-                content = self._tool_journal_content(message)
-                if not content:
-                    continue
-                append_journal_entry(
-                    self._require_conn(),
-                    scope=self._scope,
-                    scope_id=self._scope_id,
-                    shared_scope_id=self._shared_scope_id,
-                    session_id=self._session_id,
-                    turn_number=index,
-                    role="tool",
-                    content=content,
-                    metadata={
-                        "source": "session-end-tool-trace",
-                        "tool_name": str(message.get("name") or message.get("tool_name") or ""),
-                        "message_index": index,
-                    },
-                )
+        append_session_tool_journal_entries(self, messages)
 
     def _tool_journal_content(self, message: Dict[str, Any]) -> str:
-        """Decide how much tool result content should be captured into the journal.
+        """Decide how much tool result content should be captured into the journal."""
 
-        The helper strips low-value or risky tool traces so compression/journal evidence does not amplify logs, secrets, or large blobs."""
-        tool_name = str(message.get("name") or message.get("tool_name") or message.get("recipient") or "").strip()
-        journal_config = self._journal_config()
-        skip_names = set(DEFAULT_TOOL_TRACE_SKIP_NAMES)
-        raw_skip_names = journal_config.get("tool_trace_skip_names")
-        if isinstance(raw_skip_names, str):
-            skip_names.add(raw_skip_names.strip().lower())
-        elif isinstance(raw_skip_names, (list, tuple, set)):
-            skip_names.update(str(item).strip().lower() for item in raw_skip_names if str(item).strip())
-        normalized_tool_name = tool_name.lower()
-        if normalized_tool_name in skip_names or any(fragment in normalized_tool_name for fragment in DEFAULT_TOOL_TRACE_SKIP_NAME_FRAGMENTS):
-            return ""
-        raw_content = message.get("content")
-        if raw_content is None:
-            raw_content = message.get("output")
-        if raw_content is None:
-            raw_content = message.get("result")
-        raw_clean = clean_text(raw_content)
-        if contains_secret_like_text(raw_clean):
-            return ""
-        content = sanitize_capture_text(redact_secret_like_text(raw_clean))
-        filter_config = dict(self._config)
-        try:
-            filter_config["capture_hard_max_chars"] = int(journal_config.get("tool_trace_hard_max_chars") or 4000)
-        except (TypeError, ValueError):
-            filter_config["capture_hard_max_chars"] = 4000
-        include_preview = config_bool(journal_config, "tool_trace_include_output_preview", False)
-        output_chars = len(content)
-        safe_fields: list[str] = []
-        if tool_name:
-            safe_fields.append(f"tool={tool_name}")
-        safe_fields.append(f"output_chars={output_chars}")
-        parsed: Any = None
-        if content:
-            try:
-                parsed = json.loads(content)
-            except Exception:
-                parsed = None
-        if isinstance(parsed, dict):
-            for key in ("exit_code", "status", "ok", "success", "skipped", "deleted", "updated", "inserted"):
-                if key in parsed and isinstance(parsed.get(key), (str, int, float, bool)):
-                    safe_fields.append(f"{key}={parsed.get(key)}")
-            error = parsed.get("error")
-            if error:
-                safe_fields.append(f"error={compact_text(sanitize_report_text(str(error)), 160)}")
-        if include_preview and content and should_capture_text(content, filter_config).allowed:
-            try:
-                preview_chars = int(journal_config.get("tool_trace_preview_max_chars") or 500)
-            except (TypeError, ValueError):
-                preview_chars = 500
-            safe_fields.append(f"preview={compact_text(content, max(120, preview_chars))}")
-        elif content:
-            safe_fields.append("output_preview=omitted")
-        prefix = f"Tool execution summary ({tool_name})" if tool_name else "Tool execution summary"
-        try:
-            max_chars = int(journal_config.get("tool_trace_max_chars") or 1800)
-        except (TypeError, ValueError):
-            max_chars = 1800
-        return compact_text(f"{prefix}: " + "; ".join(safe_fields), max(200, max_chars))
+        return tool_journal_content(
+            message,
+            journal_config=self._journal_config(),
+            runtime_config=self._config,
+        )
 
     def _coerce_journal_float(self, journal_config: dict[str, Any], key: str, default: float) -> float:
         try:
@@ -1452,181 +572,23 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             agent_context="primary",
         )
 
+    def _has_unprocessed_journal(self) -> bool:
+        return truth_has_unprocessed_journal(self)
+
     def _maybe_start_background_journal_digest(self) -> None:
-        if self._shutdown_requested.is_set():
-            return
-        if self._memory_isolated_for_scope() or self._hermes_home is None or self._scope.agent_context != "primary":
-            return
-        if self._truth_writes_blocked():
-            return
-        journal_config = self._journal_config()
-        if not config_bool(journal_config, "enabled", True):
-            return
-        if not config_bool(journal_config, "background_digest_enabled", True):
-            return
-        interval_hours = self._coerce_journal_float(journal_config, "digest_interval_hours", 2.0)
-        if interval_hours <= 0:
-            return
-        now = time.time()
-        with self._journal_digest_lock:
-            if self._shutdown_requested.is_set():
-                return
-            if self._journal_digest_thread is not None and self._journal_digest_thread.is_alive():
-                return
-            if self._last_journal_digest_started and now - self._last_journal_digest_started < interval_hours * 3600:
-                return
-            self._last_journal_digest_started = now
-            self._last_journal_digest_status = "running"
-            self._last_journal_digest_error = ""
-            if config_bool(journal_config, "background_digest_synchronous", False):
-                current_thread = threading.current_thread()
-                self._journal_digest_thread = current_thread
-                try:
-                    self._run_background_journal_digest(journal_config)
-                finally:
-                    if self._journal_digest_thread is current_thread:
-                        self._journal_digest_thread = None
-                return
-            thread = threading.Thread(
-                target=self._run_background_journal_digest,
-                args=(dict(journal_config),),
-                name="scope-recall-journal-digest",
-                daemon=True,
-            )
-            self._journal_digest_thread = thread
-            thread.start()
+        self._background_work().maybe_start_journal_digest()
 
     def _run_background_journal_digest(self, journal_config: dict[str, Any]) -> None:
-        if self._shutdown_requested.is_set():
-            with self._journal_digest_lock:
-                self._last_journal_digest_status = "skipped"
-                self._last_journal_digest_error = "shutdown requested"
-                self._last_journal_digest_finished = time.time()
-            return
-        if self._memory_isolated_for_scope():
-            with self._journal_digest_lock:
-                self._last_journal_digest_status = "skipped"
-                self._last_journal_digest_error = "source-isolated chat"
-                self._last_journal_digest_finished = time.time()
-            return
-        hermes_home = self._hermes_home
-        if hermes_home is None:
-            with self._journal_digest_lock:
-                self._last_journal_digest_status = "skipped"
-                self._last_journal_digest_error = "missing hermes_home"
-                self._last_journal_digest_finished = time.time()
-            return
-        extractor = str(journal_config.get("extractor") or "llm").strip().lower()
-
-        def run_once() -> dict[str, Any]:
-            return run_journal_digest(
-                hermes_home=hermes_home,
-                extractor=extractor,
-                scope=self._background_digest_scope(),
-                interval_label=f"background-{journal_config.get('digest_interval_hours', 2)}h",
-                limit_entries=None,
-                dry_run=False,
-            )
-
-        try:
-            try:
-                result = run_once()
-            except sqlite3.OperationalError as exc:
-                if not _is_sqlite_lock_contention(exc):
-                    raise
-                recovery = self._recover_sqlite_connection_after_error(
-                    "background journal digest lock contention"
-                )
-                if not bool(recovery.get("recovered")):
-                    raise
-                logger.warning(
-                    "Scope Recall recovered SQLite lock contention; retrying background journal digest once"
-                )
-                result = run_once()
-            ok = bool(result.get("ok", result.get("status") == "ok"))
-            status = "ok" if ok else str(result.get("status") or "error")
-            error = "" if ok else compact_text(sanitize_report_text(str(result.get("error") or result.get("message") or result)), 240)
-            with self._journal_digest_lock:
-                self._last_journal_digest_finished = time.time()
-                self._last_journal_digest_status = status
-                self._last_journal_digest_error = error
-                self._journal_digest_consecutive_failures = 0 if ok else self._journal_digest_consecutive_failures + 1
-            if ok and not self._shutdown_requested.is_set():
-                self._maybe_run_auto_experience_promotion(trigger="background-journal-digest")
-        except Exception as exc:
-            self._rollback_conn_after_error("background journal digest")
-            with self._journal_digest_lock:
-                self._last_journal_digest_finished = time.time()
-                self._last_journal_digest_status = "error"
-                self._last_journal_digest_error = compact_text(sanitize_report_text(str(exc)), 240)
-                self._journal_digest_consecutive_failures += 1
-            logger.exception("Scope Recall background journal digest failed")
+        self._background_work().run_digest(journal_config, digest_fn=run_journal_digest)
 
     def _run_session_end_journal_digest(self) -> None:
-        if self._shutdown_requested.is_set():
-            return
-        if self._memory_isolated_for_scope() or self._hermes_home is None or self._scope.agent_context != "primary":
-            return
-        if self._truth_writes_blocked():
-            return
-        journal_config = self._journal_config()
-        if not config_bool(journal_config, "enabled", True):
-            return
-        if not config_bool(journal_config, "digest_on_session_end", True):
-            return
-        try:
-            limit_entries = int(journal_config.get("max_entries_per_digest") or 500)
-        except (TypeError, ValueError):
-            limit_entries = 500
-        extractor = str(journal_config.get("extractor") or "llm").strip().lower()
-        if extractor == "llm" and not config_bool(journal_config, "allow_session_end_llm", False):
-            logger.info("Scope Recall session-end journal digest skipped: llm extractor requires scheduled/background digest")
-            return
-        try:
-            result = run_journal_digest(
-                hermes_home=self._hermes_home,
-                extractor=extractor,
-                scope=self._scope,
-                interval_label="session-end",
-                limit_entries=max(1, limit_entries),
-                dry_run=False,
-            )
-            if result.get("ok", result.get("status") == "ok"):
-                self._maybe_run_auto_experience_promotion(trigger="session-end-journal-digest")
-        except Exception:
-            self._rollback_conn_after_error("session-end journal digest")
-            logger.exception("Scope Recall session-end journal digest failed")
+        self._background_work().run_session_end_digest(digest_fn=run_journal_digest)
+
+    def _maybe_run_auto_adjudication(self, *, trigger: str) -> None:
+        self._background_work().maybe_adjudicate(trigger=trigger)
 
     def _maybe_run_auto_experience_promotion(self, *, trigger: str) -> None:
-        if self._shutdown_requested.is_set():
-            return
-        if self._memory_isolated_for_scope() or self._scope.agent_context != "primary":
-            return
-        raw_experience_config = self._config.get("experience")
-        experience_config = raw_experience_config if isinstance(raw_experience_config, dict) else {}
-        if not config_bool(experience_config, "enabled", True):
-            return
-        if not config_bool(experience_config, "auto_promotion_enabled", False):
-            return
-        try:
-            limit_sessions = int(experience_config.get("auto_promotion_limit_sessions") or 20)
-        except (TypeError, ValueError):
-            limit_sessions = 20
-        try:
-            with self._lock:
-                result = promote_experiences(
-                    self._require_conn(),
-                    accessible_scope_ids=self._accessible_scope_ids,
-                    scope_id=self._scope_id,
-                    shared_scope_id=self._shared_scope_id,
-                    config=self._config,
-                    limit_sessions=max(1, limit_sessions),
-                    dry_run=False,
-                )
-            logger.info("Scope Recall auto experience promotion after %s: %s", trigger, result)
-        except Exception:
-            self._rollback_conn_after_error(f"auto experience promotion after {trigger}")
-            logger.exception("Scope Recall auto experience promotion failed after %s", trigger)
+        self._background_work().maybe_promote(trigger=trigger)
 
     def on_session_switch(
         self,
@@ -1661,72 +623,111 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         return build_tool_schemas(self._schema_config(), agent_context=self._scope.agent_context)
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
+        return self.route_tool(tool_name, args, **kwargs)
+
+    def route_tool(self, tool_name: str, args: Dict[str, Any], **kwargs: Any) -> str:
         del kwargs
         if self._runtime_memory_disabled():
-            from tools.registry import tool_error
+            from tools.registry import tool_error  # type: ignore[reportMissingImports]
 
             return tool_error(RUNTIME_STATUS_DISABLED_MISSING_PRINCIPAL)
         if self._memory_isolated_for_scope():
-            from tools.registry import tool_error
+            from tools.registry import tool_error  # type: ignore[reportMissingImports]
 
             return tool_error("scope-recall memory is disabled for this chat")
         if not config_bool(self._schema_config(), "enable_tools", True):
-            from tools.registry import tool_error
+            from tools.registry import tool_error  # type: ignore[reportMissingImports]
 
             return tool_error("scope-recall tools are disabled by configuration")
         if self._scope.agent_context != "primary":
-            from tools.registry import tool_error
+            from tools.registry import tool_error  # type: ignore[reportMissingImports]
 
             return tool_error("scope-recall tools are only available in the primary agent context")
         return self._tool_service.handle(tool_name, args)
 
+    def query_connection(self) -> sqlite3.Connection:
+        return self._require_conn()
+
+    def query_lock(self) -> Any:
+        return self._lock
+
+    def query_scope_view(self) -> dict[str, Any]:
+        return {
+            "scope_id": str(getattr(self, "_scope_id", "") or ""),
+            "shared_scope_id": str(getattr(self, "_shared_scope_id", "") or ""),
+            "accessible_scope_ids": list(getattr(self, "_accessible_scope_ids", []) or []),
+            "writable_scope_ids": list(getattr(self, "_writable_scope_ids", []) or []),
+            "shared_pool_scope_id": str(getattr(self, "_shared_pool_scope_id", "") or ""),
+        }
+
+    def vector_status_view(self) -> dict[str, Any]:
+        return self._bind_composition().vector_view.vector_status_view()
+
+    def retrieval_status_view(self) -> dict[str, Any]:
+        config = dict(getattr(self, "_retrieval_config", None) or {})
+        return {
+            "config": config,
+            "mode": str(config.get("mode") or "lexical"),
+            "lexical_weight": float(config.get("lexical_weight") or 1.0),
+            "vector_weight": float(config.get("vector_weight") or 0.0),
+        }
+
+    def runtime_status_view(self) -> dict[str, Any]:
+        thread = getattr(self, "_writer_thread", None)
+        digest_thread = getattr(self, "_journal_digest_thread", None)
+        db_path = getattr(self, "_db_path", None)
+        return {
+            "status": str(getattr(self, "_runtime_status", "") or ""),
+            "name": self.name,
+            "hermes_home": getattr(self, "_hermes_home", None),
+            "db_path": str(db_path) if db_path else "",
+            "truth_writer_role": str(getattr(self, "_truth_writer_role", "unknown") or "unknown"),
+            "truth_writer_owner": sanitized_truth_writer_owner(
+                getattr(self, "_truth_writer_owner", {})
+            ),
+            "last_adjudication_report": dict(
+                getattr(self, "_last_adjudication_report", {}) or {}
+            ),
+            "shared_pool_enabled": bool(getattr(self, "_shared_pool_enabled", False)),
+            "shared_pool_write_enabled": bool(
+                getattr(self, "_shared_pool_write_enabled", False)
+            ),
+            "shared_pool_id": str(getattr(self, "_shared_pool_id", "") or ""),
+            "migration_info": dict(getattr(self, "_migration_info", {}) or {}),
+            "writer_thread_alive": bool(thread is not None and thread.is_alive()),
+            "writer_failed_writes": int(getattr(self, "_writer_failed_writes", 0) or 0),
+            "writer_reported_failures": int(
+                getattr(self, "_writer_reported_failures", 0) or 0
+            ),
+            "writer_last_error_type": str(
+                getattr(self, "_writer_last_error_type", "") or ""
+            ),
+            "freshness_backfill": dict(getattr(self, "_freshness_backfill", {}) or {}),
+            "journal_digest_thread_alive": bool(
+                digest_thread is not None and digest_thread.is_alive()
+            ),
+            "journal_digest_last_started": float(
+                getattr(self, "_last_journal_digest_started", 0.0) or 0.0
+            ),
+            "journal_digest_last_finished": float(
+                getattr(self, "_last_journal_digest_finished", 0.0) or 0.0
+            ),
+            "journal_digest_last_status": str(
+                getattr(self, "_last_journal_digest_status", "never_run") or "never_run"
+            ),
+            "journal_digest_last_error": str(
+                getattr(self, "_last_journal_digest_error", "") or ""
+            ),
+            "journal_digest_consecutive_failures": int(
+                getattr(self, "_journal_digest_consecutive_failures", 0) or 0
+            ),
+        }
+
+    def recall_service_view(self) -> Any:
+        return self._recall_service
+
     def shutdown(self, *, timeout: float = 3.0) -> None:
-        """Quiesce workers before closing shared SQLite/vector resources.
-
-        A timed-out worker remains visible and resources stay open so a caller
-        can retry safely. Closing underneath a live digest can otherwise turn a
-        slow shutdown into partial writes or use-after-close failures.
-        Incomplete truth teardown after workers stop raises so callers cannot
-        treat a fail-closed retain as a finished shutdown.
-        """
-
-        if self._runtime_memory_disabled():
-            self._shutdown_requested.set()
-            self._maintenance_stop.set()
-            self._unregister_provider_instance()
-            return
-
-        wait_timeout = max(0.0, float(timeout))
-        with self._writer_lifecycle_lock:
-            self._shutdown_requested.set()
-            self._maintenance_stop.set()
-        writer_error: Exception | None = None
-        try:
-            shutdown_writer(self, timeout=wait_timeout)
-        except Exception as exc:
-            writer_error = exc
-
-        thread = self._journal_digest_thread
-        if thread is not None and thread.is_alive():
-            if thread is threading.current_thread():
-                raise RuntimeError(
-                    "Scope Recall journal digest cannot shut down its own provider"
-                )
-            thread.join(timeout=wait_timeout)
-        if thread is not None and thread.is_alive():
-            raise RuntimeError(
-                "Scope Recall journal digest did not acknowledge shutdown before timeout"
-            ) from writer_error
-        if writer_error is not None:
-            raise writer_error
-
-        with self._journal_digest_lock:
-            self._journal_digest_thread = None
-        cleaned = self._cleanup_failed_writer_initialization(
-            reraise_companion_errors=True
-        )
-        if not cleaned:
-            raise RuntimeError("Scope Recall truth teardown incomplete")
+        self._bind_composition().shutdown(timeout=timeout)
 
     def flush(self, timeout: float = 2.0) -> bool:
         if self._runtime_memory_disabled():
@@ -1748,24 +749,19 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         semantic_merge: bool = False,
         scope_mode: str | None = None,
     ) -> tuple[str, bool, str]:
-        # Hold lifecycle across merge, insert, and relation-debt follow-up so
-        # shutdown cannot flip the flag between the check and those commits.
-        with hold_positive_write_authority(self):
-            try:
-                return store_memory_now(
-                    self,
-                    content=content,
-                    source=source,
-                    target=target,
-                    session_id=session_id,
-                    metadata=metadata,
-                    allow_duplicate=allow_duplicate,
-                    semantic_merge=semantic_merge,
-                    scope_mode=scope_mode,
-                )
-            except Exception:
-                self._rollback_conn_after_error("store_now")
-                raise
+        # Inject this function's store_memory_now so globals patches reach
+        # CommandKernel. Authority, one schedule, and rollback stay there.
+        return KERNEL.store(
+            self._composition.command_port,
+            content=content,
+            source=source,
+            target=target,
+            session_id=session_id,
+            metadata=metadata,
+            allow_duplicate=allow_duplicate,
+            semantic_merge=semantic_merge,
+            scope_mode=scope_mode, store_memory_now=store_memory_now,
+        )
 
     def _find_semantic_merge_candidate(
         self, content: str, target: str
@@ -1773,37 +769,37 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         return find_semantic_merge_candidate(self, content, target)
 
     def _update_memory(self, memory_id: str, content: str, target: str | None = None) -> tuple[bool, str, str]:
-        return update_memory(self, memory_id, content, target)
+        return KERNEL.update(self._composition.command_port, memory_id, content, target)
 
     def _merge_memories(self, target_id: str, source_ids: list[str], content: str | None = None, target: str | None = None) -> dict[str, Any]:
-        return merge_memories(self, target_id, source_ids, content, target)
+        return KERNEL.merge(self._composition.command_port, target_id, source_ids, content, target)
 
     def _export_memories(self, *, fmt: str = "jsonl", scope_only: bool = True) -> dict[str, Any]:
-        return export_memories(self, fmt=fmt, scope_only=scope_only)
+        return KERNEL.export(self._composition.query_port, fmt=fmt, scope_only=scope_only)
 
     def _govern_memories(self, *, dry_run: bool = True, scope_only: bool = True) -> dict[str, Any]:
-        return govern_memories(self, dry_run=dry_run, scope_only=scope_only)
+        return KERNEL.govern(self._composition.command_port, dry_run=dry_run, scope_only=scope_only)
 
     def _archive_memories(self, ids: list[str], *, reason: str = "scope_recall_forget", actor: str = "scope_recall_forget", batch_id: str = "") -> dict[str, Any]:
-        return archive_memories(self, ids, reason=reason, actor=actor, batch_id=batch_id)
+        return KERNEL.archive(self._composition.command_port, ids, reason=reason, actor=actor, batch_id=batch_id)
 
     def _fact_owned_memory_ids(self, ids: list[str]) -> list[str]:
         return fact_owned_memory_ids(self, ids)
 
     def _delete_memories(self, ids: list[str]) -> int:
-        return delete_memories(self, ids)
+        return KERNEL.delete(self._composition.command_port, ids)
 
     def _dedupe_memories(self, *, dry_run: bool = True, scope_only: bool = True) -> dict[str, Any]:
-        return dedupe_memories(self, dry_run=dry_run, scope_only=scope_only)
+        return KERNEL.dedupe(self._composition.command_port, dry_run=dry_run, scope_only=scope_only)
 
     def _repair_vector(self) -> dict[str, Any]:
-        return repair_vector(self)
+        return KERNEL.repair(self._composition.command_port)
 
     def _hygiene_report(self, *, limit: int = 200) -> dict[str, Any]:
-        return hygiene_report(self, limit=limit)
+        return KERNEL.hygiene(self._composition.query_port, limit=limit)
 
     def _context_payload(self, *, query: str, limit: int = 5, max_chars: int = 900) -> dict[str, Any]:
-        return context_payload(self, query=query, limit=limit, max_chars=max_chars)
+        return KERNEL.context(self._composition.query_port, query=query, limit=limit, max_chars=max_chars)
 
     def _profile_payload(
         self,
@@ -1817,8 +813,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         limit: int = 5,
         max_chars: int = 1200,
     ) -> dict[str, Any]:
-        return profile_payload(
-            self,
+        return KERNEL.profile(
+            self._composition.query_port,
             query=query,
             entity=entity,
             targets=targets,
@@ -1830,19 +826,19 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         )
 
     def _probe_entity(self, *, entity: str, limit: int = 10) -> dict[str, Any]:
-        return probe_entity(self, entity=entity, limit=limit)
+        return KERNEL.probe(self._composition.query_port, entity=entity, limit=limit)
 
     def _related_entities(self, *, entity: str, limit: int = 12) -> dict[str, Any]:
-        return related_entities(self, entity=entity, limit=limit)
+        return KERNEL.related(self._composition.query_port, entity=entity, limit=limit)
 
     def _feedback_memory(self, *, memory_id: str, rating: str, note: str = "") -> dict[str, Any]:
-        return feedback_memory(self, memory_id=memory_id, rating=rating, note=note)
+        return KERNEL.feedback(self._composition.command_port, memory_id=memory_id, rating=rating, note=note)
 
     def _inspect_memory(self, *, memory_id: str) -> dict[str, Any]:
-        return inspect_memory(self, memory_id=memory_id)
+        return KERNEL.inspect(self._composition.query_port, memory_id=memory_id)
 
     def _explain_query(self, *, query: str, limit: int = 5) -> dict[str, Any]:
-        return explain_query(self, query=query, limit=limit)
+        return KERNEL.explain(self._composition.query_port, query=query, limit=limit)
 
     def _benchmark_queries(
         self,
@@ -1854,8 +850,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         include_trace: bool = False,
         prompt_budget_chars: int = 0,
     ) -> dict[str, Any]:
-        return benchmark_queries(
-            self,
+        return KERNEL.benchmark(
+            self._composition.query_port,
             queries=queries,
             cases=cases,
             limit=limit,
@@ -1865,11 +861,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         )
 
     def _embed_query_variants(self, queries: List[str]) -> List[List[float]]:
-        """Batch query embeddings when the active vector generation is ready."""
-
-        if not self._vector_ready or self._embedder is None:
-            return []
-        return self._embedder.embed_queries(queries)
+        return self._bind_composition().vector_view.embed_query_variants(queries)
 
     def _search_vector_memories(self, query: str, *, limit: int) -> List[RecallItem]:
         return search_vector_memories(self, query, limit=limit)
@@ -1890,12 +882,32 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             self._last_recall_turns[memory_id] = self._current_turn
 
     def _stats_payload(self) -> Dict[str, Any]:
-        return stats_payload(self)
+        return KERNEL.stats(self._composition.query_port)
 
     def _retrieve_limit(self) -> int:
         max_items = int(self._config_value("auto_recall_max_items", 3))
         max_per_turn = int(self._config_value("max_recall_per_turn", 10))
         return max(1, min(max_items * 3, max_per_turn * 2, 20))
+
+    def _bind_composition(self) -> RuntimeComposition:
+        composition = getattr(self, "_composition", None)
+        if composition is not None:
+            return composition
+        with _COMPOSITION_BIND_LOCK:
+            composition = getattr(self, "_composition", None)
+            if composition is not None:
+                return composition
+            composition = assemble_runtime(self)
+            object.__setattr__(self, "_composition", composition)
+            object.__setattr__(self, "_truth", composition.truth)
+            object.__setattr__(self, "_background", composition.background)
+            return composition
+
+    def _truth_session(self) -> TruthSession:
+        return self._bind_composition().truth
+
+    def _background_work(self) -> BackgroundWork:
+        return self._bind_composition().background
 
     def _close_published_connection(
         self,
@@ -1904,43 +916,12 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         context: str,
         reraise: bool = True,
     ) -> bool:
-        """Close ``conn`` and clear ``self._conn`` only after close succeeds.
-
-        A close failure retains the exact handle and demotes the writer role
-        so durable writes fail closed while process/connection authority
-        remains. The exception class alone is never treated as proof that the
-        pager closed; only a successful, idempotent ``close()`` clears the
-        published handle. This method never opens a replacement connection.
-
-        This method does not acquire ``_writer_lifecycle_lock``. Concurrently
-        reachable demotion callers must already hold that lock so publication
-        cannot race an authorized write unit. Initialize and shutdown cleanup
-        either already hold the outer lifecycle lock or run only after workers
-        have quiesced; wrapping close itself would invert lock order when a
-        caller already holds ``self._lock``.
-        """
-
-        try:
-            conn.close()
-        except Exception:
-            logger.exception("Scope Recall SQLite close failed after %s", context)
-            if self._conn is conn:
-                self._truth_writer_role = "unknown"
-            if reraise:
-                raise
-            return False
-        if self._conn is conn:
-            self._conn = None
-        return True
+        return self._truth_session().close_published(conn, context=context, reraise=reraise)
 
     def _quarantine_sqlite_connection(self, conn: Any, context: str) -> None:
         """Detach and close a connection whose transactional state is untrusted."""
 
-        self._close_published_connection(
-            conn,
-            context=f"quarantining after {context}",
-            reraise=False,
-        )
+        self._truth_session().quarantine(conn, context)
 
     def _rollback_conn_after_error(self, context: str) -> None:
         """Clear a dirty shared SQLite transaction after an exception boundary.
@@ -1962,110 +943,10 @@ class ScopeRecallMemoryProvider(MemoryProvider):
     def _rollback_conn_after_error_under_lifecycle_lock(self, context: str) -> None:
         """Run rollback/quarantine/demotion while lifecycle is already held."""
 
-        with self._lock:
-            conn = self._conn
-            if conn is None:
-                return
-            try:
-                in_transaction = bool(conn.in_transaction)
-            except sqlite3.ProgrammingError:
-                # A real already-closed sqlite3 connection has idempotent
-                # close(), but a proxy may raise ProgrammingError while its
-                # pager remains live. Reuse the close-success-before-clear
-                # boundary instead of guessing from the exception class.
-                self._close_published_connection(
-                    conn,
-                    context=f"checking transaction state after {context}",
-                    reraise=False,
-                )
-                return
-            if not in_transaction:
-                return
-            try:
-                conn.rollback()
-            except Exception:
-                logger.exception("Scope Recall SQLite rollback failed after %s", context)
-                self._quarantine_sqlite_connection(conn, context)
+        self._truth_session().rollback_after_error(context)
 
     def _rollback_peer_provider_transactions(self, context: str) -> dict[str, int]:
-        """Rollback dirty same-process peer providers that share this SQLite DB.
-
-        A recoverable `database is locked` error can be caused by another live
-        Scope Recall provider instance in the same process, not by the current
-        connection. Database identity uses ``os.path.samefile`` with a
-        realpath/normcase fallback so hardlinks and junction aliases match.
-        Under the acquired peer lock, a peer whose shutdown event is already
-        set is skipped before role or transaction rollback. Only a peer whose
-        role is exactly ``owner`` may be rolled back. Reader, unknown, failed,
-        and shutdown peers are left alone and cannot count as a successful
-        rollback. Role is read only after the peer connection lock is acquired
-        so a role-transition race fails closed.
-
-        If the peer exposes a lifecycle lock, acquire it nonblocking before
-        the peer DB lock. A busy lifecycle or DB lock skips the peer and
-        counts as busy. Release in reverse order. This keeps lock order as
-        lifecycle then SQLite and avoids deadlock when two providers recover
-        concurrently.
-        """
-        db_path = self._db_path
-        result = {
-            "peer_providers_checked": 0,
-            "peer_rollbacks": 0,
-            "peer_rollback_errors": 0,
-            "peer_busy_skipped": 0,
-        }
-        if db_path is None:
-            return result
-        with _PROVIDER_REGISTRY_LOCK:
-            peers = [provider for provider in list(_PROVIDER_REGISTRY) if provider is not self]
-        for peer in peers:
-            # Avoid treating a known shutdown peer as lock-busy. Recheck after
-            # acquiring its lock below to close the state-transition race.
-            if _provider_shutdown_requested(peer):
-                continue
-            peer_db_path = getattr(peer, "_db_path", None)
-            if peer_db_path is None or not _same_truth_database_path(peer_db_path, db_path):
-                continue
-            result["peer_providers_checked"] += 1
-            peer_lock = getattr(peer, "_lock", None)
-            acquire = getattr(peer_lock, "acquire", None)
-            release = getattr(peer_lock, "release", None)
-            if not callable(acquire) or not callable(release):
-                continue
-            held_lifecycle = _peer_writer_lifecycle_lock(peer)
-            if held_lifecycle is not None and not _try_acquire_nonblocking(
-                held_lifecycle
-            ):
-                result["peer_busy_skipped"] += 1
-                continue
-            try:
-                acquired = _try_acquire_nonblocking(peer_lock)
-                if not acquired:
-                    result["peer_busy_skipped"] += 1
-                    continue
-                try:
-                    if _provider_shutdown_requested(peer):
-                        continue
-                    if getattr(peer, "_truth_writer_role", None) != "owner":
-                        continue
-                    peer_conn = getattr(peer, "_conn", None)
-                    if peer_conn is None or not getattr(peer_conn, "in_transaction", False):
-                        continue
-                    try:
-                        peer_conn.rollback()
-                        result["peer_rollbacks"] += 1
-                    except Exception:
-                        result["peer_rollback_errors"] += 1
-                        logger.exception("Scope Recall peer SQLite rollback failed after %s", context)
-                        quarantine = getattr(peer, "_quarantine_sqlite_connection", None)
-                        if callable(quarantine):
-                            quarantine(peer_conn, f"peer recovery: {context}")
-                finally:
-                    release()
-            finally:
-                if held_lifecycle is not None:
-                    held_lifecycle.release()
-        return result
+        return _peer_recovery.rollback_peer_provider_transactions(self, context)
 
     def _recover_sqlite_connection_after_error(self, context: str) -> dict[str, Any]:
         """Rollback/probe/reopen the provider SQLite connection after lock errors.
@@ -2091,92 +972,93 @@ class ScopeRecallMemoryProvider(MemoryProvider):
     ) -> dict[str, Any]:
         """Run peer and own recovery while lifecycle is already held."""
 
-        payload: dict[str, Any] = {
-            "recovered": False,
-            "rolled_back": False,
-            "reopened": False,
-            "write_probe": False,
-            "reconnect_pending": False,
-        }
-        payload.update(self._rollback_peer_provider_transactions(context))
-        with self._lock:
-            conn = self._conn
-            if conn is None:
-                return payload
-            rollback_failed = False
-            if conn.in_transaction:
-                try:
-                    conn.rollback()
-                    payload["rolled_back"] = True
-                except Exception:
-                    logger.exception("Scope Recall SQLite rollback failed during recovery after %s", context)
-                    self._quarantine_sqlite_connection(conn, context)
-                    rollback_failed = True
-            if not rollback_failed and self._sqlite_write_probe(conn):
-                payload["recovered"] = True
-                payload["write_probe"] = True
-                return payload
-            if self._db_path is None:
-                return payload
-            if rollback_failed:
-                if self._conn is not None:
-                    payload["reconnect_pending"] = True
-                    return payload
-            elif not self._close_published_connection(
-                conn,
-                context=f"recovery after {context}",
-                reraise=False,
-            ):
-                payload["reconnect_pending"] = True
-                return payload
-            try:
-                reopened = self._open_runtime_connection()
-                payload["reopened"] = True
-                payload["write_probe"] = self._sqlite_write_probe(reopened)
-                payload["recovered"] = bool(payload["write_probe"])
-                payload["reconnect_pending"] = not payload["recovered"]
-                if not payload["recovered"]:
-                    self._close_published_connection(
-                        reopened,
-                        context=f"failed write probe after recovery {context}",
-                        reraise=False,
-                    )
-            except Exception:
-                if self._conn is not None:
-                    self._truth_writer_role = "unknown"
-                payload["reconnect_pending"] = True
-                logger.exception("Scope Recall SQLite reopen failed during recovery after %s", context)
-            return payload
+        return self._truth_session().recover_after_error(
+            context,
+            peer_rollback=self._rollback_peer_provider_transactions,
+            open_writer=self._open_runtime_connection,
+            write_probe=self._sqlite_write_probe,
+        )
 
     def _sqlite_write_probe(self, conn: sqlite3.Connection) -> bool:
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            conn.rollback()
-            return True
-        except Exception:
-            try:
-                if conn.in_transaction:
-                    conn.rollback()
-            except Exception:
-                logger.exception("Scope Recall SQLite write probe rollback failed")
-            return False
+        return self._truth_session().probe_write(conn)
 
     def _require_conn(self) -> sqlite3.Connection:
-        if self._runtime_memory_disabled():
-            raise RuntimeError(RUNTIME_STATUS_DISABLED_MISSING_PRINCIPAL)
-        conn = self._conn
-        if conn is not None:
-            return conn
-        if self._shutdown_requested.is_set():
-            raise RuntimeError("Scope Recall is shutting down")
-        if self._truth_writes_blocked():
-            raise RuntimeError("truth_writer_busy")
-        with self._lock:
-            if self._conn is None:
-                if self._truth_writes_blocked():
-                    raise RuntimeError("truth_writer_busy")
-                self._conn = self._open_runtime_connection()
-            return self._conn
+        return self._truth_session().require()
+
+    @property
+    def _conn(self) -> sqlite3.Connection | None:
+        truth = getattr(self, "_truth", None)
+        if truth is None:
+            return None
+        return truth._conn
+
+    @_conn.setter
+    def _conn(self, value: sqlite3.Connection | None) -> None:
+        self._truth_session()._conn = value
+
+    @property
+    def _journal_digest_thread(self) -> threading.Thread | None:
+        return self._background_work().thread
+
+    @_journal_digest_thread.setter
+    def _journal_digest_thread(self, value: threading.Thread | None) -> None:
+        self._background_work().thread = value
+
+    @property
+    def _journal_digest_lock(self) -> threading.RLock:
+        return self._background_work().lock
+
+    @_journal_digest_lock.setter
+    def _journal_digest_lock(self, value: threading.RLock) -> None:
+        self._background_work().lock = value
+
+    @property
+    def _last_journal_digest_started(self) -> float:
+        return self._background_work().last_started
+
+    @_last_journal_digest_started.setter
+    def _last_journal_digest_started(self, value: float) -> None:
+        self._background_work().last_started = value
+
+    @property
+    def _last_journal_digest_finished(self) -> float:
+        return self._background_work().last_finished
+
+    @_last_journal_digest_finished.setter
+    def _last_journal_digest_finished(self, value: float) -> None:
+        self._background_work().last_finished = value
+
+    @property
+    def _last_journal_digest_status(self) -> str:
+        return self._background_work().last_status
+
+    @_last_journal_digest_status.setter
+    def _last_journal_digest_status(self, value: str) -> None:
+        self._background_work().last_status = value
+
+    @property
+    def _last_journal_digest_error(self) -> str:
+        return self._background_work().last_error
+
+    @_last_journal_digest_error.setter
+    def _last_journal_digest_error(self, value: str) -> None:
+        self._background_work().last_error = value
+
+    @property
+    def _journal_digest_consecutive_failures(self) -> int:
+        return self._background_work().consecutive_failures
+
+    @_journal_digest_consecutive_failures.setter
+    def _journal_digest_consecutive_failures(self, value: int) -> None:
+        self._background_work().consecutive_failures = value
+
+    @property
+    def _journal_digest_needs_resume(self) -> bool:
+        return self._background_work().needs_resume
+
+    @_journal_digest_needs_resume.setter
+    def _journal_digest_needs_resume(self, value: bool) -> None:
+        self._background_work().needs_resume = value
 
     def _config_value(self, key: str, default: Any) -> Any:
         return self._config.get(key, default)
@@ -2198,6 +1080,113 @@ class ScopeRecallMemoryProvider(MemoryProvider):
 
     def _scope_mode_for(self, target: str, source: str = "") -> str:
         return recall_scope_mode(target, source)
+
+    def store_now(
+        self,
+        *,
+        content: str,
+        source: str,
+        target: str,
+        session_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        allow_duplicate: bool = False,
+        semantic_merge: bool = False,
+        scope_mode: str | None = None,
+    ) -> tuple[str, bool, str]:
+        """Public store command. Instance ``_store_now`` patches still apply."""
+        return self._store_now(
+            content=content,
+            source=source,
+            target=target,
+            session_id=session_id,
+            metadata=metadata,
+            allow_duplicate=allow_duplicate,
+            semantic_merge=semantic_merge,
+            scope_mode=scope_mode,
+        )
+
+    def rollback_conn_after_error(self, context: str) -> None:
+        """Public cleanup declared by MemoryCommandPort."""
+        self._rollback_conn_after_error(context)
+
+    def write_target(self) -> object:
+        """Provider-shaped domain target for memory_ops / write_kernel / shared bridge."""
+        return self
+
+    def config_view(self) -> dict[str, Any]:
+        return dict(self._config)
+
+    def config_value(self, key: str, default: Any = None) -> Any:
+        return self._config_value(key, default)
+
+    def clean_text(self, text: Any) -> str:
+        return self._clean_text(text)
+
+    def scope_id(self) -> str:
+        return str(self.query_scope_view().get("scope_id") or "")
+
+    def shared_scope_id(self) -> str:
+        return str(self.query_scope_view().get("shared_scope_id") or "")
+
+    def shared_pool_scope_id(self) -> str:
+        return str(self.query_scope_view().get("shared_pool_scope_id") or "")
+
+    def writable_scope_ids(self) -> list[str]:
+        return [
+            str(item)
+            for item in (self.query_scope_view().get("writable_scope_ids") or [])
+            if str(item)
+        ]
+
+    def has_positive_write_authority(self) -> bool:
+        from .write_kernel import has_positive_write_authority as check_authority
+
+        return check_authority(self)
+
+    def writer_lifecycle_lock(self) -> Any:
+        return self._writer_lifecycle_lock
+
+    def command_update_memory(
+        self, memory_id: str, content: str, target: str | None = None
+    ) -> tuple[bool, str, str]:
+        return self._update_memory(memory_id, content, target)
+
+    def command_merge_memories(
+        self,
+        target_id: str,
+        source_ids: list[str],
+        content: str | None = None,
+        target: str | None = None,
+    ) -> dict[str, Any]:
+        return self._merge_memories(target_id, source_ids, content, target)
+
+    def command_archive_memories(
+        self,
+        ids: list[str],
+        *,
+        reason: str = "scope_recall_forget",
+        actor: str = "scope_recall_forget",
+        batch_id: str = "",
+    ) -> dict[str, Any]:
+        return self._archive_memories(ids, reason=reason, actor=actor, batch_id=batch_id)
+
+    def command_delete_memories(self, ids: list[str]) -> int:
+        return self._delete_memories(ids)
+
+    def command_feedback_memory(self, *, memory_id: str, rating: str, note: str = "") -> dict[str, Any]:
+        return self._feedback_memory(memory_id=memory_id, rating=rating, note=note)
+
+    def command_govern_memories(self, *, dry_run: bool = True, scope_only: bool = True) -> dict[str, Any]:
+        return self._govern_memories(dry_run=dry_run, scope_only=scope_only)
+
+    def command_dedupe_memories(self, *, dry_run: bool = True, scope_only: bool = True) -> dict[str, Any]:
+        return self._dedupe_memories(dry_run=dry_run, scope_only=scope_only)
+
+    def command_repair_vector(self) -> dict[str, Any]:
+        return self._repair_vector()
+
+    def fact_owned_memory_ids(self, ids: list[str]) -> list[str]:
+        return self._fact_owned_memory_ids(ids)
 
 
 def register(ctx) -> None:

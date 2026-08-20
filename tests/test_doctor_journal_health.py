@@ -613,3 +613,92 @@ def test_repair_graph_hygiene_removes_lifecycle_hidden_companion_rows(tmp_path):
     assert applied["deleted"]["memory_relations"] == 1
     assert applied["after"]["hidden_lifecycle_entities"] == 0
     assert applied["after"]["hidden_lifecycle_relations"] == 0
+
+def test_journal_report_surfaces_deferred_backlog_metrics(tmp_path):
+    conn = _conn(tmp_path)
+    conn.execute(
+        """
+        INSERT INTO journal_entries(
+            scope_id, shared_scope_id, session_id, turn_number, role, content,
+            content_hash, created_at, processed_run_id, deferred_run_id, deferred_at, defer_count
+        ) VALUES
+            ('scope', 'shared', 'fat', 1, 'user', 'deferred once', 'h-def-1',
+             '2026-08-18T00:00:00+00:00', '', 'run-defer-1', '2026-08-18T01:00:00+00:00', 1),
+            ('scope', 'shared', 'fat', 2, 'user', 'deferred again', 'h-def-2',
+             '2026-08-18T00:00:00+00:00', '', 'run-defer-2', '2026-08-18T02:00:00+00:00', 3)
+        """
+    )
+    conn.commit()
+    conn.close()
+    doctor = _doctor_module()
+
+    payload, check, recommendations = doctor.journal_report(tmp_path)
+
+    assert check["ok"] is True
+    deferred = payload["backlog"]["deferred"]
+    assert deferred["count"] == 2
+    assert deferred["oldest_deferred_age_hours"] > 0
+    assert deferred["repeat_deferred_count"] == 1
+    assert deferred["max_defer_count"] == 3
+    assert any("budget-deferred" in item for item in recommendations)
+    assert any("repeatedly deferred" in item for item in recommendations)
+
+
+def test_journal_report_deferred_count_excludes_historical_churn_without_current_marker(
+    tmp_path,
+):
+    conn = _conn(tmp_path)
+    conn.execute(
+        """
+        INSERT INTO journal_entries(
+            scope_id, shared_scope_id, session_id, turn_number, role, content,
+            content_hash, created_at, processed_run_id, deferred_run_id, deferred_at, defer_count
+        ) VALUES
+            ('scope', 'shared', 'fat', 1, 'user', 'currently deferred', 'h-cur',
+             '2026-08-18T00:00:00+00:00', '', 'run-defer-1', '2026-08-18T01:00:00+00:00', 1),
+            ('scope', 'shared', 'fat', 2, 'user', 'covered pending with churn', 'h-hist',
+             '2026-08-18T00:00:00+00:00', '', '', NULL, 4)
+        """
+    )
+    conn.commit()
+    conn.close()
+    doctor = _doctor_module()
+
+    payload, check, _recommendations = doctor.journal_report(tmp_path)
+
+    assert check["ok"] is True
+    deferred = payload["backlog"]["deferred"]
+    assert deferred["count"] == 1
+    assert deferred["max_defer_count"] == 4
+    assert deferred["repeat_deferred_count"] == 1
+
+def test_journal_report_surfaces_pending_retryable_failures_without_row_contents(tmp_path):
+    conn = _conn(tmp_path)
+    conn.execute(
+        """
+        INSERT INTO journal_entries(
+            scope_id, shared_scope_id, session_id, turn_number, role, content,
+            content_hash, created_at, processed_run_id, retryable_failures
+        ) VALUES (
+            'scope', 'shared', 's', 1, 'user',
+            'secret journal row body must not appear in doctor output',
+            'h-retryable', '2026-08-19T00:00:00+00:00', '', 2
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+    doctor = _doctor_module()
+    payload, check, recommendations = doctor.journal_report(
+        tmp_path,
+        journal_config={"retryable_failures_quarantine": 2},
+    )
+    assert check["ok"] is True
+    retryable = payload["backlog"]["retryable_failures"]
+    assert retryable["pending_entries"] == 1
+    assert retryable["threshold"] == 2
+    assert "pending_retryable_failures" in payload["digest_health"]["reasons"]
+    joined = " ".join(recommendations)
+    assert "durable retryable LLM failures" in joined
+    assert "secret journal row body" not in json.dumps(payload, ensure_ascii=False)
+    assert "secret journal row body" not in joined

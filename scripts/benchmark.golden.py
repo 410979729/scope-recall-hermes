@@ -40,6 +40,7 @@ DEFAULT_CASES = ROOT / "benchmarks" / "curated_recall_quality_cases_v2.json"
 COPY_IGNORE_PATTERNS = (
     ".git",
     ".hermes",
+    ".hermes-agent-src",
     ".pytest_cache",
     ".ruff_cache",
     "__pycache__",

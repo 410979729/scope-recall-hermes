@@ -11,24 +11,21 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any
 
-from .capture_filters import redact_secret_like_text, sanitize_structured_value
 from .evidence_retrieval import merge_evidence_rankings
 from .gating import (
-    matched_query_intent_terms,
-    query_intent_terms,
     query_requests_current_state,
     query_tokens,
 )
-from .freshness import (
-    CURRENT_STATUSES,
-    STALE_STATUSES,
-    attach_freshness_metadata,
-    memory_freshness_map,
-)
-from .graph import apply_quality_weight, entity_distance_scores, entity_overlap_bonus, metadata_entities, normalize_entity, query_entities as graph_query_entities
+from .freshness import memory_freshness_map
+from .graph import entity_distance_scores, metadata_entities, normalize_entity, query_entities as graph_query_entities
 from .lifecycle_policy import ORDINARY_RECALL_HIDDEN_LIFECYCLE_VALUES, ordinary_recall_lifecycle_visible_sql
 from .models import RecallItem
-from .recall_pipeline import build_search_plan, final_trace_payload, initial_trace, merge_recall_candidates, rank_recall_items
+from .recall_pipeline import (
+    apply_general_policy,
+    filter_recall_lifecycle,
+    safe_recall_item as _safe_recall_item,
+    trim_recall_budget,
+)
 from .schemas import DEFAULT_EVIDENCE_DIVERSITY_DEPTH, MAX_EVIDENCE_DIVERSITY_DEPTH
 from .scoring import combine_scores, reciprocal_rank_fusion
 from .temporal_query import (
@@ -36,68 +33,28 @@ from .temporal_query import (
     query_current_fact_views,
     query_temporal_memory_precedence,
 )
+from ._internal.recall import orchestrator as _recall_orchestrator
+from ._internal.recall import prefetch as _recall_prefetch
+from ._internal.recall.request import RecallSearchRequest
+from ._internal.recall.tuning import (
+    CJK_SCOPE_PRONOUNS as _CJK_SCOPE_PRONOUNS,
+    CJK_SCOPE_QUERY_SUBJECT_RE as _CJK_SCOPE_QUERY_SUBJECT_RE,
+    ENTITY_SCOPE_STOPWORDS as _ENTITY_SCOPE_STOPWORDS,
+    FRESHNESS_ABSOLUTE_BONUS_CAP as _FRESHNESS_ABSOLUTE_BONUS_CAP,
+    FRESHNESS_BASE_WEIGHT as _FRESHNESS_BASE_WEIGHT,
+    FRESHNESS_HINTS as _FRESHNESS_HINTS,
+    FRESHNESS_MAX_WEIGHT as _FRESHNESS_MAX_WEIGHT,
+    FRESHNESS_RELATIVE_BONUS_RATIO as _FRESHNESS_RELATIVE_BONUS_RATIO,
+    FRESHNESS_STEP_WEIGHT as _FRESHNESS_STEP_WEIGHT,
+    TEMPORAL_DURABLE_TYPES as _TEMPORAL_DURABLE_TYPES,
+    TEMPORAL_EPISODIC_TYPES as _TEMPORAL_EPISODIC_TYPES,
+    TEMPORAL_TEMPORARY_TYPES as _TEMPORAL_TEMPORARY_TYPES,
+    is_short_cjk_name as _is_short_cjk_name,
+    normalize_cjk_scope_subject as _normalize_cjk_scope_subject,
+)
 
-_FRESHNESS_HINTS = {
-    "current",
-    "currently",
-    "latest",
-    "new",
-    "newest",
-    "now",
-    "recent",
-    "recently",
-    "today",
-    "updated",
-    "当前",
-    "目前",
-    "现在",
-    "如今",
-    "最新",
-}
-
-_FRESHNESS_BASE_WEIGHT = 0.03
-_FRESHNESS_STEP_WEIGHT = 0.015
-_FRESHNESS_MAX_WEIGHT = 0.06
-_FRESHNESS_ABSOLUTE_BONUS_CAP = 0.06
-_FRESHNESS_RELATIVE_BONUS_RATIO = 0.12
-
-_TEMPORAL_DURABLE_TYPES = {
-    "constraint",
-    "decision",
-    "environment_fact",
-    "fact",
-    "factual",
-    "memory",
-    "ops",
-    "ops_procedure",
-    "preference",
-    "procedure",
-    "project",
-    "project_fact",
-    "resource",
-    "user_preference",
-    "workflow",
-}
-_TEMPORAL_EPISODIC_TYPES = {"episodic", "summary"}
-_TEMPORAL_TEMPORARY_TYPES = {"scratch", "temporary", "temporary_state", "tool_trace"}
 _RECALL_HIDDEN_LIFECYCLE_VALUES = ORDINARY_RECALL_HIDDEN_LIFECYCLE_VALUES
 _RECALL_HIDDEN_LIFECYCLE_TYPES = set(_RECALL_HIDDEN_LIFECYCLE_VALUES)
-
-
-def _safe_recall_item(item: RecallItem) -> RecallItem:
-    """Redact legacy sensitive payloads at the model/tool egress boundary."""
-
-    safe_metadata, _ = sanitize_structured_value(item.metadata or {})
-    return RecallItem(
-        id=item.id,
-        content=redact_secret_like_text(item.content),
-        summary=redact_secret_like_text(item.summary),
-        source=redact_secret_like_text(item.source),
-        target=redact_secret_like_text(item.target),
-        score=item.score,
-        updated_at=item.updated_at,
-        metadata=safe_metadata if isinstance(safe_metadata, dict) else {},
-    )
 
 
 def _sanitize_recall_window(
@@ -107,86 +64,7 @@ def _sanitize_recall_window(
 ) -> list[RecallItem]:
     """Sanitize only items that can cross the recall egress boundary."""
 
-    return [_safe_recall_item(item) for item in ranked[: max(0, int(limit))]]
-
-_ENTITY_SCOPE_STOPWORDS = {
-    "anchors",
-    "api",
-    "always",
-    "artifact",
-    "base",
-    "how",
-    "is",
-    "url",
-    "uri",
-    "current",
-    "latest",
-    "like",
-    "likes",
-    "our",
-    "prod",
-    "project",
-    "response",
-    "recovery",
-    "releases",
-    "rollout",
-    "style",
-    "tell",
-    "what",
-    "when",
-    "where",
-    "which",
-    "who",
-    "deploy",
-    "deployment",
-    "rollback",
-    "run",
-    "runbook",
-    "command",
-    "production",
-    "procedure",
-    "worker",
-    "queue",
-    "drain",
-    "server",
-    "service",
-    "services",
-    "systemctl",
-    "memory",
-    "scope-recall",
-    "scope",
-    "recall",
-    "use",
-}
-
-_CJK_SCOPE_QUERY_SUBJECT_RE = re.compile(
-    r"(?<![\u4e00-\u9fff])([\u4e00-\u9fff]{2,8}?)"
-    r"(?=(?:现在|目前|当前|最近|在哪里|在哪|哪儿|何处|的|是什么|怎么|如何|是否|有没有))"
-)
-_CJK_SCOPE_PRONOUNS = {"我们", "你们", "他们", "她们", "它们", "大家", "自己"}
-_CJK_SCOPE_QUERY_PREFIXES = (
-    "麻烦请告诉我",
-    "麻烦告诉我",
-    "可以告诉我",
-    "请告诉我",
-    "我想知道",
-    "帮我查一下",
-    "能告诉我",
-    "帮我看看",
-    "告诉我",
-    "帮我查",
-    "请问",
-)
-
-
-def _normalize_cjk_scope_subject(value: str) -> str:
-    """Remove conversational prefixes without weakening the named subject."""
-
-    subject = str(value or "").strip()
-    for prefix in _CJK_SCOPE_QUERY_PREFIXES:
-        if subject.startswith(prefix) and len(subject) - len(prefix) >= 2:
-            return subject[len(prefix) :]
-    return subject
+    return [_safe_recall_item(item) for item in trim_recall_budget(ranked, limit=limit)]
 
 
 class RecallService:
@@ -356,6 +234,31 @@ class RecallService:
             sanitize_output=True,
         )
 
+    def safe_recall_item(self, item: RecallItem) -> RecallItem:
+        """Sanitize one recall item. Honors module-level ``_safe_recall_item`` patches."""
+
+        return _safe_recall_item(item)
+
+    def sanitize_recall_window(
+        self, ranked: list[RecallItem], *, limit: int
+    ) -> list[RecallItem]:
+        """Sanitize the egress window. Honors module-level sanitizer patches."""
+
+        return _sanitize_recall_window(ranked, limit=limit)
+
+    def prefetch_prompt(self, query: str, *, session_id: str = "") -> str:
+        """Assemble the current-turn recall plus optional experience packet.
+
+        This is the read-side prefetch owner. Provider keeps a one-line
+        Hermes door. Isolation, fail-soft rollback, experience gates,
+        zero-write preflight, lock, and packet merge live in the recall
+        prefetch module so Provider never calls experience preflight.
+        """
+
+        return _recall_prefetch.prefetch_prompt(
+            self.provider, query, session_id=session_id
+        )
+
     def _search_memories_internal(
         self,
         query: str,
@@ -365,372 +268,24 @@ class RecallService:
         query_vector: list[float] | None = None,
         sanitize_output: bool = True,
     ) -> list[RecallItem]:
-        """Search accessible memory sources and return ranked recall payloads.
+        """Parse once, then delegate to the unique production orchestrator.
 
         ``advisory`` keeps stale evidence with explicit warnings and penalties;
         ``strict`` excludes stale and expired rows while preserving rejection
-        diagnostics in the funnel trace.
+        diagnostics in the funnel trace. Collection, ranking, and filter
+        counters run only inside ``run_search``.
         """
-        normalized_recall_mode = str(recall_mode or "advisory").strip().lower()
-        if normalized_recall_mode not in {"advisory", "strict"}:
-            raise ValueError("recall_mode must be advisory or strict")
-        started_at = time.perf_counter()
-        # Diagnostics describe one search only; never leak a prior temporal
-        # query into a later request where the feature gate is disabled.
-        self.last_temporal_query_diagnostics = {}
-        retrieval_cfg = self.provider._retrieval_config or {}
-        plan = build_search_plan(
-            limit=limit,
-            retrieval_config=retrieval_cfg,
-            vector_config=getattr(self.provider, "_vector_config", {}) or {},
+
+        return _recall_orchestrator.run_search(
+            self,
+            RecallSearchRequest(
+                query=query,
+                limit=limit,
+                recall_mode=recall_mode,
+                query_vector=query_vector,
+                sanitize_output=sanitize_output,
+            ),
         )
-        bounded_limit = plan.bounded_limit
-        candidate_pool = plan.candidate_pool
-        trace: dict[str, Any] = initial_trace(
-            query=query,
-            plan=plan,
-            accessible_scope_count=len(getattr(self.provider, "_accessible_scope_ids", []) or []),
-        )
-        trace["recall_mode"] = normalized_recall_mode
-        intent_terms = query_intent_terms(query)
-        current_state_requested = query_requests_current_state(query)
-
-        stage_start = time.perf_counter()
-        raw_lexical_candidates = self.provider._search_db_memories(query, limit=candidate_pool)
-        lexical_candidates = self._filter_recall_lifecycle(raw_lexical_candidates)
-        trace["filters"]["lifecycle_removed"] += max(0, len(raw_lexical_candidates) - len(lexical_candidates))
-        trace["stages"]["lexical"] = self._trace_stage(lexical_candidates, raw_count=len(raw_lexical_candidates))
-        trace["timings_ms"]["lexical"] = self._elapsed_ms(stage_start)
-
-        stage_start = time.perf_counter()
-        if query_vector is None:
-            raw_vector_candidates = self.provider._search_vector_memories(
-                query,
-                limit=candidate_pool,
-            )
-        else:
-            raw_vector_candidates = self.provider._search_vector_memories_with_vector(
-                query_vector,
-                limit=candidate_pool,
-            )
-        vector_candidates = self._filter_recall_lifecycle(raw_vector_candidates)
-        trace["filters"]["lifecycle_removed"] += max(0, len(raw_vector_candidates) - len(vector_candidates))
-        trace["stages"]["vector"] = self._trace_stage(vector_candidates, raw_count=len(raw_vector_candidates))
-        trace["timings_ms"]["vector"] = self._elapsed_ms(stage_start)
-
-        stage_start = time.perf_counter()
-        curated_candidates = self.provider._search_curated_memories(query)
-        trace["stages"]["curated"] = self._trace_stage(curated_candidates)
-        trace["timings_ms"]["curated"] = self._elapsed_ms(stage_start)
-
-        temporal_candidates: list[RecallItem] = []
-        temporal_memory_ids = list(
-            dict.fromkeys(
-                item.id
-                for item in (
-                    lexical_candidates + vector_candidates + curated_candidates
-                )
-                if item.id
-            )
-        )
-        temporal_payload = self._temporal_current_candidates(
-            query,
-            limit=candidate_pool,
-            candidate_memory_ids=temporal_memory_ids,
-        )
-        if temporal_payload is not None:
-            temporal_candidates, suppressed_memory_ids = temporal_payload
-            current_memory_ids = {item.id for item in temporal_candidates}
-            before_temporal_filter = (
-                len(lexical_candidates)
-                + len(vector_candidates)
-                + len(curated_candidates)
-            )
-            lexical_candidates = [
-                item
-                for item in lexical_candidates
-                if item.id not in suppressed_memory_ids
-                and item.id not in current_memory_ids
-            ]
-            vector_candidates = [
-                item
-                for item in vector_candidates
-                if item.id not in suppressed_memory_ids
-                and item.id not in current_memory_ids
-            ]
-            curated_candidates = [
-                item
-                for item in curated_candidates
-                if item.id not in suppressed_memory_ids
-                and item.id not in current_memory_ids
-            ]
-            after_temporal_filter = (
-                len(lexical_candidates)
-                + len(vector_candidates)
-                + len(curated_candidates)
-            )
-            trace["filters"]["temporal_stale_removed"] = max(
-                0,
-                before_temporal_filter - after_temporal_filter,
-            )
-            trace["stages"]["temporal_current"] = self._trace_stage(
-                temporal_candidates
-            )
-
-        rrf_by_id = self._rrf_scores(lexical_candidates, vector_candidates, curated_candidates)
-        trace["stages"]["rrf"] = {"count": len(rrf_by_id), "ids": sorted(rrf_by_id)[:20]}
-        for item in lexical_candidates + vector_candidates + curated_candidates:
-            if item.id in rrf_by_id:
-                item.metadata = dict(item.metadata or {})
-                item.metadata["rrf_score"] = rrf_by_id[item.id]
-
-        all_candidates = (
-            lexical_candidates
-            + vector_candidates
-            + curated_candidates
-            + temporal_candidates
-        )
-        merged = merge_recall_candidates(
-            all_candidates,
-            content_dedup_key=self.provider._dedup_key,
-            preferred_duplicate=self._preferred_duplicate,
-            final_score=self.final_score,
-        )
-
-        trace["stages"]["merge"] = {
-            "input_count": len(all_candidates),
-            "output_count": len(merged),
-            "deduped_count": max(0, len(all_candidates) - len(merged)),
-        }
-        results = list(merged.values())
-        before_lifecycle = len(results)
-        results = self._filter_recall_lifecycle(results)
-        trace["filters"]["lifecycle_removed"] += max(0, before_lifecycle - len(results))
-        before_general = len(results)
-        results = self._apply_general_policy(results)
-        trace["filters"]["general_policy_removed"] = max(0, before_general - len(results))
-        trace["stages"]["candidate_after_policy"] = self._trace_stage(results)
-        entity_graph_scores = self._entity_graph_scores(query, results)
-        relation_evidence = self._persisted_relation_evidence([item.id for item in results])
-        freshness_evidence = self._fact_freshness_evidence([item.id for item in results])
-        trace["stages"]["graph"] = {
-            "entity_scored_count": len(entity_graph_scores),
-            "relation_evidence_count": sum(int((payload or {}).get("count") or 0) for payload in relation_evidence.values()),
-        }
-        trace["stages"]["fact_freshness"] = {
-            "tracked_count": len(freshness_evidence),
-            "needs_live_check_count": sum(1 for payload in freshness_evidence.values() if bool(payload.get("needs_live_check"))),
-        }
-        min_score = float(retrieval_cfg.get("min_score") or self.provider._config_value("min_score", 0.18))
-        # Vector-only matches have no lexical evidence, so they must clear a
-        # substantially higher bar than the broad vector candidate threshold.
-        # This keeps the semantic companion useful for strong hits while
-        # preventing mid-confidence neighbor drift from injecting stale topics.
-        vector_only_min_score = float(retrieval_cfg.get("vector_only_min_score") or 0.70)
-        filtered: list[RecallItem] = []
-        rejected: list[RecallItem] = []
-        self.last_rejected_candidates = []
-        for item in results:
-            meta = dict(item.metadata or {})
-            raw_bm25_score = float(meta.get("bm25_score") or 0.0)
-            matched_intent_terms = matched_query_intent_terms(
-                query,
-                f"{item.summary}\n{item.content}",
-            )
-            intent_matched = bool(matched_intent_terms)
-            if intent_terms and raw_bm25_score > 0.0 and not intent_matched:
-                meta["bm25_pre_intent_score"] = raw_bm25_score
-                meta["bm25_score"] = raw_bm25_score * 0.25
-            meta["intent_terms"] = list(intent_terms)
-            meta["intent_matched"] = intent_matched
-            meta["matched_intent_terms"] = matched_intent_terms
-            meta["current_state_requested"] = current_state_requested
-            pre_quality_score = self.final_score(meta)
-            metadata_weight = float(retrieval_cfg.get("metadata_weight") or 0.08)
-            quality_adjusted_score = apply_quality_weight(
-                pre_quality_score,
-                meta,
-                weight=metadata_weight,
-            )
-            entity_weight = float(retrieval_cfg.get("entity_weight") or 0.06)
-            entity_overlap = entity_overlap_bonus(query, meta, weight=entity_weight)
-            entity_distance_score = entity_graph_scores.get(item.id, 0.0)
-            entity_distance_weight = float(retrieval_cfg.get("entity_distance_weight", 0.04))
-            entity_distance_bonus = entity_distance_score * entity_distance_weight
-            relation_payload = relation_evidence.get(item.id, {})
-            relation_types = [
-                str(value).strip().lower()
-                for value in (relation_payload.get("types") or [])
-                if str(value).strip()
-            ]
-            contradiction_mode = str(
-                retrieval_cfg.get("relation_contradiction_mode") or "surface"
-            ).strip().lower()
-            if contradiction_mode not in {"surface", "suppress", "penalize"}:
-                contradiction_mode = "surface"
-            has_contradiction = "contradicts" in relation_types
-            relation_rerank_bonus = self._relation_rerank_bonus(relation_payload)
-            base_score = max(0.0, min(1.0, quality_adjusted_score + entity_overlap + entity_distance_bonus + relation_rerank_bonus))
-            freshness_payload = freshness_evidence.get(item.id)
-            fact_freshness_penalty = attach_freshness_metadata(meta, freshness_payload, config=retrieval_cfg)
-            meta["current_state_rank"] = self._current_state_rank(
-                item,
-                meta,
-                requested=current_state_requested,
-                intent_matched=intent_matched,
-            )
-            if fact_freshness_penalty > 0.0:
-                base_score *= max(0.0, 1.0 - fact_freshness_penalty)
-            decay_multiplier = self._temporal_decay_multiplier(meta, item.updated_at)
-            policy_class, policy_weight = self._temporal_policy(meta, item.target)
-            decay_weight = 0.0
-            pre_decay_score = base_score
-            try:
-                existing_recency_bonus = float(meta.get("recency_bonus") or 0.0)
-            except (TypeError, ValueError):
-                existing_recency_bonus = 0.0
-            if decay_multiplier < 1.0:
-                base_decay_weight = max(0.0, min(1.0, float(retrieval_cfg.get("temporal_decay_weight") or 0.0)))
-                decay_weight = max(0.0, min(1.0, base_decay_weight * policy_weight))
-                base_score *= (1.0 - decay_weight) + decay_weight * decay_multiplier
-            meta.update(
-                {
-                    "pre_quality_score": pre_quality_score,
-                    "quality_weight_applied": quality_adjusted_score - pre_quality_score,
-                    "metadata_weight": metadata_weight,
-                    "entity_overlap_bonus": entity_overlap,
-                    "entity_distance_score": entity_distance_score,
-                    "entity_distance_weight": entity_distance_weight,
-                    "entity_distance_bonus": entity_distance_bonus,
-                    "relation_evidence_count": int(relation_payload.get("count") or 0),
-                    "relation_evidence_types": relation_types,
-                    "relation_evidence_ids": relation_payload.get("ids") or [],
-                    "relation_contradiction_mode": contradiction_mode,
-                    "relation_contradiction_warning": (
-                        "contradictory_relation_evidence_present"
-                        if has_contradiction and contradiction_mode == "surface"
-                        else ""
-                    ),
-                    "relation_rerank_bonus": relation_rerank_bonus,
-                    "relation_rerank_enabled": self._config_bool(retrieval_cfg.get("relation_rerank_enabled"), False),
-                    "fact_freshness_penalty": fact_freshness_penalty,
-                    "pre_decay_score": pre_decay_score,
-                    "temporal_decay_multiplier": decay_multiplier,
-                    "temporal_decay_weight": decay_weight,
-                    "temporal_policy_class": policy_class,
-                    "temporal_policy_weight": policy_weight,
-                    "base_score": base_score,
-                    "recency_bonus": existing_recency_bonus,
-                    "final_score": base_score,
-                    "min_score": min_score,
-                    "vector_only_min_score": vector_only_min_score,
-                    "rejected_reason": "",
-                }
-            )
-            meta.setdefault("general_weight", 1.0)
-            item.metadata = meta
-            item.score = base_score
-            freshness_status = str(
-                meta.get("fact_freshness_status") or "untracked"
-            ).strip().lower()
-            if normalized_recall_mode == "strict" and (
-                freshness_status in STALE_STATUSES or freshness_status == "expired"
-            ):
-                meta["rejected_reason"] = "freshness_strict_excluded"
-                trace["filters"]["freshness_strict_excluded"] += 1
-                item.metadata = meta
-                rejected.append(item)
-                continue
-            if has_contradiction and contradiction_mode == "suppress":
-                meta["rejected_reason"] = "relation_contradiction_suppressed"
-                trace["filters"]["relation_contradiction_suppressed"] += 1
-                item.metadata = meta
-                rejected.append(item)
-                continue
-            lexical_score = float(meta.get("lexical_score") or 0.0)
-            vector_score = float(meta.get("vector_score") or 0.0)
-            if self._entity_scope_mismatch(query, item, meta):
-                meta["rejected_reason"] = "entity_scope_mismatch"
-                trace["filters"]["entity_scope_mismatch"] += 1
-                item.metadata = meta
-                rejected.append(item)
-                continue
-            if lexical_score <= 0.0 and vector_score > 0.0 and base_score < vector_only_min_score:
-                meta["rejected_reason"] = "vector_only_below_min_score"
-                trace["filters"]["vector_only_below_min_score"] += 1
-                item.metadata = meta
-                rejected.append(item)
-                continue
-            if base_score >= min_score:
-                filtered.append(item)
-            else:
-                meta["rejected_reason"] = "below_min_score"
-                trace["filters"]["below_min_score"] += 1
-                item.metadata = meta
-                rejected.append(item)
-
-        freshness_weight = self._freshness_weight(query)
-        timestamps = [self._timestamp_value(item.updated_at) for item in filtered]
-        if freshness_weight > 0.0 and timestamps:
-            oldest = min(timestamps)
-            newest = max(timestamps)
-            span = newest - oldest
-            for item in filtered:
-                bonus = self._recency_bonus(
-                    base_score=float((item.metadata or {}).get("base_score") or item.score),
-                    updated_at=item.updated_at,
-                    freshness_weight=freshness_weight,
-                    oldest=oldest,
-                    span=span,
-                )
-                item.metadata = dict(item.metadata or {})
-                item.metadata["recency_bonus"] = bonus
-                item.score += bonus
-                item.metadata["final_score"] = item.score
-
-        ranked_rejected = [
-            _safe_recall_item(item) for item in rank_recall_items(rejected)
-        ]
-        self.last_rejected_candidates = ranked_rejected
-
-        ranked = rank_recall_items(filtered)
-        current_positions = [
-            index
-            for index, item in enumerate(ranked)
-            if str(
-                (item.metadata or {}).get("fact_freshness_status") or ""
-            ).strip().lower()
-            in CURRENT_STATUSES
-        ]
-        ranking_warnings: list[dict[str, str]] = []
-        for index, item in enumerate(ranked):
-            status = str(
-                (item.metadata or {}).get("fact_freshness_status") or ""
-            ).strip().lower()
-            if status not in STALE_STATUSES or not any(
-                current_index > index for current_index in current_positions
-            ):
-                continue
-            item.metadata = dict(item.metadata or {})
-            item.metadata["ranking_warning"] = "stale_result_ranked_above_current"
-            ranking_warnings.append(
-                {
-                    "id": item.id,
-                    "warning": "stale_result_ranked_above_current",
-                }
-            )
-        if ranking_warnings:
-            trace["ranking_warnings"] = ranking_warnings
-        returned = (
-            _sanitize_recall_window(ranked, limit=bounded_limit)
-            if sanitize_output
-            else ranked[:bounded_limit]
-        )
-        trace["stages"]["ranked"] = self._trace_stage(ranked)
-        trace["final"] = final_trace_payload(returned=returned, ranked_rejected=ranked_rejected)
-        trace["timings_ms"]["total"] = self._elapsed_ms(started_at)
-        self.last_funnel_trace = trace
-        return returned
 
     def _temporal_current_candidates(
         self,
@@ -957,7 +512,20 @@ class RecallService:
             # also visible in prose instead of treating every keyword as scope.
             structured_entities = declared_entities
         else:
-            structured_entities = declared_entities & explicit_item_entities
+            # The prose proper-name extractor is Latin-oriented, so CJK
+            # subjects (天璇, 玉衡 …) vanished from the intersection and junk
+            # ASCII keywords became "the subject", which then vetoed queries
+            # that named the real CJK subject. Declared short CJK names that
+            # appear verbatim in the item's own text are subject evidence.
+            item_text = f"{item.content}\n{item.summary}"
+            cjk_declared_in_prose = {
+                entity
+                for entity in declared_entities
+                if _is_short_cjk_name(entity) and entity in item_text
+            }
+            structured_entities = (
+                declared_entities & explicit_item_entities
+            ) | cjk_declared_in_prose
         query_projects = self._project_entities(query)
         item_projects = self._project_entities("\n".join([item.content, item.summary]))
 
@@ -1296,53 +864,17 @@ class RecallService:
         return {item_id: max(0.0, min(1.0, score / max_score)) for item_id, score in fused}
 
     def _filter_recall_lifecycle(self, items: list[RecallItem]) -> list[RecallItem]:
-        output: list[RecallItem] = []
-        for item in items:
-            lifecycle = str((item.metadata or {}).get("lifecycle") or "").strip().lower()
-            if lifecycle in _RECALL_HIDDEN_LIFECYCLE_TYPES and not (
-                lifecycle == "scratch" and item.target == "general"
-            ):
-                continue
-            output.append(item)
-        return output
+        return filter_recall_lifecycle(items)
 
     def _apply_general_policy(self, items: list[RecallItem]) -> list[RecallItem]:
         retrieval_cfg = self.provider._retrieval_config or {}
-        mode = str(retrieval_cfg.get("include_general") or "same-scope").strip().lower()
-        if mode not in {"same-scope", "never", "always"}:
-            mode = "same-scope"
-        general_weight = max(0.0, min(1.0, float(retrieval_cfg.get("general_weight") or 0.35)))
-        output: list[RecallItem] = []
-        for item in items:
-            if item.target != "general":
-                output.append(item)
-                continue
-            if mode == "never":
-                continue
-            scope_id = str((item.metadata or {}).get("scope_id") or "")
-            if mode == "same-scope" and scope_id and scope_id != str(self.provider._scope_id):
-                continue
-            min_general_importance = retrieval_cfg.get("general_min_importance")
-            if mode != "always" and min_general_importance is not None:
-                try:
-                    min_importance = float(min_general_importance)
-                except (TypeError, ValueError):
-                    min_importance = -1.0
-                raw_importance = (item.metadata or {}).get("importance")
-                try:
-                    importance = float(raw_importance) if raw_importance not in (None, "") else 0.0
-                except (TypeError, ValueError):
-                    importance = 0.0
-                if min_importance >= 0.0 and importance < min_importance:
-                    continue
-            if general_weight < 1.0:
-                meta = dict(item.metadata or {})
-                for key in ("lexical_score", "vector_score", "bm25_score", "rrf_score"):
-                    meta[key] = float(meta.get(key) or 0.0) * general_weight
-                meta["general_weight"] = general_weight
-                item.metadata = meta
-            output.append(item)
-        return output
+        return apply_general_policy(
+            items,
+            include_general=str(retrieval_cfg.get("include_general") or "same-scope"),
+            general_weight=float(retrieval_cfg.get("general_weight") or 0.35),
+            general_min_importance=retrieval_cfg.get("general_min_importance"),
+            current_scope_id=str(self.provider._scope_id),
+        )
 
     def final_score(self, meta: dict[str, Any]) -> float:
         retrieval_cfg = self.provider._retrieval_config or {}

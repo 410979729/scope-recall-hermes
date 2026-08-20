@@ -438,9 +438,13 @@ class SQLiteBruteForceVectorStore:
                     raise VectorStoreCompatibilityError(
                         "sqlite-bruteforce READY seal refused an open transaction"
                     )
-                # Do not wait on a pinned reader: READY publication must fail
-                # closed and can be retried after the reader releases its pin.
-                conn.execute("PRAGMA busy_timeout=0")
+                # Tolerate sub-5s transient reader pins, then still fail
+                # closed: READY publication remains retryable after a longer
+                # pin releases. A zero timeout made every writer-tick overlap
+                # a hard seal failure under multi-writer load (issue #47's
+                # collision family); a bounded wait removes the hair trigger
+                # without weakening the fail-closed contract below.
+                conn.execute("PRAGMA busy_timeout=5000")
                 row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
                 if row is None or len(row) != 3:
                     raise VectorStoreCompatibilityError(

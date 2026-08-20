@@ -1,6 +1,9 @@
 """Tool and configuration schema builders exposed to Hermes.
 
-Schema generation controls the prompt/tool surface, so compact and standard profiles must stay aligned with dispatcher support."""
+Schema generation controls the prompt/tool surface, so compact and standard
+profiles must stay aligned with dispatcher support. Runtime identity comes from
+``tool_runtime_spec``; independent expected-set oracles stay outside this module.
+"""
 
 from __future__ import annotations
 
@@ -8,43 +11,7 @@ from typing import Any
 
 from .config_schema import build_config_registry
 from .gating import config_bool
-from .schemas import (
-    SCOPE_RECALL_BENCHMARK_SCHEMA,
-    SCOPE_RECALL_CONTEXT_SCHEMA,
-    SCOPE_RECALL_DEDUPE_SCHEMA,
-    SCOPE_RECALL_ENTITY_SCHEMA,
-    SCOPE_RECALL_EXPERIENCE_PREFLIGHT_SCHEMA,
-    SCOPE_RECALL_EXPERIENCE_PROMOTE_SCHEMA,
-    SCOPE_RECALL_EXPERIENCE_STATS_SCHEMA,
-    SCOPE_RECALL_EXPLAIN_SCHEMA,
-    SCOPE_RECALL_EXPORT_SCHEMA,
-    SCOPE_RECALL_EVOLVE_SCHEMA,
-    SCOPE_RECALL_FACT_SCHEMA,
-    SCOPE_RECALL_FEEDBACK_SCHEMA,
-    SCOPE_RECALL_FORGET_SCHEMA,
-    SCOPE_RECALL_FORGETTING_REPORT_SCHEMA,
-    SCOPE_RECALL_FORGETTING_RUN_SCHEMA,
-    SCOPE_RECALL_GOVERN_SCHEMA,
-    SCOPE_RECALL_HYGIENE_SCHEMA,
-    SCOPE_RECALL_INSPECT_SCHEMA,
-    SCOPE_RECALL_MEMORY_SCHEMA,
-    SCOPE_RECALL_MERGE_SCHEMA,
-    SCOPE_RECALL_PLAYBOOK_CREATE_SCHEMA,
-    SCOPE_RECALL_PLAYBOOK_FEEDBACK_SCHEMA,
-    SCOPE_RECALL_PLAYBOOK_INSPECT_SCHEMA,
-    SCOPE_RECALL_PLAYBOOK_REVIEW_SCHEMA,
-    SCOPE_RECALL_PLAYBOOK_SEARCH_SCHEMA,
-    SCOPE_RECALL_PROBE_SCHEMA,
-    SCOPE_RECALL_PROFILE_SCHEMA,
-    SCOPE_RECALL_REPAIR_SCHEMA,
-    SCOPE_RECALL_RELATED_SCHEMA,
-    SCOPE_RECALL_REFLECT_SCHEMA,
-    SCOPE_RECALL_SEARCH_SCHEMA,
-    SCOPE_RECALL_STATS_SCHEMA,
-    SCOPE_RECALL_STORE_SCHEMA,
-    SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA,
-    SCOPE_RECALL_UPDATE_SCHEMA,
-)
+from .tool_runtime_spec import TOOL_SPECS, visible_tool_specs
 
 
 def build_config_schema() -> list[dict[str, Any]]:
@@ -68,110 +35,49 @@ def _extra_tool_names(raw_extra_tools: Any) -> list[str]:
     return []
 
 
-def build_tool_schemas(config: dict[str, Any], *, agent_context: str = "primary") -> list[dict[str, Any]]:
-    """Build the public tool schema list for compact, standard, and optional maintenance surfaces.
+def _flag_set(config: dict[str, Any]) -> set[str]:
+    flags: set[str] = set()
+    raw_experience = config.get("experience")
+    experience_config = dict(raw_experience) if isinstance(raw_experience, dict) else {}
+    if config_bool(experience_config, "enabled", True):
+        flags.add("experience")
+    raw_temporal = config.get("temporal_queries")
+    temporal_config = dict(raw_temporal) if isinstance(raw_temporal, dict) else {}
+    if config_bool(temporal_config, "enabled", False):
+        flags.add("temporal")
+    raw_reflection = config.get("reflection")
+    reflection_config = dict(raw_reflection) if isinstance(raw_reflection, dict) else {}
+    if config_bool(reflection_config, "enabled", False):
+        flags.add("reflection")
+    if config_bool(config, "maintenance_tools_enabled", False):
+        flags.add("maintenance")
+    if config_bool(config, "secret_index_tools_enabled", False):
+        flags.add("secret_index")
+    return flags
 
-    Schema exposure controls prompt size and operator power, so feature flags and dispatcher names must remain synchronized."""
+
+def build_tool_schemas(config: dict[str, Any], *, agent_context: str = "primary") -> list[dict[str, Any]]:
+    """Build the public tool schema list for compact, standard, and optional maintenance surfaces."""
+
     if not config_bool(config, "enable_tools", True):
         return []
     if agent_context != "primary":
         return []
 
-    raw_experience_config = config.get("experience")
-    experience_config: dict[str, Any] = dict(raw_experience_config) if isinstance(raw_experience_config, dict) else {}
-    experience_enabled = config_bool(experience_config, "enabled", True)
-    raw_temporal_config = config.get("temporal_queries")
-    temporal_config: dict[str, Any] = (
-        dict(raw_temporal_config) if isinstance(raw_temporal_config, dict) else {}
-    )
-    temporal_enabled = config_bool(temporal_config, "enabled", False)
-    raw_reflection_config = config.get("reflection")
-    reflection_config: dict[str, Any] = (
-        dict(raw_reflection_config)
-        if isinstance(raw_reflection_config, dict)
-        else {}
-    )
-    reflection_enabled = config_bool(reflection_config, "enabled", False)
-    maintenance_enabled = config_bool(config, "maintenance_tools_enabled", False)
-    secret_index_enabled = config_bool(config, "secret_index_tools_enabled", False)
     profile = _schema_profile(config)
-
-    compact_schemas = [
-        SCOPE_RECALL_STORE_SCHEMA,
-        SCOPE_RECALL_SEARCH_SCHEMA,
-        SCOPE_RECALL_CONTEXT_SCHEMA,
-        SCOPE_RECALL_PROFILE_SCHEMA,
-        SCOPE_RECALL_MEMORY_SCHEMA,
-        SCOPE_RECALL_ENTITY_SCHEMA,
-    ]
-    standard_schemas = [
-        SCOPE_RECALL_STORE_SCHEMA,
-        SCOPE_RECALL_SEARCH_SCHEMA,
-        SCOPE_RECALL_CONTEXT_SCHEMA,
-        SCOPE_RECALL_PROFILE_SCHEMA,
-        SCOPE_RECALL_PROBE_SCHEMA,
-        SCOPE_RECALL_RELATED_SCHEMA,
-        SCOPE_RECALL_FEEDBACK_SCHEMA,
-        SCOPE_RECALL_FORGET_SCHEMA,
-        SCOPE_RECALL_UPDATE_SCHEMA,
-        SCOPE_RECALL_MERGE_SCHEMA,
-        SCOPE_RECALL_INSPECT_SCHEMA,
-        SCOPE_RECALL_EXPLAIN_SCHEMA,
-        SCOPE_RECALL_EXPORT_SCHEMA,
-        SCOPE_RECALL_STATS_SCHEMA,
-        SCOPE_RECALL_BENCHMARK_SCHEMA,
-    ]
-    schemas = list(standard_schemas if profile == "standard" else compact_schemas)
-
-    schema_by_name = {str(schema["name"]): schema for schema in [*compact_schemas, *standard_schemas]}
-    if temporal_enabled:
-        schemas.append(SCOPE_RECALL_FACT_SCHEMA)
-        schema_by_name[SCOPE_RECALL_FACT_SCHEMA["name"]] = SCOPE_RECALL_FACT_SCHEMA
-    if reflection_enabled:
-        schemas.append(SCOPE_RECALL_REFLECT_SCHEMA)
-        schema_by_name[SCOPE_RECALL_REFLECT_SCHEMA["name"]] = SCOPE_RECALL_REFLECT_SCHEMA
-    if secret_index_enabled:
-        schema_by_name[SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA["name"]] = SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA
-    experience_schemas = [
-        SCOPE_RECALL_PLAYBOOK_SEARCH_SCHEMA,
-        SCOPE_RECALL_PLAYBOOK_INSPECT_SCHEMA,
-        SCOPE_RECALL_EXPERIENCE_PREFLIGHT_SCHEMA,
-        SCOPE_RECALL_PLAYBOOK_FEEDBACK_SCHEMA,
-        SCOPE_RECALL_EXPERIENCE_STATS_SCHEMA,
-    ]
-    if experience_enabled:
-        schema_by_name.update({str(schema["name"]): schema for schema in experience_schemas})
-        if profile == "standard":
-            schemas.extend(experience_schemas)
-    maintenance_schemas = [
-        SCOPE_RECALL_DEDUPE_SCHEMA,
-        SCOPE_RECALL_GOVERN_SCHEMA,
-        SCOPE_RECALL_REPAIR_SCHEMA,
-        SCOPE_RECALL_HYGIENE_SCHEMA,
-        SCOPE_RECALL_FORGETTING_REPORT_SCHEMA,
-        SCOPE_RECALL_FORGETTING_RUN_SCHEMA,
-    ]
-    experience_maintenance_schemas = [
-        SCOPE_RECALL_PLAYBOOK_CREATE_SCHEMA,
-        SCOPE_RECALL_PLAYBOOK_REVIEW_SCHEMA,
-        SCOPE_RECALL_EXPERIENCE_PROMOTE_SCHEMA,
-    ]
-    if maintenance_enabled:
-        schema_by_name.update({str(schema["name"]): schema for schema in maintenance_schemas})
-        schemas.extend(maintenance_schemas)
-    if experience_enabled and maintenance_enabled:
-        schema_by_name.update(
-            {str(schema["name"]): schema for schema in experience_maintenance_schemas}
-        )
-        schemas.extend(experience_maintenance_schemas)
-
-    if maintenance_enabled:
-        schemas.append(SCOPE_RECALL_EVOLVE_SCHEMA)
-        schema_by_name[SCOPE_RECALL_EVOLVE_SCHEMA["name"]] = SCOPE_RECALL_EVOLVE_SCHEMA
-
-    if secret_index_enabled:
-        schemas.append(SCOPE_RECALL_STORE_SECRET_INDEX_SCHEMA)
-
+    flags = _flag_set(config)
+    schema_by_name: dict[str, dict[str, Any]] = {}
+    for spec in TOOL_SPECS:
+        gate = spec.feature_gate
+        if gate is None:
+            schema_by_name[spec.name] = spec.schema
+        elif gate == "experience" and "experience" in flags:
+            schema_by_name[spec.name] = spec.schema
+        elif gate == "experience+maintenance" and "experience" in flags and "maintenance" in flags:
+            schema_by_name[spec.name] = spec.schema
+        elif gate in flags:
+            schema_by_name[spec.name] = spec.schema
+    schemas = [spec.schema for spec in visible_tool_specs(profile=profile, flags=flags)]
     seen = {str(schema["name"]) for schema in schemas}
     for name in _extra_tool_names(config.get("tool_schema_extra_tools") or []):
         schema = schema_by_name.get(name)

@@ -18,7 +18,9 @@ import pytest
 
 from plugins.memory import load_memory_provider
 
+import scope_recall.capture as capture
 import scope_recall.provider as provider_module
+from scope_recall._internal.runtime import peer_recovery as peer_recovery_mod
 from scope_recall.models import RuntimeScope
 from scope_recall.provider import ScopeRecallMemoryProvider
 from writer_lease import TruthWriterLease
@@ -987,3 +989,124 @@ def test_rollback_after_error_close_failure_waits_for_lifecycle(tmp_path) -> Non
         provider._conn = raw_conn
         provider._truth_writer_role = "owner"
         _release_live_provider(provider, tmp_path)
+
+
+def test_shutdown_timeout_keeps_lease_registry_and_finalized_false_for_retry(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    provider = _provider(tmp_path)
+    connection = _Closable()
+    vector_store = _Closable()
+    provider._conn = connection
+    provider._vector_store = vector_store
+    released_lease = {"n": 0}
+
+    class Lease:
+        def release(self) -> None:
+            released_lease["n"] += 1
+
+    lease = Lease()
+    provider._truth_writer_lease = lease
+    released = threading.Event()
+    started = threading.Event()
+
+    def blocked_digest() -> None:
+        started.set()
+        released.wait(timeout=2.0)
+
+    worker = threading.Thread(target=blocked_digest, name="blocked-journal-digest")
+    provider._journal_digest_thread = worker
+    worker.start()
+    assert started.wait(timeout=1.0)
+
+    unregister_calls: list[str] = []
+    monkeypatch.setattr(provider_module, "shutdown_writer", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        peer_recovery_mod,
+        "unregister_provider_instance",
+        lambda *_args, **_kwargs: unregister_calls.append("unregistered"),
+    )
+
+    with pytest.raises(RuntimeError, match="journal digest did not acknowledge"):
+        provider.shutdown(timeout=0.01)
+
+    assert connection.closed is False
+    assert vector_store.closed is False
+    assert provider._conn is connection
+    assert provider._vector_store is vector_store
+    assert provider._truth_writer_lease is lease
+    assert released_lease["n"] == 0
+    assert unregister_calls == []
+    assert bool(getattr(provider, "_shutdown_finalized", False)) is False
+
+    released.set()
+    provider.shutdown(timeout=1.0)
+    assert connection.closed is True
+    assert vector_store.closed is True
+    assert provider._truth_writer_lease is None
+    assert released_lease["n"] == 1
+    assert unregister_calls == ["unregistered"]
+    assert bool(getattr(provider, "_shutdown_finalized", False)) is True
+
+
+def test_writer_shutdown_barrier_keeps_resources_for_retry(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Capture-writer non-ack must fail closed so a later shutdown can finish."""
+
+    provider = _provider(tmp_path)
+    connection = _Closable()
+    vector_store = _Closable()
+    provider._conn = connection
+    provider._vector_store = vector_store
+    released_lease = {"n": 0}
+
+    class Lease:
+        def release(self) -> None:
+            released_lease["n"] += 1
+
+    lease = Lease()
+    provider._truth_writer_lease = lease
+    started = threading.Event()
+    released = threading.Event()
+
+    def blocked_drain(_current) -> None:
+        started.set()
+        released.wait(timeout=2.0)
+
+    monkeypatch.setattr(capture, "_drain_relation_rebuild_debt", blocked_drain)
+    unregister_calls: list[str] = []
+    monkeypatch.setattr(
+        peer_recovery_mod,
+        "unregister_provider_instance",
+        lambda *_args, **_kwargs: unregister_calls.append("unregistered"),
+    )
+
+    capture.start_writer(provider)
+    assert started.wait(timeout=1.0)
+
+    with pytest.raises(RuntimeError, match="did not acknowledge"):
+        provider.shutdown(timeout=0.05)
+
+    assert connection.closed is False
+    assert vector_store.closed is False
+    assert provider._conn is connection
+    assert provider._vector_store is vector_store
+    assert provider._truth_writer_lease is lease
+    assert released_lease["n"] == 0
+    assert unregister_calls == []
+    assert bool(getattr(provider, "_shutdown_finalized", False)) is False
+    assert provider._writer_thread is not None
+    assert provider._writer_thread.is_alive()
+
+    released.set()
+    provider.shutdown(timeout=1.0)
+    assert connection.closed is True
+    assert vector_store.closed is True
+    assert provider._truth_writer_lease is None
+    assert released_lease["n"] == 1
+    assert unregister_calls == ["unregistered"]
+    assert bool(getattr(provider, "_shutdown_finalized", False)) is True
+    assert provider._writer_thread is None

@@ -39,7 +39,7 @@ if str(ROOT) not in sys.path:
 from secret_patterns import scan_secret_like_text, secret_scan_shadow  # noqa: E402
 from scripts.release_changelog import extract_version_section  # noqa: E402
 
-PACKAGE_VERSION = "1.9.3"
+PACKAGE_VERSION = "1.10.0"
 PUBLIC_RELEASE_BASELINE = "1.9.2"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 RELEASE_READINESS_DOC = f"docs/release-readiness.{PACKAGE_VERSION}.md"
@@ -104,10 +104,36 @@ FORBIDDEN_PUBLIC_DOC_MARKERS = {
     "manual_review_private_context": re.compile(r"人工复审"),
     "private_product_promise": re.compile(r"product promise Joy cares about", re.I),
 }
-FORBIDDEN_DISTRIBUTION_PATH_FRAGMENTS = ("/docs/plans/",)
+FORBIDDEN_DISTRIBUTION_PATH_FRAGMENTS = (
+    "/docs/plans/",
+    "/tests/phase0/",
+)
 FORBIDDEN_DISTRIBUTION_BASENAMES = {
     "hermes-upstream-recommendation-plan.md",
+    "beidou_shared_memory.py",
+    "shared_bridge_contract.py",
+    "shared_bridge_outbox.py",
+    "shared_bridge_runtime.py",
+    "test_beidou_shared_memory.py",
+    "test_shared_bridge_contract.py",
+    "test_shared_bridge_outbox.py",
+    "test_shared_bridge_runtime.py",
+    "test_beidou_shared_bridge.py",
+    "internal.module-map.md",
 }
+FORBIDDEN_PUBLIC_SOURCE_PATHS = {
+    "beidou_shared_memory.py",
+    "shared_bridge_contract.py",
+    "shared_bridge_outbox.py",
+    "shared_bridge_runtime.py",
+    "tests/test_beidou_shared_memory.py",
+    "tests/test_shared_bridge_contract.py",
+    "tests/test_shared_bridge_outbox.py",
+    "tests/test_shared_bridge_runtime.py",
+    "tests/test_beidou_shared_bridge.py",
+    "docs/internal.module-map.md",
+}
+FORBIDDEN_PUBLIC_SOURCE_PREFIXES = ("tests/phase0/",)
 REQUIRED_SOURCE_FILES = {
     "activation_transaction.py",
     "README.md",
@@ -287,6 +313,7 @@ REQUIRED_SOURCE_FILES = {
     "forgetting.py",
     "governance_cleanup.py",
     "journal_recovery.py",
+    "docs/journal-source-restore.md",
     "installer.py",
     "installer_yaml.py",
     "py.typed",
@@ -294,17 +321,38 @@ REQUIRED_SOURCE_FILES = {
 _PACKAGE_PYTHON_SOURCES = {
     path.name for path in ROOT.glob("*.py") if path.is_file()
 }
+_INTERNAL_PYTHON_SOURCES = {
+    path.relative_to(ROOT).as_posix()
+    for path in (ROOT / "_internal").rglob("*.py")
+    if path.is_file() and "__pycache__" not in path.parts
+}
 _SCRIPT_PYTHON_SOURCES = {
     path.relative_to(ROOT).as_posix()
     for path in (ROOT / "scripts").glob("*.py")
     if path.is_file()
 }
-_REQUIRED_PYTHON_SOURCES = _PACKAGE_PYTHON_SOURCES | _SCRIPT_PYTHON_SOURCES
+_REQUIRED_PYTHON_SOURCES = _PACKAGE_PYTHON_SOURCES | _SCRIPT_PYTHON_SOURCES | _INTERNAL_PYTHON_SOURCES
 REQUIRED_SOURCE_FILES.update(_REQUIRED_PYTHON_SOURCES)
+REQUIRED_SOURCE_RESTORE_SDIST_TESTS = {
+    "tests/conftest.py",
+    "tests/journal_source_restore_oracles.py",
+    "tests/journal_source_restore_support.py",
+    "tests/test_journal_source_restore_apply.py",
+    "tests/test_journal_source_restore_cli.py",
+    "tests/test_journal_source_restore_ledger.py",
+    "tests/test_journal_source_restore_package.py",
+    "tests/test_journal_source_restore_planning.py",
+    "tests/test_journal_source_restore_rows.py",
+    "tests/test_journal_source_restore_snapshot.py",
+}
 
 REQUIRED_SDIST = {
     f"{WHEEL_DIST_PREFIX}/{source_path}" for source_path in REQUIRED_SOURCE_FILES
 }
+REQUIRED_SDIST.update(
+    f"{WHEEL_DIST_PREFIX}/{source_path}"
+    for source_path in REQUIRED_SOURCE_RESTORE_SDIST_TESTS
+)
 
 
 def missing_sdist_members(names: set[str]) -> list[str]:
@@ -464,6 +512,7 @@ REQUIRED_WHEEL = {
     "scope_recall/docs/install.md",
     "scope_recall/docs/skill-bridge.md",
     "scope_recall/docs/vector-backends.md",
+    "scope_recall/docs/journal-source-restore.md",
     "scope_recall/docs/operator-runbook.md",
     "scope_recall/docs/cross-profile-rollout.md",
     "scope_recall/docs/response-contracts.md",
@@ -1577,35 +1626,66 @@ def schema_constant_tool_names() -> dict[str, str]:
 
 
 def provider_tool_schema_names_by_surface() -> dict[str, list[str]]:
-    schema_names = schema_constant_tool_names()
-    tree = ast.parse(read_text("provider_schemas.py"), filename="provider_schemas.py")
-    surfaces: dict[str, list[str]] = {}
-    variable_to_surface = {
-        "compact_schemas": "compact",
-        "standard_schemas": "standard",
-        "experience_schemas": "experience",
-        "maintenance_schemas": "maintenance",
+    """Read compact/standard/experience/maintenance names from the live spec.
+
+    Tool schemas are assembled from ``TOOL_SPECS`` in
+    ``_internal/contracts/tool_runtime_spec.py``. Historical list names in
+    ``provider_schemas.py`` are no longer the production surface source.
+    """
+
+    spec_path = "_internal/contracts/tool_runtime_spec.py"
+    tree = ast.parse(read_text(spec_path), filename=spec_path)
+    surfaces: dict[str, list[str]] = {
+        "compact": [],
+        "standard": [],
+        "experience": [],
+        "maintenance": [],
     }
+    referenced: list[str] = []
+
+    def _string_set(node: ast.AST) -> set[str]:
+        values: set[str] = set()
+        current = node
+        if (
+            isinstance(current, ast.Call)
+            and isinstance(current.func, ast.Name)
+            and current.func.id == "frozenset"
+            and current.args
+        ):
+            current = current.args[0]
+        elts = getattr(current, "elts", None)
+        if elts is None:
+            return values
+        for item in elts:
+            if isinstance(item, ast.Constant) and isinstance(item.value, str):
+                values.add(item.value)
+        return values
+
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
+        if not isinstance(node, ast.Call):
             continue
-        surface = ""
-        for target in node.targets:
-            if isinstance(target, ast.Name) and target.id in variable_to_surface:
-                surface = variable_to_surface[target.id]
-                break
-        if not surface or not isinstance(node.value, ast.List):
+        func = node.func
+        if not isinstance(func, ast.Name) or func.id != "ToolSpec":
             continue
-        values: list[str] = []
-        for item in node.value.elts:
-            if isinstance(item, ast.Name) and item.id in schema_names:
-                values.append(schema_names[item.id])
-        surfaces[surface] = values
-    referenced = {
-        schema_names[node.id]
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Name) and node.id in schema_names
-    }
+        if not node.args or not isinstance(node.args[0], ast.Constant):
+            continue
+        name = node.args[0].value
+        if not isinstance(name, str):
+            continue
+        referenced.append(name)
+        spec_surfaces = _string_set(node.args[2]) if len(node.args) >= 3 else set()
+        feature_gate = ""
+        for keyword in node.keywords:
+            if keyword.arg == "feature_gate" and isinstance(keyword.value, ast.Constant):
+                feature_gate = str(keyword.value.value or "")
+        if "compact" in spec_surfaces:
+            surfaces["compact"].append(name)
+        if "standard" in spec_surfaces:
+            surfaces["standard"].append(name)
+        if feature_gate.startswith("experience") or "experience" in spec_surfaces:
+            surfaces["experience"].append(name)
+        if "maintenance" in spec_surfaces or "maintenance" in feature_gate:
+            surfaces["maintenance"].append(name)
     surfaces["all_referenced"] = sorted(referenced)
     return surfaces
 
@@ -2329,6 +2409,9 @@ def metadata_check() -> dict[str, object]:
 
     missing_source = sorted(rel for rel in REQUIRED_SOURCE_FILES if not (ROOT / rel).is_file())
     failures: list[str] = []
+    forbidden_source = forbidden_public_source_present()
+    if forbidden_source:
+        failures.append(f"forbidden private source present: {', '.join(forbidden_source)}")
     product_contract = product_contract_check()
     public_docs_hygiene = public_doc_hygiene_check()
     release_readiness_hygiene = release_readiness_tree_hygiene_check()
@@ -2434,6 +2517,19 @@ def public_doc_hygiene_check() -> dict[str, object]:
                 if pattern.search(line):
                     findings.append({"path": rel, "marker": label, "line": line_no})
     return {"ok": not forbidden_paths and not findings, "forbidden_paths": forbidden_paths, "findings": findings}
+
+
+def forbidden_public_source_present() -> list[str]:
+    """Return private runtime paths that must stay out of the public tree."""
+
+    found: list[str] = []
+    for rel in FORBIDDEN_PUBLIC_SOURCE_PATHS:
+        if (ROOT / rel).exists():
+            found.append(rel.replace("\\", "/"))
+    for prefix in FORBIDDEN_PUBLIC_SOURCE_PREFIXES:
+        if (ROOT / prefix.rstrip("/")).exists():
+            found.append(prefix)
+    return sorted(found)
 
 
 def forbidden_distribution_entries(names: set[str]) -> list[str]:

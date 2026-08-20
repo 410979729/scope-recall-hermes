@@ -86,3 +86,21 @@ def test_heuristic_candidates_split_unrelated_user_topics_and_skip_tool_only():
     assert {tuple(candidate.session_ids) for candidate in candidates} == {("session-a",)}
     assert any("release" in candidate.content.lower() for candidate in candidates)
     assert any("tailscale" in candidate.content.lower() or "网络" in candidate.content for candidate in candidates)
+
+
+def test_heuristic_candidates_group_by_scope_and_session_tuple():
+    entries = [
+        JournalEntry(1, "scope-a", "shared-a", "same", 1, "user", "SCOPE-A journal-first digest。", "2026-06-01T00:00:01+00:00"),
+        JournalEntry(2, "scope-b", "shared-b", "same", 1, "user", "SCOPE-B journal-first digest。", "2026-06-01T00:00:02+00:00"),
+        JournalEntry(3, "scope-a", "shared-a", "", 1, "user", "EMPTY-A journal-first digest。", "2026-06-01T00:00:03+00:00"),
+        JournalEntry(4, "scope-a", "shared-a", "unknown", 1, "user", "UNKNOWN-A journal-first digest。", "2026-06-01T00:00:04+00:00"),
+    ]
+
+    candidates = journal_candidates.heuristic_journal_candidates(entries)
+
+    assert [candidate.entry_ids for candidate in candidates] == [[1], [2], [3], [4]]
+    assert "SCOPE-B" not in candidates[0].content
+    assert "SCOPE-A" not in candidates[1].content
+    assert "UNKNOWN-A" not in candidates[2].content
+    assert "EMPTY-A" not in candidates[3].content
+    assert all(candidate.covered_tool_ids is None for candidate in candidates)

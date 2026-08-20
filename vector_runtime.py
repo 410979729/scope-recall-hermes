@@ -175,6 +175,26 @@ def vector_write_replay_limit(provider: Any) -> int:
     )
 
 
+_OUTBOX_RETENTION_CONTENTION_ESCALATION = 8
+
+
+def _outbox_retention_due(provider: Any, *, interval_seconds: int) -> bool:
+    """Minute-scale retention cadence gate.
+
+    Retention is idempotent housekeeping: running it once per interval keeps
+    ``vector_outbox`` bounded, while the previous run-on-every-idle-tick
+    cadence collided with long journal digest transactions roughly once per
+    conversation turn (issue #47).
+    """
+
+    now = time.monotonic()
+    next_at = float(getattr(provider, "_next_outbox_retention_at", 0.0) or 0.0)
+    if now < next_at:
+        return False
+    provider._next_outbox_retention_at = now + max(60, int(interval_seconds))
+    return True
+
+
 def _prune_completed_outbox(
     provider: Any,
     conn: Any,
@@ -182,9 +202,16 @@ def _prune_completed_outbox(
     retention_days: int,
     keep_per_generation: int,
 ) -> dict[str, Any]:
-    """Run retention with one bounded retry for transient SQLite contention."""
+    """Run one low-priority retention pass; coalesce instead of fighting locks.
 
-    max_attempts = 2
+    Lock contention is expected while another writer (typically a journal
+    digest apply) is active. The pass skips quietly, pushes the next attempt a
+    full interval away, and only escalates to WARNING after
+    ``_OUTBOX_RETENTION_CONTENTION_ESCALATION`` consecutive skips, so real
+    starvation stays visible without one warning per conversation turn.
+    """
+
+    max_attempts = 1
     for attempt in range(1, max_attempts + 1):
         failure: BaseException | None = None
         with provider._lock:
@@ -198,6 +225,7 @@ def _prune_completed_outbox(
                     keep_per_generation=keep_per_generation,
                 )
                 conn.execute("RELEASE SAVEPOINT scope_recall_vector_outbox_retention")
+                provider._outbox_retention_contention_skips = 0
                 return {
                     "status": "pruned" if int(receipt.get("deleted") or 0) else "unchanged",
                     "attempts": attempt,
@@ -221,10 +249,32 @@ def _prune_completed_outbox(
                     except Exception:
                         pass
         assert failure is not None
-        if is_sqlite_lock_contention(failure) and attempt < max_attempts:
-            time.sleep(0.05 * attempt)
-            continue
         safe_error = _sanitize_vector_message(failure)
+        if is_sqlite_lock_contention(failure):
+            skips = int(
+                getattr(provider, "_outbox_retention_contention_skips", 0) or 0
+            ) + 1
+            provider._outbox_retention_contention_skips = skips
+            if skips >= _OUTBOX_RETENTION_CONTENTION_ESCALATION:
+                logger.warning(
+                    "Scope Recall vector outbox retention has been skipped %d "
+                    "consecutive times due to SQLite contention; a long-lived "
+                    "writer may be starving housekeeping",
+                    skips,
+                )
+            else:
+                logger.debug(
+                    "Scope Recall vector outbox retention skipped under "
+                    "SQLite contention (%d consecutive)",
+                    skips,
+                )
+            return {
+                "status": "skipped_contention",
+                "enabled": retention_days > 0,
+                "deleted": 0,
+                "attempts": attempt,
+                "consecutive_skips": skips,
+            }
         logger.warning("Scope Recall vector outbox retention failed: %s", safe_error)
         return {
             "status": "failed",
@@ -745,21 +795,36 @@ def _persist_vector_cardinality(
             conn.commit()
 
 
-def refresh_vector_audit(provider: Any) -> dict[str, int]:
-    with _vector_mutation_lock(provider):
-        if not provider._vector_store:
-            counts = {"physical_rows": 0, "unique_ids": 0, "duplicate_rows": 0, "duplicate_ids": 0}
-        else:
-            counts = provider._vector_store.audit_counts()
-    provider._vector_row_count = int(counts.get("physical_rows") or 0)
-    provider._vector_unique_id_count = int(counts.get("unique_ids") or 0)
+def _vector_audit_counts(provider: Any) -> dict[str, int]:
+    if not getattr(provider, "_vector_store", None):
+        return {"physical_rows": 0, "unique_ids": 0, "duplicate_rows": 0, "duplicate_ids": 0}
+    return provider._vector_store.audit_counts()
+
+
+def refresh_vector_audit(provider: Any, *, persist: bool = True) -> dict[str, int]:
+    if persist:
+        with _vector_mutation_lock(provider):
+            counts = _vector_audit_counts(provider)
+    else:
+        counts = _vector_audit_counts(provider)
+    provider._vector_row_count = int(counts.get("physical_rows") or counts.get("row_count") or 0)
+    provider._vector_unique_id_count = int(counts.get("unique_ids") or counts.get("unique_id_count") or 0)
     provider._vector_duplicate_row_count = int(counts.get("duplicate_rows") or 0)
-    _persist_vector_cardinality(
-        provider,
-        physical_rows=provider._vector_row_count,
-        unique_ids=provider._vector_unique_id_count,
-    )
+    if persist:
+        _persist_vector_cardinality(
+            provider,
+            physical_rows=provider._vector_row_count,
+            unique_ids=provider._vector_unique_id_count,
+        )
     return counts
+
+
+def refresh_vector_audit_and_persist(provider: Any) -> dict[str, int]:
+    """Writer-only cardinality persist. Stats/prefetch must not call this."""
+    from .write_kernel import hold_positive_write_authority
+
+    with hold_positive_write_authority(provider):
+        return refresh_vector_audit(provider, persist=True)
 
 
 
@@ -868,6 +933,13 @@ def _run_bounded_vector_reconciliation_guarded(provider: Any) -> dict[str, Any]:
         minimum=0,
         maximum=3650,
     )
+    retention_interval_seconds = _bounded_config_int(
+        config,
+        "outbox_retention_interval_seconds",
+        default=900,
+        minimum=60,
+        maximum=86_400,
+    )
     keep_per_generation = _bounded_config_int(
         config,
         "outbox_completed_keep_per_generation",
@@ -950,6 +1022,13 @@ def _run_bounded_vector_reconciliation_guarded(provider: Any) -> dict[str, Any]:
         result["outbox_retention"] = {
             "status": "deferred",
             "reason": "nonterminal_backlog",
+            "deleted": 0,
+        }
+    elif not _outbox_retention_due(
+        provider, interval_seconds=retention_interval_seconds
+    ):
+        result["outbox_retention"] = {
+            "status": "rate_limited",
             "deleted": 0,
         }
     else:

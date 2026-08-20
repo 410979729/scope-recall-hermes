@@ -35,11 +35,16 @@ class MemoryMutationService:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 yield conn
-                conn.commit()
-            except BaseException:
                 if conn.in_transaction:
-                    conn.rollback()
+                    conn.commit()
+            except BaseException:
+                self.abort(conn)
                 raise
+
+    @staticmethod
+    def abort(conn: sqlite3.Connection) -> None:
+        if conn.in_transaction:
+            conn.rollback()
 
 
 __all__ = ["MemoryMutationService", "MemoryMutationTransactionError"]

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from _scope_recall_public_memory_port import attach_public_truth_ports
 from scope_recall.experience_store import create_playbook, experience_stats
 from scope_recall.fact_repository import fact_ownership_for_memories
 from scope_recall.lifecycle_service import hard_delete_memories
@@ -178,6 +179,7 @@ def test_soft_archive_chunks_selection_and_fact_guard(tmp_path: Path) -> None:
             self._vector_ready = False
             self._vector_status = "disabled"
             self._vector_message = ""
+            attach_public_truth_ports(self)
 
         def _require_conn(self) -> sqlite3.Connection:
             return self._conn
@@ -252,6 +254,7 @@ def test_merge_chunks_source_lookup_and_atomic_delete(tmp_path: Path) -> None:
             self._vector_ready = False
             self._vector_status = "disabled"
             self._vector_message = ""
+            attach_public_truth_ports(self)
 
         def _require_conn(self) -> sqlite3.Connection:
             return self._conn

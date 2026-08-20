@@ -175,6 +175,53 @@ After drain:
 hermes-scope-recall doctor --hermes-home "$HERMES_HOME" --source-root "$SCOPE_RECALL_ROOT" --json
 ```
 
+## journal source-restore
+
+Use this only to restore a pre-approved journal/digest-run window from a trusted, checkpointed SQLite snapshot into an offline target. It is not dead-letter `journal recovery` and must not use the normal append/sanitize path.
+
+Dry-run is query-only and acquires no activation lease. Copy `target_epoch_digest` from that receipt, then apply with `--apply`, `--maintenance-confirmed`, `--expected-target-epoch-digest`, a stable `--operation-id`, and a backup path that does not already exist. Bind explicit `--journal-excluded-*` / `--digest-excluded-*` windows when an unknown tail must already be present on the target; missing or conflicting tail rows refuse. The CLI process itself acquires the PID-bound activation lease for the resolved target, calls the domain function in that same PID, and releases the exact lease on every success, refusal, or exception path. Same operation ID plus the same request fingerprint recovers a committed apply after process death; do not invent a second fingerprint for retry.
+
+```bash
+hermes-scope-recall journal source-restore \
+  --source "$SNAPSHOT" \
+  --target "$HERMES_HOME/scope-recall/memory.sqlite3" \
+  --journal-created-at-start "$JOURNAL_START" \
+  --journal-created-at-end "$JOURNAL_END" \
+  --digest-started-at-start "$DIGEST_START" \
+  --digest-started-at-end "$DIGEST_END" \
+  --expected-journal-count 19 \
+  --expected-digest-run-count 2 \
+  --expected-journal-set-digest "$JOURNAL_SET_DIGEST" \
+  --expected-digest-run-set-digest "$DIGEST_SET_DIGEST" \
+  --expected-source-sha256 "$SOURCE_SHA256" \
+  --expected-schema-digest "$SCHEMA_DIGEST" \
+  --expected-user-version "$USER_VERSION"
+```
+
+```bash
+hermes-scope-recall journal source-restore \
+  --source "$SNAPSHOT" \
+  --target "$HERMES_HOME/scope-recall/memory.sqlite3" \
+  --journal-created-at-start "$JOURNAL_START" \
+  --journal-created-at-end "$JOURNAL_END" \
+  --digest-started-at-start "$DIGEST_START" \
+  --digest-started-at-end "$DIGEST_END" \
+  --expected-journal-count 19 \
+  --expected-digest-run-count 2 \
+  --expected-journal-set-digest "$JOURNAL_SET_DIGEST" \
+  --expected-digest-run-set-digest "$DIGEST_SET_DIGEST" \
+  --expected-source-sha256 "$SOURCE_SHA256" \
+  --expected-schema-digest "$SCHEMA_DIGEST" \
+  --expected-user-version "$USER_VERSION" \
+  --apply \
+  --maintenance-confirmed \
+  --operation-id "$OPERATION_ID" \
+  --expected-target-epoch-digest "$TARGET_EPOCH_DIGEST" \
+  --prewrite-backup-path "$HERMES_HOME/scope-recall/backups/journal-source-restore.prewrite.sqlite3"
+```
+
+See `docs/journal-source-restore.md` for canonical digest serialization and apply gates. After a successful apply, run normal doctor/FTS aftercare; this command does not repair FTS. Local operator receipts are `operator.source_restore.<operation-id>.json` (`operator_receipt.v1`), not playbook receipts. If a receipt reports `status=manual_recovery_required` and `error_code=activation_lease_cleanup_failed`, recover the leftover activation lease manually; a committed apply still requires aftercare and must not be treated as a clean success. A refusal path that also fails lease release keeps the original cause only as `secondary_error_code`.
+
 If `database is locked` appears:
 
 1. Inspect holders: `fuser -v "$HERMES_HOME/scope-recall/memory.sqlite3" "$HERMES_HOME/scope-recall/memory.sqlite3-wal" "$HERMES_HOME/scope-recall/memory.sqlite3-shm"`.

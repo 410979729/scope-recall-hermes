@@ -181,7 +181,12 @@ def test_release_gate_covers_every_package_and_script_python_source():
         for path in (PLUGIN_ROOT / "scripts").glob("*.py")
         if path.is_file()
     }
-    expected_sources = root_sources | script_sources
+    internal_sources = {
+        path.relative_to(PLUGIN_ROOT).as_posix()
+        for path in (PLUGIN_ROOT / "_internal").rglob("*.py")
+        if path.is_file() and "__pycache__" not in path.parts
+    }
+    expected_sources = root_sources | script_sources | internal_sources
 
     assert expected_sources <= release_check.REQUIRED_SOURCE_FILES
     assert {
@@ -616,11 +621,11 @@ def test_release_identity_requires_version_newer_than_latest_tag():
     assert "mutually exclusive" in conflicting_modes["error"]
 
 
-def test_v193_release_candidate_identity_surfaces_are_consistent():
-    """Bind the patch release to every authoritative version surface."""
+def test_v1100_release_candidate_identity_surfaces_are_consistent():
+    """Bind the source candidate to every authoritative version surface."""
 
-    expected_version = "1.9.3"
-    release_check = _load_release_check_module("scope_recall_check_release_v193_identity")
+    expected_version = "1.10.0"
+    release_check = _load_release_check_module("scope_recall_check_release_v1100_identity")
     lexical_generation = importlib.import_module(
         f"{PACKAGE_NAME}.lexical_generation"
     )
@@ -632,7 +637,7 @@ def test_v193_release_candidate_identity_surfaces_are_consistent():
     assert _package_version() == expected_version
     assert f"version: {expected_version}" in plugin_manifest
     assert release_check.PACKAGE_VERSION == expected_version
-    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.9.3.md"
+    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.10.0.md"
     assert (PLUGIN_ROOT / release_check.RELEASE_READINESS_DOC).is_file()
     assert f"## [{expected_version}]" in changelog
     assert f"Version `{expected_version}`" in readme
@@ -645,21 +650,23 @@ def test_v193_release_candidate_identity_surfaces_are_consistent():
     )
     assert identity["ok"] is True
     assert identity["release_eligible"] is True
-    assert identity["expected_release_tag"] == "v1.9.3"
+    assert identity["expected_release_tag"] == "v1.10.0"
 
 
-def test_v193_changelog_is_cumulative_from_last_public_release():
-    release_check = _load_release_check_module("scope_recall_check_release_v193_changelog")
+def test_v1100_changelog_is_cumulative_from_last_public_release():
+    release_check = _load_release_check_module("scope_recall_check_release_v1100_changelog")
 
-    assert release_check.PACKAGE_VERSION == "1.9.3"
+    assert release_check.PACKAGE_VERSION == "1.10.0"
     assert release_check.PUBLIC_RELEASE_BASELINE == "1.9.2"
-    section = release_check.changelog_section(
-        (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8"),
-        "1.9.3",
-    )
+    changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    section = release_check.changelog_section(changelog, "1.10.0")
     assert "since the last public release, `1.9.2`" in section
-    for term in ("writer", "read-only", "journal", "SQLite", "lease", "transaction"):
+    assert "1.9.3" in section
+    assert "source interval" in section.lower()
+    for term in ("journal", "SQLite", "restore", "command port", "inventory"):
         assert term.lower() in section.lower(), term
+    historical = release_check.changelog_section(changelog, "1.9.3")
+    assert "since the last public release, `1.9.2`" in historical
 
 
 def test_ruff_lint_contract_is_explicit_across_toolchain_upgrades():
@@ -701,6 +708,11 @@ def test_productization_artifacts_are_release_gate_listed():
         "scripts/memory.browser.py",
         "scripts/skill.bridge.py",
         "scripts/release_changelog.py",
+        "docs/journal-source-restore.md",
+        "journal_source_restore.py",
+        "write_kernel.py",
+        "_internal/runtime/composition.py",
+        "_internal/recall/orchestrator.py",
     ]:
         assert source in release_check.REQUIRED_SOURCE_FILES
 
@@ -730,6 +742,11 @@ def test_productization_artifacts_are_release_gate_listed():
         "scope_recall/scripts/memory.browser.py",
         "scope_recall/scripts/skill.bridge.py",
         "scope_recall/scripts/release_changelog.py",
+        "scope_recall/docs/journal-source-restore.md",
+        "scope_recall/journal_source_restore.py",
+        "scope_recall/write_kernel.py",
+        "scope_recall/_internal/runtime/composition.py",
+        "scope_recall/_internal/recall/orchestrator.py",
     ]:
         assert wheel_path in release_check.REQUIRED_WHEEL
 
@@ -835,6 +852,33 @@ def test_distribution_hygiene_blocks_plan_artifacts():
         "scope_recall/docs/hermes-upstream-recommendation-plan.md",
         "scope_recall/docs/plans/internal.md",
     ]
+
+
+def test_distribution_hygiene_blocks_private_runtime_modules():
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_private_runtime_hygiene"
+    )
+
+    names = {
+        "scope_recall/provider.py",
+        "scope_recall/beidou_shared_memory.py",
+        "scope_recall/shared_bridge_runtime.py",
+        "scope_recall/shared_bridge_contract.py",
+        "scope_recall/shared_bridge_outbox.py",
+        "hermes_scope_recall-1.10.0/tests/phase0/oracles/contract_snapshot.json",
+        "scope_recall/docs/internal.module-map.md",
+        "hermes_scope_recall-1.10.0/tests/test_beidou_shared_bridge.py",
+    }
+    forbidden = set(release_check.forbidden_distribution_entries(names))
+    assert "scope_recall/provider.py" not in forbidden
+    assert "scope_recall/beidou_shared_memory.py" in forbidden
+    assert "scope_recall/shared_bridge_runtime.py" in forbidden
+    assert "scope_recall/shared_bridge_contract.py" in forbidden
+    assert "scope_recall/shared_bridge_outbox.py" in forbidden
+    assert "hermes_scope_recall-1.10.0/tests/phase0/oracles/contract_snapshot.json" in forbidden
+    assert "scope_recall/docs/internal.module-map.md" in forbidden
+    assert "hermes_scope_recall-1.10.0/tests/test_beidou_shared_bridge.py" in forbidden
+    assert release_check.forbidden_public_source_present() == []
 
 
 def test_changelog_completeness_gate_requires_current_release_terms():

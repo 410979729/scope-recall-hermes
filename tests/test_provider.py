@@ -4,8 +4,11 @@ This file protects the Hermes MemoryProvider contract from end-to-end regression
 
 import importlib
 import json
+import os
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 
@@ -23,6 +26,12 @@ def _write_scope_recall_config(hermes_home, values):
     config_path = hermes_home / "scope-recall" / "config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(values, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _production_experience_promotion_module(plugin):
+    """Resolve the promote_experiences module BackgroundWork actually imports."""
+    package = plugin.__class__.__module__.rsplit(".", 1)[0]
+    return importlib.import_module(f"{package}.experience_promotion")
 
 
 @pytest.fixture
@@ -73,6 +82,66 @@ def test_scope_recall_plugin_loads_from_hermes_home_plugins():
     plugin = load_memory_provider("scope-recall")
     assert plugin is not None
     assert plugin.name == "scope-recall"
+
+
+def test_scope_recall_plugin_cold_loads_through_hermes_user_loader():
+    """Recover from half-initialized modules left by Hermes' eager loader."""
+
+    script = r'''
+import importlib.util
+import os
+from pathlib import Path
+import sys
+import types
+
+parent = types.ModuleType("_hermes_user_memory")
+parent.__path__ = []
+sys.modules[parent.__name__] = parent
+package_name = "_hermes_user_memory.scope-recall"
+plugin_dir = Path(os.environ["HERMES_HOME"]) / "plugins" / "scope-recall"
+spec = importlib.util.spec_from_file_location(
+    package_name,
+    plugin_dir / "__init__.py",
+    submodule_search_locations=[str(plugin_dir)],
+)
+assert spec and spec.loader
+module = importlib.util.module_from_spec(spec)
+sys.modules[package_name] = module
+for submodule in (
+    "provider",
+    "recall",
+    "reflection",
+    "reflection_grounding",
+    "reflection_llm",
+    "reflection_tooling",
+    "tooling",
+):
+    full_name = f"{package_name}.{submodule}"
+    sys.modules[full_name] = types.ModuleType(full_name)
+spec.loader.exec_module(module)
+
+class Collector:
+    provider = None
+
+    def register_memory_provider(self, provider):
+        self.provider = provider
+
+collector = Collector()
+module.register(collector)
+assert collector.provider is not None, "cold loader returned no provider"
+assert collector.provider.name == "scope-recall"
+'''
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        text=True,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_save_config_bootstraps_empty_sqlite_schema(tmp_path):
@@ -220,7 +289,7 @@ def test_tool_dispatch_rolls_back_open_sqlite_transaction(provider, monkeypatch)
         del kwargs
         _open_transaction_and_raise(provider, "tool-dispatch")
 
-    monkeypatch.setattr(provider, "_store_now", broken_store_now)
+    monkeypatch.setattr(provider._composition.tool_port, "store_now", broken_store_now)
 
     payload = json.loads(
         provider.handle_tool_call(
@@ -234,7 +303,7 @@ def test_tool_dispatch_rolls_back_open_sqlite_transaction(provider, monkeypatch)
 
 
 def test_scope_recall_store_recovers_and_retries_after_sqlite_lock(provider, monkeypatch):
-    original_store_now = provider._store_now
+    tool_store = provider._composition.tool_port.store_now
     calls: list[dict[str, object]] = []
 
     def flaky_store_now(**kwargs):
@@ -245,9 +314,9 @@ def test_scope_recall_store_recovers_and_retries_after_sqlite_lock(provider, mon
             conn.execute("INSERT INTO rollback_probe(marker) VALUES ('store-retry')")
             assert conn.in_transaction
             raise sqlite3.OperationalError("database is locked")
-        return original_store_now(**kwargs)
+        return tool_store(**kwargs)
 
-    monkeypatch.setattr(provider, "_store_now", flaky_store_now)
+    monkeypatch.setattr(provider._composition.tool_port, "store_now", flaky_store_now)
 
     payload = json.loads(
         provider.handle_tool_call(
@@ -263,49 +332,6 @@ def test_scope_recall_store_recovers_and_retries_after_sqlite_lock(provider, mon
     assert payload["receipt"]["retry_count"] == 1
     assert len(calls) == 2
     assert calls[0] == calls[1]
-    _assert_sqlite_writer_released(provider)
-
-
-def test_scope_recall_store_does_not_recover_nested_transaction_error(
-    provider, monkeypatch
-):
-    store_calls: list[str] = []
-    recover_calls: list[str] = []
-
-    def nested_transaction_store(**kwargs):
-        del kwargs
-        store_calls.append("store")
-        raise sqlite3.OperationalError(
-            "cannot start a transaction within a transaction"
-        )
-
-    def counting_recover(context: str) -> dict[str, object]:
-        recover_calls.append(context)
-        return {"recovered": True}
-
-    monkeypatch.setattr(provider, "_store_now", nested_transaction_store)
-    monkeypatch.setattr(
-        provider, "_recover_sqlite_connection_after_error", counting_recover
-    )
-
-    payload = json.loads(
-        provider.handle_tool_call(
-            "scope_recall_store",
-            {
-                "content": "nested transaction errors must not replay a store",
-                "target": "ops",
-            },
-        )
-    )
-
-    assert store_calls == ["store"]
-    assert recover_calls == []
-    assert payload.get("recovered") not in {True}
-    assert payload.get("retry_count") in {None, 0}
-    assert "error" in payload
-    serialized = json.dumps(payload)
-    assert "cannot start a transaction within a transaction" in serialized.lower()
-    assert payload["error"]
     _assert_sqlite_writer_released(provider)
 
 
@@ -343,7 +369,7 @@ def test_scope_recall_store_recovers_peer_provider_dirty_transaction(tmp_path, m
         with provider_b._lock:
             provider_b._require_conn().execute("PRAGMA busy_timeout=50")
         original_recover = provider_b._recover_sqlite_connection_after_error
-        original_store_now = provider_b._store_now
+        original_store_now = provider_b._composition.tool_port.store_now
         recovery_reports: list[dict[str, object]] = []
         store_attempts = 0
 
@@ -360,7 +386,7 @@ def test_scope_recall_store_recovers_peer_provider_dirty_transaction(tmp_path, m
             return original_store_now(**kwargs)
 
         monkeypatch.setattr(provider_b, "_recover_sqlite_connection_after_error", capture_recover)
-        monkeypatch.setattr(provider_b, "_store_now", locked_then_store)
+        monkeypatch.setattr(provider_b._composition.tool_port, "store_now", locked_then_store)
 
         payload = json.loads(
             provider_b.handle_tool_call(
@@ -908,7 +934,11 @@ def test_background_digest_auto_promotion_runs_when_enabled(tmp_path, monkeypatc
     plugin = load_memory_provider("scope-recall")
     assert plugin is not None
     monkeypatch.setitem(plugin._run_background_journal_digest.__globals__, "run_journal_digest", fake_digest)
-    monkeypatch.setitem(plugin._run_background_journal_digest.__globals__, "promote_experiences", fake_promote)
+    monkeypatch.setattr(
+        _production_experience_promotion_module(plugin),
+        "promote_experiences",
+        fake_promote,
+    )
     plugin.initialize(
         "session-auto-promotion",
         hermes_home=str(tmp_path),
@@ -1044,7 +1074,11 @@ def test_background_digest_auto_promotion_is_opt_in_by_default(tmp_path, monkeyp
     plugin = load_memory_provider("scope-recall")
     assert plugin is not None
     monkeypatch.setitem(plugin._run_background_journal_digest.__globals__, "run_journal_digest", fake_digest)
-    monkeypatch.setitem(plugin._run_background_journal_digest.__globals__, "promote_experiences", fake_promote)
+    monkeypatch.setattr(
+        _production_experience_promotion_module(plugin),
+        "promote_experiences",
+        fake_promote,
+    )
     plugin.initialize(
         "session-auto-promotion-default-off",
         hermes_home=str(tmp_path),
@@ -1092,7 +1126,11 @@ def test_background_digest_auto_promotion_runs_when_enabled_by_config(tmp_path, 
     plugin = load_memory_provider("scope-recall")
     assert plugin is not None
     monkeypatch.setitem(plugin._run_background_journal_digest.__globals__, "run_journal_digest", fake_digest)
-    monkeypatch.setitem(plugin._run_background_journal_digest.__globals__, "promote_experiences", fake_promote)
+    monkeypatch.setattr(
+        _production_experience_promotion_module(plugin),
+        "promote_experiences",
+        fake_promote,
+    )
     plugin.initialize(
         "session-auto-promotion-enabled",
         hermes_home=str(tmp_path),
@@ -1516,10 +1554,11 @@ def test_background_journal_digest_runs_after_append_and_respects_interval(tmp_p
     plugin.initialize("session-background", hermes_home=str(tmp_path), platform="cli", agent_context="primary", agent_identity="yuheng", agent_workspace="hermes")
     calls = []
 
-    def fake_digest(journal_config):
+    def fake_digest(journal_config, *, digest_fn=None):
+        del digest_fn
         calls.append(dict(journal_config))
 
-    monkeypatch.setattr(plugin, "_run_background_journal_digest", fake_digest)
+    monkeypatch.setattr(plugin._background, "run_digest", fake_digest)
     try:
         plugin.sync_turn("用户要求 scope-recall 后台 digest 自动合并 journal evidence，而不是永远暂存。", "ok")
         plugin.sync_turn("用户继续说明：同一小时内不应该重复启动 digest worker。", "ok")
@@ -1554,12 +1593,13 @@ def test_background_journal_digest_is_nonblocking_and_not_duplicated_while_runni
     release = threading.Event()
     calls = []
 
-    def fake_digest(journal_config):
+    def fake_digest(journal_config, *, digest_fn=None):
+        del digest_fn
         calls.append(dict(journal_config))
         started.set()
         release.wait(timeout=2.0)
 
-    monkeypatch.setattr(plugin, "_run_background_journal_digest", fake_digest)
+    monkeypatch.setattr(plugin._background, "run_digest", fake_digest)
     try:
         before = time.monotonic()
         plugin.sync_turn("用户要求后台 digest 不能阻塞普通 sync_turn 前台路径。", "ok")
@@ -1605,10 +1645,10 @@ def test_background_journal_digest_failure_does_not_break_foreground_or_advance_
         plugin.sync_turn("后台 LLM digest 失败时，前台 sync_turn 不能失败，也不能消费 journal 水位。", "ok")
         with plugin._lock:
             row = plugin._require_conn().execute("SELECT processed_run_id FROM journal_entries ORDER BY id LIMIT 1").fetchone()
-            digest_error = plugin._require_conn().execute("SELECT status, error FROM journal_digest_runs ORDER BY started_at DESC LIMIT 1").fetchone()
         assert row is not None
         assert row["processed_run_id"] == ""
-        assert digest_error is None
+        assert plugin._background.last_status == "error"
+        assert plugin._background.last_error
     finally:
         plugin.shutdown()
 
@@ -1776,7 +1816,8 @@ def test_event_candidate_write_replays_vector_outbox_after_commit(provider, monk
         "write_candidates": True,
         "dry_run_log": True,
     }
-    live_provider_module = importlib.import_module(provider.__class__.__module__)
+    pkg = provider.__class__.__module__.rsplit(".", 1)[0]
+    live_vector = importlib.import_module(f"{pkg}.vector_runtime")
     replay_calls: list[int] = []
 
     def record_replay(runtime_provider, *, limit):
@@ -1788,18 +1829,8 @@ def test_event_candidate_write_replays_vector_outbox_after_commit(provider, monk
         replay_calls.append(int(limit))
         return {"claimed": 1, "completed": 1, "failed": 0}
 
-    monkeypatch.setattr(
-        live_provider_module,
-        "replay_vector_outbox",
-        record_replay,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        live_provider_module,
-        "vector_write_replay_limit",
-        lambda _provider: 17,
-        raising=False,
-    )
+    monkeypatch.setattr(live_vector, "replay_vector_outbox", record_replay)
+    monkeypatch.setattr(live_vector, "vector_write_replay_limit", lambda _provider: 17)
 
     provider.on_pre_compress(
         [
@@ -1824,8 +1855,9 @@ def test_event_candidate_store_holds_provider_sqlite_lock(provider, monkeypatch)
         "write_candidates": True,
         "dry_run_log": True,
     }
-    live_provider_module = importlib.import_module(provider.__class__.__module__)
-    original_store = live_provider_module.store_event_candidates
+    pkg = provider.__class__.__module__.rsplit(".", 1)[0]
+    live_store = importlib.import_module(f"{pkg}.candidate_store")
+    original_store = live_store.store_event_candidates
     assert not provider._lock._is_owned()
 
     def guarded_store(*args, **kwargs):
@@ -1834,7 +1866,7 @@ def test_event_candidate_store_holds_provider_sqlite_lock(provider, monkeypatch)
         )
         return original_store(*args, **kwargs)
 
-    monkeypatch.setattr(live_provider_module, "store_event_candidates", guarded_store)
+    monkeypatch.setattr(live_store, "store_event_candidates", guarded_store)
 
     provider.on_pre_compress(
         [

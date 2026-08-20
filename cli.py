@@ -15,6 +15,7 @@ _SCRIPT_COMMANDS: dict[tuple[str, ...], tuple[str, list[str]]] = {
     ("dashboard",): ("report.dashboard.py", []),
     ("journal", "digest"): ("journal-digest.py", []),
     ("journal", "recovery"): ("journal.recovery.py", []),
+    ("journal", "source-restore"): ("journal.source_restore.py", []),
     ("lexical", "plan"): ("migrate.lexical_index.py", []),
     ("lexical", "build"): ("migrate.lexical_index.py", ["--apply"]),
     ("lexical", "activate"): (
@@ -71,6 +72,7 @@ Usage:
   hermes-scope-recall dashboard [dashboard options]
   hermes-scope-recall journal digest [digest options]
   hermes-scope-recall journal recovery [recovery options]
+  hermes-scope-recall journal source-restore [source-restore options]
   hermes-scope-recall lexical plan [lexical options]      # zero-write status
   hermes-scope-recall lexical build --maintenance-confirmed [lexical options]
   hermes-scope-recall lexical activate --expected-current legacy --maintenance-confirmed

@@ -34,12 +34,18 @@ from .reflection_grounding import grounded_candidate_synthesis
 from .sql_store import record_governance_audit_event, store_row
 
 
+def _as_tool_port(host: Any) -> Any:
+    from ._internal.runtime.tool_port import bind_tool_runtime_port
+
+    return bind_tool_runtime_port(host)
+
+
 class ReflectionToolError(ValueError):
     """Fail-closed validation error safe for the public tool boundary."""
 
 
-def _reflection_config(provider: Any) -> dict[str, Any]:
-    raw = getattr(provider, "_config", {}).get("reflection")
+def _reflection_config(host: Any) -> dict[str, Any]:
+    raw = _as_tool_port(host).config_view().get("reflection")
     return dict(raw) if isinstance(raw, dict) else {}
 
 
@@ -163,10 +169,11 @@ def _configured_budget(config: dict[str, Any], args: dict[str, Any]) -> Reflecti
 
 
 def _resolve_transport(
-    provider: Any,
+    host: Any,
     config: dict[str, Any],
 ) -> Callable[[str], str] | None:
-    injected = getattr(provider, "_reflection_transport", None)
+    port = _as_tool_port(host)
+    injected = port.reflection_transport()
     if callable(injected):
         return cast(Callable[[str], str], injected)
 
@@ -189,7 +196,7 @@ def _resolve_transport(
         api_mode=str(config.get("api_mode") or ""),
     )
     resolved = resolve_llm_config(
-        Path(getattr(provider, "_hermes_home", Path.home() / ".hermes")),
+        Path(port.hermes_home_path()),
         options,
     )
     if not str(resolved.get("api_key") or ""):
@@ -351,21 +358,22 @@ def _candidate_metadata(
 
 
 def _store_candidate(
-    provider: Any,
+    host: Any,
     *,
     query: str,
     synthesis: ReflectionSynthesis,
     quality: dict[str, Any],
 ) -> dict[str, Any]:
-    scope_id = str(getattr(provider, "_shared_scope_id", "") or "").strip()
-    writable = {str(item) for item in getattr(provider, "_writable_scope_ids", [])}
+    port = _as_tool_port(host)
+    scope_id = str(port.shared_scope_id() or "").strip()
+    writable = {str(item) for item in port.writable_scope_ids()}
     if not scope_id or scope_id not in writable:
         raise ReflectionToolError("reflection candidate scope is not writable")
-    scope = getattr(provider, "_scope", None)
+    scope = port.scope_object()
     if scope is None:
         raise ReflectionToolError("reflection runtime scope is unavailable")
     candidate_id = _candidate_id(scope_id=scope_id, synthesis=synthesis)
-    conn: sqlite3.Connection = provider._require_conn()
+    conn: sqlite3.Connection = port.query_connection()
     existing = conn.execute(
         "SELECT id, content, metadata FROM memories WHERE id = ? AND scope_id = ?",
         (candidate_id, scope_id),
@@ -405,7 +413,7 @@ def _store_candidate(
             gateway_session_key=str(scope.gateway_session_key),
             agent_identity=str(scope.agent_identity),
             agent_workspace=str(scope.agent_workspace),
-            session_id=str(getattr(provider, "_session_id", "")),
+            session_id=str(port.session_id()),
             source="reflection",
             target="memory",
             content=synthesis.answer,
@@ -458,15 +466,17 @@ def _store_candidate(
     }
 
 
-def run_reflection_tool(provider: Any, *, args: dict[str, Any]) -> dict[str, Any]:
+def run_reflection_tool(host: Any, *, args: dict[str, Any]) -> dict[str, Any]:
     """Run one bounded reflection request and optionally store a review candidate."""
-    config = _reflection_config(provider)
+    port = _as_tool_port(host)
+    config_view = port.config_view()
+    config = _reflection_config(port)
     if not config_bool(config, "enabled", False):
         raise ReflectionToolError(
             "scope_recall_reflect requires reflection.enabled=true"
         )
     query_limit = _strict_int(
-        getattr(provider, "_config", {}).get("query_char_limit"),
+        config_view.get("query_char_limit"),
         name="query_char_limit",
         default=1_000,
         minimum=1,
@@ -480,7 +490,7 @@ def run_reflection_tool(provider: Any, *, args: dict[str, Any]) -> dict[str, Any
     include_trace = _strict_bool(args, "include_trace", False)
     propose_memory = _strict_bool(args, "propose_memory", False)
     if propose_memory and not config_bool(
-        getattr(provider, "_config", {}),
+        config_view,
         "maintenance_tools_enabled",
         False,
     ):
@@ -500,10 +510,11 @@ def run_reflection_tool(provider: Any, *, args: dict[str, Any]) -> dict[str, Any
         minimum=0,
         maximum=1,
     )
-    conn: sqlite3.Connection = provider._require_conn()
+    evidence_host = port.evidence_runtime()
+    conn: sqlite3.Connection = port.query_connection()
     before_changes = conn.total_changes
     pack = build_reflection_evidence_pack(
-        provider,
+        evidence_host,
         query=query,
         budget=budget,
     )
@@ -515,7 +526,7 @@ def run_reflection_tool(provider: Any, *, args: dict[str, Any]) -> dict[str, Any
             "query": query,
             "hops_used": 0,
         }
-    transport = _resolve_transport(provider, config)
+    transport = _resolve_transport(port, config)
     if transport is None:
         return {
             "ok": False,
@@ -533,7 +544,7 @@ def run_reflection_tool(provider: Any, *, args: dict[str, Any]) -> dict[str, Any
         if " ".join(requested_followup.split()).casefold() != " ".join(query.split()).casefold():
             followed_query = requested_followup
             supplemental = build_reflection_evidence_pack(
-                provider,
+                evidence_host,
                 query=followed_query,
                 budget=budget,
                 query_intent=pack.intent,
@@ -567,7 +578,7 @@ def run_reflection_tool(provider: Any, *, args: dict[str, Any]) -> dict[str, Any
         else:
             capture_result = should_capture_text(
                 candidate_synthesis.answer,
-                getattr(provider, "_config", {}),
+                config_view,
             )
             if not capture_result.allowed:
                 candidate = {
@@ -593,9 +604,9 @@ def run_reflection_tool(provider: Any, *, args: dict[str, Any]) -> dict[str, Any
                     }
                 else:
                     assert quality is not None
-                    with provider._lock:
+                    with port.query_lock():
                         candidate = _store_candidate(
-                            provider,
+                            port,
                             query=query,
                             synthesis=candidate_synthesis,
                             quality=quality,

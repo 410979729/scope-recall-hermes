@@ -4,9 +4,27 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-08-19
+
+This minor source candidate covers public journal restore, backlog fairness, vector inventory, and runtime-module convergence since the last public release, `1.9.2`. The `1.9.3` writer-lease and digest-transaction work reached `main` as a source interval only: it was never tagged, given a GitHub Release, or uploaded to PyPI, and is incorporated here. This task creates a source candidate on `main` only. SQLite remains authoritative and the stable provider/tool identities are unchanged.
+
+### Added
+- Added dry-run, epoch, backup, ledger, and idempotent journal source restore for a trusted snapshot window.
+- Added bounded unresolved-journal retry/quarantine and fair per-session budget deferral (issues #45/#48/#46).
+- Added a structured non-activatable inactive READY vector inventory (#44).
+- Assembled one production command port and converged internal runtime modules behind thin provider/tooling entrypoints.
+
+### Fixed
+- Kept the shutdown barrier so a non-acknowledging journal or capture worker leaves connections, vector resources, and the writer lease held for a later retry.
+- Preserved WAL reconciliation and epoch fencing on the writer-owned truth path.
+- Incorporated the unpublished `1.9.3` source interval: one writer per truth database, read-only followers, digest model calls outside write transactions, and idle same-process peer recovery.
+
+### Compatibility
+- Preserved Fact Evolution, temporal queries, bounded Reflection, scope routing, evidence authority, provenance-root validation, deterministic idempotency, journal checkpoint ownership, and release-identity checks.
+
 ## [1.9.3] - 2026-08-14
 
-This compatibility-preserving patch release covers the highest-priority open SQLite contention and writer-ownership risks since the last public release, `1.9.2`. SQLite remains authoritative, additional processes fail closed to read-only follower mode, and the stable provider/tool identities are unchanged.
+This compatibility-preserving source candidate covered the highest-priority open SQLite contention and writer-ownership risks since the last public release, `1.9.2`. It reached `main` without a tag, GitHub Release, or PyPI artifact. SQLite remains authoritative, additional processes fail closed to read-only follower mode, and the stable provider/tool identities are unchanged.
 
 ### Fixed
 - Enforced one write-capable Scope Recall process per truth database across gateway, CLI, and other runtimes. Provider instances in the writer process share its lease; a provider in another process opens as a read-only follower, refuses mutation tools, and may take over only after the writer exits and the operating system releases the lease.

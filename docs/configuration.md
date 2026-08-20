@@ -3,6 +3,18 @@
 This file is generated from the packaged `config.json` registry. It lists every supported leaf key, its default value, risk level, and whether a Hermes restart/reload is normally required.
 
 
+## `auto_adjudication`
+
+- `auto_adjudication.enabled` (boolean; risk: `low`; restart_required: `no`) — Run the scheduled no-human candidate adjudication pass: deterministic promote/archive lanes plus a budgeted LLM grounded-review lane. Operators read run summaries, never per-item queues. Default: `true`
+- `auto_adjudication.interval_hours` (integer; risk: `low`; restart_required: `no`) — Minimum hours between scheduled adjudication passes on the truth-writer process. Default: `24`
+- `auto_adjudication.l4_budget_per_run` (integer; risk: `low`; restart_required: `no`) — Maximum held candidates re-examined against their journal evidence per pass. Default: `20`
+- `auto_adjudication.l4_enabled` (boolean; risk: `low`; restart_required: `no`) — Enable the budgeted LLM grounded-review lane for held/needs-review candidates. Uses the journal digest LLM provider; unavailable config degrades to lanes-only. Default: `true`
+- `auto_adjudication.l4_max_evidence_chars` (integer; risk: `low`; restart_required: `no`) — Maximum sanitized journal-evidence characters shown to the grounded reviewer per candidate. Default: `2400`
+- `auto_adjudication.l4_max_uncertain_rounds` (integer; risk: `low`; restart_required: `no`) — Uncertain grounded-review verdicts allowed before a candidate is archived as unresolvable instead of rotting in the queue. Default: `3`
+- `auto_adjudication.max_archives_per_run` (integer; risk: `low`; restart_required: `no`) — Cap on deterministic-lane archives per adjudication pass. Default: `200`
+- `auto_adjudication.max_promotions_per_run` (integer; risk: `low`; restart_required: `no`) — Cap on deterministic-lane promotions per adjudication pass. Default: `100`
+- `auto_adjudication.promote_min_age_hours` (integer; risk: `low`; restart_required: `no`) — Minimum candidate age before the deterministic promote lane may auto-promote, so fresh extractions can still be corrected by newer evidence first. Default: `24`
+
 ## `auto_capture`
 
 - `auto_capture` (boolean; risk: `low`; restart_required: `no`) — Capture eligible conversation turns into Scope Recall. Default: `true`
@@ -114,9 +126,9 @@ This file is generated from the packaged `config.json` registry. It lists every 
 
 ## `identity`
 
-- `identity.desktop_principal` (string; risk: `high`; restart_required: `yes`) — Optional explicit Desktop principal override. Empty keeps the profile-local opaque auto-minted principal used when Hermes Desktop omits user_id. Changing it changes durable scope identity and requires provider reload. Default: `""`
 - `identity.cli_user_id_fallback` (string; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `identity.cli_user_id_fallback` in the `identity` group. Default: `"local"`
 - `identity.cross_platform_shared_scope` (boolean; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `identity.cross_platform_shared_scope` in the `identity` group. Default: `false`
+- `identity.desktop_principal` (string; risk: `high`; restart_required: `yes`) — Optional explicit Desktop principal override. Empty keeps the profile-local opaque auto-minted principal used when Hermes Desktop omits user_id. Changing it changes durable scope identity and requires provider reload. Default: `""`
 
 `identity.user_aliases` and `identity.chat_aliases` are optional open maps that are intentionally absent from packaged defaults.
 Account aliases map an exact `platform:user_id` to a canonical user.
@@ -130,7 +142,11 @@ Treat chat aliases as explicit operator access-control grants.
 - `journal.allow_insecure_endpoint` (boolean; risk: `high`; restart_required: `yes`) — Allow an explicitly trusted non-loopback HTTP journal endpoint. Credential-bearing headers are always stripped on HTTP. Default: `false`
 - `journal.allow_session_end_llm` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.allow_session_end_llm` in the `journal` group. Default: `false`
 - `journal.append_v1` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.append_v1` in the `journal` group. Default: `true`
+- `journal.background_digest_drain_while_idle` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.background_digest_drain_while_idle` in the `journal` group. Default: `true`
 - `journal.background_digest_enabled` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.background_digest_enabled` in the `journal` group. Default: `true`
+- `journal.background_digest_idle_pause_seconds` (number; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.background_digest_idle_pause_seconds` in the `journal` group. Default: `0.4`
+- `journal.background_digest_max_passes` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.background_digest_max_passes` in the `journal` group. Default: `20`
+- `journal.background_digest_min_restart_seconds` (number; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.background_digest_min_restart_seconds` in the `journal` group. Default: `2.0`
 - `journal.background_digest_synchronous` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.background_digest_synchronous` in the `journal` group. Default: `false`
 - `journal.backlog_fail_entries` (integer; risk: `medium`; restart_required: `yes`) — Doctor failure threshold for unprocessed journal backlog. Default: `3000`
 - `journal.backlog_max_age_hours` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.backlog_max_age_hours` in the `journal` group. Default: `72`
@@ -141,6 +157,8 @@ Treat chat aliases as explicit operator access-control grants.
 - `journal.dynamic_max_entries_enabled` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.dynamic_max_entries_enabled` in the `journal` group. Default: `true`
 - `journal.enabled` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.enabled` in the `journal` group. Default: `true`
 - `journal.endpoint` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.endpoint` in the `journal` group. Default: `""`
+- `journal.extraction_attempts_quarantine` (integer; risk: `medium`; restart_required: `yes`) — Deterministic unresolved-extraction attempts (empty/filtered parses, non-retryable LLM errors) before an entry moves to the replayable rejection ledger instead of reloading forever. Transient provider failures never consume attempts. Default: `3`
+- `journal.retryable_failures_quarantine` (integer; risk: `medium`; restart_required: `yes`) — Durable cross-run retryable LLM failures (timeouts and other retryable provider errors) before an entry leaves the FIFO head for journal-recovery replay. One transient failure stays pending and does not spend the ordinary extraction-quality budget. Default: `3`
 - `journal.extractor` (string; risk: `medium`; restart_required: `yes`; choices: `llm, heuristic`) — Scope Recall configuration key `journal.extractor` in the `journal` group. Default: `"llm"`
 - `journal.llm_chunk_chars` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.llm_chunk_chars` in the `journal` group. Default: `7000`
 - `journal.llm_max_session_chars` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.llm_max_session_chars` in the `journal` group. Default: `16000`
@@ -148,6 +166,7 @@ Treat chat aliases as explicit operator access-control grants.
 - `journal.llm_timeout` (number; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.llm_timeout` in the `journal` group. Default: `60.0`
 - `journal.max_entries_per_digest` (integer; risk: `medium`; restart_required: `yes`) — Maximum journal entries a digest run may review before dynamic backlog expansion. Default: `500`
 - `journal.max_entries_per_digest_ceiling` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.max_entries_per_digest_ceiling` in the `journal` group. Default: `1200`
+- `journal.max_entries_per_session_per_run` (integer; risk: `medium`; restart_required: `yes`) — Maximum unprocessed entries one session may contribute to a single digest load, so one high-volume session cannot starve every other session's backlog. Default: `200`
 - `journal.no_insert_fail_streak` (integer; risk: `medium`; restart_required: `yes`) — Doctor failure threshold for recent digest runs that processed entries but produced no durable writes for provider/schema/quality-risk reasons. Default: `3`
 - `journal.retention_days` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.retention_days` in the `journal` group. Default: `0`
 - `journal.retention_profile` (string; risk: `medium`; restart_required: `yes`; choices: `light, balanced, full`) — Semantic digest detail: light keeps only minimal durable facts, balanced preserves useful rationale and steps, and full preserves detailed durable context while raw transcript evidence remains in the journal. Default: `"balanced"`
@@ -331,14 +350,15 @@ Treat chat aliases as explicit operator access-control grants.
 - `vector.index_general` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.index_general` in the `vector` group. Default: `false`
 - `vector.outbox_completed_keep_per_generation` (integer; risk: `medium`; restart_required: `yes`) — Minimum number of the newest completed vector outbox events retained for each generation even after the age cutoff. Default: `5000`
 - `vector.outbox_completed_retention_days` (integer; risk: `medium`; restart_required: `yes`) — Delete completed vector outbox events older than this many days after a clean startup reconciliation pass; 0 disables pruning. Nonterminal events are never pruned. Default: `30`
+- `vector.outbox_retention_interval_seconds` (integer; risk: `medium`; restart_required: `yes`) — Minimum seconds between completed-outbox retention passes. Retention is low-priority housekeeping that skips quietly under SQLite contention instead of colliding with live writers every idle tick. Default: `900`
 - `vector.pgvector.connect_timeout_seconds` (integer; risk: `medium`; restart_required: `yes`) — Maximum time allowed to establish a PGVector connection. Values are clamped to 1–300 seconds. Default: `10`
 - `vector.pgvector.dsn_env` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.pgvector.dsn_env` in the `vector` group. Default: `"SCOPE_RECALL_PGVECTOR_DSN"`
 - `vector.pgvector.lock_timeout_ms` (integer; risk: `medium`; restart_required: `yes`) — Maximum PostgreSQL lock wait for PGVector statements. Values are clamped to 100–600000 milliseconds. Default: `5000`
 - `vector.pgvector.statement_timeout_ms` (integer; risk: `medium`; restart_required: `yes`) — Maximum execution time for each PGVector SQL statement. Values are clamped to 100–600000 milliseconds. Default: `30000`
 - `vector.pgvector.table_name` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.pgvector.table_name` in the `vector` group. Default: `"scope_recall_vectors"`
 - `vector.startup_outbox_limit` (integer; risk: `medium`; restart_required: `yes`) — Maximum durable vector outbox events replayed in one startup or background maintenance phase. Default: `200`
-- `vector.startup_reconcile_interval_seconds` (integer; risk: `medium`; restart_required: `yes`) — Minimum delay between completed vector reconciliation cycles; interrupted cycles resume immediately from their durable watermark. Default: `86400`
 - `vector.startup_reconcile_enabled` (boolean; risk: `medium`; restart_required: `yes`) — Run bounded startup/background vector outbox and truth reconciliation. Default true; set false to leave vector search available without automatic outbox/truth reconciliation ticks. Default: `true`
+- `vector.startup_reconcile_interval_seconds` (integer; risk: `medium`; restart_required: `yes`) — Minimum delay between completed vector reconciliation cycles; interrupted cycles resume immediately from their durable watermark. Default: `86400`
 - `vector.startup_reconcile_page_size` (integer; risk: `medium`; restart_required: `yes`) — Maximum truth rows planned into durable vector outbox events by one startup or background maintenance tick. Default: `200`
 - `vector.sync_mode` (string; risk: `medium`; restart_required: `yes`; choices: `incremental, rebuild`) — Scope Recall configuration key `vector.sync_mode` in the `vector` group. Default: `"incremental"`
 - `vector.table_name` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.table_name` in the `vector` group. Default: `"memories"`

@@ -417,6 +417,25 @@ def _transfer_online_backup(
     source_conn.backup(destination_conn)
 
 
+def _normalize_standalone_staging_journal(connection: sqlite3.Connection) -> None:
+    """Force DELETE journal mode before any read-only staging reopen.
+
+    Online backup of a WAL source copies WAL into the standalone staging file.
+    Health and iterdump later reopen that path read-only, which would create
+    ``-wal``/``-shm`` beside the reserved inode. Cleanup correctly treats those
+    sidecars as unowned, so the published backup would fail closed. Normalize
+    here on the still-open writer instead of deleting sidecars later.
+    """
+
+    row = connection.execute("PRAGMA journal_mode=DELETE").fetchone()
+    mode = "" if row is None else str(row[0]).strip().lower()
+    if mode != "delete":
+        raise SqliteBackupError(
+            "SQLite staging backup refused DELETE journal mode "
+            f"(got {mode or 'unknown'})"
+        )
+
+
 def verified_online_backup(
     source_path: str | Path,
     backup_path: str | Path,
@@ -425,8 +444,11 @@ def verified_online_backup(
 
     Fail closed on symlink/non-file truth, same-path source/destination,
     preexisting destination or sidecars, unhealthy source or backup, backup API
-    failure, or logical fingerprint mismatch. Only partial artifacts created by
-    this call are eligible for cleanup; cleanup failure is explicit.
+    failure, journal-mode normalize failure, or logical fingerprint mismatch.
+    WAL sources are converted to DELETE on staging before health/fingerprint
+    reopen so those reads cannot create unowned sidecars. Only partial
+    artifacts created by this call are eligible for cleanup; cleanup failure
+    is explicit.
     """
 
     source = _as_path(source_path)
@@ -492,6 +514,7 @@ def verified_online_backup(
             raise SqliteBackupError(
                 f"SQLite activation backup quick_check failed: {staging}"
             )
+        _normalize_standalone_staging_journal(dest_conn)
 
         connection_close_failures = _close_sqlite_connection(
             dest_conn,

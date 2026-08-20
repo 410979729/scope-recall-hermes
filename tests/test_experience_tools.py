@@ -548,27 +548,23 @@ def test_experience_prefetch_can_be_disabled_by_config(provider):
     assert "pb_tool" not in block
 
 
-def test_experience_prefetch_records_unknown_run_for_feedback_loop(provider):
+def test_experience_prefetch_is_zero_write(provider):
     provider.handle_tool_call(
         "scope_recall_playbook_create",
         {"id": "pb_prefetch_run", "payload": _payload(), "status": "candidate", "confidence": 0.95},
     )
     provider.handle_tool_call("scope_recall_playbook_review", {"id": "pb_prefetch_run", "action": "promote", "reason": "fixture", "dry_run": False})
     provider._config["experience"]["prefetch_enabled"] = True
+    with provider._lock:
+        before = provider._require_conn().execute("SELECT COUNT(*) FROM experience_runs").fetchone()[0]
 
     block = provider.prefetch("Need one-way headscale ACL with live node verification")
 
     assert "Experience Kernel" in block
     assert "pb_prefetch_run" in block
     with provider._lock:
-        row = provider._require_conn().execute(
-            "SELECT playbook_id, outcome, metadata, evidence FROM experience_runs WHERE playbook_id = ?",
-            ("pb_prefetch_run",),
-        ).fetchone()
-    assert row is not None
-    assert row["outcome"] == "unknown"
-    assert "requires_feedback" in row["metadata"]
-    assert "experience_preflight" in row["evidence"]
+        after = provider._require_conn().execute("SELECT COUNT(*) FROM experience_runs").fetchone()[0]
+    assert after == before
 
 
 def test_playbook_create_tool_rejects_direct_promoted_status(provider):

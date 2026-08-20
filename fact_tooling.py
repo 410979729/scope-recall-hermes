@@ -30,10 +30,15 @@ from .fact_evolution import (
 )
 from .graph import load_metadata
 from .lifecycle_policy import PROFILE_HIDDEN_LIFECYCLES
+from ._internal.runtime.tool_port import bind_fact_tool_port
 
 
 class FactToolError(ValueError):
     """A structured tool envelope violates a trusted runtime boundary."""
+
+
+def _fact_port(provider: Any):
+    return bind_fact_tool_port(provider)
 
 
 MAX_FACT_CONTENT_CHARS = 8_000
@@ -56,23 +61,16 @@ def _mapping_arg(args: Mapping[str, Any], key: str) -> dict[str, Any]:
 
 
 def _scope_id_for_mode(provider: Any, scope_mode: str) -> str:
-    if scope_mode == "shared_pool":
-        scope_id = str(getattr(provider, "_shared_pool_scope_id", "") or "")
-    elif scope_mode == "shared":
-        scope_id = str(getattr(provider, "_shared_scope_id", "") or "")
-    else:
-        scope_id = str(getattr(provider, "_scope_id", "") or "")
+    port = _fact_port(provider)
+    scope_id = str(port.scope_id_for_mode(scope_mode) or "")
     if not scope_id:
         raise FactToolError("structured fact scope is unavailable")
     return scope_id
 
 
 def _writable_scope_ids(provider: Any) -> list[str]:
-    output = [
-        str(item).strip()
-        for item in (getattr(provider, "_writable_scope_ids", []) or [])
-        if str(item).strip()
-    ]
+    port = _fact_port(provider)
+    output = [str(item).strip() for item in port.writable_scope_ids() if str(item).strip()]
     if not output:
         raise FactToolError("structured fact writable scopes are unavailable")
     return output
@@ -161,11 +159,11 @@ def _proposal(
 
 
 def _tool_run_id(provider: Any) -> str:
-    return f"tool:{str(getattr(provider, '_session_id', '') or '')}"
+    return f"tool:{str(_fact_port(provider).session_id() or '')}"
 
 
 def _runtime_provenance(provider: Any, *, operation: str) -> list[dict[str, Any]]:
-    session_id = str(getattr(provider, "_session_id", "") or "").strip()
+    session_id = str(_fact_port(provider).session_id() or "").strip()
     source_ref = session_id or f"tool-{operation}-session"
     return [
         {
@@ -190,25 +188,26 @@ def _execute(
     dry_run: bool = False,
     lane: str = "tool",
 ):
-    scope = provider._scope
-    with provider._lock:
+    port = _fact_port(provider)
+    scope = port.scope_object()
+    with port.query_lock():
         return execute_pipeline_proposal(
-            provider._require_conn(),
+            port.query_connection(),
             proposal=proposal,
             lane=lane,
-            run_id=_tool_run_id(provider),
+            run_id=_tool_run_id(port),
             source_key=source_key,
             trusted_scope_id=scope_id,
-            writable_scope_ids=_writable_scope_ids(provider),
+            writable_scope_ids=_writable_scope_ids(port),
             actor=f"scope-recall-tool-{operation}",
             source=f"tool-{operation}",
             target=target,
             content=content,
             metadata=metadata,
-            runtime_config=getattr(provider, "_config", {}),
+            runtime_config=port.config_view(),
             dry_run=dry_run,
-            provenance_refs=_runtime_provenance(provider, operation=operation),
-            session_id=str(getattr(provider, "_session_id", "") or ""),
+            provenance_refs=_runtime_provenance(port, operation=operation),
+            session_id=str(port.session_id() or ""),
             platform=str(getattr(scope, "platform", "") or ""),
             user_id=str(getattr(scope, "user_id", "") or ""),
             chat_id=str(getattr(scope, "chat_id", "") or ""),
@@ -294,9 +293,10 @@ def execute_structured_store(
 
 
 def _row_scope_mode(provider: Any, scope_id: str) -> str:
-    if scope_id == str(getattr(provider, "_shared_pool_scope_id", "") or ""):
+    port = _fact_port(provider)
+    if scope_id == str(port.shared_pool_scope_id() or ""):
         return "shared_pool"
-    if scope_id == str(getattr(provider, "_shared_scope_id", "") or ""):
+    if scope_id == str(port.shared_scope_id() or ""):
         return "shared"
     return "local"
 
@@ -308,7 +308,7 @@ def _expected_scope_for_target(
     target: str,
     source: str,
 ) -> tuple[str, str]:
-    desired_mode = str(provider._scope_mode_for(target, source))
+    desired_mode = str(_fact_port(provider).scope_mode_for(target, source))
     if current_scope_mode == "shared_pool" and desired_mode == "shared":
         desired_mode = "shared_pool"
     return desired_mode, _scope_id_for_mode(provider, desired_mode)
@@ -344,8 +344,8 @@ def execute_structured_update(
 
     writable = _writable_scope_ids(provider)
     placeholders = ",".join("?" for _ in writable)
-    with provider._lock:
-        row = provider._require_conn().execute(
+    with _fact_port(provider).query_lock():
+        row = _fact_port(provider).query_connection().execute(
             f"SELECT id, source, target, scope_id, metadata FROM memories "
             f"WHERE id = ? AND scope_id IN ({placeholders})",
             (memory_id, *writable),
@@ -381,9 +381,9 @@ def execute_structured_update(
     )
     if proposal.action is EvolutionAction.ADD:
         raise FactToolError("structured update cannot use add; use supersede or enrich")
-    with provider._lock:
+    with _fact_port(provider).query_lock():
         is_replay = pipeline_receipt_exists(
-            provider._require_conn(),
+            _fact_port(provider).query_connection(),
             lane="tool",
             run_id=_tool_run_id(provider),
             source_key=source_key,
@@ -412,8 +412,8 @@ def execute_structured_update(
     successor_id = successor_ids[-1] if successor_ids else ""
     updated_at = ""
     if successor_id:
-        with provider._lock:
-            successor = provider._require_conn().execute(
+        with _fact_port(provider).query_lock():
+            successor = _fact_port(provider).query_connection().execute(
                 "SELECT updated_at FROM memories WHERE id = ?",
                 (successor_id,),
             ).fetchone()
@@ -471,8 +471,8 @@ def _maintenance_target_binding(
         writable = _writable_scope_ids(provider)
         id_placeholders = ",".join("?" for _ in target_ids)
         scope_placeholders = ",".join("?" for _ in writable)
-        with provider._lock:
-            rows = provider._require_conn().execute(
+        with _fact_port(provider).query_lock():
+            rows = _fact_port(provider).query_connection().execute(
                 f"SELECT id, scope_id, target, source FROM memories "
                 f"WHERE id IN ({id_placeholders}) "
                 f"AND scope_id IN ({scope_placeholders})",
@@ -506,7 +506,7 @@ def _maintenance_target_binding(
     target = str(proposal_payload.get("target") or "memory").strip().lower()
     if target not in {"user", "memory", "project", "ops"}:
         raise FactToolError("proposal.target must be user, memory, project, or ops")
-    scope_mode = str(provider._scope_mode_for(target, "tool-evolve"))
+    scope_mode = str(_fact_port(provider).scope_mode_for(target, "tool-evolve"))
     return _scope_id_for_mode(provider, scope_mode), target, []
 
 
@@ -544,7 +544,7 @@ def execute_maintenance_evolution(
         trusted_scope_id=scope_id,
         allowed_target_ids=target_ids or None,
     )
-    content = provider._clean_text(str(proposal_payload.get("content") or ""))
+    content = _fact_port(provider).clean_text(str(proposal_payload.get("content") or ""))
     if proposal.action in {EvolutionAction.ADD, EvolutionAction.SUPERSEDE} and not content:
         raise FactToolError("proposal.content is required for add or supersede")
 

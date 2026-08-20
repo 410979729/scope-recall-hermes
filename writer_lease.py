@@ -52,6 +52,7 @@ ALLOWED_TRUTH_WRITER_ROLES = frozenset(
         "journal_digest",
         "nightly_digest",
         "truth_connection",
+        "journal_source_restore",
     }
 )
 _UNKNOWN_TRUTH_WRITER_ROLE = "unknown"

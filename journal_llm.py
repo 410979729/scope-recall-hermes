@@ -112,6 +112,8 @@ def _call_llm_with_retries(
                 call_kwargs["thinking"] = thinking
             return active_call_llm(prompt, **call_kwargs)
         except Exception as exc:
+            if isinstance(exc, JournalDigestLLMError):
+                raise
             last_error = exc
             last_kind, last_retryable = _classify_llm_digest_error(exc)
             if (not last_retryable) or attempt >= max_attempts:

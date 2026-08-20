@@ -28,6 +28,7 @@ REQUIRED_COMMANDS = [
     "hermes-scope-recall doctor",
     "hermes-scope-recall dashboard",
     "hermes-scope-recall journal digest",
+    "hermes-scope-recall journal source-restore",
     "hermes-scope-recall candidates report",
     "hermes-scope-recall playbooks list",
     "hermes-scope-recall playbooks review",
@@ -60,6 +61,10 @@ def test_operator_runbook_covers_required_operational_paths():
     assert "database is locked" in text
     assert "rollback-needed" in text
     assert "do not hard-delete" in text
+    assert "--expected-target-epoch-digest" in text
+    assert "--prewrite-backup-path" in text
+    assert "--operation-id" in text
+    assert "PID-bound activation lease" in text
 
 
 def test_readme_links_operator_runbook_and_configuration_reference():
