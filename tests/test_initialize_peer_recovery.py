@@ -33,6 +33,18 @@ import scope_recall.provider as provider_module
 import writer_lease as writer_lease_module
 from writer_lease import TruthWriterLease
 
+
+def _live_peer_recovery(provider):
+    """Resolve the owner module bound to this isolated plugin namespace."""
+
+    module = inspect.getmodule(type(provider))
+    assert module is not None
+    name = f"{module.__name__.rsplit('.', 1)[0]}._internal.runtime.peer_recovery"
+    recovery = sys.modules.get(name)
+    if recovery is None:
+        recovery = __import__(name, fromlist=["PROVIDER_REGISTRY"])
+    return recovery
+
 READ_ONLY_STATUS = "active_read_only"
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _WORKSPACE_PROVIDER = (_REPO_ROOT / "provider.py").resolve()
@@ -329,7 +341,7 @@ def test_failed_post_connect_initialization_releases_writer_resources(
     thread = provider._writer_thread
     assert thread is None or not thread.is_alive()
     assert provider._vector_store is None
-    assert provider not in runtime_module._PROVIDER_REGISTRY
+    assert provider not in _live_peer_recovery(provider).PROVIDER_REGISTRY
     assert provider._truth_writer_lease is None
     assert provider._truth_writer_role == "unknown"
 
@@ -1090,10 +1102,11 @@ def test_shutdown_requested_peer_is_excluded_before_lock_probe(tmp_path):
     assert runtime_module is not None
     assert Path(runtime_module.__file__).resolve() == _WORKSPACE_PROVIDER
     peer = ShutdownPeer()
-    with runtime_module._PROVIDER_REGISTRY_LOCK:
-        runtime_module._PROVIDER_REGISTRY.add(peer)
-        assert peer in runtime_module._PROVIDER_REGISTRY
-    assert runtime_module._same_truth_database_path(peer._db_path, writer._db_path)
+    recovery = _live_peer_recovery(writer)
+    with recovery.PROVIDER_REGISTRY_LOCK:
+        recovery.PROVIDER_REGISTRY.add(peer)
+        assert peer in recovery.PROVIDER_REGISTRY
+    assert recovery.same_truth_database_path(peer._db_path, writer._db_path)
     try:
         result = writer._rollback_peer_provider_transactions("pre-lock-shutdown")
         assert result == {
@@ -1104,8 +1117,8 @@ def test_shutdown_requested_peer_is_excluded_before_lock_probe(tmp_path):
         }
         assert peer._lock.acquire_calls == 0
     finally:
-        with runtime_module._PROVIDER_REGISTRY_LOCK:
-            runtime_module._PROVIDER_REGISTRY.discard(peer)
+        with recovery.PROVIDER_REGISTRY_LOCK:
+            recovery.PROVIDER_REGISTRY.discard(peer)
 
 
 def test_concurrent_initialize_publishes_one_runtime_and_does_not_leak_lease(tmp_path):
@@ -1153,14 +1166,14 @@ def test_concurrent_initialize_publishes_one_runtime_and_does_not_leak_lease(tmp
         assert state.holders == 1
         assert state.connection_pins == 1
         assert len(writer_lease_module._PROCESS_REGISTRY) == baseline + 1
-        assert provider in runtime_module._PROVIDER_REGISTRY
+        assert provider in _live_peer_recovery(provider).PROVIDER_REGISTRY
     finally:
         try:
             provider.shutdown()
         except Exception:
             pass
         assert len(writer_lease_module._PROCESS_REGISTRY) == baseline
-        assert provider not in runtime_module._PROVIDER_REGISTRY
+        assert provider not in _live_peer_recovery(provider).PROVIDER_REGISTRY
 
 
 @pytest.mark.skipif(

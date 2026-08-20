@@ -42,6 +42,10 @@ def journal_digest_metadata(
     health_flags: list[str] | None = None,
     recommended_next_limit: int | None = None,
     candidate_status_counts: Counter[str] | None = None,
+    retryable_failures: int = 0,
+    retryable_failures_quarantined: int = 0,
+    leave_states: dict[str, list[int]] | None = None,
+    receipt_kind: str = "",
 ) -> dict[str, Any]:
     after = backlog_before if backlog_after is None else int(backlog_after)
     status_counts = Counter(candidate_status_counts or {})
@@ -54,6 +58,10 @@ def journal_digest_metadata(
         "extractor_counts": dict(extractor_counts),
         "extractor_errors": extractor_errors[:5],
         "quarantine_counts": dict(quarantine_counts),
+        "retryable_failures": int(retryable_failures),
+        "retryable_failures_quarantined": int(retryable_failures_quarantined),
+        "leave_states": dict(leave_states or {}),
+        "receipt_kind": str(receipt_kind or ""),
         "backlog_before": backlog_before,
         "backlog_after": after,
         "backlog_delta": after - backlog_before,
@@ -89,6 +97,8 @@ def journal_digest_success_result(
     health_flags: list[str] | None = None,
     recommended_next_limit: int | None = None,
     candidate_status_counts: Counter[str] | None = None,
+    retryable_failures: int = 0,
+    retryable_failures_quarantined: int = 0,
 ) -> dict[str, Any]:
     productive = counts.get("inserted", 0) + counts.get("updated", 0) if productive_writes is None else int(productive_writes)
     after = backlog_before if backlog_after is None else int(backlog_after)
@@ -103,6 +113,7 @@ def journal_digest_success_result(
         "inserted": counts.get("inserted", 0),
         "updated": counts.get("updated", 0),
         "skipped": counts.get("skipped", 0),
+        "quarantined": counts.get("quarantined", 0),
         "extractor_requested": requested_extractor,
         "extractor_used": extractor_used,
         "quarantine_counts": dict(quarantine_counts),
@@ -116,6 +127,8 @@ def journal_digest_success_result(
         "no_insert_reason": no_insert_reason,
         "health_flags": list(health_flags or []),
         "candidate_status_counts": dict(status_counts),
+        "retryable_failures": int(retryable_failures),
+        "retryable_failures_quarantined": int(retryable_failures_quarantined),
         "actions": actions[:50],
     }
 
@@ -146,13 +159,17 @@ def journal_digest_receipt_fields(
         health_flags.append("backlog_remaining")
     if backlog_after >= backlog_before and total_loaded_entries > 0:
         health_flags.append("backlog_not_decreasing")
-    if quarantine_counts:
+    if quarantine_counts or int(counts.get("quarantined", 0) or 0) > 0:
         health_flags.append("quarantine")
+    if int(counts.get("retryable_failures", 0) or 0) > 0:
+        health_flags.append("retryable_failures")
     if extractor_errors:
         health_flags.append("extractor_error")
     if total_loaded_entries > 0 and productive_writes == 0:
         health_flags.append("no_productive_write")
         if quarantine_counts:
+            no_insert_reason = "quarantine"
+        elif int(counts.get("quarantined", 0) or 0) > 0:
             no_insert_reason = "quarantine"
         elif extractor_errors:
             no_insert_reason = "provider_or_schema_risk"
@@ -169,6 +186,10 @@ def journal_digest_receipt_fields(
         "no_insert_reason": no_insert_reason,
         "health_flags": health_flags,
         "recommended_next_limit": effective_limit if recommended_next_limit is None else int(recommended_next_limit),
+        "retryable_failures": int(counts.get("retryable_failures", 0) or 0),
+        "retryable_failures_quarantined": int(
+            counts.get("retryable_failures_quarantined", 0) or 0
+        ),
     }
 
 

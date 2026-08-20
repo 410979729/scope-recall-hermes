@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-scope-recall"
-version = "1.9.3"
+version = "1.10.0"
 description = "Hermes scoped memory provider with journal-first capture, SQLite truth, vector companions, and hybrid RRF retrieval."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -58,7 +58,17 @@ Issues = "https://github.com/410979729/scope-recall-hermes/issues"
 
 [tool.setuptools]
 include-package-data = true
-packages = ["scope_recall"]
+packages = [
+  "scope_recall",
+  "scope_recall._internal",
+  "scope_recall._internal.runtime",
+  "scope_recall._internal.contracts",
+  "scope_recall._internal.journal",
+  "scope_recall._internal.experience",
+  "scope_recall._internal.nightly",
+  "scope_recall._internal.memory",
+  "scope_recall._internal.recall",
+]
 package-dir = {"scope_recall" = "."}
 
 [tool.setuptools.package-data]
@@ -98,7 +108,10 @@ pythonpath = ["."]
 include = [
   "*.py",
   "scripts/*.py",
+  "_internal/*.py",
+  "_internal/**/*.py",
   "activation_transaction.py",
+  "auto_adjudication.py",
   "aliases.py",
   "artifacts.py",
   "candidate_extraction.py",
@@ -111,6 +124,7 @@ include = [
   "capture_llm.py",
   "cli.py",
   "config.py",
+  "config_runtime_spec.py",
   "config_schema.py",
   "desktop_principal.py",
   "digest_quality.py",
@@ -122,6 +136,8 @@ include = [
   "doctor_source.py",
   "doctor_sqlite.py",
   "doctor_temporal.py",
+  "digest_state.py",
+  "write_kernel.py",
   "doctor_vector.py",
   "doctor_event_digest.py",
   "embedders.py",
@@ -169,13 +185,24 @@ include = [
   "journal_llm.py",
   "journal_store.py",
   "journal_candidates.py",
+  "journal_admission.py",
+  "journal_match_policy.py",
+  "digest_admission.py",
+  "nightly_admission.py",
   "journal_extractors.py",
   "journal_recovery.py",
+  "journal_source_restore.py",
+  "journal_source_restore_rows.py",
+  "journal_source_restore_snapshot.py",
   "lifecycle_policy.py",
   "lifecycle_service.py",
   "memory_admission.py",
   "memory_mutation.py",
   "memory_ops.py",
+  "memory_queries.py",
+  "memory_scope.py",
+  "runtime_ports.py",
+  "runtime_kernel.py",
   "memory_browser.py",
   "memory_quality.py",
   "memory_text_merge.py",
@@ -187,6 +214,7 @@ include = [
   "nightly_llm.py",
   "operator_ledger.py",
   "provider_schemas.py",
+  "tool_runtime_spec.py",
   "pgvector_store.py",
   "postgres_bridge.py",
   "prompting.py",
@@ -253,5 +281,9 @@ exclude = [
 ]
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
-reportMissingImports = "warning"
+reportMissingImports = "error"
 reportMissingTypeStubs = "none"
+
+[[tool.pyright.executionEnvironments]]
+root = "scripts"
+reportMissingImports = "warning"

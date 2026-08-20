@@ -49,9 +49,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "background_digest_synchronous": False,
         "extractor": "llm",
         "digest_interval_hours": 2,
+        "background_digest_drain_while_idle": True,
+        "background_digest_max_passes": 20,
+        "background_digest_idle_pause_seconds": 0.4,
+        "background_digest_min_restart_seconds": 2.0,
         "retention_days": 0,
         "retention_profile": "balanced",
         "max_entries_per_digest": 500,
+        "max_entries_per_session_per_run": 200,
+        "extraction_attempts_quarantine": 3,
+        "retryable_failures_quarantine": 3,
         "dynamic_max_entries_enabled": True,
         "dynamic_backlog_threshold": 2000,
         "max_entries_per_digest_ceiling": 1200,
@@ -153,6 +160,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tool_schema_extra_tools": [],
     "maintenance_tools_enabled": False,
     "secret_index_tools_enabled": False,
+    "auto_adjudication": {
+        "enabled": True,
+        "interval_hours": 24,
+        "promote_min_age_hours": 24,
+        "max_promotions_per_run": 100,
+        "max_archives_per_run": 200,
+        "l4_enabled": True,
+        "l4_budget_per_run": 20,
+        "l4_max_uncertain_rounds": 3,
+        "l4_max_evidence_chars": 2400,
+    },
     "experience": {
         "enabled": True,
         "prefetch_enabled": True,
@@ -278,6 +296,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "startup_reconcile_interval_seconds": 86400,
         "outbox_completed_retention_days": 30,
         "outbox_completed_keep_per_generation": 5000,
+        "outbox_retention_interval_seconds": 900,
         "embedder": {
             "provider": "openai-compatible",
             "dimensions": 3072,
@@ -334,6 +353,7 @@ CONFIG_BOUNDED_INTEGER_PATHS: dict[str, tuple[int, int]] = {
     "relation_rebuild_chunk_pairs": (1, 1000),
     "vector.outbox_completed_retention_days": (0, 3650),
     "vector.outbox_completed_keep_per_generation": (0, 1_000_000),
+    "vector.outbox_retention_interval_seconds": (60, 86_400),
 }
 
 

@@ -347,10 +347,51 @@ def test_generation_physical_preflight_is_read_only_for_existing_sqlite_store(tm
     conn.close()
 
 
-def test_doctor_reports_invalid_inactive_ready_generation_without_failing_active_health(tmp_path):
+def _expected_embedder(identity):
+    return {
+        "provider": identity.provider,
+        "model": identity.model,
+        "dimensions": identity.dimensions,
+        "metric": identity.metric,
+        "prompt_profile": identity.prompt_profile,
+        "document_prefix": identity.document_prefix,
+        "query_prefix": identity.query_prefix,
+        "request_dimensions": identity.request_dimensions,
+        "available": True,
+    }
+
+
+def _doctor_generation_report(tmp_path, identity):
     from scope_recall.doctor_vector import vector_generation_report
 
+    return vector_generation_report(
+        tmp_path,
+        expected_embedder=_expected_embedder(identity),
+        backend=identity.backend,
+    )
+
+
+_INACTIVE_INVENTORY_FIELDS = {
+    "generation_id",
+    "activatable",
+    "label",
+    "rebuild_from_sqlite_required",
+    "reason",
+    "repair",
+}
+
+
+def _inventory_by_id(payload):
+    items = list(payload["inactive_generation_inventory"])
+    ids = [str(item.get("generation_id") or "") for item in items]
+    assert ids == sorted(ids)
+    assert all(_INACTIVE_INVENTORY_FIELDS <= set(item) for item in items)
+    return {str(item["generation_id"]): item for item in items}
+
+
+def test_doctor_reports_invalid_inactive_ready_generation_without_failing_active_health(tmp_path):
     storage, conn, identity, old = _sqlite_fixture(tmp_path)
+    active_id = str(old["generation_id"])
     target = _build_sqlite_ready(storage, conn, identity, old, "gen-doctor-missing")
     shutil.rmtree(target)
     enqueue_vector_event(
@@ -364,27 +405,244 @@ def test_doctor_reports_invalid_inactive_ready_generation_without_failing_active
     conn.commit()
     conn.close()
 
-    payload, check, recommendations = vector_generation_report(
-        tmp_path,
-        expected_embedder={
-            "provider": identity.provider,
-            "model": identity.model,
-            "dimensions": identity.dimensions,
-            "metric": identity.metric,
-            "prompt_profile": identity.prompt_profile,
-            "document_prefix": identity.document_prefix,
-            "query_prefix": identity.query_prefix,
-            "request_dimensions": identity.request_dimensions,
-            "available": True,
-        },
-        backend=identity.backend,
-    )
+    payload, check, recommendations = _doctor_generation_report(tmp_path, identity)
     assert check["ok"] is True
     assert payload["status"] == "ready"
+    assert payload["current_generation_id"] == active_id
     assert payload["ready_generation_preflight_failures"]
+    assert payload["rebuild_from_sqlite_required"] is True
+    inventory = _inventory_by_id(payload)
+    assert set(inventory) == {"gen-doctor-missing"}
+    assert active_id not in inventory
+    assert inventory["gen-doctor-missing"]["rebuild_from_sqlite_required"] is True
     assert payload["outbox_backlog"] == 0
     assert payload["inactive_outbox_status_counts"]["pending"] == 1
     assert any("cannot be activated" in item.lower() for item in recommendations)
+
+
+def test_doctor_inactive_generation_inventory_fields_for_healthy_and_broken_ready(tmp_path):
+    from scope_recall.capture_filters import sanitize_report_text
+
+    storage, conn, identity, old = _sqlite_fixture(tmp_path)
+    active_id = str(old["generation_id"])
+    _build_sqlite_ready(storage, conn, identity, old, "gen-doctor-healthy-sibling")
+    target = _build_sqlite_ready(storage, conn, identity, old, "gen-doctor-sidecar")
+    (target / "vector.sqlite3-wal").write_bytes(b"stale-wal")
+    (target / "vector.sqlite3-shm").write_bytes(b"stale-shm")
+    conn.close()
+
+    payload, check, recommendations = _doctor_generation_report(tmp_path, identity)
+    assert check["ok"] is True
+    assert payload["status"] == "ready"
+    assert payload["current_generation_id"] == active_id
+    assert payload["rebuild_from_sqlite_required"] is True
+    failures = payload["ready_generation_preflight_failures"]
+    assert [item["generation_id"] for item in failures] == ["gen-doctor-sidecar"]
+    assert failures[0]["error"]
+    assert failures[0].get("activatable") is False
+    assert failures[0].get("label") == "non_activatable"
+    inventory = _inventory_by_id(payload)
+    assert list(inventory) == ["gen-doctor-healthy-sibling", "gen-doctor-sidecar"]
+    assert active_id not in inventory
+
+    healthy = inventory["gen-doctor-healthy-sibling"]
+    assert healthy["activatable"] is True
+    assert healthy["label"] == "activatable"
+    assert healthy["rebuild_from_sqlite_required"] is False
+    assert healthy["reason"] == ""
+    assert healthy["repair"] == ""
+
+    broken = inventory["gen-doctor-sidecar"]
+    assert broken["activatable"] is False
+    assert broken["label"] == "non_activatable"
+    assert broken["rebuild_from_sqlite_required"] is True
+    assert broken["reason"] == sanitize_report_text(broken["reason"])[:300]
+    assert broken["reason"] == failures[0]["error"]
+    assert len(broken["reason"]) <= 300
+    assert "sidecar" in broken["reason"].lower()
+    assert "sqlite" in broken["repair"].lower()
+    assert len(broken["repair"]) <= 300
+    assert "vector.sqlite3" not in broken["repair"]
+    assert str(target) not in broken["reason"]
+    assert str(target) not in broken["repair"]
+    assert any("cannot be activated" in item.lower() for item in recommendations)
+
+    preflights = payload["ready_generation_preflights"]
+    assert [item["generation_id"] for item in preflights] == ["gen-doctor-healthy-sibling"]
+    assert preflights[0].get("ok") is True
+    assert preflights[0].get("activatable") is True
+    assert preflights[0].get("label") == "activatable"
+    assert "gen-doctor-sidecar" not in {
+        str(item.get("generation_id") or "") for item in preflights
+    }
+
+
+def test_doctor_payload_does_not_misclassify_healthy_inactive_ready(tmp_path):
+    storage, conn, identity, old = _sqlite_fixture(tmp_path)
+    active_id = str(old["generation_id"])
+    _build_sqlite_ready(storage, conn, identity, old, "gen-doctor-healthy")
+    conn.close()
+
+    payload, check, recommendations = _doctor_generation_report(tmp_path, identity)
+    assert check["ok"] is True
+    assert payload["status"] == "ready"
+    assert payload["current_generation_id"] == active_id
+    assert payload["ready_generation_preflight_failures"] == []
+    assert payload["rebuild_from_sqlite_required"] is False
+    inventory = _inventory_by_id(payload)
+    assert list(inventory) == ["gen-doctor-healthy"]
+    assert active_id not in inventory
+    healthy = inventory["gen-doctor-healthy"]
+    assert healthy["activatable"] is True
+    assert healthy["label"] == "activatable"
+    assert healthy["rebuild_from_sqlite_required"] is False
+    assert healthy["reason"] == ""
+    assert healthy["repair"] == ""
+    preflights = payload["ready_generation_preflights"]
+    assert [item.get("generation_id") for item in preflights] == ["gen-doctor-healthy"]
+    assert all(item.get("ok") is True for item in preflights)
+    assert all(item.get("activatable") is True for item in preflights)
+    assert all(item.get("label") == "activatable" for item in preflights)
+    assert not any(item.get("rebuild_from_sqlite_required") for item in inventory.values())
+    assert not any("cannot be activated" in item.lower() for item in recommendations)
+
+
+def test_doctor_inactive_generation_inventory_reason_is_sanitized(tmp_path, monkeypatch):
+    storage, conn, identity, old = _sqlite_fixture(tmp_path)
+    _build_sqlite_ready(storage, conn, identity, old, "gen-doctor-secret")
+    conn.close()
+
+    reserved_path = "/home/" + "synthetic-operator/.hermes/reserved-secret.db"
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError(
+            "token=abcdefghijklmnopqrstuvwxyz path=" + reserved_path
+        )
+
+    monkeypatch.setattr(
+        "scope_recall.doctor_vector.validate_generation_for_activation",
+        _boom,
+    )
+    payload, check, _recommendations = _doctor_generation_report(tmp_path, identity)
+    assert check["ok"] is True
+    assert payload["rebuild_from_sqlite_required"] is True
+    inventory = _inventory_by_id(payload)
+    entry = inventory["gen-doctor-secret"]
+    failure = payload["ready_generation_preflight_failures"][0]
+    assert entry["generation_id"] == "gen-doctor-secret"
+    assert entry["activatable"] is False
+    assert entry["label"] == "non_activatable"
+    assert entry["rebuild_from_sqlite_required"] is True
+    assert entry["reason"] == failure["error"]
+    assert "abcdefghijklmnopqrstuvwxyz" not in entry["reason"]
+    assert "abcdefghijklmnopqrstuvwxyz" not in entry["repair"]
+    assert reserved_path not in entry["reason"]
+    assert reserved_path not in entry["repair"]
+    assert "/home/synthetic-operator" not in entry["reason"]
+    assert "/home/synthetic-operator" not in entry["repair"]
+    assert "[REDACTED_PATH]" in entry["reason"]
+    assert len(entry["reason"]) <= 300
+    assert len(entry["repair"]) <= 300
+
+
+def _doctor_report_without_ready_scan(tmp_path):
+    from scope_recall.doctor_vector import vector_generation_report
+
+    return vector_generation_report(
+        tmp_path,
+        expected_embedder={
+            "provider": "local-hash",
+            "model": "hash-v1",
+            "dimensions": 16,
+            "available": True,
+        },
+        backend="sqlite-bruteforce",
+    )
+
+
+def test_doctor_absent_db_exposes_empty_inactive_generation_inventory(tmp_path):
+    payload, check, recommendations = _doctor_report_without_ready_scan(tmp_path)
+    assert payload == {
+        "status": "absent",
+        "registered": False,
+        "inactive_generation_inventory": [],
+        "rebuild_from_sqlite_required": False,
+    }
+    assert check == {"ok": True, "failures": []}
+    assert recommendations == []
+
+
+def test_doctor_legacy_unregistered_exposes_empty_inactive_generation_inventory(tmp_path):
+    storage = tmp_path / "scope-recall"
+    storage.mkdir()
+    conn = sqlite3.connect(storage / "memory.sqlite3")
+    conn.execute("CREATE TABLE memories (id TEXT PRIMARY KEY)")
+    conn.commit()
+    conn.close()
+
+    payload, check, recommendations = _doctor_report_without_ready_scan(tmp_path)
+    assert payload == {
+        "status": "legacy_unregistered",
+        "registered": False,
+        "missing_tables": [
+            "vector_generation_state",
+            "vector_generations",
+            "vector_migration_receipts",
+            "vector_outbox",
+        ],
+        "inactive_generation_inventory": [],
+        "rebuild_from_sqlite_required": False,
+    }
+    assert check == {"ok": True, "failures": []}
+    assert any("legacy-unregistered" in item for item in recommendations)
+
+
+def test_doctor_initialized_unregistered_exposes_empty_inactive_generation_inventory(tmp_path):
+    from scope_recall.vector_generation import ensure_vector_generation_schema
+
+    storage = tmp_path / "scope-recall"
+    storage.mkdir()
+    conn = sqlite3.connect(storage / "memory.sqlite3")
+    ensure_vector_generation_schema(conn)
+    conn.commit()
+    conn.close()
+
+    payload, check, recommendations = _doctor_report_without_ready_scan(tmp_path)
+    assert payload == {
+        "status": "legacy_unregistered",
+        "registered": False,
+        "current_generation_id": "",
+        "inactive_generation_inventory": [],
+        "rebuild_from_sqlite_required": False,
+    }
+    assert check == {"ok": True, "failures": []}
+    assert any("not registered" in item for item in recommendations)
+
+
+def test_doctor_missing_manifest_exposes_empty_inactive_generation_inventory(tmp_path):
+    from scope_recall.vector_generation import ensure_vector_generation_schema
+
+    storage = tmp_path / "scope-recall"
+    storage.mkdir()
+    conn = sqlite3.connect(storage / "memory.sqlite3")
+    ensure_vector_generation_schema(conn)
+    conn.execute(
+        "INSERT INTO vector_generation_state(key, value, updated_at) VALUES (?, ?, ?)",
+        ("current_generation", "gen-missing-manifest", "2026-07-10T00:00:00+00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    payload, check, recommendations = _doctor_report_without_ready_scan(tmp_path)
+    assert payload == {
+        "status": "generation_incomplete",
+        "registered": True,
+        "current_generation_id": "gen-missing-manifest",
+        "inactive_generation_inventory": [],
+        "rebuild_from_sqlite_required": False,
+    }
+    assert check == {"ok": False, "failures": ["current vector generation manifest is missing: gen-missing-manifest"]}
+    assert recommendations == ["Restore the missing manifest or CAS-activate a validated READY generation."]
 
 
 def _state(conn: sqlite3.Connection, storage: Path):

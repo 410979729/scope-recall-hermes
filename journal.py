@@ -9,7 +9,7 @@ import hashlib
 import json
 import logging
 import os
-import re
+import re  # noqa: F401
 import sqlite3
 import time
 import uuid
@@ -19,7 +19,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from .capture_filters import sanitize_report_text, sanitize_structured_value, should_capture_text
+from .capture_filters import sanitize_report_text, sanitize_structured_value, should_capture_text  # noqa: F401
 from .digest_pollution import assess_digest_batch
 from .digest_run_results import journal_digest_metadata, journal_digest_receipt_fields, journal_digest_success_result, no_unprocessed_journal_result
 from .fact_actions import EvolutionAction
@@ -28,13 +28,23 @@ from .fact_evolution import (
     fact_evolution_enabled,
     memory_type_uses_fact_evolution,
 )
-from .gating import clean_text, compact_text, dedup_key
+from .gating import clean_text, compact_text, dedup_key  # noqa: F401
 from .governance import semantic_similarity
 from .http_utils import explicit_insecure_endpoint_opt_in
 from .maintenance_lease import install_activation_lease_authorizer
 from .models import RuntimeScope, recall_scope_id_for_target
-from .transaction_guard import prepare_network_boundary
 from .truth_connection import connect_truth_database
+from .write_kernel import prepare_network_boundary, release_snapshot_transaction
+from .digest_state import (
+    LeavePlan,
+    active_journal_digest_llm_error,
+    admission_leave_reason,
+    attach_digestible_tool_provenance,
+    leave_plan_receipt_actions,
+    loaded_leave_sets,
+    plan_loaded_leave,
+    split_digestible_entries,
+)
 from .writer_lease import TruthWriterBusyError, TruthWriterLease
 from .lifecycle_policy import durable_lifecycle_visible_sql
 from .nightly_digest import call_llm
@@ -88,9 +98,15 @@ from .journal_store import (
     _row_to_entry,
     _strip_inline_data_urls,
     append_journal_entry,
+    clear_current_deferral,
     ensure_journal_schema,
+    increment_extraction_attempts,
+    increment_retryable_failures,
+    reset_retryable_failures,
     load_unprocessed_journal_entries,
+    mark_entries_deferred,
     mark_entries_processed,
+    advance_session_digest_cursors,
 )
 from .scope import accessible_scope_ids, build_scope_id, build_shared_scope_id, canonical_user_id, normalize_scope_identity, writable_scope_ids
 from .source_isolation import memory_isolated_chat_ids, scope_is_memory_isolated
@@ -170,128 +186,28 @@ _JOURNAL_EXTRACTORS_REEXPORT_COMPAT = (
     llm_journal_candidates,
 )
 
-JOURNAL_TARGETS = {"user", "memory", "project", "ops", "general"}
-
-
-
-LOW_VALUE_NOTIFICATION_RE = re.compile(
-    r"\b(?:webhook|web\s+hook|bot\s+(?:push|message|status)|notification|push\s+message|"
-    r"sign[-\s]?in|check[-\s]?in|subscription|subscribed|unsubscribe|qas)\b|"
-    r"(?:通知|推送|机器人消息|签到|签入|登录提醒|订阅(?:更新|通知)?)",
-    re.IGNORECASE,
-)
-LOW_VALUE_LOG_RE = re.compile(
-    r"\b(?:docker\s+logs?|journalctl|kubectl\s+logs?|stack\s+trace|traceback|stderr|stdout|"
-    r"shell\s+(?:prompt|output)|terminal\s+output|command\s+output|tool\s+(?:execution\s+)?summary|tool\s+result)\b|"
-    r"(?:工具执行摘要|工具结果|命令输出|终端输出|日志输出|堆栈|调用栈)",
-    re.IGNORECASE,
-)
-LOW_VALUE_PROGRESS_RE = re.compile(
-    r"\b(?:backup\s+path|temporary\s+file|run\s+result|task\s+progress|no\s+action\s+required|"
-    r"one[-\s]?off|status\s+update)\b|(?:临时文件|备份路径|任务进度|一次性|无需处理|状态更新)",
-    re.IGNORECASE,
-)
-EPHEMERAL_RELEASE_STATE_RE = re.compile(
-    r"(?:session\s+[`'\"]?\d{8}_[0-9a-f_]+|\bHEAD\s*=|\borigin/main\b|\bgit\s+status\b|"
-    r"\b(?:pushed|local|closed|open)\s+(?:commits?|issues?)\b|\bissue\s*#?\d+\b|#\d+\s+`|"
-    r"\b(?:commit|tag|branch)\s+[`'\"]?[0-9a-f]{7,40}\b|\b[0-9a-f]{7,40}\b.*\b(?:commit|HEAD|origin/main)\b|"
-    r"\b\d+\s+passed\b|\bpyright\b.*\b(?:warning|error)s?\b|\bruff\s+(?:pass|passed|全通过)\b|"
-    r"(?:未\s*commit|未\s*push|未\s*tag|不\s*tag|不\s*release|已关闭\s*issue|记录时状态|发布候选|当前进度))",
-    re.IGNORECASE,
-)
-TRANSIENT_PHASE_GATE_RE = re.compile(
-    r"(?:当前阶段|这个阶段|现阶段|下一步|继续下一步|不要急着|先(?:进行)?阶段性?验证|先验证|再进(?:入)?\s*[A-Z]\d|进入\s*[A-Z]\d|"
-    r"阶段性验收|全量\s*pytest|live\s+doctor|rollout\s+profiles\s+dry-run|可选复审|"
-    r"current\s+phase|next\s+step|phase[-\s]?gate|before\s+entering\s+[A-Z]\d|run\s+full\s+pytest|live\s+doctor)",
-    re.IGNORECASE,
-)
-HIGH_VALUE_DURABLE_SIGNAL_RE = re.compile(
-    r"\b(?:preference|prefers|constraint|policy|api\s+boundary|environment\s+fact|root\s+cause|"
-    r"fix|workaround|verification|verified|reusable|workflow|procedure|runbook|pitfall|"
-    r"design\s+decision|stable|must|should|requires?|rollback|guardrail)\b|"
-    r"(?:偏好|约束|边界|环境事实|根因|修复|验证|可复用|流程|步骤|规程|坑|设计决策|稳定|必须|应该|回滚|防护)",
-    re.IGNORECASE,
+from .journal_admission import (  # noqa: E402
+    EPHEMERAL_RELEASE_STATE_RE,  # noqa: F401
+    HIGH_VALUE_DURABLE_SIGNAL_RE,  # noqa: F401
+    JOURNAL_TARGETS,  # noqa: F401
+    LOW_VALUE_LOG_RE,  # noqa: F401
+    LOW_VALUE_NOTIFICATION_RE,  # noqa: F401
+    LOW_VALUE_PROGRESS_RE,  # noqa: F401
+    TRANSIENT_PHASE_GATE_RE,  # noqa: F401
+    _candidate_allowed,  # noqa: F401
+    _candidate_rejection_reason,
+    _has_high_value_durable_signal,  # noqa: F401
+    _low_value_promotion_reason,  # noqa: F401
 )
 
 
-def _has_high_value_durable_signal(text: str) -> bool:
-    return bool(HIGH_VALUE_DURABLE_SIGNAL_RE.search(text or ""))
 
-
-def _low_value_promotion_reason(candidate: JournalDigestCandidate) -> str:
-    """Return a rejection reason for obvious journal-digest promotion noise.
-
-    Capture filters protect raw journal ingestion, but an LLM digest can rephrase
-    webhook/log/tool noise into a plausible durable fact.  This second gate is
-    intentionally conservative: only obvious notification/log/progress shapes are
-    blocked, and root-cause/fix/workflow/preference/constraint signals still pass.
-    """
-    text = clean_text(candidate.content)
-    if not text:
-        return "low-value-empty"
-    if "[REDACTED_PATH]" in text or "Artifact anchors:" in text or "artifact anchors:" in text:
-        return "low-value-redacted-path-or-artifact-anchor"
-    if candidate.target == "project" and re.search(r"(?:当前系统现状|当前技术现状|当前系统状态|当前状态|技术债务|current status|current state|technical debt)", text, re.IGNORECASE):
-        return "low-value-stale-status-snapshot"
-    has_value_signal = _has_high_value_durable_signal(text)
-    if candidate.memory_type == "tool_trace" and not has_value_signal:
-        return "low-value-tool-trace"
-    tag_set = {str(tag).strip().lower() for tag in candidate.tags or []}
-    if TRANSIENT_PHASE_GATE_RE.search(text) and (
-        candidate.memory_type in {"decision", "summary", "workflow"}
-        or candidate.target == "project"
-        or tag_set & {"phase-gate", "project-management", "status", "progress"}
-    ):
-        return "low-value-transient-phase-gate"
-    stable_release_knowledge = has_value_signal and candidate.memory_type in {"constraint", "pitfall", "procedure", "workflow"} and candidate.target != "project"
-    if EPHEMERAL_RELEASE_STATE_RE.search(text) and not stable_release_knowledge:
-        return "low-value-ephemeral-release-or-issue-state"
-    if LOW_VALUE_NOTIFICATION_RE.search(text) and not has_value_signal:
-        return "low-value-notification"
-    if LOW_VALUE_LOG_RE.search(text) and not has_value_signal:
-        return "low-value-log-or-tool-summary"
-    if LOW_VALUE_PROGRESS_RE.search(text) and not has_value_signal:
-        return "low-value-progress"
-    return ""
-
-
-
-_WORKFLOW_CONTINUATION_TOKENS = {
-    "journal-first",
-    "journal-digest",
-    "journal",
-    "digest",
-    "merge/upsert",
-    "merge",
-    "upsert",
-    "日记",
-    "合并",
-}
-
-
-def _workflow_continuation_tokens(content: str, tags: set[str], entities: set[str]) -> set[str]:
-    del content  # generated heuristic prefixes contain "Journal digest" for every candidate
-    values: list[str] = []
-    for tag in tags:
-        clean = tag.lower()
-        if clean.startswith("topic:"):
-            values.append(clean.removeprefix("topic:"))
-    values.extend(entity.lower() for entity in entities)
-    haystack = "\n".join(values)
-    return {token for token in _WORKFLOW_CONTINUATION_TOKENS if token in haystack}
-
-
-def _is_workflow_continuation(candidate_tokens: set[str], existing_tokens: set[str]) -> bool:
-    if candidate_tokens & existing_tokens:
-        return True
-    update_tokens = {"merge/upsert", "merge", "upsert", "合并"}
-    journal_anchor_tokens = {"journal-first", "journal", "digest", "journal-digest", "日记"}
-    return bool(candidate_tokens & update_tokens and existing_tokens & journal_anchor_tokens)
-
-
-def _metadata_entities(metadata: dict[str, Any]) -> set[str]:
-    raw = metadata.get("entities", []) if isinstance(metadata, dict) else []
-    return {str(entity).strip() for entity in raw if str(entity).strip()}
+from .journal_match_policy import (  # noqa: E402
+    _WORKFLOW_CONTINUATION_TOKENS,  # noqa: F401
+    _is_workflow_continuation,
+    _metadata_entities,
+    _workflow_continuation_tokens,
+)
 
 
 def _find_match(conn: sqlite3.Connection, scope_ids: list[str], candidate: JournalDigestCandidate) -> tuple[str, str, float]:
@@ -420,28 +336,6 @@ def _merge_metadata(conn: sqlite3.Connection, *, memory_id: str, candidate: Jour
     conn.execute("UPDATE memories SET metadata = ? WHERE id = ?", (json.dumps(existing, ensure_ascii=False, sort_keys=True), memory_id))
     sync_memory_entities(conn, memory_id=memory_id, content=str(row["content"]), target=str(row["target"]), metadata=existing)
 
-
-def _candidate_rejection_reason(candidate: JournalDigestCandidate) -> str:
-    if candidate.target not in JOURNAL_TARGETS:
-        return "invalid-target"
-    if len(candidate.content) < 40:
-        return "too-short"
-    if _looks_like_historical_template_noise(candidate.content):
-        return "historical-template-noise"
-    lowered = candidate.content.lower()
-    if "operations workflow summary from journal digest:" in lowered or "journal digest memory" in lowered:
-        return "historical-template-noise"
-    capture_result = should_capture_text(candidate.content)
-    if not capture_result.allowed:
-        return f"capture-filter:{capture_result.reason or 'blocked'}"
-    low_value_reason = _low_value_promotion_reason(candidate)
-    if low_value_reason:
-        return low_value_reason
-    return ""
-
-
-def _candidate_allowed(candidate: JournalDigestCandidate) -> bool:
-    return not _candidate_rejection_reason(candidate)
 
 
 def _cross_platform_metadata(scope: RuntimeScope, config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -614,9 +508,12 @@ def _apply_structured_journal_fact_atomically(
         )
         return counter_key, action, False
 
+    from .transaction_guard import TruthTransactionTimer
+
     started_outer_transaction = not conn.in_transaction
     if started_outer_transaction:
         conn.execute("BEGIN IMMEDIATE")
+    fact_transaction_timer = TruthTransactionTimer("journal fact apply")
     token = hashlib.sha256(
         f"{run_id}:{','.join(str(item) for item in candidate.entry_ids)}".encode("utf-8")
     ).hexdigest()[:16]
@@ -657,6 +554,8 @@ def _apply_structured_journal_fact_atomically(
         if started_outer_transaction:
             conn.rollback()
         raise
+    finally:
+        fact_transaction_timer.stop()
 
 
 def _journal_candidate_components(
@@ -780,12 +679,6 @@ def _apply_structured_journal_fact_component_atomically(
                     ),
                     candidate=candidate,
                 )
-                mark_entries_processed(
-                    conn,
-                    entry_ids=[int(entry_id) for entry_id in candidate.entry_ids],
-                    run_id=run_id,
-                    commit=False,
-                )
                 tentative.append(
                     (
                         "quarantined",
@@ -901,6 +794,41 @@ def _replay_or_defer_journal_vector(
     )
 
 
+def _drain_deferred_journal_vector(
+    vector_runtime: Any,
+    deferred_vector_ops: list[dict[str, Any]],
+) -> dict[str, int]:
+    totals = {"claimed": 0, "completed": 0, "failed": 0}
+    for payload in deferred_vector_ops:
+        part = _replay_or_defer_journal_vector(vector_runtime, None, payload)
+        for key in totals:
+            totals[key] += int(part.get(key) or 0)
+    return totals
+
+
+def _commit_truth_then_drain_vector(
+    conn: sqlite3.Connection,
+    vector_runtime: Any,
+    deferred_vector_ops: list[dict[str, Any]] | None,
+    *,
+    owns_transaction: bool = True,
+) -> dict[str, int]:
+    """Commit the truth UoW, then drain deferred vector/network work.
+
+    When the caller already owns the SQLite transaction, this helper must not
+    commit or treat derived vector drain as durable. The pending-outer-commit
+    contract stays with that caller.
+    """
+
+    if not owns_transaction:
+        return {"claimed": 0, "completed": 0, "failed": 0}
+    if conn.in_transaction:
+        conn.commit()
+    if not deferred_vector_ops:
+        return {"claimed": 0, "completed": 0, "failed": 0}
+    return _drain_deferred_journal_vector(vector_runtime, deferred_vector_ops)
+
+
 def _apply_mixed_journal_component_atomically(
     conn: sqlite3.Connection,
     vector_runtime: Any,
@@ -925,9 +853,14 @@ def _apply_mixed_journal_component_atomically(
             _skip_components=True,
         )
 
+    from .transaction_guard import TruthTransactionTimer
+
     started_outer_transaction = not conn.in_transaction
     if started_outer_transaction:
         conn.execute("BEGIN IMMEDIATE")
+    transaction_timer = TruthTransactionTimer(
+        f"journal mixed component apply ({len(candidates)} candidates)"
+    )
     component_token = hashlib.sha256(
         (
             run_id
@@ -969,7 +902,10 @@ def _apply_mixed_journal_component_atomically(
         processed_entry_ids = {
             int(entry_id) for entry_id in result["processed_entry_ids"]
         }
-        if processed_entry_ids != expected_entry_ids:
+        pollution_entry_ids = {
+            int(entry_id) for entry_id in result.get("pollution_entry_ids") or []
+        }
+        if processed_entry_ids | pollution_entry_ids != expected_entry_ids:
             conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
             conn.execute(f"RELEASE SAVEPOINT {savepoint}")
             savepoint_active = False
@@ -991,10 +927,11 @@ def _apply_mixed_journal_component_atomically(
                     for candidate in candidates
                 ],
                 "processed_entry_ids": [],
+                "pollution_entry_ids": [],
             }
         mark_entries_processed(
             conn,
-            entry_ids=sorted(expected_entry_ids),
+            entry_ids=sorted(processed_entry_ids),
             run_id=run_id,
             commit=False,
         )
@@ -1023,6 +960,8 @@ def _apply_mixed_journal_component_atomically(
         if started_outer_transaction and conn.in_transaction:
             conn.rollback()
         raise
+    finally:
+        transaction_timer.stop()
 
 
 def _journal_candidate_source_evidence(
@@ -1057,6 +996,21 @@ def _journal_candidate_source_evidence(
     }
 
 
+def _run_apply_unit(conn: sqlite3.Connection, index: int, enabled: bool, fn):
+    if not enabled:
+        return fn()
+    name = f"apply_c{index}"
+    conn.execute(f"SAVEPOINT {name}")
+    try:
+        result = fn()
+    except Exception:
+        conn.execute(f"ROLLBACK TO {name}")
+        conn.execute(f"RELEASE {name}")
+        raise
+    conn.execute(f"RELEASE {name}")
+    return result
+
+
 def apply_journal_candidates(
     conn: sqlite3.Connection,
     vector_runtime: Any,
@@ -1073,6 +1027,12 @@ def apply_journal_candidates(
     """Store journal digest candidates and mark processed entries only after successful handling.
 
     This ordering prevents a failed write from silently advancing the journal watermark and losing evidence."""
+    caller_owns_transaction = bool(getattr(conn, "in_transaction", False))
+    owns_external_drain = _deferred_vector_ops is None and not dry_run
+    owned_deferred: list[dict[str, Any]] = []
+    if owns_external_drain:
+        _deferred_vector_ops = owned_deferred
+        _defer_commits = True
     scope = normalize_scope_identity(scope, runtime_config)
     local_scope_id = build_scope_id(scope, runtime_config)
     shared_scope_id = build_shared_scope_id(scope, runtime_config)
@@ -1081,6 +1041,7 @@ def apply_journal_candidates(
     pollution_counts = Counter()
     actions: list[dict[str, Any]] = []
     processed_entry_ids: set[int] = set()
+    pollution_entry_ids: set[int] = set()
     pollution_assessments = assess_digest_batch(
         candidates,
         batch_evidence=_journal_candidate_source_evidence(conn, candidates),
@@ -1136,12 +1097,18 @@ def apply_journal_candidates(
                     if action.get("action") == "quarantine":
                         pollution_counts.update(action.get("reason_codes") or [])
                     actions.append(action)
-                if source_checkpointed:
-                    processed_entry_ids.update(
-                        int(entry_id)
-                        for component_candidate in component_candidates
-                        for entry_id in component_candidate.entry_ids
-                    )
+                for component_candidate, assessment in zip(
+                    component_candidates,
+                    component_pollution,
+                    strict=True,
+                ):
+                    ids = {
+                        int(entry_id) for entry_id in component_candidate.entry_ids
+                    }
+                    if assessment.quarantined:
+                        pollution_entry_ids.update(ids)
+                    elif source_checkpointed:
+                        processed_entry_ids.update(ids)
             else:
                 mixed_result = _apply_mixed_journal_component_atomically(
                     conn,
@@ -1156,6 +1123,7 @@ def apply_journal_candidates(
                 pollution_counts.update(mixed_result["pollution_counts"])
                 actions.extend(mixed_result["actions"])
                 processed_entry_ids.update(mixed_result["processed_entry_ids"])
+                pollution_entry_ids.update(mixed_result.get("pollution_entry_ids") or [])
             continue
         if pollution.quarantined:
             counts["quarantined"] += 1
@@ -1167,17 +1135,20 @@ def apply_journal_candidates(
                     "entry_ids": candidate.entry_ids,
                 }
             )
-            processed_entry_ids.update(int(entry_id) for entry_id in candidate.entry_ids)
+            pollution_entry_ids.update(int(entry_id) for entry_id in candidate.entry_ids)
             if not dry_run:
-                _record_journal_rejection(
-                    conn,
-                    run_id=run_id,
-                    entry_ids=candidate.entry_ids,
-                    reason=(
-                        "digest pollution: " + ",".join(pollution.reason_codes)
-                    ),
-                    candidate=candidate,
-                )
+                def _quarantine_unit() -> None:
+                    _record_journal_rejection(
+                        conn,
+                        run_id=run_id,
+                        entry_ids=candidate.entry_ids,
+                        reason=(
+                            "digest pollution: " + ",".join(pollution.reason_codes)
+                        ),
+                        candidate=candidate,
+                    )
+
+                _run_apply_unit(conn, candidate_index, _defer_commits, _quarantine_unit)
                 if not _defer_commits:
                     conn.commit()
             continue
@@ -1213,7 +1184,10 @@ def apply_journal_candidates(
             actions.append({"action": "skip", "reason": rejection_reason, "entry_ids": candidate.entry_ids})
             processed_entry_ids.update(int(entry_id) for entry_id in candidate.entry_ids)
             if not dry_run:
-                _record_journal_rejection(conn, run_id=run_id, entry_ids=candidate.entry_ids, reason=rejection_reason, candidate=candidate)
+                def _skip_unit() -> None:
+                    _record_journal_rejection(conn, run_id=run_id, entry_ids=candidate.entry_ids, reason=rejection_reason, candidate=candidate)
+
+                _run_apply_unit(conn, candidate_index, _defer_commits, _skip_unit)
                 if not _defer_commits:
                     conn.commit()
             continue
@@ -1237,7 +1211,10 @@ def apply_journal_candidates(
             actions.append({"action": "skip", "reason": "existing memory covers candidate", "id": match_id, "score": round(score, 4), "entry_ids": candidate.entry_ids})
             processed_entry_ids.update(int(entry_id) for entry_id in candidate.entry_ids)
             if not dry_run:
-                _record_journal_rejection(conn, run_id=run_id, entry_ids=candidate.entry_ids, reason="existing memory covers candidate", candidate=candidate)
+                def _cover_unit() -> None:
+                    _record_journal_rejection(conn, run_id=run_id, entry_ids=candidate.entry_ids, reason="existing memory covers candidate", candidate=candidate)
+
+                _run_apply_unit(conn, candidate_index, _defer_commits, _cover_unit)
                 if not _defer_commits:
                     conn.commit()
             continue
@@ -1259,52 +1236,46 @@ def apply_journal_candidates(
         counts["inserted"] += 1
         actions.append({"action": "insert", "id": memory_id, "target": candidate.target, "entry_ids": candidate.entry_ids})
         if not dry_run:
-            stored_id, summary, updated_at, inserted = store_row(
-                conn,
-                memory_id=memory_id,
-                scope_id=candidate_scope_id,
-                platform=scope.platform,
-                user_id=scope.user_id,
-                chat_id=scope.chat_id,
-                thread_id=scope.thread_id,
-                gateway_session_key=scope.gateway_session_key,
-                agent_identity=scope.agent_identity,
-                agent_workspace=scope.agent_workspace,
-                session_id=",".join(candidate.session_ids[:3]),
-                source="journal-digest",
-                target=candidate.target,
-                content=candidate.content,
-                metadata=json.dumps(
-                    {
-                        **_cross_platform_metadata(scope, runtime_config),
-                        **candidate_metadata(
-                            candidate,
-                            run_id,
-                            default_lifecycle=str(
-                                (runtime_config or {}).get(
-                                    "automatic_digest_default_lifecycle"
-                                )
-                                or "candidate"
+            def _store_unit() -> None:
+                stored_id, summary, updated_at, inserted = store_row(
+                    conn,
+                    memory_id=memory_id,
+                    scope_id=candidate_scope_id,
+                    platform=scope.platform,
+                    user_id=scope.user_id,
+                    chat_id=scope.chat_id,
+                    thread_id=scope.thread_id,
+                    gateway_session_key=scope.gateway_session_key,
+                    agent_identity=scope.agent_identity,
+                    agent_workspace=scope.agent_workspace,
+                    session_id=",".join(candidate.session_ids[:3]),
+                    source="journal-digest",
+                    target=candidate.target,
+                    content=candidate.content,
+                    metadata=json.dumps(
+                        {
+                            **_cross_platform_metadata(scope, runtime_config),
+                            **candidate_metadata(
+                                candidate,
+                                run_id,
+                                default_lifecycle=str(
+                                    (runtime_config or {}).get(
+                                        "automatic_digest_default_lifecycle"
+                                    )
+                                    or "candidate"
+                                ),
                             ),
-                        ),
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-                commit=not _defer_commits,
-            )
-            if inserted:
-                # Store first, then attach journal provenance, then refresh the
-                # vector companion. Vector repair can be retried from SQLite.
-                _record_journal_sources(conn, memory_id=stored_id, run_id=run_id, entry_ids=candidate.entry_ids)
-                if not _defer_commits:
-                    conn.commit()
-                processed_entry_ids.update(int(entry_id) for entry_id in candidate.entry_ids)
-                vector_event_id = _latest_current_vector_event_id(conn, stored_id)
-                vector_replay = _replay_or_defer_journal_vector(
-                    vector_runtime,
-                    _deferred_vector_ops,
-                    {
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    commit=not _defer_commits,
+                )
+                if inserted:
+                    _record_journal_sources(conn, memory_id=stored_id, run_id=run_id, entry_ids=candidate.entry_ids)
+                    processed_entry_ids.update(int(entry_id) for entry_id in candidate.entry_ids)
+                    vector_event_id = _latest_current_vector_event_id(conn, stored_id)
+                    payload = {
                         "event_id": vector_event_id,
                         "id": stored_id,
                         "source": "journal-digest",
@@ -1313,27 +1284,45 @@ def apply_journal_candidates(
                         "summary": summary,
                         "updated_at": updated_at,
                         "scope_id": candidate_scope_id,
-                    },
-                )
-                if vector_event_id > 0:
-                    actions[-1]["vector_event_id"] = vector_event_id
-                    if _deferred_vector_ops is None:
-                        actions[-1]["vector_replay"] = vector_replay
-            else:
-                counts["inserted"] -= 1
-                counts["updated"] += 1
-                actions.append({"action": "update", "reason": "duplicate store_row", "id": stored_id, "entry_ids": candidate.entry_ids})
-                _merge_metadata(conn, memory_id=stored_id, candidate=candidate, run_id=run_id)
-                _record_journal_sources(conn, memory_id=stored_id, run_id=run_id, entry_ids=candidate.entry_ids)
-                if not _defer_commits:
-                    conn.commit()
-                processed_entry_ids.update(int(entry_id) for entry_id in candidate.entry_ids)
-    return {
+                    }
+                    if owns_external_drain:
+                        owned_deferred.append(payload)
+                    else:
+                        vector_replay = _replay_or_defer_journal_vector(
+                            vector_runtime,
+                            _deferred_vector_ops,
+                            payload,
+                        )
+                        if vector_event_id > 0 and _deferred_vector_ops is None:
+                            actions[-1]["vector_replay"] = vector_replay
+                    if vector_event_id > 0:
+                        actions[-1]["vector_event_id"] = vector_event_id
+                else:
+                    counts["inserted"] -= 1
+                    counts["updated"] += 1
+                    actions.append({"action": "update", "reason": "duplicate store_row", "id": stored_id, "entry_ids": candidate.entry_ids})
+                    _merge_metadata(conn, memory_id=stored_id, candidate=candidate, run_id=run_id)
+                    _record_journal_sources(conn, memory_id=stored_id, run_id=run_id, entry_ids=candidate.entry_ids)
+                    processed_entry_ids.update(int(entry_id) for entry_id in candidate.entry_ids)
+
+            _run_apply_unit(conn, candidate_index, _defer_commits, _store_unit)
+            if not _defer_commits:
+                conn.commit()
+    result = {
         "counts": dict(counts),
         "pollution_counts": dict(pollution_counts),
         "actions": actions,
         "processed_entry_ids": sorted(processed_entry_ids),
+        "pollution_entry_ids": sorted(pollution_entry_ids),
     }
+    if owns_external_drain:
+        result["vector_replay"] = _commit_truth_then_drain_vector(
+            conn,
+            vector_runtime,
+            owned_deferred,
+            owns_transaction=not caller_owns_transaction,
+        )
+    return result
 
 
 
@@ -1346,19 +1335,45 @@ def _collect_journal_candidates(
     scope: RuntimeScope,
     journal_config: dict[str, Any],
     requested_extractor: str,
-) -> tuple[list[JournalDigestCandidate], str, str, Counter[str]]:
+) -> tuple[list[JournalDigestCandidate], str, str | dict[str, Any], Counter[str]]:
+    """Collect candidates and keep structured extractor-failure metadata honest.
+
+    When the LLM path returns sanitized failure metadata on the candidate list,
+    that metadata is a ``dict``, not a string. Callers must not guess attempted
+    IDs if the list lacks ``attempted_entry_ids``.
+    """
+
     if requested_extractor == "llm":
         fallback_allowed = _config_bool(journal_config, "allow_heuristic_fallback", False)
+        hard_error_kinds = {"endpoint_policy", "filtered", "parse"}
         try:
             candidates = llm_journal_candidates(conn, entries=entries, hermes_home=hermes_home, scope=scope, journal_config=journal_config)
             candidate_status_counts = Counter(getattr(candidates, "extractor_status_counts", {}) or {})
+            extractor_error = getattr(candidates, "extractor_error", None)
+            error_kind = ""
+            if isinstance(extractor_error, dict):
+                error_kind = str(
+                    extractor_error.get("kind") or extractor_error.get("error_kind") or ""
+                )
             if candidates:
                 return candidates, "llm", "", candidate_status_counts
-            if fallback_allowed:
-                return heuristic_journal_candidates(entries), "heuristic-fallback", "llm produced no candidates", candidate_status_counts
+            if fallback_allowed and error_kind not in hard_error_kinds:
+                reason = (
+                    "llm failed; heuristic fallback enabled"
+                    if extractor_error
+                    else "llm produced no candidates"
+                )
+                return (
+                    heuristic_journal_candidates(entries),
+                    "heuristic-fallback",
+                    reason,
+                    candidate_status_counts,
+                )
+            if extractor_error:
+                return candidates, "llm-error", extractor_error, candidate_status_counts
             return candidates, "llm", "", candidate_status_counts
         except Exception as exc:
-            if isinstance(exc, JournalDigestLLMError) and exc.error_kind in {
+            if isinstance(exc, active_journal_digest_llm_error()) and exc.error_kind in {
                 "endpoint_policy",
                 "filtered",
                 "parse",
@@ -1412,7 +1427,15 @@ def _unprocessed_scopes(
     *,
     limit: int = 1000,
     excluded_chat_ids: frozenset[str] = frozenset(),
-) -> list[RuntimeScope]:
+) -> list[tuple[RuntimeScope, str]]:
+    """Return FIFO-owned unprocessed scopes paired with their stored scope_id.
+
+    Grouping is by exact ``journal_entries.scope_id``. Readable local/shared/
+    legacy aliases must not become a second claim on the same physical rows;
+    each work unit owns only this stored id. ``accessible_scope_ids`` stays
+    available for memory context, not for journal FIFO claiming.
+    """
+
     clean_excluded = sorted(excluded_chat_ids)
     exclusion_sql = ""
     params: list[object] = []
@@ -1422,7 +1445,8 @@ def _unprocessed_scopes(
         params.extend(clean_excluded)
     rows = conn.execute(
         f"""
-        SELECT platform, user_id, chat_id, thread_id, gateway_session_key, agent_identity, agent_workspace, MIN(id) AS first_id
+        SELECT platform, user_id, chat_id, thread_id, gateway_session_key,
+               agent_identity, agent_workspace, scope_id, MIN(id) AS first_id
         FROM journal_entries
         WHERE (processed_run_id IS NULL OR processed_run_id = '')
           {exclusion_sql}
@@ -1432,16 +1456,11 @@ def _unprocessed_scopes(
         """,
         [*params, max(1, int(limit or 1000))],
     ).fetchall()
-    return [_scope_from_row(row) for row in rows]
+    return [(_scope_from_row(row), str(row["scope_id"] or "")) for row in rows]
 
 
 def _open_digest_connection(db_path: Path, *, dry_run: bool) -> sqlite3.Connection:
-    """Open the digest SQLite connection without installing fallible setup.
-
-    Caller ownership starts at the returned connection. Dry-run copies into a
-    fresh in-memory destination; if that copy fails, the destination is closed
-    before the error is re-raised so it cannot outlive this helper.
-    """
+    """Open the digest SQLite connection without installing fallible setup."""
 
     if dry_run:
         conn = connect_truth_database(":memory:", mode="rwc")
@@ -1468,27 +1487,189 @@ def _record_journal_digest_failure(
     interval_label: str,
     error: BaseException,
 ) -> None:
-    """Reset a failed transaction before persisting one best-effort receipt."""
+    """Record an error without erasing a committed partial receipt.
+
+    If a running/partial receipt already exists, only status, error, and
+    finished_at change. Committed counts, metadata, and leave evidence stay.
+    A failure before the first truth commit still writes a zero-work error
+    receipt. Never REPLACE unspecified columns away.
+    """
 
     rollback_if_active(conn)
     ensure_journal_schema(conn)
+    error_text = sanitize_report_text(str(error))[:1000]
+    finished = now_iso()
+    existing = conn.execute(
+        "SELECT id FROM journal_digest_runs WHERE id = ?",
+        (run_id,),
+    ).fetchone()
+    if existing:
+        conn.execute(
+            """
+            UPDATE journal_digest_runs
+            SET finished_at = ?, status = 'error', error = ?
+            WHERE id = ?
+            """,
+            (finished, error_text, run_id),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO journal_digest_runs(
+                id, started_at, finished_at, status, extractor, interval_label,
+                processed_entries, inserted, updated, skipped, error, metadata
+            ) VALUES (?, ?, ?, 'error', ?, ?, 0, 0, 0, 0, ?, '{}')
+            """,
+            (run_id, started_at, finished, extractor, interval_label, error_text),
+        )
+    conn.commit()
+
+
+def _apply_loaded_leave_plan(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    leave: LeavePlan,
+    unresolved_ids: set[int],
+    retryable_unresolved_ids: set[int],
+    quarantine_threshold: int,
+    retryable_failures_threshold: int,
+    dry_run: bool,
+    counts: Counter[str],
+    actions: list[dict[str, Any]],
+) -> None:
+    """Persist one loaded window's exclusive leave states and emit receipt actions.
+
+    Deterministic and retryable-budget quarantine both flow through this plan so
+    a row cannot be double-marked or double-counted.
+    """
+
+    actions.extend(
+        leave_plan_receipt_actions(
+            leave,
+            unresolved_ids=unresolved_ids,
+            retryable_unresolved_ids=retryable_unresolved_ids,
+            quarantine_threshold=quarantine_threshold,
+            retryable_failures_threshold=retryable_failures_threshold,
+        )
+    )
+    if leave.deferred_ids:
+        counts["deferred"] += len(leave.deferred_ids)
+        if not dry_run:
+            mark_entries_deferred(
+                conn,
+                entry_ids=leave.deferred_ids,
+                run_id=run_id,
+                commit=False,
+            )
+    if leave.attempts_quarantined_ids:
+        counts["quarantined"] += len(leave.attempts_quarantined_ids)
+        if not dry_run:
+            _record_journal_rejection(
+                conn,
+                run_id=run_id,
+                entry_ids=leave.attempts_quarantined_ids,
+                reason="dead-letter:chunk extraction unresolved after bounded attempts",
+                candidate=JournalDigestCandidate(
+                    content=(
+                        "Chunk extraction stayed unresolved after the "
+                        "bounded attempt budget; quarantined for "
+                        "journal-recovery replay."
+                    ),
+                    target="memory",
+                    entry_ids=leave.attempts_quarantined_ids,
+                ),
+            )
+    if leave.retryable_quarantined_ids:
+        counts["quarantined"] += len(leave.retryable_quarantined_ids)
+        counts["retryable_failures_quarantined"] += len(leave.retryable_quarantined_ids)
+        if not dry_run:
+            _record_journal_rejection(
+                conn,
+                run_id=run_id,
+                entry_ids=leave.retryable_quarantined_ids,
+                reason="retry-exhausted:persistent retryable LLM failure (timeout)",
+                candidate=JournalDigestCandidate(
+                    content=(
+                        "Persistent retryable LLM failure exhausted the durable "
+                        "cross-run budget; quarantined for journal-recovery replay."
+                    ),
+                    target="memory",
+                    entry_ids=leave.retryable_quarantined_ids,
+                ),
+            )
+    if leave.skipped_ids:
+        counts["skipped"] += len(leave.skipped_ids)
+        if not dry_run:
+            _record_journal_rejection(
+                conn,
+                run_id=run_id,
+                entry_ids=leave.skipped_ids,
+                reason="no durable memory candidate",
+                candidate=JournalDigestCandidate(
+                    content="No durable memory candidate was produced for this reviewed journal entry.",
+                    target="memory",
+                    entry_ids=leave.skipped_ids,
+                ),
+            )
+
+
+def _upsert_journal_digest_run(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    started_at: str,
+    finished_at: str | None,
+    status: str,
+    extractor: str,
+    interval_label: str,
+    processed_entries: int,
+    inserted: int,
+    updated: int,
+    skipped: int,
+    error: str | None,
+    metadata: str,
+) -> None:
+    """Insert or update the digest receipt that describes committed truth.
+
+    Per-scope commits must upsert a sanitized running/partial receipt in the
+    same SQLite transaction as cursor/leave writes. Final completion updates
+    the same ``journal_digest_runs.id``.
+    """
+
     conn.execute(
         """
-        INSERT OR REPLACE INTO journal_digest_runs(
-            id, started_at, finished_at, status, extractor, interval_label, error
-        ) VALUES (?, ?, ?, 'error', ?, ?, ?)
+        INSERT INTO journal_digest_runs(
+            id, started_at, finished_at, status, extractor, interval_label,
+            processed_entries, inserted, updated, skipped, error, metadata
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            finished_at = excluded.finished_at,
+            status = excluded.status,
+            extractor = excluded.extractor,
+            interval_label = excluded.interval_label,
+            processed_entries = excluded.processed_entries,
+            inserted = excluded.inserted,
+            updated = excluded.updated,
+            skipped = excluded.skipped,
+            error = excluded.error,
+            metadata = excluded.metadata
         """,
         (
             run_id,
             started_at,
-            now_iso(),
+            finished_at,
+            status,
             extractor,
             interval_label,
-            sanitize_report_text(str(error))[:1000],
+            processed_entries,
+            inserted,
+            updated,
+            skipped,
+            error,
+            metadata,
         ),
     )
-    conn.commit()
-
 
 
 def _dynamic_journal_digest_limit(
@@ -1504,11 +1685,27 @@ def _dynamic_journal_digest_limit(
         conn,
         excluded_chat_ids=excluded_chat_ids,
     )
-    threshold = _coerce_positive_int(journal_config.get("dynamic_backlog_threshold"), configured_limit * 4)
+    auto_threshold = max(1, configured_limit * 4)
+    # Merged code defaults used 2000/1200 for a 500-entry window. Live
+    # Tianshu overrode the window to 80 but kept those defaults, so a
+    # 999-entry backlog never scaled. Never let the trigger sit above
+    # 4x the current window.
+    threshold = min(
+        _coerce_positive_int(
+            journal_config.get("dynamic_backlog_threshold"), auto_threshold
+        ),
+        auto_threshold,
+    )
     if backlog <= threshold:
         return configured_limit
     default_ceiling = max(configured_limit, 500)
-    ceiling = _coerce_positive_int(journal_config.get("max_entries_per_digest_ceiling"), default_ceiling)
+    auto_ceiling = max(default_ceiling, configured_limit * 8)
+    ceiling = min(
+        _coerce_positive_int(
+            journal_config.get("max_entries_per_digest_ceiling"), default_ceiling
+        ),
+        auto_ceiling,
+    )
     return min(backlog, max(configured_limit, ceiling))
 
 
@@ -1539,6 +1736,7 @@ def run_journal_digest(
     writer_lease: TruthWriterLease | None = None
     conn: sqlite3.Connection | None = None
     vector_runtime = None
+    prev_vector = None
     if not dry_run:
         storage_dir.mkdir(parents=True, exist_ok=True)
         writer_lease = TruthWriterLease(storage_dir, role="journal_digest")
@@ -1551,19 +1749,13 @@ def run_journal_digest(
                 owner=owner if isinstance(owner, dict) else {},
             )
     db_path = storage_dir / "memory.sqlite3"
+    run_id = uuid.uuid4().hex
+    started_at = now_iso()
     try:
-        # Cleanup ownership starts here: every later config/schema/init
-        # exception and every early return must close vector, conn, then lease.
-        # Assign the opened connection before any fallible authorizer/schema
-        # step so a later raise cannot leak a writable pager past lease release.
         conn = _open_digest_connection(db_path, dry_run=dry_run)
         if not dry_run:
             install_activation_lease_authorizer(conn, db_path)
         conn.row_factory = sqlite3.Row
-        run_id = uuid.uuid4().hex
-        started_at = now_iso()
-        requested_extractor = str(extractor or "llm").strip().lower()
-        extractor_used = requested_extractor
         runtime_config = _runtime_config(hermes_home)
         excluded_chat_ids = memory_isolated_chat_ids(runtime_config)
         raw_journal = runtime_config.get("journal")
@@ -1613,8 +1805,8 @@ def run_journal_digest(
             conn,
             excluded_chat_ids=excluded_chat_ids,
         )
-        active_scopes = (
-            [scope]
+        work_units = (
+            [(scope, "")]
             if scope is not None
             else _unprocessed_scopes(
                 conn,
@@ -1622,7 +1814,7 @@ def run_journal_digest(
                 excluded_chat_ids=excluded_chat_ids,
             )
         )
-        if not active_scopes:
+        if not work_units:
             return no_unprocessed_journal_result(run_id=run_id, requested_extractor=requested_extractor, extractor_used=extractor_used)
 
         total_loaded_entries = 0
@@ -1635,26 +1827,156 @@ def run_journal_digest(
         extractor_errors: list[Any] = []
         extraction_failure_count = 0
         actions: list[dict[str, Any]] = []
-        for active_scope in active_scopes:
+        leave_processed_ids: set[int] = set()
+        leave_pending_ids: set[int] = set()
+        leave_deferred_ids: set[int] = set()
+        leave_quarantined_ids: set[int] = set()
+        prev_scope_pending = False
+        prev_deferred: list[dict[str, Any]] = []
+        prev_vector = None
+        claimed_entry_ids: set[int] = set()
+
+        def persist_digest_receipt(
+            *,
+            status: str,
+            receipt_kind: str,
+            error: str | None,
+            pruned: int = 0,
+        ) -> None:
+            """Upsert the digest receipt that must commit with current truth."""
+
+            current_extractor = requested_extractor
+            if extractor_counts:
+                current_extractor = (
+                    next(iter(extractor_counts))
+                    if len(extractor_counts) == 1
+                    else "mixed"
+                )
+            current_processed = sorted(set(processed_entry_ids))
+            leave_states = {
+                "processed_ids": sorted(leave_processed_ids),
+                "retryable_pending_ids": sorted(leave_pending_ids),
+                "deferred_ids": sorted(leave_deferred_ids),
+                "quarantined_ids": sorted(leave_quarantined_ids),
+            }
+            backlog_now = backlog_before
+            try:
+                backlog_now = _journal_unprocessed_count(
+                    conn,
+                    excluded_chat_ids=excluded_chat_ids,
+                )
+            except Exception:
+                backlog_now = backlog_before
+            recommended_now = _dynamic_journal_digest_limit(
+                conn,
+                configured_limit=configured_limit,
+                journal_config=journal_config,
+                excluded_chat_ids=excluded_chat_ids,
+            )
+            receipt_now = journal_digest_receipt_fields(
+                total_loaded_entries=total_loaded_entries,
+                total_candidates=total_candidates,
+                counts=counts,
+                quarantine_counts=quarantine_counts,
+                extractor_errors=extractor_errors,
+                backlog_before=backlog_before,
+                backlog_after=backlog_now,
+                effective_limit=effective_limit,
+                recommended_next_limit=recommended_now,
+                candidate_status_counts=candidate_status_counts,
+            )
+            _upsert_journal_digest_run(
+                conn,
+                run_id=run_id,
+                started_at=started_at,
+                finished_at=now_iso(),
+                status=status,
+                extractor=current_extractor,
+                interval_label=interval_label,
+                processed_entries=len(current_processed),
+                inserted=int(counts.get("inserted", 0) or 0),
+                updated=int(counts.get("updated", 0) or 0),
+                skipped=int(counts.get("skipped", 0) or 0),
+                error=error,
+                metadata=json.dumps(
+                    journal_digest_metadata(
+                        total_candidates=total_candidates,
+                        total_loaded_entries=total_loaded_entries,
+                        actions=actions,
+                        requested_extractor=requested_extractor,
+                        extractor_used=current_extractor,
+                        extractor_counts=extractor_counts,
+                        extractor_errors=extractor_errors,
+                        quarantine_counts=quarantine_counts,
+                        backlog_before=backlog_before,
+                        effective_limit=effective_limit,
+                        retention_days=retention_days,
+                        pruned_entries=pruned,
+                        backlog_after=receipt_now["backlog_after"],
+                        productive_writes=receipt_now["productive_writes"],
+                        no_insert_reason=receipt_now["no_insert_reason"],
+                        health_flags=receipt_now["health_flags"],
+                        recommended_next_limit=receipt_now["recommended_next_limit"],
+                        candidate_status_counts=candidate_status_counts,
+                        retryable_failures=int(counts.get("retryable_failures", 0) or 0),
+                        retryable_failures_quarantined=int(
+                            counts.get("retryable_failures_quarantined", 0) or 0
+                        ),
+                        leave_states=leave_states,
+                        receipt_kind=receipt_kind,
+                    ),
+                    ensure_ascii=False,
+                ),
+            )
+
+        for active_scope, owner_scope_id in work_units:
+            scope_deferred: list[dict[str, Any]] = []
             remaining = max(0, effective_limit - total_loaded_entries)
             if remaining <= 0:
                 break
+            if prev_scope_pending and not dry_run:
+                persist_digest_receipt(
+                    status="running",
+                    receipt_kind="partial",
+                    error=None,
+                )
+                _commit_truth_then_drain_vector(conn, prev_vector, prev_deferred)
+                if prev_vector is not None:
+                    prev_vector.close()
+                prev_scope_pending = False
+                prev_deferred = []
+                prev_vector = None
             active_scope = normalize_scope_identity(active_scope, runtime_config)
-            scope_ids = accessible_scope_ids(active_scope, runtime_config)
+            readable_scope_ids = accessible_scope_ids(active_scope, runtime_config)
+            # Explicit ``scope=`` keeps readable aliases for that one identity.
+            # Background work units claim only the stored owner scope_id so
+            # local/shared/legacy overlap cannot reload the same physical rows.
+            claim_scope_ids = (
+                [owner_scope_id] if owner_scope_id else readable_scope_ids
+            )
             entries = load_unprocessed_journal_entries(
                 conn,
-                scope_ids=scope_ids,
+                scope_ids=claim_scope_ids,
                 limit=remaining,
                 excluded_chat_ids=excluded_chat_ids,
+                per_session_limit=journal_config.get("max_entries_per_session_per_run") or 0,  # type: ignore[arg-type]
             )
+            entries = [
+                entry for entry in entries if int(entry.id) not in claimed_entry_ids
+            ]
             if not entries:
                 continue
+            claimed_entry_ids.update(int(entry.id) for entry in entries)
+            digestible, evidence_only = split_digestible_entries(entries)
             total_loaded_entries += len(entries)
-            prepare_network_boundary(conn, "journal.run_journal_digest.snapshot")
+            if not conn.in_transaction:
+                release_snapshot_transaction(conn)
+                prepare_network_boundary(conn, "journal.run_journal_digest.snapshot")
+            raised_without_attempted = False
             try:
                 collected: Any = _collect_journal_candidates(
                     conn,
-                    entries=entries,
+                    entries=digestible,
                     hermes_home=hermes_home,
                     scope=active_scope,
                     journal_config=journal_config,
@@ -1665,16 +1987,23 @@ def run_journal_digest(
                     scope_candidate_status_counts = Counter()
                 else:
                     candidates, scope_extractor_used, extractor_error, scope_candidate_status_counts = collected
+                if candidates is None:
+                    candidates = []
+                candidates = attach_digestible_tool_provenance(candidates, digestible)
             except Exception as exc:
                 if requested_extractor != "llm":
                     raise
+                # No attempted-ID metadata: fail closed. Do not guess the
+                # loaded/digestible window, and charge no retryable or
+                # deterministic budget.
+                raised_without_attempted = True
                 scope_extractor_used = "llm-error"
                 _failure_reason, failure_meta = _quarantine_classification(exc)
                 extractor_error = failure_meta
                 scope_candidate_status_counts = Counter()
                 candidates = []
                 extraction_failure_count += 1
-                pending_entry_ids = [int(entry.id) for entry in entries]
+                pending_entry_ids = [int(entry.id) for entry in digestible]
                 actions.append(
                     {
                         "action": "error",
@@ -1684,12 +2013,14 @@ def run_journal_digest(
                         "classification": failure_meta,
                     }
                 )
+            if not dry_run and not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
             extractor_counts[scope_extractor_used] += 1
             candidate_status_counts.update(scope_candidate_status_counts)
             if extractor_error:
                 extractor_errors.append(extractor_error)
-            if scope_extractor_used == "llm-error":
-                continue
+            if scope_extractor_used == "llm-error" and not raised_without_attempted:
+                extraction_failure_count += 1
             total_candidates += len(candidates)
             candidate_entry_ids: set[int] = set()
             for candidate in candidates:
@@ -1699,17 +2030,41 @@ def run_journal_digest(
                     except (TypeError, ValueError):
                         continue
             loaded_entry_ids = {int(entry.id) for entry in entries}
+            evidence_ids = {int(entry.id) for entry in evidence_only}
+            admission_ids: list[int] = []
+            if evidence_only:
+                for entry in evidence_only:
+                    entry_id = int(entry.id)
+                    admission_ids.append(entry_id)
+                    counts["skipped"] += 1
+                    if not dry_run:
+                        _record_journal_rejection(
+                            conn,
+                            run_id=run_id,
+                            entry_ids=[entry_id],
+                            reason=admission_leave_reason(entry),
+                            candidate=JournalDigestCandidate(
+                                content=str(entry.content or ""),
+                                target="memory",
+                                entry_ids=[entry_id],
+                            ),
+                        )
             if hasattr(candidates, "reviewed_entry_ids"):
                 reviewed_entry_ids = {
                     int(entry_id)
                     for entry_id in getattr(candidates, "reviewed_entry_ids", set())
                 } & loaded_entry_ids
+                reviewed_entry_ids -= evidence_ids
                 unresolved_entry_ids = {
                     int(entry_id)
                     for entry_id in getattr(candidates, "unresolved_entry_ids", set())
                 } & loaded_entry_ids
+                unresolved_entry_ids -= evidence_ids
+            elif raised_without_attempted:
+                reviewed_entry_ids = set()
+                unresolved_entry_ids = set()
             else:
-                reviewed_entry_ids = set(loaded_entry_ids)
+                reviewed_entry_ids = set(loaded_entry_ids) - evidence_ids
                 unresolved_entry_ids = set()
             if not dry_run:
                 try:
@@ -1735,60 +2090,139 @@ def run_journal_digest(
                 candidates=candidates,
                 dry_run=dry_run,
                 runtime_config=runtime_config,
+                _defer_commits=True,
+                _deferred_vector_ops=scope_deferred if not dry_run else None,
             )
             counts.update(applied["counts"])
             quarantine_counts.update(applied.get("pollution_counts", {}))
             applied_entry_ids = {int(entry_id) for entry_id in applied.get("processed_entry_ids", [])}
-            unresolved_without_candidate_ids = sorted(
-                unresolved_entry_ids - candidate_entry_ids
-            )
-            reviewed_without_candidate_ids = sorted(
-                (reviewed_entry_ids - unresolved_entry_ids) - candidate_entry_ids
-            )
-            if unresolved_without_candidate_ids:
-                actions.append(
-                    {
-                        "action": "pending",
-                        "reason": "chunk extraction unresolved",
-                        "entry_count": len(unresolved_without_candidate_ids),
-                        "entry_ids": unresolved_without_candidate_ids[:20],
-                    }
+            pollution_entry_ids = {
+                int(entry_id) for entry_id in applied.get("pollution_entry_ids", [])
+            }
+            retryable_unresolved_ids = {
+                int(entry_id)
+                for entry_id in getattr(
+                    candidates, "retryable_unresolved_entry_ids", set()
                 )
-            if reviewed_without_candidate_ids:
-                counts["skipped"] += len(reviewed_without_candidate_ids)
-                actions.append(
-                    {
-                        "action": "skip",
-                        "reason": "no durable memory candidate",
-                        "entry_count": len(reviewed_without_candidate_ids),
-                        "entry_ids": reviewed_without_candidate_ids[:20],
-                    }
+            } & loaded_entry_ids
+            has_attempted_meta = hasattr(candidates, "attempted_entry_ids")
+            attempted_entry_ids = {
+                int(entry_id)
+                for entry_id in getattr(candidates, "attempted_entry_ids", set())
+            } & loaded_entry_ids
+            if has_attempted_meta:
+                retryable_unresolved_ids &= attempted_entry_ids
+            extractor_deferred_ids = {
+                int(entry_id)
+                for entry_id in getattr(candidates, "deferred_entry_ids", set())
+            } & loaded_entry_ids
+            # Only IDs proven to have reached `_call_llm_with_retries` may
+            # increment or reset the durable retryable budget. Unattempted
+            # suffixes, evidence-only rows, and exception paths without
+            # attempted metadata charge nothing.
+            retryable_failures_after: dict[int, int] = {}
+            if has_attempted_meta and attempted_entry_ids and not dry_run:
+                increment_ids = sorted(
+                    attempted_entry_ids & retryable_unresolved_ids
                 )
-                if not dry_run:
-                    _record_journal_rejection(
-                        conn,
-                        run_id=run_id,
-                        entry_ids=reviewed_without_candidate_ids,
-                        reason="no durable memory candidate",
-                        candidate=JournalDigestCandidate(
-                            content="No durable memory candidate was produced for this reviewed journal entry.",
-                            target="memory",
-                            entry_ids=reviewed_without_candidate_ids,
-                        ),
+                reset_ids = sorted(attempted_entry_ids - retryable_unresolved_ids)
+                if increment_ids:
+                    retryable_failures_after = increment_retryable_failures(
+                        conn, entry_ids=increment_ids, commit=False
                     )
-            scope_done_ids = sorted(applied_entry_ids | set(reviewed_without_candidate_ids))
+                    counts["retryable_failures"] += len(increment_ids)
+                if reset_ids:
+                    reset_retryable_failures(
+                        conn, entry_ids=reset_ids, commit=False
+                    )
+            quarantine_threshold = _coerce_positive_int(
+                journal_config.get("extraction_attempts_quarantine"), 3
+            )
+            retryable_failures_threshold = _coerce_positive_int(
+                journal_config.get("retryable_failures_quarantine"), 3
+            )
+            if has_attempted_meta:
+                countable_ids = sorted(
+                    (
+                        (unresolved_entry_ids - candidate_entry_ids)
+                        - retryable_unresolved_ids
+                    )
+                    & attempted_entry_ids
+                )
+            elif raised_without_attempted:
+                countable_ids = []
+            else:
+                countable_ids = sorted(
+                    (unresolved_entry_ids - candidate_entry_ids)
+                    - retryable_unresolved_ids
+                )
+            attempts_after: dict[int, int] = {}
+            if countable_ids and not dry_run:
+                attempts_after = increment_extraction_attempts(
+                    conn, entry_ids=countable_ids, commit=False
+                )
+            leave = plan_loaded_leave(
+                loaded_ids=loaded_entry_ids - evidence_ids,
+                candidate_ids=candidate_entry_ids,
+                reviewed_ids=reviewed_entry_ids,
+                unresolved_ids=unresolved_entry_ids,
+                retryable_unresolved_ids=retryable_unresolved_ids,
+                deferred_ids=extractor_deferred_ids,
+                applied_ids=applied_entry_ids,
+                pollution_ids=pollution_entry_ids,
+                attempts_after=attempts_after,
+                quarantine_threshold=quarantine_threshold,
+                retryable_failures_after=retryable_failures_after,
+                retryable_failures_threshold=retryable_failures_threshold,
+            )
+            if not dry_run:
+                clear_current_deferral(
+                    conn,
+                    entry_ids=sorted(loaded_entry_ids - set(leave.deferred_ids)),
+                    commit=False,
+                )
+            _apply_loaded_leave_plan(
+                conn,
+                run_id=run_id,
+                leave=leave,
+                unresolved_ids=unresolved_entry_ids,
+                retryable_unresolved_ids=retryable_unresolved_ids,
+                quarantine_threshold=quarantine_threshold,
+                retryable_failures_threshold=retryable_failures_threshold,
+                dry_run=dry_run,
+                counts=counts,
+                actions=actions,
+            )
+            leave_sets = loaded_leave_sets(leave, admission_ids=admission_ids)
+            leave_processed_ids.update(leave_sets["processed_ids"])
+            leave_pending_ids.update(leave_sets["retryable_pending_ids"])
+            leave_deferred_ids.update(leave_sets["deferred_ids"])
+            leave_quarantined_ids.update(leave_sets["quarantined_ids"])
+            scope_done_ids = sorted(
+                set(leave.applied_ids)
+                | set(leave.skipped_ids)
+                | set(leave.quarantined_ids)
+                | set(admission_ids)
+            )
             processed_entry_ids.extend(scope_done_ids)
             if not dry_run and scope_done_ids:
                 mark_entries_processed(
-                    conn, entry_ids=scope_done_ids, run_id=run_id
+                    conn, entry_ids=scope_done_ids, run_id=run_id, commit=False
+                )
+            if not dry_run:
+                advance_session_digest_cursors(
+                    conn,
+                    entries=entries,
+                    covered_ids=loaded_entry_ids - set(leave.deferred_ids),
+                    deferred_ids=set(leave.deferred_ids),
+                    run_id=run_id,
+                    commit=False,
                 )
             actions.extend(applied["actions"])
-            if vector_runtime is not None:
-                # Do not swallow companion teardown. A close failure must enter
-                # the outer handler so final cleanup can still close truth and
-                # release the lease, then surface the vector error.
-                vector_runtime.close()
-                vector_runtime = None
+            prev_scope_pending = True
+            prev_deferred = scope_deferred
+            prev_vector = vector_runtime
+            vector_runtime = None
 
         if total_loaded_entries == 0:
             return no_unprocessed_journal_result(run_id=run_id, requested_extractor=requested_extractor, extractor_used=extractor_used)
@@ -1800,8 +2234,8 @@ def run_journal_digest(
         pruned_entries = 0
         backlog_after = backlog_before
         if not dry_run:
-            mark_entries_processed(conn, entry_ids=unique_processed_entry_ids, run_id=run_id)
-            pruned_entries = _prune_processed_journal(conn, retention_days=retention_days)
+            mark_entries_processed(conn, entry_ids=unique_processed_entry_ids, run_id=run_id, commit=False)
+            pruned_entries = _prune_processed_journal(conn, retention_days=retention_days, commit=False)
             backlog_after = _journal_unprocessed_count(
                 conn,
                 excluded_chat_ids=excluded_chat_ids,
@@ -1839,50 +2273,17 @@ def run_journal_digest(
                 f"({', '.join(error_kinds) or 'unknown'}); source entries remain pending"
             )
         if not dry_run:
-            conn.execute(
-                """
-                INSERT INTO journal_digest_runs(id, started_at, finished_at, status, extractor, interval_label,
-                    processed_entries, inserted, updated, skipped, error, metadata)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    run_id,
-                    started_at,
-                    now_iso(),
-                    run_status,
-                    extractor_used,
-                    interval_label,
-                    len(unique_processed_entry_ids),
-                    counts.get("inserted", 0),
-                    counts.get("updated", 0),
-                    counts.get("skipped", 0),
-                    run_error or None,
-                    json.dumps(
-                        journal_digest_metadata(
-                            total_candidates=total_candidates,
-                            total_loaded_entries=total_loaded_entries,
-                            actions=actions,
-                            requested_extractor=requested_extractor,
-                            extractor_used=extractor_used,
-                            extractor_counts=extractor_counts,
-                            extractor_errors=extractor_errors,
-                            quarantine_counts=quarantine_counts,
-                            backlog_before=backlog_before,
-                            effective_limit=effective_limit,
-                            retention_days=retention_days,
-                            pruned_entries=pruned_entries,
-                            backlog_after=receipt_fields["backlog_after"],
-                            productive_writes=receipt_fields["productive_writes"],
-                            no_insert_reason=receipt_fields["no_insert_reason"],
-                            health_flags=receipt_fields["health_flags"],
-                            recommended_next_limit=receipt_fields["recommended_next_limit"],
-                            candidate_status_counts=candidate_status_counts,
-                        ),
-                        ensure_ascii=False,
-                    ),
-                ),
+            persist_digest_receipt(
+                status=run_status,
+                receipt_kind="final",
+                error=run_error or None,
+                pruned=pruned_entries,
             )
-            conn.commit()
+            _commit_truth_then_drain_vector(conn, prev_vector, prev_deferred)
+            if prev_vector is not None:
+                prev_vector.close()
+                prev_vector = None
+            prev_scope_pending = False
         result = journal_digest_success_result(
             dry_run=dry_run,
             run_id=run_id,
@@ -1903,49 +2304,57 @@ def run_journal_digest(
             health_flags=receipt_fields["health_flags"],
             recommended_next_limit=receipt_fields["recommended_next_limit"],
             candidate_status_counts=candidate_status_counts,
+            retryable_failures=int(counts.get("retryable_failures", 0) or 0),
+            retryable_failures_quarantined=int(
+                counts.get("retryable_failures_quarantined", 0) or 0
+            ),
         )
+        result["leave_states"] = {
+            "processed_ids": sorted(leave_processed_ids),
+            "retryable_pending_ids": sorted(leave_pending_ids),
+            "deferred_ids": sorted(leave_deferred_ids),
+            "quarantined_ids": sorted(leave_quarantined_ids),
+        }
         if extraction_failure_count:
             result["ok"] = False
             result["status"] = "error"
             result["error"] = run_error
         return result
     except Exception as exc:
-        if conn is not None:
-            try:
-                if dry_run:
-                    rollback_if_active(conn)
-                else:
-                    _record_journal_digest_failure(
-                        conn,
-                        run_id=run_id,
-                        started_at=started_at,
-                        extractor=requested_extractor,
-                        interval_label=interval_label,
-                        error=exc,
-                    )
-            except Exception as receipt_exc:
-                # Preserve the triggering exception even when SQLite is still too
-                # contended to persist its failure receipt.
-                try:
-                    rollback_if_active(conn)
-                except Exception:
-                    pass
-                logger.warning(
-                    "Scope Recall journal digest failure receipt could not be persisted (%s)",
-                    type(receipt_exc).__name__,
+        try:
+            if dry_run:
+                rollback_if_active(conn)
+            elif conn is not None:
+                _record_journal_digest_failure(
+                    conn,
+                    run_id=run_id,
+                    started_at=started_at,
+                    extractor=requested_extractor,
+                    interval_label=interval_label,
+                    error=exc,
                 )
+        except Exception as receipt_exc:
+            # Preserve the triggering exception even when SQLite is still too
+            # contended to persist its failure receipt.
+            try:
+                rollback_if_active(conn)
+            except Exception:
+                pass
+            logger.warning(
+                "Scope Recall journal digest failure receipt could not be persisted (%s)",
+                type(receipt_exc).__name__,
+            )
         raise
     finally:
         vector_close_error: Exception | None = None
-        if vector_runtime is not None:
+        for pending in (vector_runtime, prev_vector):
+            if pending is None:
+                continue
             try:
-                vector_runtime.close()
+                pending.close()
             except Exception as exc:
-                vector_close_error = exc
-        # Vector is rebuildable. Truth SQLite close is authoritative: a close
-        # failure must surface and must not reach lease release while a
-        # writable pager may still be live. After truth and lease succeed,
-        # a captured vector close error is still raised so teardown is visible.
+                if vector_close_error is None:
+                    vector_close_error = exc
         if conn is not None:
             conn.close()
         if writer_lease is not None:

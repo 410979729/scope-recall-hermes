@@ -1,6 +1,9 @@
 """Heuristic candidate extraction for journal digest batches.
 
-The extractor turns session entries into reviewable memory candidates while rejecting generic transcript/template noise."""
+The extractor turns session entries into reviewable memory candidates while
+rejecting generic transcript/template noise. Related turns are grouped by the
+stored ``(scope_id, session_id)`` pair so a same-named session in another
+physical scope cannot share a candidate body."""
 
 from __future__ import annotations
 
@@ -11,7 +14,7 @@ from .fact_actions import EvolutionProposal
 from .gating import compact_text
 from .governance import normalize_memory_type
 from .graph import normalize_entity
-from .journal_store import JournalEntry
+from .journal_store import JournalEntry, journal_entry_group_identity
 from .memory_admission import automatic_admission_metadata
 
 __all__ = [
@@ -47,6 +50,10 @@ class JournalDigestCandidate:
     entry_ids: list[int] = field(default_factory=list)
     session_ids: list[str] = field(default_factory=list)
     evolution: EvolutionProposal | None = None
+    # Exact digestible tool ids from the same extraction chunk and
+    # (scope_id, session_id) as this candidate. None means coverage is
+    # unknown and attach must fail closed instead of guessing a window.
+    covered_tool_ids: list[int] | None = None
 
 
 def _unique(values: list[str], *, limit: int = 16) -> list[str]:
@@ -234,15 +241,16 @@ def _heuristic_candidate_content(target: str, topic_label: str, entries: list[Jo
 def heuristic_journal_candidates(entries: list[JournalEntry]) -> list[JournalDigestCandidate]:
     if not entries:
         return []
-    # Production-safe fallback: keep related consecutive turns together, but do
-    # not let a long Telegram/Hermes session become one global memory bucket.
-    groups: dict[str, list[JournalEntry]] = {}
+    # Group by the stored (scope_id, session_id) pair. A display label such as
+    # ``session:{id or 'unknown'}`` would merge different physical scopes and
+    # collapse an empty session with the literal id ``unknown``.
+    groups: dict[tuple[str, str], list[JournalEntry]] = {}
     for entry in entries:
-        key = f"session:{entry.session_id or 'unknown'}"
-        groups.setdefault(key, []).append(entry)
+        groups.setdefault(journal_entry_group_identity(entry), []).append(entry)
 
     candidates: list[JournalDigestCandidate] = []
-    for key, session_entries in groups.items():
+    for (scope_id, session_id), session_entries in groups.items():
+        display_key = f"session:{session_id}" if session_id else "session:"
         for segment_index, group_entries in enumerate(_segment_session_entries(session_entries), start=1):
             digest_entries = [
                 entry
@@ -256,8 +264,9 @@ def heuristic_journal_candidates(entries: list[JournalEntry]) -> list[JournalDig
             session_ids = _unique([entry.session_id for entry in digest_entries], limit=12)
             entry_ids = [entry.id for entry in digest_entries]
             entities = _entry_entities(digest_entries)
-            segment_key = f"{key}:segment:{segment_index}"
-            topic_label = _topic_label(digest_entries, segment_key.replace("session:", "session "))
+            segment_key = f"{display_key}:segment:{segment_index}"
+            topic_fallback = f"scope {scope_id} session {session_id} segment {segment_index}"
+            topic_label = _topic_label(digest_entries, topic_fallback)
             content = _heuristic_candidate_content(target, topic_label, digest_entries)
             candidates.append(
                 JournalDigestCandidate(
@@ -267,7 +276,7 @@ def heuristic_journal_candidates(entries: list[JournalEntry]) -> list[JournalDig
                     importance=0.78 if target in {"memory", "ops"} else 0.62,
                     confidence=0.78,
                     entities=entities,
-                    tags=_unique([*tags, *_topic_tags(digest_entries), key, segment_key], limit=16),
+                    tags=_unique([*tags, *_topic_tags(digest_entries), display_key, segment_key], limit=16),
                     reason="journal digest grouped related consecutive conversation turns",
                     entry_ids=entry_ids,
                     session_ids=session_ids,

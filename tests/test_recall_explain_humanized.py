@@ -65,6 +65,12 @@ class FakeProvider:
         self._recall_service = FakeRecallService()
         self._retrieval_config = {"top_k": 5}
 
+    def recall_service_view(self):
+        return self._recall_service
+
+    def retrieval_status_view(self):
+        return {"config": dict(self._retrieval_config), "mode": "lexical", "lexical_weight": 1.0, "vector_weight": 0.0}
+
     def _config_value(self, key: str, default):
         return default
 

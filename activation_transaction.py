@@ -876,7 +876,7 @@ def _surface_receipt(snapshot: dict[str, Any], *, restored: bool) -> dict[str, A
         ),
         "logical_fingerprint": str(snapshot.get("logical_fingerprint") or ""),
         "logical_equivalent": bool(snapshot.get("logical_equivalent")),
-        "drift_detected": snapshot.get("drift_detected"),
+        "drift_detected": bool(snapshot.get("drift_detected")),
         "manual_recovery_required": bool(snapshot.get("drift_detected")) and not restored,
     }
 

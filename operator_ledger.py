@@ -50,6 +50,9 @@ _REQUIRED_COLUMNS = {
     "updated_at",
 }
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+_GENERIC_RECEIPT_KINDS = frozenset({"journal.source_restore"})
+_PLAYBOOK_RECEIPT_SCHEMA = "playbook_operator_receipt.v2"
+_OPERATOR_RECEIPT_SCHEMA = "operator_receipt.v1"
 
 
 def _now_iso() -> str:
@@ -257,6 +260,33 @@ def _row_dict(conn: sqlite3.Connection, operation_id: str) -> dict[str, Any]:
     return dict(zip(names, tuple(row), strict=True))
 
 
+def _uses_generic_operator_receipt(operation_kind: str) -> bool:
+    """Name non-playbook source-restore mirrors as generic operator receipts.
+
+    Existing playbook kinds keep ``playbook_operator_receipt.v2`` and
+    ``playbooks.*`` filenames byte-compatible.
+    """
+
+    return str(operation_kind) in _GENERIC_RECEIPT_KINDS
+
+
+def _mirror_result_payload(operation_kind: str, result: Any) -> Any:
+    """Copy ledger result for the filesystem mirror.
+
+    Generic source-restore mirrors omit the bounded remap pair list. The
+    private ``operator_operations.result_json`` retains those pairs. Playbook
+    receipt bytes stay unchanged.
+    """
+
+    if not _uses_generic_operator_receipt(operation_kind):
+        return result
+    if not isinstance(result, dict):
+        return result
+    cleaned = dict(result)
+    cleaned.pop("pairs", None)
+    return cleaned
+
+
 def _receipt_payload(row: Mapping[str, Any], *, db_path: Path) -> dict[str, Any]:
     try:
         before = json.loads(str(row["before_json"]))
@@ -264,8 +294,13 @@ def _receipt_payload(row: Mapping[str, Any], *, db_path: Path) -> dict[str, Any]
     except json.JSONDecodeError as exc:
         raise ValueError("operator ledger JSON is corrupt") from exc
     operation_kind = str(row["operation_kind"])
+    schema = (
+        _OPERATOR_RECEIPT_SCHEMA
+        if _uses_generic_operator_receipt(operation_kind)
+        else _PLAYBOOK_RECEIPT_SCHEMA
+    )
     return {
-        "schema_version": "playbook_operator_receipt.v2",
+        "schema_version": schema,
         "receipt_state": "mirrored",
         "operation_id": str(row["operation_id"]),
         "committed_at": str(row["committed_at"]),
@@ -276,15 +311,33 @@ def _receipt_payload(row: Mapping[str, Any], *, db_path: Path) -> dict[str, Any]
         "request_fingerprint": str(row["request_fingerprint"]),
         "backup_path": str(row["backup_path"]),
         "before": before,
-        "result": result,
+        "result": _mirror_result_payload(operation_kind, result),
     }
 
 
 def _receipt_path(db_path: Path, row: Mapping[str, Any]) -> Path:
     action = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(row["operation_kind"]).rsplit(".", 1)[-1])
-    return db_path.resolve().parent / "receipts" / (
-        f"playbooks.{action}.{row['operation_id']}.json"
+    prefix = (
+        "operator"
+        if _uses_generic_operator_receipt(str(row["operation_kind"]))
+        else "playbooks"
     )
+    return db_path.resolve().parent / "receipts" / (
+        f"{prefix}.{action}.{row['operation_id']}.json"
+    )
+
+
+def read_operator_operation(
+    conn: sqlite3.Connection, operation_id: str
+) -> dict[str, Any] | None:
+    """Read one authoritative operation row, or None when absent."""
+
+    if not _table_exists(conn):
+        return None
+    try:
+        return _row_dict(conn, operation_id)
+    except (KeyError, ValueError):
+        return None
 
 
 def _serialize_receipt(payload: Mapping[str, Any]) -> bytes:
@@ -555,6 +608,7 @@ __all__ = [
     "mirror_operator_receipt",
     "operator_ledger_report",
     "operator_ledger_schema_status",
+    "read_operator_operation",
     "record_committed_operator_operation",
     "recover_operator_receipts",
 ]

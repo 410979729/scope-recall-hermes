@@ -41,6 +41,175 @@ def journal_backlog_age_hours(oldest_created_at: str) -> float:
         return 0.0
 
 
+def _schema_unavailable_block(
+    *,
+    missing_columns: list[str],
+    recommendation: str,
+    status: str = "schema_missing",
+) -> dict[str, Any]:
+    """Fail-closed doctor block: missing columns are not numeric zero."""
+
+    return {
+        "status": status,
+        "available": False,
+        "count": None,
+        "missing_columns": list(missing_columns),
+        "recommendation": recommendation,
+    }
+
+
+_DEFERRED_REQUIRED_COLUMNS = ("deferred_run_id", "defer_count")
+
+
+def _deferred_unavailable_block(
+    *,
+    missing_columns: list[str],
+    recommendation: str,
+    status: str = "schema_missing",
+) -> dict[str, Any]:
+    """Deferred backlog is a single capability: unmeasured fields stay null."""
+
+    return {
+        **_schema_unavailable_block(
+            missing_columns=missing_columns,
+            recommendation=recommendation,
+            status=status,
+        ),
+        "oldest_deferred_age_hours": None,
+        "repeat_deferred_count": None,
+        "max_defer_count": None,
+    }
+
+
+def _journal_entry_columns(conn: sqlite3.Connection) -> set[str] | None:
+    try:
+        return {str(row[1]) for row in conn.execute("PRAGMA table_info(journal_entries)")}
+    except Exception:
+        return None
+
+
+def _deferred_backlog_metrics(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Bounded, non-content deferred-queue metrics for doctor.
+
+    Counts currently deferred overflow, the oldest visible deferral age, and a
+    repeated-deferral/churn signal. Missing columns are ``schema_missing`` so a
+    pre-migration database cannot look like a healthy zero backlog.
+    """
+
+    recommendation = (
+        "Migrate journal_entries with the current plugin schema so deferred "
+        "cursor health can be counted."
+    )
+    columns = _journal_entry_columns(conn)
+    if columns is None:
+        return _deferred_unavailable_block(
+            missing_columns=list(_DEFERRED_REQUIRED_COLUMNS),
+            recommendation=recommendation,
+            status="unknown",
+        )
+    missing = [name for name in _DEFERRED_REQUIRED_COLUMNS if name not in columns]
+    if missing:
+        return _deferred_unavailable_block(
+            missing_columns=missing,
+            recommendation=recommendation,
+        )
+    count = int(
+        conn.execute(
+            """
+            SELECT COUNT(*) FROM journal_entries
+            WHERE (processed_run_id IS NULL OR processed_run_id = '')
+              AND COALESCE(deferred_run_id, '') != ''
+            """
+        ).fetchone()[0]
+        or 0
+    )
+    oldest_row = conn.execute(
+        """
+        SELECT deferred_at FROM journal_entries
+        WHERE (processed_run_id IS NULL OR processed_run_id = '')
+          AND COALESCE(deferred_run_id, '') != ''
+          AND COALESCE(deferred_at, '') != ''
+        ORDER BY deferred_at ASC LIMIT 1
+        """
+    ).fetchone()
+    oldest_at = str(oldest_row[0]) if oldest_row else ""
+    repeat_deferred_count = int(
+        conn.execute(
+            """
+            SELECT COUNT(*) FROM journal_entries
+            WHERE (processed_run_id IS NULL OR processed_run_id = '')
+              AND COALESCE(defer_count, 0) >= 2
+            """
+        ).fetchone()[0]
+        or 0
+    )
+    max_defer_count = int(
+        conn.execute(
+            """
+            SELECT COALESCE(MAX(defer_count), 0) FROM journal_entries
+            WHERE processed_run_id IS NULL OR processed_run_id = ''
+            """
+        ).fetchone()[0]
+        or 0
+    )
+    return {
+        "status": "available",
+        "available": True,
+        "count": count,
+        "oldest_deferred_age_hours": round(journal_backlog_age_hours(oldest_at), 3),
+        "repeat_deferred_count": repeat_deferred_count,
+        "max_defer_count": max_defer_count,
+    }
+
+
+def _retryable_failure_metrics(
+    conn: sqlite3.Connection, *, threshold: int
+) -> dict[str, Any]:
+    """Bounded retryable-failure health without row contents."""
+
+    recommendation = (
+        "Migrate journal_entries with the current plugin schema so durable "
+        "retryable-failure health can be counted."
+    )
+    columns = _journal_entry_columns(conn)
+    if columns is None:
+        return {
+            **_schema_unavailable_block(
+                missing_columns=["retryable_failures"],
+                recommendation=recommendation,
+                status="unknown",
+            ),
+            "pending_entries": None,
+            "threshold": max(1, int(threshold or 3)),
+        }
+    if "retryable_failures" not in columns:
+        return {
+            **_schema_unavailable_block(
+                missing_columns=["retryable_failures"],
+                recommendation=recommendation,
+            ),
+            "pending_entries": None,
+            "threshold": max(1, int(threshold or 3)),
+        }
+    pending = int(
+        conn.execute(
+            """
+            SELECT COUNT(*) FROM journal_entries
+            WHERE (processed_run_id IS NULL OR processed_run_id = '')
+              AND COALESCE(retryable_failures, 0) > 0
+            """
+        ).fetchone()[0]
+        or 0
+    )
+    return {
+        "status": "available",
+        "available": True,
+        "count": pending,
+        "pending_entries": pending,
+        "threshold": max(1, int(threshold or 3)),
+    }
+
+
 def classify_reason_counts(reason_counts: dict[str, int]) -> dict[str, int]:
     category_counts: dict[str, int] = {}
     for reason, count in reason_counts.items():
@@ -62,7 +231,7 @@ def _json_dict(raw: Any) -> dict[str, Any]:
 def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     """Build a read-only health report for journal digest and recovery debt.
 
-    The function intentionally reports categories, samples, and thresholds rather than repairing anything: operators need to know whether backlog is ordinary work, auth/quota dead letter, quarantine, or replayable debt."""
+    The function intentionally reports categories, samples, and thresholds rather than repairing anything: operators need to know whether backlog is ordinary work, auth/quota dead letter, quarantine, or replayable debt. Missing defer or retryable budget columns fail closed in ``digest_health`` without changing the separate top-level backlog/orphan status contract."""
     journal_config = journal_config or {}
     recommendations: list[str] = []
     storage_dir = hermes_home / "scope-recall"
@@ -96,15 +265,25 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
             digest_runs = int(conn.execute("SELECT COUNT(*) FROM journal_digest_runs").fetchone()[0])
             source_links = int(conn.execute("SELECT COUNT(*) FROM memory_journal_sources").fetchone()[0])
             rejections = int(conn.execute("SELECT COUNT(*) FROM journal_rejections").fetchone()[0])
-            orphan_sources = int(
-                conn.execute(
-                    """
-                    SELECT COUNT(*)
-                    FROM memory_journal_sources AS s
-                    LEFT JOIN memories AS m ON m.id = s.memory_id
-                    WHERE m.id IS NULL
-                    """
-                ).fetchone()[0]
+            if "memories" in tables:
+                orphan_sources = int(
+                    conn.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM memory_journal_sources AS s
+                        LEFT JOIN memories AS m ON m.id = s.memory_id
+                        WHERE m.id IS NULL
+                        """
+                    ).fetchone()[0]
+                )
+            else:
+                orphan_sources = 0
+            deferred_metrics = _deferred_backlog_metrics(conn)
+            retryable_failures_threshold = max(
+                1, coerce_int(journal_config.get("retryable_failures_quarantine"), 3)
+            )
+            retryable_metrics = _retryable_failure_metrics(
+                conn, threshold=retryable_failures_threshold
             )
             oldest_unprocessed = conn.execute(
                 """
@@ -368,8 +547,34 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
         recommendations.append(
             f"Tool trace hygiene: {contaminated_tool_unprocessed} unprocessed tool trace marker hit(s) remain; run digest/cleanup after deploying sanitized ingestion."
         )
+    if deferred_metrics.get("available") is False:
+        recommendations.append(str(deferred_metrics.get("recommendation") or ""))
+    elif deferred_metrics.get("count"):
+        recommendations.append(
+            f"Journal digest has {deferred_metrics['count']} budget-deferred entrie(s); later runs should resume the per-session cursor rather than reload the same prefix."
+        )
+    if deferred_metrics.get("available") is True and deferred_metrics.get("repeat_deferred_count"):
+        recommendations.append(
+            f"Journal digest has {deferred_metrics['repeat_deferred_count']} repeatedly deferred entrie(s); inspect fat-session chunk budgets and cursor progress."
+        )
+    pending_retryable = False
+    if retryable_metrics.get("available") is False:
+        recommendations.append(str(retryable_metrics.get("recommendation") or ""))
+    elif retryable_metrics.get("pending_entries"):
+        pending_retryable = True
+        recommendations.append(
+            f"Journal backlog has {retryable_metrics['pending_entries']} unprocessed entrie(s) with durable retryable LLM failures; they leave the FIFO head after {retryable_metrics['threshold']} cross-run failure(s) and remain replayable."
+        )
     digest_health_status = "ready"
     digest_health_reasons: list[str] = []
+    if deferred_metrics.get("available") is False:
+        digest_health_reasons.append("deferred_schema_unavailable")
+        digest_health_status = "unknown"
+    if retryable_metrics.get("available") is False:
+        digest_health_reasons.append("retryable_schema_unavailable")
+        digest_health_status = "unknown"
+    if pending_retryable:
+        digest_health_reasons.append("pending_retryable_failures")
     recent_bad_runs = sum(recent_status_counts.get(status, 0) for status in ("error", "retry_scheduled", "dead_letter"))
     recent_fallback_runs = recent_status_counts.get("ok_with_fallback", 0) + recent_extractor_counts.get("heuristic-fallback", 0)
     recent_quarantine_runs = sum(
@@ -456,6 +661,8 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
                 "recommended_batch_size": recommended_batch_size,
                 "estimated_runs_to_clear": estimated_runs_to_clear,
             },
+            "deferred": deferred_metrics,
+            "retryable_failures": retryable_metrics,
         },
         "digest_runs": digest_runs,
         "digest_health": {
@@ -495,4 +702,12 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
         "rejections": rejections,
         "orphan_source_links": orphan_sources,
     }
-    return payload, {"ok": not failures, "failures": failures}, recommendations
+    seen_recommendations: set[str] = set()
+    unique_recommendations: list[str] = []
+    for item in recommendations:
+        text = str(item or "").strip()
+        if not text or text in seen_recommendations:
+            continue
+        seen_recommendations.add(text)
+        unique_recommendations.append(item)
+    return payload, {"ok": not failures, "failures": failures}, unique_recommendations

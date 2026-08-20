@@ -12,6 +12,7 @@ import pytest
 
 import scope_recall.vector_runtime as vector_runtime_module
 import scope_recall.vector_store as vector_store_module
+from _scope_recall_public_memory_port import attach_public_truth_ports
 from scope_recall import memory_ops
 from scope_recall.doctor_vector import vector_generation_report
 from scope_recall.embedders import LocalHashEmbedder
@@ -309,7 +310,7 @@ def test_setup_vector_layer_does_not_leak_orphan_generation_invalid_path(monkeyp
         def _memory_isolated_for_scope():
             return False
 
-    provider = Provider()
+    provider = attach_public_truth_ports(Provider())
     setup_vector_layer(provider)
     monkeypatch.setattr(memory_ops, "graph_relation_stats", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(memory_ops, "iter_curated_entries", lambda *_args, **_kwargs: [])
@@ -422,7 +423,7 @@ def test_active_backend_failure_redacts_internal_stats_and_warning_surfaces(monk
     monkeypatch.setattr(memory_ops, "iter_curated_entries", lambda *_args, **_kwargs: [])
     caplog.set_level("WARNING", logger=vector_runtime_module.__name__)
 
-    provider = Provider()
+    provider = attach_public_truth_ports(Provider())
     with pytest.raises(RuntimeError) as error:
         vector_runtime_module._open_vector_store(provider, dimensions=8)
     vector_runtime_module._mark_vector_startup_degraded(provider, error.value)
@@ -1003,7 +1004,14 @@ def test_completed_vector_outbox_pruning_can_be_disabled_without_mutation():
     assert conn.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0] == 1
 
 
-def test_vector_outbox_retention_retries_one_transient_lock(monkeypatch):
+def test_vector_outbox_retention_coalesces_transient_lock_without_in_pass_retry(monkeypatch):
+    """Issue #47 contract: retention never fights a live writer inside a pass.
+
+    The pre-fix behavior slept 50ms and retried in-pass, which cannot outwait
+    a long digest transaction and produced one WARNING per idle tick.
+    Retention now skips quietly and the rate-limited next pass covers it.
+    """
+
     import scope_recall.vector_runtime as vector_runtime_module
 
     conn = sqlite3.connect(":memory:")
@@ -1014,23 +1022,14 @@ def test_vector_outbox_retention_retries_one_transient_lock(monkeypatch):
     )()
     calls = {"count": 0}
 
-    def flaky_prune(_conn, *, retention_days, keep_per_generation):
+    def locked_prune(_conn, *, retention_days, keep_per_generation):
         calls["count"] += 1
-        if calls["count"] == 1:
-            raise sqlite3.OperationalError("database is locked")
-        return {
-            "enabled": True,
-            "retention_days": retention_days,
-            "keep_per_generation": keep_per_generation,
-            "generations_scanned": 1,
-            "deleted": 2,
-            "completed_remaining": 3,
-        }
+        raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(
         vector_runtime_module,
         "prune_completed_vector_outbox",
-        flaky_prune,
+        locked_prune,
     )
 
     receipt = _prune_completed_outbox(
@@ -1040,10 +1039,34 @@ def test_vector_outbox_retention_retries_one_transient_lock(monkeypatch):
         keep_per_generation=5000,
     )
 
-    assert calls["count"] == 2
+    assert calls["count"] == 1, "lock contention must not trigger an in-pass retry"
+    assert receipt["status"] == "skipped_contention"
+    assert receipt["deleted"] == 0
+    assert receipt["consecutive_skips"] == 1
+    assert conn.in_transaction is False
+
+    # A later uncontended pass succeeds and clears the skip streak.
+    monkeypatch.setattr(
+        vector_runtime_module,
+        "prune_completed_vector_outbox",
+        lambda _conn, *, retention_days, keep_per_generation: {
+            "enabled": True,
+            "retention_days": retention_days,
+            "keep_per_generation": keep_per_generation,
+            "generations_scanned": 1,
+            "deleted": 2,
+            "completed_remaining": 3,
+        },
+    )
+    receipt = _prune_completed_outbox(
+        provider,
+        conn,
+        retention_days=30,
+        keep_per_generation=5000,
+    )
     assert receipt["status"] == "pruned"
     assert receipt["deleted"] == 2
-    assert receipt["attempts"] == 2
+    assert provider._outbox_retention_contention_skips == 0
     assert conn.in_transaction is False
     conn.close()
 

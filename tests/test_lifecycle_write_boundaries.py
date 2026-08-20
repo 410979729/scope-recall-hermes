@@ -18,6 +18,10 @@ ALLOWED_METADATA_SQL = {
     ("lifecycle_service.py", "transition_memory_lifecycle"),
     ("journal.py", "_merge_metadata"),
     ("nightly_digest.py", "merge_candidate_metadata"),
+    # L4 grounded-review bookkeeping: increments l4_uncertain_* counters only,
+    # never touches lifecycle or content; terminal transitions still go
+    # through transition_memory_lifecycle.
+    ("auto_adjudication.py", "_mark_uncertain_round"),
 }
 ALLOWED_LIFECYCLE_PLANNERS = {
     ("governance.py", "merge_metadata"),

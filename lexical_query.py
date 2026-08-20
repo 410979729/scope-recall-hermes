@@ -53,18 +53,38 @@ def trigram_fts_query(query: str, tokens: list[str]) -> str:
     return " OR ".join(quoted[:24])
 
 
+_ASCII_TOKEN = re.compile(r"[a-z0-9][a-z0-9_.-]{3,}")
+
+
 def cjk_substring_score(query: str, content: str, summary: str) -> float:
-    """Score CJK evidence without allowing a single generic bigram through."""
+    """Score supplemental-channel evidence without letting one generic bigram through.
+
+    The curve is calibrated against the retrieval ``min_score`` gate (default
+    0.35): one trigram plus a couple of supporting bigrams must survive it,
+    because colloquial Chinese paraphrases rarely share more surface than
+    that with the stored text. The old flat curve (0.12 + 0.04/match, cap
+    0.5) scored exactly those hits at 0.24-0.32 and silently erased the
+    shadow channel's top-ranked candidates. ASCII identifiers (``systemd``,
+    ``final`` …) count as strong evidence too; the FTS trigram tokenizer
+    already matched on them, so scoring must not ignore them.
+    """
 
     terms = cjk_query_ngrams(query, limit=24)
-    if not terms:
+    query_ascii = set(_ASCII_TOKEN.findall(str(query or "").lower()))
+    if not terms and not query_ascii:
         return 0.0
     haystack = f"{content}\n{summary}".lower()
-    matches = [term for term in terms if term.lower() in haystack]
-    if not matches:
+    trigram_hits = sum(
+        1 for term in terms if len(term) >= 3 and term.lower() in haystack
+    )
+    bigram_hits = sum(
+        1 for term in terms if len(term) == 2 and term.lower() in haystack
+    )
+    ascii_hits = sum(1 for token in query_ascii if token in haystack)
+    strong_hits = trigram_hits + ascii_hits
+    if strong_hits == 0 and bigram_hits < 2:
         return 0.0
-    trigram_matches = sum(1 for term in matches if len(term) >= 3)
-    bigram_matches = sum(1 for term in matches if len(term) == 2)
-    if trigram_matches == 0 and bigram_matches < 2:
-        return 0.0
-    return min(0.5, 0.12 + 0.04 * min(len(matches), 6))
+    return min(
+        0.55,
+        0.20 + 0.06 * min(strong_hits, 4) + 0.03 * min(bigram_hits, 5),
+    )

@@ -106,6 +106,18 @@ def test_journal_extractors_session_bundles_sort_and_handle_tool_only():
     assert bundles[1].is_task is True
 
 
+def test_journal_extractors_bundles_keep_empty_session_distinct_from_unknown():
+    entries = [
+        JournalEntry(1, "scope-a", "shared-a", "", 1, "user", "请验证 empty session。", "2026-06-01T00:00:01+00:00"),
+        JournalEntry(2, "scope-a", "shared-a", "unknown", 1, "user", "请验证 unknown session。", "2026-06-01T00:00:02+00:00"),
+        JournalEntry(3, "scope-b", "shared-b", "", 1, "user", "请验证 other empty session。", "2026-06-01T00:00:03+00:00"),
+    ]
+
+    bundles = journal_extractors._journal_session_bundles(entries)
+    keys = {(bundle.scope_id, bundle.id) for bundle in bundles}
+    assert keys == {("scope-a", ""), ("scope-a", "unknown"), ("scope-b", "")}
+
+
 def test_journal_extractors_digest_candidate_conversion_defaults_and_evidence():
     raw = SimpleNamespace(
         content="LLM digest extracted a durable Scope Recall workflow.",

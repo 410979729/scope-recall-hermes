@@ -7,7 +7,6 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -508,8 +507,18 @@ def test_relation_runtime_config_rejects_out_of_range_overrides(tmp_path: Path):
 
 
 def test_relation_budget_helpers_fail_closed_for_internal_config_bypass():
-    provider = SimpleNamespace(
-        _config={
+    class _CommandConfigPort:
+        def __init__(self, config: dict[str, object]) -> None:
+            self._config = config
+
+        def config_view(self) -> dict[str, object]:
+            return dict(self._config)
+
+        def config_value(self, key: str, default: object = None) -> object:
+            return self._config.get(key, default)
+
+    provider = _CommandConfigPort(
+        {
             "relation_extraction_max_pairs": 500_000,
             "relation_sync_neighbor_limit": 500_000,
         }

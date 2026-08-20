@@ -5,6 +5,7 @@ Vector state is rebuildable companion data; failures should mark repair needs wi
 from __future__ import annotations
 
 from collections import Counter
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -13,7 +14,11 @@ from typing import Any
 from .lifecycle_policy import DURABLE_HIDDEN_LIFECYCLES, ordinary_recall_lifecycle_visible
 from .capture_filters import sanitize_report_text
 from .vector_generation import resolve_generation_storage_root
-from .vector_generation_preflight import validate_generation_for_activation
+from .vector_generation_preflight import (
+    sanitize_generation_identifier,
+    sanitize_outward_preflight_report,
+    validate_generation_for_activation,
+)
 from .vector_store import native_vector_dependency_status, normalize_vector_backend
 
 def lancedb_table_names(db: Any) -> list[str]:
@@ -598,6 +603,139 @@ def _backend_vector_report(
     return payload, check, recommendations
 
 
+_READY_PREFLIGHT_TEXT_LIMIT = 300
+_INACTIVE_REBUILD_GUIDANCE = (
+    "Rebuild this inactive READY generation from current SQLite truth before activation."
+)
+_REDACTED_GENERATION_PREFIX = "redacted-generation"
+_UNSAFE_GENERATION_ID_MARKERS = (
+    ":\\",
+    ":/",
+    "\\\\",
+    "/home/",
+    "/users/",
+    "/tmp/",
+    "image_cache",
+    "[screenshot]",
+    "[image attached",
+    "sk-",
+)
+
+
+def _unsafe_generation_id_text(text: str) -> bool:
+    lowered = str(text or "").casefold()
+    if not lowered:
+        return False
+    if any(token in lowered for token in _UNSAFE_GENERATION_ID_MARKERS):
+        return True
+    return "\\" in lowered or lowered.startswith("/")
+
+
+def _redacted_generation_placeholder(raw: str) -> str:
+    digest = hashlib.sha256(str(raw).encode("utf-8")).hexdigest()[:16]
+    return f"{_REDACTED_GENERATION_PREFIX}-{digest}"
+
+
+def _sanitize_ready_preflight_text(value: Any, *, fallback: str = "") -> str:
+    """Bound and redact one doctor field shared by preflight and inventory rows.
+
+    Empty or leftover path/token material never falls back to the original
+    value. A safe, distinct fallback (for example an exception type name) is
+    allowed; otherwise the field becomes an irreversible bounded digest.
+    """
+
+    raw = str(value or "")
+    cleaned = sanitize_report_text(raw)[:_READY_PREFLIGHT_TEXT_LIMIT]
+    if cleaned and not _unsafe_generation_id_text(cleaned):
+        return cleaned
+    safe_fallback = sanitize_report_text(str(fallback or ""))[:_READY_PREFLIGHT_TEXT_LIMIT]
+    if (
+        safe_fallback
+        and not _unsafe_generation_id_text(safe_fallback)
+        and safe_fallback != raw
+    ):
+        return safe_fallback
+    if not raw:
+        return ""
+    return _redacted_generation_placeholder(raw)
+
+
+def _empty_inactive_generation_contract() -> dict[str, Any]:
+    """Stable public keys for payloads that never scan inactive READY generations."""
+
+    return {
+        "inactive_generation_inventory": [],
+        "rebuild_from_sqlite_required": False,
+    }
+
+
+def _inactive_ready_inventory_item(
+    *,
+    generation_id: str,
+    activatable: bool,
+    reason: str = "",
+    repair: str = "",
+) -> dict[str, Any]:
+    """Build one bounded inactive READY inventory row.
+
+    Healthy rows stay activatable and must not request a SQLite rebuild. Broken
+    rows are labeled non-activatable and carry sanitized rebuild guidance only.
+    ``generation_id`` is an identifier field and stays distinct when the raw
+    value would otherwise collapse to a generic redaction marker.
+    """
+
+    return {
+        "generation_id": sanitize_generation_identifier(generation_id),
+        "activatable": bool(activatable),
+        "label": "activatable" if activatable else "non_activatable",
+        "rebuild_from_sqlite_required": not bool(activatable),
+        "reason": _sanitize_ready_preflight_text(reason) if reason else "",
+        "repair": _sanitize_ready_preflight_text(repair) if repair else "",
+    }
+
+
+def _annotate_healthy_ready_preflight(
+    preflight: dict[str, Any],
+    *,
+    raw_generation_id: str = "",
+) -> dict[str, Any]:
+    """Sanitize the preflight body and add the additive activatable label."""
+
+    cleaned = sanitize_outward_preflight_report(
+        preflight, raw_generation_id=raw_generation_id
+    )
+    return {**cleaned, "activatable": True, "label": "activatable"}
+
+
+def _inactive_ready_preflight_records(
+    generation_id: str,
+    exc: BaseException,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Derive compatible failure and inventory rows from one preflight exception.
+
+    ``ready_generation_preflight_failures`` keeps the existing
+    ``{generation_id, error}`` contract (plus the additive non-activatable
+    flags already published on that list). ``inactive_generation_inventory``
+    is the machine-readable label for every inactive READY generation.
+    """
+
+    safe_id = sanitize_generation_identifier(generation_id)
+    safe_error = _sanitize_ready_preflight_text(str(exc), fallback=type(exc).__name__)
+    failure = {
+        "generation_id": safe_id,
+        "error": safe_error,
+        "label": "non_activatable",
+        "activatable": False,
+    }
+    inventory = _inactive_ready_inventory_item(
+        generation_id=generation_id,
+        activatable=False,
+        reason=safe_error,
+        repair=_INACTIVE_REBUILD_GUIDANCE,
+    )
+    return failure, inventory
+
+
 def vector_generation_report(
     hermes_home: Path,
     *,
@@ -605,11 +743,34 @@ def vector_generation_report(
     backend: str,
     fallback_backend: str = "",
 ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
-    """Inspect generation identity, migration state, and durable replay debt."""
+    """Inspect generation identity, migration state, and durable replay debt.
+
+    ``inactive_generation_inventory`` lists every non-ACTIVE READY generation in
+    deterministic published ``generation_id`` order. Identifier fields use a
+    collision-resistant secret-free token when the raw id is unsafe or would
+    collapse to a generic redaction marker. Each row carries ``activatable``,
+    ``label``, sanitized ``reason``/``repair``, and
+    ``rebuild_from_sqlite_required``. The same rebuild flag is also published at
+    the payload top level and is true only when at least one inventoried READY
+    generation cannot be activated.
+
+    Healthy inactive READY generations remain in ``ready_generation_preflights``
+    with additive ``activatable=true,label=activatable``. Broken rows stay in
+    ``ready_generation_preflight_failures`` as ``{generation_id, error}`` plus
+    the additive non-activatable flags. ACTIVE generation health is decided
+    independently of inactive READY debt.
+
+    Early-return payloads that never reach the READY preflight scan still expose
+    the empty inventory contract so the public schema stays stable.
+    """
 
     db_path = hermes_home / "scope-recall" / "memory.sqlite3"
     if not db_path.exists():
-        return {"status": "absent", "registered": False}, {"ok": True, "failures": []}, []
+        return (
+            {"status": "absent", "registered": False, **_empty_inactive_generation_contract()},
+            {"ok": True, "failures": []},
+            [],
+        )
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     recommendations: list[str] = []
@@ -625,7 +786,12 @@ def vector_generation_report(
                 "Vector companion is still in legacy-unregistered mode; run a zero-write generation plan and register the legacy generation before migration."
             )
             return (
-                {"status": "legacy_unregistered", "registered": False, "missing_tables": sorted(required - tables)},
+                {
+                    "status": "legacy_unregistered",
+                    "registered": False,
+                    "missing_tables": sorted(required - tables),
+                    **_empty_inactive_generation_contract(),
+                },
                 {"ok": True, "failures": []},
                 recommendations,
             )
@@ -637,7 +803,12 @@ def vector_generation_report(
                 "Vector generation tables are initialized but the legacy companion is not registered; register it before any model/backend migration."
             )
             return (
-                {"status": "legacy_unregistered", "registered": False, "current_generation_id": ""},
+                {
+                    "status": "legacy_unregistered",
+                    "registered": False,
+                    "current_generation_id": "",
+                    **_empty_inactive_generation_contract(),
+                },
                 {"ok": True, "failures": []},
                 recommendations,
             )
@@ -649,7 +820,12 @@ def vector_generation_report(
         if current is None:
             failures.append(f"current vector generation manifest is missing: {current_id}")
             return (
-                {"status": "generation_incomplete", "registered": True, "current_generation_id": current_id},
+                {
+                    "status": "generation_incomplete",
+                    "registered": True,
+                    "current_generation_id": current_id,
+                    **_empty_inactive_generation_contract(),
+                },
                 {"ok": False, "failures": failures},
                 ["Restore the missing manifest or CAS-activate a validated READY generation."],
             )
@@ -766,23 +942,44 @@ def vector_generation_report(
             ).fetchall()
         }
         ready_generation_preflights: list[dict[str, Any]] = []
-        ready_generation_preflight_failures: list[dict[str, str]] = []
+        ready_generation_preflight_failures: list[dict[str, Any]] = []
+        inactive_generation_inventory: list[dict[str, Any]] = []
         storage_dir = hermes_home / "scope-recall"
         ready_rows = conn.execute(
-            "SELECT * FROM vector_generations WHERE status = 'ready' ORDER BY generation_id"
+            """
+            SELECT * FROM vector_generations
+            WHERE status = 'ready' AND generation_id <> ?
+            ORDER BY generation_id
+            """,
+            (current_id,),
         ).fetchall()
         for ready_row in ready_rows:
             ready_manifest = dict(ready_row)
             ready_id = str(ready_manifest.get("generation_id") or "")
             try:
                 ready_generation_preflights.append(
-                    validate_generation_for_activation(storage_dir, conn, ready_manifest)
+                    _annotate_healthy_ready_preflight(
+                        validate_generation_for_activation(storage_dir, conn, ready_manifest),
+                        raw_generation_id=ready_id,
+                    )
+                )
+                inactive_generation_inventory.append(
+                    _inactive_ready_inventory_item(generation_id=ready_id, activatable=True)
                 )
             except Exception as exc:
-                safe_error = sanitize_report_text(str(exc))[:300] or type(exc).__name__
-                ready_generation_preflight_failures.append(
-                    {"generation_id": ready_id, "error": safe_error}
-                )
+                failure, inventory_entry = _inactive_ready_preflight_records(ready_id, exc)
+                ready_generation_preflight_failures.append(failure)
+                inactive_generation_inventory.append(inventory_entry)
+        ready_generation_preflights.sort(key=lambda item: str(item.get("generation_id") or ""))
+        ready_generation_preflight_failures.sort(
+            key=lambda item: str(item.get("generation_id") or "")
+        )
+        inactive_generation_inventory.sort(
+            key=lambda item: str(item.get("generation_id") or "")
+        )
+        rebuild_from_sqlite_required = any(
+            bool(item.get("rebuild_from_sqlite_required")) for item in inactive_generation_inventory
+        )
         if ready_generation_preflight_failures:
             recommendations.append(
                 "Inactive READY rollback inventory failed physical preflight; it cannot be activated until rebuilt from a current truth cohort."
@@ -873,6 +1070,8 @@ def vector_generation_report(
             "generation_status_counts": generation_counts,
             "ready_generation_preflights": ready_generation_preflights,
             "ready_generation_preflight_failures": ready_generation_preflight_failures,
+            "inactive_generation_inventory": inactive_generation_inventory,
+            "rebuild_from_sqlite_required": rebuild_from_sqlite_required,
             "outbox_status_counts": outbox_counts,
             "inactive_outbox_status_counts": inactive_outbox_counts,
             "outbox_backlog": backlog,

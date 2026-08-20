@@ -1600,6 +1600,30 @@ def record_experience_preflight_run(
     return {"recorded": True, "run_id": run_id, "id": playbook_id, "decision": safe_decision}
 
 
+def record_experience_preflight_run_command(
+    provider: Any,
+    *,
+    playbook: Mapping[str, Any],
+    scope_id: str,
+    decision: str,
+    query: str,
+    reasons: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Writer-only durable preflight receipt. Prefetch must not call this."""
+    from .write_kernel import hold_positive_write_authority
+
+    with hold_positive_write_authority(provider):
+        conn = provider._require_conn()
+        return record_experience_preflight_run(
+            conn,
+            playbook=playbook,
+            scope_id=scope_id,
+            decision=decision,
+            query=query,
+            reasons=reasons,
+        )
+
+
 def _record_feedback_reflection_event(
     conn: sqlite3.Connection,
     *,

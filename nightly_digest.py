@@ -27,6 +27,7 @@ from .config import load_runtime_config
 from .digest_pollution import assess_digest_batch
 from .digest_quality import score_digest_candidate
 from .digest_run_results import nightly_digest_metadata, nightly_digest_result, nightly_status_payload
+from .nightly_admission import candidate_is_allowed
 from .fact_actions import EvolutionAction, EvolutionProposal, parse_evolution_proposal
 from .fact_evolution import (
     execute_pipeline_proposal,
@@ -64,8 +65,8 @@ from .retention_profiles import normalize_retention_profile, retention_profile_i
 from .scope import accessible_scope_ids, build_scope_id, build_shared_scope_id, canonical_user_id, normalize_scope_identity, writable_scope_ids
 from .sql_store import ensure_schema, exact_duplicate_groups, store_row
 from .sqlite_schema import execute_script_transaction_neutral
-from .transaction_guard import prepare_network_boundary
 from .truth_connection import connect_truth_database
+from .transaction_guard import prepare_network_boundary, release_snapshot_transaction
 from .writer_lease import TruthWriterBusyError, TruthWriterLease
 from .vector_runtime import (
     mark_vector_needs_repair,
@@ -143,6 +144,10 @@ class SessionBundle:
     command_hints: list[str] = field(default_factory=list)
     is_task: bool = False
     completed: bool = False
+    # Stored journal scope_id for this bundle. Empty for nightly-digest
+    # bundles that are not journal-scoped. Journal extractors require it
+    # so the same session_id in another scope cannot share a bundle.
+    scope_id: str = ""
 
     @property
     def message_ids(self) -> list[int]:
@@ -1040,17 +1045,7 @@ def parse_llm_candidates(
 
 
 
-def candidate_is_allowed(candidate: DigestCandidate) -> bool:
-    if candidate.target not in TARGETS:
-        return False
-    if len(candidate.content) < 40:
-        return False
-    if not should_capture_text(candidate.content).allowed:
-        return False
-    quality = score_digest_candidate(candidate)
-    if quality.recommended_action == "reject":
-        return False
-    return True
+# candidate_is_allowed lives in nightly_admission and is imported above.
 
 
 # LLM config, HTTP calls, and retry classification live in nightly_llm.py.
@@ -1731,10 +1726,7 @@ def collect_candidates(
 ) -> list[DigestCandidate]:
     """Collect digest candidates from session bundles using configured extractor strategy.
 
-    Snapshot reads belong to the caller. When ``conn`` is provided, any leftover
-    truth transaction is released before each network call so a peer can
-    ``BEGIN IMMEDIATE``. Apply stays in a later short transaction.
-    """
+    The result includes fallback/status metadata so later apply steps can explain why candidates were or were not produced."""
     candidates: list[DigestCandidate] = []
     fallback_events = fallback_events if fallback_events is not None else []
     for bundle in bundles:
@@ -1747,6 +1739,7 @@ def collect_candidates(
         for chunk in session_chunks(bundle, chunk_chars=options.chunk_chars, max_session_chars=options.max_session_chars):
             prompt = build_prompt(bundle, chunk, existing_context)
             try:
+                release_snapshot_transaction(conn)
                 prepare_network_boundary(conn, "nightly.collect_candidates.llm")
                 raw = _call_llm_with_retries(
                     prompt,
@@ -1859,8 +1852,6 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
     started_at = ""
     llm_config: dict[str, Any] = {}
     try:
-        # Cleanup ownership starts here: config/schema/init failures and early
-        # returns must close vector, conn, then lease.
         if options.dry_run and memory_db.exists():
             conn = connect_truth_database(memory_db, mode="ro", timeout=30)
         elif options.dry_run:
@@ -1886,6 +1877,7 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
         vector_runtime = None if options.dry_run else DigestVectorRuntime(hermes_home=hermes_home, conn=conn, scope=scope)
         existing = existing_memory_context(conn, scope)
         fallback_events: list[dict[str, Any]] = []
+        release_snapshot_transaction(conn)
         prepare_network_boundary(conn, "nightly.run_digest.snapshot")
         candidates = collect_candidates(
             bundles,
@@ -2015,7 +2007,6 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
                 )
                 conn.commit()
             except Exception:
-                # Keep the triggering exception when the receipt table is not ready yet.
                 pass
         raise
     finally:
@@ -2025,10 +2016,6 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
                 vector_runtime.close()
             except Exception as exc:
                 vector_close_error = exc
-        # Vector is rebuildable. Truth SQLite close is authoritative: a close
-        # failure must surface and must not reach lease release while a
-        # writable pager may still be live. After truth and lease succeed,
-        # a captured vector close error is still raised so teardown is visible.
         if conn is not None:
             conn.close()
         if writer_lease is not None:
