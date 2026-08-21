@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import textwrap
+import threading
 
 import pytest
 
@@ -727,3 +728,337 @@ def test_non_live_different_filename_does_not_create_truth_lease(tmp_path):
         assert _child_acquire_status(storage) == "STATUS:acquired"
     finally:
         conn.close()
+
+
+def _enable_posix_descriptor_hardening(monkeypatch, module) -> None:
+    """Force the POSIX fchmod path so Windows can exercise descriptor policy."""
+
+    monkeypatch.setattr(module, "_descriptor_permissions_supported", lambda: True)
+    if not callable(getattr(module.os, "fchmod", None)):
+        monkeypatch.setattr(module.os, "fchmod", lambda _fd, _mode: None, raising=False)
+
+
+def _count_truth_db_raw_opens(monkeypatch, db_path: Path):
+    """Count ``os.open`` of the live DB while keeping directory open portable.
+
+    Windows cannot raw-open a directory the way POSIX ``O_DIRECTORY`` does.
+    Directory opens therefore use a stand-in descriptor whose ``fstat`` still
+    reports a real directory. The live database file uses the real ``os.open``
+    so identity (dev/ino) stays truthful.
+    """
+
+    opened_db: list[str] = []
+    fake_directory_fds: dict[int, Path] = {}
+    next_fake_fd = [20000]
+    real_open = os.open
+    real_fstat = os.fstat
+    real_close = os.close
+
+    def _is_live_db(path: str | os.PathLike[str]) -> bool:
+        target = Path(os.fspath(path))
+        if target == db_path:
+            return True
+        try:
+            return bool(db_path.exists() and os.path.samefile(target, db_path))
+        except OSError:
+            return False
+
+    def counting_open(path, flags, *args, **kwargs):
+        target = Path(os.fspath(path))
+        if _is_live_db(target):
+            opened_db.append(str(target))
+        if target.is_dir() and os.name == "nt":
+            descriptor = next_fake_fd[0]
+            next_fake_fd[0] += 1
+            fake_directory_fds[descriptor] = target
+            return descriptor
+        return real_open(path, flags, *args, **kwargs)
+
+    def counting_fstat(descriptor: int):
+        if descriptor in fake_directory_fds:
+            return os.lstat(fake_directory_fds[descriptor])
+        return real_fstat(descriptor)
+
+    def counting_close(descriptor: int) -> None:
+        if descriptor in fake_directory_fds:
+            fake_directory_fds.pop(descriptor, None)
+            return
+        real_close(descriptor)
+
+    monkeypatch.setattr(os, "open", counting_open)
+    monkeypatch.setattr(os, "fstat", counting_fstat)
+    monkeypatch.setattr(os, "close", counting_close)
+    return opened_db
+
+
+def _production_truth_connection_aliases():
+    """Load the production file through the repo's two real import shapes.
+
+    Tests and production already import this module as both ``truth_connection``
+    and ``scope_recall.truth_connection``. Those aliases are distinct module
+    objects, so a class defined in the file is not shared by identity.
+    """
+
+    import importlib
+
+    packaged = importlib.import_module("scope_recall.truth_connection")
+    top_level = importlib.import_module("truth_connection")
+    assert packaged is not top_level
+    assert Path(packaged.__file__).resolve() == Path(top_level.__file__).resolve()
+    return top_level, packaged
+
+
+def test_descriptor_hardening_second_call_does_not_raw_open_live_db(
+    tmp_path, monkeypatch
+):
+    """Windows-runnable RED for issue #39: later hardens must not os.open the DB."""
+
+    import scope_recall.truth_connection as tc
+
+    db_path = tmp_path / "harden" / "memory.sqlite3"
+    _enable_posix_descriptor_hardening(monkeypatch, tc)
+    opened_db = _count_truth_db_raw_opens(monkeypatch, db_path)
+
+    tc._harden_mutable_truth_path(db_path, create=True)
+    assert opened_db.count(str(db_path)) == 1, opened_db
+    opened_db.clear()
+
+    tc._harden_mutable_truth_path(db_path, create=False)
+    assert str(db_path) not in opened_db, (
+        "a second hardening raw-opened the live truth file with os.open, "
+        "which cancels POSIX advisory locks (issue #39)"
+    )
+
+
+def test_hardening_cache_is_shared_across_real_import_aliases(tmp_path, monkeypatch):
+    """Second alias must reuse the first alias's process-wide hardening cache."""
+
+    alias_a, alias_b = _production_truth_connection_aliases()
+    assert alias_a._POSIX_HARDENING_STATE_NAME == alias_b._POSIX_HARDENING_STATE_NAME
+    sys.modules.pop(alias_a._POSIX_HARDENING_STATE_NAME, None)
+
+    db_path = tmp_path / "harden" / "memory.sqlite3"
+    _enable_posix_descriptor_hardening(monkeypatch, alias_a)
+    _enable_posix_descriptor_hardening(monkeypatch, alias_b)
+    opened_db = _count_truth_db_raw_opens(monkeypatch, db_path)
+
+    alias_a._harden_mutable_truth_path(db_path, create=True)
+    alias_b._harden_mutable_truth_path(db_path, create=False)
+    assert opened_db.count(str(db_path)) == 1, (
+        "cross-import-alias hardening raw-opened the live truth file twice; "
+        f"opens={opened_db}"
+    )
+    assert alias_a._posix_hardening_state() is alias_b._posix_hardening_state()
+    assert alias_a._posix_hardening_state().lock is alias_b._posix_hardening_state().lock
+
+
+def test_hardening_cache_reset_is_alias_neutral(tmp_path, monkeypatch):
+    """Test reset must clear the holder no matter which alias populated it."""
+
+    alias_a, alias_b = _production_truth_connection_aliases()
+    sys.modules.pop(alias_a._POSIX_HARDENING_STATE_NAME, None)
+
+    db_path = tmp_path / "harden" / "memory.sqlite3"
+    _enable_posix_descriptor_hardening(monkeypatch, alias_a)
+    _enable_posix_descriptor_hardening(monkeypatch, alias_b)
+    opened_db = _count_truth_db_raw_opens(monkeypatch, db_path)
+
+    alias_a._harden_mutable_truth_path(db_path, create=True)
+    opened_db.clear()
+    alias_b._reset_posix_hardening_cache_for_tests()
+    alias_a._harden_mutable_truth_path(db_path, create=False)
+    assert str(db_path) in opened_db
+
+
+def test_incompatible_shared_hardening_state_fails_closed_without_raw_open(
+    tmp_path, monkeypatch
+):
+    """An unknown marker schema must not be repaired into trusted cache evidence."""
+
+    import types
+
+    import scope_recall.truth_connection as tc
+
+    db_path = tmp_path / "harden" / "memory.sqlite3"
+    _enable_posix_descriptor_hardening(monkeypatch, tc)
+    opened_db = _count_truth_db_raw_opens(monkeypatch, db_path)
+
+    cached_path = (
+        "C:\\foreign\\cached\\memory.sqlite3"
+        if os.name == "nt"
+        else "/foreign/cached/memory.sqlite3"
+    )
+    cached_dev, cached_ino = 424242, 868686
+    foreign = types.ModuleType(tc._POSIX_HARDENING_STATE_NAME)
+    foreign.version = 0
+    foreign.lock = threading.Lock()
+    foreign.pid = os.getpid()
+    foreign.by_path = {cached_path: (cached_dev, cached_ino, 0o600)}
+    foreign.by_identity = {(cached_dev, cached_ino): (cached_dev, cached_ino, 0o600)}
+    monkeypatch.setitem(sys.modules, tc._POSIX_HARDENING_STATE_NAME, foreign)
+
+    with pytest.raises(TruthDatabaseConnectionError) as caught:
+        tc._harden_mutable_truth_path(db_path, create=True)
+    message = f"{caught.value}\n{caught.value!r}"
+    assert "restart" in message.lower()
+    assert cached_path not in message
+    assert str(db_path) not in message
+    assert str(cached_dev) not in message
+    assert str(cached_ino) not in message
+    assert str(db_path) not in opened_db
+    assert sys.modules[tc._POSIX_HARDENING_STATE_NAME] is foreign
+    assert foreign.version == 0
+    assert foreign.by_path == {cached_path: (cached_dev, cached_ino, 0o600)}
+    assert foreign.by_identity == {
+        (cached_dev, cached_ino): (cached_dev, cached_ino, 0o600)
+    }
+
+
+def test_hardening_identity_replacement_fails_closed_without_raw_open(
+    tmp_path, monkeypatch
+):
+    import scope_recall.truth_connection as tc
+
+    db_path = tmp_path / "harden" / "memory.sqlite3"
+    _enable_posix_descriptor_hardening(monkeypatch, tc)
+    opened_db = _count_truth_db_raw_opens(monkeypatch, db_path)
+
+    tc._harden_mutable_truth_path(db_path, create=True)
+    previous = tc._lstat_hardening_record(db_path)
+    opened_db.clear()
+    db_path.unlink()
+    db_path.write_bytes(b"replaced-identity")
+    current = tc._lstat_hardening_record(db_path)
+    # Rare unlink+recreate inode reuse would look unchanged; perturb cache
+    # so this node still exercises the fail-closed identity path.
+    if previous is not None and current is not None and previous == current:
+        key = tc._path_hardening_key(db_path)
+        state = tc._posix_hardening_state()
+        dev, ino, mode = state.by_path[key]
+        state.by_path[key] = (dev, ino + 1, mode)
+
+    with pytest.raises(TruthDatabaseConnectionError, match="identity or permissions"):
+        tc._harden_mutable_truth_path(db_path, create=False)
+    assert str(db_path) not in opened_db
+
+
+def test_hardening_permission_drift_fails_closed_without_raw_open(
+    tmp_path, monkeypatch
+):
+    import scope_recall.truth_connection as tc
+
+    db_path = tmp_path / "harden" / "memory.sqlite3"
+    _enable_posix_descriptor_hardening(monkeypatch, tc)
+    opened_db = _count_truth_db_raw_opens(monkeypatch, db_path)
+
+    tc._harden_mutable_truth_path(db_path, create=True)
+    opened_db.clear()
+    if os.name != "nt":
+        os.chmod(db_path, 0o644)
+    else:
+        key = tc._path_hardening_key(db_path)
+        state = tc._posix_hardening_state()
+        dev, ino, mode = state.by_path[key]
+        state.by_path[key] = (dev, ino, mode ^ 0o044)
+
+    with pytest.raises(TruthDatabaseConnectionError, match="identity or permissions"):
+        tc._harden_mutable_truth_path(db_path, create=False)
+    assert str(db_path) not in opened_db
+
+
+def test_hardening_hardlink_alias_does_not_raw_open_again(tmp_path, monkeypatch):
+    import scope_recall.truth_connection as tc
+
+    db_path = tmp_path / "harden" / "memory.sqlite3"
+    alias = tmp_path / "harden" / "truth-hardlink.sqlite3"
+    _enable_posix_descriptor_hardening(monkeypatch, tc)
+    opened_db = _count_truth_db_raw_opens(monkeypatch, db_path)
+
+    tc._harden_mutable_truth_path(db_path, create=True)
+    try:
+        os.link(db_path, alias)
+    except OSError as exc:
+        pytest.skip(f"filesystem cannot create the hardlink: {exc}")
+    opened_db.clear()
+
+    tc._harden_mutable_truth_path(alias, create=False)
+    assert opened_db == []
+
+
+def test_hardening_concurrent_first_opens_raw_open_once(tmp_path, monkeypatch):
+    import scope_recall.truth_connection as tc
+
+    db_path = tmp_path / "harden" / "memory.sqlite3"
+    _enable_posix_descriptor_hardening(monkeypatch, tc)
+    opened_db = _count_truth_db_raw_opens(monkeypatch, db_path)
+
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(8)
+
+    def worker() -> None:
+        try:
+            barrier.wait(timeout=5)
+            tc._harden_mutable_truth_path(db_path, create=True)
+        except BaseException as exc:  # noqa: BLE001 - collect worker failures
+            errors.append(exc)
+
+    workers = [threading.Thread(target=worker) for _ in range(8)]
+    for thread in workers:
+        thread.start()
+    for thread in workers:
+        thread.join(timeout=10)
+        assert thread.is_alive() is False
+    assert errors == []
+    assert opened_db.count(str(db_path)) == 1
+
+
+def test_hardening_cache_does_not_survive_pid_change(tmp_path, monkeypatch):
+    import scope_recall.truth_connection as tc
+
+    db_path = tmp_path / "harden" / "memory.sqlite3"
+    _enable_posix_descriptor_hardening(monkeypatch, tc)
+    opened_db = _count_truth_db_raw_opens(monkeypatch, db_path)
+
+    tc._harden_mutable_truth_path(db_path, create=True)
+    opened_db.clear()
+    parent_pid = os.getpid()
+    monkeypatch.setattr(os, "getpid", lambda: parent_pid + 1)
+
+    tc._harden_mutable_truth_path(db_path, create=False)
+    assert str(db_path) in opened_db
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows inherited-ACL path")
+def test_windows_writable_truth_does_not_raw_open_for_descriptor_chmod(
+    tmp_path, monkeypatch
+):
+    opened_db: list[str] = []
+    real_open = os.open
+
+    def counting_open(path, flags, *args, **kwargs):
+        if Path(os.fspath(path)).name.casefold() == "memory.sqlite3":
+            opened_db.append(os.fspath(path))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", counting_open)
+    conn = connect_truth_database(tmp_path / "memory.sqlite3", mode="rwc")
+    conn.close()
+    assert opened_db == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink replacement")
+def test_symlink_replacement_after_hardening_is_rejected_before_raw_open(
+    tmp_path, monkeypatch
+):
+    import scope_recall.truth_connection as tc
+
+    db_path = tmp_path / "harden" / "memory.sqlite3"
+    opened_db = _count_truth_db_raw_opens(monkeypatch, db_path)
+    tc._harden_mutable_truth_path(db_path, create=True)
+    opened_db.clear()
+    db_path.unlink()
+    db_path.symlink_to(tmp_path / "other.sqlite3")
+
+    with pytest.raises(TruthDatabaseConnectionError, match="symlink"):
+        tc._harden_mutable_truth_path(db_path, create=False)
+    assert str(db_path) not in opened_db

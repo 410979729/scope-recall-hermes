@@ -5,7 +5,16 @@ Every Scope Recall connection that can read or mutate the authoritative memory
 SQLite database must cross this module before schema, transactions, migrations,
 or activation authorizers are installed. Writable FILE-backed connections
 classified as live truth acquire a connection-level truth writer lease on the
-storage directory before the SQLite pager opens. Live truth is the
+storage directory before the SQLite pager opens. POSIX writable opens
+raw-open and fchmod-harden each database identity at most once per process
+so a later descriptor close cannot cancel same-process SQLite advisory
+locks. Identity replacement or permission drift after that cached event
+fails closed instead of raw-opening while this process may hold locks.
+An existing process-wide hardening marker with an unknown version or
+schema also fails closed and requires a process restart; it is not
+repaired or replaced while this process may already hold SQLite locks.
+
+Live truth is the
 ASCII-case-insensitive ``memory.sqlite3`` basename, plus any existing
 same-directory filesystem alias or hardlink that ``os.path.samefile``
 identifies with sibling ``memory.sqlite3``. ``:memory:``, read-only
@@ -19,7 +28,9 @@ from __future__ import annotations
 import os
 import sqlite3
 import stat
+import sys
 import threading
+import types
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
@@ -125,12 +136,241 @@ def _descriptor_permissions_supported() -> bool:
     return os.name != "nt" and callable(getattr(os, "fchmod", None))
 
 
+_POSIX_HARDENING_STATE_NAME = "_scope_recall_posix_truth_hardening"
+_POSIX_HARDENING_STATE_VERSION = 1
+_THREAD_LOCK_TYPE = type(threading.Lock())
+
+
+def _new_posix_hardening_holder() -> types.ModuleType:
+    """Build a versioned process-wide holder using only alias-neutral builtins."""
+
+    holder = types.ModuleType(_POSIX_HARDENING_STATE_NAME)
+    setattr(holder, "version", _POSIX_HARDENING_STATE_VERSION)
+    setattr(holder, "lock", threading.Lock())
+    setattr(holder, "pid", os.getpid())
+    setattr(holder, "by_path", {})
+    setattr(holder, "by_identity", {})
+    return holder
+
+
+def _posix_hardening_holder_usable(holder: object) -> bool:
+    """Return whether *holder* has the shared schema without class identity."""
+
+    return (
+        getattr(holder, "version", None) == _POSIX_HARDENING_STATE_VERSION
+        and isinstance(getattr(holder, "lock", None), _THREAD_LOCK_TYPE)
+        and isinstance(getattr(holder, "by_path", None), dict)
+        and isinstance(getattr(holder, "by_identity", None), dict)
+        and isinstance(getattr(holder, "pid", None), int)
+    )
+
+
+def _posix_hardening_state() -> types.ModuleType:
+    """Return the process-wide POSIX hardening holder shared across import aliases.
+
+    A missing marker is created with ``sys.modules.setdefault`` so concurrent
+    import aliases still share one lock. A valid current-schema marker is
+    reused. An existing marker with an unknown version or schema fails
+    closed: this process may already hold SQLite locks, so the holder is
+    not repaired, cleared, or replaced.
+    """
+
+    holder = sys.modules.get(_POSIX_HARDENING_STATE_NAME)
+    if _posix_hardening_holder_usable(holder) and isinstance(holder, types.ModuleType):
+        return holder
+    if _POSIX_HARDENING_STATE_NAME not in sys.modules:
+        holder = sys.modules.setdefault(
+            _POSIX_HARDENING_STATE_NAME, _new_posix_hardening_holder()
+        )
+    else:
+        # Re-read after a missed first get so a racing alias that published a
+        # valid holder is reused instead of being treated as incompatible.
+        holder = sys.modules.get(_POSIX_HARDENING_STATE_NAME)
+    if _posix_hardening_holder_usable(holder) and isinstance(holder, types.ModuleType):
+        return holder
+    raise TruthDatabaseConnectionError(
+        "SQLite truth storage hardening state is incompatible; restart the process"
+    )
+
+
+def _reset_posix_hardening_cache_for_tests() -> None:
+    """Clear process-local hardening records so tests cannot leak identity."""
+
+    holder = sys.modules.get(_POSIX_HARDENING_STATE_NAME)
+    lock = getattr(holder, "lock", None)
+    by_path = getattr(holder, "by_path", None)
+    by_identity = getattr(holder, "by_identity", None)
+    if not isinstance(lock, _THREAD_LOCK_TYPE):
+        return
+    if not isinstance(by_path, dict) or not isinstance(by_identity, dict):
+        return
+    with lock:
+        by_path.clear()
+        by_identity.clear()
+        setattr(holder, "pid", os.getpid())
+
+
+def _after_fork_reset_hardening() -> None:
+    """Drop inherited records and the inherited lock after ``fork``."""
+
+    holder = sys.modules.get(_POSIX_HARDENING_STATE_NAME)
+    if holder is None:
+        return
+    setattr(holder, "lock", threading.Lock())
+    setattr(holder, "pid", os.getpid())
+    setattr(holder, "by_path", {})
+    setattr(holder, "by_identity", {})
+    setattr(holder, "version", _POSIX_HARDENING_STATE_VERSION)
+
+
+def _invalidate_inherited_hardening_state(state: types.ModuleType) -> None:
+    """Forget a parent's records when this process is a fork child.
+
+    Caller must hold ``state.lock``. ``register_at_fork`` already replaces the
+    inherited lock; this PID check covers import aliases and platforms without
+    that hook.
+    """
+
+    if getattr(state, "pid", None) == os.getpid():
+        return
+    by_path = getattr(state, "by_path", None)
+    by_identity = getattr(state, "by_identity", None)
+    if isinstance(by_path, dict):
+        by_path.clear()
+    if isinstance(by_identity, dict):
+        by_identity.clear()
+    setattr(state, "pid", os.getpid())
+
+
+def _path_hardening_key(path: Path) -> str:
+    return os.path.abspath(os.fspath(path))
+
+
+def _as_hardening_record(value: object) -> tuple[int, int, int] | None:
+    """Accept only an immutable ``(dev, ino, mode)`` tuple."""
+
+    if not isinstance(value, tuple) or len(value) != 3:
+        return None
+    dev, ino, mode = value
+    if not isinstance(dev, int) or not isinstance(ino, int) or not isinstance(mode, int):
+        return None
+    return (dev, ino, mode)
+
+
+def _lstat_hardening_record(path: Path) -> tuple[int, int, int] | None:
+    try:
+        st = os.lstat(os.fspath(path))
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(st.st_mode):
+        raise TruthDatabaseConnectionError(
+            "SQLite truth storage cannot use symlink paths"
+        )
+    return (int(st.st_dev), int(st.st_ino), int(stat.S_IMODE(st.st_mode)))
+
+
+def _harden_truth_directory_descriptor(
+    parent: Path, directory_flags: int, fchmod: Callable[[int, int], None]
+) -> None:
+    """Re-apply owner-only directory mode through a no-follow descriptor.
+
+    A directory descriptor is a different inode than the live SQLite file, so
+    closing it cannot cancel database advisory locks. Repeat this on every
+    writable open so directory permission drift is still corrected.
+    """
+
+    directory_fd = os.open(parent, directory_flags)
+    try:
+        if not stat.S_ISDIR(os.fstat(directory_fd).st_mode):
+            raise TruthDatabaseConnectionError(
+                "SQLite truth storage parent is not a directory"
+            )
+        fchmod(directory_fd, TRUTH_DIRECTORY_MODE)
+    finally:
+        os.close(directory_fd)
+
+
+def _apply_database_descriptor_hardening(
+    path: Path,
+    file_flags: int,
+    fchmod: Callable[[int, int], None],
+    state: types.ModuleType,
+    path_key: str,
+) -> None:
+    """Raw-open, fchmod, and record one database identity. Caller holds the lock."""
+
+    database_fd = os.open(path, file_flags, TRUTH_DATABASE_MODE)
+    try:
+        st = os.fstat(database_fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise TruthDatabaseConnectionError(
+                "SQLite truth storage is not a regular file"
+            )
+        fchmod(database_fd, TRUTH_DATABASE_MODE)
+        st = os.fstat(database_fd)
+        record = (
+            int(st.st_dev),
+            int(st.st_ino),
+            int(stat.S_IMODE(st.st_mode)),
+        )
+        state.by_path[path_key] = record
+        state.by_identity[record[:2]] = record
+    finally:
+        os.close(database_fd)
+
+
+def _harden_truth_database_descriptor_once(
+    path: Path, file_flags: int, fchmod: Callable[[int, int], None]
+) -> None:
+    """Harden the live DB at most once per process identity, or fail closed."""
+
+    path_key = _path_hardening_key(path)
+    state = _posix_hardening_state()
+    with state.lock:
+        _invalidate_inherited_hardening_state(state)
+        current = _lstat_hardening_record(path)
+        if path_key in state.by_path:
+            cached_path = _as_hardening_record(state.by_path[path_key])
+            if cached_path is None or current is None or cached_path != current:
+                raise TruthDatabaseConnectionError(
+                    "SQLite truth storage identity or permissions changed after hardening"
+                )
+            return
+        if current is not None:
+            identity_key = current[:2]
+            if identity_key in state.by_identity:
+                cached_identity = _as_hardening_record(state.by_identity[identity_key])
+                if cached_identity is None or cached_identity != current:
+                    raise TruthDatabaseConnectionError(
+                        "SQLite truth storage identity or permissions changed after hardening"
+                    )
+                state.by_path[path_key] = cached_identity
+                return
+        _apply_database_descriptor_hardening(
+            path, file_flags, fchmod, state, path_key
+        )
+
+
+_register_at_fork = getattr(os, "register_at_fork", None)
+if callable(_register_at_fork):
+    _register_at_fork(after_in_child=_after_fork_reset_hardening)
+
+
 def _harden_mutable_truth_path(path: Path, *, create: bool) -> None:
     """Create or harden mutable truth storage without following final symlinks.
 
     Windows uses the containing profile's inherited ACL boundary. POSIX systems
     harden both the directory and database through opened descriptors so a path
     replacement cannot redirect the chmod operation.
+
+    Closing a raw descriptor for a live SQLite file can cancel advisory locks
+    held by this process. The database file is therefore raw-opened and
+    fchmod-hardened at most once per process identity/path epoch. A later
+    writable open of the same inode skips ``os.open``. If the path now names a
+    different file or the recorded mode drifted, this function fails closed
+    rather than raw-opening while SQLite locks may exist. An incompatible
+    process-wide hardening marker fails closed the same way and requires a
+    process restart.
     """
 
     parent = path.parent
@@ -163,25 +403,8 @@ def _harden_mutable_truth_path(path: Path, *, create: bool) -> None:
         file_flags |= os.O_CREAT
 
     try:
-        directory_fd = os.open(parent, directory_flags)
-        try:
-            if not stat.S_ISDIR(os.fstat(directory_fd).st_mode):
-                raise TruthDatabaseConnectionError(
-                    "SQLite truth storage parent is not a directory"
-                )
-            fchmod(directory_fd, TRUTH_DIRECTORY_MODE)
-        finally:
-            os.close(directory_fd)
-
-        database_fd = os.open(path, file_flags, TRUTH_DATABASE_MODE)
-        try:
-            if not stat.S_ISREG(os.fstat(database_fd).st_mode):
-                raise TruthDatabaseConnectionError(
-                    "SQLite truth storage is not a regular file"
-                )
-            fchmod(database_fd, TRUTH_DATABASE_MODE)
-        finally:
-            os.close(database_fd)
+        _harden_truth_directory_descriptor(parent, directory_flags, fchmod)
+        _harden_truth_database_descriptor_once(path, file_flags, fchmod)
     except TruthDatabaseConnectionError:
         raise
     except OSError as exc:

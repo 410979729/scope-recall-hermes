@@ -11,6 +11,8 @@ import tempfile
 import types
 from pathlib import Path
 
+import pytest
+
 _TEST_HERMES_HOME = tempfile.TemporaryDirectory(prefix="scope.recall.test-home.")
 
 
@@ -38,3 +40,17 @@ def _register_package_alias(repo_root: Path) -> None:
 _REPO_ROOT = _install_plugin()
 _register_package_alias(_REPO_ROOT)
 os.environ["HERMES_HOME"] = _TEST_HERMES_HOME.name
+
+
+@pytest.fixture(autouse=True)
+def _isolate_posix_truth_hardening_cache():
+    """Reset process-local POSIX hardening records around every test."""
+
+    import scope_recall.truth_connection as truth_connection
+
+    reset = getattr(truth_connection, "_reset_posix_hardening_cache_for_tests", None)
+    if callable(reset):
+        reset()
+    yield
+    if callable(reset):
+        reset()
