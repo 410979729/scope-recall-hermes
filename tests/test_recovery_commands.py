@@ -17,22 +17,54 @@ from scope_recall.recovery_commands import (
 )
 
 # cmd.exe / PowerShell 5.1 on Chinese Windows write OEM/ANSI bytes (CP936).
-# Release-gate pytest inherits PYTHONUTF8=1, so text=True decodes as UTF-8,
+# Release-gate pytest may inherit PYTHONUTF8=1, so text=True decodes as UTF-8,
 # kills the stderr reader thread, and leaves stderr=None.
-_WINDOWS_SUBPROCESS_ENCODINGS = ("utf-8", "oem", "cp936", "gbk", "cp1252")
+# Host OEM/ANSI codecs (``oem``, ``cp1252``, and en-US ``preferred``) are
+# single-byte and permissive: they accept CP936 bytes without raising and
+# return mojibake. CP936/GBK must therefore run before those fallbacks.
+_WINDOWS_CJK_ENCODINGS = ("cp936", "gbk")
+_WINDOWS_SINGLE_BYTE_FALLBACKS = ("oem", "cp1252")
 
 
-def _decode_windows_subprocess_bytes(payload: bytes | None) -> str:
+def _windows_subprocess_encodings(preferred: str | None = None) -> list[str]:
+    """Return decode candidates with CJK codecs before permissive single-byte fallbacks.
+
+    Strict UTF-8 remains first so valid UTF-8/ASCII wins. ``preferred`` is
+    appended after CP936/GBK because en-US Windows often reports ``cp1252``,
+    which would otherwise short-circuit localized cmd.exe diagnostics.
+    """
+
+    if preferred is None:
+        preferred = locale.getpreferredencoding(False)
+    encodings: list[str] = []
+    seen: set[str] = set()
+    for name in (
+        "utf-8",
+        *_WINDOWS_CJK_ENCODINGS,
+        preferred,
+        *_WINDOWS_SINGLE_BYTE_FALLBACKS,
+    ):
+        normalized = str(name or "").strip()
+        if not normalized:
+            continue
+        key = normalized.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        encodings.append(normalized)
+    return encodings
+
+
+def _decode_windows_subprocess_bytes(
+    payload: bytes | None,
+    *,
+    preferred: str | None = None,
+) -> str:
     """Decode localized Windows process output without dropping the stream."""
 
     if not payload:
         return ""
-    encodings: list[str] = []
-    preferred = locale.getpreferredencoding(False)
-    for name in ("utf-8", preferred, *_WINDOWS_SUBPROCESS_ENCODINGS):
-        if name and name not in encodings:
-            encodings.append(name)
-    for name in encodings:
+    for name in _windows_subprocess_encodings(preferred):
         try:
             return payload.decode(name)
         except (LookupError, UnicodeDecodeError):
@@ -237,12 +269,16 @@ def test_windows_file_and_tree_recovery_commands_execute(tmp_path):
     assert (destination_tree / "nested" / "marker.txt").read_text(encoding="utf-8") == "ready\n"
 
 
+def _localized_cmd_stderr_gbk() -> bytes:
+    return (
+        "'powershell.exe' 不是内部或外部命令，也不是可运行的程序或批处理文件。\r\n"
+    ).encode("gbk")
+
+
 def test_windows_recovery_diagnostics_survive_localized_cmd_stderr():
     """GBK cmd.exe diagnostics must stay usable under UTF-8 pytest."""
 
-    payload = (
-        "'powershell.exe' 不是内部或外部命令，也不是可运行的程序或批处理文件。\r\n"
-    ).encode("gbk")
+    payload = _localized_cmd_stderr_gbk()
     assert payload[17] == 0xB2
     with pytest.raises(UnicodeDecodeError):
         payload.decode("utf-8")
@@ -251,3 +287,50 @@ def test_windows_recovery_diagnostics_survive_localized_cmd_stderr():
     diagnostic = _decode_windows_subprocess_bytes(None) + decoded
     assert "powershell.exe" in diagnostic
     assert "不是内部或外部命令" in diagnostic
+    # Public Windows CI used en-US preferred=cp1252 and lost this phrase.
+    for preferred in ("cp1252", "oem", "utf-8"):
+        recovered = _decode_windows_subprocess_bytes(payload, preferred=preferred)
+        assert "不是内部或外部命令" in recovered
+        assert recovered[:16] == "'powershell.exe'"
+
+
+def test_windows_subprocess_encoding_order_tries_cjk_before_permissive_fallbacks():
+    """Ordering is the contract; do not just accept host OEM mojibake."""
+
+    for preferred in ("utf-8", "cp1252", "oem", "cp936", "windows-1252"):
+        names = [name.casefold() for name in _windows_subprocess_encodings(preferred)]
+        assert names[0] == "utf-8"
+        cjk_index = min(names.index("cp936"), names.index("gbk"))
+        assert names.index("oem") > cjk_index
+        assert names.index("cp1252") > cjk_index
+        if preferred.casefold() in {"cp1252", "oem", "windows-1252"}:
+            assert names.index(preferred.casefold()) > cjk_index
+
+
+def test_permissive_single_byte_fallback_mojibakes_gbk_before_cjk_codecs():
+    """cp1252 is the host-independent proof that a late fallback would swallow GBK."""
+
+    payload = _localized_cmd_stderr_gbk()
+    mojibake = payload.decode("cp1252")
+    assert "不是内部或外部命令" not in mojibake
+    assert "\xb2" in mojibake
+    assert _decode_windows_subprocess_bytes(payload, preferred="cp1252") != mojibake
+
+
+def test_windows_subprocess_decoder_prefers_strict_utf8():
+    utf8_cjk = "不是内部或外部命令".encode("utf-8")
+    assert _decode_windows_subprocess_bytes(utf8_cjk) == "不是内部或外部命令"
+    assert _decode_windows_subprocess_bytes(b"ready\r\n") == "ready\r\n"
+
+
+def test_windows_subprocess_decoder_keeps_western_bytes_and_empty_streams():
+    western = b"Caf\xe9"
+    with pytest.raises(UnicodeDecodeError):
+        western.decode("utf-8")
+    with pytest.raises(UnicodeDecodeError):
+        western.decode("gbk")
+    decoded = _decode_windows_subprocess_bytes(western)
+    assert decoded.startswith("Caf")
+    assert decoded != ""
+    assert _decode_windows_subprocess_bytes(None) == ""
+    assert _decode_windows_subprocess_bytes(b"") == ""

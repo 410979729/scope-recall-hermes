@@ -621,11 +621,11 @@ def test_release_identity_requires_version_newer_than_latest_tag():
     assert "mutually exclusive" in conflicting_modes["error"]
 
 
-def test_v1101_release_candidate_identity_surfaces_are_consistent():
+def test_v1102_release_candidate_identity_surfaces_are_consistent():
     """Bind the source candidate to every authoritative version surface."""
 
-    expected_version = "1.10.1"
-    release_check = _load_release_check_module("scope_recall_check_release_v1101_identity")
+    expected_version = "1.10.2"
+    release_check = _load_release_check_module("scope_recall_check_release_v1102_identity")
     lexical_generation = importlib.import_module(
         f"{PACKAGE_NAME}.lexical_generation"
     )
@@ -637,7 +637,7 @@ def test_v1101_release_candidate_identity_surfaces_are_consistent():
     assert _package_version() == expected_version
     assert f"version: {expected_version}" in plugin_manifest
     assert release_check.PACKAGE_VERSION == expected_version
-    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.10.1.md"
+    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.10.2.md"
     assert (PLUGIN_ROOT / release_check.RELEASE_READINESS_DOC).is_file()
     assert f"## [{expected_version}]" in changelog
     assert f"Version `{expected_version}`" in readme
@@ -650,24 +650,31 @@ def test_v1101_release_candidate_identity_surfaces_are_consistent():
     )
     assert identity["ok"] is True
     assert identity["release_eligible"] is True
-    assert identity["expected_release_tag"] == "v1.10.1"
+    assert identity["expected_release_tag"] == "v1.10.2"
     assert identity["latest_release_tag"] == "v1.9.2"
     assert "v1.10.0" not in identity["latest_release_tag"]
 
 
-def test_v1101_changelog_is_cumulative_from_last_public_release():
-    release_check = _load_release_check_module("scope_recall_check_release_v1101_changelog")
+def test_v1102_changelog_is_cumulative_from_last_public_release():
+    release_check = _load_release_check_module("scope_recall_check_release_v1102_changelog")
 
-    assert release_check.PACKAGE_VERSION == "1.10.1"
+    assert release_check.PACKAGE_VERSION == "1.10.2"
     assert release_check.PUBLIC_RELEASE_BASELINE == "1.9.2"
     changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    section = release_check.changelog_section(changelog, "1.10.1")
+    section = release_check.changelog_section(changelog, "1.10.2")
     assert "since the last public release, `1.9.2`" in section
     assert "since the last public release, `1.10.0`" not in section
     assert "supersede" in section.lower() or "incorporat" in section.lower()
     assert "1.10.0" in section
     assert "descriptor" in section.lower()
     assert "journal" in section.lower()
+    assert "fixture" in section.lower()
+    assert "does not weaken" in section.lower() or "not weaken" in section.lower()
+    assert "staging replacement" in section.lower()
+    assert "hardening cache" in section.lower()
+    assert "cp936/gbk" in section.lower()
+    assert "oem fallback" in section.lower()
+    assert "recovery-command" in section.lower()
     historical = release_check.changelog_section(changelog, "1.10.0")
     assert "since the last public release, `1.9.2`" in historical
     assert "1.9.3" in historical
@@ -676,15 +683,39 @@ def test_v1101_changelog_is_cumulative_from_last_public_release():
         assert term.lower() in historical.lower(), term
 
 
-def test_v1101_public_surfaces_do_not_call_untagged_1100_the_last_release():
-    release_check = _load_release_check_module("scope_recall_check_release_v1101_baseline_truth")
+def test_v1102_public_wording_covers_both_ci_fixture_corrections():
+    """Public 1.10.2 wording must keep both CI fixture corrections visible."""
+
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_v1102_both_ci_fixtures"
+    )
+    changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    surfaces = {
+        "changelog": release_check.changelog_section(changelog, "1.10.2"),
+        "readme": (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8"),
+        "stability": (PLUGIN_ROOT / "docs" / "stability.md").read_text(encoding="utf-8"),
+        "readiness": (PLUGIN_ROOT / "docs" / "release-readiness.1.10.2.md").read_text(
+            encoding="utf-8"
+        ),
+    }
+    for name, text in surfaces.items():
+        lowered = text.lower()
+        assert "staging replacement" in lowered, name
+        assert "hardening cache" in lowered, name
+        assert "cp936/gbk" in lowered, name
+        assert "oem fallback" in lowered, name
+        assert "recovery-command" in lowered, name
+
+
+def test_v1102_public_surfaces_do_not_call_untagged_1100_the_last_release():
+    release_check = _load_release_check_module("scope_recall_check_release_v1102_baseline_truth")
 
     truth = release_check.public_release_baseline_truth_check()
     assert truth["ok"] is True, truth
     assert release_check.PUBLIC_RELEASE_BASELINE == "1.9.2"
     readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
     stability = (PLUGIN_ROOT / "docs" / "stability.md").read_text(encoding="utf-8")
-    readiness = (PLUGIN_ROOT / "docs" / "release-readiness.1.10.1.md").read_text(encoding="utf-8")
+    readiness = (PLUGIN_ROOT / "docs" / "release-readiness.1.10.2.md").read_text(encoding="utf-8")
     assert "Release `1.10.0`" not in readme
     assert "prior public source candidate" in readme
     assert "last packaged `1.9.2`" in stability
