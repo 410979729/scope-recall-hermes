@@ -25,6 +25,12 @@ from scope_recall.truth_connection import connect_truth_database
 
 
 def _write_truth_db(path: Path, *, marker: str = "alpha") -> None:
+    """Create a Scope Recall truth DB through the production connection path.
+
+    Do not use this to simulate an external owner replacing a path this
+    process already hardened; use ``_write_external_sqlite_db`` instead.
+    """
+
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = connect_truth_database(path, mode="rwc")
     try:
@@ -34,6 +40,33 @@ def _write_truth_db(path: Path, *, marker: str = "alpha") -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def _write_external_sqlite_db(path: Path, *, marker: str) -> None:
+    """Write a valid SQLite replacement as an independent external actor.
+
+    A real external owner or process would not share Scope Recall's
+    process-wide POSIX descriptor-hardening cache. After this process has
+    already hardened a staging path, ``connect_truth_database`` correctly
+    fail-closes on inode replacement. Routing the simulated external actor
+    through that production helper therefore collapses the cleanup-ownership
+    contract into the in-process identity check before cleanup can observe
+    the replacement. Use stdlib ``sqlite3`` so the fixture creates a readable
+    DB without entering or evicting production hardening state.
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("PRAGMA journal_mode=DELETE")
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS probe(id INTEGER PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        connection.execute("DELETE FROM probe")
+        connection.execute("INSERT INTO probe(value) VALUES (?)", (marker,))
+        connection.commit()
+    finally:
+        connection.close()
 
 
 def _write_wal_truth_db(path: Path, *, marker: str = "wal-source") -> None:
@@ -870,6 +903,14 @@ def test_release_owned_artifacts_pins_posix_identity_through_path_cleanup(
 def test_verified_online_backup_preserves_external_replacement_during_cleanup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Cleanup must preserve a staging namespace replaced by an external owner.
+
+    The replacement is written with stdlib SQLite so this process's
+    descriptor-hardening cache is not consulted. Production cleanup refuses
+    to remove the replacement inode because its identity no longer matches
+    the owned staging inode.
+    """
+
     import scope_recall.sqlite_backup as sqlite_backup
 
     source = tmp_path / "memory.sqlite3"
@@ -884,7 +925,7 @@ def test_verified_online_backup_preserves_external_replacement_during_cleanup(
 
     def replace_before_cleanup(path, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
         path.unlink(missing_ok=True)
-        _write_truth_db(path, marker="external-owner")
+        _write_external_sqlite_db(path, marker="external-owner")
         external_sidecar = Path(f"{path}-wal")
         external_sidecar.write_bytes(b"external-sidecar")
         replacements.append((path, external_sidecar))

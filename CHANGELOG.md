@@ -4,6 +4,18 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.10.2] - 2026-08-21
+
+This patch source candidate is cumulative since the last public release, `1.9.2`. It incorporates and supersedes the untagged `1.10.0` public source candidate and the `1.10.1` public source candidate that reached the public tree. It is two CI fixture corrections and does not change production runtime behavior: the simulated external staging replacement no longer enters this process's truth-connection hardening cache, and Windows recovery-command test diagnostics decode CP936/GBK before permissive OEM fallback. It does not weaken descriptor hardening. SQLite remains authoritative and the stable provider/tool identities are unchanged.
+
+### Fixed
+- Stopped the verified online-backup cleanup fixture from writing the simulated external owner replacement through `connect_truth_database`, so POSIX descriptor-hardening identity checks no longer fire before cleanup ownership can preserve the replaced staging DB and sidecar.
+- Decoded Windows recovery-command test diagnostics as CP936/GBK before host-dependent OEM or cp1252 fallbacks, so localized cmd.exe stderr is not silently mojibaked on en-US CI. Production recovery command generation is unchanged.
+
+### Compatibility
+- Preserved Fact Evolution, temporal queries, bounded Reflection, scope routing, evidence authority, provenance-root validation, deterministic idempotency, journal checkpoint ownership, and release-identity checks.
+- Preserved the `1.10.1` POSIX owner-only descriptor-hardening contract and journal deferred-metric doctor fixtures. Identity replacement or permission drift after the cached hardening event still fails closed. Windows inherited-ACL behavior is unchanged.
+
 ## [1.10.1] - 2026-08-20
 
 This patch source candidate is cumulative since the last public release, `1.9.2`. It incorporates and supersedes the untagged `1.10.0` public source candidate that reached `main` without a tag, GitHub Release, or PyPI artifact. It covers cross-platform SQLite lock hardening and deterministic journal health fixtures. SQLite remains authoritative and the stable provider/tool identities are unchanged.
