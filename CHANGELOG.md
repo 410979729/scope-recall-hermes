@@ -4,6 +4,17 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.10.1] - 2026-08-20
+
+This patch source candidate is cumulative since the last public release, `1.9.2`. It incorporates and supersedes the untagged `1.10.0` public source candidate that reached `main` without a tag, GitHub Release, or PyPI artifact. It covers cross-platform SQLite lock hardening and deterministic journal health fixtures. SQLite remains authoritative and the stable provider/tool identities are unchanged.
+
+### Fixed
+- Cached POSIX owner-only descriptor hardening so a process raw-opens each live truth-database identity at most once, including when the same file is imported under top-level and `scope_recall.*` aliases; later writable connections cannot cancel same-process SQLite advisory locks. Identity replacement or permission drift after that cached event fails closed instead of raw-opening while locks may be held. An incompatible or foreign process-wide hardening marker fails closed and requires a process restart instead of being repaired into trusted cache evidence. Windows inherited-ACL behavior is unchanged.
+- Isolated deferred-metric and pending-retryable doctor fixtures from the default 72-hour backlog-age failure policy so those tests stay deterministic without weakening production age checks.
+
+### Compatibility
+- Preserved Fact Evolution, temporal queries, bounded Reflection, scope routing, evidence authority, provenance-root validation, deterministic idempotency, journal checkpoint ownership, and release-identity checks.
+
 ## [1.10.0] - 2026-08-19
 
 This minor source candidate covers public journal restore, backlog fairness, vector inventory, and runtime-module convergence since the last public release, `1.9.2`. The `1.9.3` writer-lease and digest-transaction work reached `main` as a source interval only: it was never tagged, given a GitHub Release, or uploaded to PyPI, and is incorporated here. This task creates a source candidate on `main` only. SQLite remains authoritative and the stable provider/tool identities are unchanged.

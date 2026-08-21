@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import locale
 import os
 import subprocess
 from pathlib import Path, PurePosixPath
@@ -14,6 +15,74 @@ from scope_recall.recovery_commands import (
     restore_symlink_command,
     restore_tree_command,
 )
+
+# cmd.exe / PowerShell 5.1 on Chinese Windows write OEM/ANSI bytes (CP936).
+# Release-gate pytest inherits PYTHONUTF8=1, so text=True decodes as UTF-8,
+# kills the stderr reader thread, and leaves stderr=None.
+_WINDOWS_SUBPROCESS_ENCODINGS = ("utf-8", "oem", "cp936", "gbk", "cp1252")
+
+
+def _decode_windows_subprocess_bytes(payload: bytes | None) -> str:
+    """Decode localized Windows process output without dropping the stream."""
+
+    if not payload:
+        return ""
+    encodings: list[str] = []
+    preferred = locale.getpreferredencoding(False)
+    for name in ("utf-8", preferred, *_WINDOWS_SUBPROCESS_ENCODINGS):
+        if name and name not in encodings:
+            encodings.append(name)
+    for name in encodings:
+        try:
+            return payload.decode(name)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return payload.decode("utf-8", errors="replace")
+
+
+def _windows_recovery_command_env() -> dict[str, str]:
+    """Keep paste-ready ``powershell.exe`` resolvable on a stripped native PATH."""
+
+    env = os.environ.copy()
+    powershell_home = (
+        Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+    )
+    if not powershell_home.is_dir():
+        return env
+    extra = str(powershell_home)
+    updated = False
+    for key in ("Path", "PATH"):
+        if key not in env:
+            continue
+        parts = [part for part in env[key].split(os.pathsep) if part]
+        if extra not in parts:
+            env[key] = extra + os.pathsep + env[key]
+        updated = True
+    if not updated:
+        env["Path"] = extra
+    return env
+
+
+def _run_recovery_command(command: str) -> subprocess.CompletedProcess[str]:
+    """Execute one paste-ready recovery command with bytes-safe diagnostics."""
+
+    result = subprocess.run(
+        command,
+        shell=True,
+        text=False,
+        capture_output=True,
+        timeout=30,
+        env=_windows_recovery_command_env() if os.name == "nt" else None,
+    )
+    return subprocess.CompletedProcess(
+        args=result.args,
+        returncode=result.returncode,
+        stdout=_decode_windows_subprocess_bytes(result.stdout),
+        stderr=_decode_windows_subprocess_bytes(result.stderr),
+    )
 
 
 def test_windows_recovery_commands_use_powershell_and_literal_paths():
@@ -148,13 +217,7 @@ def test_windows_file_and_tree_recovery_commands_execute(tmp_path):
         preexisting=True,
         platform="nt",
     )
-    file_result = subprocess.run(
-        file_command,
-        shell=True,
-        text=True,
-        capture_output=True,
-        timeout=30,
-    )
+    file_result = _run_recovery_command(file_command)
     assert file_result.returncode == 0, file_result.stderr + file_result.stdout
     assert destination_file.read_text(encoding="utf-8") == "provider: scope-recall\n"
 
@@ -169,12 +232,22 @@ def test_windows_file_and_tree_recovery_commands_execute(tmp_path):
         preexisting=True,
         platform="nt",
     )
-    tree_result = subprocess.run(
-        tree_command,
-        shell=True,
-        text=True,
-        capture_output=True,
-        timeout=30,
-    )
+    tree_result = _run_recovery_command(tree_command)
     assert tree_result.returncode == 0, tree_result.stderr + tree_result.stdout
     assert (destination_tree / "nested" / "marker.txt").read_text(encoding="utf-8") == "ready\n"
+
+
+def test_windows_recovery_diagnostics_survive_localized_cmd_stderr():
+    """GBK cmd.exe diagnostics must stay usable under UTF-8 pytest."""
+
+    payload = (
+        "'powershell.exe' 不是内部或外部命令，也不是可运行的程序或批处理文件。\r\n"
+    ).encode("gbk")
+    assert payload[17] == 0xB2
+    with pytest.raises(UnicodeDecodeError):
+        payload.decode("utf-8")
+
+    decoded = _decode_windows_subprocess_bytes(payload)
+    diagnostic = _decode_windows_subprocess_bytes(None) + decoded
+    assert "powershell.exe" in diagnostic
+    assert "不是内部或外部命令" in diagnostic

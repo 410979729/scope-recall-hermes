@@ -632,9 +632,14 @@ def test_journal_report_surfaces_deferred_backlog_metrics(tmp_path):
     conn.close()
     doctor = _doctor_module()
 
-    payload, check, recommendations = doctor.journal_report(tmp_path)
+    # Isolate deferred-metric contract from the default 72h backlog-age policy.
+    payload, check, recommendations = doctor.journal_report(
+        tmp_path,
+        journal_config={"backlog_max_age_hours": 0},
+    )
 
     assert check["ok"] is True
+    assert payload["backlog"]["thresholds"]["max_age_hours"] == 0
     deferred = payload["backlog"]["deferred"]
     assert deferred["count"] == 2
     assert deferred["oldest_deferred_age_hours"] > 0
@@ -664,9 +669,14 @@ def test_journal_report_deferred_count_excludes_historical_churn_without_current
     conn.close()
     doctor = _doctor_module()
 
-    payload, check, _recommendations = doctor.journal_report(tmp_path)
+    # Isolate deferred-metric contract from the default 72h backlog-age policy.
+    payload, check, _recommendations = doctor.journal_report(
+        tmp_path,
+        journal_config={"backlog_max_age_hours": 0},
+    )
 
     assert check["ok"] is True
+    assert payload["backlog"]["thresholds"]["max_age_hours"] == 0
     deferred = payload["backlog"]["deferred"]
     assert deferred["count"] == 1
     assert deferred["max_defer_count"] == 4
@@ -689,9 +699,13 @@ def test_journal_report_surfaces_pending_retryable_failures_without_row_contents
     conn.commit()
     conn.close()
     doctor = _doctor_module()
+    # Isolate retryable-failure contract from the default 72h backlog-age policy.
     payload, check, recommendations = doctor.journal_report(
         tmp_path,
-        journal_config={"retryable_failures_quarantine": 2},
+        journal_config={
+            "retryable_failures_quarantine": 2,
+            "backlog_max_age_hours": 0,
+        },
     )
     assert check["ok"] is True
     retryable = payload["backlog"]["retryable_failures"]
@@ -702,3 +716,36 @@ def test_journal_report_surfaces_pending_retryable_failures_without_row_contents
     assert "durable retryable LLM failures" in joined
     assert "secret journal row body" not in json.dumps(payload, ensure_ascii=False)
     assert "secret journal row body" not in joined
+
+
+def test_journal_report_fails_when_unprocessed_backlog_exceeds_age_policy(tmp_path):
+    """Dedicated age-policy contract: a stale unprocessed row fails at the default 72h gate."""
+
+    conn = _conn(tmp_path)
+    conn.execute(
+        """
+        INSERT INTO journal_entries(
+            scope_id, shared_scope_id, session_id, turn_number, role, content,
+            content_hash, created_at, processed_run_id
+        ) VALUES (
+            'scope', 'shared', 's', 1, 'user', 'stale unprocessed backlog',
+            'h-age-policy', '2026-01-01T00:00:00+00:00', ''
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+    doctor = _doctor_module()
+
+    payload, check, recommendations = doctor.journal_report(
+        tmp_path,
+        journal_config={"backlog_max_age_hours": 72},
+    )
+
+    assert check["ok"] is False
+    assert payload["backlog"]["thresholds"]["max_age_hours"] == 72
+    assert any(
+        "oldest unprocessed entry" in failure and "above threshold 72h" in failure
+        for failure in check["failures"]
+    )
+    assert any("oldest unprocessed" in item or "journal-digest" in item for item in recommendations)
