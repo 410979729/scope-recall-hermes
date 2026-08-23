@@ -39,8 +39,8 @@ if str(ROOT) not in sys.path:
 from secret_patterns import scan_secret_like_text, secret_scan_shadow  # noqa: E402
 from scripts.release_changelog import extract_version_section  # noqa: E402
 
-PACKAGE_VERSION = "1.10.2"
-PUBLIC_RELEASE_BASELINE = "1.9.2"
+PACKAGE_VERSION = "1.10.3"
+PUBLIC_RELEASE_BASELINE = "1.10.2"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 RELEASE_READINESS_DOC = f"docs/release-readiness.{PACKAGE_VERSION}.md"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
@@ -607,16 +607,32 @@ STABLE_LIFECYCLE_HOOKS = {
     "on_session_switch",
 }
 STABLE_PROVIDER_METHODS = STABLE_LIFECYCLE_HOOKS | {"get_config_schema", "get_tool_schemas"}
-REQUIRED_CHANGELOG_TERMS = (
-    "Fact Evolution",
-    "temporal",
-    "Reflection",
-    "scope routing",
-    "evidence authority",
-    "provenance-root",
-    "idempotency",
-    "journal checkpoint",
-    "release-identity",
+REQUIRED_CHANGELOG_TERMS_BY_VERSION = {
+    "1.10.2": (
+        "Fact Evolution",
+        "temporal",
+        "Reflection",
+        "scope routing",
+        "evidence authority",
+        "provenance-root",
+        "idempotency",
+        "journal checkpoint",
+        "release-identity",
+    ),
+    "1.10.3": (
+        "memory_auto_adjudication",
+        "governance",
+        "rollback",
+        "event_type",
+        "action",
+    ),
+}
+PUBLIC_RELEASE_BASELINES_BY_VERSION = {
+    "1.10.2": "1.9.2",
+    "1.10.3": "1.10.2",
+}
+REQUIRED_CHANGELOG_TERMS = REQUIRED_CHANGELOG_TERMS_BY_VERSION.get(
+    PACKAGE_VERSION, ()
 )
 RELEASE_READINESS_LOCAL_STATE_PATTERNS = {
     "embedded_live_snapshot": re.compile(r"current read-only snapshot", re.I),
@@ -1388,19 +1404,24 @@ def changelog_section(changelog: str, version: str) -> str:
 
 
 def changelog_completeness_check(changelog: str, *, version: str = PACKAGE_VERSION) -> dict[str, object]:
+    required_terms = REQUIRED_CHANGELOG_TERMS_BY_VERSION.get(version, ())
+    release_baseline = PUBLIC_RELEASE_BASELINES_BY_VERSION.get(
+        version,
+        PUBLIC_RELEASE_BASELINE if version == PACKAGE_VERSION else "",
+    )
     section = changelog_section(changelog, version)
     if not section:
         return {
             "ok": False,
             "version": version,
-            "missing_terms": list(REQUIRED_CHANGELOG_TERMS),
+            "missing_terms": list(required_terms),
             "section_found": False,
             "baseline_found": False,
         }
     lower = section.lower()
-    missing_terms = [term for term in REQUIRED_CHANGELOG_TERMS if term.lower() not in lower]
-    baseline_marker = f"since the last public release, `{PUBLIC_RELEASE_BASELINE}`"
-    baseline_found = baseline_marker.lower() in lower
+    missing_terms = [term for term in required_terms if term.lower() not in lower]
+    baseline_marker = f"since the last public release, `{release_baseline}`"
+    baseline_found = bool(release_baseline) and baseline_marker.lower() in lower
     return {
         "ok": not missing_terms and baseline_found,
         "version": version,
@@ -1411,17 +1432,15 @@ def changelog_completeness_check(changelog: str, *, version: str = PACKAGE_VERSI
 
 
 def public_release_baseline_truth_check() -> dict[str, object]:
-    """Keep current docs from calling untagged 1.10.0 the last public release.
-
-    ``1.10.0`` reached ``main`` as a public source candidate only: there is no
-    ``v1.10.0`` tag, GitHub Release, or PyPI artifact. The last tagged and
-    packaged public release remains ``1.9.2``.
-    """
+    """Keep current public surfaces anchored to the preceding release."""
 
     failures: list[str] = []
-    if PUBLIC_RELEASE_BASELINE != "1.9.2":
+    package_key = _release_version_key(PACKAGE_VERSION)
+    baseline_key = _release_version_key(PUBLIC_RELEASE_BASELINE)
+    if package_key is None or baseline_key is None or baseline_key >= package_key:
         failures.append(
-            f"PUBLIC_RELEASE_BASELINE must stay 1.9.2, not {PUBLIC_RELEASE_BASELINE}"
+            "PUBLIC_RELEASE_BASELINE must be a valid release older than "
+            f"{PACKAGE_VERSION}, not {PUBLIC_RELEASE_BASELINE}"
         )
     changelog = read_text("CHANGELOG.md")
     current_section = changelog_section(changelog, PACKAGE_VERSION)
@@ -1430,42 +1449,25 @@ def public_release_baseline_truth_check() -> dict[str, object]:
             f"changelog {PACKAGE_VERSION} must be cumulative since last public release "
             f"{PUBLIC_RELEASE_BASELINE}"
         )
-    if "since the last public release, `1.10.0`" in current_section:
+    if not changelog_section(changelog, PUBLIC_RELEASE_BASELINE):
         failures.append(
-            f"changelog {PACKAGE_VERSION} must not call untagged 1.10.0 the last public release"
+            f"changelog must retain historical public baseline {PUBLIC_RELEASE_BASELINE}"
         )
-    current_lower = current_section.lower()
-    if "1.10.0" not in current_section or (
-        "supersed" not in current_lower and "incorporat" not in current_lower
-    ):
-        failures.append(
-            f"changelog {PACKAGE_VERSION} must say it incorporates/supersedes the "
-            "untagged 1.10.0 public source candidate"
-        )
-    historical = changelog_section(changelog, "1.10.0")
-    if "since the last public release, `1.9.2`" not in historical:
-        failures.append("historical 1.10.0 changelog must keep last public release 1.9.2")
     readiness = read_text(RELEASE_READINESS_DOC) if (ROOT / RELEASE_READINESS_DOC).is_file() else ""
     if f"Public release baseline: `{PUBLIC_RELEASE_BASELINE}`." not in readiness:
         failures.append(
             f"{RELEASE_READINESS_DOC} must declare public release baseline {PUBLIC_RELEASE_BASELINE}"
-        )
-    if "Public release baseline: `1.10.0`." in readiness:
-        failures.append(
-            f"{RELEASE_READINESS_DOC} must not treat untagged 1.10.0 as the public baseline"
         )
     stability = read_text("docs/stability.md")
     if f"last packaged `{PUBLIC_RELEASE_BASELINE}`" not in stability:
         failures.append(
             f"docs/stability.md must keep last packaged line {PUBLIC_RELEASE_BASELINE}"
         )
-    if "last packaged `1.10.0`" in stability:
-        failures.append("docs/stability.md must not call 1.10.0 the last packaged line")
     readme = read_text("README.md")
-    if "Release `1.10.0`" in readme:
-        failures.append("README must not call 1.10.0 a Release")
-    if re.search(r"(?i)1\.10\.0[^\n]{0,80}\bpackage\b|\bpackage\b[^\n]{0,80}1\.10\.0", readme):
-        failures.append("README must not call 1.10.0 a package")
+    if f"last packaged `{PUBLIC_RELEASE_BASELINE}`" not in readme:
+        failures.append(
+            f"README must keep last packaged line {PUBLIC_RELEASE_BASELINE}"
+        )
     return {"ok": not failures, "failures": failures}
 
 

@@ -407,6 +407,58 @@ def test_governance_audit_coverage_counts_memory_quality_archive_events(event_ty
     assert report["legacy_coverage"]["backfill_candidates"] == 0
 
 
+def test_generic_archive_action_is_not_trusted_for_coverage_or_rollback():
+    conn = _conn()
+    _insert(conn, memory_id="untrusted-archive", content="Archive event from an unknown writer.")
+    before = dict(
+        conn.execute(
+            "SELECT id, scope_id, source, target, content, summary, updated_at, metadata "
+            "FROM memories WHERE id='untrusted-archive'"
+        ).fetchone()
+    )
+    _update_metadata(
+        conn,
+        "untrusted-archive",
+        {
+            "lifecycle": "archived",
+            "candidate_promotion_batch_id": "untrusted-batch",
+        },
+    )
+    after = dict(
+        conn.execute(
+            "SELECT id, scope_id, source, target, content, summary, updated_at, metadata "
+            "FROM memories WHERE id='untrusted-archive'"
+        ).fetchone()
+    )
+    record_governance_audit_event(
+        conn,
+        event_id="gov_untrusted_archive",
+        event_type="third_party_writer",
+        action="archive",
+        scope_id="shared-scope",
+        target_id="untrusted-archive",
+        batch_id="untrusted-batch",
+        before=before,
+        after=after,
+        reason="fixture unknown archive writer",
+        actor="test",
+        dry_run=False,
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    conn.commit()
+
+    coverage = governance_audit_coverage_report(conn, scope_ids=["shared-scope"])
+    rollback = rollback_cleanup_batch(
+        conn,
+        batch_id="untrusted-batch",
+        dry_run=True,
+        event_types=["third_party_writer"],
+    )
+
+    assert coverage["new_mutation_coverage"]["missing_audit"] == 1
+    assert rollback["rollback_candidates"] == 0
+
+
 def test_governance_audit_coverage_treats_archived_at_only_rows_as_legacy():
     conn = _conn()
     _insert(conn, memory_id="archived-at-only", content="Historical archive row that predates governance audit coverage.")

@@ -4,6 +4,19 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.10.3] - 2026-08-23
+
+This patch is cumulative since the last public release, `1.10.2`. It fixes issue #50 by recognizing the official `memory_auto_adjudication` + `archive` receipt in governance coverage and cleanup rollback without trusting arbitrary archive writers. SQLite remains authoritative and stable provider/tool identities are unchanged.
+
+### Fixed
+- Counted the exact `event_type=memory_auto_adjudication` and `action=archive` pair as an audited archive mutation in the governance coverage report, so Doctor no longer reports a false missing-audit row after official automatic adjudication.
+- Added that same exact event/action pair to default batch rollback selection. Rollback still verifies the recorded after-snapshot and refuses a row whose lifecycle or metadata changed after the receipt.
+- Kept unknown event types fail-closed: a generic third-party `archive` action is neither governance coverage nor a rollback authority.
+
+### Compatibility
+- Preserved the existing `memory_cleanup`, `forgetting`, and `scope_recall_forget` soft-archive rollback contracts.
+- Added no schema migration and changed no default adjudication policy.
+
 ## [1.10.2] - 2026-08-21
 
 This patch source candidate is cumulative since the last public release, `1.9.2`. It incorporates and supersedes the untagged `1.10.0` public source candidate and the `1.10.1` public source candidate that reached the public tree. It is two CI fixture corrections and does not change production runtime behavior: the simulated external staging replacement no longer enters this process's truth-connection hardening cache, and Windows recovery-command test diagnostics decode CP936/GBK before permissive OEM fallback. It does not weaken descriptor hardening. SQLite remains authoritative and the stable provider/tool identities are unchanged.
