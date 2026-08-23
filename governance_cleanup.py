@@ -23,6 +23,13 @@ TEMPLATE_NOISE_REASONS = {
     "transcript.role-prefix-assistant",
 }
 
+DEFAULT_ROLLBACK_EVENT_ACTIONS = {
+    "memory_cleanup": "soft_archive",
+    "forgetting": "soft_archive",
+    "scope_recall_forget": "soft_archive",
+    "memory_auto_adjudication": "archive",
+}
+
 
 def _now_iso() -> str:
     return now_utc_iso()
@@ -80,6 +87,7 @@ def _audited_archive_ids(conn: sqlite3.Connection) -> set[str]:
           AND (
               action IN ('soft_archive', 'legacy_archive_backfill')
               OR (event_type = 'memory_candidate_promotion' AND action = 'archive')
+              OR (event_type = 'memory_auto_adjudication' AND action = 'archive')
               OR (event_type = 'memory_quality_lint' AND action = 'archive_lint_hit')
               OR (event_type = 'memory_quality_cleanup' AND action = 'archive_active_lint_hit')
           )
@@ -441,9 +449,13 @@ def rollback_cleanup_batch(
     """Rollback a previously applied governance cleanup batch where audit evidence is sufficient.
 
     Rollback stays evidence-driven: rows without matching governance receipts should not be guessed back into active state."""
-    types = [str(item) for item in (event_types or ("memory_cleanup", "forgetting", "scope_recall_forget")) if str(item)]
+    types = [
+        str(item)
+        for item in (event_types or tuple(DEFAULT_ROLLBACK_EVENT_ACTIONS))
+        if str(item)
+    ]
     if not types:
-        types = ["memory_cleanup", "forgetting", "scope_recall_forget"]
+        types = list(DEFAULT_ROLLBACK_EVENT_ACTIONS)
     if not dry_run:
         ensure_schema(conn)
     elif not _governance_table_exists(conn):
@@ -455,15 +467,22 @@ def rollback_cleanup_batch(
             "restore_ids": [],
             "status": "schema_missing",
         }
-    placeholders = ",".join("?" for _ in types)
+    event_action_pairs = [
+        (event_type, DEFAULT_ROLLBACK_EVENT_ACTIONS.get(event_type, "soft_archive"))
+        for event_type in dict.fromkeys(types)
+    ]
+    pair_clause = " OR ".join(
+        "(event_type = ? AND action = ?)" for _ in event_action_pairs
+    )
+    pair_params = [value for pair in event_action_pairs for value in pair]
     rows = conn.execute(
         f"""
         SELECT id, event_type, target_id, scope_id, before_json, after_json, reason
         FROM governance_audit_events
-        WHERE batch_id = ? AND event_type IN ({placeholders}) AND action = 'soft_archive' AND dry_run = 0
+        WHERE batch_id = ? AND dry_run = 0 AND ({pair_clause})
         ORDER BY created_at ASC, id ASC
         """,
-        (batch_id, *types),
+        (batch_id, *pair_params),
     ).fetchall()
     result = {
         "dry_run": bool(dry_run),

@@ -13,6 +13,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from scope_recall.auto_adjudication import run_auto_adjudication
+from scope_recall.governance_cleanup import (
+    governance_audit_coverage_report,
+    rollback_cleanup_batch,
+)
 from scope_recall.journal import append_journal_entry, ensure_journal_schema
 from scope_recall.models import RuntimeScope
 from scope_recall.scope import build_scope_id, build_shared_scope_id
@@ -105,6 +109,61 @@ def test_lanes_promote_aged_and_archive_noise_and_defer_young(tmp_path):
         (report["batch_id"],),
     ).fetchone()[0]
     assert audit_rows >= 2, "auto decisions must land in the governance audit trail"
+
+    coverage = governance_audit_coverage_report(conn, scope_ids=["scope-test"])
+    assert coverage["new_mutation_coverage"]["missing_audit"] == 0
+    assert coverage["new_mutation_coverage"]["ok"] is True
+
+    dry_rollback = rollback_cleanup_batch(
+        conn,
+        batch_id=report["batch_id"],
+        dry_run=True,
+    )
+    assert dry_rollback["rollback_candidates"] == 1
+    assert dry_rollback["restore_ids"] == ["noise"]
+
+    applied_rollback = rollback_cleanup_batch(
+        conn,
+        batch_id=report["batch_id"],
+        dry_run=False,
+    )
+    assert applied_rollback["restored"] == 1
+    assert _lifecycle(conn, "noise") == "candidate"
+
+
+def test_auto_archive_rollback_refuses_state_changed_after_the_receipt(tmp_path):
+    hermes_home, conn = _home(tmp_path)
+    _insert_candidate(
+        conn,
+        "noise",
+        summary="Conversation summary",
+        content="One-off transcript digest that should remain hidden after a later review.",
+        metadata={"memory_type": "summary", "confidence": 0.62, "importance": 0.5},
+        age_hours=48,
+    )
+    report = run_auto_adjudication(hermes_home, {}, llm_call=None)
+    assert _lifecycle(conn, "noise") == "archived"
+
+    row = conn.execute("SELECT metadata FROM memories WHERE id='noise'").fetchone()
+    changed = json.loads(row["metadata"])
+    changed["later_operator_review"] = True
+    conn.execute(
+        "UPDATE memories SET metadata = ?, updated_at = ? WHERE id = 'noise'",
+        (
+            json.dumps(changed, ensure_ascii=False, sort_keys=True),
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    conn.commit()
+
+    rollback = rollback_cleanup_batch(
+        conn,
+        batch_id=report["batch_id"],
+        dry_run=False,
+    )
+    assert rollback["rollback_candidates"] == 1
+    assert rollback["restored"] == 0
+    assert _lifecycle(conn, "noise") == "archived"
 
 
 def _scope() -> RuntimeScope:
