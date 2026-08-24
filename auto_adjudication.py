@@ -39,6 +39,11 @@ from .candidate_promotion import (
     now_iso,
 )
 from .candidate_review import transition_candidate_metadata
+from .adjudication_schedule import (
+    claim_adjudication_schedule,
+    complete_adjudication_schedule,
+    release_adjudication_schedule,
+)
 from .capture_filters import sanitize_report_text
 from .lifecycle_service import LifecycleConflictError, transition_memory_lifecycle
 from .maintenance_ops import connect_memory_db, memory_db_path
@@ -51,6 +56,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG: dict[str, Any] = {
     "enabled": True,
     "interval_hours": 24,
+    "claim_timeout_hours": 2,
     "promote_min_age_hours": 24,
     "max_promotions_per_run": 100,
     "max_archives_per_run": 200,
@@ -177,7 +183,9 @@ def _transition(
 
 def _mark_uncertain_round(
     conn: sqlite3.Connection, row: sqlite3.Row, *, reason: str, at: str
-) -> int:
+) -> int | None:
+    """CAS one uncertainty round, returning ``None`` on stale evidence."""
+
     metadata = load_metadata(row["metadata"])
     rounds = int(metadata.get("l4_uncertain_rounds") or 0) + 1
     metadata["l4_uncertain_rounds"] = rounds
@@ -193,7 +201,7 @@ def _mark_uncertain_round(
         ),
     )
     if int(cur.rowcount or 0) != 1:
-        return int(load_metadata(row["metadata"]).get("l4_uncertain_rounds") or 0)
+        return None
     return rounds
 
 
@@ -215,7 +223,12 @@ def run_auto_adjudication(
             "ok": True,
             "status": "disabled",
             "lanes": {},
-            "l4": {"enabled": False, "errors": 0, "exhausted_archived": 0},
+            "l4": {
+                "enabled": False,
+                "errors": 0,
+                "exhausted_archived": 0,
+                "conflicts_skipped": 0,
+            },
         }
 
     db_path = memory_db_path(Path(hermes_home))
@@ -253,6 +266,7 @@ def run_auto_adjudication(
             "unsupported": 0,
             "uncertain": 0,
             "exhausted_archived": 0,
+            "conflicts_skipped": 0,
             "errors": 0,
         },
         "exceptions": [],
@@ -357,40 +371,46 @@ def run_auto_adjudication(
                         summary["l4"]["reviewed"] += 1
                         summary["l4"][verdict] += 1
                         if verdict == "supported":
-                            _transition(
+                            if not _transition(
                                 conn,
                                 row,
                                 action="promote",
                                 reason=f"l4_grounded:{reason}",
                                 batch_id=batch_id,
                                 at=at,
-                            )
+                            ):
+                                summary["l4"]["conflicts_skipped"] += 1
                         elif verdict == "unsupported":
-                            _transition(
+                            if not _transition(
                                 conn,
                                 row,
                                 action="archive",
                                 reason=f"l4_ungrounded:{reason}",
                                 batch_id=batch_id,
                                 at=at,
-                            )
+                            ):
+                                summary["l4"]["conflicts_skipped"] += 1
                         else:
                             rounds = _mark_uncertain_round(conn, row, reason=reason, at=at)
+                            if rounds is None:
+                                summary["l4"]["conflicts_skipped"] += 1
+                                continue
                             if rounds >= l4_max_rounds:
                                 fresh = conn.execute(
-                                    "SELECT * FROM memories WHERE id = ?",
-                                    (str(row["id"]),),
+                                    "SELECT * FROM memories WHERE id = ? AND updated_at = ?",
+                                    (str(row["id"]), at),
                                 ).fetchone()
-                                if fresh is not None:
-                                    _transition(
+                                if fresh is not None and _transition(
                                         conn,
                                         fresh,
                                         action="archive",
                                         reason=f"l4_unresolvable_after_{rounds}_rounds",
                                         batch_id=batch_id,
                                         at=at,
-                                    )
+                                    ):
                                     summary["l4"]["exhausted_archived"] += 1
+                                else:
+                                    summary["l4"]["conflicts_skipped"] += 1
                 conn.commit()
             except Exception as exc:
                 conn.rollback()
@@ -478,7 +498,12 @@ def build_l4_llm_call(
 
 
 def run_provider_auto_adjudication(provider: Any, *, trigger: str) -> None:
-    """Run the scheduled adjudication pass from the digest worker."""
+    """Run the scheduled adjudication pass from the digest worker.
+
+    A short atomic claim transaction prevents duplicate same-process and
+    cross-process runs. Slow adjudication stays outside the transaction, and a
+    failed run releases its claim for immediate retry.
+    """
 
     import time
 
@@ -496,10 +521,25 @@ def run_provider_auto_adjudication(provider: Any, *, trigger: str) -> None:
         interval_hours = float(adjudication_config.get("interval_hours") or 24)
     except (TypeError, ValueError):
         interval_hours = 24.0
+    try:
+        claim_timeout_hours = float(
+            adjudication_config.get("claim_timeout_hours") or 2
+        )
+    except (TypeError, ValueError):
+        claim_timeout_hours = 2.0
+    interval_hours = max(0.0, interval_hours)
+    claim_timeout_hours = max(1.0 / 60.0, claim_timeout_hours)
     now = time.time()
-    if provider._last_adjudication_at and now - provider._last_adjudication_at < interval_hours * 3600:
+    db_path = memory_db_path(Path(provider._hermes_home))
+    claim_token = claim_adjudication_schedule(
+        db_path,
+        now=now,
+        interval_hours=interval_hours,
+        claim_timeout_hours=claim_timeout_hours,
+        trigger=trigger,
+    )
+    if claim_token is None:
         return
-    provider._last_adjudication_at = now
     try:
         llm_call = None
         if config_bool(adjudication_config, "l4_enabled", True):
@@ -509,6 +549,24 @@ def run_provider_auto_adjudication(provider: Any, *, trigger: str) -> None:
             provider._config,
             llm_call=llm_call,
         )
+        if report.get("ok"):
+            completed_at = time.time()
+            complete_adjudication_schedule(
+                db_path,
+                claim_token=claim_token,
+                completed_at=completed_at,
+                trigger=trigger,
+                interval_hours=interval_hours,
+            )
+            provider._last_adjudication_at = completed_at
+        else:
+            release_adjudication_schedule(
+                db_path,
+                claim_token=claim_token,
+                released_at=time.time(),
+                trigger=trigger,
+                interval_hours=interval_hours,
+            )
         provider._last_adjudication_report = report
         logger.info(
             "Scope Recall auto adjudication after %s: %s",
@@ -524,6 +582,16 @@ def run_provider_auto_adjudication(provider: Any, *, trigger: str) -> None:
             ),
         )
     except Exception:
+        try:
+            release_adjudication_schedule(
+                db_path,
+                claim_token=claim_token,
+                released_at=time.time(),
+                trigger=trigger,
+                interval_hours=interval_hours,
+            )
+        except Exception:
+            logger.exception("Scope Recall auto adjudication claim release failed")
         logger.exception("Scope Recall auto adjudication failed after %s", trigger)
 
 

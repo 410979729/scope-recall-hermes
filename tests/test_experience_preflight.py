@@ -161,6 +161,7 @@ def test_preflight_can_record_reuse_run_with_pending_live_check_evidence():
     assert "pending_live_check" in row["preconditions_checked"]
     assert "not_started" in row["steps_completed"]
     assert "experience_preflight" in row["evidence"]
+    assert not row["finished_at"]
 
 
 def test_preflight_respects_experience_enabled_master_switch():

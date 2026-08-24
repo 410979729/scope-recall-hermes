@@ -135,7 +135,7 @@ def test_uncertain_round_cas_skips_stale_row(tmp_path):
     )
     conn.commit()
     rounds = _mark_uncertain_round(conn, row, reason="stale", at="2026-08-16T00:00:00+00:00")
-    assert rounds == 0
+    assert rounds is None
     meta = json.loads(
         conn.execute("SELECT metadata FROM memories WHERE id=?", ("cas-row",)).fetchone()[0]
     )

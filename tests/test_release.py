@@ -621,11 +621,11 @@ def test_release_identity_requires_version_newer_than_latest_tag():
     assert "mutually exclusive" in conflicting_modes["error"]
 
 
-def test_v1103_release_candidate_identity_surfaces_are_consistent():
+def test_v1104_release_candidate_identity_surfaces_are_consistent():
     """Bind the source candidate to every authoritative version surface."""
 
-    expected_version = "1.10.3"
-    release_check = _load_release_check_module("scope_recall_check_release_v1103_identity")
+    expected_version = "1.10.4"
+    release_check = _load_release_check_module("scope_recall_check_release_v1104_identity")
     lexical_generation = importlib.import_module(
         f"{PACKAGE_NAME}.lexical_generation"
     )
@@ -637,7 +637,7 @@ def test_v1103_release_candidate_identity_surfaces_are_consistent():
     assert _package_version() == expected_version
     assert f"version: {expected_version}" in plugin_manifest
     assert release_check.PACKAGE_VERSION == expected_version
-    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.10.3.md"
+    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.10.4.md"
     assert (PLUGIN_ROOT / release_check.RELEASE_READINESS_DOC).is_file()
     assert f"## [{expected_version}]" in changelog
     assert f"Version `{expected_version}`" in readme
@@ -646,28 +646,28 @@ def test_v1103_release_candidate_identity_surfaces_are_consistent():
     assert lexical_generation.LEXICAL_MIGRATION_PLUGIN_VERSION == "1.9.0"
 
     identity = release_check.release_version_identity_check(
-        tags=["v1.8.7", "v1.9.2", "v1.10.2"]
+        tags=["v1.8.7", "v1.9.2", "v1.10.2", "v1.10.3"]
     )
     assert identity["ok"] is True
     assert identity["release_eligible"] is True
-    assert identity["expected_release_tag"] == "v1.10.3"
-    assert identity["latest_release_tag"] == "v1.10.2"
+    assert identity["expected_release_tag"] == "v1.10.4"
+    assert identity["latest_release_tag"] == "v1.10.3"
 
 
-def test_v1103_changelog_starts_at_the_last_public_release():
-    release_check = _load_release_check_module("scope_recall_check_release_v1103_changelog")
+def test_v1104_changelog_starts_at_the_last_public_release():
+    release_check = _load_release_check_module("scope_recall_check_release_v1104_changelog")
 
-    assert release_check.PACKAGE_VERSION == "1.10.3"
-    assert release_check.PUBLIC_RELEASE_BASELINE == "1.10.2"
+    assert release_check.PACKAGE_VERSION == "1.10.4"
+    assert release_check.PUBLIC_RELEASE_BASELINE == "1.10.3"
     changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    section = release_check.changelog_section(changelog, "1.10.3")
-    assert "since the last public release, `1.10.2`" in section
+    section = release_check.changelog_section(changelog, "1.10.4")
+    assert "since the last public release, `1.10.3`" in section
     assert "#50" in section
     assert "memory_auto_adjudication" in section
-    assert "governance" in section.lower()
-    assert "rollback" in section.lower()
-    assert "event_type" in section
-    assert "action" in section
+    assert "metadata" in section
+    assert "receipt" in section
+    assert "run_id" in section
+    assert "throttle" in section
     historical = release_check.changelog_section(changelog, "1.10.2")
     assert "since the last public release, `1.9.2`" in historical
     historical_gate = release_check.changelog_completeness_check(
@@ -678,18 +678,18 @@ def test_v1103_changelog_starts_at_the_last_public_release():
     assert historical_gate["missing_terms"] == []
 
 
-def test_v1103_public_wording_covers_auto_archive_governance_fix():
-    """Every current public surface must describe the issue #50 contract."""
+def test_v1104_public_wording_covers_post_release_audit_fixes():
+    """Every current public surface must describe the generic audit fixes."""
 
     release_check = _load_release_check_module(
-        "scope_recall_check_release_v1103_auto_archive_governance"
+        "scope_recall_check_release_v1104_audit_fixes"
     )
     changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     surfaces = {
-        "changelog": release_check.changelog_section(changelog, "1.10.3"),
+        "changelog": release_check.changelog_section(changelog, "1.10.4"),
         "readme": (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8"),
         "stability": (PLUGIN_ROOT / "docs" / "stability.md").read_text(encoding="utf-8"),
-        "readiness": (PLUGIN_ROOT / "docs" / "release-readiness.1.10.3.md").read_text(
+        "readiness": (PLUGIN_ROOT / "docs" / "release-readiness.1.10.4.md").read_text(
             encoding="utf-8"
         ),
     }
@@ -698,20 +698,21 @@ def test_v1103_public_wording_covers_auto_archive_governance_fix():
         assert "memory_auto_adjudication" in text, name
         assert "governance" in lowered, name
         assert "rollback" in lowered, name
+        assert "throttle" in lowered, name
 
 
-def test_v1103_public_surfaces_name_1102_as_the_public_baseline():
-    release_check = _load_release_check_module("scope_recall_check_release_v1103_baseline_truth")
+def test_v1104_public_surfaces_name_1103_as_the_public_baseline():
+    release_check = _load_release_check_module("scope_recall_check_release_v1104_baseline_truth")
 
     truth = release_check.public_release_baseline_truth_check()
     assert truth["ok"] is True, truth
-    assert release_check.PUBLIC_RELEASE_BASELINE == "1.10.2"
+    assert release_check.PUBLIC_RELEASE_BASELINE == "1.10.3"
     readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
     stability = (PLUGIN_ROOT / "docs" / "stability.md").read_text(encoding="utf-8")
-    readiness = (PLUGIN_ROOT / "docs" / "release-readiness.1.10.3.md").read_text(encoding="utf-8")
-    assert "last packaged `1.10.2`" in readme
-    assert "last packaged `1.10.2`" in stability
-    assert "Public release baseline: `1.10.2`." in readiness
+    readiness = (PLUGIN_ROOT / "docs" / "release-readiness.1.10.4.md").read_text(encoding="utf-8")
+    assert "last packaged `1.10.3`" in readme
+    assert "last packaged `1.10.3`" in stability
+    assert "Public release baseline: `1.10.3`." in readiness
 
 
 def test_ruff_lint_contract_is_explicit_across_toolchain_upgrades():
@@ -936,11 +937,10 @@ def test_changelog_completeness_gate_requires_current_release_terms():
     assert failed["section_found"] is False
     assert failed["missing_terms"] == list(release_check.REQUIRED_CHANGELOG_TERMS)
     assert set(failed["missing_terms"]) == {
-        "memory_auto_adjudication",
-        "governance",
-        "rollback",
-        "event_type",
-        "action",
+        "metadata",
+        "receipt",
+        "run_id",
+        "throttle",
     }
 
     missing_baseline = (
@@ -2649,6 +2649,7 @@ def test_release_benchmark_gate_accepts_lexical_50k_release_contract(monkeypatch
         },
         "scripts/benchmark.temporal_scale.py": {
             "schema_version": "scope-recall.temporal-scale.v2",
+            "candidate_version": release_check.PACKAGE_VERSION,
             "passed": True,
             "sizes": [100_000, 1_000_000],
             "rounds_per_query": 30,
@@ -2678,6 +2679,12 @@ def test_release_benchmark_gate_accepts_lexical_50k_release_contract(monkeypatch
     assert result["lexical_cjk_metrics"]["rows"] == 50_000
     assert result["lexical_cjk_metrics"]["rounds"] == 3
     assert result["lexical_cjk_metrics"]["target_misses"] == ["shadow_p95"]
+
+    temporal_scale_payload = json_payloads["scripts/benchmark.temporal_scale.py"]
+    temporal_scale_payload["candidate_version"] = "0.0.0"
+    wrong_candidate_version = release_check.benchmark_check()
+    assert wrong_candidate_version["ok"] is False
+    temporal_scale_payload["candidate_version"] = release_check.PACKAGE_VERSION
 
     lexical_payload = json_payloads["scripts/benchmark.lexical_cjk.py"]
     lexical_payload["shadow_p95_ms"] = "fast"

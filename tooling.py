@@ -1237,6 +1237,7 @@ class ScopeRecallToolService:
                 model_name=str(args.get("model_name") or ""),
                 tool_call_count=int(args.get("tool_call_count") or 0),
                 token_estimate=int(args.get("token_estimate") or 0),
+                run_id=str(args.get("run_id") or ""),
             )
         return self._json(payload)
 

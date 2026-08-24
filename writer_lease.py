@@ -51,6 +51,7 @@ ALLOWED_TRUTH_WRITER_ROLES = frozenset(
         "save_config",
         "journal_digest",
         "nightly_digest",
+        "auto_adjudication",
         "truth_connection",
         "journal_source_restore",
     }

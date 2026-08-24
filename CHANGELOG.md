@@ -4,6 +4,20 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.10.4] - 2026-08-23
+
+This patch candidate is cumulative since the last public release, `1.10.3`. It closes post-release governance and scheduling gaps around issue #50 without changing SQLite authority or stable provider/tool identities.
+
+### Fixed
+- Restored rollback metadata from the recorded before-snapshot instead of merging it with archived state, and rejected missing or malformed rollback snapshots instead of guessing an active record.
+- Counted archive coverage only for explicit trusted event/action pairs whose latest receipt still matches the current archived row, so an old receipt or unknown writer cannot mask a later unaudited mutation.
+- Kept Experience preflight runs pending with an empty `finished_at`, carried optional `run_id` feedback through the public tool path, and allowed one pending run to close after its playbook becomes terminal without mutating terminal playbook counters.
+- Persisted the successful `memory_auto_adjudication` throttle marker in the governance ledger, so provider recreation cannot bypass the configured interval and failed runs remain retryable.
+
+### Compatibility
+- Added no database schema migration. Existing governance receipts, rollback event types, package/install shape, and V1 memory semantics remain supported.
+- The feedback `run_id` field is optional; callers that do not use preflight run receipts keep the existing feedback behavior.
+
 ## [1.10.3] - 2026-08-23
 
 This patch is cumulative since the last public release, `1.10.2`. It fixes issue #50 by recognizing the official `memory_auto_adjudication` + `archive` receipt in governance coverage and cleanup rollback without trusting arbitrary archive writers. SQLite remains authoritative and stable provider/tool identities are unchanged.

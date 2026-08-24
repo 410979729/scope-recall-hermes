@@ -12,6 +12,11 @@ from typing import Any, Sequence
 
 from .capture_filters import sanitize_report_text
 from .gating import compact_text
+from .governance_rollback import (
+    receipt_binds_current_archive,
+    rollback_cleanup_batch as rollback_cleanup_batch,
+    snapshot_memory_row,
+)
 from .lifecycle_service import transition_memory_lifecycle
 from .maintenance_ops import json_dumps_stable, make_batch_id, now_utc_iso
 from .sql_store import ensure_schema, record_governance_audit_event
@@ -23,12 +28,18 @@ TEMPLATE_NOISE_REASONS = {
     "transcript.role-prefix-assistant",
 }
 
-DEFAULT_ROLLBACK_EVENT_ACTIONS = {
-    "memory_cleanup": "soft_archive",
-    "forgetting": "soft_archive",
-    "scope_recall_forget": "soft_archive",
-    "memory_auto_adjudication": "archive",
-}
+RECOGNIZED_ARCHIVE_RECEIPTS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("memory_cleanup", "soft_archive"),
+        ("forgetting", "soft_archive"),
+        ("scope_recall_forget", "soft_archive"),
+        ("memory_cleanup", "legacy_archive_backfill"),
+        ("memory_candidate_promotion", "archive"),
+        ("memory_auto_adjudication", "archive"),
+        ("memory_quality_lint", "archive_lint_hit"),
+        ("memory_quality_cleanup", "archive_active_lint_hit"),
+    }
+)
 
 
 def _now_iso() -> str:
@@ -43,6 +54,7 @@ def _json_loads(raw: Any) -> dict[str, Any]:
     except Exception:
         return {}
     return value if isinstance(value, dict) else {}
+
 
 
 def _json_dumps(value: Any) -> str:
@@ -75,25 +87,52 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
         return set()
 
 
-def _audited_archive_ids(conn: sqlite3.Connection) -> set[str]:
+def _recognized_archive_pair_sql() -> tuple[str, list[str]]:
+    pairs = sorted(RECOGNIZED_ARCHIVE_RECEIPTS)
+    clause = " OR ".join("(event_type = ? AND action = ?)" for _ in pairs)
+    params = [value for pair in pairs for value in pair]
+    return clause, params
+
+
+
+def _audited_archive_ids(
+    conn: sqlite3.Connection,
+    archived_rows: Sequence[sqlite3.Row],
+) -> set[str]:
     if not _governance_table_exists(conn):
         return set()
+    pair_clause, pair_params = _recognized_archive_pair_sql()
     rows = conn.execute(
-        """
-        SELECT DISTINCT target_id
+        f"""
+        SELECT target_id, after_json
         FROM governance_audit_events
         WHERE dry_run = 0
           AND target_id != ''
-          AND (
-              action IN ('soft_archive', 'legacy_archive_backfill')
-              OR (event_type = 'memory_candidate_promotion' AND action = 'archive')
-              OR (event_type = 'memory_auto_adjudication' AND action = 'archive')
-              OR (event_type = 'memory_quality_lint' AND action = 'archive_lint_hit')
-              OR (event_type = 'memory_quality_cleanup' AND action = 'archive_active_lint_hit')
-          )
-        """
+          AND ({pair_clause})
+        ORDER BY rowid ASC
+        """,
+        pair_params,
     ).fetchall()
-    return {str(row["target_id"] if isinstance(row, sqlite3.Row) else row[0]) for row in rows if str(row["target_id"] if isinstance(row, sqlite3.Row) else row[0])}
+    latest_receipts: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        target_id = str(row["target_id"] if isinstance(row, sqlite3.Row) else row[0])
+        after_raw = row["after_json"] if isinstance(row, sqlite3.Row) else row[1]
+        if not target_id:
+            continue
+        # SQLite insertion order is authoritative when application timestamps tie.
+        # Replacing oldest -> newest leaves exactly the latest recognized receipt,
+        # so an older match cannot mask a newer stale or malformed receipt.
+        latest_receipts[target_id] = _json_loads(after_raw)
+    audited: set[str] = set()
+    for row in archived_rows:
+        current = snapshot_memory_row(row)
+        target_id = str(current["id"])
+        latest_after = latest_receipts.get(target_id)
+        if latest_after is not None and receipt_binds_current_archive(
+            latest_after, current
+        ):
+            audited.add(target_id)
+    return audited
 
 
 def classify_cleanup_reason(row: sqlite3.Row) -> str:
@@ -183,17 +222,6 @@ def find_cleanup_candidates(
     return candidates
 
 
-def _snapshot_row(row: sqlite3.Row) -> dict[str, Any]:
-    return {
-        "id": str(row["id"]),
-        "scope_id": str(row["scope_id"] or ""),
-        "source": str(row["source"] or ""),
-        "target": str(row["target"] or ""),
-        "summary": str(row["summary"] or ""),
-        "updated_at": str(row["updated_at"] or ""),
-        "metadata": _json_loads(row["metadata"]),
-    }
-
 
 def apply_cleanup(
     conn: sqlite3.Connection,
@@ -237,7 +265,7 @@ def apply_cleanup(
         ).fetchone()
         if row is None or _is_archived(row):
             continue
-        before = _snapshot_row(row)
+        before = snapshot_memory_row(row)
         metadata = dict(before["metadata"])
         transition_memory_lifecycle(
             conn,
@@ -293,7 +321,10 @@ def governance_audit_coverage_report(
 ) -> dict[str, Any]:
     """Report which archived/cleaned rows have sufficient governance audit evidence.
 
-    Coverage gaps are operational debt because rollback and accountability depend on those receipts."""
+    Coverage for a current archived row requires a recognized receipt whose
+    after snapshot is bound to the current archived state, not merely any
+    historical receipt for the same target_id.
+    """
     required_columns = {"id", "scope_id", "source", "target", "content", "summary", "updated_at", "metadata"}
     memory_columns = _table_columns(conn, "memories")
     missing_columns = sorted(required_columns - memory_columns)
@@ -319,8 +350,8 @@ def governance_audit_coverage_report(
         """,
         params,
     ).fetchall()
-    audited_ids = _audited_archive_ids(conn)
     archived_rows = [row for row in rows if _is_archived(row)]
+    audited_ids = _audited_archive_ids(conn, archived_rows)
     audited_rows = [row for row in archived_rows if str(row["id"]) in audited_ids]
     missing_rows = [row for row in archived_rows if str(row["id"]) not in audited_ids]
     new_rows = [row for row in archived_rows if _has_new_archive_marker(_json_loads(row["metadata"]))]
@@ -400,8 +431,9 @@ def backfill_legacy_archive_audit(
         """,
         params,
     ).fetchall()
-    audited_ids = _audited_archive_ids(conn)
-    candidates = [row for row in rows if _is_archived(row) and str(row["id"]) not in audited_ids and not _has_new_archive_marker(_json_loads(row["metadata"]))]
+    archived_rows = [row for row in rows if _is_archived(row)]
+    audited_ids = _audited_archive_ids(conn, archived_rows)
+    candidates = [row for row in archived_rows if str(row["id"]) not in audited_ids and not _has_new_archive_marker(_json_loads(row["metadata"]))]
     max_items = max(0, int(limit))
     if max_items:
         candidates = candidates[:max_items]
@@ -417,7 +449,7 @@ def backfill_legacy_archive_audit(
         return result
     now = _now_iso()
     for row in candidates:
-        snapshot = _snapshot_row(row)
+        snapshot = snapshot_memory_row(row)
         record_governance_audit_event(
             conn,
             event_id=f"gov_{uuid.uuid4().hex}",
@@ -435,115 +467,4 @@ def backfill_legacy_archive_audit(
         )
     conn.commit()
     result["backfilled"] = len(candidates)
-    return result
-
-
-def rollback_cleanup_batch(
-    conn: sqlite3.Connection,
-    *,
-    batch_id: str,
-    dry_run: bool = True,
-    actor: str = "governance.cleanup.py",
-    event_types: Sequence[str] | None = None,
-) -> dict[str, Any]:
-    """Rollback a previously applied governance cleanup batch where audit evidence is sufficient.
-
-    Rollback stays evidence-driven: rows without matching governance receipts should not be guessed back into active state."""
-    types = [
-        str(item)
-        for item in (event_types or tuple(DEFAULT_ROLLBACK_EVENT_ACTIONS))
-        if str(item)
-    ]
-    if not types:
-        types = list(DEFAULT_ROLLBACK_EVENT_ACTIONS)
-    if not dry_run:
-        ensure_schema(conn)
-    elif not _governance_table_exists(conn):
-        return {
-            "dry_run": True,
-            "batch_id": batch_id,
-            "rollback_candidates": 0,
-            "restored": 0,
-            "restore_ids": [],
-            "status": "schema_missing",
-        }
-    event_action_pairs = [
-        (event_type, DEFAULT_ROLLBACK_EVENT_ACTIONS.get(event_type, "soft_archive"))
-        for event_type in dict.fromkeys(types)
-    ]
-    pair_clause = " OR ".join(
-        "(event_type = ? AND action = ?)" for _ in event_action_pairs
-    )
-    pair_params = [value for pair in event_action_pairs for value in pair]
-    rows = conn.execute(
-        f"""
-        SELECT id, event_type, target_id, scope_id, before_json, after_json, reason
-        FROM governance_audit_events
-        WHERE batch_id = ? AND dry_run = 0 AND ({pair_clause})
-        ORDER BY created_at ASC, id ASC
-        """,
-        (batch_id, *pair_params),
-    ).fetchall()
-    result = {
-        "dry_run": bool(dry_run),
-        "batch_id": batch_id,
-        "rollback_candidates": len(rows),
-        "restored": 0,
-        "restore_ids": [str(row["target_id"]) for row in rows],
-        "restored_relation_count": 0,
-        "skipped_relation_count": 0,
-        "skipped_relations": [],
-    }
-    if dry_run or not rows:
-        return result
-    now = _now_iso()
-    restored = 0
-    for audit in rows:
-        target_id = str(audit["target_id"])
-        before = _json_loads(audit["before_json"])
-        after = _json_loads(audit["after_json"])
-        raw_before_metadata = before.get("metadata")
-        before_metadata = dict(raw_before_metadata) if isinstance(raw_before_metadata, dict) else {}
-        raw_after_metadata = after.get("metadata")
-        after_metadata = dict(raw_after_metadata) if isinstance(raw_after_metadata, dict) else {}
-        current = conn.execute("SELECT id, scope_id, source, target, content, summary, updated_at, metadata FROM memories WHERE id = ?", (target_id,)).fetchone()
-        if current is None:
-            continue
-        current_snapshot = _snapshot_row(current)
-        raw_current_metadata = current_snapshot.get("metadata")
-        current_metadata = raw_current_metadata if isinstance(raw_current_metadata, dict) else {}
-        # Defensive rollback gate: only undo the exact archived state produced by
-        # this batch. Removing these checks makes rollback non-idempotent and can
-        # overwrite a later operator/archive decision with stale metadata.
-        if str(current_metadata.get("lifecycle") or "").strip().lower() != "archived":
-            continue
-        current_batch = str(current_metadata.get("rollback_batch_id") or "")
-        if current_batch and current_batch != batch_id:
-            continue
-        if not current_batch and after_metadata and current_metadata != after_metadata:
-            continue
-        restore_relations = before.get("relations") if isinstance(before.get("relations"), list) else []
-        transition_result = transition_memory_lifecycle(
-            conn,
-            memory_id=target_id,
-            lifecycle=str(before_metadata.get("lifecycle") or "active"),
-            metadata_updates=before_metadata,
-            restore_relations=restore_relations,
-            expected_updated_at=str(current["updated_at"] or ""),
-            expected_lifecycle="archived",
-            actor=actor,
-            reason=str(audit["reason"] or "rollback"),
-            event_type=str(audit["event_type"] or "memory_cleanup"),
-            action="rollback_soft_archive",
-            batch_id=batch_id,
-            timestamp=now,
-        )
-        relation_receipt = transition_result.get("relation_restore") or {}
-        result["restored_relation_count"] += int(relation_receipt.get("restored") or 0)
-        skipped = relation_receipt.get("skipped") or []
-        result["skipped_relation_count"] += len(skipped)
-        result["skipped_relations"].extend(skipped)
-        restored += 1
-    conn.commit()
-    result["restored"] = restored
     return result

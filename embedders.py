@@ -25,17 +25,17 @@ from .http_utils import (
 )
 
 try:
-    from openai import OpenAI
+    from openai import OpenAI  # type: ignore[reportMissingImports]
 except Exception:  # pragma: no cover - optional dependency
     OpenAI = None
 
 try:
-    from openai import DefaultHttpxClient
+    from openai import DefaultHttpxClient  # type: ignore[reportMissingImports]
 except Exception:  # pragma: no cover - compatibility with older optional SDKs
     DefaultHttpxClient = None
 
 try:
-    import httpx as _httpx
+    import httpx as _httpx  # type: ignore[reportMissingImports]
 except Exception:  # pragma: no cover - optional dependency of OpenAI adapters
     _httpx = None
 

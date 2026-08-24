@@ -369,6 +369,170 @@ def test_hard_delete_truth_failure_rolls_back_before_vector_callback(tmp_path):
     conn.close()
 
 
+def test_transition_replace_metadata_is_opt_in_and_drops_unspecified_keys(tmp_path):
+    """Exact replace is default-off; rollback-style restore must not merge leftover keys."""
+
+    conn, _generation_id = _fixture(tmp_path)
+    conn.execute("BEGIN IMMEDIATE")
+    transition_memory_lifecycle(
+        conn,
+        memory_id="subject",
+        lifecycle="archived",
+        metadata_updates={
+            "archive_reason": "fixture-archive",
+            "archived_at": "2026-01-01T00:00:00+00:00",
+            "archived_by": "test",
+            "candidate_status": "archived",
+            "candidate_promotion_batch_id": "promo-1",
+        },
+        actor="test",
+        reason="archive then restore",
+        event_type="test_replace_metadata",
+        action="soft_archive",
+    )
+    conn.commit()
+
+    archived = json.loads(conn.execute("SELECT metadata FROM memories WHERE id = 'subject'").fetchone()[0])
+    assert archived["archive_reason"] == "fixture-archive"
+    restore_metadata = {
+        "lifecycle": "promoted",
+        "memory_type": "factual",
+        "entities": ["Scope Recall", "Joy"],
+        "freshness": {"fact_key": "scope-recall:test", "truth_type": "config", "validator_kind": "manual"},
+    }
+
+    conn.execute("BEGIN IMMEDIATE")
+    merged = transition_memory_lifecycle(
+        conn,
+        memory_id="subject",
+        lifecycle="promoted",
+        metadata_updates=restore_metadata,
+        actor="test",
+        reason="default merge keeps leftovers",
+        event_type="test_replace_metadata",
+        action="restore_merge",
+    )
+    conn.commit()
+    merged_metadata = json.loads(conn.execute("SELECT metadata FROM memories WHERE id = 'subject'").fetchone()[0])
+    assert merged["applied"] is True
+    assert merged_metadata["archive_reason"] == "fixture-archive"
+    assert merged_metadata["candidate_promotion_batch_id"] == "promo-1"
+
+    conn.execute("BEGIN IMMEDIATE")
+    transition_memory_lifecycle(
+        conn,
+        memory_id="subject",
+        lifecycle="archived",
+        metadata_updates={
+            "archive_reason": "fixture-archive",
+            "archived_at": "2026-01-01T00:00:00+00:00",
+            "archived_by": "test",
+            "candidate_status": "archived",
+            "candidate_promotion_batch_id": "promo-1",
+        },
+        actor="test",
+        reason="re-archive for exact replace",
+        event_type="test_replace_metadata",
+        action="soft_archive",
+    )
+    conn.commit()
+
+    conn.execute("BEGIN IMMEDIATE")
+    replaced = transition_memory_lifecycle(
+        conn,
+        memory_id="subject",
+        lifecycle="promoted",
+        metadata_updates=restore_metadata,
+        replace_metadata=True,
+        actor="test",
+        reason="exact restore",
+        event_type="test_replace_metadata",
+        action="restore_exact",
+    )
+    conn.commit()
+    restored = json.loads(conn.execute("SELECT metadata FROM memories WHERE id = 'subject'").fetchone()[0])
+
+    assert replaced["applied"] is True
+    for key in (
+        "archive_reason",
+        "archived_at",
+        "archived_by",
+        "candidate_status",
+        "candidate_promotion_batch_id",
+    ):
+        assert key not in restored
+    conn.close()
+
+
+def test_transition_replace_metadata_preserves_legacy_absent_lifecycle_exactly(tmp_path):
+    conn, _generation_id = _fixture(tmp_path)
+    conn.execute("BEGIN IMMEDIATE")
+    transition_memory_lifecycle(
+        conn,
+        memory_id="subject",
+        lifecycle="archived",
+        metadata_updates={"archive_reason": "fixture"},
+        actor="test",
+        reason="archive",
+        event_type="test_replace_metadata",
+        action="soft_archive",
+    )
+    conn.commit()
+
+    legacy_metadata = {"memory_type": "factual", "entities": ["Scope Recall"]}
+    conn.execute("BEGIN IMMEDIATE")
+    transition_memory_lifecycle(
+        conn,
+        memory_id="subject",
+        lifecycle="active",
+        metadata_updates=legacy_metadata,
+        replace_metadata=True,
+        actor="test",
+        reason="exact legacy restore",
+        event_type="test_replace_metadata",
+        action="restore_exact",
+    )
+    conn.commit()
+
+    restored = json.loads(
+        conn.execute("SELECT metadata FROM memories WHERE id = 'subject'").fetchone()[0]
+    )
+    assert restored == legacy_metadata
+    conn.close()
+
+
+def test_transition_replace_metadata_rejects_lifecycle_mismatch_without_side_effects(
+    tmp_path,
+):
+    conn, _generation_id = _fixture(tmp_path)
+    before = _counts(conn)
+    original_metadata = conn.execute(
+        "SELECT metadata FROM memories WHERE id = 'subject'"
+    ).fetchone()[0]
+
+    conn.execute("BEGIN IMMEDIATE")
+    with pytest.raises(ValueError, match="replacement metadata lifecycle"):
+        transition_memory_lifecycle(
+            conn,
+            memory_id="subject",
+            lifecycle="archived",
+            metadata_updates={"lifecycle": "active", "memory_type": "factual"},
+            replace_metadata=True,
+            actor="test",
+            reason="mismatched exact replacement",
+            event_type="test_replace_metadata",
+            action="restore_exact",
+        )
+    conn.rollback()
+
+    assert _counts(conn) == before
+    assert (
+        conn.execute("SELECT metadata FROM memories WHERE id = 'subject'").fetchone()[0]
+        == original_metadata
+    )
+    conn.close()
+
+
 def test_transition_cas_conflict_has_zero_side_effects(tmp_path):
     conn, _generation_id = _fixture(tmp_path)
     before = _counts(conn)
