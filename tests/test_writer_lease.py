@@ -25,6 +25,7 @@ from plugins.memory import load_memory_provider
 
 import writer_lease as writer_lease_module
 from writer_lease import (
+    ALLOWED_TRUTH_WRITER_ROLES,
     TRUTH_WRITER_LEASE_FILENAME,
     TRUTH_WRITER_LEASE_INFO_FILENAME,
     TruthWriterBusyError,
@@ -35,6 +36,10 @@ from writer_lease import (
 
 READ_ONLY_STATUS = "active_read_only"
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_auto_adjudication_is_a_recognized_truth_writer_role():
+    assert "auto_adjudication" in ALLOWED_TRUTH_WRITER_ROLES
 
 
 def _provider():

@@ -106,9 +106,18 @@ def main() -> int:
             )
         payload["result"] = result
         payload["after_counts"] = active_dirty_counts(conn, scope_ids=scoped)
-        payload["ok"] = True
+        rollback_blocked = bool(
+            args.rollback_batch
+            and should_apply
+            and int(result.get("rollback_candidates") or 0) > 0
+            and int(result.get("restored") or 0) == 0
+            and result.get("status") == "blocked"
+        )
+        payload["ok"] = not rollback_blocked
+        if rollback_blocked:
+            payload["error"] = "rollback blocked: no candidate has sufficient current evidence"
         emit(payload, fmt=args.format)
-        return 0
+        return 3 if rollback_blocked else 0
     finally:
         conn.close()
 

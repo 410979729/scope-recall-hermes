@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from scope_recall.auto_adjudication import run_auto_adjudication
+from scope_recall.auto_adjudication import run_auto_adjudication, run_provider_auto_adjudication
 from scope_recall.governance_cleanup import (
     governance_audit_coverage_report,
     rollback_cleanup_batch,
@@ -20,7 +22,7 @@ from scope_recall.governance_cleanup import (
 from scope_recall.journal import append_journal_entry, ensure_journal_schema
 from scope_recall.models import RuntimeScope
 from scope_recall.scope import build_scope_id, build_shared_scope_id
-from scope_recall.sql_store import ensure_schema
+from scope_recall.sql_store import ensure_schema, record_governance_audit_event
 
 
 def _home(tmp_path: Path) -> tuple[Path, sqlite3.Connection]:
@@ -258,6 +260,56 @@ def test_l4_uncertain_rounds_exhaust_to_archive(tmp_path):
     assert _lifecycle(conn, "held-uncertain") == "archived"
 
 
+def test_l4_stale_uncertain_verdict_cannot_archive_concurrently_changed_content(tmp_path):
+    hermes_home, conn = _home(tmp_path)
+    _held_candidate_with_evidence(
+        conn,
+        "held-concurrent",
+        evidence_text="这段证据不够明确，专门验证慢速评审期间并发修改候选正文时必须拒绝旧裁决。",
+    )
+    metadata = json.loads(
+        conn.execute("SELECT metadata FROM memories WHERE id='held-concurrent'").fetchone()[0]
+    )
+    metadata["l4_uncertain_rounds"] = 1
+    conn.execute(
+        "UPDATE memories SET metadata = ? WHERE id = 'held-concurrent'",
+        (json.dumps(metadata, ensure_ascii=False, sort_keys=True),),
+    )
+    conn.commit()
+
+    db_path = hermes_home / "scope-recall" / "memory.sqlite3"
+
+    def concurrent_uncertain(_prompt: str) -> str:
+        peer = sqlite3.connect(db_path)
+        try:
+            peer.execute(
+                "UPDATE memories SET content = ?, updated_at = ? WHERE id = ?",
+                (
+                    "NEW UNREVIEWED CONTENT",
+                    datetime.now(timezone.utc).isoformat(),
+                    "held-concurrent",
+                ),
+            )
+            peer.commit()
+        finally:
+            peer.close()
+        return json.dumps({"verdict": "uncertain", "reason": "旧证据不足"})
+
+    report = run_auto_adjudication(
+        hermes_home,
+        {"auto_adjudication": {"l4_max_uncertain_rounds": 1}},
+        llm_call=concurrent_uncertain,
+    )
+    row = conn.execute(
+        "SELECT content, json_extract(metadata, '$.lifecycle') FROM memories WHERE id='held-concurrent'"
+    ).fetchone()
+
+    assert row["content"] == "NEW UNREVIEWED CONTENT"
+    assert row[1] == "candidate"
+    assert report["l4"]["exhausted_archived"] == 0
+    assert report["l4"]["conflicts_skipped"] == 1
+
+
 def test_l4_llm_errors_keep_candidates_and_surface_exceptions(tmp_path):
     hermes_home, conn = _home(tmp_path)
     _held_candidate_with_evidence(
@@ -274,6 +326,139 @@ def test_l4_llm_errors_keep_candidates_and_surface_exceptions(tmp_path):
     assert _lifecycle(conn, "held-error") == "candidate"
 
 
+def _provider_like(hermes_home: Path, *, interval_hours: float = 24.0):
+    class Provider:
+        def __init__(self) -> None:
+            self._shutdown_requested = type("E", (), {"is_set": lambda self: False})()
+            self._hermes_home = hermes_home
+            self._config = {
+                "auto_adjudication": {
+                    "enabled": True,
+                    "interval_hours": interval_hours,
+                    "l4_enabled": False,
+                }
+            }
+            self._last_adjudication_at = 0.0
+            self._last_adjudication_report = {}
+
+        def _truth_writes_blocked(self) -> bool:
+            return False
+
+        def _memory_isolated_for_scope(self) -> bool:
+            return False
+
+        def _journal_config(self) -> dict:
+            return {}
+
+    return Provider()
+
+
+def test_auto_adjudication_throttle_survives_provider_recreation(tmp_path, monkeypatch):
+    hermes_home, conn = _home(tmp_path)
+    conn.close()
+    calls: list[str] = []
+
+    def fake_run(*_args, **_kwargs):
+        calls.append("run")
+        return {"ok": True, "status": "applied"}
+
+    monkeypatch.setattr("scope_recall.auto_adjudication.run_auto_adjudication", fake_run)
+
+    first = _provider_like(hermes_home)
+    run_provider_auto_adjudication(first, trigger="first")
+    second = _provider_like(hermes_home)
+    run_provider_auto_adjudication(second, trigger="second")
+
+    assert calls == ["run"]
+
+
+def test_auto_adjudication_throttle_records_completion_not_start_time(
+    tmp_path, monkeypatch
+):
+    hermes_home, conn = _home(tmp_path)
+    conn.close()
+    clock = [100.0]
+
+    def fake_run(*_args, **_kwargs):
+        clock[0] = 200.0
+        return {"ok": True, "status": "applied"}
+
+    monkeypatch.setattr("time.time", lambda: clock[0])
+    monkeypatch.setattr(
+        "scope_recall.auto_adjudication.run_auto_adjudication", fake_run
+    )
+
+    run_provider_auto_adjudication(_provider_like(hermes_home), trigger="completion")
+
+    receipt_conn = sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3")
+    try:
+        row = receipt_conn.execute(
+            "SELECT after_json FROM governance_audit_events "
+            "WHERE event_type = 'memory_auto_adjudication' "
+            "AND action = 'schedule_complete'"
+        ).fetchone()
+    finally:
+        receipt_conn.close()
+    assert row is not None
+    assert json.loads(row[0])["completed_at_unix"] == 200.0
+
+
+def test_failed_auto_adjudication_does_not_write_durable_throttle(tmp_path, monkeypatch):
+    hermes_home, conn = _home(tmp_path)
+    conn.close()
+    calls: list[str] = []
+
+    def fail_then_ok(*_args, **_kwargs):
+        if "fail" not in calls:
+            calls.append("fail")
+            raise RuntimeError("injected adjudication failure")
+        calls.append("ok")
+        return {"ok": True, "status": "applied"}
+
+    monkeypatch.setattr("scope_recall.auto_adjudication.run_auto_adjudication", fail_then_ok)
+
+    first = _provider_like(hermes_home)
+    run_provider_auto_adjudication(first, trigger="fail")
+    second = _provider_like(hermes_home)
+    run_provider_auto_adjudication(second, trigger="retry")
+
+    assert calls == ["fail", "ok"]
+
+
+def test_durable_throttle_ignores_receipt_for_another_target(tmp_path, monkeypatch):
+    hermes_home, conn = _home(tmp_path)
+    conn.close()
+    receipt_conn = sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3")
+    try:
+        ensure_schema(receipt_conn)
+        record_governance_audit_event(
+            receipt_conn,
+            event_id="wrong-target-throttle-receipt",
+            event_type="memory_auto_adjudication",
+            action="schedule_complete",
+            target_id="not-the-scheduler",
+            scope_id="",
+            before={},
+            after={"completed_at_unix": 9999999999.0},
+            reason="unrelated receipt",
+            actor="test",
+        )
+        receipt_conn.commit()
+    finally:
+        receipt_conn.close()
+    calls: list[str] = []
+
+    def fake_run(*_args, **_kwargs):
+        calls.append("run")
+        return {"ok": True, "status": "applied"}
+
+    monkeypatch.setattr("scope_recall.auto_adjudication.run_auto_adjudication", fake_run)
+
+    run_provider_auto_adjudication(_provider_like(hermes_home), trigger="wrong-target")
+
+    assert calls == ["run"]
+
+
 def test_lanes_only_when_llm_unavailable(tmp_path):
     hermes_home, conn = _home(tmp_path)
     _held_candidate_with_evidence(
@@ -284,3 +469,74 @@ def test_lanes_only_when_llm_unavailable(tmp_path):
     assert report["l4"]["enabled"] is False
     assert report["lanes"]["held_for_l4"] == 1
     assert _lifecycle(conn, "held-no-llm") == "candidate"
+
+
+def test_scheduled_throttle_claim_is_atomic_across_concurrent_providers(
+    tmp_path, monkeypatch
+):
+    hermes_home, conn = _home(tmp_path)
+    conn.close()
+    calls: list[str] = []
+    first_entered = threading.Event()
+    release_run = threading.Event()
+
+    def fake_run(*_args, **_kwargs):
+        calls.append("run")
+        first_entered.set()
+        assert release_run.wait(timeout=5)
+        return {"ok": True, "status": "applied"}
+
+    monkeypatch.setattr(
+        "scope_recall.auto_adjudication.run_auto_adjudication", fake_run
+    )
+    workers = [
+        threading.Thread(
+            target=run_provider_auto_adjudication,
+            args=(_provider_like(hermes_home),),
+            kwargs={"trigger": f"worker-{index}"},
+        )
+        for index in range(2)
+    ]
+
+    workers[0].start()
+    assert first_entered.wait(timeout=5)
+    workers[1].start()
+    time.sleep(0.1)
+    release_run.set()
+    for worker in workers:
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+
+    assert calls == ["run"]
+
+
+def test_scheduled_throttle_recovers_an_expired_claim(tmp_path, monkeypatch):
+    hermes_home, conn = _home(tmp_path)
+    record_governance_audit_event(
+        conn,
+        event_id="expired-schedule-claim",
+        event_type="memory_auto_adjudication",
+        action="schedule_claim",
+        target_id="auto_adjudication_schedule",
+        after={"claim_token": "dead-worker", "expires_at_unix": 50.0},
+        reason="simulate a worker that died after claiming",
+        actor="test",
+    )
+    conn.commit()
+    conn.close()
+    calls: list[str] = []
+
+    def fake_run(*_args, **_kwargs):
+        calls.append("run")
+        return {"ok": True, "status": "applied"}
+
+    monkeypatch.setattr("time.time", lambda: 100.0)
+    monkeypatch.setattr(
+        "scope_recall.auto_adjudication.run_auto_adjudication", fake_run
+    )
+
+    run_provider_auto_adjudication(
+        _provider_like(hermes_home), trigger="recover-expired-claim"
+    )
+
+    assert calls == ["run"]

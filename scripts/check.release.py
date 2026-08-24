@@ -39,8 +39,8 @@ if str(ROOT) not in sys.path:
 from secret_patterns import scan_secret_like_text, secret_scan_shadow  # noqa: E402
 from scripts.release_changelog import extract_version_section  # noqa: E402
 
-PACKAGE_VERSION = "1.10.3"
-PUBLIC_RELEASE_BASELINE = "1.10.2"
+PACKAGE_VERSION = "1.10.4"
+PUBLIC_RELEASE_BASELINE = "1.10.3"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 RELEASE_READINESS_DOC = f"docs/release-readiness.{PACKAGE_VERSION}.md"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
@@ -626,10 +626,17 @@ REQUIRED_CHANGELOG_TERMS_BY_VERSION = {
         "event_type",
         "action",
     ),
+    "1.10.4": (
+        "metadata",
+        "receipt",
+        "run_id",
+        "throttle",
+    ),
 }
 PUBLIC_RELEASE_BASELINES_BY_VERSION = {
     "1.10.2": "1.9.2",
     "1.10.3": "1.10.2",
+    "1.10.4": "1.10.3",
 }
 REQUIRED_CHANGELOG_TERMS = REQUIRED_CHANGELOG_TERMS_BY_VERSION.get(
     PACKAGE_VERSION, ()
@@ -1328,6 +1335,7 @@ def benchmark_check() -> dict[str, object]:
     scale_ok = (
         bool(scale_payload.get("passed"))
         and scale_payload.get("schema_version") == "scope-recall.temporal-scale.v2"
+        and scale_payload.get("candidate_version") == PACKAGE_VERSION
         and scale_payload.get("sizes") == [100_000, 1_000_000]
         and _int_payload_value(scale_payload, "rounds_per_query") >= 30
     )

@@ -21,6 +21,7 @@ from scope_recall.experience_store import (
     find_duplicate_playbooks,
     inspect_playbook,
     merge_playbooks,
+    record_experience_preflight_run,
     record_playbook_feedback,
     review_playbook,
     search_playbooks,
@@ -709,6 +710,256 @@ def test_unknown_feedback_records_run_without_changing_confidence_or_counts():
     assert after["failure_count"] == before["failure_count"] == 0
     assert after["stale_count"] == before["stale_count"] == 0
     assert conn.execute("SELECT COUNT(*) FROM experience_runs WHERE playbook_id = ? AND outcome = 'unknown'", ("pb_unknown",)).fetchone()[0] == 1
+
+
+def _record_pending_preflight_run(conn: sqlite3.Connection, *, playbook_id: str, scope_id: str = "scope-a", accessible_scope_ids: list[str] | None = None) -> str:
+    """Create one pending experience_runs row through the existing preflight recorder."""
+
+    inspected = inspect_playbook(
+        conn,
+        playbook_id=playbook_id,
+        accessible_scope_ids=accessible_scope_ids or [scope_id],
+    )
+    playbook = inspected["playbook"] if isinstance(inspected.get("playbook"), dict) else {}
+    receipt = record_experience_preflight_run(
+        conn,
+        playbook=playbook,
+        scope_id=scope_id,
+        decision="guided_reuse",
+        query="Need one-way Headscale ACL so management can access target",
+        reasons=["fixture pending run"],
+    )
+    run_id = str(receipt.get("run_id") or "")
+    assert receipt.get("recorded") is True
+    assert run_id.startswith("xrun_")
+    return run_id
+
+
+def test_feedback_with_run_id_finalizes_pending_preflight_run_in_place():
+    conn = _conn()
+    _create_promoted(conn, playbook_id="pb_close")
+    run_id = _record_pending_preflight_run(conn, playbook_id="pb_close")
+    pending = conn.execute(
+        "SELECT started_at, finished_at FROM experience_runs WHERE id = ?",
+        (run_id,),
+    ).fetchone()
+
+    feedback = record_playbook_feedback(
+        conn,
+        playbook_id="pb_close",
+        scope_id="scope-a",
+        accessible_scope_ids=["scope-a"],
+        outcome="success",
+        run_id=run_id,
+        evidence=["live check passed"],
+        outcome_reason="closed from pending preflight",
+    )
+    row = conn.execute("SELECT * FROM experience_runs WHERE id = ?", (run_id,)).fetchone()
+    counts = conn.execute(
+        "SELECT success_count, failure_count FROM procedural_playbooks WHERE id = ?",
+        ("pb_close",),
+    ).fetchone()
+
+    assert feedback["recorded"] is True
+    assert feedback["run_id"] == run_id
+    assert feedback["success_count"] == 1
+    assert conn.execute("SELECT COUNT(*) FROM experience_runs").fetchone()[0] == 1
+    assert row["outcome"] == "success"
+    assert row["started_at"] == pending["started_at"]
+    assert row["finished_at"]
+    assert row["outcome_reason"] == "closed from pending preflight"
+    assert counts["success_count"] == 1
+    assert counts["failure_count"] == 0
+
+
+def test_feedback_with_run_id_does_not_recount_already_finalized_run():
+    conn = _conn()
+    _create_promoted(conn, playbook_id="pb_closed_once")
+    run_id = _record_pending_preflight_run(conn, playbook_id="pb_closed_once")
+    first = record_playbook_feedback(
+        conn,
+        playbook_id="pb_closed_once",
+        scope_id="scope-a",
+        accessible_scope_ids=["scope-a"],
+        outcome="success",
+        run_id=run_id,
+        evidence=["first close"],
+    )
+    second = record_playbook_feedback(
+        conn,
+        playbook_id="pb_closed_once",
+        scope_id="scope-a",
+        accessible_scope_ids=["scope-a"],
+        outcome="failed",
+        run_id=run_id,
+        evidence=["must not recount"],
+    )
+    row = conn.execute("SELECT outcome, started_at FROM experience_runs WHERE id = ?", (run_id,)).fetchone()
+    counts = conn.execute(
+        "SELECT success_count, failure_count FROM procedural_playbooks WHERE id = ?",
+        ("pb_closed_once",),
+    ).fetchone()
+
+    assert first["recorded"] is True
+    assert first["success_count"] == 1
+    assert second == {
+        "recorded": False,
+        "id": "pb_closed_once",
+        "run_id": run_id,
+        "error": "run_already_finalized",
+        "outcome": "success",
+    }
+    assert conn.execute("SELECT COUNT(*) FROM experience_runs").fetchone()[0] == 1
+    assert row["outcome"] == "success"
+    assert counts["success_count"] == 1
+    assert counts["failure_count"] == 0
+
+
+def test_feedback_with_run_id_rejects_unknown_outcome_without_mutating():
+    conn = _conn()
+    _create_promoted(conn, playbook_id="pb_unknown_close")
+    run_id = _record_pending_preflight_run(conn, playbook_id="pb_unknown_close")
+
+    blocked = record_playbook_feedback(
+        conn,
+        playbook_id="pb_unknown_close",
+        scope_id="scope-a",
+        accessible_scope_ids=["scope-a"],
+        outcome="unknown",
+        run_id=run_id,
+        evidence=["still pending"],
+    )
+    row = conn.execute("SELECT outcome FROM experience_runs WHERE id = ?", (run_id,)).fetchone()
+    counts = conn.execute(
+        "SELECT success_count FROM procedural_playbooks WHERE id = ?",
+        ("pb_unknown_close",),
+    ).fetchone()
+
+    assert blocked == {
+        "recorded": False,
+        "id": "pb_unknown_close",
+        "run_id": run_id,
+        "error": "outcome_not_terminal",
+    }
+    assert row["outcome"] == "unknown"
+    assert counts["success_count"] == 0
+    assert conn.execute("SELECT COUNT(*) FROM experience_runs").fetchone()[0] == 1
+
+
+def test_feedback_with_run_id_requires_matching_playbook_and_accessible_scope():
+    conn = _conn()
+    _create_promoted(conn, playbook_id="pb_owner")
+    _create_promoted(conn, playbook_id="pb_other")
+    owner_run = _record_pending_preflight_run(conn, playbook_id="pb_owner")
+
+    mismatch = record_playbook_feedback(
+        conn,
+        playbook_id="pb_other",
+        scope_id="scope-a",
+        accessible_scope_ids=["scope-a"],
+        outcome="success",
+        run_id=owner_run,
+        evidence=["wrong playbook"],
+    )
+    missing = record_playbook_feedback(
+        conn,
+        playbook_id="pb_owner",
+        scope_id="scope-a",
+        accessible_scope_ids=["scope-a"],
+        outcome="success",
+        run_id="xrun_missing",
+        evidence=["missing run"],
+    )
+
+    create_playbook(
+        conn,
+        playbook_id="pb_shared_run",
+        scope_id="scope-owner",
+        shared_scope_id="pool",
+        payload=_payload(),
+        status="candidate",
+        confidence=0.9,
+    )
+    review_playbook(
+        conn,
+        playbook_id="pb_shared_run",
+        accessible_scope_ids=["scope-owner", "pool"],
+        action="promote",
+        reason="fixture",
+    )
+    shared_run = _record_pending_preflight_run(
+        conn,
+        playbook_id="pb_shared_run",
+        scope_id="scope-a",
+        accessible_scope_ids=["scope-a", "pool"],
+    )
+    hidden = record_playbook_feedback(
+        conn,
+        playbook_id="pb_shared_run",
+        scope_id="scope-b",
+        accessible_scope_ids=["scope-b", "pool"],
+        outcome="failed",
+        run_id=shared_run,
+        evidence=["other consumer cannot close this run"],
+    )
+
+    assert mismatch == {"recorded": False, "id": "pb_other", "error": "run_playbook_mismatch"}
+    assert missing == {"recorded": False, "id": "pb_owner", "error": "run_not_found"}
+    assert hidden == {"recorded": False, "id": "pb_shared_run", "error": "run_not_found"}
+    assert json.dumps([mismatch, missing, hidden], ensure_ascii=False).count("error") == 3
+    assert conn.execute("SELECT outcome FROM experience_runs WHERE id = ?", (owner_run,)).fetchone()[0] == "unknown"
+    assert conn.execute("SELECT outcome FROM experience_runs WHERE id = ?", (shared_run,)).fetchone()[0] == "unknown"
+    assert conn.execute("SELECT success_count FROM procedural_playbooks WHERE id = ?", ("pb_owner",)).fetchone()[0] == 0
+    assert conn.execute("SELECT success_count FROM procedural_playbooks WHERE id = ?", ("pb_other",)).fetchone()[0] == 0
+    assert conn.execute("SELECT failure_count FROM procedural_playbooks WHERE id = ?", ("pb_shared_run",)).fetchone()[0] == 0
+
+
+def test_feedback_without_run_id_still_inserts_independent_run():
+    conn = _conn()
+    _create_promoted(conn, playbook_id="pb_compat")
+    pending_id = _record_pending_preflight_run(conn, playbook_id="pb_compat")
+
+    feedback = record_playbook_feedback(
+        conn,
+        playbook_id="pb_compat",
+        scope_id="scope-a",
+        accessible_scope_ids=["scope-a"],
+        outcome="success",
+        evidence=["legacy feedback without run_id"],
+    )
+    rows = conn.execute(
+        "SELECT id, outcome FROM experience_runs WHERE playbook_id = ? ORDER BY started_at, id",
+        ("pb_compat",),
+    ).fetchall()
+
+    assert feedback["recorded"] is True
+    assert feedback["success_count"] == 1
+    assert feedback["run_id"] in {row["id"] for row in rows}
+    assert feedback["run_id"] != pending_id
+    assert len(rows) == 2
+    assert {row["id"] for row in rows} != {pending_id}
+    assert pending_id in {row["id"] for row in rows}
+    assert {row["outcome"] for row in rows} == {"unknown", "success"}
+
+
+def test_feedback_rejects_secret_like_run_id_before_persisting():
+    conn = _conn()
+    _create_promoted(conn, playbook_id="pb_run_secret")
+    run_id = _record_pending_preflight_run(conn, playbook_id="pb_run_secret")
+
+    with pytest.raises(ExperienceValidationError):
+        record_playbook_feedback(
+            conn,
+            playbook_id="pb_run_secret",
+            scope_id="scope-a",
+            accessible_scope_ids=["scope-a"],
+            outcome="success",
+            run_id="token=not_a_real_key_12345",
+            evidence=["safe"],
+        )
+
+    assert conn.execute("SELECT COUNT(*) FROM experience_runs").fetchone()[0] == 1
+    assert conn.execute("SELECT outcome FROM experience_runs WHERE id = ?", (run_id,)).fetchone()[0] == "unknown"
 
 
 def test_find_duplicate_playbooks_groups_same_task_class_and_title():
@@ -1618,6 +1869,83 @@ def test_feedback_rejects_terminal_status_playbooks_without_mutating_counts_or_r
         assert inspected["playbook"]["status"] == expected_status
         assert inspected["playbook"]["failure_count"] == 0
         assert inspected["runs"] == []
+
+
+def test_feedback_finalizes_pending_run_on_terminal_playbook_exactly_once():
+    conn = _conn()
+    _create_promoted(conn, playbook_id="pb_terminal_run")
+    pending = record_experience_preflight_run(
+        conn,
+        playbook={"id": "pb_terminal_run", "confidence": 0.9, "preconditions": [], "steps": []},
+        scope_id="scope-a",
+        decision="guided_reuse",
+        query="Need one-way Headscale ACL",
+        reasons=["fixture"],
+    )
+    run_id = pending["run_id"]
+    pending_row = conn.execute("SELECT outcome, finished_at FROM experience_runs WHERE id = ?", (run_id,)).fetchone()
+    assert pending_row["outcome"] == "unknown"
+    assert not pending_row["finished_at"]
+
+    review_playbook(conn, playbook_id="pb_terminal_run", accessible_scope_ids=["scope-a"], action="quarantine", reason="terminal after pending run")
+    before = conn.execute(
+        "SELECT status, success_count, failure_count, stale_count, confidence FROM procedural_playbooks WHERE id = ?",
+        ("pb_terminal_run",),
+    ).fetchone()
+
+    first = record_playbook_feedback(
+        conn,
+        playbook_id="pb_terminal_run",
+        scope_id="scope-a",
+        accessible_scope_ids=["scope-a"],
+        outcome="success",
+        decision="guided_reuse",
+        evidence=["late feedback after quarantine"],
+        outcome_reason="finalize pending run",
+        run_id=run_id,
+    )
+    after_first = conn.execute(
+        "SELECT status, success_count, failure_count, stale_count, confidence FROM procedural_playbooks WHERE id = ?",
+        ("pb_terminal_run",),
+    ).fetchone()
+    finalized = conn.execute(
+        "SELECT outcome, outcome_reason, finished_at FROM experience_runs WHERE id = ?",
+        (run_id,),
+    ).fetchone()
+
+    assert first["recorded"] is True
+    assert first["global_updated"] is False
+    assert first["run_finalized"] is True
+    assert first["status"] == "quarantined"
+    assert tuple(after_first) == tuple(before)
+    assert finalized["outcome"] == "success"
+    assert finalized["finished_at"]
+    assert finalized["outcome_reason"] == "finalize pending run"
+
+    second = record_playbook_feedback(
+        conn,
+        playbook_id="pb_terminal_run",
+        scope_id="scope-a",
+        accessible_scope_ids=["scope-a"],
+        outcome="failed",
+        decision="guided_reuse",
+        evidence=["must not finalize twice"],
+        run_id=run_id,
+    )
+    after_second = conn.execute(
+        "SELECT status, success_count, failure_count, outcome FROM procedural_playbooks "
+        "JOIN experience_runs ON experience_runs.playbook_id = procedural_playbooks.id "
+        "WHERE procedural_playbooks.id = ? AND experience_runs.id = ?",
+        ("pb_terminal_run", run_id),
+    ).fetchone()
+
+    assert second["recorded"] is False
+    assert second["error"] == "run_already_finalized"
+    assert after_second["status"] == "quarantined"
+    assert after_second["success_count"] == 0
+    assert after_second["failure_count"] == 0
+    assert after_second["outcome"] == "success"
+    assert conn.execute("SELECT COUNT(*) FROM experience_runs WHERE playbook_id = ?", ("pb_terminal_run",)).fetchone()[0] == 1
 
 
 def test_create_playbook_rejects_direct_promoted_status():

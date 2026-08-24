@@ -265,6 +265,42 @@ def test_cleanup_rollback_restores_soft_archived_metadata():
     assert _metadata(conn, "ops").get("lifecycle") != "archived"
 
 
+def test_cleanup_rollback_preserves_callers_outer_transaction():
+    conn = _conn()
+    _insert(
+        conn,
+        memory_id="ops",
+        content="Operations workflow summary from journal digest: user: 继续 assistant: 完成。",
+    )
+    _insert(conn, memory_id="marker", content="caller-owned content")
+    apply_cleanup(
+        conn,
+        scope_ids=["shared-scope"],
+        dry_run=False,
+        limit=20,
+        batch_id="outer-transaction-rollback",
+    )
+    assert _metadata(conn, "ops")["lifecycle"] == "archived"
+
+    conn.execute(
+        "UPDATE memories SET content = ? WHERE id = ?",
+        ("caller uncommitted change", "marker"),
+    )
+    assert conn.in_transaction is True
+
+    applied = rollback_cleanup_batch(
+        conn,
+        batch_id="outer-transaction-rollback",
+        dry_run=False,
+    )
+
+    assert applied["restored"] == 1
+    assert conn.in_transaction is True
+    conn.rollback()
+    assert conn.execute("SELECT content FROM memories WHERE id='marker'").fetchone()[0] == "caller-owned content"
+    assert _metadata(conn, "ops")["lifecycle"] == "archived"
+
+
 def test_scope_recall_forget_archive_batch_is_default_rollback_candidate():
     conn = _conn()
     _insert(conn, memory_id="forgotten", content="User asked to forget this exact memory id.")
@@ -317,6 +353,72 @@ def test_cleanup_rollback_dry_run_is_query_only_on_readonly_connection(tmp_path)
     assert dry["dry_run"] is True
     assert dry["rollback_candidates"] == 1
     assert dry["restored"] == 0
+
+
+def test_cleanup_rollback_replaces_archive_metadata_exactly():
+    conn = _conn()
+    _insert(conn, memory_id="ops", content="Operations workflow summary from journal digest: user: 继续 assistant: 完成。")
+    apply_cleanup(conn, scope_ids=["shared-scope"], dry_run=False, limit=20, batch_id="batch-exact-restore")
+    archived = _metadata(conn, "ops")
+    assert archived["archived_at"]
+    assert archived["archived_by"]
+
+    applied = rollback_cleanup_batch(conn, batch_id="batch-exact-restore", dry_run=False)
+
+    restored = _metadata(conn, "ops")
+    assert applied["restored"] == 1
+    assert restored.get("lifecycle") != "archived"
+    for key in (
+        "archive_reason",
+        "archived_at",
+        "archived_by",
+        "candidate_status",
+        "candidate_promotion_batch_id",
+    ):
+        assert key not in restored
+
+
+def test_cleanup_rollback_refuses_metadata_drift_with_same_batch_marker():
+    conn = _conn()
+    _insert(conn, memory_id="ops", content="Operations workflow summary from journal digest: user: 继续 assistant: 完成。")
+    apply_cleanup(conn, scope_ids=["shared-scope"], dry_run=False, limit=20, batch_id="batch-drift")
+    _update_metadata(conn, "ops", {"operator_note": "later decision"})
+    before = conn.execute(
+        "SELECT metadata, updated_at FROM memories WHERE id = 'ops'"
+    ).fetchone()
+
+    applied = rollback_cleanup_batch(conn, batch_id="batch-drift", dry_run=False)
+    after = conn.execute(
+        "SELECT metadata, updated_at FROM memories WHERE id = 'ops'"
+    ).fetchone()
+
+    assert applied["restored"] == 0
+    assert tuple(after) == tuple(before)
+    assert _metadata(conn, "ops")["operator_note"] == "later decision"
+
+
+def test_cleanup_rollback_malformed_before_json_is_skipped_without_mutation():
+    conn = _conn()
+    _insert(conn, memory_id="ops", content="Operations workflow summary from journal digest: user: 继续 assistant: 完成。")
+    apply_cleanup(conn, scope_ids=["shared-scope"], dry_run=False, limit=20, batch_id="batch-malformed")
+    before_row = conn.execute(
+        "SELECT metadata, updated_at FROM memories WHERE id = 'ops'"
+    ).fetchone()
+    conn.execute(
+        "UPDATE governance_audit_events SET before_json = ? WHERE batch_id = ? AND action = 'soft_archive'",
+        ("{not-json", "batch-malformed"),
+    )
+    conn.commit()
+
+    applied = rollback_cleanup_batch(conn, batch_id="batch-malformed", dry_run=False)
+    after_row = conn.execute(
+        "SELECT metadata, updated_at FROM memories WHERE id = 'ops'"
+    ).fetchone()
+
+    assert applied["restored"] == 0
+    assert applied["skipped_invalid"] == 1
+    assert _metadata(conn, "ops")["lifecycle"] == "archived"
+    assert tuple(after_row) == tuple(before_row)
 
 
 def test_cleanup_rollback_skips_rows_rearchived_by_later_batch():
@@ -407,6 +509,117 @@ def test_governance_audit_coverage_counts_memory_quality_archive_events(event_ty
     assert report["legacy_coverage"]["backfill_candidates"] == 0
 
 
+def test_unknown_writer_known_soft_archive_is_not_trusted_for_coverage():
+    conn = _conn()
+    _insert(conn, memory_id="rogue-archive", content="Archive receipt from an unknown writer using a known action.")
+    before = dict(
+        conn.execute(
+            "SELECT id, scope_id, source, target, content, summary, updated_at, metadata "
+            "FROM memories WHERE id='rogue-archive'"
+        ).fetchone()
+    )
+    _update_metadata(
+        conn,
+        "rogue-archive",
+        {"lifecycle": "archived", "rollback_batch_id": "rogue-batch"},
+    )
+    after = dict(
+        conn.execute(
+            "SELECT id, scope_id, source, target, content, summary, updated_at, metadata "
+            "FROM memories WHERE id='rogue-archive'"
+        ).fetchone()
+    )
+    record_governance_audit_event(
+        conn,
+        event_id="gov_rogue_soft_archive",
+        event_type="third_party_writer",
+        action="soft_archive",
+        scope_id="shared-scope",
+        target_id="rogue-archive",
+        batch_id="rogue-batch",
+        before=before,
+        after=after,
+        reason="unknown writer with a known action must fail closed",
+        actor="test",
+        dry_run=False,
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    conn.commit()
+
+    report = governance_audit_coverage_report(conn, scope_ids=["shared-scope"])
+
+    assert report["status"] == "needs_repair"
+    assert report["archived_with_audit"] == 0
+    assert report["new_mutation_coverage"]["missing_audit"] == 1
+
+
+def test_rollback_rejects_unknown_event_type_without_mapping_to_soft_archive():
+    conn = _conn()
+    _insert(conn, memory_id="rogue-restore", content="Operations workflow summary from journal digest: user: 继续 assistant: 完成。")
+    apply_cleanup(conn, scope_ids=["shared-scope"], dry_run=False, limit=20, batch_id="legal-batch")
+    conn.execute(
+        "UPDATE governance_audit_events SET event_type = 'rogue_writer' "
+        "WHERE batch_id = 'legal-batch' AND action = 'soft_archive'"
+    )
+    conn.commit()
+    before_row = conn.execute(
+        "SELECT metadata, updated_at FROM memories WHERE id = 'rogue-restore'"
+    ).fetchone()
+
+    applied = rollback_cleanup_batch(
+        conn,
+        batch_id="legal-batch",
+        dry_run=False,
+        event_types=["rogue_writer"],
+    )
+    after_row = conn.execute(
+        "SELECT metadata, updated_at FROM memories WHERE id = 'rogue-restore'"
+    ).fetchone()
+
+    assert applied["restored"] == 0
+    assert applied["rollback_candidates"] == 0
+    assert applied["unsupported_event_types"] == ["rogue_writer"]
+    assert _metadata(conn, "rogue-restore")["lifecycle"] == "archived"
+    assert tuple(after_row) == tuple(before_row)
+
+
+def test_recognized_archive_receipt_pairs_count_as_coverage():
+    conn = _conn()
+    _insert(conn, memory_id="legal-archive", content="Memory archived by a recognized writer pair.")
+    _update_metadata(
+        conn,
+        "legal-archive",
+        {"lifecycle": "archived", "rollback_batch_id": "legal-pair"},
+    )
+    row = conn.execute(
+        "SELECT id, scope_id, source, target, content, summary, updated_at, metadata "
+        "FROM memories WHERE id='legal-archive'"
+    ).fetchone()
+    snapshot = dict(row)
+    record_governance_audit_event(
+        conn,
+        event_id="gov_legal_forget",
+        event_type="forgetting",
+        action="soft_archive",
+        scope_id="shared-scope",
+        target_id="legal-archive",
+        batch_id="legal-pair",
+        before=snapshot,
+        after=snapshot,
+        reason="recognized forgetting archive pair",
+        actor="test",
+        dry_run=False,
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    conn.commit()
+
+    report = governance_audit_coverage_report(conn, scope_ids=["shared-scope"])
+
+    assert report["archived_with_audit"] == 1
+    assert report["new_mutation_coverage"]["missing_audit"] == 0
+    assert report["new_mutation_coverage"]["ok"] is True
+
+
 def test_generic_archive_action_is_not_trusted_for_coverage_or_rollback():
     conn = _conn()
     _insert(conn, memory_id="untrusted-archive", content="Archive event from an unknown writer.")
@@ -471,6 +684,195 @@ def test_governance_audit_coverage_treats_archived_at_only_rows_as_legacy():
     assert report["new_mutation_coverage"]["missing_audit"] == 0
     assert report["legacy_coverage"]["archived_total"] == 1
     assert report["legacy_coverage"]["backfill_candidates"] == 1
+
+
+def test_stale_archive_receipt_does_not_cover_later_unaudited_rearchive():
+    conn = _conn()
+    _insert(conn, memory_id="ops", content="Operations workflow summary from journal digest: user: 继续 assistant: 完成。")
+    apply_cleanup(conn, scope_ids=["shared-scope"], dry_run=False, limit=20, batch_id="stale-receipt")
+    covered = governance_audit_coverage_report(conn, scope_ids=["shared-scope"])
+    assert covered["status"] == "ready"
+    assert covered["new_mutation_coverage"]["missing_audit"] == 0
+
+    metadata = _metadata(conn, "ops")
+    metadata["later_operator_review"] = True
+    conn.execute(
+        "UPDATE memories SET metadata = ?, updated_at = ? WHERE id = 'ops'",
+        (json.dumps(metadata, ensure_ascii=False, sort_keys=True), "2026-08-01T00:00:00+00:00"),
+    )
+    conn.commit()
+
+    report = governance_audit_coverage_report(conn, scope_ids=["shared-scope"])
+
+    assert report["status"] == "needs_repair"
+    assert report["archived_total"] == 1
+    assert report["archived_with_audit"] == 0
+    assert report["archived_without_audit"] == 1
+    assert report["new_mutation_coverage"]["missing_audit"] == 1
+    assert report["new_mutation_coverage"]["ok"] is False
+
+
+def test_only_latest_recognized_archive_receipt_can_cover_current_state():
+    conn = _conn()
+    _insert(
+        conn,
+        memory_id="ops",
+        content="Operations workflow summary from journal digest: user: 继续 assistant: 完成。",
+    )
+    apply_cleanup(
+        conn,
+        scope_ids=["shared-scope"],
+        dry_run=False,
+        limit=20,
+        batch_id="first-receipt",
+    )
+    covered = governance_audit_coverage_report(conn, scope_ids=["shared-scope"])
+    assert covered["archived_with_audit"] == 1
+
+    current = dict(
+        conn.execute(
+            "SELECT id, scope_id, source, target, content, summary, updated_at, metadata "
+            "FROM memories WHERE id = 'ops'"
+        ).fetchone()
+    )
+    stale_after = dict(current)
+    stale_after["updated_at"] = "2099-01-01T00:00:00+00:00"
+    record_governance_audit_event(
+        conn,
+        event_id="gov_later_stale_receipt",
+        event_type="forgetting",
+        action="soft_archive",
+        scope_id="shared-scope",
+        target_id="ops",
+        batch_id="later-receipt",
+        before=current,
+        after=stale_after,
+        reason="latest recognized receipt deliberately does not bind current truth",
+        actor="test",
+        dry_run=False,
+        created_at="2099-01-01T00:00:00+00:00",
+    )
+    conn.commit()
+
+    report = governance_audit_coverage_report(conn, scope_ids=["shared-scope"])
+
+    assert report["status"] == "needs_repair"
+    assert report["archived_with_audit"] == 0
+    assert report["archived_without_audit"] == 1
+
+
+def test_latest_archive_receipt_uses_write_order_when_timestamps_tie():
+    conn = _conn()
+    _insert(
+        conn,
+        memory_id="ops",
+        content="Operations workflow summary from journal digest: user: 继续 assistant: 完成。",
+    )
+    apply_cleanup(
+        conn,
+        scope_ids=["shared-scope"],
+        dry_run=False,
+        limit=20,
+        batch_id="timestamp-tie-base",
+    )
+    current = dict(
+        conn.execute(
+            "SELECT id, scope_id, source, target, content, summary, updated_at, metadata "
+            "FROM memories WHERE id = 'ops'"
+        ).fetchone()
+    )
+    stale_after = dict(current)
+    stale_after["updated_at"] = "2099-01-01T00:00:01+00:00"
+    tied_at = "2099-01-01T00:00:00+00:00"
+    record_governance_audit_event(
+        conn,
+        event_id="gov_z_matching_written_first",
+        event_type="forgetting",
+        action="soft_archive",
+        scope_id="shared-scope",
+        target_id="ops",
+        batch_id="timestamp-tie-matching",
+        before=current,
+        after=current,
+        reason="matching receipt written first",
+        actor="test",
+        dry_run=False,
+        created_at=tied_at,
+    )
+    record_governance_audit_event(
+        conn,
+        event_id="gov_a_stale_written_last",
+        event_type="forgetting",
+        action="soft_archive",
+        scope_id="shared-scope",
+        target_id="ops",
+        batch_id="timestamp-tie-stale",
+        before=current,
+        after=stale_after,
+        reason="stale receipt written last at the same timestamp",
+        actor="test",
+        dry_run=False,
+        created_at=tied_at,
+    )
+    conn.commit()
+
+    report = governance_audit_coverage_report(conn, scope_ids=["shared-scope"])
+
+    assert report["status"] == "needs_repair"
+    assert report["archived_with_audit"] == 0
+
+
+def test_rollback_deduplicates_same_target_receipts_within_one_batch():
+    conn = _conn()
+    _insert(
+        conn,
+        memory_id="ops",
+        content="Operations workflow summary from journal digest: user: 继续 assistant: 完成。",
+    )
+    apply_cleanup(
+        conn,
+        scope_ids=["shared-scope"],
+        dry_run=False,
+        limit=20,
+        batch_id="duplicate-target-batch",
+    )
+    original = conn.execute(
+        "SELECT before_json, after_json FROM governance_audit_events "
+        "WHERE batch_id = 'duplicate-target-batch'"
+    ).fetchone()
+    assert original is not None
+    record_governance_audit_event(
+        conn,
+        event_id="gov_duplicate_target_receipt",
+        event_type="memory_cleanup",
+        action="soft_archive",
+        scope_id="shared-scope",
+        target_id="ops",
+        batch_id="duplicate-target-batch",
+        before=json.loads(original["before_json"]),
+        after=json.loads(original["after_json"]),
+        reason="duplicate exact receipt for the same target and batch",
+        actor="test",
+        dry_run=False,
+        created_at="2099-01-01T00:00:00+00:00",
+    )
+    conn.commit()
+
+    dry = rollback_cleanup_batch(
+        conn,
+        batch_id="duplicate-target-batch",
+        dry_run=True,
+    )
+    applied = rollback_cleanup_batch(
+        conn,
+        batch_id="duplicate-target-batch",
+        dry_run=False,
+    )
+
+    assert dry["rollback_candidates"] == 1
+    assert dry["restore_ids"] == ["ops"]
+    assert applied["restored"] == 1
+    assert applied["status"] == "restored"
 
 
 def test_backfill_legacy_archive_audit_records_existing_archived_state():
@@ -540,6 +942,54 @@ def test_governance_cleanup_cli_allows_apply_rollback_batch(tmp_path):
         reopened.close()
 
 
+def test_governance_cleanup_cli_fails_when_apply_rollback_is_blocked(tmp_path):
+    db_path = tmp_path / "memory.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    _insert(
+        conn,
+        memory_id="blocked",
+        content="Operations workflow summary from journal digest: user: 继续 assistant: 完成。",
+    )
+    apply_cleanup(
+        conn,
+        scope_ids=["shared-scope"],
+        dry_run=False,
+        limit=20,
+        batch_id="blocked-cli-batch",
+    )
+    conn.execute(
+        "UPDATE governance_audit_events SET before_json = ? WHERE batch_id = ?",
+        (json.dumps({"metadata": {}}), "blocked-cli-batch"),
+    )
+    conn.commit()
+    conn.close()
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/governance.cleanup.py",
+            "--db",
+            str(db_path),
+            "--rollback-batch",
+            "--batch-id",
+            "blocked-cli-batch",
+            "--apply",
+        ],
+        cwd=str(__import__("pathlib").Path(__file__).resolve().parents[1]),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    payload = json.loads(completed.stdout)
+    assert payload["ok"] is False
+    assert payload["result"]["status"] == "blocked"
+
+
 def test_governance_audit_coverage_cli_reports_legacy_backfill_candidates(tmp_path):
     db_path = tmp_path / "memory.sqlite3"
     conn = sqlite3.connect(db_path)
@@ -569,3 +1019,83 @@ def test_governance_audit_coverage_cli_reports_legacy_backfill_candidates(tmp_pa
     assert payload["before"]["legacy_coverage"]["backfill_candidates"] == 1
     assert payload["result"]["dry_run"] is True
     assert payload["result"]["candidate_count"] == 1
+
+
+def test_rollback_rejects_before_metadata_without_explicit_lifecycle():
+    conn = _conn()
+    _insert(
+        conn,
+        memory_id="incomplete-before",
+        content="Operations workflow summary from journal digest: user: 继续 assistant: 完成。",
+    )
+    apply_cleanup(
+        conn,
+        scope_ids=["shared-scope"],
+        dry_run=False,
+        limit=20,
+        batch_id="incomplete-before-batch",
+    )
+    conn.execute(
+        "UPDATE governance_audit_events SET before_json = ? WHERE batch_id = ?",
+        (json.dumps({"metadata": {}}), "incomplete-before-batch"),
+    )
+    conn.commit()
+
+    dry = rollback_cleanup_batch(
+        conn,
+        batch_id="incomplete-before-batch",
+        dry_run=True,
+    )
+    applied = rollback_cleanup_batch(
+        conn,
+        batch_id="incomplete-before-batch",
+        dry_run=False,
+    )
+
+    assert dry["restore_ids"] == []
+    assert dry["invalid_ids"] == ["incomplete-before"]
+    assert applied["restored"] == 0
+    assert _metadata(conn, "incomplete-before")["lifecycle"] == "archived"
+
+
+def test_archive_receipt_and_rollback_bind_current_content():
+    conn = _conn()
+    _insert(
+        conn,
+        memory_id="content-drift",
+        content="Operations workflow summary from journal digest: user: 继续 assistant: 完成。",
+    )
+    apply_cleanup(
+        conn,
+        scope_ids=["shared-scope"],
+        dry_run=False,
+        limit=20,
+        batch_id="content-drift-batch",
+    )
+    conn.execute(
+        "UPDATE memories SET content = ? WHERE id = ?",
+        ("tampered archived content", "content-drift"),
+    )
+    conn.commit()
+
+    coverage = governance_audit_coverage_report(conn, scope_ids=["shared-scope"])
+    dry = rollback_cleanup_batch(
+        conn,
+        batch_id="content-drift-batch",
+        dry_run=True,
+    )
+    applied = rollback_cleanup_batch(
+        conn,
+        batch_id="content-drift-batch",
+        dry_run=False,
+    )
+
+    assert coverage["archived_with_audit"] == 0
+    assert coverage["archived_without_audit"] == 1
+    assert dry["restore_ids"] == []
+    assert dry["stale_ids"] == ["content-drift"]
+    assert applied["restored"] == 0
+    assert applied["status"] == "blocked"
+    assert conn.execute(
+        "SELECT content FROM memories WHERE id = 'content-drift'"
+    ).fetchone()[0] == "tampered archived content"

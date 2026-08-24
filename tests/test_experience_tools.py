@@ -9,7 +9,11 @@ import json
 import pytest
 
 from plugins.memory import load_memory_provider
-from scope_recall.experience_store import create_playbook, review_playbook
+from scope_recall.experience_store import (
+    create_playbook,
+    record_experience_preflight_run,
+    review_playbook,
+)
 from scope_recall.models import RuntimeScope
 from scope_recall.scope import build_shared_scope_id
 
@@ -173,9 +177,77 @@ def test_playbook_feedback_updates_writable_owner_scope_for_auto_promoted_playbo
     assert feedback["status"] == "needs_review"
     assert feedback["failure_count"] == 1
     with provider._lock:
-        row = provider._require_conn().execute("SELECT status, failure_count FROM procedural_playbooks WHERE id = ?", ("pb_auto_owned",)).fetchone()
+        row = provider._require_conn().execute(
+            "SELECT status, failure_count FROM procedural_playbooks WHERE id = ?",
+            ("pb_auto_owned",),
+        ).fetchone()
     assert row["status"] == "needs_review"
     assert row["failure_count"] == 1
+
+
+def test_playbook_feedback_tool_finalizes_the_supplied_preflight_run(provider):
+    schemas = {schema["name"]: schema for schema in provider.get_tool_schemas()}
+    assert "run_id" in schemas["scope_recall_playbook_feedback"]["parameters"][
+        "properties"
+    ]
+
+    with provider._lock:
+        conn = provider._require_conn()
+        create_playbook(
+            conn,
+            playbook_id="pb_tool_pending",
+            scope_id=provider._scope_id,
+            shared_scope_id=provider._shared_scope_id,
+            payload=_payload(),
+            status="candidate",
+            confidence=0.9,
+        )
+        review_playbook(
+            conn,
+            playbook_id="pb_tool_pending",
+            accessible_scope_ids=provider._accessible_scope_ids,
+            action="promote",
+            reason="fixture pending run",
+        )
+        pending = record_experience_preflight_run(
+            conn,
+            playbook={
+                "id": "pb_tool_pending",
+                "confidence": 0.9,
+                "preconditions": [],
+                "steps": [],
+            },
+            scope_id=provider._scope_id,
+            decision="guided_reuse",
+            query="Need one-way management ACL",
+            reasons=["fixture"],
+        )
+
+    feedback = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_playbook_feedback",
+            {
+                "id": "pb_tool_pending",
+                "run_id": pending["run_id"],
+                "outcome": "success",
+                "decision": "guided_reuse",
+                "evidence": ["verified"],
+            },
+        )
+    )
+
+    assert feedback["recorded"] is True
+    assert feedback["run_finalized"] is True
+    with provider._lock:
+        rows = provider._require_conn().execute(
+            "SELECT id, outcome, finished_at FROM experience_runs "
+            "WHERE playbook_id = ?",
+            ("pb_tool_pending",),
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["id"] == pending["run_id"]
+    assert rows[0]["outcome"] == "success"
+    assert rows[0]["finished_at"]
 
 
 def test_playbook_review_tool_can_dedupe_and_merge(provider):

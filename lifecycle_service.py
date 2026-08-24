@@ -365,12 +365,17 @@ def transition_memory_lifecycle(
     batch_id: str = "",
     timestamp: str = "",
     fact_mutation_authority: str = "",
+    replace_metadata: bool = False,
 ) -> dict[str, Any]:
     """Apply one lifecycle transition under a savepoint without committing.
 
     The memory row, FTS, entities, bidirectional relations, freshness, audit
     event, and durable vector replay intent either all change or all roll back.
     The caller owns the outer transaction and commit boundary.
+
+    ``metadata_updates`` merge into the current metadata by default. Pass
+    ``replace_metadata=True`` only for evidence-backed restore that must write
+    the supplied snapshot exactly; this flag stays default-off.
     """
 
     memory_id = str(memory_id or "").strip()
@@ -428,18 +433,34 @@ def transition_memory_lifecycle(
         before_relations = _relations(conn, memory_id)
         before = _snapshot(row, metadata=before_metadata, relations=before_relations)
         at = timestamp or now_iso()
-        after_metadata = dict(before_metadata)
-        after_metadata.update(dict(metadata_updates or {}))
-        if current_lifecycle != lifecycle:
-            after_metadata.setdefault("previous_lifecycle", current_lifecycle)
-        after_metadata["lifecycle"] = lifecycle
+        if replace_metadata:
+            after_metadata = dict(metadata_updates or {})
+            replacement_lifecycle = str(
+                after_metadata.get("lifecycle") or "active"
+            ).strip().lower()
+            if replacement_lifecycle != lifecycle:
+                raise ValueError(
+                    "replacement metadata lifecycle does not match requested lifecycle"
+                )
+        else:
+            after_metadata = dict(before_metadata)
+            after_metadata.update(dict(metadata_updates or {}))
+            if current_lifecycle != lifecycle:
+                after_metadata.setdefault("previous_lifecycle", current_lifecycle)
+            after_metadata["lifecycle"] = lifecycle
         safe_after_metadata, _ = sanitize_structured_value(after_metadata)
         after_metadata = (
             safe_after_metadata
             if isinstance(safe_after_metadata, dict)
-            else {"lifecycle": lifecycle}
+            else {}
         )
-        after_metadata["lifecycle"] = lifecycle
+        effective_lifecycle = str(
+            after_metadata.get("lifecycle") or "active"
+        ).strip().lower()
+        if effective_lifecycle != lifecycle:
+            raise ValueError(
+                "sanitized replacement metadata lifecycle does not match requested lifecycle"
+            )
         if after_metadata == before_metadata and not restore_relations:
             conn.execute(f"RELEASE SAVEPOINT {savepoint}")
             return {
@@ -492,7 +513,9 @@ def transition_memory_lifecycle(
             "restored": 0,
             "skipped": [],
         }
-        hidden = lifecycle_is_hidden(after_metadata)
+        hidden = lifecycle_is_hidden(
+            {**after_metadata, "lifecycle": effective_lifecycle}
+        )
         if hidden:
             if _table_exists(conn, "memories_fts"):
                 conn.execute(
@@ -583,7 +606,7 @@ def transition_memory_lifecycle(
             vector_operation = "upsert"
 
         if not ordinary_recall_lifecycle_visible(
-            lifecycle=str(after_metadata.get("lifecycle") or ""),
+            lifecycle=effective_lifecycle,
             target=str(row["target"] or ""),
         ):
             vector_operation = "delete"

@@ -1534,9 +1534,12 @@ def record_experience_preflight_run(
     query: str,
     reasons: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """Persist the result of one Experience preflight evaluation.
+    """Persist one Experience preflight evaluation as a pending run.
 
-    Recording the evidence lets later promotion decisions cite the exact gate outcomes that were active at review time."""
+    ``finished_at`` stays NULL until feedback finalizes the run. Recording the
+    evidence lets later promotion decisions cite the exact gate outcomes that
+    were active at review time.
+    """
     playbook_id = sanitize_report_text(str(playbook.get("id") or "").strip())
     safe_scope_id = sanitize_report_text(str(scope_id or "").strip())
     safe_decision = sanitize_report_text(str(decision or "guided_reuse").strip().lower())
@@ -1592,7 +1595,7 @@ def record_experience_preflight_run(
             _json_dumps([{"kind": "experience_preflight", "query": safe_query, "reasons": safe_reasons}]),
             "preflight injected; awaiting outcome feedback",
             now,
-            now,
+            None,
             _json_dumps({"source": "experience_preflight", "requires_feedback": True}),
         ),
     )
@@ -1695,6 +1698,98 @@ def _record_feedback_reflection_event(
     return True
 
 
+_TERMINAL_EXPERIENCE_RUN_OUTCOMES = frozenset(
+    {"success", "partial", "failed", "stale", "misleading"}
+)
+
+
+def _lookup_pending_experience_run_for_feedback(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    playbook_id: str,
+    accessible_scope_ids: Sequence[str],
+) -> tuple[sqlite3.Row | None, dict[str, Any] | None]:
+    """Resolve one accessible pending run for in-place feedback.
+
+    Missing and cross-scope rows share ``run_not_found`` so a receipt cannot
+    prove that a run exists outside the caller's accessible scopes.
+    """
+
+    run_scope_sql, run_scope_params = _run_scope_predicate(accessible_scope_ids)
+    row = conn.execute(
+        f"SELECT * FROM experience_runs WHERE id = ? AND {run_scope_sql}",
+        [run_id, *run_scope_params],
+    ).fetchone()
+    if row is None:
+        return None, {"recorded": False, "id": playbook_id, "error": "run_not_found"}
+    if str(row["playbook_id"] or "") != playbook_id:
+        return None, {"recorded": False, "id": playbook_id, "error": "run_playbook_mismatch"}
+    if str(row["outcome"] or "").strip().lower() in _TERMINAL_EXPERIENCE_RUN_OUTCOMES:
+        return None, {
+            "recorded": False,
+            "id": playbook_id,
+            "run_id": run_id,
+            "error": "run_already_finalized",
+            "outcome": sanitize_report_text(str(row["outcome"] or "")),
+        }
+    return row, None
+
+
+def _finalize_pending_experience_run(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    decision: str,
+    preconditions_checked: Any,
+    steps_completed: Any,
+    evidence: Any,
+    outcome: str,
+    outcome_reason: str,
+    model_name: str,
+    tool_call_count: int,
+    token_estimate: int,
+    finished_at: str,
+) -> bool:
+    """Write a terminal outcome onto an existing pending experience_runs row.
+
+    ``started_at`` stays on the original preflight receipt. The ``unknown``
+    predicate is the write-side compare-and-swap so a second finalize cannot
+    silently replace an already terminal row.
+    """
+
+    cursor = conn.execute(
+        """
+        UPDATE experience_runs
+        SET decision = ?,
+            preconditions_checked = ?,
+            steps_completed = ?,
+            evidence = ?,
+            outcome = ?,
+            outcome_reason = ?,
+            model_name = ?,
+            tool_call_count = ?,
+            token_estimate = ?,
+            finished_at = ?
+        WHERE id = ? AND outcome = 'unknown'
+        """,
+        (
+            decision,
+            _json_dumps(preconditions_checked),
+            _json_dumps(steps_completed),
+            _json_dumps(evidence),
+            outcome,
+            outcome_reason,
+            model_name,
+            int(tool_call_count or 0),
+            int(token_estimate or 0),
+            finished_at,
+            run_id,
+        ),
+    )
+    return int(cursor.rowcount or 0) == 1
+
+
 def record_playbook_feedback(
     conn: sqlite3.Connection,
     *,
@@ -1711,11 +1806,21 @@ def record_playbook_feedback(
     tool_call_count: int = 0,
     token_estimate: int = 0,
     negative_feedback_threshold: int = 1,
+    run_id: str = "",
 ) -> dict[str, Any]:
     """Record user/operator feedback for an Experience playbook.
 
-    Feedback updates both aggregate trust signals and event history so promotion decisions can be explained later instead of depending only on the latest rating."""
+    Feedback updates both aggregate trust signals and event history so promotion decisions can be explained later instead of depending only on the latest rating.
+
+    When ``run_id`` is omitted, a new ``experience_runs`` row is inserted. When
+    it is provided, the matching pending preflight row is finalized in place so
+    playbook counters stay single-counted.
+    """
     _reject_secret_like_value(playbook_id, path="feedback.playbook_id")
+    requested_run_id = str(run_id or "").strip()
+    if requested_run_id:
+        _reject_secret_like_value(requested_run_id, path="feedback.run_id")
+        requested_run_id = sanitize_report_text(requested_run_id)
     scope_sql, scope_params = _scope_predicate(accessible_scope_ids if accessible_scope_ids is not None else [scope_id])
     row = conn.execute(f"SELECT * FROM procedural_playbooks WHERE id = ? AND {scope_sql}", [playbook_id, *scope_params]).fetchone()
     if row is None:
@@ -1739,8 +1844,103 @@ def record_playbook_feedback(
     safe_model_name = sanitize_report_text(model_name)
     now = _now_iso()
     current_status = str(row["status"])
+    if requested_run_id and normalized_outcome == "unknown":
+        return {
+            "recorded": False,
+            "id": playbook_id,
+            "run_id": requested_run_id,
+            "error": "outcome_not_terminal",
+        }
+    feedback_scopes = accessible_scope_ids if accessible_scope_ids is not None else [scope_id]
+    persisted_run_id = requested_run_id
+    if requested_run_id:
+        _, run_error = _lookup_pending_experience_run_for_feedback(
+            conn,
+            run_id=requested_run_id,
+            playbook_id=playbook_id,
+            accessible_scope_ids=feedback_scopes,
+        )
+        if run_error is not None:
+            return run_error
+        finalized = _finalize_pending_experience_run(
+            conn,
+            run_id=requested_run_id,
+            decision=normalized_decision,
+            preconditions_checked=safe_preconditions_checked,
+            steps_completed=safe_steps_completed,
+            evidence=safe_evidence,
+            outcome=normalized_outcome,
+            outcome_reason=safe_outcome_reason,
+            model_name=safe_model_name,
+            tool_call_count=tool_call_count,
+            token_estimate=token_estimate,
+            finished_at=now,
+        )
+        if not finalized:
+            current = conn.execute(
+                "SELECT outcome FROM experience_runs WHERE id = ?",
+                (requested_run_id,),
+            ).fetchone()
+            return {
+                "recorded": False,
+                "id": playbook_id,
+                "run_id": requested_run_id,
+                "error": "run_already_finalized",
+                "outcome": sanitize_report_text(str(current["outcome"] if current else "")),
+            }
+    else:
+        if current_status in {"quarantined", "superseded"}:
+            return {
+                "recorded": False,
+                "id": playbook_id,
+                "error": "terminal_status",
+                "status": current_status,
+            }
+        persisted_run_id = f"xrun_{uuid.uuid4().hex}"
+        conn.execute(
+            """
+            INSERT INTO experience_runs(
+                id, playbook_id, scope_id, decision, confidence_at_use,
+                preconditions_checked, steps_completed, evidence, outcome,
+                outcome_reason, model_name, tool_call_count, token_estimate, started_at, finished_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                persisted_run_id,
+                playbook_id,
+                scope_id,
+                normalized_decision,
+                float(row["confidence"]),
+                _json_dumps(safe_preconditions_checked),
+                _json_dumps(safe_steps_completed),
+                _json_dumps(safe_evidence),
+                normalized_outcome,
+                safe_outcome_reason,
+                safe_model_name,
+                int(tool_call_count or 0),
+                int(token_estimate or 0),
+                now,
+                now,
+            ),
+        )
     if current_status in {"quarantined", "superseded"}:
-        return {"recorded": False, "id": playbook_id, "error": "terminal_status", "status": current_status}
+        # The playbook is immutable, but an already-created pending run still
+        # needs a terminal receipt. Finalize it exactly once without changing
+        # playbook counters, confidence, status, reflections, or skill state.
+        conn.commit()
+        return {
+            "recorded": True,
+            "global_updated": False,
+            "run_finalized": True,
+            "id": playbook_id,
+            "run_id": persisted_run_id,
+            "outcome": normalized_outcome,
+            "status": current_status,
+            "confidence": float(row["confidence"]),
+            "success_count": int(row["success_count"]),
+            "failure_count": int(row["failure_count"]),
+            "stale_count": int(row["stale_count"]),
+        }
     global_update_allowed = str(scope_id) == str(row["scope_id"])
     success_delta = 1 if normalized_outcome == "success" else 0
     failure_delta = 1 if normalized_outcome in {"failed", "misleading"} else 0
@@ -1748,32 +1948,6 @@ def record_playbook_feedback(
     threshold = max(1, int(negative_feedback_threshold or 1))
     negative_feedback_count = int(row["failure_count"]) + failure_delta + int(row["stale_count"]) + stale_delta
     recommended_status = "needs_review" if normalized_outcome in {"failed", "misleading", "stale"} and negative_feedback_count >= threshold else current_status
-    conn.execute(
-        """
-        INSERT INTO experience_runs(
-            id, playbook_id, scope_id, decision, confidence_at_use,
-            preconditions_checked, steps_completed, evidence, outcome,
-            outcome_reason, model_name, tool_call_count, token_estimate, started_at, finished_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            f"xrun_{uuid.uuid4().hex}",
-            playbook_id,
-            scope_id,
-            normalized_decision,
-            float(row["confidence"]),
-            _json_dumps(safe_preconditions_checked),
-            _json_dumps(safe_steps_completed),
-            _json_dumps(safe_evidence),
-            normalized_outcome,
-            safe_outcome_reason,
-            safe_model_name,
-            int(tool_call_count or 0),
-            int(token_estimate or 0),
-            now,
-            now,
-        ),
-    )
     reflection_recorded = _record_feedback_reflection_event(
         conn,
         row=row,
@@ -1791,7 +1965,9 @@ def record_playbook_feedback(
         return {
             "recorded": True,
             "global_updated": False,
+            "run_finalized": True,
             "id": playbook_id,
+            "run_id": persisted_run_id,
             "outcome": normalized_outcome,
             "status": current_status,
             "confidence": float(row["confidence"]),
@@ -1826,7 +2002,9 @@ def record_playbook_feedback(
     return {
         "recorded": True,
         "global_updated": True,
+        "run_finalized": True,
         "id": playbook_id,
+        "run_id": persisted_run_id,
         "outcome": normalized_outcome,
         "status": str(final["status"]),
         "confidence": float(final["confidence"]),

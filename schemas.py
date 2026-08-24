@@ -691,6 +691,10 @@ SCOPE_RECALL_PLAYBOOK_FEEDBACK_SCHEMA = {
         "type": "object",
         "properties": {
             "id": {"type": "string", "description": "Playbook id."},
+            "run_id": {
+                "type": "string",
+                "description": "Optional pending run id returned by preflight; finalizes that run instead of creating a second row.",
+            },
             "outcome": {"type": "string", "enum": ["success", "partial", "failed", "stale", "misleading", "unknown"]},
             "decision": {"type": "string", "enum": ["direct_reuse", "guided_reuse", "no_reuse"]},
             "evidence": {"type": "array", "items": {}},

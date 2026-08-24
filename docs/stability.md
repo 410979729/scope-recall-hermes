@@ -1,6 +1,6 @@
 # Scope Recall V1 stability contract
 
-`scope-recall` 1.10.3 keeps the V1 compatibility contract on the last packaged `1.10.2` line. It fixes issue #50 by admitting the exact official `memory_auto_adjudication` + `archive` receipt to governance coverage and cleanup rollback. Unknown archive writers remain fail-closed, and rollback still refuses lifecycle or metadata drift after the recorded snapshot. SQLite authority, the stable provider/tool identities, schema, and automatic-adjudication policy are unchanged.
+`scope-recall` 1.10.4 keeps the V1 compatibility contract on the last packaged `1.10.3` line. It hardens issue #50 follow-up behavior by restoring exact rollback metadata, rejecting malformed rollback evidence, binding governance coverage to the latest recognized receipt and current archived state, closing identified pending Experience `run_id` rows without mutating terminal playbooks, and persisting the successful `memory_auto_adjudication` throttle across provider recreation. SQLite authority, stable provider/tool identities, and the database schema are unchanged.
 
 This document defines the stable V1 compatibility surface and the areas that may evolve in patch or minor releases.
 
