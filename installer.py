@@ -234,6 +234,30 @@ def _load_installed_package(plugin_dir: Path, *, package_name: str = "_scope_rec
     return module
 
 
+def _read_current_vector_generation(conn: sqlite3.Connection) -> dict[str, Any] | None:
+    """Read the active vector manifest without invoking schema-ensuring helpers."""
+
+    tables = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name IN ('vector_generations', 'vector_generation_state')"
+        ).fetchall()
+    }
+    if tables != {"vector_generations", "vector_generation_state"}:
+        return None
+    cursor = conn.execute(
+        "SELECT generation.* FROM vector_generation_state AS state "
+        "JOIN vector_generations AS generation ON generation.generation_id = state.value "
+        "WHERE state.key = 'current_generation' LIMIT 1"
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    columns = [str(item[0]) for item in cursor.description or ()]
+    return {column: row[index] for index, column in enumerate(columns)}
+
+
 def _runtime_verify(home: Path, plugin_dir: Path) -> dict[str, Any]:
     """Verify an installed Scope Recall copy against a Hermes home.
 
@@ -316,17 +340,16 @@ def _runtime_verify(home: Path, plugin_dir: Path) -> dict[str, Any]:
                 conn.execute("PRAGMA query_only=ON")
                 try:
                     schema_status = sql_store.schema_migration_status(conn)
-                    vector_generation = importlib.import_module(
-                        f"{package_name}.vector_generation"
-                    )
-                    manifest = vector_generation.current_generation(conn)
+                    manifest = _read_current_vector_generation(conn)
                     if manifest is not None:
                         active_backend = str(
                             manifest.get("backend") or ""
                         ).strip().lower()
+                        vector_generation = importlib.import_module(
+                            f"{package_name}.vector_generation"
+                        )
                         generation_root = vector_generation.resolve_generation_storage_root(
-                            storage_dir,
-                            manifest.get("storage_path"),
+                            storage_dir, manifest.get("storage_path")
                         )
                         if active_backend == "sqlite-bruteforce":
                             active_path = generation_root / "vector.sqlite3"

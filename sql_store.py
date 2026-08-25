@@ -18,6 +18,7 @@ from .capture_filters import (
     sanitize_report_text,
     sanitize_structured_value,
 )
+from .capture_intents import ensure_capture_intent_schema
 from .gating import compact_text, dedup_key
 from .governance import classify_memory, merge_metadata
 from .graph import backfill_memory_entities, ensure_graph_schema, sync_memory_entities
@@ -245,6 +246,7 @@ def ensure_schema_migrations(conn: sqlite3.Connection) -> None:
     existing_user_version = _assert_supported_schema_version(conn)
     ensure_temporal_fact_schema(conn)
     ensure_relation_rebuild_schema(conn)
+    ensure_capture_intent_schema(conn)
     ensure_relation_frequency_index_schema(conn)
     ensure_vector_reconciliation_schema(conn)
     ensure_operator_ledger_schema(conn)
@@ -454,6 +456,7 @@ def ensure_schema(conn: sqlite3.Connection, *, commit: bool = True) -> None:
     ensure_experience_schema(conn)
     ensure_governance_schema(conn)
     ensure_relation_rebuild_schema(conn)
+    ensure_capture_intent_schema(conn)
     ensure_relation_frequency_index_schema(conn)
     from .vector_generation import ensure_vector_generation_schema
 

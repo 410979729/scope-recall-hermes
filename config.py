@@ -39,6 +39,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "query_char_limit": 1000,
     "min_capture_length": 40,
+    "capture_queue_capacity": 256,
     "capture_raw_user": False,
     "journal": {
         "allow_heuristic_fallback": False,
@@ -163,6 +164,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "auto_adjudication": {
         "enabled": True,
         "interval_hours": 24,
+        "claim_timeout_hours": 2,
+        "retry_backoff_minutes": 15,
         "promote_min_age_hours": 24,
         "max_promotions_per_run": 100,
         "max_archives_per_run": 200,
@@ -310,6 +313,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "query_prefix": "",
             "prompt_profile": "default-v1",
             "connection_retry_delays": [2.0, 4.0, 8.0],
+            "connect_timeout_seconds": 5.0,
+            "read_timeout_seconds": 15.0,
+            "write_timeout_seconds": 15.0,
+            "pool_timeout_seconds": 5.0,
+            "query_timeout_seconds": 8.0,
+            "writer_timeout_seconds": 30.0,
+            "maintenance_timeout_seconds": 45.0,
         },
         "fallback_embedder": {
             "provider": "local-hash",
@@ -351,9 +361,19 @@ CONFIG_BOUNDED_INTEGER_PATHS: dict[str, tuple[int, int]] = {
     "relation_extraction_max_pairs": (1, 5000),
     "relation_sync_neighbor_limit": (1, 256),
     "relation_rebuild_chunk_pairs": (1, 1000),
+    "capture_queue_capacity": (8, 4096),
     "vector.outbox_completed_retention_days": (0, 3650),
     "vector.outbox_completed_keep_per_generation": (0, 1_000_000),
     "vector.outbox_retention_interval_seconds": (60, 86_400),
+}
+CONFIG_BOUNDED_NUMBER_PATHS: dict[str, tuple[float, float]] = {
+    "vector.embedder.connect_timeout_seconds": (0.05, 300.0),
+    "vector.embedder.read_timeout_seconds": (0.05, 300.0),
+    "vector.embedder.write_timeout_seconds": (0.05, 300.0),
+    "vector.embedder.pool_timeout_seconds": (0.05, 300.0),
+    "vector.embedder.query_timeout_seconds": (0.05, 300.0),
+    "vector.embedder.writer_timeout_seconds": (0.05, 300.0),
+    "vector.embedder.maintenance_timeout_seconds": (0.05, 300.0),
 }
 
 
@@ -454,6 +474,16 @@ def _config_value_error(dotted: str, value: Any) -> str:
             return (
                 f"invalid value for {dotted}: expected an integer "
                 f"between {minimum} and {maximum}"
+            )
+        return ""
+    number_bounds = CONFIG_BOUNDED_NUMBER_PATHS.get(dotted)
+    if number_bounds is not None:
+        minimum, maximum = number_bounds
+        number = float(value)
+        if not math.isfinite(number) or not minimum <= number <= maximum:
+            return (
+                f"invalid value for {dotted}: expected a finite number "
+                f"between {minimum:g} and {maximum:g}"
             )
         return ""
     if dotted != "vector.embedder.connection_retry_delays":

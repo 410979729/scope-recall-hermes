@@ -513,7 +513,7 @@ class RecallService:
             structured_entities = declared_entities
         else:
             # The prose proper-name extractor is Latin-oriented, so CJK
-            # subjects (天璇, 玉衡 …) vanished from the intersection and junk
+            # subjects (小明, 小红 …) vanished from the intersection and junk
             # ASCII keywords became "the subject", which then vetoed queries
             # that named the real CJK subject. Declared short CJK names that
             # appear verbatim in the item's own text are subject evidence.

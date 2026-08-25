@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tomllib
 import types
+import zipfile
 from pathlib import Path
 
 import lancedb
@@ -827,8 +828,15 @@ def test_public_doc_hygiene_blocks_private_plan_markers(tmp_path, monkeypatch):
     release_check = _load_release_check_module("scope_recall_check_release_private_doc_markers")
     docs_plans = tmp_path / "docs" / "plans"
     docs_plans.mkdir(parents=True)
-    (tmp_path / "README.md").write_text("The product promise Joy cares about\n", encoding="utf-8")
-    (docs_plans / "internal.md").write_text("由插件/玉衡自动提取，不需要 Joy 人工复审。\n", encoding="utf-8")
+    private_user = "J" + "oy"
+    private_agent = "玉" + "衡"
+    (tmp_path / "README.md").write_text(
+        f"The product promise {private_user} cares about\n", encoding="utf-8"
+    )
+    (docs_plans / "internal.md").write_text(
+        f"由插件/{private_agent}自动提取，不需要 {private_user} 人工复审。\n",
+        encoding="utf-8",
+    )
     monkeypatch.setattr(release_check, "ROOT", tmp_path)
 
     result = release_check.public_doc_hygiene_check()
@@ -840,6 +848,39 @@ def test_public_doc_hygiene_blocks_private_plan_markers(tmp_path, monkeypatch):
     assert ("README.md", "private_product_promise") in markers
     assert ("docs/plans/internal.md", "agent_persona_yuheng") in markers
     assert ("docs/plans/internal.md", "manual_review_private_context") in markers
+
+
+def test_distribution_persona_hygiene_scans_runtime_and_packaged_benchmarks(tmp_path):
+    release_check = _load_release_check_module("scope_recall_check_release_persona_hygiene")
+    artifact = tmp_path / "candidate.whl"
+    private_user = "J" + "oy"
+    private_agent = "玉" + "衡"
+    private_system = "Bei" + "dou"
+    with zipfile.ZipFile(artifact, "w") as archive:
+        archive.writestr(
+            "scope_recall/runtime.py",
+            f"AUTHORITY = 'Ask {private_user} before release.'\n",
+        )
+        archive.writestr(
+            "scope_recall/benchmarks/cases.json",
+            json.dumps(
+                {"candidate": f"{private_agent} uses {private_system}."},
+                ensure_ascii=False,
+            ),
+        )
+        archive.writestr(
+            "scope_recall/tests/test_fixture.py",
+            f"PRIVATE = '{private_user}'\n",
+        )
+
+    findings = release_check.scan_distribution_artifact(artifact)
+
+    assert {item["marker"] for item in findings["private_persona"]} == {
+        "agent_persona_yuheng",
+        "private_project_beidou",
+        "private_user_joy",
+    }
+    assert all("tests/test_fixture.py" not in item["path"] for item in findings["private_persona"])
 
 
 def test_release_readiness_hygiene_excludes_deployment_local_state():
@@ -1795,8 +1836,8 @@ def test_pypi_workflow_runs_release_gate_before_publish():
     assert "fetch-depth: 0" in pypi_workflow
     assert "python -m pip install --upgrade pip build \".[lancedb,dev]\"" in pypi_workflow
     assert pypi_workflow.index("scripts/check.release.py") < pypi_workflow.index("pypa/gh-action-pypi-publish")
-    assert "  release:" in pypi_workflow
-    assert "types: [published]" in pypi_workflow
+    assert "  release:" not in pypi_workflow
+    assert "types: [published]" not in pypi_workflow
     assert "repository_dispatch:" in pypi_workflow
     assert "scope-recall-pypi-publish" in pypi_workflow
     assert "workflow_dispatch:" in pypi_workflow
@@ -2526,12 +2567,21 @@ def test_openai_compatible_embedder_rotates_to_next_key_after_failure(monkeypatc
 
     attempts: list[str] = []
     encoding_formats: list[str | None] = []
+    constructed_max_retries: list[int] = []
+    constructed_timeouts: list[object] = []
 
     class _FakeEmbeddings:
         def __init__(self, key: str) -> None:
             self.key = key
 
-        def create(self, *, model: str, input: list[str], encoding_format: str | None = None):
+        def create(
+            self,
+            *,
+            model: str,
+            input: list[str],
+            encoding_format: str | None = None,
+            timeout: object = None,
+        ):
             attempts.append(self.key)
             encoding_formats.append(encoding_format)
             if self.key == "public-test-key-1":
@@ -2546,8 +2596,20 @@ def test_openai_compatible_embedder_rotates_to_next_key_after_failure(monkeypatc
             return _Response()
 
     class _FakeOpenAI:
-        def __init__(self, *, api_key: str, base_url: str | None = None, http_client=None) -> None:  # noqa: ANN001,ARG002
+        def __init__(
+            self,
+            *,
+            api_key: str,
+            base_url: str | None = None,
+            http_client=None,
+            timeout: object = None,
+            max_retries: int = 0,
+        ) -> None:  # noqa: ANN001,ARG002
+            constructed_max_retries.append(max_retries)
+            constructed_timeouts.append(timeout)
             self.embeddings = _FakeEmbeddings(api_key)
+            self.timeout = timeout
+            self.max_retries = max_retries
 
     monkeypatch.setattr("scope_recall.embedders.OpenAI", _FakeOpenAI)
     embedder = OpenAICompatibleEmbedder(
@@ -2557,11 +2619,18 @@ def test_openai_compatible_embedder_rotates_to_next_key_after_failure(monkeypatc
         dimensions=3,
     )
 
-    vectors = embedder.embed_texts(["memory row"])
+    try:
+        vectors = embedder.embed_texts(["memory row"])
 
-    assert vectors == [[0.1, 0.2, 0.3]]
-    assert attempts == ["public-test-key-1", "public-test-key-2"]
-    assert encoding_formats == ["float", "float"]
+        assert vectors == [[0.1, 0.2, 0.3]]
+        assert attempts == ["public-test-key-1", "public-test-key-2"]
+        assert encoding_formats == ["float", "float"]
+        assert constructed_max_retries == [0, 0]
+        assert all(item is not None for item in constructed_timeouts)
+    finally:
+        embedder.close()
+
+
 def test_release_runner_returns_structured_error_when_executable_missing() -> None:
     release_check = _load_release_check_module(
         "scope_recall_check_release_missing_prereq"
@@ -2576,6 +2645,93 @@ def test_release_runner_returns_structured_error_when_executable_missing() -> No
     assert result["stderr"] == ""
 
 
+
+def test_release_runner_discovers_instance_bundled_git_when_path_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_bundled_git"
+    )
+    source_root = tmp_path / "workspace" / "tmp" / "scope-recall-candidate"
+    source_root.mkdir(parents=True)
+    (tmp_path / "config.yaml").write_text("instance: test\n", encoding="utf-8")
+    bundled_git = tmp_path / "git" / "cmd" / "git.exe"
+    bundled_git.parent.mkdir(parents=True)
+    bundled_git.write_bytes(b"")
+    monkeypatch.setattr(release_check.shutil, "which", lambda *_args, **_kwargs: None)
+
+    resolved = release_check.resolve_release_command(
+        ["git", "status", "--porcelain=v1"],
+        env={"PATH": ""},
+        root=source_root,
+    )
+
+    assert resolved[0] == str(bundled_git)
+    assert resolved[1:] == ["status", "--porcelain=v1"]
+
+
+def test_release_runner_never_executes_git_from_candidate_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A candidate-controlled git.exe must not outrank the instance bundle."""
+
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_rejects_candidate_git"
+    )
+    source_root = tmp_path / "workspace" / "tmp" / "scope-recall-candidate"
+    source_root.mkdir(parents=True)
+    (tmp_path / "config.yaml").write_text("instance: test\n", encoding="utf-8")
+    forged_git = source_root / "git" / "cmd" / "git.exe"
+    forged_git.parent.mkdir(parents=True)
+    forged_git.write_bytes(b"candidate-controlled")
+    bundled_git = tmp_path / "git" / "cmd" / "git.exe"
+    bundled_git.parent.mkdir(parents=True)
+    bundled_git.write_bytes(b"trusted-instance-bundle")
+    monkeypatch.setattr(
+        release_check.shutil,
+        "which",
+        lambda *_args, **_kwargs: str(forged_git),
+    )
+
+    resolved = release_check.resolve_release_command(
+        ["git", "status", "--porcelain=v1"],
+        env={"PATH": ""},
+        root=source_root,
+    )
+
+    assert resolved[0] == str(bundled_git)
+    assert resolved[0] != str(forged_git)
+
+
+def test_release_runner_fails_closed_when_only_candidate_git_exists(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Reject a candidate Git instead of returning a bare executable name."""
+
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_rejects_only_candidate_git"
+    )
+    source_root = tmp_path / "scope-recall-candidate"
+    source_root.mkdir()
+    forged_git = source_root / "git.exe"
+    forged_git.write_bytes(b"candidate-controlled")
+    monkeypatch.setattr(
+        release_check.shutil,
+        "which",
+        lambda *_args, **_kwargs: str(forged_git),
+    )
+
+    with pytest.raises(FileNotFoundError, match="trusted Git executable"):
+        release_check.resolve_release_command(
+            ["git", "status", "--porcelain=v1"],
+            env={"PATH": str(source_root)},
+            root=source_root,
+        )
+
+
 def test_release_gate_fails_closed_without_traceback_when_git_missing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2584,9 +2740,13 @@ def test_release_gate_fails_closed_without_traceback_when_git_missing(
     release_check = _load_release_check_module(
         "scope_recall_check_release_git_prereq"
     )
+    candidate = tmp_path / "scope-recall-candidate"
+    candidate.mkdir()
     empty_path = tmp_path / "empty-path"
     empty_path.mkdir()
+    monkeypatch.setattr(release_check, "ROOT", candidate)
     monkeypatch.setenv("PATH", str(empty_path))
+    monkeypatch.setattr(release_check.shutil, "which", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(sys, "argv", ["check.release.py"])
 
     exit_code = release_check.main()

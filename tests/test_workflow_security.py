@@ -131,15 +131,17 @@ def test_ci_jobs_that_execute_plugin_tests_use_pinned_hermes_checkout():
         assert ".github/scripts/checkout_pinned_hermes.py" in _run_text(job), job_name
 
 
-def test_github_release_publish_is_retry_safe_without_source_execution():
+def test_github_release_publish_is_immutable_without_source_execution():
     publish_text = _run_text(_workflow("release.yml")["jobs"]["publish"])
     assert "gh release view" in publish_text
-    assert "gh release edit" in publish_text
-    assert "gh release upload" in publish_text
-    assert "--clobber" in publish_text
     assert "gh release create" in publish_text
-    assert publish_text.count("gh release ") == 4
-    assert publish_text.count('--repo "${GITHUB_REPOSITORY}"') == 4
+    assert "gh release edit" not in publish_text
+    assert "gh release upload" not in publish_text
+    assert "--clobber" not in publish_text
+    assert "Refusing to mutate existing GitHub Release" in publish_text
+    assert publish_text.index("gh release view") < publish_text.index("gh release create")
+    assert publish_text.count("gh release ") == 2
+    assert publish_text.count('--repo "${GITHUB_REPOSITORY}"') == 2
 
 
 def test_release_credentials_are_isolated_from_build_and_source_execution():
@@ -154,11 +156,12 @@ def test_release_credentials_are_isolated_from_build_and_source_execution():
 
     for workflow_name, expected_publish_permissions in expectations.items():
         workflow = _workflow(workflow_name)
-        build_job = workflow["jobs"]["build"]
+        source_job_name = "prepare" if workflow_name == "pypi.yml" else "build"
+        build_job = workflow["jobs"][source_job_name]
         publish_job = workflow["jobs"]["publish"]
 
         assert build_job.get("permissions", {"contents": "read"}) == {"contents": "read"}
-        assert publish_job["needs"] == "build"
+        assert publish_job["needs"] == source_job_name
         assert publish_job["permissions"] == expected_publish_permissions
         expected_environment = "pypi" if workflow_name == "pypi.yml" else None
         assert publish_job.get("environment") == expected_environment

@@ -53,6 +53,10 @@ class FakeCursor:
         if normalized.startswith("select count(*)"):
             self.rows = [(len(self.conn.records),)]
             return
+        if normalized.startswith("select 1 from") and "where id" in normalized:
+            memory_id = str(params[0]) if params else ""
+            self.rows = [(1,)] if memory_id in self.conn.records else []
+            return
         if normalized.startswith("select id from"):
             self.rows = [(memory_id,) for memory_id in sorted(self.conn.records)]
             return
@@ -216,6 +220,12 @@ def test_pgvector_store_protocol_with_fake_driver(monkeypatch: pytest.MonkeyPatc
         )
 
         assert store.count_rows() == 2
+        assert store.contains_id("m1") is True
+        assert store.contains_id("missing") is False
+        contains_sql = [sql for sql, _params in conn.statements if "SELECT 1 FROM" in sql]
+        assert contains_sql
+        assert "LIMIT 1" in contains_sql[-1]
+        assert "COUNT(" not in contains_sql[-1]
         assert store.audit_counts()["unique_ids"] == 2
         records = store.list_records()
         assert set(records) == {"m1", "m2"}

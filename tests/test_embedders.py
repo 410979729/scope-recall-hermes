@@ -23,6 +23,33 @@ from scope_recall.embedders import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _close_openai_compatible_embedders(monkeypatch: pytest.MonkeyPatch):
+    """Terminal-close hosted embedders so idle workers release global permits."""
+
+    created: list[OpenAICompatibleEmbedder] = []
+    original_init = OpenAICompatibleEmbedder.__init__
+
+    def _init(self: OpenAICompatibleEmbedder, *args, **kwargs) -> None:
+        original_init(self, *args, **kwargs)
+        created.append(self)
+
+    monkeypatch.setattr(OpenAICompatibleEmbedder, "__init__", _init)
+    yield
+    for embedder in created:
+        embedder.close()
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if embedder.request_resources()["workers"] == 0:
+                break
+            time.sleep(0.01)
+        else:
+            raise AssertionError(
+                "fixture close left a live hosted worker: "
+                f"{embedder.request_resources()}"
+            )
+
+
 def test_sentence_transformer_readiness_records_model_load_failure(monkeypatch):
     """Package importability alone must not certify an unloadable local model."""
 
@@ -172,6 +199,7 @@ class _FakeEmbeddingsAPI:
         input: list[str],
         encoding_format: str | None = None,
         dimensions: int | None = None,
+        timeout: object = None,
     ):
         self.calls.append(len(input))
         self.encoding_formats.append(encoding_format)
@@ -503,6 +531,7 @@ def _make_minimax_embedder() -> MiniMaxEmbedder:
         model="embo-01",
         api_key="pk-test",
         base_url="https://example.invalid",
+        dimensions=3,
     )
 
 
@@ -608,6 +637,7 @@ def test_minimax_embedder_sends_optional_group_id_query_param(monkeypatch):
         api_key="pk-test",
         base_url="https://example.invalid",
         group_id="public-group-id",
+        dimensions=3,
     )
     captured_urls: list[str] = []
 
@@ -632,7 +662,7 @@ def test_minimax_embedder_chunks_large_batches(monkeypatch):
         body = json.loads(request.data.decode("utf-8"))
         call_sizes.append(len(body["texts"]))
         return _FakeHTTPResponse(
-            {"vectors": [[0.0, 0.0, 0.0] for _ in body["texts"]]}
+            {"vectors": [[0.1, 0.2, 0.3] for _ in body["texts"]]}
         )
 
     monkeypatch.setattr("scope_recall.embedders.safe_urlopen", fake_urlopen)
@@ -654,6 +684,7 @@ def test_minimax_embedder_raises_on_http_error(monkeypatch):
         model="embo-01",
         api_key="pk-test",
         base_url="https://example.invalid",
+        dimensions=3,
     )
     assert len(embedder._api_keys) == 1
 
@@ -682,6 +713,7 @@ def test_minimax_embedder_rotates_to_second_key(monkeypatch):
         api_key=["key-one", "key-two"],
         api_key_env=[],  # ignore MINIMAX_API_KEY from the host environment
         base_url="https://example.invalid",
+        dimensions=3,
     )
     assert len(embedder._api_keys) == 2
 

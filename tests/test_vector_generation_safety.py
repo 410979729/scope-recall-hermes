@@ -16,7 +16,7 @@ from _scope_recall_public_memory_port import attach_public_truth_ports
 from scope_recall import memory_ops
 from scope_recall.doctor_vector import vector_generation_report
 from scope_recall.embedders import LocalHashEmbedder
-from scope_recall.provider import MemoryProvider
+from scope_recall.provider import MemoryProvider, ScopeRecallMemoryProvider
 from scope_recall.sql_store import ensure_schema
 from scope_recall.sqlite_vector_store import SQLiteBruteForceVectorStore
 from scope_recall.truth_connection import probe_truth_database_header
@@ -326,6 +326,53 @@ def test_setup_vector_layer_does_not_leak_orphan_generation_invalid_path(monkeyp
     assert "current_pointer" in provider._vector_message
     assert provider._vector_message not in prompt
     assert len(provider._vector_message) <= 300
+
+
+def test_public_stats_omit_absolute_truth_and_vector_paths(monkeypatch, tmp_path):
+    """LLM-facing stats expose logical status, never operator filesystem paths."""
+
+    provider = ScopeRecallMemoryProvider()
+    provider.initialize(
+        "session-public-stats-path-hygiene",
+        hermes_home=str(tmp_path),
+        platform="cli",
+        user_id="benchmark-user",
+        agent_context="primary",
+        agent_identity="benchmark-agent",
+        agent_workspace="hermes",
+    )
+    private_root = r"C:\Users\Alice\scope-recall"
+    provider._db_path = private_root + r"\memory.sqlite3"
+    monkeypatch.setattr(
+        provider,
+        "vector_status_view",
+        lambda: {
+            "enabled": True,
+            "ready": True,
+            "status": "ready",
+            "message": "",
+            "backend": "sqlite-bruteforce",
+            "path": private_root + r"\vector.sqlite3",
+            "table": "memories",
+            "row_count": 0,
+            "unique_id_count": 0,
+            "duplicate_row_count": 0,
+            "sync_mode": "incremental",
+            "embedder": {},
+            "fallback_embedder": {},
+        },
+    )
+
+    try:
+        stats = memory_ops.stats_payload(provider)
+    finally:
+        provider.shutdown()
+
+    rendered = json.dumps(stats, ensure_ascii=False)
+    assert "db_path" not in stats
+    assert "path" not in stats["vector"]
+    assert "Alice" not in rendered
+    assert "C:\\" not in rendered
 
 
 def test_native_dependency_status_redacts_defensive_exception_path(monkeypatch):

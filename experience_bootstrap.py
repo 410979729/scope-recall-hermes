@@ -73,7 +73,7 @@ def _playbook(
             "steps": list(steps),
             "pitfalls": [
                 {"signal": "旧经验包含具体版本、路径或发布状态", "mistake": "把旧事实当当前事实", "correction": "只复用流程；所有状态必须 live check。"},
-                {"signal": "任务涉及发布、push、tag、删除或重启", "mistake": "未经授权执行高风险动作", "correction": "先报告验证结果，等待 Joy 明确授权。"},
+                {"signal": "任务涉及发布、push、tag、删除或重启", "mistake": "未经授权执行高风险动作", "correction": "先报告验证结果，等待操作员明确授权。"},
             ],
             "verification": list(verification),
             "cleanup": ["记录已验证项、未验证边界和临时产物处理情况。"],
@@ -152,7 +152,7 @@ CORE_PLAYBOOKS: tuple[dict[str, Any], ...] = (
         goal="发布动作前后都以远端事实为准，禁止用本地候选状态替代发布结果。",
         steps=(
             _step(1, "发布前读取 git diff/status、版本号、workflow、token/auth 状态。", "本地和远端状态输出"),
-            _step(2, "发布只在 Joy 授权后执行；执行后回读 commit/tag/release/CI/PyPI。", "远端回读证据", capability_class="network_or_remote"),
+            _step(2, "发布只在操作员授权后执行；执行后回读 commit/tag/release/CI/PyPI。", "远端回读证据", capability_class="network_or_remote"),
             _step(3, "报告成功项、失败项、传播延迟和未验证边界。", "最终回执"),
         ),
         verification=("tag/release/CI/PyPI 均已回读", "失败或延迟明确标注", "无伪造发布结果"),

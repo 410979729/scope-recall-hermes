@@ -10,10 +10,8 @@ scheduled pipeline:
   operator CLI, so an auto decision is indistinguishable from a reviewed one
   in the audit trail.
 - L4 (grounded sampling review): a bounded budget of held/needs-review
-  candidates is re-examined against their own journal evidence by an LLM.
-  Supported claims promote, unsupported claims archive, uncertain claims stay
-  and are retried on later runs; after ``l4_max_uncertain_rounds`` the row is
-  archived as unresolvable instead of rotting forever.
+  candidates is re-examined against complete journal evidence by an LLM. The
+  result is advisory only: untrusted model output never owns memory lifecycle.
 - L5 (exception surface): every run returns one bounded summary dict that
   doctor/stats expose; humans read summaries, never queues.
 
@@ -28,10 +26,26 @@ import json
 import logging
 import sqlite3
 import uuid
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from .adjudication_l4 import (
+    build_review_request,
+    collect_journal_evidence,
+    parse_l4_response,
+)
+from .adjudication_progress import (
+    L4ReviewReceipt,
+    advisory_queue_id,
+    candidate_review_fingerprint,
+    latest_queue_cursor,
+    latest_scan_cursor,
+    record_review_receipts,
+    record_scan_cursor,
+    reviewed_fingerprints,
+)
 from .candidate_promotion import (
     candidate_rows,
     classify_candidate_row,
@@ -42,7 +56,10 @@ from .candidate_review import transition_candidate_metadata
 from .adjudication_schedule import (
     claim_adjudication_schedule,
     complete_adjudication_schedule,
+    latest_schedule_retry_context,
     release_adjudication_schedule,
+    retry_adjudication_schedule,
+    schedule_target_id,
 )
 from .capture_filters import sanitize_report_text
 from .lifecycle_service import LifecycleConflictError, transition_memory_lifecycle
@@ -57,27 +74,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "enabled": True,
     "interval_hours": 24,
     "claim_timeout_hours": 2,
+    "retry_backoff_minutes": 15,
     "promote_min_age_hours": 24,
     "max_promotions_per_run": 100,
     "max_archives_per_run": 200,
     "l4_enabled": True,
     "l4_budget_per_run": 20,
-    "l4_max_uncertain_rounds": 3,
     "l4_max_evidence_chars": 2400,
 }
 
-_L4_PROMPT = """你是记忆库的接地审计员。下面是一条候选长期记忆和它的原始证据（对话日志片段）。
-请仅依据证据判断这条记忆是否成立。
 
-候选记忆（target={target}, type={memory_type}）:
-{content}
-
-原始证据:
-{evidence}
-
-只输出一个 JSON 对象，不要输出其他内容：
-{{"verdict": "supported" | "unsupported" | "uncertain", "reason": "不超过40字的理由"}}
-判定标准：证据直接支持记忆的关键事实 -> supported；证据与记忆矛盾或完全无关 -> unsupported；证据不足以判断 -> uncertain。"""
+class L4ConfigurationError(RuntimeError):
+    """The requested L4 reviewer could not be built from runtime config."""
 
 
 def _age_hours(updated_at: str) -> float:
@@ -97,50 +105,7 @@ def _config_int(config: dict[str, Any], key: str, default: int) -> int:
         return default
 
 
-def _journal_evidence(
-    conn: sqlite3.Connection, memory_id: str, *, max_chars: int
-) -> str:
-    rows = conn.execute(
-        """
-        SELECT je.role, je.content
-        FROM memory_journal_sources mjs
-        JOIN journal_entries je ON je.id = mjs.journal_entry_id
-        WHERE mjs.memory_id = ?
-        ORDER BY je.id ASC
-        LIMIT 6
-        """,
-        (str(memory_id),),
-    ).fetchall()
-    parts: list[str] = []
-    used = 0
-    for row in rows:
-        snippet = sanitize_report_text(str(row["content"] or ""))
-        if not snippet:
-            continue
-        remaining = max_chars - used
-        if remaining <= 0:
-            break
-        chunk = f"[{row['role']}] {snippet[:remaining]}"
-        parts.append(chunk)
-        used += len(chunk)
-    return "\n".join(parts)
-
-
-def _parse_l4_verdict(raw: str) -> tuple[str, str]:
-    text = str(raw or "").strip()
-    start = text.find("{")
-    end = text.rfind("}")
-    if start >= 0 and end > start:
-        text = text[start : end + 1]
-    try:
-        payload = json.loads(text)
-    except ValueError:
-        return "uncertain", "unparseable reviewer output"
-    verdict = str(payload.get("verdict") or "").strip().lower()
-    if verdict not in {"supported", "unsupported", "uncertain"}:
-        verdict = "uncertain"
-    reason = sanitize_report_text(str(payload.get("reason") or ""))[:120]
-    return verdict, reason
+_journal_evidence = collect_journal_evidence
 
 
 def _transition(
@@ -181,38 +146,251 @@ def _transition(
         return False
 
 
-def _mark_uncertain_round(
-    conn: sqlite3.Connection, row: sqlite3.Row, *, reason: str, at: str
-) -> int | None:
-    """CAS one uncertainty round, returning ``None`` on stale evidence."""
+def _checkpoint_l4_progress(
+    *,
+    hermes_home: Path,
+    db_path: Path,
+    receipts: Sequence[L4ReviewReceipt],
+    batch_id: str,
+    at: str,
+    queue_id: str,
+    last_selected_id: str,
+) -> None:
+    """Persist a bounded L4 receipt/cursor checkpoint in one short transaction."""
 
-    metadata = load_metadata(row["metadata"])
-    rounds = int(metadata.get("l4_uncertain_rounds") or 0) + 1
-    metadata["l4_uncertain_rounds"] = rounds
-    metadata["l4_last_uncertain_at"] = at
-    metadata["l4_last_uncertain_reason"] = reason
-    cur = conn.execute(
-        "UPDATE memories SET metadata = ?, updated_at = ? WHERE id = ? AND updated_at = ?",
-        (
-            json.dumps(metadata, ensure_ascii=False, sort_keys=True),
-            at,
-            str(row["id"]),
-            str(row["updated_at"] or ""),
-        ),
-    )
-    if int(cur.rowcount or 0) != 1:
-        return None
-    return rounds
+    with holding_truth_writer_lease(
+        Path(hermes_home) / "scope-recall", role="auto_adjudication_progress"
+    ):
+        write_conn = connect_memory_db(db_path, apply=True, timeout=30.0)
+        write_conn.row_factory = sqlite3.Row
+        try:
+            ensure_governance_schema(write_conn)
+            write_conn.commit()
+            write_conn.execute("BEGIN IMMEDIATE")
+            record_review_receipts(
+                write_conn,
+                receipts,
+                batch_id=batch_id,
+                created_at=at,
+                queue_id=queue_id,
+                last_selected_id=last_selected_id,
+            )
+            write_conn.commit()
+        except Exception:
+            if write_conn.in_transaction:
+                write_conn.rollback()
+            raise
+        finally:
+            write_conn.close()
+
+
+def _run_l4_advisory(
+    *,
+    hermes_home: Path,
+    db_path: Path,
+    rows: list[dict[str, Any]],
+    llm_call: Callable[..., str],
+    budget: int,
+    evidence_chars: int,
+    summary: dict[str, Any],
+    batch_id: str,
+    at: str,
+    queue_id: str,
+    scope_ids: Sequence[str],
+    all_scopes: bool,
+) -> None:
+    """Review held candidates without owning truth-writer or lifecycle authority."""
+
+    conn = connect_memory_db(db_path, apply=False, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    last_selected_id = ""
+    last_checkpointed_id = ""
+    try:
+        rows.sort(
+            key=lambda row: (
+                str(row.get("updated_at") or ""),
+                str(row.get("id") or ""),
+            )
+        )
+        cursor = latest_queue_cursor(conn, queue_id)
+        ordered_ids = [str(row.get("id") or "") for row in rows]
+        if cursor in ordered_ids:
+            split = ordered_ids.index(cursor) + 1
+            rows = [*rows[split:], *rows[:split]]
+        prior = reviewed_fingerprints(
+            conn, [str(row.get("id") or "") for row in rows]
+        )
+        for row in rows:
+            if summary["l4"]["selected"] >= budget:
+                break
+            memory_id = str(row.get("id") or "")
+            try:
+                evidence = _journal_evidence(
+                    conn,
+                    memory_id,
+                    scope_ids=scope_ids,
+                    all_scopes=all_scopes,
+                    max_chars=evidence_chars,
+                )
+            except sqlite3.OperationalError as exc:
+                summary["l4"]["selected"] += 1
+                last_selected_id = memory_id
+                summary["l4"]["errors"] += 1
+                summary["exceptions"].append(
+                    {
+                        "kind": "l4_evidence_lookup",
+                        "id": memory_id,
+                        "error": sanitize_report_text(str(exc))[:160],
+                    }
+                )
+                summary["_l4_retry_candidate_ids"].append(memory_id)
+                continue
+            fingerprint = candidate_review_fingerprint(row, evidence)
+            if (memory_id, fingerprint) in prior:
+                continue
+            summary["l4"]["selected"] += 1
+            last_selected_id = memory_id
+            if evidence.authorization_error:
+                summary["l4"]["errors"] += 1
+                summary["l4"]["evidence_incomplete"] += 1
+                summary["l4"]["scope_violations"] += 1
+                summary["exceptions"].append(
+                    {
+                        "kind": "l4_evidence_scope_violation",
+                        "id": memory_id,
+                        "error": "linked journal evidence is outside authorized scopes",
+                    }
+                )
+                continue
+            if evidence.truncated:
+                summary["l4"]["evidence_truncated"] += 1
+                summary["l4"]["evidence_incomplete"] += 1
+                summary["l4"]["destructive_blocked_truncated"] += 1
+                continue
+            if evidence.total_count == 0 or evidence.included_count == 0:
+                summary["l4"]["errors"] += 1
+                summary["l4"]["evidence_incomplete"] += 1
+                summary["exceptions"].append(
+                    {
+                        "kind": "l4_evidence_incomplete",
+                        "id": memory_id,
+                        "error": "no linked journal evidence",
+                    }
+                )
+                continue
+            request = build_review_request(
+                target=str(row.get("target") or ""),
+                memory_type=str(
+                    load_metadata(row.get("metadata")).get("memory_type") or ""
+                ),
+                content=str(row.get("content") or "")[:1200],
+                evidence_text=evidence.text,
+                evidence_truncated=evidence.truncated,
+            )
+            try:
+                prepare_network_boundary(conn, "auto_adjudication.l4_llm")
+                summary["l4"]["attempted"] += 1
+                raw_verdict = llm_call(
+                    request.user_payload,
+                    system_prompt=request.system_prompt,
+                )
+            except Exception as exc:
+                summary["l4"]["errors"] += 1
+                summary["exceptions"].append(
+                    {
+                        "kind": "l4_llm_error",
+                        "id": memory_id,
+                        "error": sanitize_report_text(str(exc))[:160],
+                    }
+                )
+                summary["_l4_retry_candidate_ids"].append(memory_id)
+                continue
+            parsed = parse_l4_response(raw_verdict)
+            if not parsed.ok or parsed.verdict is None:
+                summary["l4"]["errors"] += 1
+                summary["l4"]["protocol_errors"] += 1
+                summary["exceptions"].append(
+                    {
+                        "kind": "l4_protocol_error",
+                        "id": memory_id,
+                        "error": parsed.error,
+                    }
+                )
+                summary["_l4_retry_candidate_ids"].append(memory_id)
+                continue
+            fresh_row_raw = conn.execute(
+                "SELECT id, scope_id, target, content, metadata, updated_at "
+                "FROM memories WHERE id = ?",
+                (memory_id,),
+            ).fetchone()
+            fresh_row = dict(fresh_row_raw) if fresh_row_raw is not None else None
+            if fresh_row is None or any(
+                str(fresh_row.get(key) or "") != str(row.get(key) or "")
+                for key in ("scope_id", "content", "metadata", "updated_at")
+            ):
+                summary["l4"]["conflicts_skipped"] += 1
+                continue
+            fresh_evidence = _journal_evidence(
+                conn,
+                memory_id,
+                scope_ids=scope_ids,
+                all_scopes=all_scopes,
+                max_chars=evidence_chars,
+            )
+            if fresh_evidence != evidence:
+                summary["l4"]["conflicts_skipped"] += 1
+                continue
+            verdict = parsed.verdict
+            summary["l4"]["reviewed"] += 1
+            summary["l4"][verdict] += 1
+            summary["l4"]["advisory_only"] += 1
+            receipt = L4ReviewReceipt(
+                memory_id=memory_id,
+                scope_id=str(row.get("scope_id") or ""),
+                review_fingerprint=fingerprint,
+                verdict=verdict,
+                reason=parsed.reason,
+            )
+            _checkpoint_l4_progress(
+                hermes_home=hermes_home,
+                db_path=db_path,
+                receipts=(receipt,),
+                batch_id=batch_id,
+                at=at,
+                queue_id=queue_id,
+                last_selected_id=memory_id,
+            )
+            last_checkpointed_id = memory_id
+    finally:
+        conn.close()
+
+    if last_selected_id and last_selected_id != last_checkpointed_id:
+        _checkpoint_l4_progress(
+            hermes_home=hermes_home,
+            db_path=db_path,
+            receipts=(),
+            batch_id=batch_id,
+            at=at,
+            queue_id=queue_id,
+            last_selected_id=last_selected_id,
+        )
 
 
 def run_auto_adjudication(
     hermes_home: Path,
     runtime_config: dict[str, Any] | None = None,
     *,
-    llm_call: Callable[[str], str] | None = None,
+    llm_call: Callable[..., str] | None = None,
     limit: int = 1000,
+    scope_ids: Sequence[str] | None = None,
+    all_scopes: bool = False,
 ) -> dict[str, Any]:
-    """Run one bounded no-human adjudication pass and return the L5 summary."""
+    """Run one bounded adjudication pass inside an explicit write boundary.
+
+    Provider-triggered runs pass their immutable writable-scope allowlist.
+    ``all_scopes`` is reserved for an explicit operator invocation; omitting
+    both modes fails closed before the truth database is opened.
+    """
 
     raw = (runtime_config or {}).get("auto_adjudication")
     config = dict(DEFAULT_CONFIG)
@@ -231,6 +409,19 @@ def run_auto_adjudication(
             },
         }
 
+    normalized_scope_ids = tuple(
+        dict.fromkeys(
+            str(scope_id).strip()
+            for scope_id in (scope_ids or ())
+            if str(scope_id).strip()
+        )
+    )
+    if all_scopes and normalized_scope_ids:
+        return {"ok": False, "status": "ambiguous_scope_mode"}
+    if not all_scopes and not normalized_scope_ids:
+        return {"ok": False, "status": "scope_required"}
+    queue_id = advisory_queue_id(normalized_scope_ids, all_scopes=all_scopes)
+
     db_path = memory_db_path(Path(hermes_home))
     if not db_path.exists():
         return {"ok": False, "status": "missing_database", "path": str(db_path)}
@@ -241,19 +432,22 @@ def run_auto_adjudication(
     archive_cap = _config_int(config, "max_archives_per_run", 200)
     min_age_hours = float(config.get("promote_min_age_hours") or 24)
     l4_budget = _config_int(config, "l4_budget_per_run", 20)
-    l4_max_rounds = max(1, _config_int(config, "l4_max_uncertain_rounds", 3))
     l4_evidence_chars = _config_int(config, "l4_max_evidence_chars", 2400)
     l4_enabled = bool(config.get("l4_enabled", True)) and llm_call is not None
 
     summary: dict[str, Any] = {
         "ok": True,
         "status": "applied",
+        "lanes_status": "pending",
         "batch_id": batch_id,
         "at": at,
         "lanes": {
             "promoted": 0,
+            "promoted_attempted": 0,
             "promote_deferred_young": 0,
             "archived": 0,
+            "archived_attempted": 0,
+            "rolled_back": 0,
             "held_for_l4": 0,
             "defer_recent": 0,
             "skipped": 0,
@@ -261,16 +455,28 @@ def run_auto_adjudication(
         },
         "l4": {
             "enabled": l4_enabled,
+            "status": "pending" if l4_enabled else "disabled",
             "reviewed": 0,
+            "attempted": 0,
+            "selected": 0,
             "supported": 0,
             "unsupported": 0,
             "uncertain": 0,
             "exhausted_archived": 0,
+            "advisory_only": 0,
             "conflicts_skipped": 0,
             "errors": 0,
+            "protocol_errors": 0,
+            "evidence_incomplete": 0,
+            "evidence_truncated": 0,
+            "destructive_blocked_truncated": 0,
+            "scope_violations": 0,
         },
+        "_l4_candidate_ids": [],
+        "_l4_retry_candidate_ids": [],
         "exceptions": [],
     }
+    l4_pool: list[dict[str, Any]] = []
 
     try:
         with holding_truth_writer_lease(
@@ -281,8 +487,14 @@ def run_auto_adjudication(
             conn.row_factory = sqlite3.Row
             try:
                 ensure_governance_schema(conn)
-                rows = candidate_rows(conn, scope_ids=None, limit=limit)
-                l4_pool: list[sqlite3.Row] = []
+                scan_updated_at, scan_id = latest_scan_cursor(conn, queue_id)
+                rows = candidate_rows(
+                    conn,
+                    scope_ids=None if all_scopes else normalized_scope_ids,
+                    limit=limit,
+                    cursor_updated_at=scan_updated_at,
+                    cursor_id=scan_id,
+                )
                 for row in rows:
                     decision = classify_candidate_row(row, conn)
                     if decision.lane == "promote_safe":
@@ -300,6 +512,7 @@ def run_auto_adjudication(
                             at=at,
                         ):
                             summary["lanes"]["promoted"] += 1
+                            summary["lanes"]["promoted_attempted"] += 1
                         else:
                             summary["lanes"]["conflicts_skipped"] += 1
                     elif decision.lane == "archive_low_value":
@@ -314,6 +527,7 @@ def run_auto_adjudication(
                             at=at,
                         ):
                             summary["lanes"]["archived"] += 1
+                            summary["lanes"]["archived_attempted"] += 1
                         else:
                             summary["lanes"]["conflicts_skipped"] += 1
                     elif decision.lane == "defer_recent":
@@ -322,118 +536,224 @@ def run_auto_adjudication(
                         summary["lanes"]["skipped"] += 1
                     else:
                         summary["lanes"]["held_for_l4"] += 1
-                        l4_pool.append(row)
+                        l4_pool.append(dict(row))
 
-                if l4_enabled and l4_pool:
-                    l4_pool.sort(key=lambda row: str(row["updated_at"] or ""))
-                    for row in l4_pool[:l4_budget]:
-                        try:
-                            evidence = _journal_evidence(
-                                conn, str(row["id"]), max_chars=l4_evidence_chars
-                            )
-                        except sqlite3.OperationalError as exc:
-                            summary["l4"]["errors"] += 1
-                            summary["exceptions"].append(
-                                {
-                                    "kind": "l4_evidence_lookup",
-                                    "id": str(row["id"]),
-                                    "error": sanitize_report_text(str(exc))[:160],
-                                }
-                            )
-                            continue
-                        if not evidence:
-                            verdict, reason = "uncertain", "no journal evidence linked"
-                        else:
-                            prompt = _L4_PROMPT.format(
-                                target=str(row["target"] or ""),
-                                memory_type=str(
-                                    load_metadata(row["metadata"]).get("memory_type") or ""
-                                ),
-                                content=sanitize_report_text(str(row["content"] or ""))[:1200],
-                                evidence=evidence,
-                            )
-                            try:
-                                conn.commit()
-                                prepare_network_boundary(
-                                    conn, "auto_adjudication.l4_llm"
-                                )
-                                verdict, reason = _parse_l4_verdict(llm_call(prompt))  # type: ignore[reportOptionalCall]
-                            except Exception as exc:
-                                summary["l4"]["errors"] += 1
-                                summary["exceptions"].append(
-                                    {
-                                        "kind": "l4_llm_error",
-                                        "id": str(row["id"]),
-                                        "error": sanitize_report_text(str(exc))[:160],
-                                    }
-                                )
-                                continue
-                        summary["l4"]["reviewed"] += 1
-                        summary["l4"][verdict] += 1
-                        if verdict == "supported":
-                            if not _transition(
-                                conn,
-                                row,
-                                action="promote",
-                                reason=f"l4_grounded:{reason}",
-                                batch_id=batch_id,
-                                at=at,
-                            ):
-                                summary["l4"]["conflicts_skipped"] += 1
-                        elif verdict == "unsupported":
-                            if not _transition(
-                                conn,
-                                row,
-                                action="archive",
-                                reason=f"l4_ungrounded:{reason}",
-                                batch_id=batch_id,
-                                at=at,
-                            ):
-                                summary["l4"]["conflicts_skipped"] += 1
-                        else:
-                            rounds = _mark_uncertain_round(conn, row, reason=reason, at=at)
-                            if rounds is None:
-                                summary["l4"]["conflicts_skipped"] += 1
-                                continue
-                            if rounds >= l4_max_rounds:
-                                fresh = conn.execute(
-                                    "SELECT * FROM memories WHERE id = ? AND updated_at = ?",
-                                    (str(row["id"]), at),
-                                ).fetchone()
-                                if fresh is not None and _transition(
-                                        conn,
-                                        fresh,
-                                        action="archive",
-                                        reason=f"l4_unresolvable_after_{rounds}_rounds",
-                                        batch_id=batch_id,
-                                        at=at,
-                                    ):
-                                    summary["l4"]["exhausted_archived"] += 1
-                                else:
-                                    summary["l4"]["conflicts_skipped"] += 1
+                summary["_l4_candidate_ids"] = [
+                    str(row.get("id") or "") for row in l4_pool
+                ]
+
+                if rows:
+                    last_row = rows[-1]
+                    record_scan_cursor(
+                        conn,
+                        queue_id=queue_id,
+                        updated_at=str(last_row["updated_at"] or ""),
+                        memory_id=str(last_row["id"] or ""),
+                        batch_id=batch_id,
+                        created_at=at,
+                    )
                 conn.commit()
+                summary["lanes_status"] = "committed"
             except Exception as exc:
                 conn.rollback()
+                summary["lanes"]["rolled_back"] = (
+                    summary["lanes"]["promoted"]
+                    + summary["lanes"]["archived"]
+                )
+                summary["lanes"]["promoted"] = 0
+                summary["lanes"]["archived"] = 0
                 summary["ok"] = False
                 summary["status"] = "failed"
+                summary["lanes_status"] = "rolled_back"
                 summary["error"] = sanitize_report_text(str(exc))[:300]
                 logger.exception("Scope Recall auto adjudication failed")
             finally:
                 conn.close()
+        if l4_enabled and l4_pool:
+            assert llm_call is not None
+            _run_l4_advisory(
+                hermes_home=Path(hermes_home),
+                db_path=db_path,
+                rows=l4_pool,
+                llm_call=llm_call,
+                budget=l4_budget,
+                evidence_chars=l4_evidence_chars,
+                summary=summary,
+                batch_id=batch_id,
+                at=at,
+                queue_id=queue_id,
+                scope_ids=normalized_scope_ids,
+                all_scopes=all_scopes,
+            )
+            if summary["l4"]["selected"]:
+                if summary["l4"]["errors"] and not summary["l4"]["reviewed"]:
+                    summary["l4"]["status"] = "failed"
+                    if summary["lanes_status"] == "committed":
+                        summary["status"] = "applied_l4_degraded"
+                elif summary["l4"]["errors"]:
+                    summary["l4"]["status"] = "partial"
+                    if summary["lanes_status"] == "committed":
+                        summary["status"] = "applied_l4_degraded"
+                else:
+                    summary["l4"]["status"] = "ok"
+            else:
+                summary["l4"]["status"] = "idle"
     except TruthWriterBusyError:
         summary["ok"] = False
         summary["status"] = "truth_writer_busy"
+    except Exception as exc:
+        summary["ok"] = False
+        summary["status"] = "failed"
+        summary["error"] = sanitize_report_text(str(exc))[:300]
+        logger.exception("Scope Recall auto adjudication failed")
+    return summary
+
+
+def _load_l4_retry_rows(
+    conn: sqlite3.Connection,
+    *,
+    candidate_ids: Sequence[str],
+    scope_ids: Sequence[str],
+) -> list[dict[str, Any]]:
+    """Reload exact queued candidates without re-running deterministic lanes."""
+
+    ordered_ids = tuple(
+        dict.fromkeys(str(value).strip() for value in candidate_ids if str(value).strip())
+    )
+    scopes = tuple(
+        dict.fromkeys(str(value).strip() for value in scope_ids if str(value).strip())
+    )
+    if not ordered_ids or not scopes:
+        return []
+    found: dict[str, dict[str, Any]] = {}
+    scope_placeholders = ", ".join("?" for _ in scopes)
+    for offset in range(0, len(ordered_ids), 300):
+        batch = ordered_ids[offset : offset + 300]
+        id_placeholders = ", ".join("?" for _ in batch)
+        rows = conn.execute(
+            f"""
+            SELECT id, scope_id, source, target, content, summary, updated_at, metadata
+            FROM memories
+            WHERE id IN ({id_placeholders})
+              AND scope_id IN ({scope_placeholders})
+              AND LOWER(COALESCE(
+                    CASE WHEN json_valid(metadata)
+                         THEN json_extract(metadata, '$.lifecycle') ELSE '' END,
+                    ''
+                  )) = 'candidate'
+            """,
+            (*batch, *scopes),
+        ).fetchall()
+        for row in rows:
+            item = dict(row)
+            found[str(item.get("id") or "")] = item
+    return [found[memory_id] for memory_id in ordered_ids if memory_id in found]
+
+
+def run_l4_retry(
+    hermes_home: Path,
+    runtime_config: dict[str, Any] | None,
+    *,
+    llm_call: Callable[..., str],
+    candidate_ids: Sequence[str],
+    scope_ids: Sequence[str],
+) -> dict[str, Any]:
+    """Retry only queued advisory L4 work; deterministic lanes are untouched."""
+
+    normalized_scope_ids = tuple(
+        dict.fromkeys(
+            str(scope_id).strip() for scope_id in scope_ids if str(scope_id).strip()
+        )
+    )
+    if not normalized_scope_ids:
+        return {"ok": False, "status": "scope_required", "lanes_status": "not_run"}
+    db_path = memory_db_path(Path(hermes_home))
+    if not db_path.exists():
+        return {"ok": False, "status": "missing_database", "lanes_status": "not_run"}
+    raw = (runtime_config or {}).get("auto_adjudication")
+    config = dict(DEFAULT_CONFIG)
+    if isinstance(raw, dict):
+        config.update(raw)
+    batch_id = f"auto-adjudication-l4-{uuid.uuid4().hex[:12]}"
+    at = now_iso()
+    summary: dict[str, Any] = {
+        "ok": True,
+        "status": "l4_applied",
+        "lanes_status": "not_run",
+        "batch_id": batch_id,
+        "at": at,
+        "lanes": {},
+        "l4": {
+            "enabled": True,
+            "status": "pending",
+            "reviewed": 0,
+            "attempted": 0,
+            "selected": 0,
+            "supported": 0,
+            "unsupported": 0,
+            "uncertain": 0,
+            "exhausted_archived": 0,
+            "advisory_only": 0,
+            "conflicts_skipped": 0,
+            "errors": 0,
+            "protocol_errors": 0,
+            "evidence_incomplete": 0,
+            "evidence_truncated": 0,
+            "destructive_blocked_truncated": 0,
+            "scope_violations": 0,
+        },
+        "_l4_retry_candidate_ids": [],
+        "exceptions": [],
+    }
+    conn = connect_memory_db(db_path, apply=False, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = _load_l4_retry_rows(
+            conn,
+            candidate_ids=candidate_ids,
+            scope_ids=normalized_scope_ids,
+        )
+    finally:
+        conn.close()
+    if not rows:
+        summary["status"] = "l4_idle"
+        summary["l4"]["status"] = "idle"
+        return summary
+    _run_l4_advisory(
+        hermes_home=Path(hermes_home),
+        db_path=db_path,
+        rows=rows,
+        llm_call=llm_call,
+        budget=_config_int(config, "l4_budget_per_run", 20),
+        evidence_chars=_config_int(config, "l4_max_evidence_chars", 2400),
+        summary=summary,
+        batch_id=batch_id,
+        at=at,
+        queue_id=advisory_queue_id(normalized_scope_ids, all_scopes=False),
+        scope_ids=normalized_scope_ids,
+        all_scopes=False,
+    )
+    if summary["l4"]["errors"] and not summary["l4"]["reviewed"]:
+        summary["ok"] = False
+        summary["status"] = "l4_failed"
+        summary["l4"]["status"] = "failed"
+    elif summary["l4"]["errors"]:
+        summary["ok"] = False
+        summary["status"] = "l4_partial"
+        summary["l4"]["status"] = "partial"
+    else:
+        summary["l4"]["status"] = "ok"
     return summary
 
 
 def build_l4_llm_call(
     hermes_home: Path, journal_config: dict[str, Any]
-) -> Callable[[str], str] | None:
+) -> Callable[..., str] | None:
     """Build the grounded-review LLM callable from the digest LLM settings.
 
     L4 reuses the journal digest provider/model (the same trusted extraction
-    channel); if that resolution fails the caller degrades to lanes-only
-    adjudication instead of blocking the run.
+    channel). A requested but invalid configuration is an operational failure,
+    not permission to record a successful lanes-only schedule completion.
     """
 
     try:
@@ -465,14 +785,14 @@ def build_l4_llm_call(
             timeout=float(journal_config.get("timeout") or journal_config.get("llm_timeout") or 60.0),
         )
         llm_config = resolve_llm_config(Path(hermes_home), options)
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "Scope Recall L4 grounded review is unavailable: digest LLM config "
-            "did not resolve; adjudication continues lanes-only"
+            "did not resolve"
         )
-        return None
+        raise L4ConfigurationError("digest LLM config did not resolve") from exc
 
-    def call(prompt: str) -> str:
+    def call(prompt: str, *, system_prompt: str) -> str:
         return _call_llm_with_retries(
             prompt,
             model=llm_config["model"],
@@ -492,18 +812,14 @@ def build_l4_llm_call(
             ),
             max_attempts=2,
             retry_delay=1.0,
+            system_prompt=system_prompt,
         )
 
     return call
 
 
 def run_provider_auto_adjudication(provider: Any, *, trigger: str) -> None:
-    """Run the scheduled adjudication pass from the digest worker.
-
-    A short atomic claim transaction prevents duplicate same-process and
-    cross-process runs. Slow adjudication stays outside the transaction, and a
-    failed run releases its claim for immediate retry.
-    """
+    """Run deterministic lanes and advisory L4 on independent schedules."""
 
     import time
 
@@ -529,44 +845,225 @@ def run_provider_auto_adjudication(provider: Any, *, trigger: str) -> None:
         claim_timeout_hours = 2.0
     interval_hours = max(0.0, interval_hours)
     claim_timeout_hours = max(1.0 / 60.0, claim_timeout_hours)
+    try:
+        retry_backoff_minutes = float(
+            adjudication_config.get("retry_backoff_minutes") or 15
+        )
+    except (TypeError, ValueError):
+        retry_backoff_minutes = 15.0
+    retry_backoff_seconds = min(
+        24.0 * 3600.0,
+        max(60.0, retry_backoff_minutes * 60.0),
+    )
     now = time.time()
     db_path = memory_db_path(Path(provider._hermes_home))
+    writable_scope_ids = tuple(provider._writable_scope_ids)
+    target_id = schedule_target_id(writable_scope_ids)
+    l4_enabled = config_bool(adjudication_config, "l4_enabled", True)
+    l4_target_id = f"{target_id}:l4"
+    l4_retry_context = (
+        latest_schedule_retry_context(db_path, target_id=l4_target_id)
+        if l4_enabled
+        else {}
+    )
     claim_token = claim_adjudication_schedule(
         db_path,
         now=now,
         interval_hours=interval_hours,
         claim_timeout_hours=claim_timeout_hours,
         trigger=trigger,
+        target_id=target_id,
     )
-    if claim_token is None:
+    l4_claim_token = None
+    try:
+        l4_claim_token = (
+            claim_adjudication_schedule(
+                db_path,
+                now=now,
+                interval_hours=interval_hours,
+                claim_timeout_hours=claim_timeout_hours,
+                trigger=f"{trigger}:l4",
+                target_id=l4_target_id,
+            )
+            if l4_enabled
+            else None
+        )
+    except Exception:
+        if claim_token is not None:
+            try:
+                release_adjudication_schedule(
+                    db_path,
+                    claim_token=claim_token,
+                    released_at=time.time(),
+                    trigger=trigger,
+                    interval_hours=interval_hours,
+                    target_id=target_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Scope Recall failed to release primary adjudication claim "
+                    "after L4 claim acquisition failed"
+                )
+        return
+    if claim_token is None and l4_claim_token is None:
         return
     try:
         llm_call = None
-        if config_bool(adjudication_config, "l4_enabled", True):
-            llm_call = build_l4_llm_call(provider._hermes_home, provider._journal_config())
-        report = run_auto_adjudication(
-            provider._hermes_home,
-            provider._config,
-            llm_call=llm_call,
-        )
-        if report.get("ok"):
-            completed_at = time.time()
-            complete_adjudication_schedule(
-                db_path,
-                claim_token=claim_token,
-                completed_at=completed_at,
-                trigger=trigger,
-                interval_hours=interval_hours,
+        l4_config_error = False
+        report: dict[str, Any] | None = None
+        if l4_claim_token is not None:
+            try:
+                llm_call = build_l4_llm_call(
+                    provider._hermes_home, provider._journal_config()
+                )
+            except L4ConfigurationError:
+                l4_config_error = True
+        if claim_token is not None:
+            report = run_auto_adjudication(
+                provider._hermes_home,
+                provider._config,
+                llm_call=llm_call if l4_claim_token is not None else None,
+                scope_ids=writable_scope_ids,
             )
-            provider._last_adjudication_at = completed_at
-        else:
-            release_adjudication_schedule(
-                db_path,
-                claim_token=claim_token,
-                released_at=time.time(),
-                trigger=trigger,
-                interval_hours=interval_hours,
-            )
+            lanes_committed = report.get("lanes_status") == "committed"
+            if not report.get("lanes_status"):
+                lanes_committed = bool(report.get("ok"))
+            if lanes_committed:
+                completed_at = time.time()
+                finished = complete_adjudication_schedule(
+                    db_path,
+                    claim_token=claim_token,
+                    completed_at=completed_at,
+                    trigger=trigger,
+                    interval_hours=interval_hours,
+                    target_id=target_id,
+                )
+                if not finished:
+                    report = {
+                        **report,
+                        "ok": False,
+                        "status": "schedule_claim_lost",
+                    }
+                    if l4_claim_token is not None:
+                        release_adjudication_schedule(
+                            db_path,
+                            claim_token=l4_claim_token,
+                            released_at=time.time(),
+                            trigger=f"{trigger}:l4",
+                            interval_hours=interval_hours,
+                            target_id=l4_target_id,
+                        )
+                    provider._last_adjudication_report = report
+                    return
+                provider._last_adjudication_at = completed_at
+            else:
+                finished = retry_adjudication_schedule(
+                    db_path,
+                    claim_token=claim_token,
+                    scheduled_at=time.time(),
+                    trigger=trigger,
+                    interval_hours=interval_hours,
+                    retry_after_seconds=retry_backoff_seconds,
+                    target_id=target_id,
+                )
+                if not finished:
+                    report = {
+                        **report,
+                        "ok": False,
+                        "status": "schedule_claim_lost",
+                    }
+
+        if l4_claim_token is not None:
+            if claim_token is not None:
+                assert report is not None
+                candidate_ids = tuple(
+                    report.get("_l4_retry_candidate_ids")
+                    or report.get("_l4_candidate_ids")
+                    or ()
+                )
+                l4_report = report
+                if l4_config_error:
+                    l4_report["status"] = (
+                        "applied_l4_degraded"
+                        if l4_report.get("lanes_status") == "committed"
+                        else "l4_config_error"
+                    )
+                    l4_report.setdefault("l4", {})["status"] = "config_error"
+            else:
+                candidate_ids = tuple(l4_retry_context.get("candidate_ids") or ())
+                if l4_config_error:
+                    l4_report = {
+                        "ok": False,
+                        "status": "l4_config_error",
+                        "lanes_status": "not_run",
+                        "l4": {"status": "config_error", "errors": 1},
+                        "_l4_retry_candidate_ids": list(candidate_ids),
+                    }
+                elif candidate_ids:
+                    assert llm_call is not None
+                    l4_report = run_l4_retry(
+                        provider._hermes_home,
+                        provider._config,
+                        llm_call=llm_call,
+                        candidate_ids=candidate_ids,
+                        scope_ids=writable_scope_ids,
+                    )
+                else:
+                    l4_report = {
+                        "ok": True,
+                        "status": "l4_idle",
+                        "lanes_status": "not_run",
+                        "l4": {"status": "idle", "errors": 0},
+                    }
+                report = l4_report
+
+            if l4_config_error:
+                retry_ids = tuple(
+                    l4_report.get("_l4_retry_candidate_ids") or candidate_ids
+                )
+            else:
+                retry_ids = tuple(
+                    l4_report.get("_l4_retry_candidate_ids") or ()
+                )
+            l4_status = str((l4_report.get("l4") or {}).get("status") or "")
+            if l4_config_error or l4_status not in {"ok", "idle"}:
+                finished = retry_adjudication_schedule(
+                    db_path,
+                    claim_token=l4_claim_token,
+                    scheduled_at=time.time(),
+                    trigger=f"{trigger}:l4",
+                    interval_hours=interval_hours,
+                    retry_after_seconds=retry_backoff_seconds,
+                    target_id=l4_target_id,
+                    retry_context={
+                        "candidate_ids": list(retry_ids),
+                        "reason": (
+                            "l4_config_error"
+                            if l4_config_error
+                            else (l4_status or "not_run")
+                        ),
+                    },
+                )
+            else:
+                finished = complete_adjudication_schedule(
+                    db_path,
+                    claim_token=l4_claim_token,
+                    completed_at=time.time(),
+                    trigger=f"{trigger}:l4",
+                    interval_hours=interval_hours,
+                    target_id=l4_target_id,
+                )
+            if not finished:
+                assert report is not None
+                report = {
+                    **report,
+                    "ok": False,
+                    "status": "schedule_claim_lost",
+                }
+
+        if report is None:
+            return
+        report = {key: value for key, value in report.items() if not key.startswith("_")}
         provider._last_adjudication_report = report
         logger.info(
             "Scope Recall auto adjudication after %s: %s",
@@ -582,22 +1079,31 @@ def run_provider_auto_adjudication(provider: Any, *, trigger: str) -> None:
             ),
         )
     except Exception:
-        try:
-            release_adjudication_schedule(
-                db_path,
-                claim_token=claim_token,
-                released_at=time.time(),
-                trigger=trigger,
-                interval_hours=interval_hours,
-            )
-        except Exception:
-            logger.exception("Scope Recall auto adjudication claim release failed")
+        for token, owned_target, owned_trigger in (
+            (claim_token, target_id, trigger),
+            (l4_claim_token, l4_target_id, f"{trigger}:l4"),
+        ):
+            if token is None:
+                continue
+            try:
+                release_adjudication_schedule(
+                    db_path,
+                    claim_token=token,
+                    released_at=time.time(),
+                    trigger=owned_trigger,
+                    interval_hours=interval_hours,
+                    target_id=owned_target,
+                )
+            except Exception:
+                logger.exception("Scope Recall auto adjudication claim release failed")
         logger.exception("Scope Recall auto adjudication failed after %s", trigger)
 
 
 __all__ = [
     "DEFAULT_CONFIG",
+    "L4ConfigurationError",
     "build_l4_llm_call",
     "run_auto_adjudication",
+    "run_l4_retry",
     "run_provider_auto_adjudication",
 ]

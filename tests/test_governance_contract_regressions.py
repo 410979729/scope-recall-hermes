@@ -6,10 +6,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import shutil
 import sys
 from pathlib import Path
 
+from plugin_source import install_plugin_tree
 from plugins.memory import load_memory_provider
 from tools.memory_tool import MemoryStore, memory_tool
 
@@ -26,10 +26,7 @@ def _provider(tmp_path: Path, *, user_id: str = "joy", chat_id: str = "chat-a", 
     plugin_link = plugin_home / "scope-recall"
     repo_root = Path(__file__).resolve().parents[1]
     if not plugin_link.exists():
-        try:
-            plugin_link.symlink_to(repo_root, target_is_directory=True)
-        except OSError:
-            shutil.copytree(repo_root, plugin_link)
+        install_plugin_tree(plugin_link, repo_root)
     if config:
         _write_scope_recall_config(tmp_path, config)
     plugin = load_memory_provider("scope-recall")

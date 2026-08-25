@@ -32,16 +32,12 @@ def _preview(row: Any) -> dict[str, Any]:
     }
 
 
-def _vector_records(vector_store: Any) -> dict[str, dict[str, Any]]:
-    if vector_store is None or not hasattr(vector_store, "list_records"):
-        return {}
-    try:
-        records = vector_store.list_records()
-    except Exception:
-        return {}
-    if isinstance(records, dict):
-        return {str(key): dict(value) for key, value in records.items() if key}
-    return {}
+def _vector_records(vector_store: Any, *, limit: int = 200) -> dict[str, dict[str, Any]]:
+    """Sample companion metadata without listing or decoding full vectors."""
+
+    from .vector_store import sample_vector_metadata
+
+    return sample_vector_metadata(vector_store, limit=limit)
 
 
 def build_hygiene_report(conn: Any, vector_store: Any = None, limit: int = 200) -> dict[str, Any]:
@@ -119,7 +115,7 @@ def build_hygiene_report(conn: Any, vector_store: Any = None, limit: int = 200) 
     duplicate_groups.sort(key=lambda group: group["count"], reverse=True)
 
     sqlite_targets_by_id = {str(row["id"]): str(row["target"] or "") for row in rows}
-    records = _vector_records(vector_store)
+    records = _vector_records(vector_store, limit=limit)
     general_vector_rows = []
     for memory_id, record in records.items():
         target = str(record.get("target") or sqlite_targets_by_id.get(memory_id) or "")

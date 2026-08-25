@@ -16,7 +16,7 @@ from .scoring import semantic_similarity
 
 _SENTENCE_RE = re.compile(r"(?<=[.!?。！？])\s+")
 _PREFERENCE_RE = re.compile(
-    r"\b(?P<subject>[A-Z][\w-]*|user|joy)\s+(?:prefers?|likes?|wants?|希望|喜欢|喜歡|偏好)\s+(?P<object>[^.!?。！？]+)",
+    r"(?<!\w)(?P<subject>[^\W\d_][\w-]{0,63})\s+(?:prefers?|likes?|wants?|希望|喜欢|喜歡|偏好)\s+(?P<object>[^.!?。！？]+)",
     re.IGNORECASE,
 )
 _DEPLOY_RE = re.compile(

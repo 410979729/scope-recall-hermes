@@ -52,6 +52,7 @@ ALLOWED_TRUTH_WRITER_ROLES = frozenset(
         "journal_digest",
         "nightly_digest",
         "auto_adjudication",
+        "auto_adjudication_progress",
         "truth_connection",
         "journal_source_restore",
     }

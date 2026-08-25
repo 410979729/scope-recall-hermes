@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pytest
 
+from plugin_source import assert_same_source
 from plugins.memory import load_memory_provider
 
 import scope_recall.provider as provider_module
@@ -55,12 +56,17 @@ _RECOVERED_RETRY_WARNING = (
 
 
 def _assert_workspace_provider(provider) -> None:
-    """Fail closed if this node is exercising a different provider.py."""
+    """Fail closed if this node is exercising a different provider.py.
+
+    Copy-fallback fixtures load from a content-identical tree, not the
+    workspace absolute path, so identity is source bytes rather than
+    symlink/samefile equality.
+    """
 
     module_file = Path(provider_module.__file__).resolve()
     class_file = Path(inspect.getfile(type(provider))).resolve()
-    assert module_file == _WORKSPACE_PROVIDER
-    assert class_file == _WORKSPACE_PROVIDER
+    assert_same_source(module_file, _WORKSPACE_PROVIDER, label="scope_recall.provider")
+    assert_same_source(class_file, _WORKSPACE_PROVIDER, label="loaded provider class")
 
 
 def _provider():
@@ -310,7 +316,7 @@ def test_failed_post_connect_initialization_releases_writer_resources(
     provider = _provider()
     runtime_module = inspect.getmodule(type(provider))
     assert runtime_module is not None
-    assert Path(runtime_module.__file__).resolve() == _WORKSPACE_PROVIDER
+    assert_same_source(Path(runtime_module.__file__), _WORKSPACE_PROVIDER, label="runtime provider")
     captured: dict[str, object] = {"conn": None, "schema_calls": 0}
     real_open = provider._open_runtime_connection
     real_schema = runtime_module.ensure_journal_schema
@@ -613,7 +619,7 @@ def test_promotion_failure_after_writer_conn_assigned_returns_readonly(
     reader = _provider()
     runtime_module = inspect.getmodule(type(reader))
     assert runtime_module is not None
-    assert Path(runtime_module.__file__).resolve() == _WORKSPACE_PROVIDER
+    assert_same_source(Path(runtime_module.__file__), _WORKSPACE_PROVIDER, label="runtime provider")
     captured: dict[str, object] = {}
 
     def fail_start_writer(provider_arg):
@@ -676,7 +682,7 @@ def test_promotion_incomplete_cleanup_stays_fail_closed(tmp_path, monkeypatch):
     reader = _provider()
     runtime_module = inspect.getmodule(type(reader))
     assert runtime_module is not None
-    assert Path(runtime_module.__file__).resolve() == _WORKSPACE_PROVIDER
+    assert_same_source(Path(runtime_module.__file__), _WORKSPACE_PROVIDER, label="runtime provider")
     captured: dict[str, object] = {}
 
     def fail_start_writer(provider_arg):
@@ -732,7 +738,7 @@ def test_promotion_reader_close_failure_retains_acquired_lease(
     reader = _provider()
     runtime_module = inspect.getmodule(type(reader))
     assert runtime_module is not None
-    assert Path(runtime_module.__file__).resolve() == _WORKSPACE_PROVIDER
+    assert_same_source(Path(runtime_module.__file__), _WORKSPACE_PROVIDER, label="runtime provider")
     captured: dict[str, object] = {"lease": None, "real_conn": None, "writer_calls": 0}
     real_acquire = runtime_module.TruthWriterLease.acquire
 
@@ -816,7 +822,7 @@ def test_concurrent_reader_promotion_publishes_one_lease(tmp_path, monkeypatch):
     reader = _provider()
     runtime_module = inspect.getmodule(type(reader))
     assert runtime_module is not None
-    assert Path(runtime_module.__file__).resolve() == _WORKSPACE_PROVIDER
+    assert_same_source(Path(runtime_module.__file__), _WORKSPACE_PROVIDER, label="runtime provider")
     constructed: list[object] = []
     acquire_calls: list[object] = []
     init_calls = {"count": 0}
@@ -945,7 +951,7 @@ def test_reader_does_not_promote_when_shutdown_requested(tmp_path, monkeypatch):
     reader = _provider()
     runtime_module = inspect.getmodule(type(reader))
     assert runtime_module is not None
-    assert Path(runtime_module.__file__).resolve() == _WORKSPACE_PROVIDER
+    assert_same_source(Path(runtime_module.__file__), _WORKSPACE_PROVIDER, label="runtime provider")
     constructed: list[object] = []
     acquire_calls: list[object] = []
 
@@ -1100,7 +1106,7 @@ def test_shutdown_requested_peer_is_excluded_before_lock_probe(tmp_path):
     writer._db_path = db_path
     runtime_module = inspect.getmodule(type(writer))
     assert runtime_module is not None
-    assert Path(runtime_module.__file__).resolve() == _WORKSPACE_PROVIDER
+    assert_same_source(Path(runtime_module.__file__), _WORKSPACE_PROVIDER, label="runtime provider")
     peer = ShutdownPeer()
     recovery = _live_peer_recovery(writer)
     with recovery.PROVIDER_REGISTRY_LOCK:
@@ -1126,7 +1132,7 @@ def test_concurrent_initialize_publishes_one_runtime_and_does_not_leak_lease(tmp
     provider = _provider()
     runtime_module = inspect.getmodule(type(provider))
     assert runtime_module is not None
-    assert Path(runtime_module.__file__).resolve() == _WORKSPACE_PROVIDER
+    assert_same_source(Path(runtime_module.__file__), _WORKSPACE_PROVIDER, label="runtime provider")
     baseline = len(writer_lease_module._PROCESS_REGISTRY)
     results: list[str] = []
     errors: list[BaseException] = []

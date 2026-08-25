@@ -11,10 +11,11 @@ import logging
 from pathlib import Path
 import sqlite3
 import time
-from typing import Any, Sequence, cast
+from typing import Any, Iterable, Sequence, cast
 
 from .capture_filters import sanitize_report_text
-from .embedders import build_embedder
+from .embedders import build_embedder, close_embedder
+from .embedding_validation import validate_embedding_batch, zip_embedding_rows
 from .gating import config_bool
 from .graph import load_metadata
 from .lifecycle_policy import ordinary_recall_lifecycle_visible, ordinary_recall_lifecycle_visible_sql
@@ -29,6 +30,11 @@ from .vector_generation import (
     resolve_generation_storage_root,
     update_generation_cardinality,
     validate_generation_compatibility,
+)
+from .vector_membership import (
+    apply_membership_mutation,
+    membership_is_ready,
+    replace_generation_membership,
 )
 from .vector_outbox_replay import replay_committed_vector_events
 from .vector_reconciliation import (
@@ -481,6 +487,10 @@ def setup_vector_layer(provider: Any) -> None:
             old_store.close()
         except Exception:
             logger.debug("Scope Recall vector store close during setup failed", exc_info=True)
+    try:
+        close_embedder(getattr(provider, "_embedder", None))
+    except Exception:
+        logger.debug("Scope Recall embedder close during setup failed", exc_info=True)
     provider._vector_enabled = config_bool(provider._vector_config or {}, "enabled", False)
     provider._vector_backend = str((provider._vector_config or {}).get("backend") or "lancedb")
     provider._vector_ready = False
@@ -567,11 +577,13 @@ def setup_vector_layer(provider: Any) -> None:
         try:
             available = bool(candidate_embedder.is_available())
         except Exception as exc:
+            close_embedder(candidate_embedder)
             candidate_failures.append(
                 f"{label}_embedder_probe_failed:{_sanitize_vector_message(exc)}"
             )
             continue
         if not available:
+            close_embedder(candidate_embedder)
             candidate_failures.append(f"{label}_embedder_unavailable")
             continue
         try:
@@ -581,6 +593,7 @@ def setup_vector_layer(provider: Any) -> None:
                 candidate_config,
             )
         except Exception as exc:
+            close_embedder(candidate_embedder)
             candidate_failures.append(
                 f"{label}_embedder_identity_failed:{_sanitize_vector_message(exc)}"
             )
@@ -601,6 +614,7 @@ def setup_vector_layer(provider: Any) -> None:
                 ),
             )
         except GenerationCompatibilityError as exc:
+            close_embedder(candidate_embedder)
             candidate_failures.append(
                 f"{label}_embedding_space_incompatible:"
                 f"{_sanitize_vector_message(exc)}"
@@ -610,6 +624,7 @@ def setup_vector_layer(provider: Any) -> None:
         try:
             candidate_embedder.probe_readiness()
         except Exception as exc:
+            close_embedder(candidate_embedder)
             candidate_failures.append(
                 f"{label}_embedder_readiness_failed:{_sanitize_vector_message(exc)}"
             )
@@ -621,6 +636,7 @@ def setup_vector_layer(provider: Any) -> None:
                 candidate_config,
             )
         except Exception as exc:
+            close_embedder(candidate_embedder)
             candidate_failures.append(
                 f"{label}_embedder_identity_failed:{_sanitize_vector_message(exc)}"
             )
@@ -631,6 +647,7 @@ def setup_vector_layer(provider: Any) -> None:
                 replace(candidate_identity, backend=manifest_backend),
             )
         except GenerationCompatibilityError as exc:
+            close_embedder(candidate_embedder)
             candidate_failures.append(
                 f"{label}_embedding_space_incompatible:"
                 f"{_sanitize_vector_message(exc)}"
@@ -664,10 +681,12 @@ def setup_vector_layer(provider: Any) -> None:
     try:
         existing_manifest = _select_generation_storage(provider, selected_identity)
     except Exception as exc:
+        close_embedder(provider._embedder)
         _mark_vector_startup_degraded(provider, exc)
         return
 
     if existing_manifest is None:
+        close_embedder(provider._embedder)
         _mark_vector_startup_degraded(
             provider,
             "active vector generation disappeared before physical open",
@@ -688,8 +707,10 @@ def setup_vector_layer(provider: Any) -> None:
         provider._vector_unique_id_count = int(
             existing_manifest.get("unique_id_count") or 0
         )
-        provider._vector_duplicate_row_count = 0
-        _refresh_vector_row_count_only(provider)
+        provider._vector_duplicate_row_count = max(
+            0,
+            provider._vector_row_count - provider._vector_unique_id_count,
+        )
         # Ordinary startup is outbox-first and strictly bounded.  Full stale-row
         # sweeps remain explicit repair/doctor work; they are never hidden here.
         reconciliation = run_bounded_vector_reconciliation(provider)
@@ -716,6 +737,7 @@ def setup_vector_layer(provider: Any) -> None:
             )
     except Exception as exc:
         _mark_vector_startup_degraded(provider, exc)
+        close_embedder(provider._embedder)
         if provider._vector_store is not None:
             try:
                 provider._vector_store.close()
@@ -801,21 +823,62 @@ def _vector_audit_counts(provider: Any) -> dict[str, int]:
     return provider._vector_store.audit_counts()
 
 
+def _vector_store_ids(provider: Any) -> list[str]:
+    """Collect companion ids for an explicit Doctor/full audit only."""
+
+    store = getattr(provider, "_vector_store", None)
+    list_ids = getattr(store, "list_ids", None) if store is not None else None
+    if not callable(list_ids):
+        return []
+    return [
+        str(item)
+        for item in cast(Iterable[Any], list_ids())
+        if str(item)
+    ]
+
+
 def refresh_vector_audit(provider: Any, *, persist: bool = True) -> dict[str, int]:
-    if persist:
-        with _vector_mutation_lock(provider):
-            counts = _vector_audit_counts(provider)
-    else:
+    generation_id = str(getattr(provider, "_vector_generation_id", "") or "")
+    if not persist:
         counts = _vector_audit_counts(provider)
-    provider._vector_row_count = int(counts.get("physical_rows") or counts.get("row_count") or 0)
-    provider._vector_unique_id_count = int(counts.get("unique_ids") or counts.get("unique_id_count") or 0)
-    provider._vector_duplicate_row_count = int(counts.get("duplicate_rows") or 0)
-    if persist:
-        _persist_vector_cardinality(
-            provider,
-            physical_rows=provider._vector_row_count,
-            unique_ids=provider._vector_unique_id_count,
+        provider._vector_row_count = int(
+            counts.get("physical_rows") or counts.get("row_count") or 0
         )
+        provider._vector_unique_id_count = int(
+            counts.get("unique_ids") or counts.get("unique_id_count") or 0
+        )
+        provider._vector_duplicate_row_count = int(counts.get("duplicate_rows") or 0)
+        return counts
+
+    with _vector_mutation_lock(provider):
+        counts = _vector_audit_counts(provider)
+        member_ids = _vector_store_ids(provider)
+        provider._vector_row_count = int(
+            counts.get("physical_rows") or counts.get("row_count") or 0
+        )
+        provider._vector_unique_id_count = int(
+            counts.get("unique_ids") or counts.get("unique_id_count") or 0
+        )
+        provider._vector_duplicate_row_count = int(counts.get("duplicate_rows") or 0)
+        conn = provider._require_conn()
+        with provider._lock:
+            owns_transaction = not bool(getattr(conn, "in_transaction", False))
+            if owns_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            try:
+                if generation_id:
+                    replace_generation_membership(conn, generation_id, member_ids)
+                _persist_vector_cardinality(
+                    provider,
+                    physical_rows=provider._vector_row_count,
+                    unique_ids=provider._vector_unique_id_count,
+                )
+                if owns_transaction:
+                    conn.commit()
+            except Exception:
+                if owns_transaction:
+                    conn.rollback()
+                raise
     return counts
 
 
@@ -843,29 +906,92 @@ def _should_index_row(provider: Any, target: str, metadata: dict[str, Any] | str
     )
 
 
-def _refresh_vector_row_count_only(provider: Any) -> None:
-    """Refresh only the backend's bounded physical-row counter.
+def _adjusted_vector_counts(
+    provider: Any,
+    *,
+    operation: str,
+    existed: bool,
+) -> tuple[int, int] | None:
+    """Return the next cached physical/unique pair for one proven mutation."""
 
-    Unlike ``refresh_vector_audit`` this never enumerates ids or records and does
-    not attempt duplicate discovery.  It keeps status counters accurate after a
-    bounded outbox replay without reintroducing cardinality-bound startup work.
+    physical = max(0, int(getattr(provider, "_vector_row_count", 0) or 0))
+    unique = max(0, int(getattr(provider, "_vector_unique_id_count", 0) or 0))
+    if operation == "upsert":
+        if not existed:
+            physical += 1
+            unique += 1
+    elif operation == "delete":
+        if existed:
+            physical = max(0, physical - 1)
+            unique = max(0, unique - 1)
+    else:
+        return None
+    unique = min(unique, physical)
+    return physical, unique
+
+
+def _apply_incremental_vector_counts(
+    provider: Any,
+    *,
+    operation: str,
+    memory_id: str,
+    existed: bool | None,
+) -> None:
+    """Adjust cached physical/unique counts after one successful mutation.
+
+    The supported path uses the SQLite membership ledger: a primary-key
+    equality lookup on ``(generation_id, memory_id)`` decides insert vs
+    update vs delete, then membership and cached counts commit together.
+    Unknown existence leaves the cache unchanged. Duplicate discovery stays
+    on explicit Doctor audit. In-memory counters update only after that
+    transaction commits so a persist error cannot drift ahead of the ledger.
     """
 
-    store = getattr(provider, "_vector_store", None)
-    counter = getattr(store, "count_rows", None) if store is not None else None
-    if not callable(counter):
-        return
-    with _vector_mutation_lock(provider):
-        value = counter()
-    if isinstance(value, (int, str)):
-        provider._vector_row_count = int(value)
-        duplicate_rows = max(0, int(getattr(provider, "_vector_duplicate_row_count", 0) or 0))
-        provider._vector_unique_id_count = max(0, provider._vector_row_count - duplicate_rows)
-        _persist_vector_cardinality(
-            provider,
-            physical_rows=provider._vector_row_count,
-            unique_ids=provider._vector_unique_id_count,
-        )
+    generation_id = str(getattr(provider, "_vector_generation_id", "") or "")
+    conn = provider._require_conn()
+    with provider._lock:
+        owns_transaction = not bool(getattr(conn, "in_transaction", False))
+        if owns_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        try:
+            resolved_existed = existed
+            if generation_id and membership_is_ready(conn, generation_id):
+                resolved_existed = apply_membership_mutation(
+                    conn,
+                    generation_id=generation_id,
+                    memory_id=memory_id,
+                    operation=operation,
+                )
+            if resolved_existed is None:
+                if owns_transaction:
+                    conn.rollback()
+                return
+            adjusted = _adjusted_vector_counts(
+                provider,
+                operation=operation,
+                existed=resolved_existed,
+            )
+            if adjusted is None:
+                if owns_transaction:
+                    conn.rollback()
+                return
+            physical, unique = adjusted
+            if generation_id:
+                update_generation_cardinality(
+                    conn,
+                    generation_id=generation_id,
+                    row_count=physical,
+                    unique_id_count=unique,
+                )
+            if owns_transaction:
+                conn.commit()
+        except Exception:
+            if owns_transaction:
+                conn.rollback()
+            raise
+    provider._vector_row_count = physical
+    provider._vector_unique_id_count = unique
+    provider._vector_duplicate_row_count = max(0, physical - unique)
 
 
 def run_bounded_vector_reconciliation(provider: Any) -> dict[str, Any]:
@@ -952,8 +1078,6 @@ def _run_bounded_vector_reconciliation_guarded(provider: Any) -> dict[str, Any]:
         limit=outbox_limit,
         refresh_audit_after=False,
     )
-    if int(first.get("completed") or 0) > 0:
-        _refresh_vector_row_count_only(provider)
     conn = provider._require_conn()
     with provider._lock:
         backlog = vector_outbox_backlog_status(
@@ -1001,8 +1125,6 @@ def _run_bounded_vector_reconciliation_guarded(provider: Any) -> dict[str, Any]:
         result["claimed"] += int(second["claimed"])
         result["completed"] += int(second["completed"])
         result["failed"] += int(second["failed"])
-        if int(second.get("completed") or 0) > 0:
-            _refresh_vector_row_count_only(provider)
     with provider._lock:
         remaining = vector_outbox_backlog_status(
             conn,
@@ -1093,9 +1215,24 @@ def sync_vector_index(provider: Any) -> int:
 
         if changed_rows:
             texts = [provider._vector_text(row["summary"], row["content"]) for row in changed_rows]
-            vectors = provider._embedder.embed_texts(texts)
+            embed_maintenance = getattr(provider._embedder, "embed_maintenance", None)
+            raw_vectors = (
+                embed_maintenance(texts)
+                if callable(embed_maintenance)
+                else provider._embedder.embed_texts(texts)
+            )
+            vectors = validate_embedding_batch(
+                raw_vectors,
+                expected_count=len(changed_rows),
+                expected_dimensions=int(provider._embedder.dimensions),
+                provider=str(getattr(provider._embedder, "provider", "embedder")),
+            )
             payload = []
-            for row, vector in zip(changed_rows, vectors):
+            for row, vector in zip_embedding_rows(
+                changed_rows,
+                vectors,
+                provider=str(getattr(provider._embedder, "provider", "embedder")),
+            ):
                 payload.append(
                     {
                         "id": row["id"],
@@ -1156,7 +1293,7 @@ def replay_vector_outbox_events(
     provider: Any,
     *,
     event_ids: Sequence[int],
-    refresh_audit_after: bool = True,
+    refresh_audit_after: bool = False,
 ) -> dict[str, int]:
     """Replay exact committed outbox IDs without draining unrelated backlog first."""
 
@@ -1184,9 +1321,15 @@ def replay_vector_outbox(
     provider: Any,
     *,
     limit: int = 200,
-    refresh_audit_after: bool = True,
+    refresh_audit_after: bool = False,
 ) -> dict[str, int]:
-    """Serialize truth outbox claims, schema bookkeeping, and physical replay."""
+    """Serialize truth outbox claims, schema bookkeeping, and physical replay.
+
+    Ordinary writes keep cardinality incrementally after successful per-id
+    mutations. They never COUNT or list the companion. A full ID audit runs
+    only when the caller explicitly asks for one, and empty ``claimed=0``
+    replays skip that hook entirely.
+    """
 
     generation_id = str(getattr(provider, "_vector_generation_id", "") or "")
     if not generation_id or not provider._vector_store or not provider._embedder:
@@ -1204,7 +1347,7 @@ def _replay_vector_outbox_guarded(
     *,
     limit: int = 200,
     event_ids: Sequence[int] | None = None,
-    refresh_audit_after: bool = True,
+    refresh_audit_after: bool = False,
 ) -> dict[str, int]:
     """Replay committed intent through the shared single-writer executor."""
 
@@ -1216,7 +1359,7 @@ def _replay_vector_outbox_guarded(
         mark_vector_needs_repair(provider, error)
         logger.warning("Scope Recall vector replay failed: %s", error)
 
-    return replay_committed_vector_events(
+    result = replay_committed_vector_events(
         provider._require_conn(),
         generation_id=generation_id,
         vector_store=provider._vector_store,
@@ -1240,7 +1383,16 @@ def _replay_vector_outbox_guarded(
             if refresh_audit_after
             else None
         ),
+        on_physical_mutation=(
+            lambda operation, memory_id, existed: _apply_incremental_vector_counts(
+                provider,
+                operation=operation,
+                memory_id=memory_id,
+                existed=existed,
+            )
+        ),
     )
+    return result
 
 
 def upsert_vector_record(

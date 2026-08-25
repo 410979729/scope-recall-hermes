@@ -189,25 +189,82 @@ def _scope_filter_sql(scope_ids: Sequence[str] | None) -> tuple[str, list[str]] 
     return f" AND scope_id IN ({placeholders})", scopes
 
 
-def candidate_rows(conn: sqlite3.Connection, *, scope_ids: Sequence[str] | None = None, limit: int = 1000) -> list[sqlite3.Row]:
+def candidate_rows(
+    conn: sqlite3.Connection,
+    *,
+    scope_ids: Sequence[str] | None = None,
+    limit: int = 1000,
+    cursor_updated_at: str = "",
+    cursor_id: str = "",
+) -> list[sqlite3.Row]:
+    """Return one bounded, circular keyset page of candidate rows.
+
+    A durable caller cursor prevents a permanently held oldest page from
+    starving later candidates. The default remains the ordinary oldest-first
+    view used by operator debt reports.
+    """
+
     conn.row_factory = sqlite3.Row
     scope_filter = _scope_filter_sql(scope_ids)
     if scope_filter is None:
         return []
     scope_sql, scope_params = scope_filter
-    return list(
+    page_limit = max(1, int(limit or 1000))
+    select_sql = """
+        SELECT id, scope_id, source, target, content, summary, updated_at, metadata
+        FROM memories
+        WHERE LOWER(COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.lifecycle') ELSE '' END, '')) = 'candidate'
+    """
+    order_sql = " ORDER BY COALESCE(updated_at, '') ASC, id ASC LIMIT ?"
+    if not cursor_updated_at and not cursor_id:
+        return list(
+            conn.execute(
+                f"{select_sql} {scope_sql} {order_sql}",
+                (*scope_params, page_limit),
+            ).fetchall()
+        )
+
+    after_sql = """
+        AND (
+            COALESCE(updated_at, '') > ?
+            OR (COALESCE(updated_at, '') = ? AND id > ?)
+        )
+    """
+    rows = list(
         conn.execute(
-            f"""
-            SELECT id, scope_id, source, target, content, summary, updated_at, metadata
-            FROM memories
-            WHERE LOWER(COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.lifecycle') ELSE '' END, '')) = 'candidate'
-              {scope_sql}
-            ORDER BY updated_at ASC, id ASC
-            LIMIT ?
-            """,
-            (*scope_params, max(1, int(limit or 1000))),
+            f"{select_sql} {scope_sql} {after_sql} {order_sql}",
+            (
+                *scope_params,
+                cursor_updated_at,
+                cursor_updated_at,
+                cursor_id,
+                page_limit,
+            ),
         ).fetchall()
     )
+    remaining = page_limit - len(rows)
+    if remaining <= 0:
+        return rows
+
+    wrap_sql = """
+        AND (
+            COALESCE(updated_at, '') < ?
+            OR (COALESCE(updated_at, '') = ? AND id <= ?)
+        )
+    """
+    rows.extend(
+        conn.execute(
+            f"{select_sql} {scope_sql} {wrap_sql} {order_sql}",
+            (
+                *scope_params,
+                cursor_updated_at,
+                cursor_updated_at,
+                cursor_id,
+                remaining,
+            ),
+        ).fetchall()
+    )
+    return rows
 
 
 def candidate_debt_report(

@@ -42,7 +42,7 @@ def build_experience_playbook_payload(
     must_stop = [
         "现场证据与经验手册目标不一致。",
         "验证命令失败、缺少输出，或最后状态不是完成/通过。",
-        "无法判断是否继续复用时，必须停下问 Joy。",
+        "无法判断是否继续复用时，必须停下问操作员。",
     ]
     prohibited = ["不得用旧记忆替代本轮 live 证据。"]
     pitfalls = [
@@ -54,19 +54,19 @@ def build_experience_playbook_payload(
     ]
     if high_risk:
         if secret_risk:
-            must_stop.append("涉及凭据、token、secret 或密钥相邻信息；必须由 Joy 明确授权并重新核验证据。")
+            must_stop.append("涉及凭据、token、secret 或密钥相邻信息；必须由操作员明确授权并重新核验证据。")
             prohibited.append("不得自动复用、传播或执行包含凭据相邻上下文的经验手册。")
-        must_stop.append("涉及推送、发布、重启、删除、迁移、远程/跨实例或凭据相邻操作且 Joy 未明确授权。")
+        must_stop.append("涉及推送、发布、重启、删除、迁移、远程/跨实例或凭据相邻操作且操作员未明确授权。")
         prohibited.append("不得自动执行发布、推送、重启、删除、迁移或凭据相邻动作。")
         pitfalls.append(
             {
                 "signal": "涉及推送、发布、重启、删除或凭据相邻操作",
                 "mistake": "自动执行高风险动作",
-                "correction": "只复用检查流程；执行前必须现场核验并遵守 Joy 授权边界。",
+                "correction": "只复用检查流程；执行前必须现场核验并遵守操作员授权边界。",
             }
         )
     if verification_missing:
-        must_stop.append("缺少验证输出；复用前必须停下补验证或问 Joy。")
+        must_stop.append("缺少验证输出；复用前必须停下补验证或问操作员。")
         prohibited.append("不得把缺少验证输出的经验手册直接当作已验证流程自动复用。")
         pitfalls.append(
             {
@@ -107,7 +107,7 @@ def build_experience_playbook_payload(
             {
                 "number": 3,
                 "capability_class": "read_only",
-                "action": "收尾时明确列出通过项、剩余风险和是否需要 Joy 授权。",
+                "action": "收尾时明确列出通过项、剩余风险和是否需要操作员授权。",
                 "evidence_required": "测试/检查结果和授权边界说明",
                 "why": "避免把候选状态误报成已发布或已执行。",
                 "previous_mistakes": ["把本地候选版本说成远端正式版本。"],
@@ -120,7 +120,7 @@ def build_experience_playbook_payload(
             "default_decision": "guided_reuse" if high_risk or verification_missing else "direct_reuse",
             "allow_direct_reuse": not high_risk and not verification_missing,
             "risk_level": normalized_risk_level,
-            "must_stop_and_ask_joy": must_stop,
+            "must_stop_and_ask_operator": must_stop,
             "prohibited_auto_actions": prohibited,
             "source_evidence_anchor_count": len(evidence_anchors or []),
             "source_evidence_anchor_kinds": anchor_kinds,

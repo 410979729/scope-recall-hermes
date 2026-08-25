@@ -360,9 +360,9 @@ def run_golden(
                     hermes_home=str(hermes_home),
                     platform="cli",
                     agent_context="primary",
-                    agent_identity="yuheng",
+                    agent_identity="benchmark-agent",
                     agent_workspace="hermes",
-                    user_id="joy",
+                    user_id="benchmark-user",
                 )
                 for item in fixture.get("setup") or []:
                     if not isinstance(item, dict):

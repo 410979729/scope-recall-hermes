@@ -58,6 +58,16 @@ def test_source_trust_priors_distinguish_curated_user_tool_and_raw_assistant_sou
     assert assistant["trust"] < tool["trust"]
 
 
+def test_preference_classification_is_symmetric_across_user_names():
+    results = [
+        classify_memory(f"{name} prefers concise reports.", "user", "tool-store")
+        for name in ("Alice", "Bob", "小明")
+    ]
+
+    assert {result["category"] for result in results} == {"preference"}
+    assert len({result["trust"] for result in results}) == 1
+
+
 def test_conflicting_memory_store_marks_contradiction_relation_for_review(tmp_path):
     _write_config(tmp_path, {"vector": {"enabled": False}, "retrieval": {"mode": "lexical", "min_score": 0.18}})
     plugin = load_memory_provider("scope-recall")

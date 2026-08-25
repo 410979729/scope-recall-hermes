@@ -50,23 +50,16 @@ def normalize_backend(value: str) -> str:
     return "sqlite-bruteforce" if backend == "sqlite" else backend
 
 
-def _table_rows(table: Any) -> list[dict[str, Any]]:
-    if hasattr(table, "to_list"):
-        try:
-            return list(table.to_list())
-        except Exception:
-            pass
-    if hasattr(table, "to_arrow"):
-        try:
-            return table.to_arrow().to_pylist()
-        except Exception:
-            pass
-    if hasattr(table, "to_pandas"):
-        try:
-            return table.to_pandas().to_dict(orient="records")
-        except Exception:
-            pass
-    return []
+_METADATA_COLUMNS = ("id", "scope_id", "source", "target", "content", "summary", "updated_at")
+_SAMPLE_HARD_LIMIT = 200
+
+
+def _clamp_sample_limit(limit: Any) -> int:
+    try:
+        value = int(limit)
+    except (TypeError, ValueError):
+        value = _SAMPLE_HARD_LIMIT
+    return max(0, min(value, _SAMPLE_HARD_LIMIT))
 
 
 class ReadOnlyLanceVectorRecords:
@@ -74,57 +67,61 @@ class ReadOnlyLanceVectorRecords:
         self.vector_dir = vector_dir
         self.table_name = table_name
 
-    def list_records(self) -> dict[str, dict[str, Any]]:
+    def sample_metadata(self, *, limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
         if lancedb is None or not self.vector_dir.exists():
-            return {}
+            return []
         try:
             db = lancedb.connect(str(self.vector_dir))
             table = db.open_table(self.table_name)
         except Exception:
-            return {}
-        records: dict[str, dict[str, Any]] = {}
-        for row in _table_rows(table):
-            memory_id = str(row.get("id") or "")
-            if not memory_id:
-                continue
-            current = records.get(memory_id)
-            if current is None or str(row.get("updated_at") or "") >= str(current.get("updated_at") or ""):
-                records[memory_id] = dict(row)
-        return records
+            return []
+        from scope_recall_hygiene_runtime.vector_store import sample_lance_table_metadata
+
+        return sample_lance_table_metadata(
+            table,
+            columns=_METADATA_COLUMNS,
+            limit=_clamp_sample_limit(limit),
+            offset=max(0, int(offset or 0)),
+        )
+
+    def list_records(self) -> dict[str, dict[str, Any]]:
+        return {str(row["id"]): row for row in self.sample_metadata(limit=_SAMPLE_HARD_LIMIT)}
 
 
 class ReadOnlySQLiteVectorRecords:
     def __init__(self, vector_path: Path) -> None:
         self.vector_path = vector_path
 
-    def list_records(self) -> dict[str, dict[str, Any]]:
+    def sample_metadata(self, *, limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
         if not self.vector_path.exists():
-            return {}
+            return []
+        bounded = _clamp_sample_limit(limit)
+        start = max(0, int(offset or 0))
+        if bounded <= 0:
+            return []
         try:
             conn = sqlite3.connect(f"file:{self.vector_path}?mode=ro", uri=True)
             conn.row_factory = sqlite3.Row
             try:
                 tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
                 if "vector_records" not in tables:
-                    return {}
+                    return []
                 rows = conn.execute(
                     """
                     SELECT id, scope_id, source, target, content, summary, updated_at
                     FROM vector_records
                     ORDER BY updated_at ASC, id ASC
-                    """
+                    LIMIT ? OFFSET ?
+                    """,
+                    (bounded, start),
                 ).fetchall()
             finally:
                 conn.close()
         except Exception:
-            return {}
-        records: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            memory_id = str(row["id"] or "")
-            if not memory_id:
-                continue
-            records[memory_id] = {
-                "id": memory_id,
+            return []
+        return [
+            {
+                "id": str(row["id"] or ""),
                 "scope_id": str(row["scope_id"] or ""),
                 "source": str(row["source"] or ""),
                 "target": str(row["target"] or ""),
@@ -132,7 +129,12 @@ class ReadOnlySQLiteVectorRecords:
                 "summary": str(row["summary"] or ""),
                 "updated_at": str(row["updated_at"] or ""),
             }
-        return records
+            for row in rows
+            if str(row["id"] or "")
+        ]
+
+    def list_records(self) -> dict[str, dict[str, Any]]:
+        return {str(row["id"]): row for row in self.sample_metadata(limit=_SAMPLE_HARD_LIMIT)}
 
 
 def render_markdown(report: dict[str, Any]) -> str:

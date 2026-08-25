@@ -32,6 +32,11 @@ jobs:
             python: "3.12"
             install-target: ".[lancedb,dev]"
             command: python -m pytest -q
+          - name: windows-full-py311
+            os: windows-latest
+            python: "3.11"
+            install-target: ".[lancedb,dev]"
+            command: python -m pytest -q
           - name: windows-full-py312
             os: windows-latest
             python: "3.12"
@@ -87,6 +92,35 @@ jobs:
           python -m pytest -q
           tests/test_hidden_vector_repair.py::test_hidden_vector_repair_handles_legacy_root_lancedb
           tests/test_tenth_review_regressions.py::test_lancedb_concurrent_handles_do_not_duplicate_ids
+
+  windows-no-symlink:
+    name: windows-no-symlink-py311
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install package and pinned Hermes runtime
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[lancedb,dev]"
+          python .github/scripts/checkout_pinned_hermes.py
+          python -m pip install -e .hermes-agent-src
+      - name: Exercise no-symlink Windows product paths
+        shell: pwsh
+        env:
+          PYTHONPATH: .hermes-agent-src
+          SCOPE_RECALL_TEST_FORCE_COPY_PLUGIN: "1"
+          SCOPE_RECALL_TEST_ASSUME_NO_SYMLINK: "1"
+        run: >-
+          python -m pytest -q
+          tests/test_initialize_peer_recovery.py
+          tests/test_installer.py
+          tests/test_windows_test_gate.py
+          tests/test_windows_filesystem.py
 
   windows-installer:
     runs-on: windows-latest

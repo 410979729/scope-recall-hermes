@@ -14,7 +14,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from .vector_store import VectorStoreCompatibilityError
+from .vector_store import VECTOR_METADATA_COLUMNS, VectorStoreCompatibilityError, clamp_vector_sample_limit
 
 
 class SQLiteBruteForceVectorStore:
@@ -49,6 +49,12 @@ class SQLiteBruteForceVectorStore:
     @property
     def dimensions(self) -> int:
         return self._dimensions
+
+    @property
+    def id_lookup_indexed(self) -> bool:
+        """``vector_records.id`` is the table primary key."""
+
+        return True
 
     def is_available(self) -> bool:
         return True
@@ -345,11 +351,25 @@ class SQLiteBruteForceVectorStore:
             conn.execute(f"DELETE FROM vector_records WHERE id IN ({placeholders})", ids)
             conn.commit()
 
+    def contains_id(self, memory_id: str) -> bool:
+        """Indexed primary-key existence probe; never counts or lists the corpus."""
+
+        resolved = str(memory_id or "")
+        if not resolved:
+            return False
+        with self._lock:
+            row = self._require_conn().execute(
+                "SELECT 1 FROM vector_records WHERE id = ? LIMIT 1",
+                (resolved,),
+            ).fetchone()
+        return row is not None
+
     def delete(self, ids: list[str]) -> int:
-        before = set(self.list_ids())
-        self.delete_by_ids(ids)
-        after = set(self.list_ids())
-        return len(before - after)
+        existing = [str(item) for item in ids if str(item) and self.contains_id(str(item))]
+        if not existing:
+            return 0
+        self.delete_by_ids(existing)
+        return len(existing)
 
     def list_ids(self) -> list[str]:
         with self._lock:
@@ -369,6 +389,26 @@ class SQLiteBruteForceVectorStore:
             record = self._row_to_record(row, include_vector=True)
             output[str(record["id"])] = record
         return output
+
+    def sample_metadata(self, *, limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
+        """Return a bounded metadata page without reading ``vector_json``."""
+
+        bounded = clamp_vector_sample_limit(limit)
+        start = max(0, int(offset or 0))
+        if bounded <= 0:
+            return []
+        columns = ", ".join(VECTOR_METADATA_COLUMNS)
+        with self._lock:
+            rows = self._require_conn().execute(
+                f"""
+                SELECT {columns}
+                FROM vector_records
+                ORDER BY id
+                LIMIT ? OFFSET ?
+                """,
+                (bounded, start),
+            ).fetchall()
+        return [self._row_to_record(row, include_vector=False) for row in rows]
 
     def audit_counts(self) -> dict[str, int]:
         ids = self.list_ids()
@@ -413,7 +453,15 @@ class SQLiteBruteForceVectorStore:
             record.pop("vector", None)
             record["_distance"] = distance
             candidates.append(record)
-        candidates.sort(key=lambda item: (float(item.get("_distance") or 0.0), str(item.get("updated_at") or "")))
+        # Stable multi-key ordering: nearest first, then newest truth revision,
+        # then ID for deterministic ties.  A single tuple key would order the
+        # ISO timestamp ascending and incorrectly prefer stale records.
+        candidates.sort(key=lambda item: str(item.get("id") or ""))
+        candidates.sort(
+            key=lambda item: str(item.get("updated_at") or ""),
+            reverse=True,
+        )
+        candidates.sort(key=lambda item: float(item.get("_distance") or 0.0))
         return candidates[: max(0, int(limit))]
 
     def count_rows(self) -> int:

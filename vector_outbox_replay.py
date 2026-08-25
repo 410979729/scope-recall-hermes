@@ -19,6 +19,8 @@ from .vector_generation import (
     complete_vector_event,
     fail_vector_event,
 )
+from .vector_membership import membership_is_ready
+from .vector_store import store_contains_id, store_id_lookup_is_indexed
 
 ReplayResult = dict[str, int]
 
@@ -115,6 +117,7 @@ def replay_committed_vector_events(
     worker_id: str = "",
     on_failure: Callable[[str], None] | None = None,
     after_replay: Callable[[], Any] | None = None,
+    on_physical_mutation: Callable[[str, str, bool | None], Any] | None = None,
 ) -> ReplayResult:
     """Claim and causally apply committed events with crash-safe replay.
 
@@ -128,6 +131,12 @@ def replay_committed_vector_events(
     A direct truth drift without a newer event triggers bounded re-preparation.
     A crash after physical mutation but before completion remains safe because
     backend upsert/delete operations are idempotent by memory id.
+
+    ``after_replay`` is skipped when no event is claimed so empty replay cannot
+    trigger a full companion audit. Successful physical mutations notify
+    ``on_physical_mutation`` so callers can maintain cached counts from the
+    SQLite membership ledger or an indexed backend probe. Unindexed Lance
+    ``where(id).limit(1)`` filters are never issued here.
     """
 
     resolved_generation = str(generation_id or "").strip()
@@ -229,11 +238,24 @@ def replay_committed_vector_events(
                             raise
 
                     if not event_applied and not retry_preparation:
+                        existed = None
+                        with _held(db_lock):
+                            ledger_ready = membership_is_ready(
+                                conn, resolved_generation
+                            )
+                        if not ledger_ready and store_id_lookup_is_indexed(
+                            vector_store
+                        ):
+                            existed = store_contains_id(vector_store, memory_id)
                         if prepared_should_delete:
                             vector_store.delete_by_ids([memory_id])
+                            operation = "delete"
                         else:
                             assert prepared_record is not None
                             vector_store.upsert_records([prepared_record])
+                            operation = "upsert"
+                        if on_physical_mutation is not None:
+                            on_physical_mutation(operation, memory_id, existed)
 
                         # A writer may have committed while physical I/O was in
                         # flight. Complete this lease under a short fence, but
@@ -308,7 +330,7 @@ def replay_committed_vector_events(
                 on_failure(safe_error)
             break
 
-    if after_replay is not None:
+    if claimed > 0 and after_replay is not None:
         after_replay()
     return {"claimed": claimed, "completed": completed, "failed": failed}
 

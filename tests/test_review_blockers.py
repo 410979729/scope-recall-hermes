@@ -8,10 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
-from scope_recall.auto_adjudication import (
-    _mark_uncertain_round,
-    run_auto_adjudication,
-)
+from scope_recall.auto_adjudication import run_auto_adjudication
 from scope_recall.journal import append_journal_entry, ensure_journal_schema, run_journal_digest
 from scope_recall.journal_llm import JournalDigestLLMError
 from scope_recall.journal_recovery import find_replay_candidates
@@ -114,7 +111,8 @@ def test_evidence_lock_does_not_archive(tmp_path, monkeypatch):
     report = run_auto_adjudication(
         hermes_home,
         {"auto_adjudication": {"enabled": True, "l4_enabled": True, "l4_max_uncertain_rounds": 1}},
-        llm_call=lambda prompt: '{"verdict":"unsupported","reason":"should not run"}',
+        llm_call=lambda _prompt, **_kwargs: '{"schema_version":"scope_recall_l4_verdict.v1","verdict":"unsupported","reason":"should not run"}',
+        scope_ids=("scope-test",),
     )
     lifecycle = conn.execute(
         "SELECT json_extract(metadata, '$.lifecycle') FROM memories WHERE id=?",
@@ -123,23 +121,6 @@ def test_evidence_lock_does_not_archive(tmp_path, monkeypatch):
     assert lifecycle == "candidate"
     assert int(report.get("l4", {}).get("errors") or 0) >= 1
     assert int(report.get("l4", {}).get("exhausted_archived") or 0) == 0
-
-
-def test_uncertain_round_cas_skips_stale_row(tmp_path):
-    hermes_home, conn = _home(tmp_path)
-    _insert_candidate(conn, "cas-row", age_hours=1)
-    row = conn.execute("SELECT * FROM memories WHERE id=?", ("cas-row",)).fetchone()
-    conn.execute(
-        "UPDATE memories SET updated_at=? WHERE id=?",
-        ("2099-01-01T00:00:00+00:00", "cas-row"),
-    )
-    conn.commit()
-    rounds = _mark_uncertain_round(conn, row, reason="stale", at="2026-08-16T00:00:00+00:00")
-    assert rounds is None
-    meta = json.loads(
-        conn.execute("SELECT metadata FROM memories WHERE id=?", ("cas-row",)).fetchone()[0]
-    )
-    assert int(meta.get("l4_uncertain_rounds") or 0) == 0
 
 
 def test_nonretryable_extractor_failure_counts_attempts(tmp_path, monkeypatch):

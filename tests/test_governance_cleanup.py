@@ -421,6 +421,53 @@ def test_cleanup_rollback_malformed_before_json_is_skipped_without_mutation():
     assert tuple(after_row) == tuple(before_row)
 
 
+def test_cleanup_rollback_rejects_archived_before_snapshot_and_never_reports_noop_restored():
+    conn = _conn()
+    _insert(
+        conn,
+        memory_id="already-archived-before",
+        content="Operations workflow summary from journal digest: user: 继续 assistant: 完成。",
+    )
+    apply_cleanup(
+        conn,
+        scope_ids=["shared-scope"],
+        dry_run=False,
+        limit=20,
+        batch_id="archived-before-noop",
+    )
+    receipt = conn.execute(
+        "SELECT after_json FROM governance_audit_events "
+        "WHERE batch_id='archived-before-noop' AND action='soft_archive'"
+    ).fetchone()
+    conn.execute(
+        "UPDATE governance_audit_events SET before_json = ? "
+        "WHERE batch_id='archived-before-noop' AND action='soft_archive'",
+        (receipt["after_json"],),
+    )
+    conn.commit()
+
+    dry = rollback_cleanup_batch(
+        conn,
+        batch_id="archived-before-noop",
+        dry_run=True,
+    )
+    applied = rollback_cleanup_batch(
+        conn,
+        batch_id="archived-before-noop",
+        dry_run=False,
+    )
+
+    assert dry["restore_ids"] == []
+    assert dry["invalid_ids"] == ["already-archived-before"]
+    assert applied["restored"] == 0
+    assert applied["invalid_ids"] == ["already-archived-before"]
+    assert _metadata(conn, "already-archived-before")["lifecycle"] == "archived"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM governance_audit_events "
+        "WHERE batch_id='archived-before-noop' AND action='rollback_soft_archive'"
+    ).fetchone()[0] == 0
+
+
 def test_cleanup_rollback_skips_rows_rearchived_by_later_batch():
     conn = _conn()
     _insert(conn, memory_id="ops", content="Operations workflow summary from journal digest: user: 继续 assistant: 完成。")

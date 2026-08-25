@@ -81,6 +81,7 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
     )
     bounded_limit = plan.bounded_limit
     candidate_pool = plan.candidate_pool
+    vector_depth = plan.vector_top_k
     trace: dict[str, Any] = recall_pipeline.initial_trace(
         query=query,
         plan=plan,
@@ -103,12 +104,12 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
     if effective_query_vector is None:
         raw_vector_candidates = host.provider._search_vector_memories(
             query,
-            limit=candidate_pool,
+            limit=vector_depth,
         )
     else:
         raw_vector_candidates = host.provider._search_vector_memories_with_vector(
             effective_query_vector,
-            limit=candidate_pool,
+            limit=vector_depth,
         )
     vector_candidates = host._filter_recall_lifecycle(raw_vector_candidates)
     trace["filters"]["lifecycle_removed"] += max(0, len(raw_vector_candidates) - len(vector_candidates))

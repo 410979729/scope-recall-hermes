@@ -728,43 +728,43 @@
     },
     {
       "label": "commercial_35_expected",
-      "content": "Aria 当前 主数据库端口 is 6432; live verification status is current.",
+      "content": "OperatorA 当前 主数据库端口 is 6432; live verification status is current.",
       "target": "user",
       "memory_type": "factual",
       "importance": 0.92,
       "entities": [
-        "Aria"
+        "OperatorA"
       ]
     },
     {
       "label": "commercial_35_distractor",
-      "content": "Aria 迁移中的 主数据库端口 was 5432; this progress note is not final.",
+      "content": "OperatorA 迁移中的 主数据库端口 was 5432; this progress note is not final.",
       "target": "user",
       "memory_type": "factual",
       "importance": 0.35,
       "entities": [
-        "Aria"
+        "OperatorA"
       ],
       "lifecycle": "in_progress"
     },
     {
       "label": "commercial_36_expected",
-      "content": "Beidou 当前 current backup bucket is s3://beidou-prod-backup; live verification status is current.",
+      "content": "Northstar 当前 current backup bucket is s3://northstar-prod-backup; live verification status is current.",
       "target": "user",
       "memory_type": "factual",
       "importance": 0.92,
       "entities": [
-        "Beidou"
+        "Northstar"
       ]
     },
     {
       "label": "commercial_36_distractor",
-      "content": "Beidou 迁移中的 current backup bucket was s3://beidou-dev; this progress note is not final.",
+      "content": "Northstar 迁移中的 current backup bucket was s3://northstar-dev; this progress note is not final.",
       "target": "user",
       "memory_type": "factual",
       "importance": 0.35,
       "entities": [
-        "Beidou"
+        "Northstar"
       ],
       "lifecycle": "in_progress"
     },
@@ -2169,7 +2169,7 @@
     },
     {
       "name": "mixed-35-v1",
-      "query": "Aria 当前 主数据库端口 是什么？",
+      "query": "OperatorA 当前 主数据库端口 是什么？",
       "expected_labels": [
         "commercial_35_expected"
       ],
@@ -2181,7 +2181,7 @@
     },
     {
       "name": "mixed-35-v2",
-      "query": "What is the verified 主数据库端口 for Aria?",
+      "query": "What is the verified 主数据库端口 for OperatorA?",
       "expected_labels": [
         "commercial_35_expected"
       ],
@@ -2193,7 +2193,7 @@
     },
     {
       "name": "mixed-35-v3",
-      "query": "Aria live current 主数据库端口",
+      "query": "OperatorA live current 主数据库端口",
       "expected_labels": [
         "commercial_35_expected"
       ],
@@ -2205,7 +2205,7 @@
     },
     {
       "name": "mixed-36-v1",
-      "query": "Beidou 当前 current backup bucket 是什么？",
+      "query": "Northstar 当前 current backup bucket 是什么？",
       "expected_labels": [
         "commercial_36_expected"
       ],
@@ -2217,7 +2217,7 @@
     },
     {
       "name": "mixed-36-v2",
-      "query": "What is the verified current backup bucket for Beidou?",
+      "query": "What is the verified current backup bucket for Northstar?",
       "expected_labels": [
         "commercial_36_expected"
       ],
@@ -2229,7 +2229,7 @@
     },
     {
       "name": "mixed-36-v3",
-      "query": "Beidou live current current backup bucket",
+      "query": "Northstar live current current backup bucket",
       "expected_labels": [
         "commercial_36_expected"
       ],

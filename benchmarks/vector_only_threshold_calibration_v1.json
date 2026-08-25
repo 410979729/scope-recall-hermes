@@ -40,7 +40,7 @@
     {
       "case_id": "current-os",
       "query": "你现在跑什么系统",
-      "candidate": "Aria 当前运行在 Debian 12 操作系统上。",
+      "candidate": "OperatorA 当前运行在 Debian 12 操作系统上。",
       "kind": "positive",
       "label": 1,
       "score": 0.704171
@@ -63,15 +63,15 @@
     },
     {
       "case_id": "current-host",
-      "query": "玉衡现在运行在哪台机器",
-      "candidate": "玉衡当前运行在家里的 Windows 11 主机。",
+      "query": "AgentNova现在运行在哪台机器",
+      "candidate": "AgentNova当前运行在家里的 Windows 11 主机。",
       "kind": "positive",
       "label": 1,
       "score": 0.877709
     },
     {
       "case_id": "current-host",
-      "query": "玉衡现在运行在哪台机器",
+      "query": "AgentNova现在运行在哪台机器",
       "candidate": "搬迁清单列出了几台候选 Windows 电脑。",
       "kind": "hard_negative",
       "label": 0,
@@ -79,7 +79,7 @@
     },
     {
       "case_id": "current-host",
-      "query": "玉衡现在运行在哪台机器",
+      "query": "AgentNova现在运行在哪台机器",
       "candidate": "花园的自动喷灌器每周运行两次。",
       "kind": "easy_negative",
       "label": 0,

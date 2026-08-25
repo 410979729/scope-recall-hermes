@@ -1186,18 +1186,31 @@ class ScopeRecallToolService:
         outcome = str(args.get("outcome") or "").strip()
         if not outcome:
             return tool_error("outcome is required")
-        raw_evidence = args.get("evidence") or []
-        evidence = (
-            raw_evidence if isinstance(raw_evidence, list) else [str(raw_evidence)]
-        )
-        raw_preconditions = args.get("preconditions_checked") or []
-        preconditions_checked = (
-            raw_preconditions
-            if isinstance(raw_preconditions, list)
-            else [str(raw_preconditions)]
-        )
-        raw_steps = args.get("steps_completed") or []
-        steps_completed = raw_steps if isinstance(raw_steps, list) else [str(raw_steps)]
+        evidence: list[Any] | None = None
+        if "evidence" in args:
+            raw_evidence = args.get("evidence")
+            evidence = (
+                raw_evidence
+                if isinstance(raw_evidence, list)
+                else ([] if raw_evidence is None else [str(raw_evidence)])
+            )
+        preconditions_checked: list[Any] | None = None
+        if "preconditions_checked" in args:
+            raw_preconditions = args.get("preconditions_checked")
+            preconditions_checked = (
+                raw_preconditions
+                if isinstance(raw_preconditions, list)
+                else ([] if raw_preconditions is None else [str(raw_preconditions)])
+            )
+        steps_completed: list[Any] | None = None
+        if "steps_completed" in args:
+            raw_steps = args.get("steps_completed")
+            steps_completed = (
+                raw_steps
+                if isinstance(raw_steps, list)
+                else ([] if raw_steps is None else [str(raw_steps)])
+            )
+        decision = None if "decision" not in args else str(args.get("decision") or "")
         with self._port.query_lock():
             conn = self._port.query_connection()
             feedback_scope_id = self._playbook_scope_id()
@@ -1227,7 +1240,7 @@ class ScopeRecallToolService:
                 scope_id=feedback_scope_id,
                 outcome=outcome,
                 accessible_scope_ids=self._port.accessible_scope_ids(),
-                decision=str(args.get("decision") or "guided_reuse"),
+                decision=decision,
                 evidence=evidence,
                 preconditions_checked=preconditions_checked,
                 steps_completed=steps_completed,

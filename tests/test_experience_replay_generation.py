@@ -58,7 +58,8 @@ def test_successful_task_generates_valid_guided_playbook_with_replay_terms():
     assert payload["reuse_policy"]["default_decision"] == "guided_reuse"
     assert payload["reuse_policy"]["source_evidence_anchor_count"] >= 2
     assert any("pytest" in item for item in payload["verification"])
-    assert "必须停下问 Joy" in " ".join(payload["reuse_policy"]["must_stop_and_ask_joy"])
+    assert "must_stop_and_ask_joy" not in payload["reuse_policy"]
+    assert "必须停下问操作员" in " ".join(payload["reuse_policy"]["must_stop_and_ask_operator"])
 
 
 def test_final_failure_is_not_accepted_for_experience_generation_even_with_historical_success():

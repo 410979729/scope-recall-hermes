@@ -712,7 +712,14 @@ def test_unknown_feedback_records_run_without_changing_confidence_or_counts():
     assert conn.execute("SELECT COUNT(*) FROM experience_runs WHERE playbook_id = ? AND outcome = 'unknown'", ("pb_unknown",)).fetchone()[0] == 1
 
 
-def _record_pending_preflight_run(conn: sqlite3.Connection, *, playbook_id: str, scope_id: str = "scope-a", accessible_scope_ids: list[str] | None = None) -> str:
+def _record_pending_preflight_run(
+    conn: sqlite3.Connection,
+    *,
+    playbook_id: str,
+    scope_id: str = "scope-a",
+    accessible_scope_ids: list[str] | None = None,
+    decision: str = "guided_reuse",
+) -> str:
     """Create one pending experience_runs row through the existing preflight recorder."""
 
     inspected = inspect_playbook(
@@ -725,7 +732,7 @@ def _record_pending_preflight_run(conn: sqlite3.Connection, *, playbook_id: str,
         conn,
         playbook=playbook,
         scope_id=scope_id,
-        decision="guided_reuse",
+        decision=decision,
         query="Need one-way Headscale ACL so management can access target",
         reasons=["fixture pending run"],
     )
@@ -770,6 +777,87 @@ def test_feedback_with_run_id_finalizes_pending_preflight_run_in_place():
     assert row["outcome_reason"] == "closed from pending preflight"
     assert counts["success_count"] == 1
     assert counts["failure_count"] == 0
+
+
+def test_minimal_feedback_preserves_pending_preflight_evidence():
+    conn = _conn()
+    _create_promoted(conn, playbook_id="pb_preserve_all")
+    run_id = _record_pending_preflight_run(conn, playbook_id="pb_preserve_all")
+    before = conn.execute(
+        "SELECT evidence, preconditions_checked, steps_completed FROM experience_runs WHERE id = ?",
+        (run_id,),
+    ).fetchone()
+
+    feedback = record_playbook_feedback(
+        conn,
+        playbook_id="pb_preserve_all",
+        scope_id="scope-a",
+        accessible_scope_ids=["scope-a"],
+        outcome="success",
+        run_id=run_id,
+    )
+    after = conn.execute(
+        "SELECT evidence, preconditions_checked, steps_completed FROM experience_runs WHERE id = ?",
+        (run_id,),
+    ).fetchone()
+
+    assert feedback["recorded"] is True
+    assert dict(after) == dict(before)
+
+
+def test_minimal_feedback_preserves_pending_preflight_decision():
+    conn = _conn()
+    _create_promoted(conn, playbook_id="pb_preserve_decision")
+    run_id = _record_pending_preflight_run(
+        conn,
+        playbook_id="pb_preserve_decision",
+        decision="direct_reuse",
+    )
+
+    feedback = record_playbook_feedback(
+        conn,
+        playbook_id="pb_preserve_decision",
+        scope_id="scope-a",
+        accessible_scope_ids=["scope-a"],
+        outcome="success",
+        run_id=run_id,
+    )
+    finalized = conn.execute(
+        "SELECT decision FROM experience_runs WHERE id = ?",
+        (run_id,),
+    ).fetchone()
+
+    assert feedback["recorded"] is True
+    assert finalized["decision"] == "direct_reuse"
+
+
+def test_partial_feedback_only_replaces_fields_explicitly_supplied():
+    conn = _conn()
+    _create_promoted(conn, playbook_id="pb_preserve_partial")
+    run_id = _record_pending_preflight_run(conn, playbook_id="pb_preserve_partial")
+    before = conn.execute(
+        "SELECT evidence, preconditions_checked, steps_completed FROM experience_runs WHERE id = ?",
+        (run_id,),
+    ).fetchone()
+
+    feedback = record_playbook_feedback(
+        conn,
+        playbook_id="pb_preserve_partial",
+        scope_id="scope-a",
+        accessible_scope_ids=["scope-a"],
+        outcome="success",
+        run_id=run_id,
+        evidence=["explicit completion evidence"],
+    )
+    after = conn.execute(
+        "SELECT evidence, preconditions_checked, steps_completed FROM experience_runs WHERE id = ?",
+        (run_id,),
+    ).fetchone()
+
+    assert feedback["recorded"] is True
+    assert json.loads(after["evidence"]) == ["explicit completion evidence"]
+    assert after["preconditions_checked"] == before["preconditions_checked"]
+    assert after["steps_completed"] == before["steps_completed"]
 
 
 def test_feedback_with_run_id_does_not_recount_already_finalized_run():

@@ -24,6 +24,7 @@ REQUIRED_RUNTIME = (
     "docs/journal-source-restore.md",
 )
 REQUIRED_SDIST_TESTS = (
+    "tests/plugin_source.py",
     "tests/conftest.py",
     "tests/journal_source_restore_support.py",
     "tests/journal_source_restore_oracles.py",

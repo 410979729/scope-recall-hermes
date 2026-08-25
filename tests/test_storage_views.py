@@ -4,6 +4,7 @@ They ensure lifecycle and scope filters are applied before recall merges candida
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 from scope_recall.sql_store import ensure_schema, store_row
@@ -11,6 +12,7 @@ from scope_recall.storage_views import (
     search_curated_memories,
     search_db_memories,
     search_vector_memories,
+    search_vector_memories_with_vector,
 )
 
 
@@ -99,6 +101,43 @@ def test_search_db_memories_keeps_relevant_lexical_hits():
     results = search_db_memories(provider, "OpenClaw gateway 天璇", limit=5)
 
     assert [item.id for item in results] == ["ops-openclaw"]
+
+
+def test_indexed_lexical_hits_do_not_fall_through_to_leading_wildcard_like():
+    conn = _conn()
+    for index in range(2):
+        _store(
+            conn,
+            memory_id=f"indexed-orion-{index}",
+            content=f"Project Orion deployment checklist item {index}.",
+        )
+    provider = FakeProvider(conn)
+    provider._retrieval_config["candidate_pool"] = 2
+    statements: list[str] = []
+    conn.set_trace_callback(statements.append)
+
+    results = search_db_memories(provider, "Project Orion deployment", limit=1)
+
+    assert results
+    assert not any(" LIKE '%" in statement.upper() for statement in statements)
+
+
+def test_leading_wildcard_like_remains_a_bounded_compatibility_fallback():
+    conn = _conn()
+    _store(
+        conn,
+        memory_id="substring-only",
+        content="The deployment codename is preORIONpost and remains searchable.",
+    )
+    provider = FakeProvider(conn)
+    provider._retrieval_config["candidate_pool"] = 2
+    statements: list[str] = []
+    conn.set_trace_callback(statements.append)
+
+    results = search_db_memories(provider, "ORION", limit=1)
+
+    assert [item.id for item in results] == ["substring-only"]
+    assert any(" LIKE '%ORION%'" in statement.upper() for statement in statements)
 
 
 def test_search_curated_memories_rejects_source_prior_only_noise(tmp_path):
@@ -212,6 +251,10 @@ def test_search_vector_memories_respects_requested_limit():
         (),
         {"embed_query": staticmethod(lambda _query: [1.0, 0.0])},
     )()
+    truth_rows = {
+        memory_id: _truth_vector_row(conn, memory_id)
+        for memory_id in (f"vector-{idx}" for idx in range(8))
+    }
 
     class VectorStore:
         @staticmethod
@@ -219,26 +262,16 @@ def test_search_vector_memories_respects_requested_limit():
             assert limit == 20
             rows = [
                 {
-                    "id": f"vector-{idx}",
+                    **truth_rows[f"vector-{idx}"],
                     "scope_id": scope_id,
-                    "content": f"vector candidate {idx}",
-                    "summary": f"vector candidate {idx}",
-                    "source": "tool-store",
-                    "target": "ops",
-                    "updated_at": f"2026-01-{idx + 1:02d}T00:00:00+00:00",
                     "_distance": float(idx) / 100.0,
                 }
                 for idx in range(8)
             ]
             rows.append(
                 {
-                    "id": "vector-0",
+                    **truth_rows["vector-0"],
                     "scope_id": scope_id,
-                    "content": "vector candidate 0",
-                    "summary": "vector candidate 0",
-                    "source": "tool-store",
-                    "target": "ops",
-                    "updated_at": "2026-01-01T00:00:00+00:00",
                     "_distance": 0.99,
                 }
             )
@@ -252,3 +285,212 @@ def test_search_vector_memories_respects_requested_limit():
 
     assert len(results) == 1
     assert results[0].id == "vector-0"
+
+
+def test_transient_query_embedding_failure_recovers_without_vector_repair(monkeypatch):
+    conn = _conn()
+    _store(conn, memory_id="recovering-vector", content="recovering vector truth")
+    truth = conn.execute(
+        "SELECT id, scope_id, content, summary, source, target, updated_at "
+        "FROM memories WHERE id = 'recovering-vector'"
+    ).fetchone()
+    provider = FakeProvider(conn)
+    vector_row = {key: truth[key] for key in truth.keys()}
+    vector_row["_distance"] = 0.0
+    _attach_vector_rows(provider, [vector_row])
+
+    class RecoveringEmbedder:
+        def __init__(self):
+            self.calls = 0
+
+        def embed_query(self, _query):
+            self.calls += 1
+            if self.calls == 1:
+                raise TimeoutError("temporary provider timeout")
+            return [1.0, 0.0]
+
+    embedder = RecoveringEmbedder()
+    provider._embedder = embedder
+    clock = [100.0]
+    monkeypatch.setattr(
+        "scope_recall.storage_views.time.monotonic",
+        lambda: clock[0],
+    )
+
+    assert search_vector_memories(provider, "recover", limit=5) == []
+    assert provider._vector_ready is True
+    assert getattr(provider, "_vector_status", "ready") != "needs_repair"
+    clock[0] = 100.5
+    assert search_vector_memories(provider, "recover", limit=5) == []
+    assert embedder.calls == 1
+    clock[0] = 101.1
+    recovered = search_vector_memories(provider, "recover", limit=5)
+
+    assert [item.id for item in recovered] == ["recovering-vector"]
+    assert embedder.calls == 2
+    assert provider._vector_ready is True
+    assert provider._vector_query_failure_count == 0
+    assert provider._vector_query_last_error == ""
+
+
+def _attach_vector_rows(provider: FakeProvider, rows: list[dict[str, object]]) -> None:
+    """Attach a vector companion whose rows may intentionally disagree with truth."""
+
+    class VectorStore:
+        @staticmethod
+        def search(_vector, *, scope_id: str, limit: int):
+            del scope_id
+            return [dict(row) for row in rows[:limit]]
+
+    provider._vector_ready = True
+    provider._vector_store = VectorStore()
+    provider._vector_config = {"top_k": 20}
+    provider._retrieval_config["vector_min_score"] = 0.0
+
+
+def _vector_row(memory_id: str, *, scope_id: str = "shared-scope") -> dict[str, object]:
+    return {
+        "id": memory_id,
+        "scope_id": scope_id,
+        "content": "stale vector content",
+        "summary": "stale vector summary",
+        "source": "stale-vector-source",
+        "target": "stale-vector-target",
+        "updated_at": "2025-01-01T00:00:00+00:00",
+        "_distance": 0.01,
+    }
+
+
+def _truth_vector_row(
+    conn: sqlite3.Connection,
+    memory_id: str,
+    *,
+    distance: float = 0.01,
+) -> dict[str, object]:
+    truth = conn.execute(
+        "SELECT id, scope_id, content, summary, source, target, updated_at "
+        "FROM memories WHERE id = ?",
+        (memory_id,),
+    ).fetchone()
+    assert truth is not None
+    row = {key: truth[key] for key in truth.keys()}
+    row["_distance"] = distance
+    return row
+
+
+def test_vector_hit_rehydrates_all_output_fields_from_sqlite_truth():
+    conn = _conn()
+    _store(
+        conn,
+        memory_id="truth-newer",
+        content="authoritative SQLite truth content",
+        source="truth-source",
+        target="ops",
+    )
+    conn.execute(
+        "UPDATE memories SET summary = ?, updated_at = ? WHERE id = ?",
+        ("authoritative truth summary", "2026-08-24T12:00:00+00:00", "truth-newer"),
+    )
+    conn.commit()
+    provider = FakeProvider(conn)
+    _attach_vector_rows(provider, [_truth_vector_row(conn, "truth-newer")])
+
+    results = search_vector_memories_with_vector(provider, [1.0, 0.0], limit=5)
+
+    assert len(results) == 1
+    item = results[0]
+    assert item.content == "authoritative SQLite truth content"
+    assert item.summary == "authoritative truth summary"
+    assert item.source == "truth-source"
+    assert item.target == "ops"
+    assert item.updated_at == "2026-08-24T12:00:00+00:00"
+    assert item.metadata is not None
+    assert item.metadata["scope_id"] == "shared-scope"
+    assert provider._vector_ready is True
+
+
+def test_stale_vector_companion_cannot_score_current_truth_revision():
+    conn = _conn()
+    _store(
+        conn,
+        memory_id="truth-revised",
+        content="authoritative revised truth content",
+        source="truth-source",
+        target="ops",
+    )
+    provider = FakeProvider(conn)
+    _attach_vector_rows(provider, [_vector_row("truth-revised")])
+
+    results = search_vector_memories_with_vector(provider, [1.0, 0.0], limit=5)
+
+    assert results == []
+    assert provider._vector_ready is False
+    assert provider._vector_status == "needs_repair"
+
+
+def test_vector_hit_cannot_spoof_an_accessible_scope_over_forbidden_truth():
+    conn = _conn()
+    _store(
+        conn,
+        memory_id="forbidden-truth",
+        content="forbidden SQLite truth",
+        scope_id="forbidden-scope",
+    )
+    provider = FakeProvider(conn)
+    _attach_vector_rows(
+        provider,
+        [_vector_row("forbidden-truth", scope_id="shared-scope")],
+    )
+
+    results = search_vector_memories_with_vector(provider, [1.0, 0.0], limit=5)
+
+    assert results == []
+
+
+def test_vector_hit_cannot_surface_truth_hidden_by_lifecycle():
+    conn = _conn()
+    _store(conn, memory_id="archived-truth", content="archived truth")
+    _store(conn, memory_id="scratch-durable", content="durable scratch truth")
+    for memory_id, lifecycle in (
+        ("archived-truth", "archived"),
+        ("scratch-durable", "scratch"),
+    ):
+        row = conn.execute(
+            "SELECT metadata FROM memories WHERE id = ?", (memory_id,)
+        ).fetchone()
+        metadata = json.loads(str(row[0] or "{}"))
+        metadata["lifecycle"] = lifecycle
+        conn.execute(
+            "UPDATE memories SET metadata = ? WHERE id = ?",
+            (json.dumps(metadata, sort_keys=True), memory_id),
+        )
+    conn.commit()
+    provider = FakeProvider(conn)
+    _attach_vector_rows(
+        provider,
+        [_vector_row("archived-truth"), _vector_row("scratch-durable")],
+    )
+    results = search_vector_memories_with_vector(provider, [1.0, 0.0], limit=5)
+
+    assert results == []
+
+
+def test_vector_truth_rehydration_chunks_under_live_sqlite_parameter_limit():
+    conn = _conn()
+    memory_ids = [f"chunked-truth-{idx:02d}" for idx in range(37)]
+    for memory_id in memory_ids:
+        _store(conn, memory_id=memory_id, content=f"truth for {memory_id}")
+    conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 12)
+    provider = FakeProvider(conn)
+    rows = [_truth_vector_row(conn, memory_id) for memory_id in memory_ids]
+    _attach_vector_rows(provider, rows)
+    provider._vector_config["top_k"] = len(rows)
+
+    results = search_vector_memories_with_vector(
+        provider,
+        [1.0, 0.0],
+        limit=len(rows),
+    )
+
+    assert {item.id for item in results} == set(memory_ids)
+    assert all(item.content == f"truth for {item.id}" for item in results)

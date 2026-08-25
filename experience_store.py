@@ -1797,7 +1797,7 @@ def record_playbook_feedback(
     scope_id: str,
     outcome: str,
     accessible_scope_ids: Sequence[str] | None = None,
-    decision: str = "guided_reuse",
+    decision: str | None = None,
     evidence: Sequence[Any] | None = None,
     preconditions_checked: Sequence[Any] | None = None,
     steps_completed: Sequence[Any] | None = None,
@@ -1828,10 +1828,11 @@ def record_playbook_feedback(
     normalized_outcome = str(outcome or "unknown").strip().lower()
     if normalized_outcome not in {"success", "partial", "failed", "stale", "misleading", "unknown"}:
         raise ExperienceValidationError("unsupported feedback outcome")
-    normalized_decision = str(decision or "guided_reuse").strip().lower()
-    if normalized_decision not in {"direct_reuse", "guided_reuse", "no_reuse"}:
-        raise ExperienceValidationError("unsupported feedback decision")
-    _reject_secret_like_value(normalized_decision, path="feedback.decision")
+    normalized_decision = str(decision or "").strip().lower()
+    if normalized_decision:
+        if normalized_decision not in {"direct_reuse", "guided_reuse", "no_reuse"}:
+            raise ExperienceValidationError("unsupported feedback decision")
+        _reject_secret_like_value(normalized_decision, path="feedback.decision")
     _reject_secret_like_value(list(evidence or []), path="feedback.evidence")
     _reject_secret_like_value(list(preconditions_checked or []), path="feedback.preconditions_checked")
     _reject_secret_like_value(list(steps_completed or []), path="feedback.steps_completed")
@@ -1854,7 +1855,7 @@ def record_playbook_feedback(
     feedback_scopes = accessible_scope_ids if accessible_scope_ids is not None else [scope_id]
     persisted_run_id = requested_run_id
     if requested_run_id:
-        _, run_error = _lookup_pending_experience_run_for_feedback(
+        pending_run, run_error = _lookup_pending_experience_run_for_feedback(
             conn,
             run_id=requested_run_id,
             playbook_id=playbook_id,
@@ -1862,6 +1863,24 @@ def record_playbook_feedback(
         )
         if run_error is not None:
             return run_error
+        assert pending_run is not None
+        # Omission is not an instruction to erase preflight evidence. Preserve
+        # each durable field unless the caller explicitly supplied a replacement
+        # (including an explicit empty list).
+        if evidence is None:
+            safe_evidence = _json_loads(pending_run["evidence"], [])
+        if preconditions_checked is None:
+            safe_preconditions_checked = _json_loads(
+                pending_run["preconditions_checked"], []
+            )
+        if steps_completed is None:
+            safe_steps_completed = _json_loads(pending_run["steps_completed"], [])
+        if not normalized_decision:
+            normalized_decision = str(
+                pending_run["decision"] or "guided_reuse"
+            ).strip().lower()
+            if normalized_decision not in {"direct_reuse", "guided_reuse", "no_reuse"}:
+                raise ExperienceValidationError("unsupported pending feedback decision")
         finalized = _finalize_pending_experience_run(
             conn,
             run_id=requested_run_id,
@@ -1889,6 +1908,8 @@ def record_playbook_feedback(
                 "outcome": sanitize_report_text(str(current["outcome"] if current else "")),
             }
     else:
+        if not normalized_decision:
+            normalized_decision = "guided_reuse"
         if current_status in {"quarantined", "superseded"}:
             return {
                 "recorded": False,
