@@ -4,6 +4,23 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.10.5] - 2026-08-25
+
+This patch candidate is cumulative since the last public release, `1.10.3`, and supersedes the unpublished `1.10.4` source checkpoint. It closes the remaining bounded-concurrency, release-provenance, and distribution-scanner defects found by exact-epoch review while retaining the issue #50 contract, without changing SQLite authority or stable provider/tool identities.
+
+### Fixed
+- Bound public shutdown, worker quiescence, and cleanup to one absolute deadline while retaining one tracked retryable cleanup worker instead of duplicating close attempts.
+- Made Windows pinned-source checkout fail closed when process tree termination or bounded pipe collection cannot be confirmed after a Git timeout.
+- Required the PyPI origin gate to verify that the exact release workflow run completed successfully, while keeping source-executing jobs on read-only contents permissions.
+- Serialized queued capture with merge mutations so an accepted delayed write cannot recreate a merged source row.
+- Preserved the current and remaining L4 candidates when the second fresh-evidence lookup fails, publishing retry context instead of a false completion.
+- Resolved contradiction chains as a deterministic conflict graph so non-conflicting endpoints remain recallable while authoritative and two-node behavior stays stable.
+- Restricted synthetic source-fixture exemptions to source scanning; wheel and sdist secret/path scans no longer mask matching distribution content.
+
+### Compatibility
+- Added no database schema migration and changed no public tool name, provider identity, package layout, or default scope mode.
+- Preserved the cumulative `1.10.4` rollback metadata, governance receipt, Experience `run_id`, and `memory_auto_adjudication` throttle fixes on the last packaged `1.10.3` line.
+
 ## [1.10.4] - 2026-08-23
 
 This patch candidate is cumulative since the last public release, `1.10.3`. It closes post-release governance and scheduling gaps around issue #50 without changing SQLite authority or stable provider/tool identities.

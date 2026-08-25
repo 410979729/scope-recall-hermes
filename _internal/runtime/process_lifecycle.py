@@ -156,6 +156,91 @@ def _acquire_shutdown_lock(lock: Any, *, deadline: float, name: str) -> bool:
     return True
 
 
+class _ShutdownCleanupAttempt:
+    def __init__(self) -> None:
+        self.thread: threading.Thread | None = None
+        self.error: BaseException | None = None
+
+
+def _run_shutdown_cleanup(
+    provider: Any, attempt: _ShutdownCleanupAttempt
+) -> None:
+    """Run one process-shutdown cleanup attempt and retain its outcome."""
+
+    try:
+        cleanup = getattr(provider, "_cleanup_failed_writer_initialization", None)
+        if callable(cleanup):
+            cleaned = cleanup(reraise_companion_errors=True)
+        else:
+            cleaned = cleanup_failed_writer_initialization(
+                provider, reraise_companion_errors=True
+            )
+        if not cleaned:
+            raise RuntimeError("Scope Recall truth teardown incomplete")
+    except BaseException as exc:
+        attempt.error = exc
+
+
+def _join_shutdown_cleanup(provider: Any, *, deadline: float) -> None:
+    """Start cleanup once, then wait only within this shutdown deadline."""
+
+    lifecycle_lock = getattr(provider, "_writer_lifecycle_lock", None)
+    lifecycle_acquired = False
+    attempt: _ShutdownCleanupAttempt | None = None
+    cleanup_thread: threading.Thread | None = None
+    try:
+        lifecycle_acquired = _acquire_shutdown_lock(
+            lifecycle_lock, deadline=deadline, name="writer lifecycle"
+        )
+        candidate = getattr(provider, "_shutdown_cleanup_attempt", None)
+        if isinstance(candidate, _ShutdownCleanupAttempt):
+            attempt = candidate
+            cleanup_thread = attempt.thread
+        if (
+            cleanup_thread is not None
+            and not cleanup_thread.is_alive()
+            and attempt is not None
+            and attempt.error is not None
+        ):
+            attempt = None
+            cleanup_thread = None
+        if cleanup_thread is None:
+            if _remaining(deadline) <= 0:
+                raise RuntimeError(
+                    "Scope Recall shutdown deadline expired before resource cleanup"
+                )
+            attempt = _ShutdownCleanupAttempt()
+            cleanup_thread = threading.Thread(
+                target=_run_shutdown_cleanup,
+                args=(provider, attempt),
+                name="scope-recall-shutdown-cleanup",
+                daemon=True,
+            )
+            attempt.thread = cleanup_thread
+            provider._shutdown_cleanup_attempt = attempt
+            provider._shutdown_cleanup_thread = cleanup_thread
+            try:
+                cleanup_thread.start()
+            except BaseException:
+                provider._shutdown_cleanup_attempt = None
+                provider._shutdown_cleanup_thread = None
+                raise
+    finally:
+        if lifecycle_acquired:
+            assert lifecycle_lock is not None
+            lifecycle_lock.release()
+
+    assert attempt is not None
+    assert cleanup_thread is not None
+    cleanup_thread.join(timeout=_remaining(deadline))
+    if cleanup_thread.is_alive():
+        raise RuntimeError(
+            "Scope Recall shutdown deadline expired during resource cleanup"
+        )
+    if attempt.error is not None:
+        raise attempt.error
+
+
 def _attach_writer_runtime(provider: Any) -> None:
     bind = getattr(provider, "_bind_composition", None)
     composition = bind() if callable(bind) else getattr(provider, "_composition", None)
@@ -213,6 +298,8 @@ def initialize_under_lifecycle_lock(provider: Any, session_id: str, **kwargs: An
         )
     provider._shutdown_requested.clear()
     provider._shutdown_finalized = False
+    provider._shutdown_cleanup_attempt = None
+    provider._shutdown_cleanup_thread = None
     provider._session_id = session_id
     provider._current_turn = 0
     provider._last_recall_turns = {}
@@ -722,9 +809,11 @@ def shutdown_provider_process(provider: Any, *, timeout: float = 3.0) -> None:
         if maintenance_stop is not None:
             maintenance_stop.set()
     finally:
-        if lifecycle_acquired and lifecycle_lock is not None:
+        if lifecycle_acquired:
+            assert lifecycle_lock is not None
             lifecycle_lock.release()
-        if submission_acquired and submission_lock is not None:
+        if submission_acquired:
+            assert submission_lock is not None
             submission_lock.release()
 
     if bool(getattr(provider, "_shutdown_finalized", False)):
@@ -746,15 +835,7 @@ def shutdown_provider_process(provider: Any, *, timeout: float = 3.0) -> None:
     if digest_error is not None:
         raise digest_error
 
-    cleanup = getattr(provider, "_cleanup_failed_writer_initialization", None)
-    if callable(cleanup):
-        cleaned = cleanup(reraise_companion_errors=True)
-    else:
-        cleaned = cleanup_failed_writer_initialization(
-            provider, reraise_companion_errors=True
-        )
-    if not cleaned:
-        raise RuntimeError("Scope Recall truth teardown incomplete")
+    _join_shutdown_cleanup(provider, deadline=deadline)
     provider._shutdown_finalized = True
 
 

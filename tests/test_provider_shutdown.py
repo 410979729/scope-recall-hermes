@@ -37,6 +37,18 @@ class _Closable:
         self.closed = True
 
 
+class _BlockingClosable:
+    def __init__(self) -> None:
+        self.close_calls = 0
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self.entered.set()
+        self.release.wait(timeout=2.0)
+
+
 def _provider(tmp_path) -> ScopeRecallMemoryProvider:
     provider = ScopeRecallMemoryProvider()
     provider._hermes_home = tmp_path
@@ -190,7 +202,7 @@ def test_public_shutdown_shares_one_deadline_between_writer_and_digest(
 
     def slow_digest(timeout: float) -> None:
         digest_timeouts.append(timeout)
-        time.sleep(max(0.0, timeout))
+        time.sleep(max(0.0, timeout - 0.02))
 
     monkeypatch.setattr(provider_module, "shutdown_writer", slow_writer)
     monkeypatch.setattr(provider._background_work(), "join_digest", slow_digest)
@@ -208,6 +220,160 @@ def test_public_shutdown_shares_one_deadline_between_writer_and_digest(
     assert len(digest_timeouts) == 1
     assert 0.0 <= digest_timeouts[0] < 0.06
     assert elapsed < 0.15
+    assert provider._shutdown_finalized is True
+
+
+def test_public_shutdown_total_deadline_covers_blocking_vector_cleanup(
+    tmp_path, monkeypatch
+) -> None:
+    provider = _provider(tmp_path)
+    connection = _Closable()
+    vector_store = _BlockingClosable()
+    provider._conn = connection
+    provider._vector_store = vector_store
+    monkeypatch.setattr(
+        provider_module, "shutdown_writer", lambda *_args, **_kwargs: None
+    )
+    errors: list[BaseException] = []
+    finished = threading.Event()
+
+    def run_shutdown() -> None:
+        try:
+            provider.shutdown(timeout=0.05)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            finished.set()
+
+    caller = threading.Thread(target=run_shutdown, name="blocking-vector-shutdown")
+    started = time.monotonic()
+    caller.start()
+    assert vector_store.entered.wait(timeout=1.0)
+    try:
+        assert finished.wait(timeout=0.25), "public shutdown exceeded its total deadline"
+        caller.join(timeout=0.1)
+        assert caller.is_alive() is False
+        assert time.monotonic() - started < 0.35
+        assert len(errors) == 1
+        assert "shutdown deadline" in str(errors[0])
+        cleanup_worker = provider._shutdown_cleanup_thread
+        assert cleanup_worker.is_alive()
+        assert bool(getattr(provider, "_shutdown_finalized", False)) is False
+        assert provider._vector_store is vector_store
+        assert connection.closed is False
+
+        with pytest.raises(RuntimeError, match="shutdown deadline"):
+            provider.shutdown(timeout=0.01)
+        assert provider._shutdown_cleanup_thread is cleanup_worker
+        assert vector_store.close_calls == 1
+    finally:
+        vector_store.release.set()
+        caller.join(timeout=1.0)
+
+    provider.shutdown(timeout=1.0)
+    assert provider._shutdown_cleanup_thread is cleanup_worker
+    assert vector_store.close_calls == 1
+    assert provider._vector_store is None
+    assert provider._conn is None
+    assert connection.closed is True
+    assert provider._shutdown_finalized is True
+
+
+def test_public_shutdown_total_deadline_covers_provider_lock_cleanup(
+    tmp_path, monkeypatch
+) -> None:
+    provider = _provider(tmp_path)
+    connection = _Closable()
+    provider._conn = connection
+    monkeypatch.setattr(
+        provider_module, "shutdown_writer", lambda *_args, **_kwargs: None
+    )
+    lock_held = threading.Event()
+    release_lock = threading.Event()
+
+    def hold_provider_lock() -> None:
+        with provider._lock:
+            lock_held.set()
+            release_lock.wait(timeout=2.0)
+
+    holder = threading.Thread(target=hold_provider_lock, name="provider-lock-holder")
+    holder.start()
+    assert lock_held.wait(timeout=1.0)
+
+    errors: list[BaseException] = []
+    finished = threading.Event()
+
+    def run_shutdown() -> None:
+        try:
+            provider.shutdown(timeout=0.05)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            finished.set()
+
+    caller = threading.Thread(target=run_shutdown, name="provider-lock-shutdown")
+    started = time.monotonic()
+    caller.start()
+    try:
+        assert finished.wait(timeout=0.25), "public shutdown exceeded its total deadline"
+        caller.join(timeout=0.1)
+        assert caller.is_alive() is False
+        assert time.monotonic() - started < 0.35
+        assert len(errors) == 1
+        assert "shutdown deadline" in str(errors[0])
+        cleanup_worker = provider._shutdown_cleanup_thread
+        assert cleanup_worker.is_alive()
+        assert bool(getattr(provider, "_shutdown_finalized", False)) is False
+        assert provider._conn is connection
+        assert connection.closed is False
+
+        with pytest.raises(RuntimeError, match="shutdown deadline"):
+            provider.shutdown(timeout=0.01)
+        assert provider._shutdown_cleanup_thread is cleanup_worker
+    finally:
+        release_lock.set()
+        holder.join(timeout=1.0)
+        caller.join(timeout=1.0)
+
+    provider.shutdown(timeout=1.0)
+    assert provider._shutdown_cleanup_thread is cleanup_worker
+    assert provider._conn is None
+    assert connection.closed is True
+    assert provider._shutdown_finalized is True
+
+
+def test_public_shutdown_retries_completed_cleanup_error(
+    tmp_path, monkeypatch
+) -> None:
+    provider = _provider(tmp_path)
+    monkeypatch.setattr(
+        provider_module, "shutdown_writer", lambda *_args, **_kwargs: None
+    )
+    cleanup_calls: list[str] = []
+
+    def transient_cleanup(**_kwargs) -> bool:
+        cleanup_calls.append("cleanup")
+        if len(cleanup_calls) == 1:
+            raise RuntimeError("injected transient cleanup failure")
+        return True
+
+    monkeypatch.setattr(
+        provider,
+        "_cleanup_failed_writer_initialization",
+        transient_cleanup,
+    )
+
+    with pytest.raises(RuntimeError, match="transient cleanup failure"):
+        provider.shutdown(timeout=1.0)
+    first_worker = provider._shutdown_cleanup_thread
+    assert first_worker.is_alive() is False
+    assert bool(getattr(provider, "_shutdown_finalized", False)) is False
+
+    provider.shutdown(timeout=1.0)
+
+    assert cleanup_calls == ["cleanup", "cleanup"]
+    assert provider._shutdown_cleanup_thread is not first_worker
+    assert provider._shutdown_cleanup_thread.is_alive() is False
     assert provider._shutdown_finalized is True
 
 

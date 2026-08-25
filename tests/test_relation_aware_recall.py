@@ -315,6 +315,50 @@ def test_suppress_mode_keeps_deterministic_winner_without_double_kill():
         provider.close()
 
 
+def test_suppress_mode_keeps_non_conflicting_ends_of_contradiction_chain():
+    first = _item("chain-a", 0.83)
+    middle = _item("chain-b", 0.82)
+    last = _item("chain-c", 0.81)
+    provider = DummyProvider(
+        {
+            "mode": "lexical",
+            "min_score": 0.01,
+            "relation_contradiction_mode": "suppress",
+        },
+        [first, middle, last],
+    )
+    try:
+        provider._require_conn().executemany(
+            """
+            INSERT INTO memory_relations(
+                source_memory_id, target_memory_id, relation_type,
+                confidence, note, created_at
+            ) VALUES (?, ?, 'contradicts', 1.0, ?, ?)
+            """,
+            [
+                (
+                    left_id,
+                    right_id,
+                    "contradiction chain",
+                    "2026-06-01T00:00:00+00:00",
+                )
+                for left_id, right_id in (("chain-a", "chain-b"), ("chain-b", "chain-c"))
+            ],
+        )
+        provider._require_conn().commit()
+
+        service = RecallService(provider)
+        results = service.search_memories("Project Atlas deploy command", limit=3)
+
+        assert [item.id for item in results] == ["chain-a", "chain-c"]
+        assert [item.id for item in service.last_rejected_candidates] == ["chain-b"]
+        assert (service.last_rejected_candidates[0].metadata or {}).get(
+            "rejected_reason"
+        ) == "relation_contradiction_suppressed"
+    finally:
+        provider.close()
+
+
 def test_suppress_mode_preserves_one_sided_bounded_candidate():
     visible = _item("visible-contradiction-side", 0.82)
     provider = DummyProvider(

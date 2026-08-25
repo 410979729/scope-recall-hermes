@@ -150,6 +150,42 @@ def test_distribution_fixture_exemption_is_match_specific(tmp_path) -> None:
         assert secret not in "\n".join(findings["secrets"])
 
 
+def test_distribution_scanner_does_not_mask_synthetic_secret_prefix(
+    tmp_path: Path,
+) -> None:
+    module = _load_release_check_module()
+    secret = "legacy_token_example_12345" + "REAL_PRIVATE_KEY"
+    payload = f'api_key="{secret}"\n'.encode()
+    wheel = tmp_path / "synthetic-secret.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("scope_recall/tests/synthetic_secret.py", payload)
+    sdist = tmp_path / "synthetic-secret.tar.gz"
+    with tarfile.open(sdist, "w:gz") as archive:
+        info = tarfile.TarInfo("scope-recall/tests/synthetic_secret.py")
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+
+    for artifact in (wheel, sdist):
+        findings = module.scan_distribution_artifact(artifact)
+        secret_findings = [
+            item for item in findings["secrets"] if "api_key_assignment" in item
+        ]
+        assert len(secret_findings) == 1, artifact
+        assert secret not in "\n".join(findings["secrets"])
+
+
+def test_source_scanner_keeps_exact_synthetic_secret_fixture_exemption() -> None:
+    module = _load_release_check_module()
+    exact_fixture = "legacy_token_example_12345"
+
+    findings = module._scan_sensitive_text(
+        Path("tests/exact_synthetic_secret.py"),
+        f'api_key="{exact_fixture}"\n',
+    )
+
+    assert findings["secrets"] == []
+
+
 def test_release_scanner_recognizes_foreign_cross_os_home_paths():
     module = _load_release_check_module()
     foreign_paths = (

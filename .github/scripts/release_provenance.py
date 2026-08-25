@@ -78,6 +78,8 @@ def verify_provenance(
     expected_source_tree: str,
     expected_release_tag: str,
     expected_workflow_run_id: str,
+    workflow_run_status: str,
+    workflow_run_conclusion: str,
     packages_dir: Path,
 ) -> dict[str, Any]:
     """Verify receipt identity fields and the exact distribution bytes."""
@@ -97,6 +99,10 @@ def verify_provenance(
         raise ValueError("provenance workflow path mismatch")
     if workflow.get("run_id") != str(expected_workflow_run_id):
         raise ValueError("provenance workflow run_id mismatch")
+    if workflow_run_status != "completed":
+        raise ValueError("originating workflow run must be completed")
+    if workflow_run_conclusion != "success":
+        raise ValueError("originating workflow run must be successful")
     artifacts = payload.get("artifacts")
     if artifacts != _distribution_hashes(packages_dir):
         raise ValueError("provenance artifact digest mismatch")
@@ -117,6 +123,8 @@ def main() -> int:
         command.add_argument("--workflow-run-id", required=True)
         command.add_argument("--packages-dir", type=Path, required=True)
     create.add_argument("--workflow-run-attempt", required=True)
+    verify.add_argument("--workflow-run-status", required=True)
+    verify.add_argument("--workflow-run-conclusion", required=True)
     args = parser.parse_args()
     common = {
         "repository": args.repository,
@@ -140,6 +148,8 @@ def main() -> int:
             expected_source_tree=common["source_tree"],
             expected_release_tag=common["release_tag"],
             expected_workflow_run_id=args.workflow_run_id,
+            workflow_run_status=args.workflow_run_status,
+            workflow_run_conclusion=args.workflow_run_conclusion,
             packages_dir=args.packages_dir,
         )
     print(json.dumps(payload, ensure_ascii=True, sort_keys=True))

@@ -499,6 +499,88 @@ def test_processing_capture_finishes_before_forget_and_cannot_revive(
         _shutdown(provider, release)
 
 
+@pytest.mark.parametrize("tool_name", ["scope_recall_merge", "scope_recall_memory"])
+def test_processing_capture_finishes_before_tool_merge_and_cannot_revive_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tool_name: str,
+) -> None:
+    provider = _live_provider(tmp_path)
+    target_content = _CONTENT % f"merge-target-{tool_name}"
+    source_content = _CONTENT % f"merge-source-{tool_name}"
+    target_id, target_inserted, _ = capture.store_now(
+        provider,
+        content=target_content,
+        source="turn-user",
+        target="general",
+        session_id="merge-target",
+    )
+    source_id, source_inserted, _ = capture.store_now(
+        provider,
+        content=source_content,
+        source="turn-user",
+        target="general",
+        session_id="merge-source",
+    )
+    assert target_inserted is source_inserted is True
+    original_store_now = capture.store_now
+    writer_entered = threading.Event()
+    release_writer = threading.Event()
+    merge_done = threading.Event()
+    merge_payload: dict[str, Any] = {}
+    merge_errors: list[BaseException] = []
+
+    def paused_store_now(provider_arg: Any, **kwargs: Any):
+        writer_entered.set()
+        assert release_writer.wait(timeout=5.0)
+        return original_store_now(provider_arg, **kwargs)
+
+    def run_merge() -> None:
+        try:
+            args: dict[str, Any] = {
+                "target_id": target_id,
+                "source_ids": [source_id],
+            }
+            if tool_name == "scope_recall_memory":
+                args["action"] = "merge"
+            merge_payload.update(json.loads(provider.handle_tool_call(tool_name, args)))
+        except BaseException as exc:  # pragma: no cover - asserted below
+            merge_errors.append(exc)
+        finally:
+            merge_done.set()
+
+    monkeypatch.setattr(capture, "store_now", paused_store_now)
+    merge_thread = threading.Thread(target=run_merge, name=f"tool-merge-{tool_name}")
+    try:
+        queued = capture.enqueue_store(
+            provider,
+            content=source_content,
+            source="turn-user",
+            target="general",
+            session_id="accepted-before-merge",
+        )
+        assert queued["status"] == "accepted"
+        assert writer_entered.wait(timeout=2.0)
+
+        merge_thread.start()
+        completed_while_writer_paused = merge_done.wait(timeout=0.2)
+        release_writer.set()
+        merge_thread.join(timeout=3.0)
+
+        assert completed_while_writer_paused is False
+        assert merge_thread.is_alive() is False
+        assert merge_errors == []
+        assert merge_payload.get("merged") is True
+        assert provider.flush(timeout=3.0) is True
+        with provider._lock:
+            active_source = _active_content_count(
+                provider._require_conn(), source_content
+            )
+        assert active_source == 0
+    finally:
+        release_writer.set()
+        _shutdown(provider, release_writer)
+
 
 @pytest.mark.parametrize("tool_case", ["forget", "dedupe"])
 def test_tool_memory_mutation_and_enqueue_do_not_invert_submission_lifecycle_locks(

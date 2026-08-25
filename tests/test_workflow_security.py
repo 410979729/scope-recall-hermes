@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 import re
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -124,6 +126,63 @@ def test_checkout_helper_timeout_cleans_process_tree_and_reports_structure(
         "error": "command_timeout",
         "timeout_seconds": 7,
     }
+
+
+@pytest.mark.parametrize("taskkill_returncode", [0, 1])
+def test_checkout_helper_windows_tree_cleanup_failure_stays_bounded_and_secret_free(
+    monkeypatch: pytest.MonkeyPatch,
+    taskkill_returncode: int,
+) -> None:
+    helper = _checkout_helper()
+    communicate_timeouts: list[float | int | None] = []
+
+    class HangingProcess:
+        pid = 12345
+        returncode = None
+
+        def poll(self):
+            return None
+
+        def communicate(self, timeout=None):
+            communicate_timeouts.append(timeout)
+            raise subprocess.TimeoutExpired(
+                ["git", "fetch"],
+                timeout,
+                output="PRIVATE_TIMEOUT_OUTPUT",
+                stderr="PRIVATE_TIMEOUT_ERROR",
+            )
+
+        def kill(self):
+            return None
+
+    def taskkill(*args, **kwargs):
+        assert kwargs["timeout"] == helper.TERMINATION_GRACE_SECONDS
+        return subprocess.CompletedProcess(args[0], taskkill_returncode)
+
+    monkeypatch.setattr(helper.os, "name", "nt")
+    monkeypatch.setattr(helper.subprocess, "Popen", lambda *args, **kwargs: HangingProcess())
+    monkeypatch.setattr(helper.subprocess, "run", taskkill)
+
+    started = time.monotonic()
+    with pytest.raises(helper.CheckoutCommandError) as caught:
+        helper._run("git", "fetch", timeout_seconds=0.01)
+    elapsed = time.monotonic() - started
+
+    payload = caught.value.as_dict()
+    serialized = json.dumps(payload, sort_keys=True)
+    assert elapsed < 0.5
+    assert communicate_timeouts == [
+        0.01,
+        helper.TERMINATION_GRACE_SECONDS,
+        helper.TERMINATION_GRACE_SECONDS,
+    ]
+    assert payload == {
+        "command": ["git", "fetch"],
+        "error": "process_tree_termination_failed",
+        "timeout_seconds": 0.01,
+    }
+    assert "PRIVATE_TIMEOUT_OUTPUT" not in serialized
+    assert "PRIVATE_TIMEOUT_ERROR" not in serialized
 
 
 def test_release_jobs_have_hard_timeouts() -> None:

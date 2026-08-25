@@ -41,7 +41,7 @@ if str(ROOT) not in sys.path:
 from secret_patterns import scan_secret_like_text, secret_scan_shadow  # noqa: E402
 from scripts.release_changelog import extract_version_section  # noqa: E402
 
-PACKAGE_VERSION = "1.10.4"
+PACKAGE_VERSION = "1.10.5"
 PUBLIC_RELEASE_BASELINE = "1.10.3"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 RELEASE_READINESS_DOC = f"docs/release-readiness.{PACKAGE_VERSION}.md"
@@ -654,11 +654,21 @@ REQUIRED_CHANGELOG_TERMS_BY_VERSION = {
         "run_id",
         "throttle",
     ),
+    "1.10.5": (
+        "shutdown",
+        "process tree",
+        "workflow",
+        "merge",
+        "retry",
+        "contradiction",
+        "scanner",
+    ),
 }
 PUBLIC_RELEASE_BASELINES_BY_VERSION = {
     "1.10.2": "1.9.2",
     "1.10.3": "1.10.2",
     "1.10.4": "1.10.3",
+    "1.10.5": "1.10.3",
 }
 REQUIRED_CHANGELOG_TERMS = REQUIRED_CHANGELOG_TERMS_BY_VERSION.get(
     PACKAGE_VERSION, ()
@@ -2750,7 +2760,7 @@ def _scan_sensitive_text(
     secret_text = _mask_exact_synthetic_test_values(
         rel,
         text,
-        APPROVED_SYNTHETIC_TEST_VALUES,
+        APPROVED_SYNTHETIC_TEST_VALUES if allow_source_fixture_exemptions else (),
     )
     scan_shadow = secret_scan_shadow(secret_text)
     for match in scan_secret_like_text(secret_text):

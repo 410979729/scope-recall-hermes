@@ -46,14 +46,14 @@ class CheckoutCommandError(RuntimeError):
         return payload
 
 
-def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+def _terminate_process_tree(process: subprocess.Popen[str]) -> bool:
     """Force-stop the isolated process group/tree after a hard timeout."""
 
     if process.poll() is not None:
-        return
+        return True
     if os.name == "nt":
         try:
-            subprocess.run(
+            result = subprocess.run(
                 ["taskkill", "/PID", str(process.pid), "/T", "/F"],
                 check=False,
                 stdout=subprocess.DEVNULL,
@@ -61,14 +61,25 @@ def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
                 timeout=TERMINATION_GRACE_SECONDS,
             )
         except (OSError, subprocess.TimeoutExpired):
+            result = None
+        if result is not None and result.returncode == 0:
+            return True
+        try:
             process.kill()
-        return
+        except OSError:
+            pass
+        return False
     try:
         os.killpg(process.pid, signal.SIGKILL)
+        return True
     except ProcessLookupError:
-        pass
+        return True
     except OSError:
-        process.kill()
+        try:
+            process.kill()
+        except OSError:
+            pass
+        return False
 
 
 def _run(
@@ -94,14 +105,25 @@ def _run(
     try:
         stdout, _stderr = process.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired as exc:
-        _terminate_process_tree(process)
+        tree_terminated = _terminate_process_tree(process)
+        tree_termination_failed = tree_terminated is False
         try:
             process.communicate(timeout=TERMINATION_GRACE_SECONDS)
         except subprocess.TimeoutExpired:
-            process.kill()
-            process.communicate()
+            try:
+                process.kill()
+            except OSError:
+                pass
+            try:
+                process.communicate(timeout=TERMINATION_GRACE_SECONDS)
+            except (OSError, subprocess.TimeoutExpired):
+                tree_termination_failed = True
         raise CheckoutCommandError(
-            "command_timeout",
+            (
+                "process_tree_termination_failed"
+                if tree_termination_failed
+                else "command_timeout"
+            ),
             command,
             timeout_seconds=timeout_seconds,
         ) from exc

@@ -344,13 +344,26 @@ def _run_l4_advisory(
             ):
                 summary["l4"]["conflicts_skipped"] += 1
                 continue
-            fresh_evidence = _journal_evidence(
-                conn,
-                memory_id,
-                scope_ids=scope_ids,
-                all_scopes=all_scopes,
-                max_chars=evidence_chars,
-            )
+            try:
+                fresh_evidence = _journal_evidence(
+                    conn,
+                    memory_id,
+                    scope_ids=scope_ids,
+                    all_scopes=all_scopes,
+                    max_chars=evidence_chars,
+                )
+            except sqlite3.OperationalError as exc:
+                summary["l4"]["errors"] += 1
+                summary["exceptions"].append(
+                    {
+                        "kind": "l4_fresh_evidence_lookup",
+                        "id": memory_id,
+                        "error": sanitize_report_text(str(exc))[:160],
+                    }
+                )
+                retain_retry_rows(rows[row_index:])
+                checkpoint_failed = True
+                break
             if fresh_evidence != evidence:
                 summary["l4"]["conflicts_skipped"] += 1
                 continue

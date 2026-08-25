@@ -622,11 +622,11 @@ def test_release_identity_requires_version_newer_than_latest_tag():
     assert "mutually exclusive" in conflicting_modes["error"]
 
 
-def test_v1104_release_candidate_identity_surfaces_are_consistent():
+def test_v1105_release_candidate_identity_surfaces_are_consistent():
     """Bind the source candidate to every authoritative version surface."""
 
-    expected_version = "1.10.4"
-    release_check = _load_release_check_module("scope_recall_check_release_v1104_identity")
+    expected_version = "1.10.5"
+    release_check = _load_release_check_module("scope_recall_check_release_v1105_identity")
     lexical_generation = importlib.import_module(
         f"{PACKAGE_NAME}.lexical_generation"
     )
@@ -638,7 +638,7 @@ def test_v1104_release_candidate_identity_surfaces_are_consistent():
     assert _package_version() == expected_version
     assert f"version: {expected_version}" in plugin_manifest
     assert release_check.PACKAGE_VERSION == expected_version
-    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.10.4.md"
+    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.10.5.md"
     assert (PLUGIN_ROOT / release_check.RELEASE_READINESS_DOC).is_file()
     assert f"## [{expected_version}]" in changelog
     assert f"Version `{expected_version}`" in readme
@@ -651,17 +651,17 @@ def test_v1104_release_candidate_identity_surfaces_are_consistent():
     )
     assert identity["ok"] is True
     assert identity["release_eligible"] is True
-    assert identity["expected_release_tag"] == "v1.10.4"
+    assert identity["expected_release_tag"] == "v1.10.5"
     assert identity["latest_release_tag"] == "v1.10.3"
 
 
-def test_v1104_changelog_starts_at_the_last_public_release():
-    release_check = _load_release_check_module("scope_recall_check_release_v1104_changelog")
+def test_v1105_changelog_starts_at_the_last_public_release():
+    release_check = _load_release_check_module("scope_recall_check_release_v1105_changelog")
 
-    assert release_check.PACKAGE_VERSION == "1.10.4"
+    assert release_check.PACKAGE_VERSION == "1.10.5"
     assert release_check.PUBLIC_RELEASE_BASELINE == "1.10.3"
     changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    section = release_check.changelog_section(changelog, "1.10.4")
+    section = release_check.changelog_section(changelog, "1.10.5")
     assert "since the last public release, `1.10.3`" in section
     assert "#50" in section
     assert "memory_auto_adjudication" in section
@@ -669,6 +669,13 @@ def test_v1104_changelog_starts_at_the_last_public_release():
     assert "receipt" in section
     assert "run_id" in section
     assert "throttle" in section
+    assert "shutdown" in section
+    assert "process tree" in section
+    assert "workflow" in section
+    assert "merge" in section
+    assert "retry" in section
+    assert "contradiction" in section
+    assert "scanner" in section
     historical = release_check.changelog_section(changelog, "1.10.2")
     assert "since the last public release, `1.9.2`" in historical
     historical_gate = release_check.changelog_completeness_check(
@@ -679,18 +686,18 @@ def test_v1104_changelog_starts_at_the_last_public_release():
     assert historical_gate["missing_terms"] == []
 
 
-def test_v1104_public_wording_covers_post_release_audit_fixes():
+def test_v1105_public_wording_covers_post_release_audit_fixes():
     """Every current public surface must describe the generic audit fixes."""
 
     release_check = _load_release_check_module(
-        "scope_recall_check_release_v1104_audit_fixes"
+        "scope_recall_check_release_v1105_audit_fixes"
     )
     changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     surfaces = {
-        "changelog": release_check.changelog_section(changelog, "1.10.4"),
+        "changelog": release_check.changelog_section(changelog, "1.10.5"),
         "readme": (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8"),
         "stability": (PLUGIN_ROOT / "docs" / "stability.md").read_text(encoding="utf-8"),
-        "readiness": (PLUGIN_ROOT / "docs" / "release-readiness.1.10.4.md").read_text(
+        "readiness": (PLUGIN_ROOT / "docs" / "release-readiness.1.10.5.md").read_text(
             encoding="utf-8"
         ),
     }
@@ -702,15 +709,15 @@ def test_v1104_public_wording_covers_post_release_audit_fixes():
         assert "throttle" in lowered, name
 
 
-def test_v1104_public_surfaces_name_1103_as_the_public_baseline():
-    release_check = _load_release_check_module("scope_recall_check_release_v1104_baseline_truth")
+def test_v1105_public_surfaces_name_1103_as_the_public_baseline():
+    release_check = _load_release_check_module("scope_recall_check_release_v1105_baseline_truth")
 
     truth = release_check.public_release_baseline_truth_check()
     assert truth["ok"] is True, truth
     assert release_check.PUBLIC_RELEASE_BASELINE == "1.10.3"
     readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
     stability = (PLUGIN_ROOT / "docs" / "stability.md").read_text(encoding="utf-8")
-    readiness = (PLUGIN_ROOT / "docs" / "release-readiness.1.10.4.md").read_text(encoding="utf-8")
+    readiness = (PLUGIN_ROOT / "docs" / "release-readiness.1.10.5.md").read_text(encoding="utf-8")
     assert "last packaged `1.10.3`" in readme
     assert "last packaged `1.10.3`" in stability
     assert "Public release baseline: `1.10.3`." in readiness
@@ -978,10 +985,13 @@ def test_changelog_completeness_gate_requires_current_release_terms():
     assert failed["section_found"] is False
     assert failed["missing_terms"] == list(release_check.REQUIRED_CHANGELOG_TERMS)
     assert set(failed["missing_terms"]) == {
-        "metadata",
-        "receipt",
-        "run_id",
-        "throttle",
+        "shutdown",
+        "process tree",
+        "workflow",
+        "merge",
+        "retry",
+        "contradiction",
+        "scanner",
     }
 
     missing_baseline = (

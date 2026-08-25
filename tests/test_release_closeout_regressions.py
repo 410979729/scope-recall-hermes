@@ -6,8 +6,11 @@ import ast
 import hashlib
 import importlib.util
 from pathlib import Path
+import sys
 import tomllib
 import zipfile
+
+import pytest
 
 from scope_recall import memory_queries
 
@@ -40,6 +43,26 @@ def _load_release_provenance():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _write_release_provenance_fixture(tmp_path: Path):
+    provenance = _load_release_provenance()
+    packages = tmp_path / "dist"
+    packages.mkdir()
+    (packages / "candidate.whl").write_bytes(b"wheel")
+    (packages / "candidate.tar.gz").write_bytes(b"sdist")
+    receipt = tmp_path / "RELEASE-PROVENANCE.json"
+    provenance.write_provenance(
+        receipt,
+        repository="owner/repo",
+        source_sha="a" * 40,
+        source_tree="b" * 40,
+        release_tag="v1.10.4",
+        workflow_run_id="12345",
+        workflow_run_attempt="2",
+        packages_dir=packages,
+    )
+    return provenance, packages, receipt
 
 
 def test_public_migration_info_exposes_only_logical_status() -> None:
@@ -151,23 +174,7 @@ def test_distribution_persona_scan_covers_markdown_and_all_private_agent_names(
 
 
 def test_release_provenance_binds_source_run_and_distribution_bytes(tmp_path: Path) -> None:
-    provenance = _load_release_provenance()
-    packages = tmp_path / "dist"
-    packages.mkdir()
-    (packages / "candidate.whl").write_bytes(b"wheel")
-    (packages / "candidate.tar.gz").write_bytes(b"sdist")
-    receipt = tmp_path / "RELEASE-PROVENANCE.json"
-
-    provenance.write_provenance(
-        receipt,
-        repository="owner/repo",
-        source_sha="a" * 40,
-        source_tree="b" * 40,
-        release_tag="v1.10.4",
-        workflow_run_id="12345",
-        workflow_run_attempt="2",
-        packages_dir=packages,
-    )
+    provenance, packages, receipt = _write_release_provenance_fixture(tmp_path)
 
     verified = provenance.verify_provenance(
         receipt,
@@ -176,6 +183,8 @@ def test_release_provenance_binds_source_run_and_distribution_bytes(tmp_path: Pa
         expected_source_tree="b" * 40,
         expected_release_tag="v1.10.4",
         expected_workflow_run_id="12345",
+        workflow_run_status="completed",
+        workflow_run_conclusion="success",
         packages_dir=packages,
     )
     assert verified["workflow"]["run_attempt"] == "2"
@@ -189,12 +198,99 @@ def test_release_provenance_binds_source_run_and_distribution_bytes(tmp_path: Pa
             expected_source_tree="b" * 40,
             expected_release_tag="v1.10.4",
             expected_workflow_run_id="12345",
+            workflow_run_status="completed",
+            workflow_run_conclusion="success",
             packages_dir=packages,
         )
     except ValueError as exc:
         assert "source_sha" in str(exc)
     else:
         raise AssertionError("mismatched source SHA was accepted")
+
+
+def test_release_provenance_accepts_completed_successful_workflow_run(
+    tmp_path: Path,
+) -> None:
+    provenance, packages, receipt = _write_release_provenance_fixture(tmp_path)
+
+    verified = provenance.verify_provenance(
+        receipt,
+        expected_repository="owner/repo",
+        expected_source_sha="a" * 40,
+        expected_source_tree="b" * 40,
+        expected_release_tag="v1.10.4",
+        expected_workflow_run_id="12345",
+        workflow_run_status="completed",
+        workflow_run_conclusion="success",
+        packages_dir=packages,
+    )
+
+    assert verified["workflow"]["run_id"] == "12345"
+
+
+@pytest.mark.parametrize(
+    ("workflow_run_status", "workflow_run_conclusion", "message"),
+    (
+        ("in_progress", "", "completed"),
+        ("completed", "failure", "successful"),
+    ),
+)
+def test_release_provenance_rejects_non_successful_workflow_runs(
+    tmp_path: Path,
+    workflow_run_status: str,
+    workflow_run_conclusion: str,
+    message: str,
+) -> None:
+    provenance, packages, receipt = _write_release_provenance_fixture(tmp_path)
+
+    with pytest.raises(ValueError, match=message):
+        provenance.verify_provenance(
+            receipt,
+            expected_repository="owner/repo",
+            expected_source_sha="a" * 40,
+            expected_source_tree="b" * 40,
+            expected_release_tag="v1.10.4",
+            expected_workflow_run_id="12345",
+            workflow_run_status=workflow_run_status,
+            workflow_run_conclusion=workflow_run_conclusion,
+            packages_dir=packages,
+        )
+
+
+def test_release_provenance_cli_forwards_failed_run_outcome(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provenance, packages, receipt = _write_release_provenance_fixture(tmp_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "release_provenance.py",
+            "verify",
+            "--provenance",
+            str(receipt),
+            "--repository",
+            "owner/repo",
+            "--source-sha",
+            "a" * 40,
+            "--source-tree",
+            "b" * 40,
+            "--release-tag",
+            "v1.10.4",
+            "--workflow-run-id",
+            "12345",
+            "--workflow-run-status",
+            "completed",
+            "--workflow-run-conclusion",
+            "failure",
+            "--packages-dir",
+            str(packages),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="successful"):
+        provenance.main()
 
 
 def test_package_integration_subprocesses_are_bounded() -> None:
