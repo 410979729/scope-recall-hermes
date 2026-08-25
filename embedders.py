@@ -1239,6 +1239,8 @@ class MiniMaxEmbedder(BaseEmbedder):
         )
         self._timeout = self._read_timeout
         self._active_key_index = 0
+        self._closed = False
+        self._request_runner = BoundedEmbedderRequestRunner()
 
     @staticmethod
     def _coerce_request_type(value: Any, default: str) -> str:
@@ -1266,9 +1268,24 @@ class MiniMaxEmbedder(BaseEmbedder):
                 "query_timeout_seconds": self._query_timeout,
                 "writer_timeout_seconds": self._writer_timeout,
                 "maintenance_timeout_seconds": self._maintenance_timeout,
+                "closed": self._closed,
+                "request_resources": self._request_runner.snapshot(),
             }
         )
         return payload
+
+    def request_resources(self) -> dict[str, int]:
+        """Return the declared hosted-request bound and current occupancy."""
+
+        return self._request_runner.snapshot()
+
+    def close(self) -> None:
+        """Terminally stop new MiniMax requests without joining a stuck call."""
+
+        if self._closed:
+            return
+        self._closed = True
+        self._request_runner.shutdown()
 
     def _rotate_key_after_failure(self) -> bool:
         if len(self._api_keys) <= 1:
@@ -1285,6 +1302,49 @@ class MiniMaxEmbedder(BaseEmbedder):
 
     def _request_timeout(self, remaining: float) -> float:
         return min(self._read_timeout, max(_MIN_TRANSPORT_TIMEOUT_SECONDS, remaining))
+
+    def _call_with_deadline(self, fn: Any, *, deadline: float, operation: str) -> Any:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.0:
+            raise TimeoutError(
+                f"{self.provider} {operation} embedding exceeded the "
+                f"{self._operation_budget(operation):g}s operation budget"
+            )
+        try:
+            return self._request_runner.run(fn, timeout=remaining)
+        except EmbedderRequestClosedError:
+            raise RuntimeError(f"{self.provider} embedder is closed") from None
+        except InFlightEmbedderRequestError:
+            raise TimeoutError(
+                f"{self.provider} {operation} embedding rejected because "
+                "a request is already in flight"
+            ) from None
+        except HostedEmbedderWorkerLimitError:
+            raise TimeoutError(
+                f"{self.provider} {operation} embedding rejected because "
+                "the plugin hosted-embedding worker limit is exhausted"
+            ) from None
+        except EmbedderRequestDeadlineError:
+            raise TimeoutError(
+                f"{self.provider} {operation} embedding exceeded the "
+                f"{self._operation_budget(operation):g}s operation budget"
+            ) from None
+
+    def _request_payload(
+        self,
+        request: urllib.request.Request,
+        *,
+        timeout: float,
+    ) -> Any:
+        """Perform and fully consume one urllib response inside the hard deadline."""
+
+        with safe_urlopen(
+            request,
+            timeout=timeout,
+            allow_insecure=self._allow_insecure_endpoint,
+        ) as resp:
+            raw = resp.read().decode("utf-8")
+        return _json_lib.loads(raw)
 
     def _post_embeddings(
         self,
@@ -1328,13 +1388,15 @@ class MiniMaxEmbedder(BaseEmbedder):
                 },
             )
             try:
-                with safe_urlopen(
-                    req,
-                    timeout=self._request_timeout(remaining),
-                    allow_insecure=self._allow_insecure_endpoint,
-                ) as resp:
-                    raw = resp.read().decode("utf-8")
-                payload = _json_lib.loads(raw)
+                payload = self._call_with_deadline(
+                    partial(
+                        self._request_payload,
+                        req,
+                        timeout=self._request_timeout(remaining),
+                    ),
+                    deadline=resolved_deadline,
+                    operation=resolved_operation,
+                )
             except UnsafeEndpointError:
                 raise
             except TimeoutError:

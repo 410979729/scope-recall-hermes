@@ -1,6 +1,9 @@
-"""Asynchronous capture writer for current-turn memory rows.
+"""Bounded process-local asynchronous capture writer.
 
-The provider queues capture work here so tool latency stays low, while the synchronous helpers remain available for tests and explicit writes."""
+Capture payloads are sanitized before enqueue and live only until the writer
+consumes them.  Synchronous helpers remain available for explicit writes and
+tests.
+"""
 
 from __future__ import annotations
 
@@ -12,25 +15,21 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from typing import Any, Callable, Iterator, TypeGuard
+from dataclasses import dataclass
+from typing import Any, Callable, Iterator
 
 from .capture_control import (
     CONTROL_PUT_TIMEOUT_SECONDS,
-    bind_write_control_queue,
-    put_control,
-    wake_writer,
-)
-from .capture_filters import should_capture_text
-from .capture_intents import (
-    capture_intent_report,
-    claim_next_capture_intent,
-    complete_capture_intent,
-    merge_capture_queue_report,
-    persist_from_provider,
+    bind_write_queue,
+    capture_queue_report as _process_capture_queue_report,
+    put_work,
     queue_capacity,
-    release_stale_processing,
-    requeue_capture_intent,
-    unconsumed_depth,
+    queue_maxsize,
+)
+from .capture_filters import (
+    sanitize_capture_text,
+    sanitize_structured_value,
+    should_capture_text,
 )
 from .capture_outcomes import ensure_outcome_accounted, handle_capture_enqueue
 from .memory_mutation import MemoryMutationService
@@ -64,18 +63,96 @@ _WRITE_KERNEL_REEXPORT_COMPAT = (
 logger = logging.getLogger(__name__)
 
 
+def capture_queue_report(provider: Any) -> dict[str, Any]:
+    """Expose bounded process-local queue status to runtime diagnostics."""
+
+    return _process_capture_queue_report(provider)
+
+
+@dataclass(frozen=True)
+class CaptureAuthorizationEnvelope:
+    """Immutable enqueue-time routing and identity authority for one capture."""
+
+    scope_mode: str
+    row_scope_id: str
+    runtime_scope_id: str
+    shared_scope_id: str
+    shared_pool_scope_id: str
+    platform: str
+    user_id: str
+    chat_id: str
+    thread_id: str
+    gateway_session_key: str
+    agent_identity: str
+    agent_workspace: str
+    canonical_user: str
+
+
+@contextmanager
+def _capture_submission_lock(provider: Any) -> Iterator[None]:
+    """Serialize capture publication with explicit forget/delete mutations."""
+
+    lock = getattr(provider, "_capture_submission_lock", None)
+    if lock is None:
+        yield
+        return
+    with lock:
+        yield
+
+
+def _resolve_capture_authorization(
+    provider: Any,
+    *,
+    target: str,
+    source: str,
+    scope_mode: str | None = None,
+) -> CaptureAuthorizationEnvelope:
+    requested_scope_mode = str(scope_mode or "").strip().lower()
+    if requested_scope_mode not in {"shared", "local", "shared_pool"}:
+        requested_scope_mode = recall_scope_mode(target, source)
+    runtime_scope_id = str(getattr(provider, "_scope_id", "") or "")
+    shared_scope_id = str(getattr(provider, "_shared_scope_id", "") or "")
+    shared_pool_scope_id = str(
+        getattr(provider, "_shared_pool_scope_id", "") or ""
+    )
+    row_scope_id = runtime_scope_id
+    if requested_scope_mode == "shared":
+        row_scope_id = shared_scope_id
+    elif requested_scope_mode == "shared_pool":
+        row_scope_id = shared_pool_scope_id
+    scope = provider._scope
+    return CaptureAuthorizationEnvelope(
+        scope_mode=requested_scope_mode,
+        row_scope_id=row_scope_id,
+        runtime_scope_id=runtime_scope_id,
+        shared_scope_id=shared_scope_id,
+        shared_pool_scope_id=shared_pool_scope_id,
+        platform=str(getattr(scope, "platform", "") or ""),
+        user_id=str(getattr(scope, "user_id", "") or ""),
+        chat_id=str(getattr(scope, "chat_id", "") or ""),
+        thread_id=str(getattr(scope, "thread_id", "") or ""),
+        gateway_session_key=str(
+            getattr(scope, "gateway_session_key", "") or ""
+        ),
+        agent_identity=str(getattr(scope, "agent_identity", "") or ""),
+        agent_workspace=str(getattr(scope, "agent_workspace", "") or ""),
+        canonical_user=str(canonical_user_id(scope, provider._config) or ""),
+    )
+
+
 @contextmanager
 def _capture_store_authority(
-    provider: Any, *, complete_accepted_intent: bool = False
+    provider: Any, *, complete_accepted_capture: bool = False
 ) -> Iterator[None]:
-    """Hold lifecycle for one truth store.
+    """Hold lifecycle authority for one truth-store unit.
 
-    Completing an already-persisted intent may finish during shutdown flush.
-    New synchronous stores still fail closed once shutdown is visible.
+    An accepted queue item may finish during shutdown flush, but it must still
+    belong to the current owner process.  New direct writes fail closed after
+    shutdown is published.
     """
 
     with _writer_lifecycle_lock(provider):
-        if complete_accepted_intent:
+        if complete_accepted_capture:
             if getattr(provider, "_truth_writer_role", None) != "owner":
                 raise RuntimeError(WRITE_AUTHORITY_BUSY)
         else:
@@ -83,204 +160,26 @@ def _capture_store_authority(
         yield
 
 
-def _is_sqlite_conn(conn: object) -> TypeGuard[sqlite3.Connection]:
-    """Skip stub connections used by shutdown tests."""
-
-    return hasattr(conn, "in_transaction") and hasattr(conn, "execute")
-
-
-def _wake_writer(provider: Any) -> bool:
-    """Hint the writer that durable intents are waiting. Never blocks."""
-
-    return wake_writer(provider)
-
-
-def _release_stale_capture_intents(provider: Any) -> None:
-    """Requeue processing rows left behind by a previous writer process."""
-
-    require = getattr(provider, "_require_conn", None)
-    lock = getattr(provider, "_lock", None)
-    if not callable(require) or lock is None:
-        return
-    with lock:
-        conn = require()
-        if not _is_sqlite_conn(conn) or conn.in_transaction:
-            return
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            release_stale_processing(conn)
-            conn.commit()
-        except Exception:
-            if conn.in_transaction:
-                conn.rollback()
-            raise
-
-
-def _open_intent_transaction(provider: Any) -> sqlite3.Connection | None:
-    require = getattr(provider, "_require_conn", None)
-    if not callable(require):
-        return None
-    conn = require()
-    if not _is_sqlite_conn(conn) or conn.in_transaction:
-        return None
-    conn.execute("BEGIN IMMEDIATE")
-    return conn
-
-
-def _consume_durable_intents(
-    provider: Any, *, limit: int = 8, allow_after_shutdown: bool = False
-) -> int:
-    """Claim and store a bounded page of persisted intents without vector replay.
-
-    Each unit commits the truth row, then marks the intent completed in a
-    second short transaction. Vector replay stays on the idle/sync path so a
-    blocked embedder cannot occupy the capture-intent persist lock.
-    """
-
-    require = getattr(provider, "_require_conn", None)
-    lock = getattr(provider, "_lock", None)
-    if not callable(require) or lock is None:
-        return 0
-    # A close retry can intentionally detach the published connection before
-    # shutdown asks the writer to flush. Do not reopen truth after shutdown has
-    # begun merely to discover that there is no remaining connection to drain.
-    if allow_after_shutdown and getattr(provider, "_conn", None) is None:
-        return 0
-    probe = require()
-    if not _is_sqlite_conn(probe):
-        return 0
-    consumed = 0
-    for _ in range(max(1, int(limit))):
-        shutdown_requested = getattr(provider, "_shutdown_requested", None)
-        if not allow_after_shutdown and (
-            provider._stop.is_set()
-            or (shutdown_requested is not None and shutdown_requested.is_set())
-        ):
-            break
-        with lock:
-            conn = _open_intent_transaction(provider)
-            if conn is None:
-                break
-            try:
-                intent = claim_next_capture_intent(conn)
-                conn.commit()
-            except Exception:
-                if conn.in_transaction:
-                    conn.rollback()
-                raise
-        if intent is None:
-            break
-        try:
-            store_now(
-                provider,
-                content=intent["content"],
-                source=intent["source"],
-                target=intent["target"],
-                session_id=intent["session_id"] or provider._session_id,
-                metadata=intent.get("metadata") or {},
-                replay_vector=False,
-                complete_accepted_intent=True,
-            )
-            with lock:
-                conn = _open_intent_transaction(provider)
-                if conn is None:
-                    raw = require()
-                    if _is_sqlite_conn(raw) and raw.in_transaction:
-                        raw.rollback()
-                    conn = _open_intent_transaction(provider)
-                if conn is None:
-                    continue
-                try:
-                    complete_capture_intent(conn, int(intent["id"]))
-                    conn.commit()
-                except Exception:
-                    if conn.in_transaction:
-                        conn.rollback()
-                    raise
-        except Exception:
-            with lock:
-                try:
-                    conn = require()
-                    if not _is_sqlite_conn(conn):
-                        raise RuntimeError("capture intent SQLite connection is unavailable")
-                    if conn.in_transaction:
-                        conn.rollback()
-                    conn.execute("BEGIN IMMEDIATE")
-                    requeue_capture_intent(conn, int(intent["id"]))
-                    conn.commit()
-                except Exception:
-                    logger.exception("Scope Recall could not requeue a failed capture intent")
-            raise
-        consumed += 1
-    return consumed
-
-
-def capture_queue_report(provider: Any) -> dict[str, Any]:
-    """Expose depth, oldest age, and reject/defer counters without path leakage."""
-
-    config = getattr(provider, "_config", None)
-    capacity = queue_capacity(config if isinstance(config, dict) else None)
-    durable: dict[str, Any] = {
-        "status": "unavailable",
-        "capacity": capacity,
-        "depth": 0,
-        "pending": 0,
-        "processing": 0,
-        "oldest_age_seconds": 0.0,
-        "rejected": 0,
-        "deferred": 0,
-    }
-    require = getattr(provider, "_require_conn", None)
-    lock = getattr(provider, "_lock", None)
-    if callable(require) and lock is not None:
-        acquired = False
-        try:
-            acquired = bool(lock.acquire(timeout=0.05))
-        except TypeError:
-            lock.acquire()
-            acquired = True
-        if acquired:
-            try:
-                conn = require()
-                if _is_sqlite_conn(conn):
-                    durable = capture_intent_report(conn, capacity=capacity)
-            except Exception:
-                durable = dict(durable)
-            finally:
-                lock.release()
-    return merge_capture_queue_report(durable, provider, capacity=capacity)
-
-
 def _drain_relation_rebuild_debt(provider: Any) -> None:
-    """Use the existing writer thread to process one bounded relation chunk.
-
-    Each idle unit rechecks shutdown/role under the lifecycle lock before any
-    durable work. Returning here is fail-closed: a blocked writer must not
-    start or continue a bounded mutation after the flag is visible.
-    """
+    """Run one bounded idle maintenance tick under lifecycle authority."""
 
     with _writer_lifecycle_lock(provider):
         _drain_relation_rebuild_debt_locked(provider)
 
 
 def _drain_relation_rebuild_debt_locked(provider: Any) -> None:
-    """Run one idle maintenance tick while the caller holds lifecycle."""
+    """Run vector maintenance independently from optional relation extraction."""
 
     if not has_positive_write_authority(provider):
         return
     maintenance_stop = getattr(provider, "_maintenance_stop", None)
     if maintenance_stop is not None and maintenance_stop.is_set():
         return
-    if not bool(provider._config.get("relation_extraction_enabled", True)):
-        return
-    configured_pairs = int(
-        provider._config.get("relation_rebuild_chunk_pairs", 250) or 250
-    )
-    pair_limit = max(1, min(configured_pairs, 1000))
+
     if (
-        getattr(provider, "_vector_ready", False)
-        and getattr(provider, "_vector_store", None) is not None
+        getattr(provider, "_vector_store", None) is not None
         and getattr(provider, "_embedder", None) is not None
+        and bool(getattr(provider, "_vector_generation_id", ""))
     ):
         try:
             from .vector_runtime import run_bounded_vector_reconciliation
@@ -299,10 +198,17 @@ def _drain_relation_rebuild_debt_locked(provider: Any) -> None:
                 "Scope Recall bounded vector maintenance tick failed",
                 exc_info=True,
             )
+
     if maintenance_stop is not None and maintenance_stop.is_set():
         return
     if not has_positive_write_authority(provider):
         return
+    if not bool(provider._config.get("relation_extraction_enabled", True)):
+        return
+    configured_pairs = int(
+        provider._config.get("relation_rebuild_chunk_pairs", 250) or 250
+    )
+    pair_limit = max(1, min(configured_pairs, 1000))
     with provider._lock:
         conn = provider._require_conn()
         if relation_frequency_debt_exists(conn):
@@ -326,32 +232,49 @@ def _drain_relation_rebuild_debt_locked(provider: Any) -> None:
 
 
 def start_writer(provider: Any) -> None:
-    with _writer_lifecycle_lock(provider):
-        bind_write_control_queue(provider)
-        if provider._writer_thread and provider._writer_thread.is_alive():
-            return
-        shutdown_requested = getattr(provider, "_shutdown_requested", None)
-        if shutdown_requested is not None:
-            shutdown_requested.clear()
-        provider._stop.clear()
-        maintenance_stop = getattr(provider, "_maintenance_stop", None)
-        if maintenance_stop is not None:
-            maintenance_stop.clear()
-        try:
-            _release_stale_capture_intents(provider)
-        except Exception:
-            logger.exception("Scope Recall could not requeue stale capture intents")
-        provider._writer_thread = threading.Thread(
-            target=writer_loop,
-            args=(provider,),
-            daemon=True,
-            name="scope-recall-writer",
+    """Start the sole consumer after binding the configured finite queue."""
+
+    with _capture_submission_lock(provider):
+        with _writer_lifecycle_lock(provider):
+            bind_write_queue(provider)
+            if provider._writer_thread and provider._writer_thread.is_alive():
+                return
+            shutdown_requested = getattr(provider, "_shutdown_requested", None)
+            if shutdown_requested is not None:
+                shutdown_requested.clear()
+            provider._stop.clear()
+            maintenance_stop = getattr(provider, "_maintenance_stop", None)
+            if maintenance_stop is not None:
+                maintenance_stop.clear()
+            provider._writer_thread = threading.Thread(
+                target=writer_loop,
+                args=(provider,),
+                daemon=True,
+                name="scope-recall-writer",
+            )
+            provider._writer_thread.start()
+
+
+def _set_processing(provider: Any, delta: int) -> None:
+    lock = getattr(provider, "_lock", None)
+    if lock is None:
+        provider._capture_queue_processing = max(
+            0, int(getattr(provider, "_capture_queue_processing", 0) or 0) + delta
         )
-        provider._writer_thread.start()
+        return
+    with lock:
+        provider._capture_queue_processing = max(
+            0, int(getattr(provider, "_capture_queue_processing", 0) or 0) + delta
+        )
 
 
 def writer_loop(provider: Any) -> None:
-    while not provider._stop.is_set():
+    """Consume bounded process-local jobs; never acquire the submission lock."""
+
+    # Shutdown is sentinel-driven.  ``_stop`` suppresses maintenance, but must
+    # never let the consumer disappear before it acknowledges the queued
+    # sentinel; otherwise that stale control item kills the next writer.
+    while True:
         try:
             job = provider._write_queue.get(timeout=0.2)
         except queue.Empty:
@@ -364,13 +287,6 @@ def writer_loop(provider: Any) -> None:
             last_drain = float(
                 getattr(provider, "_last_relation_rebuild_drain", 0.0) or 0.0
             )
-            try:
-                _consume_durable_intents(provider, limit=1)
-            except Exception:
-                rollback = getattr(provider, "_rollback_conn_after_error", None)
-                if callable(rollback):
-                    rollback("durable capture intent drain")
-                logger.exception("Scope Recall durable capture intent drain failed")
             if now - last_drain >= 1.0:
                 provider._last_relation_rebuild_drain = now
                 try:
@@ -378,9 +294,11 @@ def writer_loop(provider: Any) -> None:
                 except Exception:
                     rollback = getattr(provider, "_rollback_conn_after_error", None)
                     if callable(rollback):
-                        rollback("relation rebuild background drain")
-                    logger.exception("Scope Recall relation rebuild background drain failed")
+                        rollback("capture writer maintenance")
+                    logger.exception("Scope Recall writer maintenance failed")
             continue
+
+        processing_store = False
         try:
             if job is None:
                 return
@@ -390,12 +308,8 @@ def writer_loop(provider: Any) -> None:
                 event = job.get("event")
                 result = job.get("result")
                 try:
-                    _consume_durable_intents(
-                        provider,
-                        limit=queue_capacity(getattr(provider, "_config", None)),
-                        allow_after_shutdown=True,
-                    )
-                    with provider._lock:
+                    lock = getattr(provider, "_lock", None)
+                    if lock is None:
                         failed_writes = int(
                             getattr(provider, "_writer_failed_writes", 0) or 0
                         )
@@ -404,102 +318,200 @@ def writer_loop(provider: Any) -> None:
                         )
                         success = failed_writes == reported_failures
                         provider._writer_reported_failures = failed_writes
+                    else:
+                        with lock:
+                            failed_writes = int(
+                                getattr(provider, "_writer_failed_writes", 0) or 0
+                            )
+                            reported_failures = int(
+                                getattr(provider, "_writer_reported_failures", 0) or 0
+                            )
+                            success = failed_writes == reported_failures
+                            provider._writer_reported_failures = failed_writes
                     if isinstance(result, dict):
                         result["success"] = success
                 finally:
                     if isinstance(event, threading.Event):
                         event.set()
                 continue
-            if job.get("kind") == "drain":
-                _consume_durable_intents(provider, limit=8)
-                continue
             if job.get("kind") == "store":
+                processing_store = True
+                _set_processing(provider, 1)
                 store_now(
                     provider,
                     content=job["content"],
                     source=job["source"],
                     target=job["target"],
-                    session_id=job.get("session_id") or provider._session_id,
+                    session_id=job.get("session_id") or "",
                     metadata=job.get("metadata") or {},
                     replay_vector=False,
+                    complete_accepted_capture=True,
+                    authorization=job.get("authorization"),
                 )
         except Exception as exc:
             rollback = getattr(provider, "_rollback_conn_after_error", None)
             if callable(rollback):
                 rollback("background writer")
-            with provider._lock:
+            lock = getattr(provider, "_lock", None)
+            if lock is None:
                 provider._writer_failed_writes = (
                     int(getattr(provider, "_writer_failed_writes", 0) or 0) + 1
                 )
                 provider._writer_last_error_type = type(exc).__name__
+            else:
+                with lock:
+                    provider._writer_failed_writes = (
+                        int(getattr(provider, "_writer_failed_writes", 0) or 0) + 1
+                    )
+                    provider._writer_last_error_type = type(exc).__name__
             logger.exception("Scope Recall background write failed")
         finally:
+            if processing_store:
+                _set_processing(provider, -1)
             provider._write_queue.task_done()
+            job = None
 
 
-def _durable_queue_idle(provider: Any) -> bool:
-    require = getattr(provider, "_require_conn", None)
-    lock = getattr(provider, "_lock", None)
-    if not callable(require) or lock is None:
-        return True
-    with lock:
-        try:
-            conn = require()
-            if not _is_sqlite_conn(conn):
-                return True
-            return unconsumed_depth(conn) == 0
-        except Exception:
-            return True
+def _remaining(deadline: float) -> float:
+    return max(0.0, deadline - time.monotonic())
+
+
+@contextmanager
+def _provider_lock_until(
+    provider: Any, attribute: str, deadline: float
+) -> Iterator[None]:
+    """Acquire one provider RLock without crossing the caller's deadline."""
+
+    lock = getattr(provider, attribute, None)
+    if lock is None:
+        yield
+        return
+    remaining = _remaining(deadline)
+    if remaining <= 0 or not lock.acquire(timeout=remaining):
+        raise RuntimeError("Scope Recall writer did not acknowledge the shutdown flush")
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def flush_writer(provider: Any, timeout: float = 2.0) -> bool:
-    thread = provider._writer_thread
+    """Wait for all jobs published before the marker, bounded by one deadline."""
+
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    thread = getattr(provider, "_writer_thread", None)
     if thread is None:
-        return provider._write_queue.empty() and _durable_queue_idle(provider)
+        return bool(
+            provider._write_queue.empty()
+            and int(getattr(provider, "_capture_queue_processing", 0) or 0) == 0
+        )
     if not thread.is_alive():
         return False
     done = threading.Event()
     result: dict[str, bool] = {}
-    put_timeout = min(CONTROL_PUT_TIMEOUT_SECONDS, max(0.01, float(timeout)))
+    remaining = _remaining(deadline)
+    if remaining <= 0:
+        return False
     try:
-        if not put_control(
+        if not put_work(
             provider._write_queue,
             {"kind": "flush", "event": done, "result": result},
-            timeout=put_timeout,
+            timeout=min(CONTROL_PUT_TIMEOUT_SECONDS, remaining),
         ):
             return False
     except RuntimeError:
         return False
-    if not done.wait(timeout=timeout):
+    remaining = _remaining(deadline)
+    if remaining <= 0 or not done.wait(timeout=remaining):
         return False
     return bool(result.get("success", False))
 
 
 def shutdown_writer(provider: Any, timeout: float = 3.0) -> None:
-    with _writer_lifecycle_lock(provider):
-        shutdown_requested = getattr(provider, "_shutdown_requested", None)
-        if shutdown_requested is not None:
-            shutdown_requested.set()
-        maintenance_stop = getattr(provider, "_maintenance_stop", None)
-        if maintenance_stop is not None:
-            maintenance_stop.set()
-    if not flush_writer(provider, timeout=timeout):
+    """Publish shutdown atomically with enqueue and stop by a hard deadline."""
+
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    with _provider_lock_until(provider, "_capture_submission_lock", deadline):
+        with _provider_lock_until(provider, "_writer_lifecycle_lock", deadline):
+            shutdown_requested = getattr(provider, "_shutdown_requested", None)
+            if shutdown_requested is not None:
+                shutdown_requested.set()
+            maintenance_stop = getattr(provider, "_maintenance_stop", None)
+            if maintenance_stop is not None:
+                maintenance_stop.set()
+    remaining = _remaining(deadline)
+    if remaining <= 0 or not flush_writer(provider, timeout=remaining):
         raise RuntimeError("Scope Recall writer did not acknowledge the shutdown flush")
     provider._stop.set()
-    thread = provider._writer_thread
+    thread = getattr(provider, "_writer_thread", None)
     if thread is not None and thread.is_alive():
-        try:
-            put_control(
-                provider._write_queue,
-                None,
-                timeout=min(CONTROL_PUT_TIMEOUT_SECONDS, max(0.01, float(timeout))),
-            )
-        except RuntimeError:
-            pass
-        thread.join(timeout=timeout)
+        remaining = _remaining(deadline)
+        if remaining > 0:
+            try:
+                put_work(
+                    provider._write_queue,
+                    None,
+                    timeout=min(CONTROL_PUT_TIMEOUT_SECONDS, remaining),
+                )
+            except RuntimeError:
+                pass
+        join = getattr(thread, "join", None)
+        if callable(join):
+            join(timeout=_remaining(deadline))
     if thread is not None and thread.is_alive():
         raise RuntimeError("Scope Recall writer did not stop before resource teardown")
+    if not provider._write_queue.empty():
+        raise RuntimeError("Scope Recall writer stopped with unconsumed queue control")
     provider._writer_thread = None
+
+
+@contextmanager
+def capture_mutation_barrier(provider: Any, timeout: float = 2.0) -> Iterator[None]:
+    """Drain accepted captures, then exclude new enqueue through a mutation.
+
+    Lock order is submission then lifecycle (inside queued store units).  The
+    writer never acquires submission, so processing jobs can finish while a
+    forget/delete caller waits on the flush marker.
+    """
+
+    if not hasattr(provider, "_capture_submission_lock"):
+        yield
+        return
+    with _capture_submission_lock(provider):
+        work_queue = getattr(provider, "_write_queue", None)
+        thread = getattr(provider, "_writer_thread", None)
+        has_pending = work_queue is not None and not work_queue.empty()
+        processing = int(getattr(provider, "_capture_queue_processing", 0) or 0)
+        if thread is not None and thread.is_alive():
+            if not flush_writer(provider, timeout=timeout):
+                raise RuntimeError(
+                    "Scope Recall capture queue did not flush before memory mutation"
+                )
+        elif has_pending or processing:
+            raise RuntimeError(
+                "Scope Recall capture queue is unavailable before memory mutation"
+            )
+        yield
+
+
+def _enqueue_result(
+    provider: Any,
+    *,
+    status: str,
+    reason: str,
+    depth: int,
+    capacity: int,
+) -> dict[str, Any]:
+    return ensure_outcome_accounted(
+        provider,
+        {
+            "status": status,
+            "reason": reason,
+            "intent_id": None,
+            "depth": max(0, int(depth)),
+            "capacity": max(0, int(capacity)),
+        },
+    )
 
 
 def enqueue_store(
@@ -511,69 +523,88 @@ def enqueue_store(
     session_id: str,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Persist a capture intent, then wake the writer.
+    """Sanitize and publish one capture to the finite process-local queue."""
 
-    Returns an explicit accepted/coalesced/rejected/deferred status. Filtered
-    text is rejected without occupying queue capacity. Shutdown still raises so
-    existing fail-closed callers keep their contract.
-    """
+    safe_content = sanitize_capture_text(content)
+    safe_metadata_raw, _ = sanitize_structured_value(metadata or {})
+    safe_metadata = safe_metadata_raw if isinstance(safe_metadata_raw, dict) else {}
+    work_queue = getattr(provider, "_write_queue", None)
+    capacity = queue_maxsize(work_queue) or queue_capacity(
+        getattr(provider, "_config", None)
+    )
+    if not should_capture_text(safe_content, provider._config).allowed:
+        return _enqueue_result(
+            provider,
+            status="rejected",
+            reason="filtered",
+            depth=int(getattr(work_queue, "qsize", lambda: 0)()),
+            capacity=capacity,
+        )
 
-    if not should_capture_text(content, provider._config).allowed:
-        return ensure_outcome_accounted(
-            provider,
-            {
-                "status": "rejected",
-                "reason": "filtered",
-                "intent_id": None,
-                "depth": 0,
-                "capacity": queue_capacity(getattr(provider, "_config", None)),
-                "durable_accounted": False,
-            },
-        )
-    with _writer_lifecycle_lock(provider):
-        shutdown_requested = getattr(provider, "_shutdown_requested", None)
-        if (
-            (shutdown_requested is not None and shutdown_requested.is_set())
-            or provider._stop.is_set()
-        ):
-            raise RuntimeError("Scope Recall writer is shutting down")
-        result = persist_from_provider(
-            provider,
-            content=content,
-            source=source,
-            target=target,
-            session_id=session_id,
-            metadata=metadata or {},
-        )
-    if result.pop("_fallback", False):
-        work_queue = bind_write_control_queue(provider)
-        hinted = False
-        try:
-            hinted = put_control(
-                work_queue,
-                {
-                    "kind": "store",
-                    "content": content,
-                    "source": source,
-                    "target": target,
-                    "session_id": session_id,
-                    "metadata": metadata or {},
-                },
+    with _capture_submission_lock(provider):
+        with _writer_lifecycle_lock(provider):
+            shutdown_requested = getattr(provider, "_shutdown_requested", None)
+            if (
+                (shutdown_requested is not None and shutdown_requested.is_set())
+                or provider._stop.is_set()
+            ):
+                raise RuntimeError("Scope Recall writer is shutting down")
+            if not has_positive_write_authority(provider):
+                return _enqueue_result(
+                    provider,
+                    status="rejected",
+                    reason="write_authority",
+                    depth=int(getattr(work_queue, "qsize", lambda: 0)()),
+                    capacity=capacity,
+                )
+            if work_queue is None:
+                return _enqueue_result(
+                    provider,
+                    status="deferred",
+                    reason="writer_unavailable",
+                    depth=0,
+                    capacity=capacity,
+                )
+            thread = getattr(provider, "_writer_thread", None)
+            if thread is None or not thread.is_alive():
+                return _enqueue_result(
+                    provider,
+                    status="deferred",
+                    reason="writer_unavailable",
+                    depth=int(getattr(work_queue, "qsize", lambda: 0)()),
+                    capacity=capacity,
+                )
+            authorization = _resolve_capture_authorization(
+                provider,
+                target=target,
+                source=source,
             )
-        except RuntimeError:
-            hinted = False
-        if not hinted:
-            result = {
-                "status": "rejected",
-                "reason": "control_queue_full",
-                "intent_id": None,
-                "depth": int(getattr(work_queue, "qsize", lambda: 0)()),
-                "capacity": queue_capacity(getattr(provider, "_config", None)),
-                "durable_accounted": False,
+            job = {
+                "kind": "store",
+                "content": safe_content,
+                "source": str(source),
+                "target": str(target),
+                "session_id": str(session_id),
+                "metadata": safe_metadata,
+                "authorization": authorization,
             }
-    if result.get("status") in {"accepted", "coalesced"}:
-        _wake_writer(provider)
-    return ensure_outcome_accounted(provider, result)
+            try:
+                work_queue.put_nowait(job)
+            except queue.Full:
+                return _enqueue_result(
+                    provider,
+                    status="rejected",
+                    reason="queue_full",
+                    depth=int(work_queue.qsize()),
+                    capacity=capacity,
+                )
+            return {
+                "status": "accepted",
+                "reason": "queued",
+                "intent_id": None,
+                "depth": int(work_queue.qsize()),
+                "capacity": capacity,
+            }
 
 
 def enqueue_and_observe(
@@ -612,39 +643,44 @@ def store_now(
     before_commit: Callable[[sqlite3.Connection, str], dict[str, Any] | None]
     | None = None,
     replay_vector: bool = True,
-    complete_accepted_intent: bool = False,
+    complete_accepted_capture: bool = False,
+    authorization: CaptureAuthorizationEnvelope | None = None,
 ) -> tuple[str, bool, dict[str, Any] | None]:
-    """Synchronously store one capture row through the provider database.
+    """Synchronously commit one sanitized capture row through SQLite truth."""
 
-    Queue workers call this after dequeue, so the lifecycle gate is acquired
-    here independently. The same RLock spans the authority check through
-    commit so a concurrent shutdown setter cannot publish the flag mid-unit.
-    """
-    if not should_capture_text(content, provider._config).allowed:
+    safe_content = sanitize_capture_text(content)
+    safe_metadata_raw, _ = sanitize_structured_value(metadata or {})
+    safe_metadata = safe_metadata_raw if isinstance(safe_metadata_raw, dict) else {}
+    if not should_capture_text(safe_content, provider._config).allowed:
         return "", False, None
     with _capture_store_authority(
-        provider, complete_accepted_intent=complete_accepted_intent
+        provider, complete_accepted_capture=complete_accepted_capture
     ):
+        resolved_authorization = authorization or _resolve_capture_authorization(
+            provider,
+            target=target,
+            source=source,
+            scope_mode=scope_mode,
+        )
         memory_id = uuid.uuid4().hex
-        requested_scope_mode = str(scope_mode or "").strip().lower()
-        if requested_scope_mode not in {"shared", "local", "shared_pool"}:
-            requested_scope_mode = recall_scope_mode(target, source)
-        row_scope_id = provider._scope_id
-        if requested_scope_mode == "shared":
-            row_scope_id = provider._shared_scope_id
-        elif requested_scope_mode == "shared_pool":
-            row_scope_id = provider._shared_pool_scope_id
-        metadata_payload = dict(metadata or {})
-        metadata_payload.setdefault("scope_mode", requested_scope_mode)
-        metadata_payload.setdefault("runtime_scope_id", provider._scope_id)
-        metadata_payload.setdefault("shared_scope_id", provider._shared_scope_id)
-        metadata_payload.setdefault("raw_platform", provider._scope.platform)
-        metadata_payload.setdefault("raw_user_id", provider._scope.user_id)
-        canonical = canonical_user_id(provider._scope, provider._config)
-        if canonical:
-            metadata_payload.setdefault("canonical_user", canonical)
+        metadata_payload = dict(safe_metadata)
+        metadata_payload.setdefault("scope_mode", resolved_authorization.scope_mode)
+        metadata_payload.setdefault(
+            "runtime_scope_id", resolved_authorization.runtime_scope_id
+        )
+        metadata_payload.setdefault(
+            "shared_scope_id", resolved_authorization.shared_scope_id
+        )
+        metadata_payload.setdefault("raw_platform", resolved_authorization.platform)
+        metadata_payload.setdefault("raw_user_id", resolved_authorization.user_id)
+        if resolved_authorization.canonical_user:
+            metadata_payload.setdefault(
+                "canonical_user", resolved_authorization.canonical_user
+            )
             metadata_payload.setdefault("scope_identity_mode", "canonical")
-        metadata_json = json.dumps(metadata_payload, ensure_ascii=False, sort_keys=True)
+        metadata_json = json.dumps(
+            metadata_payload, ensure_ascii=False, sort_keys=True
+        )
         companion_result: dict[str, Any] | None = None
         inserted = False
         from .transaction_guard import TruthTransactionTimer
@@ -655,18 +691,18 @@ def store_now(
                 memory_id, _summary, _updated_at, inserted = store_row(
                     conn,
                     memory_id=memory_id,
-                    scope_id=row_scope_id,
-                    platform=provider._scope.platform,
-                    user_id=provider._scope.user_id,
-                    chat_id=provider._scope.chat_id,
-                    thread_id=provider._scope.thread_id,
-                    gateway_session_key=provider._scope.gateway_session_key,
-                    agent_identity=provider._scope.agent_identity,
-                    agent_workspace=provider._scope.agent_workspace,
+                    scope_id=resolved_authorization.row_scope_id,
+                    platform=resolved_authorization.platform,
+                    user_id=resolved_authorization.user_id,
+                    chat_id=resolved_authorization.chat_id,
+                    thread_id=resolved_authorization.thread_id,
+                    gateway_session_key=resolved_authorization.gateway_session_key,
+                    agent_identity=resolved_authorization.agent_identity,
+                    agent_workspace=resolved_authorization.agent_workspace,
                     session_id=session_id,
                     source=source,
                     target=target,
-                    content=content,
+                    content=safe_content,
                     metadata=metadata_json,
                     allow_duplicate=allow_duplicate
                     or str(source).startswith("legacy-"),
@@ -717,7 +753,7 @@ def capture_turn_llm_candidates(
     except UnsafeEndpointError:
         logger.warning(
             "Scope Recall capture blocked by endpoint policy; "
-            "durable capture fallbacks disabled for this turn"
+            "capture fallbacks disabled for this turn"
         )
         return False, True
     except Exception:
@@ -741,7 +777,7 @@ def capture_turn_llm_candidates(
                 "tags": candidate.tags,
             },
         )
-        if outcome.get("status") in {"accepted", "coalesced"}:
+        if outcome.get("status") == "accepted":
             extracted = True
     return extracted, False
 
@@ -784,7 +820,7 @@ def capture_turn_fallbacks(
                 session_id=provider._session_id,
                 metadata={"category": candidate.category, "confidence": candidate.confidence},
             )
-            if outcome.get("status") in {"accepted", "coalesced"}:
+            if outcome.get("status") == "accepted":
                 extracted = True
     if (
         not llm_extracted

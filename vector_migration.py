@@ -33,6 +33,7 @@ from .vector_generation import (
     register_generation,
     start_migration_receipt,
 )
+from .vector_membership import replace_generation_membership
 from .vector_reconciliation import mark_generation_snapshot_reconciled
 from .vector_store import build_vector_store
 from .vector_generation_preflight import (
@@ -535,6 +536,7 @@ def build_vector_generation(
             ready_manifest,
             require_receipt=True,
         )
+        replace_generation_membership(conn, generation_id, records)
         if activate:
             activate_generation(
                 conn,

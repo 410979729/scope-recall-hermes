@@ -25,6 +25,7 @@ from scope_recall.auto_adjudication import (
     run_auto_adjudication,
     run_provider_auto_adjudication,
 )
+from scope_recall.doctor_sqlite import runtime_pipeline_report
 from scope_recall.governance_cleanup import (
     governance_audit_coverage_report,
     rollback_cleanup_batch,
@@ -1102,6 +1103,56 @@ def test_l4_claim_failure_releases_already_owned_primary_claim(
     ]
 
 
+def test_provider_retries_l4_schedule_when_budget_tail_remains(tmp_path, monkeypatch):
+    hermes_home, conn = _home(tmp_path)
+    candidate_ids = ["held-provider-budget-first", "held-provider-budget-second"]
+    for memory_id in candidate_ids:
+        _held_candidate_with_evidence(
+            conn,
+            memory_id,
+            evidence_text=f"Complete evidence for {memory_id} remains reviewable.",
+        )
+    conn.close()
+    provider = _provider_like(hermes_home)
+    provider._config["auto_adjudication"].update(
+        {"l4_enabled": True, "l4_budget_per_run": 1}
+    )
+    calls: list[str] = []
+
+    def supported(prompt: str, **_kwargs) -> str:
+        calls.append(json.loads(prompt)["candidate"]["content"])
+        return json.dumps(
+            {
+                "schema_version": L4_SCHEMA_VERSION,
+                "verdict": "supported",
+                "reason": "the linked evidence supports this candidate",
+            }
+        )
+
+    monkeypatch.setattr(auto_module, "build_l4_llm_call", lambda *_args: supported)
+
+    run_provider_auto_adjudication(provider, trigger="l4-budget-tail")
+
+    target = f"{schedule_target_id(provider._writable_scope_ids)}:l4"
+    receipt_conn = sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3")
+    try:
+        rows = receipt_conn.execute(
+            "SELECT action, after_json FROM governance_audit_events "
+            "WHERE event_type='memory_auto_adjudication' AND target_id=? "
+            "ORDER BY rowid",
+            (target,),
+        ).fetchall()
+    finally:
+        receipt_conn.close()
+
+    assert len(calls) == 1
+    assert rows[-1][0] == "schedule_retry"
+    assert json.loads(rows[-1][1])["retry_context"]["candidate_ids"] == [
+        candidate_ids[1]
+    ]
+    assert not any(action == "schedule_complete" for action, _payload in rows)
+
+
 def test_pending_l4_status_retries_instead_of_completing_schedule(
     tmp_path, monkeypatch
 ):
@@ -1251,8 +1302,7 @@ def test_l4_config_failure_runs_lanes_and_retries_only_l4(
     assert provider._last_adjudication_report["status"] == "applied_l4_degraded"
     assert provider._last_adjudication_report["lanes_status"] == "committed"
     assert provider._last_adjudication_report["l4"]["status"] == "config_error"
-    assert actions[-1] == "schedule_retry"
-    assert "schedule_complete" in actions
+    assert actions[-2:] == ["schedule_retry", "schedule_complete"]
 
 
 def test_durable_throttle_ignores_receipt_for_another_target(tmp_path, monkeypatch):
@@ -1371,3 +1421,273 @@ def test_scheduled_throttle_recovers_an_expired_claim(tmp_path, monkeypatch):
     )
 
     assert calls == ["run"]
+
+
+def test_l4_only_claim_requires_persisted_retry_context(tmp_path, monkeypatch):
+    """A worker without the primary claim must not steal an empty initial L4 slot."""
+
+    hermes_home, conn = _home(tmp_path)
+    conn.close()
+    provider = _provider_like(hermes_home)
+    provider._config["auto_adjudication"]["l4_enabled"] = True
+    target = schedule_target_id(provider._writable_scope_ids)
+    claims: list[str] = []
+
+    def claim(*_args, target_id: str, **_kwargs):
+        claims.append(target_id)
+        return None
+
+    monkeypatch.setattr(auto_module, "claim_adjudication_schedule", claim)
+    monkeypatch.setattr(
+        auto_module,
+        "latest_schedule_retry_context",
+        lambda *_args, **_kwargs: {},
+    )
+
+    run_provider_auto_adjudication(provider, trigger="no-primary-no-retry")
+
+    assert claims == [target]
+
+
+def test_primary_claim_is_released_when_initial_l4_claim_is_unavailable(
+    tmp_path, monkeypatch
+):
+    """Initial deterministic work must not outrun its paired L4 ownership."""
+
+    hermes_home, conn = _home(tmp_path)
+    conn.close()
+    provider = _provider_like(hermes_home)
+    provider._config["auto_adjudication"]["l4_enabled"] = True
+    claims = iter(("primary-token", None))
+    released: list[tuple[str, str]] = []
+    lane_runs: list[str] = []
+
+    monkeypatch.setattr(
+        auto_module,
+        "claim_adjudication_schedule",
+        lambda *_args, **_kwargs: next(claims),
+    )
+    monkeypatch.setattr(
+        auto_module,
+        "release_adjudication_schedule",
+        lambda *_args, claim_token, target_id, **_kwargs: released.append(
+            (claim_token, target_id)
+        )
+        or True,
+    )
+    monkeypatch.setattr(
+        auto_module,
+        "run_auto_adjudication",
+        lambda *_args, **_kwargs: lane_runs.append("run") or {},
+    )
+
+    run_provider_auto_adjudication(provider, trigger="split-claim")
+
+    assert lane_runs == []
+    assert released == [
+        ("primary-token", schedule_target_id(provider._writable_scope_ids))
+    ]
+
+
+def test_l4_retry_preserves_unselected_tail_beyond_budget(tmp_path):
+    hermes_home, conn = _home(tmp_path)
+    candidate_ids = [f"held-tail-{index:02d}" for index in range(25)]
+    for memory_id in candidate_ids:
+        _held_candidate_with_evidence(
+            conn,
+            memory_id,
+            evidence_text=f"Complete evidence for {memory_id} remains reviewable.",
+        )
+
+    def supported(_prompt: str, **_kwargs) -> str:
+        return json.dumps(
+            {
+                "schema_version": L4_SCHEMA_VERSION,
+                "verdict": "supported",
+                "reason": "the linked evidence supports this candidate",
+            }
+        )
+
+    result = auto_module.run_l4_retry(
+        hermes_home,
+        {"auto_adjudication": {"l4_budget_per_run": 20}},
+        llm_call=supported,
+        candidate_ids=candidate_ids,
+        scope_ids=("scope-test",),
+    )
+
+    assert result["l4"]["reviewed"] == 20
+    assert result["_l4_retry_candidate_ids"] == candidate_ids[20:]
+
+
+def test_l4_checkpoint_failure_retains_current_and_remaining_candidates(
+    tmp_path, monkeypatch
+):
+    hermes_home, conn = _home(tmp_path)
+    candidate_ids = ["held-checkpoint-current", "held-checkpoint-remaining"]
+    for memory_id in candidate_ids:
+        _held_candidate_with_evidence(
+            conn,
+            memory_id,
+            evidence_text=f"Complete evidence for {memory_id} remains reviewable.",
+        )
+
+    def supported(_prompt: str, **_kwargs) -> str:
+        return json.dumps(
+            {
+                "schema_version": L4_SCHEMA_VERSION,
+                "verdict": "supported",
+                "reason": "the linked evidence supports this candidate",
+            }
+        )
+
+    monkeypatch.setattr(
+        auto_module,
+        "_checkpoint_l4_progress",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("checkpoint unavailable")),
+    )
+
+    result = auto_module.run_l4_retry(
+        hermes_home,
+        {"auto_adjudication": {"l4_budget_per_run": 2}},
+        llm_call=supported,
+        candidate_ids=candidate_ids,
+        scope_ids=("scope-test",),
+    )
+
+    assert result["l4"]["status"] == "failed"
+    assert result["_l4_retry_candidate_ids"] == candidate_ids
+
+
+def test_l4_final_cursor_checkpoint_failure_returns_retry_context(
+    tmp_path, monkeypatch
+):
+    hermes_home, conn = _home(tmp_path)
+    candidate_id = "held-final-cursor-checkpoint"
+    _held_candidate_with_evidence(
+        conn,
+        candidate_id,
+        evidence_text="Complete evidence remains reviewable after a cursor failure.",
+    )
+
+    monkeypatch.setattr(
+        auto_module,
+        "_checkpoint_l4_progress",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("cursor checkpoint unavailable")),
+    )
+
+    result = auto_module.run_l4_retry(
+        hermes_home,
+        {"auto_adjudication": {"l4_budget_per_run": 1}},
+        llm_call=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("synthetic L4 transport failure")
+        ),
+        candidate_ids=[candidate_id],
+        scope_ids=("scope-test",),
+    )
+
+    assert result["l4"]["status"] == "failed"
+    assert result["_l4_retry_candidate_ids"] == [candidate_id]
+    assert any(item["kind"] == "l4_checkpoint_error" for item in result["exceptions"])
+
+
+def test_l4_retry_publication_failure_never_completes_primary_schedule(
+    tmp_path, monkeypatch
+):
+    hermes_home, conn = _home(tmp_path)
+    conn.close()
+    provider = _provider_like(hermes_home)
+    provider._config["auto_adjudication"]["l4_enabled"] = True
+    target = schedule_target_id(provider._writable_scope_ids)
+    completed: list[str] = []
+    released: list[str] = []
+
+    monkeypatch.setattr(
+        auto_module,
+        "claim_adjudication_schedule",
+        lambda *_args, target_id, **_kwargs: f"token:{target_id}",
+    )
+    monkeypatch.setattr(auto_module, "build_l4_llm_call", lambda *_args: object())
+    monkeypatch.setattr(
+        auto_module,
+        "run_auto_adjudication",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "status": "applied_l4_degraded",
+            "lanes_status": "committed",
+            "l4": {"status": "failed", "errors": 1},
+            "_l4_retry_candidate_ids": ["held-publication-gap"],
+        },
+    )
+    monkeypatch.setattr(
+        auto_module,
+        "complete_adjudication_schedule",
+        lambda *_args, target_id, **_kwargs: completed.append(target_id) or True,
+    )
+
+    def fail_l4_retry(*_args, target_id: str, **_kwargs):
+        if target_id.endswith(":l4"):
+            raise RuntimeError("injected L4 retry publication failure")
+        return True
+
+    monkeypatch.setattr(auto_module, "retry_adjudication_schedule", fail_l4_retry)
+    monkeypatch.setattr(
+        auto_module,
+        "release_adjudication_schedule",
+        lambda *_args, target_id, **_kwargs: released.append(target_id) or True,
+    )
+
+    run_provider_auto_adjudication(provider, trigger="publication-gap")
+
+    assert target not in completed
+    assert target in released
+    assert f"{target}:l4" in released
+
+
+
+def test_doctor_runtime_pipeline_surfaces_stale_claim_and_l4_config_error(tmp_path):
+    hermes_home, conn = _home(tmp_path)
+    target_id = schedule_target_id(("scope-test",))
+    record_governance_audit_event(
+        conn,
+        event_id="doctor-stale-primary-claim",
+        event_type="memory_auto_adjudication",
+        action="schedule_claim",
+        target_id=target_id,
+        after={"claim_id": "expired", "expires_at_unix": 1.0},
+        reason="stale claim fixture",
+        actor="test",
+    )
+    record_governance_audit_event(
+        conn,
+        event_id="doctor-l4-config-retry",
+        event_type="memory_auto_adjudication",
+        action="schedule_retry",
+        target_id=f"{target_id}:l4",
+        after={
+            "retry_at_unix": 2.0,
+            "retry_context": {"reason": "l4_config_error", "candidate_ids": ["held"]},
+        },
+        reason="L4 config retry fixture",
+        actor="test",
+    )
+    conn.commit()
+    conn.close()
+
+    payload, check, recommendations = runtime_pipeline_report(
+        hermes_home,
+        {"capture_queue_capacity": 64},
+    )
+
+    assert check["ok"] is False
+    assert payload["capture"] == {
+        "mode": "bounded_process_local",
+        "capacity": 64,
+        "durable_backlog": False,
+        "pressure_result": "rejected",
+        "ok": True,
+    }
+    assert payload["adjudication"]["stale_claims"] == 1
+    assert payload["adjudication"]["l4_config_errors"] == 1
+    assert any("expired claim" in item for item in recommendations)
+    assert any("LLM configuration" in item for item in recommendations)

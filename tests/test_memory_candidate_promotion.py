@@ -141,6 +141,48 @@ def test_candidate_report_keeps_conflicting_candidate_for_review(tmp_path):
     assert sample["conflict_with"] == "active"
 
 
+def test_candidate_conflict_finds_active_duplicate_older_than_200_rows(tmp_path):
+    """Promotion conflict checks must not silently ignore an older duplicate."""
+
+    db_path = tmp_path / "memory.sqlite3"
+    conn = _conn(db_path)
+    duplicate_content = "Run pytest and doctor before rollout."
+    try:
+        _insert_memory(
+            conn,
+            "active-duplicate-old",
+            summary="Stable workflow",
+            content=duplicate_content,
+            metadata={"lifecycle": "promoted"},
+            updated_at="2025-01-01T00:00:00+00:00",
+        )
+        for index in range(201):
+            _insert_memory(
+                conn,
+                f"active-filler-{index:03d}",
+                summary=f"Unrelated active workflow {index}",
+                content=f"Run unrelated verification workflow number {index}.",
+                metadata={"lifecycle": "promoted"},
+                updated_at=f"2026-01-01T00:{index // 60:02d}:{index % 60:02d}+00:00",
+            )
+        _insert_memory(
+            conn,
+            "candidate-behind-window",
+            summary="Stable workflow",
+            content=duplicate_content,
+        )
+        row = conn.execute(
+            "SELECT * FROM memories WHERE id='candidate-behind-window'"
+        ).fetchone()
+        decision = classify_candidate_row(row, conn)
+    finally:
+        conn.close()
+
+    assert decision.action == "keep_candidate"
+    assert decision.reason == "active_memory_conflict"
+    assert decision.conflict_with == "active-duplicate-old"
+
+
 def test_candidate_rows_and_debt_report_respect_scope_ids(tmp_path):
     db_path = tmp_path / "memory.sqlite3"
     conn = _conn(db_path)

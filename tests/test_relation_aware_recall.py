@@ -269,6 +269,145 @@ def test_relation_rerank_boosts_superseding_candidate_when_enabled():
         provider.close()
 
 
+def test_suppress_mode_keeps_deterministic_winner_without_double_kill():
+    first = _item("first-contradiction", 0.82)
+    second = _item("second-contradiction", 0.81)
+    provider = DummyProvider(
+        {
+            "mode": "lexical",
+            "min_score": 0.01,
+            "relation_contradiction_mode": "suppress",
+        },
+        [first, second],
+    )
+    try:
+        provider._require_conn().execute(
+            """
+            INSERT INTO memory_relations(
+                source_memory_id, target_memory_id, relation_type,
+                confidence, note, created_at
+            ) VALUES (?, ?, 'contradicts', 1.0, ?, ?)
+            """,
+            (
+                "first-contradiction",
+                "second-contradiction",
+                "symmetric evidence without authority",
+                "2026-06-01T00:00:00+00:00",
+            ),
+        )
+        provider._require_conn().commit()
+
+        service = RecallService(provider)
+        results = service.search_memories("Project Atlas deploy command", limit=2)
+
+        assert [item.id for item in results] == ["first-contradiction"]
+        assert any(
+            row.id == "second-contradiction"
+            and (row.metadata or {}).get("rejected_reason")
+            == "relation_contradiction_suppressed"
+            for row in service.last_rejected_candidates
+        )
+        assert not any(
+            row.id == "first-contradiction"
+            for row in service.last_rejected_candidates
+        )
+    finally:
+        provider.close()
+
+
+def test_suppress_mode_preserves_one_sided_bounded_candidate():
+    visible = _item("visible-contradiction-side", 0.82)
+    provider = DummyProvider(
+        {
+            "mode": "lexical",
+            "min_score": 0.01,
+            "relation_contradiction_mode": "suppress",
+        },
+        [visible],
+    )
+    try:
+        provider._require_conn().execute(
+            "INSERT OR REPLACE INTO memories(id, scope_id, target, metadata) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                "bounded-out-peer",
+                "shared-scope",
+                "project",
+                json.dumps({"lifecycle": "active", "scope_id": "shared-scope"}),
+            ),
+        )
+        provider._require_conn().execute(
+            """
+            INSERT INTO memory_relations(
+                source_memory_id, target_memory_id, relation_type,
+                confidence, note, created_at
+            ) VALUES (?, ?, 'contradicts', 1.0, ?, ?)
+            """,
+            (
+                "visible-contradiction-side",
+                "bounded-out-peer",
+                "only one side reached the bounded candidate set",
+                "2026-06-01T00:00:00+00:00",
+            ),
+        )
+        provider._require_conn().commit()
+
+        service = RecallService(provider)
+        results = service.search_memories("Project Atlas deploy command", limit=1)
+
+        assert [item.id for item in results] == ["visible-contradiction-side"]
+        assert service.last_rejected_candidates == []
+    finally:
+        provider.close()
+
+
+def test_suppress_mode_rejects_only_directionally_superseded_loser():
+    winner = _item("current-command", 0.82)
+    loser = _item("superseded-command", 0.81)
+    provider = DummyProvider(
+        {
+            "mode": "lexical",
+            "min_score": 0.01,
+            "relation_contradiction_mode": "suppress",
+        },
+        [winner, loser],
+    )
+    try:
+        provider._require_conn().executemany(
+            """
+            INSERT INTO memory_relations(
+                source_memory_id, target_memory_id, relation_type,
+                confidence, note, created_at
+            ) VALUES (?, ?, ?, 1.0, ?, ?)
+            """,
+            [
+                (
+                    "current-command",
+                    "superseded-command",
+                    relation_type,
+                    "directional authority",
+                    "2026-06-01T00:00:00+00:00",
+                )
+                for relation_type in ("contradicts", "supersedes")
+            ],
+        )
+        provider._require_conn().commit()
+
+        service = RecallService(provider)
+        results = service.search_memories("Project Atlas deploy command", limit=2)
+
+        assert [item.id for item in results] == ["current-command"]
+        assert any(
+            row.id == "superseded-command"
+            and (row.metadata or {}).get("rejected_reason")
+            == "relation_contradiction_suppressed"
+            for row in service.last_rejected_candidates
+        )
+        assert not any(row.id == "current-command" for row in service.last_rejected_candidates)
+    finally:
+        provider.close()
+
+
 @pytest.mark.parametrize("mode", ["surface", "penalize", "suppress"])
 def test_relation_contradiction_mode_has_distinct_surface_penalize_and_suppress_semantics(mode):
     contradicted = _item("contradicted-command", 0.82)
@@ -333,13 +472,11 @@ def test_relation_contradiction_mode_has_distinct_surface_penalize_and_suppress_
                 "relation_rerank_bonus"
             ] < 0.0
         else:
-            assert [item.id for item in results] == ["clean-command"]
-            assert any(
-                row.id == "contradicted-command"
-                and (row.metadata or {}).get("rejected_reason")
-                == "relation_contradiction_suppressed"
-                for row in service.last_rejected_candidates
-            )
+            assert [item.id for item in results] == [
+                "contradicted-command",
+                "clean-command",
+            ]
+            assert service.last_rejected_candidates == []
     finally:
         provider.close()
 

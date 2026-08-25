@@ -8,13 +8,13 @@ import time
 import pytest
 
 import scope_recall.capture as capture
-from scope_recall.capture_control import new_write_control_queue
+from scope_recall.capture_control import new_write_queue
 
 
 class _Provider:
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._write_queue: queue.Queue[object] = new_write_control_queue()
+        self._write_queue: queue.Queue[object] = new_write_queue()
         self._writer_thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._maintenance_stop = threading.Event()
@@ -72,6 +72,31 @@ def test_shutdown_timeout_keeps_live_thread_visible_for_safe_retry(
     release.set()
     capture.shutdown_writer(provider, timeout=1.0)
     assert provider._writer_thread is None
+
+
+def test_shutdown_submission_lock_wait_obeys_hard_deadline() -> None:
+    provider = _Provider()
+    provider._capture_submission_lock = threading.RLock()
+    acquired = threading.Event()
+    release = threading.Event()
+
+    def hold_submission() -> None:
+        with provider._capture_submission_lock:
+            acquired.set()
+            release.wait(timeout=2.0)
+
+    holder = threading.Thread(target=hold_submission, name="capture-submission-holder")
+    holder.start()
+    assert acquired.wait(timeout=1.0)
+    started = time.monotonic()
+    try:
+        with pytest.raises(RuntimeError, match="did not acknowledge"):
+            capture.shutdown_writer(provider, timeout=0.05)
+        assert time.monotonic() - started < 0.25
+        assert provider._shutdown_requested.is_set() is False
+    finally:
+        release.set()
+        holder.join(timeout=1.0)
 
 
 def test_enqueue_after_writer_shutdown_fails_instead_of_silently_losing_write() -> None:
@@ -179,3 +204,38 @@ def test_flush_rejects_dead_writer_with_pending_work() -> None:
     provider._write_queue.put(object())
 
     assert capture.flush_writer(provider, timeout=0.01) is False
+
+
+def test_shutdown_consumes_control_sentinel_before_writer_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker must not exit on ``_stop`` before consuming its sentinel."""
+
+    provider = _Provider()
+    capture.start_writer(provider)
+    original_put_work = capture.put_work
+    delayed_sentinel = threading.Event()
+
+    def delay_sentinel_until_old_worker_exits(work_queue, item, *, timeout):
+        if item is None:
+            deadline = time.monotonic() + 0.5
+            thread = provider._writer_thread
+            while thread is not None and thread.is_alive() and time.monotonic() < deadline:
+                time.sleep(0.005)
+            delayed_sentinel.set()
+        return original_put_work(work_queue, item, timeout=timeout)
+
+    monkeypatch.setattr(capture, "put_work", delay_sentinel_until_old_worker_exits)
+
+    capture.shutdown_writer(provider, timeout=1.0)
+
+    assert delayed_sentinel.is_set()
+    assert provider._write_queue.empty()
+
+    capture.start_writer(provider)
+    restarted = provider._writer_thread
+    assert restarted is not None
+    time.sleep(0.05)
+    assert restarted.is_alive()
+
+    capture.shutdown_writer(provider, timeout=1.0)

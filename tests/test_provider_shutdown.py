@@ -12,6 +12,7 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -146,6 +147,68 @@ def test_shutdown_timeout_keeps_connections_open_for_safe_retry(
     assert provider._conn is None
     assert provider._vector_store is None
     assert unregister_calls == ["unregistered"]
+
+
+def test_public_shutdown_lifecycle_lock_wait_obeys_total_deadline(tmp_path) -> None:
+    provider = _provider(tmp_path)
+    lifecycle_held = threading.Event()
+    release_lifecycle = threading.Event()
+
+    def hold_lifecycle() -> None:
+        with provider._writer_lifecycle_lock:
+            lifecycle_held.set()
+            release_lifecycle.wait(timeout=2.0)
+
+    holder = threading.Thread(target=hold_lifecycle, name="shutdown-lifecycle-holder")
+    holder.start()
+    assert lifecycle_held.wait(timeout=1.0)
+    started = time.monotonic()
+    try:
+        with pytest.raises(RuntimeError, match="shutdown deadline"):
+            provider.shutdown(timeout=0.05)
+        assert time.monotonic() - started < 0.25
+        assert provider._shutdown_requested.is_set() is False
+        assert bool(getattr(provider, "_shutdown_finalized", False)) is False
+    finally:
+        release_lifecycle.set()
+        holder.join(timeout=1.0)
+
+    provider.shutdown(timeout=1.0)
+    assert bool(getattr(provider, "_shutdown_finalized", False)) is True
+
+
+def test_public_shutdown_shares_one_deadline_between_writer_and_digest(
+    tmp_path, monkeypatch
+) -> None:
+    provider = _provider(tmp_path)
+    writer_timeouts: list[float] = []
+    digest_timeouts: list[float] = []
+
+    def slow_writer(_provider, *, timeout: float) -> None:
+        writer_timeouts.append(timeout)
+        time.sleep(0.07)
+
+    def slow_digest(timeout: float) -> None:
+        digest_timeouts.append(timeout)
+        time.sleep(max(0.0, timeout))
+
+    monkeypatch.setattr(provider_module, "shutdown_writer", slow_writer)
+    monkeypatch.setattr(provider._background_work(), "join_digest", slow_digest)
+    monkeypatch.setattr(
+        provider,
+        "_cleanup_failed_writer_initialization",
+        lambda **_kwargs: True,
+    )
+
+    started = time.monotonic()
+    provider.shutdown(timeout=0.1)
+    elapsed = time.monotonic() - started
+
+    assert len(writer_timeouts) == 1
+    assert len(digest_timeouts) == 1
+    assert 0.0 <= digest_timeouts[0] < 0.06
+    assert elapsed < 0.15
+    assert provider._shutdown_finalized is True
 
 
 def test_shutdown_during_digest_skips_post_digest_promotion(

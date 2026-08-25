@@ -1686,10 +1686,9 @@ def _dynamic_journal_digest_limit(
         excluded_chat_ids=excluded_chat_ids,
     )
     auto_threshold = max(1, configured_limit * 4)
-    # Merged code defaults used 2000/1200 for a 500-entry window. Live
-    # Tianshu overrode the window to 80 but kept those defaults, so a
-    # 999-entry backlog never scaled. Never let the trigger sit above
-    # 4x the current window.
+    # A deployment may override the window while retaining larger defaults,
+    # leaving a smaller backlog unable to scale. Never let the trigger sit
+    # above 4x the current window.
     threshold = min(
         _coerce_positive_int(
             journal_config.get("dynamic_backlog_threshold"), auto_threshold

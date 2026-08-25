@@ -24,11 +24,7 @@ from ._internal.memory.scope import accessible_scope_params, payload_entities, s
 from .models import recall_scope_mode
 from .operator_ledger import operator_ledger_report
 from ._internal.recall.pipeline import humanize_filter_trace, humanize_recall_components
-from .capture_intents import (
-    capture_intent_report,
-    merge_capture_queue_report,
-    queue_capacity,
-)
+from .capture_control import capture_queue_report
 from .relation_rebuild_queue import relation_rebuild_queue_report
 from .sql_store import curated_recall_item_id, iter_curated_entries  # noqa: F401
 from .storage_views import _curated_memory_allowed
@@ -38,6 +34,17 @@ def _as_str_dict(payload: Any) -> dict[str, Any]:
     if isinstance(payload, dict):
         return {str(key): value for key, value in payload.items()}
     return {}
+
+
+def _public_migration_info(payload: Any) -> dict[str, bool]:
+    """Expose migration outcomes without publishing local filesystem paths."""
+
+    info = _as_str_dict(payload)
+    return {
+        key: bool(info[key])
+        for key in ("migrated", "config_copied")
+        if key in info
+    }
 
 
 def _require_port_method(provider: Any, name: str) -> Any:
@@ -1007,28 +1014,7 @@ def stats_payload(provider: Any) -> dict[str, Any]:
             conn, accessible_scope_ids=accessible_scope_params(provider)
         )
         relation_rebuild = relation_rebuild_queue_report(conn)
-        capture_capacity = queue_capacity(getattr(provider, "_config", None))
-        try:
-            capture_queue = merge_capture_queue_report(
-                capture_intent_report(conn, capacity=capture_capacity),
-                provider,
-                capacity=capture_capacity,
-            )
-        except sqlite3.OperationalError:
-            capture_queue = merge_capture_queue_report(
-                {
-                    "status": "unavailable",
-                    "capacity": capture_capacity,
-                    "depth": 0,
-                    "pending": 0,
-                    "processing": 0,
-                    "oldest_age_seconds": 0.0,
-                    "rejected": 0,
-                    "deferred": 0,
-                },
-                provider,
-                capacity=capture_capacity,
-            )
+        capture_queue = capture_queue_report(provider)
         operator_ledger = operator_ledger_report(conn)
         freshness = fact_freshness_report(conn)
         adjudication_report = dict(
@@ -1096,7 +1082,7 @@ def stats_payload(provider: Any) -> dict[str, Any]:
         "capture_queue": capture_queue,
         "operator_ledger": operator_ledger,
         "curated_memories": len(_ops.iter_curated_entries(runtime_view.get("hermes_home"))),
-        "migration": dict(runtime_view.get("migration_info") or {}),
+        "migration": _public_migration_info(runtime_view.get("migration_info")),
         "background_writer": {
             "thread_alive": bool(runtime_view.get("writer_thread_alive")),
             "failed_writes": failed_writes,

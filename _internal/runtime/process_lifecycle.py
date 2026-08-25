@@ -23,6 +23,7 @@ import logging
 import sqlite3
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -136,6 +137,23 @@ def _call_provider(provider: Any, name: str, *args: Any, default: Any = None, **
     if callable(default):
         return default(*args, **kwargs)
     raise RuntimeError(f"Scope Recall process lifecycle missing {name}")
+
+
+def _remaining(deadline: float) -> float:
+    return max(0.0, deadline - time.monotonic())
+
+
+def _acquire_shutdown_lock(lock: Any, *, deadline: float, name: str) -> bool:
+    """Acquire one optional process-shutdown lock without crossing deadline."""
+
+    if lock is None:
+        return False
+    remaining = _remaining(deadline)
+    if remaining <= 0 or not lock.acquire(timeout=remaining):
+        raise RuntimeError(
+            f"Scope Recall shutdown deadline expired while acquiring {name} lock"
+        )
+    return True
 
 
 def _attach_writer_runtime(provider: Any) -> None:
@@ -685,36 +703,48 @@ def shutdown_provider_process(provider: Any, *, timeout: float = 3.0) -> None:
         provider._shutdown_finalized = True
         return
 
-    wait_timeout = max(0.0, float(timeout))
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    submission_lock = getattr(provider, "_capture_submission_lock", None)
     lifecycle_lock = getattr(provider, "_writer_lifecycle_lock", None)
-    if lifecycle_lock is not None:
-        with lifecycle_lock:
-            shutdown_requested = getattr(provider, "_shutdown_requested", None)
-            if shutdown_requested is not None:
-                shutdown_requested.set()
-            maintenance_stop = getattr(provider, "_maintenance_stop", None)
-            if maintenance_stop is not None:
-                maintenance_stop.set()
-    else:
+    submission_acquired = False
+    lifecycle_acquired = False
+    try:
+        submission_acquired = _acquire_shutdown_lock(
+            submission_lock, deadline=deadline, name="capture submission"
+        )
+        lifecycle_acquired = _acquire_shutdown_lock(
+            lifecycle_lock, deadline=deadline, name="writer lifecycle"
+        )
         shutdown_requested = getattr(provider, "_shutdown_requested", None)
         if shutdown_requested is not None:
             shutdown_requested.set()
         maintenance_stop = getattr(provider, "_maintenance_stop", None)
         if maintenance_stop is not None:
             maintenance_stop.set()
+    finally:
+        if lifecycle_acquired and lifecycle_lock is not None:
+            lifecycle_lock.release()
+        if submission_acquired and submission_lock is not None:
+            submission_lock.release()
 
     if bool(getattr(provider, "_shutdown_finalized", False)):
         return
 
     writer_error: Exception | None = None
     try:
-        _shutdown_writer(provider, wait_timeout)
+        _shutdown_writer(provider, _remaining(deadline))
     except Exception as exc:
         writer_error = exc
 
-    _background_work(provider).join_digest(wait_timeout)
+    digest_error: Exception | None = None
+    try:
+        _background_work(provider).join_digest(_remaining(deadline))
+    except Exception as exc:
+        digest_error = exc
     if writer_error is not None:
         raise writer_error
+    if digest_error is not None:
+        raise digest_error
 
     cleanup = getattr(provider, "_cleanup_failed_writer_initialization", None)
     if callable(cleanup):

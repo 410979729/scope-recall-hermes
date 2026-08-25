@@ -18,13 +18,14 @@ import os
 import pathlib
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
 import tempfile
 import tomllib
 import zipfile
-from typing import Any
+from typing import Any, Sequence
 
 try:
     import yaml
@@ -92,16 +93,20 @@ _IDENTIFIER_CONTEXT_WINDOW_CHARS = 160
 _RESERVED_POSITIVE_IDENTIFIER = "9000000001"
 _RESERVED_IDENTIFIER_FIXTURE_PATHS = frozenset(
     {
+        "tests/test_experience_tools.py",
+        "tests/test_governance_contract_regressions.py",
+        "tests/test_journal_backlog_fairness.py",
         "tests/test_journal_digest.py",
         "tests/test_journal_extractors.py",
         "tests/test_nightly_digest.py",
         "tests/test_provider.py",
+        "tests/test_review_blockers.py",
         "tests/test_v1015_audit_regressions.py",
     }
 )
 FORBIDDEN_PUBLIC_DOC_MARKERS = {
     "personal_name_joy": re.compile(r"\b" + "J" + "oy" + r"\b"),
-    "agent_persona_yuheng": re.compile("玉" + "衡"),
+    "agent_persona_" + "yu" + "heng": re.compile("玉" + "衡"),
     "manual_review_private_context": re.compile(r"人工复审"),
     "private_product_promise": re.compile("product promise " + "J" + "oy cares about", re.I),
 }
@@ -109,8 +114,15 @@ FORBIDDEN_PUBLIC_PACKAGE_PERSONA_MARKERS = {
     "private_user_joy": re.compile(r"\b" + "J" + "oy" + r"\b", re.I),
     "private_user_eri": re.compile(r"\b" + "E" + "ri" + r"\b", re.I),
     "private_agent_aria": re.compile(r"\b" + "A" + "ria" + r"\b", re.I),
-    "agent_persona_yuheng": re.compile("玉" + "衡"),
-    "private_project_beidou": re.compile(r"\b" + "Bei" + "dou" + r"\b", re.I),
+    "agent_persona_" + "yu" + "heng": re.compile(
+        r"\b" + "Yu" + "heng" + r"\b|" + "玉" + "衡", re.I
+    ),
+    "private_agent_" + "tian" + "shu": re.compile(
+        r"\b" + "Tian" + "shu" + r"\b|" + "天" + "枢", re.I
+    ),
+    "private_project_" + "bei" + "dou": re.compile(
+        r"\b" + "Bei" + "dou" + r"\b|" + "北" + "斗", re.I
+    ),
 }
 FORBIDDEN_DISTRIBUTION_PATH_FRAGMENTS = (
     "/docs/plans/",
@@ -118,27 +130,27 @@ FORBIDDEN_DISTRIBUTION_PATH_FRAGMENTS = (
 )
 FORBIDDEN_DISTRIBUTION_BASENAMES = {
     "hermes-upstream-recommendation-plan.md",
-    "beidou_shared_memory.py",
+    "bei" + "dou_shared_memory.py",
     "shared_bridge_contract.py",
     "shared_bridge_outbox.py",
     "shared_bridge_runtime.py",
-    "test_beidou_shared_memory.py",
+    "test_" + "bei" + "dou_shared_memory.py",
     "test_shared_bridge_contract.py",
     "test_shared_bridge_outbox.py",
     "test_shared_bridge_runtime.py",
-    "test_beidou_shared_bridge.py",
+    "test_" + "bei" + "dou_shared_bridge.py",
     "internal.module-map.md",
 }
 FORBIDDEN_PUBLIC_SOURCE_PATHS = {
-    "beidou_shared_memory.py",
+    "bei" + "dou_shared_memory.py",
     "shared_bridge_contract.py",
     "shared_bridge_outbox.py",
     "shared_bridge_runtime.py",
-    "tests/test_beidou_shared_memory.py",
+    "tests/test_" + "bei" + "dou_shared_memory.py",
     "tests/test_shared_bridge_contract.py",
     "tests/test_shared_bridge_outbox.py",
     "tests/test_shared_bridge_runtime.py",
-    "tests/test_beidou_shared_bridge.py",
+    "tests/test_" + "bei" + "dou_shared_bridge.py",
     "docs/internal.module-map.md",
 }
 FORBIDDEN_PUBLIC_SOURCE_PREFIXES = ("tests/phase0/",)
@@ -665,6 +677,13 @@ WINDOWS_PRIVATE_AGENT_ROOT_RE = re.compile(
     r"(?:^|[\s`'\"=(])[A-Za-z]:[/\\]+Agents[/\\]",
     re.IGNORECASE,
 )
+ABSOLUTE_HOME_PATH_RE = re.compile(
+    r"(?:^|[\s`'\"=(])(?:"
+    r"[A-Za-z]:[/\\]+Users[/\\]+[^/\\\s`'\"<>|]+[/\\]"
+    r"|/(?:home|Users)/[^/\s`'\"<>]+/"
+    r")",
+    re.IGNORECASE,
+)
 
 
 def _private_path_markers() -> tuple[str, ...]:
@@ -672,7 +691,6 @@ def _private_path_markers() -> tuple[str, ...]:
 
     home = pathlib.Path.home()
     raw = {
-        str(home / ".hermes-yuheng"),
         str(home) + os.sep,
         str(home) + "/",
     }
@@ -692,6 +710,8 @@ def _line_has_private_path(line: str, markers: tuple[str, ...]) -> bool:
     if any(marker in line for marker in markers):
         return True
     if PRIVATE_TILDE_INSTANCE_HOME_RE.search(line):
+        return True
+    if ABSOLUTE_HOME_PATH_RE.search(line):
         return True
     return WINDOWS_PRIVATE_AGENT_ROOT_RE.search(line) is not None
 
@@ -739,12 +759,152 @@ def resolve_release_command(
         "trusted Git executable was not found outside the release candidate"
     )
 
+
+GIT_HELPER_TIMEOUT_SECONDS = 15.0
+_GIT_HELPER_CODE = r"""
+import json
+import pathlib
+import subprocess
+import sys
+
+cmd = json.loads(sys.argv[1])
+try:
+    completed = subprocess.run(cmd, capture_output=True, check=False)
+except FileNotFoundError:
+    payload = {
+        "returncode": 127,
+        "stdout": "",
+        "stderr": "",
+        "error": "prerequisite_missing",
+        "prerequisite": pathlib.PurePath(str(cmd[0])).name if cmd else "",
+    }
+except OSError as exc:
+    winerror = getattr(exc, "winerror", None)
+    payload = {
+        "returncode": int(winerror or exc.errno or 1),
+        "stdout": "",
+        "stderr": str(exc),
+        "error": "prerequisite_unusable",
+        "prerequisite": pathlib.PurePath(str(cmd[0])).name if cmd else "",
+        "detail": str(exc),
+        "winerror": winerror,
+        "errno": exc.errno,
+    }
+else:
+    payload = {
+        "returncode": completed.returncode,
+        "stdout": completed.stdout.decode("utf-8", errors="replace"),
+        "stderr": completed.stderr.decode("utf-8", errors="replace"),
+    }
+sys.stdout.write(json.dumps(payload, ensure_ascii=True))
+"""
+
+
+def _terminate_process_tree(proc: subprocess.Popen[bytes]) -> None:
+    """Best-effort termination of a timed-out helper and all descendants."""
+
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5.0,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+    if proc.poll() is None:
+        proc.kill()
+    try:
+        proc.wait(timeout=5.0)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _run_git_helper(
+    cmd: list[str],
+    *,
+    cwd: pathlib.Path,
+    env: dict[str, str],
+    timeout: float,
+) -> dict[str, object]:
+    """Launch Git behind a trusted bounded worker so CreateProcess cannot hang the gate."""
+
+    creationflags = (
+        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-I", "-c", _GIT_HELPER_CODE, json.dumps(cmd)],
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        creationflags=creationflags,
+        start_new_session=os.name != "nt",
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _terminate_process_tree(proc)
+        return {
+            "cmd": cmd,
+            "returncode": 124,
+            "stdout": "",
+            "stderr": "",
+            "error": "prerequisite_timeout",
+            "prerequisite": "git",
+            "timeout_seconds": timeout,
+        }
+    if proc.returncode != 0:
+        detail = stderr.decode("utf-8", errors="replace")
+        return {
+            "cmd": cmd,
+            "returncode": proc.returncode,
+            "stdout": "",
+            "stderr": detail,
+            "error": "prerequisite_unusable",
+            "prerequisite": "git",
+            "detail": detail,
+        }
+    try:
+        payload = json.loads(stdout.decode("utf-8", errors="strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return {
+            "cmd": cmd,
+            "returncode": 1,
+            "stdout": "",
+            "stderr": "",
+            "error": "prerequisite_unusable",
+            "prerequisite": "git",
+            "detail": f"invalid bounded Git helper response: {type(exc).__name__}",
+        }
+    if not isinstance(payload, dict):
+        payload = {
+            "returncode": 1,
+            "stdout": "",
+            "stderr": "",
+            "error": "prerequisite_unusable",
+            "prerequisite": "git",
+            "detail": "invalid bounded Git helper response type",
+        }
+    payload["cmd"] = cmd
+    return payload
+
 def run(
     cmd: list[str],
     *,
     cwd: pathlib.Path = ROOT,
     env: dict[str, str] | None = None,
     capture_output: bool = True,
+    timeout: float | None = None,
 ) -> dict[str, object]:
     """Run a release subprocess with optional output capture.
 
@@ -758,6 +918,13 @@ def run(
     child_env["PYTHONIOENCODING"] = "utf-8"
     try:
         resolved_cmd = resolve_release_command(cmd, env=child_env)
+        if cmd and pathlib.PurePath(str(cmd[0])).name.lower() in {"git", "git.exe"}:
+            return _run_git_helper(
+                resolved_cmd,
+                cwd=cwd,
+                env=child_env,
+                timeout=GIT_HELPER_TIMEOUT_SECONDS if timeout is None else timeout,
+            )
         proc = subprocess.run(
             resolved_cmd,
             cwd=cwd,
@@ -766,7 +933,18 @@ def run(
             encoding="utf-8",
             errors="replace",
             capture_output=capture_output,
+            timeout=timeout,
         )
+    except subprocess.TimeoutExpired:
+        return {
+            "cmd": cmd,
+            "returncode": 124,
+            "stdout": "",
+            "stderr": "",
+            "error": "prerequisite_timeout",
+            "prerequisite": pathlib.PurePath(str(cmd[0])).name if cmd else "",
+            "timeout_seconds": timeout,
+        }
     except FileNotFoundError:
         # A missing prerequisite (for example Git absent from PATH) must fail
         # closed as structured gate output, not as a bare traceback.
@@ -1944,6 +2122,29 @@ def pypi_workflow_gate_check() -> dict[str, object]:
         failures.append("PyPI workflow does not refuse repeated dispatch without upload")
     if "pypi.org/pypi/hermes-scope-recall" not in pypi_text:
         failures.append("PyPI workflow does not check the published package version")
+    staged_layout_markers = (
+        "stage_release_assets.py",
+        "--packages-dir release-staging/packages",
+        "--metadata-dir release-staging/metadata",
+        "python -m twine check release-staging/packages/*",
+        "release-staging/packages/*.whl",
+        "release-staging/packages/*.tar.gz",
+        "release-staging/metadata/SHA256SUMS",
+        "packages-dir: release-assets/packages/",
+    )
+    if any(marker not in pypi_text for marker in staged_layout_markers):
+        failures.append(
+            "PyPI workflow must publish from a validated distribution-only packages directory"
+        )
+    provenance_markers = (
+        "release_provenance.py verify",
+        "RELEASE-PROVENANCE.json",
+        "actions/runs/${RELEASE_RUN_ID}",
+        "client_payload.source_sha",
+        "client_payload.release_run_id",
+    )
+    if any(marker not in pypi_text for marker in provenance_markers):
+        failures.append("PyPI workflow does not verify source/run-bound provenance")
 
     for workflow_name, workflow_text in (("PyPI", pypi_text), ("tag release", release_text)):
         if "Invalid release tag" not in workflow_text:
@@ -1969,6 +2170,34 @@ def pypi_workflow_gate_check() -> dict[str, object]:
         failures.append("tag release workflow must not upload onto an existing GitHub Release")
     if "Refuse existing GitHub Release" not in release_text:
         failures.append("tag release workflow does not refuse an existing GitHub Release")
+    release_policy_markers = (
+        'git cat-file -t "refs/tags/${RELEASE_TAG}"',
+        'test "${tag_type}" = "tag"',
+        "git rev-parse --verify refs/remotes/origin/main",
+        "git merge-base --is-ancestor HEAD refs/remotes/origin/main",
+        "commits/${RELEASE_SHA}/check-runs",
+        "windows-full-py311",
+        "windows-full-py312",
+        "windows-no-symlink-py311",
+    )
+    if any(marker not in release_text for marker in release_policy_markers):
+        failures.append(
+            "tag release workflow must require an annotated tag with local main ancestry and exact-SHA required CI"
+        )
+    if "git fetch --no-tags origin main" in release_text:
+        failures.append("tag release workflow must use the checkout's local main ref")
+    if "branches/main/protection/required_status_checks" in release_text:
+        failures.append(
+            "tag release workflow must not require unavailable Administration API access"
+        )
+    release_provenance_markers = (
+        "release_provenance.py create",
+        "RELEASE-PROVENANCE.json",
+        "client_payload[source_sha]",
+        "client_payload[release_run_id]",
+    )
+    if any(marker not in release_text for marker in release_provenance_markers):
+        failures.append("tag release workflow does not emit source/run-bound provenance")
     if "gh release create" not in release_text:
         failures.append("tag release workflow does not create a GitHub Release")
     if (
@@ -2074,13 +2303,8 @@ def redact_sensitive(text: object) -> str:
 
 SYNTHETIC_HOME_PRIVATE_FIXTURE = "/home/" + "a/private"
 
-SYNTHETIC_TEST_FIXTURE_MARKERS = (
-    "fake",
-    "fixture",
-    "legacy_",
-    "example_",
-    "notareal",
-    "not_a_real",
+APPROVED_SYNTHETIC_TEST_VALUES = (
+    "notarealsecretvalue12345",
     "public-test-token",
     "secret1234567890",
     "abcdef1234567890",
@@ -2091,16 +2315,73 @@ SYNTHETIC_TEST_FIXTURE_MARKERS = (
     "sk-secret",
     "[redacted",
     "redacted_",
+    "«redacted:sk-",
+    "sk-exa...7890",
+    "not_a_real_key_12345",
+    "legacy_status_example_12345",
+    "legacy_outcome_example_12345",
+    "legacy_token_example_12345",
+    "legacy_key_name_12345",
+    "not-a-real-secret",
+
+    "charlie1234567890zulu",
     "private/output.log",
     SYNTHETIC_HOME_PRIVATE_FIXTURE,
 )
+APPROVED_SYNTHETIC_SOURCE_ONLY_VALUES = (
+    '"900" + "0000002"',
+)
+APPROVED_SYNTHETIC_TEST_PATH_FRAGMENTS = (
+    "/" + "home/synthetic/",
+    "/" + "home/operator/",
+    "/" + "home/private-user/",
+    "c:" + "/" + "users/synthetic/",
+    "c:" + "/" + "users/administrator/",
+    "c:" + r"\users\synthetic",
+    "c:" + r"\users\administrator",
+    "c:" + r"\users\alice",
+    "c:" + r"\users\operator",
+    "c:" + r"\\users\\synthetic",
+    "c:" + r"\\users\\administrator",
+    "c:" + r"\\users\\alice",
+    "c:" + r"\\users\\operator",
+    "c:" + r"users\administrator",
+    "c:" + r"users\\administrator",
+)
 
 
-def _is_synthetic_test_fixture_line(rel: pathlib.Path, line: str) -> bool:
+def _mask_exact_synthetic_test_values(
+    rel: pathlib.Path,
+    text: str,
+    values: Sequence[str],
+) -> str:
+    """Mask only approved fixture substrings while preserving scan offsets."""
+
     if rel.parts[:1] != ("tests",):
+        return text
+    masked = text
+    for value in sorted(values, key=len, reverse=True):
+        masked = re.sub(
+            re.escape(value),
+            lambda match: "_" * len(match.group(0)),
+            masked,
+            flags=re.IGNORECASE,
+        )
+    return masked
+
+
+def _is_synthetic_identifier_fixture_context(
+    rel: pathlib.Path,
+    context: str,
+    *,
+    allow_source_fixture_exemptions: bool = True,
+) -> bool:
+    """Allow only the explicit source-assembled identifier fixture."""
+
+    if rel.parts[:1] != ("tests",) or not allow_source_fixture_exemptions:
         return False
-    lowered = line.lower()
-    return any(marker in lowered for marker in SYNTHETIC_TEST_FIXTURE_MARKERS)
+    lowered = context.lower()
+    return any(value in lowered for value in APPROVED_SYNTHETIC_SOURCE_ONLY_VALUES)
 
 
 def _is_reserved_identifier_fixture_context(rel: pathlib.Path, context: str) -> bool:
@@ -2415,7 +2696,13 @@ def _non_python_identifier_lines(rel: pathlib.Path, text: str) -> set[int]:
     return _text_identifier_lines(text)
 
 
-def _scan_sensitive_text(rel: pathlib.Path, text: str, *, display_path: str = "") -> dict[str, list[str]]:
+def _scan_sensitive_text(
+    rel: pathlib.Path,
+    text: str,
+    *,
+    display_path: str = "",
+    allow_source_fixture_exemptions: bool = True,
+) -> dict[str, list[str]]:
     """Scan one decoded source/artifact member without echoing sensitive values."""
 
     findings: dict[str, list[str]] = {"secrets": [], "private_paths": []}
@@ -2438,17 +2725,21 @@ def _scan_sensitive_text(rel: pathlib.Path, text: str, *, display_path: str = ""
         line_no
         for line_no in positive_lines
         if not (
-            _is_synthetic_test_fixture_line(
+            _is_synthetic_identifier_fixture_context(
                 rel,
                 "\n".join(lines[line_no - 1 :])[:_IDENTIFIER_CONTEXT_WINDOW_CHARS]
                 if 0 < line_no <= len(lines)
                 else "",
+                allow_source_fixture_exemptions=allow_source_fixture_exemptions,
             )
-            or _is_reserved_identifier_fixture_context(
-                rel,
-                "\n".join(lines[line_no - 1 :])[:_IDENTIFIER_CONTEXT_WINDOW_CHARS]
-                if 0 < line_no <= len(lines)
-                else "",
+            or (
+                allow_source_fixture_exemptions
+                and _is_reserved_identifier_fixture_context(
+                    rel,
+                    "\n".join(lines[line_no - 1 :])[:_IDENTIFIER_CONTEXT_WINDOW_CHARS]
+                    if 0 < line_no <= len(lines)
+                    else "",
+                )
             )
         )
     }
@@ -2456,8 +2747,13 @@ def _scan_sensitive_text(rel: pathlib.Path, text: str, *, display_path: str = ""
         f"{label}:{line_no}: personal_numeric_id: [REDACTED_ID]" for line_no in sorted(positive_lines)
     )
 
-    scan_shadow = secret_scan_shadow(text)
-    for match in scan_secret_like_text(text):
+    secret_text = _mask_exact_synthetic_test_values(
+        rel,
+        text,
+        APPROVED_SYNTHETIC_TEST_VALUES,
+    )
+    scan_shadow = secret_scan_shadow(secret_text)
+    for match in scan_secret_like_text(secret_text):
         line_no = scan_shadow[: match.start].count("\n") + 1
         line = lines[line_no - 1] if 0 <= line_no - 1 < len(lines) else match.text
         if match.name in {"api_key_assignment", "token_assignment"} and not _looks_like_release_secret(
@@ -2465,27 +2761,33 @@ def _scan_sensitive_text(rel: pathlib.Path, text: str, *, display_path: str = ""
             source_line=line,
         ):
             continue
-        if _is_synthetic_test_fixture_line(rel, line):
-            continue
         findings["secrets"].append(
             f"{label}:{line_no}: {match.name}: [REDACTED_SECRET]"
         )
 
     for match in TELEGRAM_GROUP_ID_RE.finditer(scan_shadow):
         line_no = scan_shadow[: match.start()].count("\n") + 1
-        line = lines[line_no - 1] if 0 <= line_no - 1 < len(lines) else ""
-        if _is_synthetic_test_fixture_line(rel, line):
-            continue
         findings["secrets"].append(
             f"{label}:{line_no}: personal_numeric_id: [REDACTED_ID]"
         )
 
     private_markers = _private_path_markers()
+    path_fixture_values = (
+        (*APPROVED_SYNTHETIC_TEST_PATH_FRAGMENTS, SYNTHETIC_HOME_PRIVATE_FIXTURE)
+        if allow_source_fixture_exemptions
+        else ()
+    )
     private_path_lines = [
         line_no
         for line_no, line in enumerate(lines, 1)
-        if _line_has_private_path(line, private_markers)
-        and not _is_synthetic_test_fixture_line(rel, line)
+        if _line_has_private_path(
+            _mask_exact_synthetic_test_values(
+                rel,
+                line,
+                path_fixture_values,
+            ),
+            private_markers,
+        )
     ]
     if private_path_lines:
         findings["private_paths"].append(f"{label}:{private_path_lines[0]}")
@@ -2549,7 +2851,7 @@ def _distribution_member_source_path(name: str) -> pathlib.Path:
 
 
 def _distribution_member_persona_eligible(name: str) -> bool:
-    """Limit persona scanning to shipped runtime code and packaged benchmark data."""
+    """Scan every shipped text surface except test fixtures."""
 
     parts = list(pathlib.PurePosixPath(str(name).replace("\\", "/")).parts)
     if parts and parts[0].startswith("hermes_scope_recall-"):
@@ -2558,10 +2860,8 @@ def _distribution_member_persona_eligible(name: str) -> bool:
         parts = parts[1:]
     if not parts or "tests" in parts:
         return False
-    suffix = pathlib.PurePosixPath(parts[-1]).suffix.lower()
-    if parts[0] == "benchmarks":
-        return suffix == ".json"
-    return suffix == ".py"
+    member = pathlib.PurePosixPath(parts[-1])
+    return member.suffix.lower() in _DISTRIBUTION_TEXT_SUFFIXES or member.name in _DISTRIBUTION_TEXT_NAMES
 
 
 def _scan_private_persona(name: str, text: str) -> list[dict[str, object]]:
@@ -2608,6 +2908,7 @@ def scan_distribution_artifact(path: pathlib.Path) -> dict[str, list[Any]]:
             rel,
             text,
             display_path=f"{artifact.name}:{name}",
+            allow_source_fixture_exemptions=False,
         )
         findings["secrets"].extend(scanned["secrets"])
         findings["private_paths"].extend(scanned["private_paths"])

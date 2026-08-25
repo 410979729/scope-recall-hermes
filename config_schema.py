@@ -11,7 +11,7 @@ from typing import Any
 _DESCRIPTION_OVERRIDES = {
     "auto_recall": "Enable automatic recall injection at turn start.",
     "auto_capture": "Capture eligible conversation turns into Scope Recall.",
-    "capture_queue_capacity": "Maximum unconsumed durable capture intents in SQLite. Distinct from the small in-memory wake/control channel. Excess enqueue attempts receive an explicit rejected or deferred status instead of silent loss.",
+    "capture_queue_capacity": "Maximum sanitized capture jobs held in the bounded process-local writer queue. Excess enqueue attempts receive an explicit rejected or deferred status instead of silent loss; queued payloads are not persisted.",
     "automatic_digest_default_lifecycle": "Lifecycle for non-time-sensitive journal/nightly automatic digest outputs. Candidate is the review-first default; promoted explicitly opts into immediate recall visibility. Time-sensitive snapshots remain candidates that need a live check.",
     "memory_isolated_chat_ids": "Runtime-only chat identifiers excluded from prompt recall, tools, capture, journal, and digest surfaces.",
     "journal.max_entries_per_digest": "Maximum journal entries a digest run may review before dynamic backlog expansion.",
@@ -92,7 +92,7 @@ _DESCRIPTION_OVERRIDES = {
     "forgetting.enabled": "Enable forgetting report and apply tools; disabled tools fail closed.",
     "forgetting.hard_delete_sensitive": "Second safety gate for sensitive-data hard deletion; apply also requires an explicit hard_delete request.",
     "forgetting.soft_archive_default": "Default whether forgetting apply archives soft candidates; each call may explicitly override it.",
-    "retrieval.relation_contradiction_mode": "Contradiction handling: surface keeps and warns, suppress excludes, and penalize applies relation_contradicts_penalty.",
+    "retrieval.relation_contradiction_mode": "Contradiction handling: surface keeps and warns; suppress excludes exactly one deterministic loser when both sides reach the bounded candidate set and preserves a one-sided candidate; penalize applies relation_contradicts_penalty.",
 }
 
 _GROUP_NOTES = {

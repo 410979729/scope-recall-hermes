@@ -13,6 +13,8 @@ permissions:
 env:
   # Hermes Agent v0.19.1 / v2026.7.30. Compatibility upgrades are reviewed explicitly.
   HERMES_AGENT_COMMIT: cc4cab2f592e60a197e796506de9168f74baf3ea
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
 
 jobs:
   test:
@@ -26,26 +28,43 @@ jobs:
             os: ubuntu-latest
             python: "3.11"
             install-target: ".[lancedb,dev]"
+            constraint: constraints/release.txt
             command: python -m pytest -q
           - name: linux-py312
             os: ubuntu-latest
             python: "3.12"
             install-target: ".[lancedb,dev]"
+            constraint: constraints/release.txt
+            command: python -m pytest -q
+          - name: linux-dependency-min-py311
+            os: ubuntu-latest
+            python: "3.11"
+            install-target: ".[lancedb,dev]"
+            constraint: constraints/runtime-min.txt
+            command: python -m pytest -q
+          - name: linux-dependency-max-py312
+            os: ubuntu-latest
+            python: "3.12"
+            install-target: ".[lancedb,dev]"
+            constraint: constraints/runtime-max.txt
             command: python -m pytest -q
           - name: windows-full-py311
             os: windows-latest
             python: "3.11"
             install-target: ".[lancedb,dev]"
+            constraint: constraints/release.txt
             command: python -m pytest -q
           - name: windows-full-py312
             os: windows-latest
             python: "3.12"
             install-target: ".[lancedb,dev]"
+            constraint: constraints/release.txt
             command: python -m pytest -q
           - name: macos-full-py312
             os: macos-latest
             python: "3.12"
             install-target: ".[lancedb,dev]"
+            constraint: constraints/release.txt
             command: python -m pytest -q
 
     steps:
@@ -55,6 +74,8 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
       - name: Install Hermes runtime for plugin tests
+        env:
+          PIP_CONSTRAINT: ${{ matrix.constraint }}
         run: |
           python -m pip install --upgrade pip
           python -m pip install "${{ matrix.install-target }}"

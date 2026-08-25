@@ -21,7 +21,7 @@ from .capture import (
     shutdown_writer,
     start_writer,
 )
-from .capture_control import new_write_control_queue
+from .capture_control import new_write_queue
 from .write_kernel import (
     TruthWriterLease,
     hold_positive_write_authority,  # noqa: F401
@@ -185,7 +185,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._composition = assemble_runtime(self)
         self._truth = self._composition.truth
         self._lock = threading.RLock()
-        self._write_queue: queue.Queue[Any] = new_write_control_queue()
+        self._write_queue: queue.Queue[Any] = new_write_queue()
         self._writer_thread: threading.Thread | None = None
         # Queue-order receipts: a flush acknowledges every write job before its
         # marker and must report whether any of those jobs failed.  Keep only
@@ -196,7 +196,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._writer_last_error_type = ""
         self._capture_queue_rejected = 0
         self._capture_queue_deferred = 0
-        self._write_wakeup = threading.Event()
+        self._capture_queue_processing = 0
         self._stop = threading.Event()
         self._maintenance_stop = threading.Event()
         self._session_id = ""
@@ -243,6 +243,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._recall_service = RecallService(self)
         self._tool_service = ScopeRecallToolService(self._composition.tool_port)
         self._shutdown_requested = threading.Event()
+        self._capture_submission_lock = threading.RLock()
         self._writer_lifecycle_lock = threading.RLock()
         self._background = self._composition.background
         self._foreground_busy_count = 0

@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+import scope_recall.embedding_request_runner as request_runner_module
 import scope_recall.embedders as embedders_module
 from scope_recall.embedding_request_runner import (
     MAX_LIVE_HOSTED_EMBEDDING_WORKERS,
@@ -120,28 +121,27 @@ def _wait_until_budget(*, live_workers: int, timeout: float = 2.0) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _close_openai_compatible_embedders(monkeypatch: pytest.MonkeyPatch) -> Any:
+def _close_hosted_embedders(monkeypatch: pytest.MonkeyPatch) -> Any:
     """Terminal-close hosted embedders so idle workers release global permits."""
 
-    created: list[OpenAICompatibleEmbedder] = []
-    original_init = OpenAICompatibleEmbedder.__init__
+    created: list[Any] = []
+    original_openai_init = OpenAICompatibleEmbedder.__init__
+    original_minimax_init = MiniMaxEmbedder.__init__
 
-    def _init(self: OpenAICompatibleEmbedder, *args: Any, **kwargs: Any) -> None:
-        original_init(self, *args, **kwargs)
+    def _openai_init(self: OpenAICompatibleEmbedder, *args: Any, **kwargs: Any) -> None:
+        original_openai_init(self, *args, **kwargs)
         created.append(self)
 
-    monkeypatch.setattr(OpenAICompatibleEmbedder, "__init__", _init)
+    def _minimax_init(self: MiniMaxEmbedder, *args: Any, **kwargs: Any) -> None:
+        original_minimax_init(self, *args, **kwargs)
+        created.append(self)
+
+    monkeypatch.setattr(OpenAICompatibleEmbedder, "__init__", _openai_init)
+    monkeypatch.setattr(MiniMaxEmbedder, "__init__", _minimax_init)
     yield
     for embedder in created:
         embedder.close()
-        _wait_until(
-            lambda: embedder.request_resources()["workers"] == 0,
-            timeout=2.0,
-            message=(
-                "fixture close left a live hosted worker: "
-                f"{embedder.request_resources()}"
-            ),
-        )
+        _wait_until_worker_exit(embedder)
 
 
 def _openai_embedder(**kwargs: Any) -> OpenAICompatibleEmbedder:
@@ -601,6 +601,64 @@ def test_minimax_and_sentence_transformers_share_strict_batch_validation(
         st.embed_texts(["alpha", "beta"])
 
 
+def test_minimax_half_open_transport_returns_within_query_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    embedder = MiniMaxEmbedder(
+        model="embo-01",
+        api_key="pk-test",
+        base_url="https://example.invalid",
+        dimensions=3,
+        query_timeout_seconds=0.15,
+        read_timeout_seconds=5.0,
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    results: list[list[float]] = []
+    errors: list[BaseException] = []
+
+    def hanging_urlopen(request: Any, *, timeout: float, allow_insecure: bool = False) -> Any:
+        del request, timeout, allow_insecure
+        entered.set()
+        release.wait(timeout=5)
+        return _FakeHTTPResponse({"vectors": [[0.1, 0.2, 0.3]]})
+
+    monkeypatch.setattr("scope_recall.embedders.safe_urlopen", hanging_urlopen)
+
+    def call_query() -> None:
+        try:
+            results.append(embedder.embed_query("half-open"))
+        except BaseException as exc:  # pragma: no cover - assertion payload
+            errors.append(exc)
+
+    caller = threading.Thread(target=call_query)
+    caller.start()
+    try:
+        assert entered.wait(timeout=1.0)
+        caller.join(timeout=0.5)
+        assert caller.is_alive() is False
+        assert results == []
+        assert len(errors) == 1
+        assert isinstance(errors[0], TimeoutError)
+        assert "query embedding exceeded" in str(errors[0])
+        resources = embedder.request_resources()
+        assert resources["in_flight"] == 1
+        assert resources["queued"] == 0
+        assert resources["workers"] == 1
+        assert resources["live_workers"] <= MAX_LIVE_HOSTED_EMBEDDING_WORKERS
+        retry_started = time.monotonic()
+        with pytest.raises(TimeoutError, match="already in flight"):
+            embedder.embed_query("still-half-open")
+        assert time.monotonic() - retry_started < 0.15
+        assert embedder.request_resources()["in_flight"] == 1
+    finally:
+        release.set()
+        caller.join(timeout=2)
+        close_embedder(embedder)
+        if hasattr(embedder, "request_resources"):
+            _wait_until_worker_exit(embedder)
+
+
 def test_full_sync_rejects_n_minus_one_without_partial_write() -> None:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -735,6 +793,50 @@ def test_build_embedder_threads_timeout_budgets() -> None:
     assert resources["workers"] == 0
     assert resources["max_live_workers"] == MAX_LIVE_HOSTED_EMBEDDING_WORKERS
     assert resources["live_workers"] <= MAX_LIVE_HOSTED_EMBEDDING_WORKERS
+
+
+def test_bounded_request_runner_publishes_completion_after_releasing_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = BoundedEmbedderRequestRunner()
+    completion_published = threading.Event()
+    release_completion = threading.Event()
+    original_succeed = request_runner_module._Job.succeed
+
+    def pause_after_publish(job: Any, value: Any) -> None:
+        original_succeed(job, value)
+        if value == "first":
+            completion_published.set()
+            release_completion.wait(timeout=5)
+
+    monkeypatch.setattr(request_runner_module._Job, "succeed", pause_after_publish)
+
+    try:
+        assert runner.run(lambda: "first", timeout=1.0) == "first"
+        assert completion_published.wait(timeout=1.0)
+
+        results: list[str] = []
+        errors: list[BaseException] = []
+
+        def submit_second() -> None:
+            try:
+                results.append(runner.run(lambda: "second", timeout=1.0))
+            except BaseException as exc:  # pragma: no cover - assertion payload
+                errors.append(exc)
+
+        caller = threading.Thread(target=submit_second)
+        caller.start()
+        time.sleep(0.05)
+        release_completion.set()
+        caller.join(timeout=2)
+
+        assert caller.is_alive() is False
+        assert errors == []
+        assert results == ["second"]
+    finally:
+        release_completion.set()
+        runner.shutdown()
+        _wait_until_worker_exit(runner)
 
 
 def test_bounded_request_runner_does_not_grow_workers_or_queue() -> None:

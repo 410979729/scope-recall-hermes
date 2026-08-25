@@ -7,6 +7,12 @@ from __future__ import annotations
 import json
 import sqlite3
 
+from scope_recall.lexical_generation import (
+    LEXICAL_GENERATION_ID,
+    LEXICAL_SHADOW_TABLE,
+    activate_generation,
+)
+from scope_recall.lexical_migration import build_lexical_generation
 from scope_recall.sql_store import ensure_schema, store_row
 from scope_recall.storage_views import (
     search_curated_memories,
@@ -138,6 +144,133 @@ def test_leading_wildcard_like_remains_a_bounded_compatibility_fallback():
 
     assert [item.id for item in results] == ["substring-only"]
     assert any(" LIKE '%ORION%'" in statement.upper() for statement in statements)
+
+
+def test_leading_wildcard_like_miss_scans_only_the_bounded_recent_window():
+    conn = _conn()
+    _store(
+        conn,
+        memory_id="old-substring-only",
+        content="The legacy deployment codename is preORIONpost.",
+    )
+    _set_updated_at(conn, "old-substring-only", "2020-01-01T00:00:00+00:00")
+    for index in range(8):
+        memory_id = f"recent-unrelated-{index}"
+        _store(
+            conn,
+            memory_id=memory_id,
+            content=f"Recent unrelated deployment note {index}.",
+        )
+        _set_updated_at(
+            conn,
+            memory_id,
+            f"2026-01-{index + 1:02d}T00:00:00+00:00",
+        )
+    provider = FakeProvider(conn)
+    provider._retrieval_config["candidate_pool"] = 2
+    provider._retrieval_config["like_fallback_scan_limit"] = 4
+
+    results = search_db_memories(provider, "ORION", limit=1)
+
+    assert results == []
+
+
+def test_ready_unactivated_trigram_does_not_change_ordinary_search():
+    conn = _conn()
+    _store(
+        conn,
+        memory_id="old-ready-not-active",
+        content="The legacy deployment codename is preORIONpost.",
+    )
+    _set_updated_at(conn, "old-ready-not-active", "2020-01-01T00:00:00+00:00")
+    for index in range(8):
+        memory_id = f"recent-ready-unrelated-{index}"
+        _store(
+            conn,
+            memory_id=memory_id,
+            content=f"Recent unrelated deployment note {index}.",
+        )
+        _set_updated_at(
+            conn,
+            memory_id,
+            f"2026-01-{index + 1:02d}T00:00:00+00:00",
+        )
+    built = build_lexical_generation(
+        conn,
+        LEXICAL_GENERATION_ID,
+        batch_size=16,
+        sample_limit=4,
+    )
+    assert built["status"] == "ready"
+    provider = FakeProvider(conn)
+    provider._retrieval_config["candidate_pool"] = 2
+    provider._retrieval_config["like_fallback_scan_limit"] = 4
+    statements: list[str] = []
+    conn.set_trace_callback(statements.append)
+
+    results = search_db_memories(provider, "ORION", limit=1)
+    conn.set_trace_callback(None)
+
+    assert results == []
+    assert not any(
+        LEXICAL_SHADOW_TABLE.upper() in statement.upper()
+        and " MATCH '" in statement.upper()
+        for statement in statements
+    )
+
+
+def test_active_reviewed_trigram_finds_old_substring_beyond_97_newer_rows():
+    conn = _conn()
+    _store(
+        conn,
+        memory_id="old-substring-only",
+        content="The legacy deployment codename is preORIONpost.",
+    )
+    _set_updated_at(conn, "old-substring-only", "2020-01-01T00:00:00+00:00")
+    for index in range(97):
+        memory_id = f"recent-unrelated-{index}"
+        _store(
+            conn,
+            memory_id=memory_id,
+            content=f"Recent unrelated deployment note {index}.",
+        )
+        _set_updated_at(conn, memory_id, "2026-01-01T00:00:00+00:00")
+    built = build_lexical_generation(
+        conn,
+        LEXICAL_GENERATION_ID,
+        batch_size=128,
+        sample_limit=4,
+    )
+    assert built["status"] == "ready"
+    activated = activate_generation(
+        conn,
+        LEXICAL_GENERATION_ID,
+        expected_current="",
+    )
+    conn.commit()
+    assert activated["status"] == "active"
+    provider = FakeProvider(conn)
+    provider._retrieval_config["candidate_pool"] = 2
+    provider._retrieval_config["like_fallback_scan_limit"] = 64
+    statements: list[str] = []
+    conn.set_trace_callback(statements.append)
+
+    results = search_db_memories(provider, "ORION", limit=1)
+    conn.set_trace_callback(None)
+
+    assert [item.id for item in results] == ["old-substring-only"]
+    indexed_statements = [
+        statement.upper()
+        for statement in statements
+        if LEXICAL_SHADOW_TABLE.upper() in statement.upper()
+        and " MATCH '" in statement.upper()
+    ]
+    assert indexed_statements
+    assert all(
+        "INDEXED BY IDX_SCOPE_RECALL_SCOPE_UPDATED" in statement.upper()
+        for statement in statements
+        if "LIKE '%ORION%'" in statement.upper()
+    )
 
 
 def test_search_curated_memories_rejects_source_prior_only_noise(tmp_path):

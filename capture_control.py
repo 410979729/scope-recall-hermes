@@ -1,10 +1,8 @@
-"""Bounded wake/control channel for the capture writer.
+"""Bounded process-local work queue for the capture writer.
 
-Durable intent capacity lives in SQLite and is advertised separately as
-``capture_queue_capacity``. This module owns only the in-memory control
-queue: drain hints, flush markers, shutdown sentinels, and stub-test store
-hints. ``maxsize`` is the structural bound. ``qsize()`` is never treated as
-a concurrency guard.
+Capture payloads exist only in this queue until the writer consumes them.  The
+queue's structural ``maxsize`` is the backpressure contract; ``qsize()`` is
+observability only and is never used as an enqueue guard.
 """
 
 from __future__ import annotations
@@ -12,18 +10,31 @@ from __future__ import annotations
 import queue
 from typing import Any, cast
 
-CONTROL_QUEUE_MAXSIZE = 4
+DEFAULT_CAPTURE_QUEUE_CAPACITY = 256
+MIN_CAPTURE_QUEUE_CAPACITY = 8
+MAX_CAPTURE_QUEUE_CAPACITY = 4096
 CONTROL_PUT_TIMEOUT_SECONDS = 0.2
 
 
-def new_write_control_queue() -> queue.Queue[Any]:
-    """Return the process-local wake/control queue with a finite maxsize."""
+def queue_capacity(config: dict[str, Any] | None = None) -> int:
+    """Return the clamped configured process-local queue capacity."""
 
-    return queue.Queue(maxsize=CONTROL_QUEUE_MAXSIZE)
+    raw = (config or {}).get("capture_queue_capacity", DEFAULT_CAPTURE_QUEUE_CAPACITY)
+    try:
+        configured = int(raw)
+    except (TypeError, ValueError):
+        configured = DEFAULT_CAPTURE_QUEUE_CAPACITY
+    return max(MIN_CAPTURE_QUEUE_CAPACITY, min(MAX_CAPTURE_QUEUE_CAPACITY, configured))
 
 
-def control_queue_maxsize(work_queue: Any) -> int:
-    """Return the structural maxsize, or 0 when the object is not bounded."""
+def new_write_queue(config: dict[str, Any] | None = None) -> queue.Queue[Any]:
+    """Create the finite capture work queue."""
+
+    return queue.Queue(maxsize=queue_capacity(config))
+
+
+def queue_maxsize(work_queue: Any) -> int:
+    """Return a queue's structural bound, or zero when it is unbounded."""
 
     try:
         return int(getattr(work_queue, "maxsize", 0) or 0)
@@ -31,42 +42,39 @@ def control_queue_maxsize(work_queue: Any) -> int:
         return 0
 
 
-def bind_write_control_queue(provider: Any) -> queue.Queue[Any]:
-    """Ensure ``provider._write_queue`` is a finite control channel.
+def bind_write_queue(provider: Any) -> queue.Queue[Any]:
+    """Bind the configured finite queue before the writer starts.
 
-    An already-bounded queue is kept. An unbounded queue is replaced only
-    when no writer thread is alive, so a running ``get()`` is not detached
-    from the object callers put into.
+    A live writer is never detached from its queue.  Before startup an empty
+    queue with the wrong capacity is safely replaced.
     """
 
+    desired = queue_capacity(getattr(provider, "_config", None))
     current = getattr(provider, "_write_queue", None)
-    if control_queue_maxsize(current) > 0:
+    if queue_maxsize(current) == desired:
         return cast(queue.Queue[Any], current)
     thread = getattr(provider, "_writer_thread", None)
     alive = thread is not None and bool(getattr(thread, "is_alive", lambda: False)())
-    if alive and current is not None:
+    if alive:
+        if queue_maxsize(current) <= 0:
+            raise RuntimeError("Scope Recall capture queue must have a finite maxsize")
         return cast(queue.Queue[Any], current)
-    bound = new_write_control_queue()
+    if current is not None and not bool(getattr(current, "empty", lambda: True)()):
+        if queue_maxsize(current) <= 0:
+            raise RuntimeError("Scope Recall capture queue must have a finite maxsize")
+        return cast(queue.Queue[Any], current)
+    bound = new_write_queue(getattr(provider, "_config", None))
     provider._write_queue = bound
     return bound
 
 
-def put_control(
-    work_queue: Any,
-    item: Any,
-    *,
-    timeout: float | None = None,
-) -> bool:
-    """Nonblocking or bounded-time put onto the control channel.
-
-    Returns False when the finite queue is full. Raises if the channel is
-    unbounded so capture never grows a silent in-memory pile.
-    """
+def put_work(work_queue: Any, item: Any, *, timeout: float | None = None) -> bool:
+    """Put work without waiting indefinitely; return ``False`` on backpressure."""
 
     if work_queue is None:
         return False
-    if control_queue_maxsize(work_queue) <= 0:
-        raise RuntimeError("Scope Recall write control queue must have a finite maxsize")
+    if queue_maxsize(work_queue) <= 0:
+        raise RuntimeError("Scope Recall capture queue must have a finite maxsize")
     try:
         if timeout is None or float(timeout) <= 0:
             work_queue.put_nowait(item)
@@ -77,27 +85,43 @@ def put_control(
         return False
 
 
-def wake_writer(provider: Any) -> bool:
-    """Hint the writer that durable intents are waiting. Never blocks."""
+def capture_queue_report(provider: Any) -> dict[str, Any]:
+    """Return process-local queue state without inspecting queued payloads."""
 
-    wakeup = getattr(provider, "_write_wakeup", None)
-    if wakeup is not None:
-        wakeup.set()
     work_queue = getattr(provider, "_write_queue", None)
-    if work_queue is None:
-        return False
+    capacity = queue_maxsize(work_queue) or queue_capacity(
+        getattr(provider, "_config", None)
+    )
     try:
-        return put_control(work_queue, {"kind": "drain"})
-    except RuntimeError:
-        return False
+        depth = max(0, int(work_queue.qsize())) if work_queue is not None else 0
+    except (AttributeError, NotImplementedError, TypeError, ValueError):
+        depth = 0
+    processing = max(0, int(getattr(provider, "_capture_queue_processing", 0) or 0))
+    return {
+        "status": "ready" if capacity > 0 else "unavailable",
+        "capacity": capacity,
+        "depth": depth,
+        "pending": depth,
+        "processing": processing,
+        "oldest_age_seconds": 0.0,
+        "rejected": max(
+            0, int(getattr(provider, "_capture_queue_rejected", 0) or 0)
+        ),
+        "deferred": max(
+            0, int(getattr(provider, "_capture_queue_deferred", 0) or 0)
+        ),
+    }
 
 
 __all__ = [
     "CONTROL_PUT_TIMEOUT_SECONDS",
-    "CONTROL_QUEUE_MAXSIZE",
-    "bind_write_control_queue",
-    "control_queue_maxsize",
-    "new_write_control_queue",
-    "put_control",
-    "wake_writer",
+    "DEFAULT_CAPTURE_QUEUE_CAPACITY",
+    "MAX_CAPTURE_QUEUE_CAPACITY",
+    "MIN_CAPTURE_QUEUE_CAPACITY",
+    "bind_write_queue",
+    "capture_queue_report",
+    "new_write_queue",
+    "put_work",
+    "queue_capacity",
+    "queue_maxsize",
 ]

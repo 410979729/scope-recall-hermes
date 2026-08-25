@@ -39,7 +39,7 @@ Clearance condition: every mandatory source, artifact, clean-tree, CI, tagged-id
 - The verified online-backup cleanup fixture proves transfer failure, partial cleanup failure, absent destination, readable external marker `external-owner`, and byte-for-byte sidecar preservation without routing the simulated external actor through production hardening.
 - Windows recovery-command diagnostic tests prove CP936/GBK decode before permissive OEM/ANSI fallbacks without changing production command generation.
 - Cross-process and same-process writer-lease suites from the `1.9.3`/`1.10.0` interval remain green.
-- Built wheel and sdist must omit private Beidou/shared-bridge modules, `tests/phase0/`, and `docs/internal.module-map.md`, expose version `1.10.2`, and install without relying on the source checkout.
+- Built wheel and sdist must omit private shared-bridge modules, `tests/phase0/`, and `docs/internal.module-map.md`, expose version `1.10.2`, and install without relying on the source checkout.
 
 ## Parent-run evidence (pending)
 

@@ -832,7 +832,7 @@ This is the first public release after `v1.4.0`; the GitHub release notes for `v
 ### Fixed
 - Aligned the README public version text with package/plugin metadata and documented the Hermes venv + `PYTHONPATH` test command so plain `pytest` from an unrelated environment is not mistaken for release evidence.
 - Preserved pure lexical recall in default hybrid mode when BM25 metadata exists but `bm25_weight` is still zero, avoiding accidental dampening of local/general matches.
-- Reduced generic English entity noise so related-entity results keep explicit caller-provided entities such as `yuheng` visible.
+- Reduced generic English entity noise so related-entity results keep explicit caller-provided agent identities visible.
 
 ## [1.0.6] - 2026-06-01
 

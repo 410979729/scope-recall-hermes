@@ -1834,7 +1834,8 @@ def test_pypi_workflow_runs_release_gate_before_publish():
     assert "fetch-depth: 0" in ci_workflow
     assert "scripts/check.release.py --tagged-release" in pypi_workflow
     assert "fetch-depth: 0" in pypi_workflow
-    assert "python -m pip install --upgrade pip build \".[lancedb,dev]\"" in pypi_workflow
+    assert "python -m pip install --require-hashes -r constraints/release-hashed.txt" in pypi_workflow
+    assert 'python -m pip install --no-deps ".[lancedb,dev]"' in pypi_workflow
     assert pypi_workflow.index("scripts/check.release.py") < pypi_workflow.index("pypa/gh-action-pypi-publish")
     assert "  release:" not in pypi_workflow
     assert "types: [published]" not in pypi_workflow
@@ -1917,7 +1918,10 @@ def test_ci_installs_release_gate_lint_dependency():
     dev_deps = pyproject["project"]["optional-dependencies"]["dev"]
     workflow = (PLUGIN_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
-    assert "ruff" in dev_deps
+    assert any(
+        dep == "ruff" or dep.startswith(("ruff<", "ruff>", "ruff=", "ruff!", "ruff~", "ruff["))
+        for dep in dev_deps
+    )
     assert '".[lancedb,dev]"' in workflow
 
 
@@ -2175,7 +2179,7 @@ def test_ordinary_vector_startup_defers_duplicate_detection_to_explicit_audit(tm
 
 
 
-def test_vector_upsert_failure_marks_needs_repair_without_losing_sqlite_row(tmp_path, monkeypatch):
+def test_vector_upsert_failure_stays_retryable_without_losing_sqlite_row(tmp_path, monkeypatch):
     plugin = load_memory_provider("scope-recall")
     assert plugin is not None
     _write_local_debug_vector_config(tmp_path)
@@ -2205,8 +2209,8 @@ def test_vector_upsert_failure_marks_needs_repair_without_losing_sqlite_row(tmp_
         count = plugin._conn.execute("SELECT COUNT(*) FROM memories WHERE id = ?", (payload["id"],)).fetchone()[0]
         assert count == 1
         stats = json.loads(plugin.handle_tool_call("scope_recall_stats", {}))
-        assert stats["vector"]["ready"] is False
-        assert stats["vector"]["status"] == "needs_repair"
+        assert stats["vector"]["ready"] is True
+        assert stats["vector"]["status"] == "degraded"
         assert "simulated LanceDB delete failure" in stats["vector"]["message"]
         event = plugin._conn.execute(
             "SELECT status, operation, generation_id FROM vector_outbox WHERE memory_id = ?",

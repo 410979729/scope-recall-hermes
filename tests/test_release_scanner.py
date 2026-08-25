@@ -45,6 +45,127 @@ def test_release_scanner_detects_json_yaml_and_python_secret_assignments(tmp_pat
     assert "[REDACTED_SECRET]" in joined
 
 
+def test_release_scanner_does_not_fail_open_on_fake_fixture_markers():
+    module = _load_release_check_module()
+    secret = "sk-" + ("R" * 24)
+    text = f'api_key = "{secret}"  # fake fixture value\n'
+
+    findings = module._scan_sensitive_text(Path("tests/fake_fixture.py"), text)
+
+    assert any("api_key_assignment: [REDACTED_SECRET]" in item for item in findings["secrets"])
+    assert secret not in "\n".join(findings["secrets"])
+
+
+def test_release_scanner_allows_only_structurally_synthetic_repository_fixtures():
+    module = _load_release_check_module()
+    fixtures = {
+        Path("tests/safe_secret.py"): 'token="legacy_token_example_12345"\n',
+        Path("tests/safe_redaction.py"): 'api_key="«redacted:sk-…»"\n',
+        Path("tests/safe_identifier.py"): 'chat_id = "900" + "0000002"  # fixture\n',
+        Path("tests/safe_windows_path.py"): (
+            'path = "C:/Users/synthetic/AppData/Local/Temp/result.json"\n'
+        ),
+        Path("tests/safe_posix_path.py"): 'path = "/home/synthetic/.ssh/id_rsa"\n',
+    }
+
+    for rel, text in fixtures.items():
+        findings = module._scan_sensitive_text(rel, text)
+        assert findings == {"secrets": [], "private_paths": []}, rel
+
+
+def test_private_path_fixture_exemptions_are_source_only_and_match_specific(tmp_path) -> None:
+    module = _load_release_check_module()
+    synthetic_path = "C:" + "\\Users\\Alice\\.ssh\\id_rsa"
+    other_private_path = "/" + "Users/Bob/.ssh/id_rsa"
+    source_rel = Path("tests/synthetic_windows_path.py")
+
+    source_only = module._scan_sensitive_text(
+        source_rel,
+        f'path = r"{synthetic_path}"\n',
+    )
+    source_mixed = module._scan_sensitive_text(
+        source_rel,
+        f'fixture = r"{synthetic_path}"; other = "{other_private_path}"\n',
+    )
+
+    assert source_only["private_paths"] == []
+    assert len(source_mixed["private_paths"]) == 1
+    assert source_mixed["private_paths"][0].endswith("synthetic_windows_path.py:1")
+
+    payload = f'path = r"{synthetic_path}"\n'.encode()
+    wheel = tmp_path / "synthetic-path.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("scope_recall/tests/synthetic_windows_path.py", payload)
+    sdist = tmp_path / "synthetic-path.tar.gz"
+    with tarfile.open(sdist, "w:gz") as archive:
+        info = tarfile.TarInfo("scope-recall/tests/synthetic_windows_path.py")
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+
+    for artifact in (wheel, sdist):
+        findings = module.scan_distribution_artifact(artifact)
+        assert findings["private_paths"], artifact
+
+
+def test_release_scanner_fixture_exemption_is_match_specific() -> None:
+    module = _load_release_check_module()
+    secret = "sk-" + ("M" * 24)
+    foreign_private_path = "C:/" + "Users/Alice/private/output.log"
+    text = (
+        'token="legacy_token_example_12345"; '
+        f'api_key="{secret}"; path="{foreign_private_path}"\n'
+    )
+
+    findings = module._scan_sensitive_text(Path("tests/mixed_fixture.py"), text)
+
+    assert any("api_key_assignment" in item for item in findings["secrets"])
+    assert len(findings["private_paths"]) == 1
+    assert findings["private_paths"][0].endswith("mixed_fixture.py:1")
+    rendered = "\n".join(findings["secrets"])
+    assert secret not in rendered
+    assert "legacy_token_example_12345" not in rendered
+
+
+def test_distribution_fixture_exemption_is_match_specific(tmp_path) -> None:
+    module = _load_release_check_module()
+    secret = "sk-" + ("N" * 24)
+    foreign_private_path = "C:/" + "Users/Alice/private/output.log"
+    payload = (
+        'token="legacy_token_example_12345"; '
+        f'api_key="{secret}"; path="{foreign_private_path}"\n'
+    ).encode()
+    wheel = tmp_path / "mixed.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("scope_recall/tests/mixed_fixture.py", payload)
+    sdist = tmp_path / "mixed.tar.gz"
+    with tarfile.open(sdist, "w:gz") as archive:
+        info = tarfile.TarInfo("scope-recall/tests/mixed_fixture.py")
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+
+    for artifact in (wheel, sdist):
+        findings = module.scan_distribution_artifact(artifact)
+        assert any("api_key_assignment" in item for item in findings["secrets"])
+        assert findings["private_paths"]
+        assert secret not in "\n".join(findings["secrets"])
+
+
+def test_release_scanner_recognizes_foreign_cross_os_home_paths():
+    module = _load_release_check_module()
+    foreign_paths = (
+        "C:" + "\\Users\\" + "Alice\\.hermes\\private.log",
+        "/".join(("", "home", "alice", ".hermes", "private.log")),
+        "/".join(("", "Users", "alice", ".hermes", "private.log")),
+    )
+
+    for private_path in foreign_paths:
+        findings = module._scan_sensitive_text(
+            Path("README.md"),
+            f"private file: {private_path}\n",
+        )
+        assert findings["private_paths"] == ["README.md:1"], private_path
+
+
 def test_release_scanner_uses_runtime_home_for_private_paths(tmp_path, monkeypatch):
     module = _load_release_check_module()
     fake_home = tmp_path / "home" / "agent"
@@ -81,7 +202,7 @@ def test_release_scanner_rejects_tilde_instance_home_paths(tmp_path):
     assert findings["private_paths"] == ["README.md:1"]
 
 
-def test_release_scanner_limits_reserved_synthetic_identifier_to_marked_test_fixtures(tmp_path):
+def test_release_scanner_limits_reserved_identifier_to_explicit_fixture_paths(tmp_path):
     module = _load_release_check_module()
     private_like_id = "8123" + "456789"
     reserved_synthetic_id = "900" + "0000001"
@@ -116,6 +237,8 @@ def test_release_scanner_limits_reserved_synthetic_identifier_to_marked_test_fix
     assert findings["secrets"] == [
         "operator.py:1: personal_numeric_id: [REDACTED_ID]",
         "private.py:1: personal_numeric_id: [REDACTED_ID]",
+        "tests/synthetic_fixture.py:1: personal_numeric_id: [REDACTED_ID]",
+        "tests/synthetic_fixture.yaml:1: personal_numeric_id: [REDACTED_ID]",
         "tests/test_journal_digest.py:1: personal_numeric_id: [REDACTED_ID]",
     ]
     assert private_like_id not in "\n".join(findings["secrets"])

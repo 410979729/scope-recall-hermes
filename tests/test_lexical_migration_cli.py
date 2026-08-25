@@ -116,6 +116,8 @@ def _run(home: Path, *args: str) -> subprocess.CompletedProcess[str]:
         ],
         cwd=ROOT,
         text=True,
+        encoding="utf-8",
+        errors="strict",
         capture_output=True,
         check=False,
     )

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=69,<82", "wheel>=0.45,<1"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -21,34 +21,34 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
 ]
-dependencies = ["PyYAML>=6.0", "jsonschema>=4.22"]
+dependencies = ["PyYAML>=6.0,<7", "jsonschema>=4.22,<5"]
 
 [project.scripts]
 hermes-scope-recall = "scope_recall.cli:main"
 
 [project.optional-dependencies]
 lancedb = [
-  "lancedb>=0.30.2",
+  "lancedb>=0.30.2,<0.31",
   "pyarrow>=24,<25",
 ]
 pgvector = [
-  "psycopg[binary]>=3",
-  "pgvector>=0.3",
+  "psycopg[binary]>=3,<4",
+  "pgvector>=0.3,<1",
 ]
 all = [
-  "lancedb>=0.30.2",
+  "lancedb>=0.30.2,<0.31",
   "pyarrow>=24,<25",
-  "psycopg[binary]>=3",
-  "pgvector>=0.3",
+  "psycopg[binary]>=3,<4",
+  "pgvector>=0.3,<1",
 ]
 dev = [
-  "build",
-  "pytest",
-  "PyYAML>=6",
-  "ruff",
-  "setuptools>=69",
-  "wheel",
-  "pyright",
+  "build>=1.2,<2",
+  "pytest>=8,<10",
+  "PyYAML>=6,<7",
+  "ruff>=0.12,<1",
+  "setuptools>=69,<82",
+  "wheel>=0.45,<1",
+  "pyright>=1.1,<2",
 ]
 
 [project.urls]

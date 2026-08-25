@@ -16,6 +16,7 @@ from scope_recall.maintenance_lease import activation_lease_path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SUBPROCESS_TIMEOUT_SECONDS = 300
 REQUIRED_RUNTIME = (
     "journal_source_restore.py",
     "journal_source_restore_snapshot.py",
@@ -97,6 +98,7 @@ def _build_artifacts(work: Path) -> tuple[Path, Path]:
         text=True,
         env=_clean_env(),
         check=False,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert installed.returncode == 0, installed.stdout + "\n" + installed.stderr
     built = subprocess.run(
@@ -119,6 +121,7 @@ def _build_artifacts(work: Path) -> tuple[Path, Path]:
         text=True,
         env=_clean_env(),
         check=False,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert built.returncode == 0, built.stdout + "\n" + built.stderr
     wheels = list(dist_dir.glob("*.whl")) or list(src.glob("*.whl"))
@@ -152,6 +155,7 @@ def test_real_sdist_and_installed_wheel_source_restore(tmp_path: Path) -> None:
         text=True,
         env=_clean_env(),
         check=False,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert tester_ready.returncode == 0, tester_ready.stdout + "\n" + tester_ready.stderr
     tester_env = _clean_env(extra={"PYTHONPATH": str(extracted)})
@@ -162,6 +166,7 @@ def test_real_sdist_and_installed_wheel_source_restore(tmp_path: Path) -> None:
         text=True,
         env=tester_env,
         check=False,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert collect.returncode == 0, collect.stdout + "\n" + collect.stderr
     ran = subprocess.run(
@@ -171,6 +176,7 @@ def test_real_sdist_and_installed_wheel_source_restore(tmp_path: Path) -> None:
         text=True,
         env=tester_env,
         check=False,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert ran.returncode == 0, ran.stdout + "\n" + ran.stderr
 
@@ -190,6 +196,7 @@ def test_real_sdist_and_installed_wheel_source_restore(tmp_path: Path) -> None:
         text=True,
         env=_clean_env(),
         check=False,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert installed.returncode == 0, installed.stdout + "\n" + installed.stderr
     env = _clean_env(
@@ -205,6 +212,7 @@ def test_real_sdist_and_installed_wheel_source_restore(tmp_path: Path) -> None:
         text=True,
         env=env,
         check=False,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert help_done.returncode == 0, help_done.stdout + "\n" + help_done.stderr
     assert "operation-id" in help_done.stdout
@@ -218,6 +226,7 @@ def test_real_sdist_and_installed_wheel_source_restore(tmp_path: Path) -> None:
         text=True,
         env=env,
         check=False,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert dry.returncode == 0, dry.stdout + "\n" + dry.stderr
     dry_payload = json.loads(dry.stdout)
@@ -234,6 +243,7 @@ def test_real_sdist_and_installed_wheel_source_restore(tmp_path: Path) -> None:
         text=True,
         env=env,
         check=False,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert refused.returncode != 0
     refused_payload = json.loads(refused.stdout)
@@ -249,6 +259,7 @@ def test_real_sdist_and_installed_wheel_source_restore(tmp_path: Path) -> None:
         text=True,
         env=env,
         check=False,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert applied.returncode == 0, applied.stdout + "\n" + applied.stderr
     applied_payload = json.loads(applied.stdout)

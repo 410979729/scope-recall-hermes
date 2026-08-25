@@ -22,10 +22,52 @@ permissions:
 env:
   # Hermes Agent v0.19.1 / v2026.7.30. Compatibility upgrades are reviewed explicitly.
   HERMES_AGENT_COMMIT: cc4cab2f592e60a197e796506de9168f74baf3ea
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+  PIP_CONSTRAINT: constraints/release.txt
 
 jobs:
-  prepare:
+  verify_release_origin:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Verify originating release workflow run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_TAG: ${{ github.event.client_payload.tag }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+          DISPATCH_SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
+          DISPATCH_RUN_ID: ${{ github.event.client_payload.release_run_id }}
+        run: |
+          RELEASE_TAG="${DISPATCH_TAG:-${INPUT_RELEASE_TAG}}"
+          if ! [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release tag: expected a v<major>.<minor>.<patch> tag ref" >&2
+            exit 1
+          fi
+          mkdir -p release-origin
+          gh release download "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern RELEASE-PROVENANCE.json \
+            --dir release-origin
+          SOURCE_SHA="$(jq -er '.source_sha' release-origin/RELEASE-PROVENANCE.json)"
+          RELEASE_RUN_ID="$(jq -er '.workflow.run_id' release-origin/RELEASE-PROVENANCE.json)"
+          [[ "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${RELEASE_RUN_ID}" =~ ^[0-9]+$ ]]
+          if [ "${GITHUB_EVENT_NAME}" = "repository_dispatch" ]; then
+            test "${DISPATCH_SOURCE_SHA}" = "${SOURCE_SHA}"
+            test "${DISPATCH_RUN_ID}" = "${RELEASE_RUN_ID}"
+          fi
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RELEASE_RUN_ID}" --jq '.path')" = ".github/workflows/release.yml"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RELEASE_RUN_ID}" --jq '.head_sha')" = "${SOURCE_SHA}"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RELEASE_RUN_ID}" --jq '.repository.full_name')" = "${GITHUB_REPOSITORY}"
+
+  prepare:
+    needs: verify_release_origin
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read
     outputs:
@@ -91,7 +133,8 @@ jobs:
           artifacts = [
               path
               for path in sorted(root.iterdir())
-              if path.is_file() and path.name != "SHA256SUMS"
+              if path.is_file()
+              and path.name not in {"SHA256SUMS", "RELEASE-PROVENANCE.json"}
           ]
           if not artifacts:
               raise SystemExit("GitHub Release contained no wheel/sdist artifacts")
@@ -115,6 +158,44 @@ jobs:
               raise SystemExit(f"SHA256SUMS lists missing artifacts: {', '.join(extra)}")
           print("verified", len(artifacts), "GitHub Release artifacts", file=sys.stderr)
           PY
+      - name: Verify source/run-bound release provenance
+        env:
+          RELEASE_TAG: ${{ steps.release_tag.outputs.release_tag }}
+          DISPATCH_SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
+          DISPATCH_RUN_ID: ${{ github.event.client_payload.release_run_id }}
+        run: |
+          SOURCE_SHA="$(python -c 'import json; print(json.load(open("release-download/RELEASE-PROVENANCE.json", encoding="utf-8"))["source_sha"])')"
+          SOURCE_TREE="$(python -c 'import json; print(json.load(open("release-download/RELEASE-PROVENANCE.json", encoding="utf-8"))["source_tree"])')"
+          RELEASE_RUN_ID="$(python -c 'import json; print(json.load(open("release-download/RELEASE-PROVENANCE.json", encoding="utf-8"))["workflow"]["run_id"])')"
+          [[ "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${SOURCE_TREE}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${RELEASE_RUN_ID}" =~ ^[0-9]+$ ]]
+          test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+          test "$(git rev-parse 'HEAD^{tree}')" = "${SOURCE_TREE}"
+          if [ "${GITHUB_EVENT_NAME}" = "repository_dispatch" ]; then
+            test "${DISPATCH_SOURCE_SHA}" = "${SOURCE_SHA}"
+            test "${DISPATCH_RUN_ID}" = "${RELEASE_RUN_ID}"
+          fi
+          python .github/scripts/release_provenance.py verify \
+            --provenance release-download/RELEASE-PROVENANCE.json \
+            --repository "${GITHUB_REPOSITORY}" \
+            --source-sha "${SOURCE_SHA}" \
+            --source-tree "${SOURCE_TREE}" \
+            --release-tag "${RELEASE_TAG}" \
+            --workflow-run-id "${RELEASE_RUN_ID}" \
+            --packages-dir release-download
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RELEASE_RUN_ID}" --jq '.path')" = ".github/workflows/release.yml"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RELEASE_RUN_ID}" --jq '.head_sha')" = "${SOURCE_SHA}"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RELEASE_RUN_ID}" --jq '.repository.full_name')" = "${GITHUB_REPOSITORY}"
+      - name: Stage validated distributions
+        env:
+          RELEASE_TAG: ${{ steps.release_tag.outputs.release_tag }}
+        run: |
+          python .github/scripts/stage_release_assets.py \
+            --source-dir release-download \
+            --packages-dir release-staging/packages \
+            --metadata-dir release-staging/metadata \
+            --version "${RELEASE_TAG#v}"
       - name: Refuse repeated PyPI publish
         env:
           RELEASE_TAG: ${{ steps.release_tag.outputs.release_tag }}
@@ -132,27 +213,32 @@ jobs:
           fi
       - name: Install release dependencies
         run: |
-          python -m pip install --upgrade pip build ".[lancedb,dev]"
+          python -m pip install --require-hashes -r constraints/release-hashed.txt
+          python -m pip install --no-deps ".[lancedb,dev]"
           python .github/scripts/checkout_pinned_hermes.py
-          python -m pip install -e .hermes-agent-src
+          python -m pip install --no-deps -e .hermes-agent-src
       - name: Run tagged release gate
         env:
           PYTHONPATH: .hermes-agent-src
         run: python scripts/check.release.py --tagged-release
+      - name: Validate staged distributions with Twine
+        run: python -m twine check release-staging/packages/*
       - name: Upload reviewed release artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: scope-recall-pypi
           path: |
-            release-download/*.whl
-            release-download/*.tar.gz
-            release-download/SHA256SUMS
+            release-staging/packages/*.whl
+            release-staging/packages/*.tar.gz
+            release-staging/metadata/SHA256SUMS
+            release-staging/metadata/RELEASE-PROVENANCE.json
           if-no-files-found: error
           retention-days: 3
 
   publish:
     needs: prepare
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment: pypi
     permissions:
       contents: read
@@ -166,5 +252,5 @@ jobs:
       - name: Publish distributions to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
-          packages-dir: release-assets/
+          packages-dir: release-assets/packages/
           print-hash: true

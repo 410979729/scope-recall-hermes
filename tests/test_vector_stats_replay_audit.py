@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import sqlite3
@@ -29,6 +30,7 @@ from scope_recall.vector_runtime import (
     _apply_incremental_vector_counts,
     refresh_vector_audit,
     replay_vector_outbox,
+    replay_vector_outbox_events,
 )
 from scope_recall.vector_store import (
     HYGIENE_SAMPLE_HARD_LIMIT,
@@ -207,6 +209,54 @@ def test_stats_succeeds_when_list_records_raises() -> None:
     assert "audit_counts" not in store.calls
     assert "list_ids" not in store.calls
     assert "count_rows" not in store.calls
+
+
+def test_stats_tool_json_sanitizes_embedder_base_url() -> None:
+    conn = _truth_conn()
+    store = _ForbiddenEnumerationStore(physical_rows=4)
+    provider = _stats_provider(conn, store)
+    private_path = "/tenant/private-project/v1/embeddings"
+    private_query = "api_key=private-query-marker"
+    provider._embedder = SimpleNamespace(
+        describe=lambda: {
+            "provider": "openai-compatible",
+            "base_url": f"https://embeddings.example.test{private_path}?{private_query}",
+        }
+    )
+    provider.vector_status_view = RuntimeVectorView(provider).vector_status_view
+
+    payload = stats_payload(provider)
+    rendered = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["vector"]["embedder"]["base_url"] == (
+        "https://embeddings.example.test/v1/embeddings"
+    )
+    assert "private-project" not in rendered
+    assert "private-query-marker" not in rendered
+
+
+def test_stats_tool_json_sanitizes_fallback_embedder_base_url() -> None:
+    conn = _truth_conn()
+    store = _ForbiddenEnumerationStore(physical_rows=4)
+    provider = _stats_provider(conn, store)
+    private_path = "/tenant/fallback-private/v1/embeddings"
+    private_query = "project=fallback-codename"
+    provider._vector_config = {
+        "fallback_embedder": {
+            "provider": "openai-compatible",
+            "base_url": f"https://fallback.example.test{private_path}?{private_query}",
+        }
+    }
+    provider.vector_status_view = RuntimeVectorView(provider).vector_status_view
+
+    payload = stats_payload(provider)
+    rendered = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["vector"]["fallback_embedder"]["base_url"] == (
+        "https://fallback.example.test/v1/embeddings"
+    )
+    assert "fallback-private" not in rendered
+    assert "fallback-codename" not in rendered
 
 
 def test_stats_does_not_duplicate_status_or_full_audit() -> None:
@@ -530,6 +580,139 @@ def test_failed_mutation_does_not_adjust_cached_counts() -> None:
     assert provider._vector_duplicate_row_count == 1
     _assert_no_corpus_scan(store)
     assert _membership_ids(conn, str(provider._vector_generation_id)) == []
+
+
+def test_transient_replay_failure_stays_retryable_and_recovers_runtime_state() -> None:
+    conn = _truth_conn()
+    ensure_vector_generation_schema(conn)
+    store = _ForbiddenEnumerationStore()
+    provider = _ordinary_replay_fixture(
+        conn,
+        store,
+        memory_id="memory-transient",
+        event_key="transient-write",
+        operation="upsert",
+        content="retry this embedding",
+        timestamp="2026-08-24T00:00:00+00:00",
+    )
+
+    class FlakyEmbedder:
+        dimensions = 2
+        provider = "flaky"
+        calls = 0
+
+        def embed(self, _text: str) -> list[float]:
+            self.calls += 1
+            if self.calls == 1:
+                raise TimeoutError("synthetic transient embedding timeout")
+            return [1.0, 0.0]
+
+    provider._embedder = FlakyEmbedder()
+    provider._vector_ready = True
+    provider._vector_status = "ready"
+    provider._vector_message = ""
+
+    first = replay_vector_outbox(provider)
+
+    assert first == {"claimed": 1, "completed": 0, "failed": 1}
+    assert provider._vector_ready is True
+    assert provider._vector_status == "degraded"
+    assert "transient embedding timeout" in provider._vector_message
+
+    conn.execute(
+        "UPDATE vector_outbox SET available_at = ? WHERE event_key = ?",
+        ("2000-01-01T00:00:00+00:00", "transient-write"),
+    )
+    conn.commit()
+    second = replay_vector_outbox(provider)
+
+    assert second == {"claimed": 1, "completed": 1, "failed": 0}
+    assert provider._vector_ready is True
+    assert provider._vector_status == "ready"
+    assert provider._vector_message == ""
+    assert "memory-transient" in store.records
+
+
+def test_successful_exact_replay_does_not_hide_unrelated_outbox_debt() -> None:
+    conn = _truth_conn()
+    ensure_vector_generation_schema(conn)
+    store = _ForbiddenEnumerationStore()
+    provider = _ordinary_replay_fixture(
+        conn,
+        store,
+        memory_id="memory-debt-a",
+        event_key="debt-a",
+        operation="upsert",
+        content="first event remains retryable",
+        timestamp="2026-08-24T00:00:00+00:00",
+    )
+    store_row(
+        conn,
+        memory_id="memory-success-b",
+        scope_id="scope-a",
+        platform="test",
+        user_id="sample-user",
+        chat_id="",
+        thread_id="",
+        gateway_session_key="",
+        agent_identity="sample-agent",
+        agent_workspace="test",
+        session_id="session-a",
+        source="fixture",
+        target="memory",
+        content="second event succeeds",
+        metadata="{}",
+        allow_duplicate=True,
+        timestamp="2026-08-24T00:00:01+00:00",
+        enqueue_vector_intent=False,
+    )
+    enqueue_vector_event(
+        conn,
+        event_key="success-b",
+        generation_id=str(provider._vector_generation_id),
+        memory_id="memory-success-b",
+        operation="upsert",
+        timestamp="2026-08-24T00:00:01+00:00",
+    )
+    conn.commit()
+
+    class FailOnceEmbedder:
+        dimensions = 2
+        provider = "flaky"
+        calls = 0
+
+        def embed(self, _text: str) -> list[float]:
+            self.calls += 1
+            if self.calls == 1:
+                raise TimeoutError("synthetic debt remains")
+            return [1.0, 0.0]
+
+    provider._embedder = FailOnceEmbedder()
+    provider._vector_ready = True
+    provider._vector_status = "ready"
+    provider._vector_message = ""
+    event_ids = {
+        str(row["event_key"]): int(row["id"])
+        for row in conn.execute(
+            "SELECT id, event_key FROM vector_outbox WHERE event_key IN ('debt-a', 'success-b')"
+        ).fetchall()
+    }
+
+    assert replay_vector_outbox_events(provider, event_ids=[event_ids["debt-a"]]) == {
+        "claimed": 1,
+        "completed": 0,
+        "failed": 1,
+    }
+    assert provider._vector_status == "degraded"
+
+    assert replay_vector_outbox_events(provider, event_ids=[event_ids["success-b"]]) == {
+        "claimed": 1,
+        "completed": 1,
+        "failed": 0,
+    }
+    assert provider._vector_replay_degraded is True
+    assert provider._vector_status == "degraded"
+    assert "synthetic debt remains" in provider._vector_message
 
 
 def test_empty_replay_performs_no_contains_or_count() -> None:
