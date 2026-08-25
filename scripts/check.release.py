@@ -24,6 +24,7 @@ import tarfile
 import tempfile
 import tomllib
 import zipfile
+from typing import Any
 
 try:
     import yaml
@@ -99,10 +100,17 @@ _RESERVED_IDENTIFIER_FIXTURE_PATHS = frozenset(
     }
 )
 FORBIDDEN_PUBLIC_DOC_MARKERS = {
-    "personal_name_joy": re.compile(r"\bJoy\b"),
-    "agent_persona_yuheng": re.compile(r"玉衡"),
+    "personal_name_joy": re.compile(r"\b" + "J" + "oy" + r"\b"),
+    "agent_persona_yuheng": re.compile("玉" + "衡"),
     "manual_review_private_context": re.compile(r"人工复审"),
-    "private_product_promise": re.compile(r"product promise Joy cares about", re.I),
+    "private_product_promise": re.compile("product promise " + "J" + "oy cares about", re.I),
+}
+FORBIDDEN_PUBLIC_PACKAGE_PERSONA_MARKERS = {
+    "private_user_joy": re.compile(r"\b" + "J" + "oy" + r"\b", re.I),
+    "private_user_eri": re.compile(r"\b" + "E" + "ri" + r"\b", re.I),
+    "private_agent_aria": re.compile(r"\b" + "A" + "ria" + r"\b", re.I),
+    "agent_persona_yuheng": re.compile("玉" + "衡"),
+    "private_project_beidou": re.compile(r"\b" + "Bei" + "dou" + r"\b", re.I),
 }
 FORBIDDEN_DISTRIBUTION_PATH_FRAGMENTS = (
     "/docs/plans/",
@@ -171,6 +179,7 @@ REQUIRED_SOURCE_FILES = {
     "relation_scope_state.py",
     "vector_generation.py",
     "vector_generation_preflight.py",
+    "vector_membership.py",
     "vector_migration.py",
     "vector_mutation_guard.py",
     "vector_outbox_replay.py",
@@ -387,6 +396,7 @@ REQUIRED_WHEEL = {
     "scope_recall/relation_scope_state.py",
     "scope_recall/vector_generation.py",
     "scope_recall/vector_generation_preflight.py",
+    "scope_recall/vector_membership.py",
     "scope_recall/vector_migration.py",
     "scope_recall/vector_mutation_guard.py",
     "scope_recall/vector_outbox_replay.py",
@@ -686,6 +696,49 @@ def _line_has_private_path(line: str, markers: tuple[str, ...]) -> bool:
     return WINDOWS_PRIVATE_AGENT_ROOT_RE.search(line) is not None
 
 
+
+def resolve_release_command(
+    cmd: list[str],
+    *,
+    env: dict[str, str],
+    root: pathlib.Path | None = None,
+) -> list[str]:
+    """Resolve Git from PATH or the enclosing Hermes instance bundle.
+
+    Hermes Windows instances may carry Git under ``git/cmd/git.exe`` without
+    exposing it through the service process PATH. Prerequisite checks and
+    later git-tree execution share this resolver so a PATH-empty trusted
+    bundle can still attest the candidate. The candidate tree itself is
+    never a Git source: only enclosing instance directories may provide
+    the fallback.
+    """
+
+    if root is None:
+        root = ROOT
+    if not cmd:
+        return []
+    executable = str(cmd[0])
+    if pathlib.PurePath(executable).name.lower() not in {"git", "git.exe"}:
+        return list(cmd)
+    root_resolved = root.resolve()
+    path_hit = shutil.which(executable, path=env.get("PATH"))
+    if path_hit:
+        resolved_hit = pathlib.Path(path_hit).resolve()
+        if not resolved_hit.is_relative_to(root_resolved):
+            return [str(resolved_hit), *cmd[1:]]
+    # ``root`` is the untrusted release candidate itself. Searching it would
+    # let candidate-controlled bytes replace the Git used to attest that same
+    # candidate. Only enclosing instance directories may provide the fallback.
+    for base in root.parents:
+        if not (base / "config.yaml").is_file():
+            continue
+        candidate = base / "git" / "cmd" / "git.exe"
+        if candidate.is_file():
+            return [str(candidate), *cmd[1:]]
+    raise FileNotFoundError(
+        "trusted Git executable was not found outside the release candidate"
+    )
+
 def run(
     cmd: list[str],
     *,
@@ -704,8 +757,9 @@ def run(
     child_env["PYTHONUTF8"] = "1"
     child_env["PYTHONIOENCODING"] = "utf-8"
     try:
+        resolved_cmd = resolve_release_command(cmd, env=child_env)
         proc = subprocess.run(
-            cmd,
+            resolved_cmd,
             cwd=cwd,
             env=child_env,
             text=True,
@@ -723,6 +777,22 @@ def run(
             "stderr": "",
             "error": "prerequisite_missing",
             "prerequisite": pathlib.PurePath(str(cmd[0])).name if cmd else "",
+        }
+    except OSError as exc:
+        # Corrupt or non-native executables raise OSError (WinError 193 on
+        # Windows) instead of FileNotFoundError. Keep that fail-closed and
+        # structured so the gate never dumps a traceback.
+        winerror = getattr(exc, "winerror", None)
+        return {
+            "cmd": cmd,
+            "returncode": int(winerror or exc.errno or 1),
+            "stdout": "",
+            "stderr": str(exc),
+            "error": "prerequisite_unusable",
+            "prerequisite": pathlib.PurePath(str(cmd[0])).name if cmd else "",
+            "detail": str(exc),
+            "winerror": winerror,
+            "errno": exc.errno,
         }
     return {
         "cmd": cmd,
@@ -886,15 +956,33 @@ def _is_ignorable_git_status_line(line: str) -> bool:
 
 
 def git_prerequisite_check() -> dict[str, object]:
-    """Fail closed with structured output when Git is unavailable on PATH."""
+    """Resolve trusted Git the same way execution does, then run ``git --version``.
 
-    if shutil.which("git") is not None:
-        return {"ok": True, "prerequisite": "git"}
+    ``shutil.which`` alone would reject a PATH-empty Hermes bundle and would
+    accept a corrupt executable that later explodes as an uncaught OSError.
+    """
+
+    result = run(["git", "--version"])
+    if result.get("error") or result["returncode"] != 0:
+        payload: dict[str, object] = {
+            "ok": False,
+            "error": str(result.get("error") or "prerequisite_failed"),
+            "prerequisite": "git",
+            "detail": str(
+                result.get("stderr")
+                or result.get("detail")
+                or "git --version failed"
+            ),
+        }
+        if result.get("winerror") is not None:
+            payload["winerror"] = result["winerror"]
+        if result.get("errno") is not None:
+            payload["errno"] = result["errno"]
+        return payload
     return {
-        "ok": False,
-        "error": "prerequisite_missing",
+        "ok": True,
         "prerequisite": "git",
-        "detail": "git executable not found on PATH; install Git and rerun the release gate",
+        "version": str(result.get("stdout") or "").strip(),
     }
 
 
@@ -1832,12 +1920,30 @@ def pypi_workflow_gate_check() -> dict[str, object]:
         failures.append("PyPI workflow does not publish to PyPI")
     if publish_marker in pypi_text and gate_marker in pypi_text and pypi_text.index(gate_marker) > pypi_text.index(publish_marker):
         failures.append("PyPI workflow invokes release gate after the publish step")
-    if not re.search(r"(?m)^  release:\s*$", pypi_text):
-        failures.append("PyPI workflow does not listen for published GitHub Releases")
-    if not re.search(r"(?m)^    types:\s*\[published\]\s*$", pypi_text):
-        failures.append("PyPI workflow release trigger is not limited to published releases")
+    if re.search(r"(?m)^  release:\s*$", pypi_text):
+        failures.append(
+            "PyPI workflow must not also trigger on GitHub Release published events"
+        )
+    if not re.search(r"(?m)^  repository_dispatch:\s*$", pypi_text):
+        failures.append("PyPI workflow does not listen for repository_dispatch")
+    if "scope-recall-pypi-publish" not in pypi_text:
+        failures.append("PyPI workflow is missing the scope-recall-pypi-publish dispatch type")
     if not re.search(r"(?m)^  workflow_dispatch:\s*$", pypi_text):
         failures.append("PyPI workflow does not retain a manual fallback")
+    if "gh release download" not in pypi_text:
+        failures.append("PyPI workflow does not download GitHub Release artifacts")
+    if "SHA256SUMS" not in pypi_text or "sha256" not in pypi_text.lower():
+        failures.append("PyPI workflow does not verify SHA-256 of reused artifacts")
+    if "python -m build" in pypi_text:
+        failures.append("PyPI workflow must reuse GitHub Release artifacts instead of rebuilding")
+    if "skip-existing" in pypi_text:
+        failures.append("PyPI workflow must not skip existing uploads")
+    if "concurrency:" not in pypi_text or "pypi-publish-" not in pypi_text:
+        failures.append("PyPI workflow lacks per-tag concurrency")
+    if "Refuse repeated PyPI publish" not in pypi_text:
+        failures.append("PyPI workflow does not refuse repeated dispatch without upload")
+    if "pypi.org/pypi/hermes-scope-recall" not in pypi_text:
+        failures.append("PyPI workflow does not check the published package version")
 
     for workflow_name, workflow_text in (("PyPI", pypi_text), ("tag release", release_text)):
         if "Invalid release tag" not in workflow_text:
@@ -1851,6 +1957,36 @@ def pypi_workflow_gate_check() -> dict[str, object]:
         failures.append("tag release workflow must not publish to PyPI directly")
     if "id-token: write" in release_text:
         failures.append("tag release workflow must not hold PyPI OIDC permission")
+    if "concurrency:" not in release_text or "github-release-" not in release_text:
+        failures.append("tag release workflow lacks per-tag concurrency")
+    if "cancel-in-progress: false" not in release_text:
+        failures.append("tag release workflow concurrency must not cancel in-progress runs")
+    if "--clobber" in release_text:
+        failures.append("tag release workflow must not clobber existing GitHub Release assets")
+    if "gh release edit" in release_text:
+        failures.append("tag release workflow must not edit an existing GitHub Release")
+    if "gh release upload" in release_text:
+        failures.append("tag release workflow must not upload onto an existing GitHub Release")
+    if "Refuse existing GitHub Release" not in release_text:
+        failures.append("tag release workflow does not refuse an existing GitHub Release")
+    if "gh release create" not in release_text:
+        failures.append("tag release workflow does not create a GitHub Release")
+    if (
+        "Refuse existing GitHub Release" in release_text
+        and "gh release create" in release_text
+        and release_text.index("Refuse existing GitHub Release")
+        > release_text.index("gh release create")
+    ):
+        failures.append("tag release workflow must refuse an existing release before create")
+    if (
+        "Refuse existing GitHub Release" in release_text
+        and "Trigger PyPI publish workflow" in release_text
+        and release_text.index("Refuse existing GitHub Release")
+        > release_text.index("Trigger PyPI publish workflow")
+    ):
+        failures.append(
+            "tag release workflow must refuse an existing release before repository_dispatch"
+        )
     return {"ok": not failures, "failures": failures}
 
 
@@ -2412,7 +2548,36 @@ def _distribution_member_source_path(name: str) -> pathlib.Path:
     return pathlib.Path(*parts)
 
 
-def scan_distribution_artifact(path: pathlib.Path) -> dict[str, list[str]]:
+def _distribution_member_persona_eligible(name: str) -> bool:
+    """Limit persona scanning to shipped runtime code and packaged benchmark data."""
+
+    parts = list(pathlib.PurePosixPath(str(name).replace("\\", "/")).parts)
+    if parts and parts[0].startswith("hermes_scope_recall-"):
+        parts = parts[1:]
+    if parts and parts[0] == "scope_recall":
+        parts = parts[1:]
+    if not parts or "tests" in parts:
+        return False
+    suffix = pathlib.PurePosixPath(parts[-1]).suffix.lower()
+    if parts[0] == "benchmarks":
+        return suffix == ".json"
+    return suffix == ".py"
+
+
+def _scan_private_persona(name: str, text: str) -> list[dict[str, object]]:
+    """Return path/line-only findings without echoing private persona text."""
+
+    if not _distribution_member_persona_eligible(name):
+        return []
+    findings: list[dict[str, object]] = []
+    for line_no, line in enumerate(text.splitlines(), 1):
+        for marker, pattern in FORBIDDEN_PUBLIC_PACKAGE_PERSONA_MARKERS.items():
+            if pattern.search(line):
+                findings.append({"path": name, "marker": marker, "line": line_no})
+    return findings
+
+
+def scan_distribution_artifact(path: pathlib.Path) -> dict[str, list[Any]]:
     """Scan decoded wheel/sdist members so packaging cannot bypass source hygiene."""
 
     artifact = pathlib.Path(path)
@@ -2435,17 +2600,25 @@ def scan_distribution_artifact(path: pathlib.Path) -> dict[str, list[str]]:
     else:
         raise ValueError(f"unsupported distribution artifact: {artifact.name}")
 
-    findings: dict[str, list[str]] = {"secrets": [], "private_paths": []}
+    findings: dict[str, list[Any]] = {"secrets": [], "private_paths": [], "private_persona": []}
     for name, raw in members:
         rel = _distribution_member_source_path(name)
+        text = raw.decode("utf-8", errors="ignore")
         scanned = _scan_sensitive_text(
             rel,
-            raw.decode("utf-8", errors="ignore"),
+            text,
             display_path=f"{artifact.name}:{name}",
         )
         findings["secrets"].extend(scanned["secrets"])
         findings["private_paths"].extend(scanned["private_paths"])
-    return {key: sorted(set(value)) for key, value in findings.items()}
+        findings["private_persona"].extend(_scan_private_persona(name, text))
+    findings["secrets"] = sorted(set(findings["secrets"]))
+    findings["private_paths"] = sorted(set(findings["private_paths"]))
+    findings["private_persona"] = sorted(
+        findings["private_persona"],
+        key=lambda item: (str(item["path"]), int(item["line"]), str(item["marker"])),
+    )
+    return findings
 
 
 def release_environment_check() -> dict[str, object]:
@@ -2461,6 +2634,81 @@ def release_environment_check() -> dict[str, object]:
         "required_modules": modules,
         "missing_modules": missing,
         "install_command": "python -m pip install -e '.[dev,all]'",
+    }
+
+
+SUPPORTED_PYTHON_MINORS = ("3.11", "3.12")
+REQUIRED_PYTHON = ">=3.11,<3.13"
+
+
+def python_support_check() -> dict[str, object]:
+    """Align requires-python, classifiers, and CI with tested CPython minors.
+
+    Only 3.11 and 3.12 are exercised. An unbounded ``>=3.11`` would claim
+    untested 3.13+ interpreters. Windows CI must cover both the minimum and
+    maximum supported minors.
+    """
+
+    failures: list[str] = []
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    requires = str(pyproject.get("project", {}).get("requires-python") or "")
+    classifiers = [
+        str(item) for item in pyproject.get("project", {}).get("classifiers") or []
+    ]
+    if requires != REQUIRED_PYTHON:
+        failures.append(f"requires-python must be {REQUIRED_PYTHON}, got {requires!r}")
+    for minor in SUPPORTED_PYTHON_MINORS:
+        marker = f"Programming Language :: Python :: {minor}"
+        if marker not in classifiers:
+            failures.append(f"missing classifier: {marker}")
+    extra_minors = [
+        item
+        for item in classifiers
+        if item.startswith("Programming Language :: Python :: 3.")
+        and item.rsplit(" ", 1)[-1] not in SUPPORTED_PYTHON_MINORS
+    ]
+    if extra_minors:
+        failures.append(f"untested Python classifiers: {', '.join(extra_minors)}")
+
+    ci_path = ROOT / ".github" / "workflows" / "ci.yml"
+    windows_minors: set[str] = set()
+    if not ci_path.is_file():
+        failures.append("missing .github/workflows/ci.yml")
+    elif yaml is None:
+        failures.append("PyYAML is required to validate the CI Python matrix")
+    else:
+        ci = yaml.safe_load(ci_path.read_text(encoding="utf-8"))
+        include = (
+            (((ci or {}).get("jobs") or {}).get("test") or {})
+            .get("strategy", {})
+            .get("matrix", {})
+            .get("include", [])
+        )
+        for lane in include:
+            if not isinstance(lane, dict):
+                continue
+            if lane.get("os") == "windows-latest" and str(lane.get("name") or "").startswith(
+                "windows-full-"
+            ):
+                windows_minors.add(str(lane.get("python") or ""))
+        if windows_minors != set(SUPPORTED_PYTHON_MINORS):
+            failures.append(
+                "Windows CI must cover supported minors "
+                f"{', '.join(SUPPORTED_PYTHON_MINORS)}; found {sorted(windows_minors)}"
+            )
+        jobs = (ci or {}).get("jobs") or {}
+        no_symlink = jobs.get("windows-no-symlink")
+        if not isinstance(no_symlink, dict) or no_symlink.get("runs-on") != "windows-latest":
+            failures.append("CI is missing a blocking windows-no-symlink lane")
+        elif no_symlink.get("continue-on-error"):
+            failures.append("windows-no-symlink lane must not continue on error")
+
+    return {
+        "ok": not failures,
+        "failures": failures,
+        "requires_python": requires,
+        "supported_minors": list(SUPPORTED_PYTHON_MINORS),
+        "windows_minors": sorted(windows_minors),
     }
 
 
@@ -2546,6 +2794,10 @@ def metadata_check() -> dict[str, object]:
         missing_pyright = pyright_coverage.get("missing_pyright_include", [])
         missing_pyright_list = missing_pyright if isinstance(missing_pyright, list) else []
         failures.append(f"pyright include missing required source files: {', '.join(str(item) for item in missing_pyright_list)}")
+    python_support = python_support_check()
+    python_support_failures = python_support.get("failures", [])
+    if not python_support["ok"] and isinstance(python_support_failures, list):
+        failures.extend(f"python support: {failure}" for failure in python_support_failures)
     return {
         "ok": not missing_source and not failures,
         "missing_source": missing_source,
@@ -2554,6 +2806,7 @@ def metadata_check() -> dict[str, object]:
         "public_docs_hygiene": public_docs_hygiene,
         "release_readiness_hygiene": release_readiness_hygiene,
         "pyright_coverage": pyright_coverage,
+        "python_support": python_support,
     }
 
 
@@ -2770,10 +3023,6 @@ def main() -> int:
 
     The command is intentionally strict because it is used by CI, tag release workflows, and local pre-publish checks."""
     args = parse_args()
-    git_prerequisite = git_prerequisite_check()
-    if not git_prerequisite["ok"]:
-        print(json.dumps(git_prerequisite, ensure_ascii=False, indent=2))
-        return 1
     progress("cleanup_generated:start")
     cleanup_generated()
     progress("environment:start")
@@ -2781,8 +3030,30 @@ def main() -> int:
     if not environment["ok"]:
         print(json.dumps({"ok": False, "environment": environment}, ensure_ascii=False, indent=2))
         return 1
-    progress("git_tree:start")
-    git_tree = git_tree_check(allow_dirty=bool(args.allow_dirty))
+    # Scan release source before metadata parsing or any external command. A
+    # contaminated tree must fail cheaply, while a clean but incomplete tree
+    # must still report a missing or unusable Git prerequisite structurally.
+    progress("scan:start")
+    scan = scan_tree()
+    blocking_scan = {key: value for key, value in scan.items() if value}
+    if blocking_scan:
+        progress("release_gate:failed")
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "environment": environment,
+                    "failures": {"scan": blocking_scan},
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 1
+    git_prerequisite = git_prerequisite_check()
+    if not git_prerequisite["ok"]:
+        print(json.dumps(git_prerequisite, ensure_ascii=False, indent=2))
+        return 1
     progress("metadata:start")
     metadata = metadata_check()
     progress("release_identity:start")
@@ -2792,12 +3063,8 @@ def main() -> int:
     )
     progress("live_dashboard:start")
     live_dashboard = live_dashboard_file_check(str(args.live_dashboard_json or ""), accept_stale=bool(args.accept_stale_live_waiver))
-    # Scan release source before the multi-minute test/build stages. A known
-    # sensitive identifier or private path should fail cheaply and must never be
-    # hidden behind a later green wheel/install result.
-    progress("scan:start")
-    scan = scan_tree()
-    blocking_scan = {key: value for key, value in scan.items() if value}
+    progress("git_tree:start")
+    git_tree = git_tree_check(allow_dirty=bool(args.allow_dirty))
     preflight_failures: dict[str, object] = {}
     if not git_tree["ok"]:
         preflight_failures["git_tree"] = git_tree
@@ -2807,8 +3074,7 @@ def main() -> int:
         preflight_failures["release_identity"] = release_identity
     if not live_dashboard["ok"]:
         preflight_failures["live_dashboard"] = live_dashboard
-    if blocking_scan:
-        preflight_failures["scan"] = blocking_scan
+
     if preflight_failures:
         progress("release_gate:failed")
         print(

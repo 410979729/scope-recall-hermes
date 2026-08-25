@@ -96,13 +96,13 @@ COMMON_SECRET_PATTERN_VALUES: tuple[re.Pattern[str], ...] = tuple(
 SECRET_ASSIGNMENT_RE = re.compile(
     r"(?:api[_ \t-]?key|secret|password|passwd|"
     r"credential(?:[_ \t-]?[a-z0-9_]+)?|private[_ \t-]?key)[\"']?"
-    r"(?:[ \t]*(?::|=|是)[ \t]*|[ \t]+is[ \t]+)[^\s]+",
+    r"(?:[ \t]*(?::|=|是)[ \t]*|[ \t]+is[ \t]+(?!(?:not|none|true|false)\b))[^\s]+",
     re.IGNORECASE,
 )
 
 TOKEN_ASSIGNMENT_RE = re.compile(
     r"(?P<key>(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_-]*[_-])?token)[\"']?"
-    r"(?:[ \t]*(?::|=|是)[ \t]*|[ \t]+is[ \t]+)[^\s]+",
+    r"(?:[ \t]*(?::|=|是)[ \t]*|[ \t]+is[ \t]+(?!(?:not|none|true|false)\b))[^\s]+",
     re.IGNORECASE,
 )
 

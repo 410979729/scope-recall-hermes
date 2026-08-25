@@ -28,6 +28,7 @@
   "capture_raw_user": false,
   "query_char_limit": 1000,
   "min_capture_length": 40,
+  "capture_queue_capacity": 256,
   "journal": {
     "allow_heuristic_fallback": false,
     "allow_session_end_llm": false,
@@ -153,6 +154,8 @@
   "auto_adjudication": {
     "enabled": true,
     "interval_hours": 24,
+    "claim_timeout_hours": 2,
+    "retry_backoff_minutes": 15,
     "promote_min_age_hours": 24,
     "max_promotions_per_run": 100,
     "max_archives_per_run": 200,
@@ -336,7 +339,14 @@
         2.0,
         4.0,
         8.0
-      ]
+      ],
+      "connect_timeout_seconds": 5.0,
+      "read_timeout_seconds": 15.0,
+      "write_timeout_seconds": 15.0,
+      "pool_timeout_seconds": 5.0,
+      "query_timeout_seconds": 8.0,
+      "writer_timeout_seconds": 30.0,
+      "maintenance_timeout_seconds": 45.0
     },
     "fallback_embedder": {
       "provider": "local-hash",

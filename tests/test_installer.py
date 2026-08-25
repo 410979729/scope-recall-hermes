@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from plugin_source import probe_symlink_privilege, require_symlink_privilege
 from scope_recall.response_schemas import DOCTOR_REQUIRED_CHECK_NAMES
 
 PLUGIN_NAME = "scope-recall"
@@ -775,9 +776,32 @@ def test_atomic_replace_treats_unsupported_parent_fsync_as_success_after_replace
     assert not list(tmp_path.glob(".config.yaml.scope-recall.*.tmp"))
 
 
+def test_atomic_config_replace_updates_ordinary_file(tmp_path):
+    import scope_recall.installer as installer
+
+    home = tmp_path / "home"
+    home.mkdir()
+    config_path = home / "config.yaml"
+    config_path.write_text(
+        "memory: {provider: legacy-memory, max_items: 42}\n",
+        encoding="utf-8",
+    )
+
+    receipt = installer._write_memory_provider_config(home)
+
+    assert receipt["config_updated"] is True
+    assert config_path.is_file()
+    assert not config_path.is_symlink()
+    assert yaml.safe_load(config_path.read_text(encoding="utf-8"))["memory"] == {
+        "provider": "scope-recall",
+        "max_items": 42,
+    }
+
+
 def test_atomic_config_replace_preserves_symlink_identity_and_target_mode(tmp_path):
     import scope_recall.installer as installer
 
+    require_symlink_privilege(tmp_path)
     home = tmp_path / "home"
     home.mkdir()
     external = tmp_path / "external.yaml"
@@ -1626,6 +1650,7 @@ def test_install_activate_failure_restores_symlink_target(
 ):
     import scope_recall.installer as installer
 
+    require_symlink_privilege(tmp_path)
     home = tmp_path / "home"
     plugin_dir = home / "plugins" / PLUGIN_NAME
     _write_installed_plugin(plugin_dir, version="1.7.2", marker="stable-old")
@@ -2121,7 +2146,10 @@ def test_installer_excludes_local_secret_state_and_symlink_artifacts(tmp_path, m
     (fake_source / "lancedb" / "fragment").write_text("state\n", encoding="utf-8")
     outside = tmp_path / "outside.txt"
     outside.write_text("outside\n", encoding="utf-8")
-    (fake_source / "outside-link.txt").symlink_to(outside)
+    linked_artifact = False
+    if probe_symlink_privilege(tmp_path):
+        (fake_source / "outside-link.txt").symlink_to(outside)
+        linked_artifact = True
     monkeypatch.setattr(installer, "source_root", lambda: fake_source)
 
     result = installer.install(hermes_home=tmp_path / "home")
@@ -2131,7 +2159,8 @@ def test_installer_excludes_local_secret_state_and_symlink_artifacts(tmp_path, m
     assert not (plugin_dir / ".env.local").exists()
     assert not (plugin_dir / "memory.sqlite3").exists()
     assert not (plugin_dir / "lancedb").exists()
-    assert not (plugin_dir / "outside-link.txt").exists()
+    if linked_artifact:
+        assert not (plugin_dir / "outside-link.txt").exists()
 
 
 def test_installer_windows_default_matches_hermes_platform_default(tmp_path, monkeypatch):

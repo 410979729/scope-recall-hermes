@@ -12,10 +12,19 @@ import threading
 import time
 from concurrent.futures import Future
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Iterable, Mapping
 
 from .aliases import canonicalize_alias
 from .capture_filters import sanitize_report_text
+from .embedding_request_runner import (
+    BoundedEmbedderRequestRunner,
+    EmbedderRequestClosedError,
+    EmbedderRequestDeadlineError,
+    HostedEmbedderWorkerLimitError,
+    InFlightEmbedderRequestError,
+)
+from .embedding_validation import validate_embedding_batch, zip_embedding_rows
 from .gating import clean_text, query_tokens
 from .http_utils import (
     UnsafeEndpointError,
@@ -126,6 +135,42 @@ _CONNECTION_EXCEPTION_MODULE_PREFIXES = ("httpcore", "httpx", "openai")
 _DEFAULT_CONNECTION_RETRY_DELAYS = (2.0, 4.0, 8.0)
 _MAX_CONNECTION_RETRY_DELAYS = 8
 _MAX_CONNECTION_RETRY_DELAY_SECONDS = 300.0
+_MIN_TRANSPORT_TIMEOUT_SECONDS = 0.05
+_MAX_TRANSPORT_TIMEOUT_SECONDS = 300.0
+_DEFAULT_CONNECT_TIMEOUT_SECONDS = 5.0
+_DEFAULT_READ_TIMEOUT_SECONDS = 15.0
+_DEFAULT_WRITE_TIMEOUT_SECONDS = 15.0
+_DEFAULT_POOL_TIMEOUT_SECONDS = 5.0
+_DEFAULT_QUERY_TIMEOUT_SECONDS = 8.0
+_DEFAULT_WRITER_TIMEOUT_SECONDS = 30.0
+_DEFAULT_MAINTENANCE_TIMEOUT_SECONDS = 45.0
+_SDK_MAX_RETRIES = 0
+_EMBED_OPERATIONS = frozenset({"query", "writer", "maintenance"})
+
+
+def _close_quietly(handle: Any) -> None:
+    """Close a transport handle on this thread. Never spawn a closer thread."""
+
+    closer = getattr(handle, "close", None)
+    if not callable(closer):
+        return
+    try:
+        closer()
+    except Exception:
+        return
+
+
+class UnsupportedEmbedderSdkError(RuntimeError):
+    """Hosted SDK or HTTP client cannot honor timeout or max_retries."""
+
+
+def _unsupported_sdk_contract(provider: str, surface: str) -> UnsupportedEmbedderSdkError:
+    """Fail closed when a hosted SDK/client cannot honor timeout or max_retries."""
+
+    return UnsupportedEmbedderSdkError(
+        f"{provider} {surface} rejected required timeout or max_retries; "
+        "hosted OpenAI-compatible embeddings fail closed as unsupported"
+    )
 
 
 def _config_bool_value(value: Any, default: bool = False) -> bool:
@@ -178,6 +223,56 @@ def _coerce_connection_retry_delays(value: Any) -> tuple[float, ...]:
         delays.append(delay)
     return tuple(delays)
 
+
+
+def _coerce_timeout_seconds(
+    value: Any,
+    default: float,
+    *,
+    name: str,
+    minimum: float = _MIN_TRANSPORT_TIMEOUT_SECONDS,
+    maximum: float = _MAX_TRANSPORT_TIMEOUT_SECONDS,
+) -> float:
+    """Return a finite timeout in seconds or reject unsafe configuration."""
+
+    if value is None:
+        return float(default)
+    if isinstance(value, bool):
+        raise ValueError(
+            f"{name} must be a finite number between {minimum:g} and {maximum:g}"
+        )
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{name} must be a finite number between {minimum:g} and {maximum:g}"
+        ) from exc
+    if not math.isfinite(parsed) or not minimum <= parsed <= maximum:
+        raise ValueError(
+            f"{name} must be a finite number between {minimum:g} and {maximum:g}"
+        )
+    return parsed
+
+
+def _normalize_embed_operation(operation: Any) -> str:
+    name = str(operation or "writer").strip().casefold()
+    if name not in _EMBED_OPERATIONS:
+        raise ValueError("embedding operation must be query, writer, or maintenance")
+    return name
+
+
+def close_embedder(embedder: Any) -> None:
+    """Idempotently terminal-close an embedder if it exposes close.
+
+    This is lifecycle cleanup (setup replacement, failed init, shutdown).
+    It is not a retry-time transport reset.
+    """
+
+    if embedder is None:
+        return
+    closer = getattr(embedder, "close", None)
+    if callable(closer):
+        closer()
 
 
 def _normalize_feature(token: str) -> str:
@@ -356,6 +451,16 @@ class BaseEmbedder:
     def embed_texts(self, texts: Iterable[str]) -> list[list[float]]:
         raise NotImplementedError
 
+    def embed_maintenance(self, texts: Iterable[str]) -> list[list[float]]:
+        """Embed indexed documents under the maintenance operation budget."""
+
+        return self.embed_texts(texts)
+
+    def close(self) -> None:
+        """Release transport handles. Idempotent and safe if never opened."""
+
+        return None
+
 
 class LocalHashEmbedder(BaseEmbedder):
     def __init__(self, *, provider: str = "local-hash", dimensions: int = 256, model: str = "hash-v1") -> None:
@@ -400,7 +505,22 @@ class LocalDebugEmbedder(LocalHashEmbedder):
 class OpenAICompatibleEmbedder(BaseEmbedder):
     """OpenAI-compatible hosted embedding adapter.
 
-    Provider-specific request quirks, including float vector response formats, are contained here rather than spread across vector code."""
+    Provider-specific request quirks, including float vector response
+    formats, stay here rather than spreading across vector code.
+
+    Lifecycle:
+    - ``close()`` is terminal. It stops new hosted requests, drops HTTP
+      and OpenAI handles on this thread, and asks an idle request worker
+      to exit without joining it. The same instance cannot be reopened.
+    - ``reset_transport()`` is the nonterminal retry/key-rotation path.
+      It drops handles without shutting the runner and without changing
+      timeout or ``max_retries``.
+    - Deadline expiry returns within the remaining operation budget. The
+      same still-open embedder may recover after the underlying SDK call
+      later exits; a process restart is not required. Python cannot
+      forcibly kill that SDK thread, so a stuck call keeps its plugin-wide
+      worker permit until it returns.
+    """
     def __init__(
         self,
         *,
@@ -417,6 +537,13 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
         prompt_profile: str = "default-v1",
         connection_retry_delays: Any = None,
         allow_insecure_endpoint: bool = False,
+        connect_timeout_seconds: Any = None,
+        read_timeout_seconds: Any = None,
+        write_timeout_seconds: Any = None,
+        pool_timeout_seconds: Any = None,
+        query_timeout_seconds: Any = None,
+        writer_timeout_seconds: Any = None,
+        maintenance_timeout_seconds: Any = None,
     ) -> None:
         resolved_dimensions = int(dimensions or _known_dimensions(model, 1536) or 1536)
         super().__init__(provider=provider, dimensions=resolved_dimensions, model=model)
@@ -441,9 +568,47 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
             else connection_retry_delays
         )
         self._connection_retry_delays = _coerce_connection_retry_delays(retry_delays)
+        self._connect_timeout = _coerce_timeout_seconds(
+            connect_timeout_seconds,
+            _DEFAULT_CONNECT_TIMEOUT_SECONDS,
+            name="connect_timeout_seconds",
+        )
+        self._read_timeout = _coerce_timeout_seconds(
+            read_timeout_seconds,
+            _DEFAULT_READ_TIMEOUT_SECONDS,
+            name="read_timeout_seconds",
+        )
+        self._write_timeout = _coerce_timeout_seconds(
+            write_timeout_seconds,
+            _DEFAULT_WRITE_TIMEOUT_SECONDS,
+            name="write_timeout_seconds",
+        )
+        self._pool_timeout = _coerce_timeout_seconds(
+            pool_timeout_seconds,
+            _DEFAULT_POOL_TIMEOUT_SECONDS,
+            name="pool_timeout_seconds",
+        )
+        self._query_timeout = _coerce_timeout_seconds(
+            query_timeout_seconds,
+            _DEFAULT_QUERY_TIMEOUT_SECONDS,
+            name="query_timeout_seconds",
+        )
+        self._writer_timeout = _coerce_timeout_seconds(
+            writer_timeout_seconds,
+            _DEFAULT_WRITER_TIMEOUT_SECONDS,
+            name="writer_timeout_seconds",
+        )
+        self._maintenance_timeout = _coerce_timeout_seconds(
+            maintenance_timeout_seconds,
+            _DEFAULT_MAINTENANCE_TIMEOUT_SECONDS,
+            name="maintenance_timeout_seconds",
+        )
         self._client = None
         self._http_client = None
         self._active_key_index = 0
+        self._client_guard = threading.RLock()
+        self._closed = False
+        self._request_runner = BoundedEmbedderRequestRunner()
 
     def is_available(self) -> bool:
         return bool(OpenAI is not None and self._api_keys)
@@ -461,9 +626,24 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
                 "document_prefix_configured": bool(self._document_prefix),
                 "query_prefix_configured": bool(self._query_prefix),
                 "connection_retry_delays": list(self._connection_retry_delays),
+                "connect_timeout_seconds": self._connect_timeout,
+                "read_timeout_seconds": self._read_timeout,
+                "write_timeout_seconds": self._write_timeout,
+                "pool_timeout_seconds": self._pool_timeout,
+                "query_timeout_seconds": self._query_timeout,
+                "writer_timeout_seconds": self._writer_timeout,
+                "maintenance_timeout_seconds": self._maintenance_timeout,
+                "sdk_max_retries": _SDK_MAX_RETRIES,
+                "closed": self._closed,
+                "request_resources": self._request_runner.snapshot(),
             }
         )
         return payload
+
+    def request_resources(self) -> dict[str, int]:
+        """Return the declared hosted-request bound and current occupancy."""
+
+        return self._request_runner.snapshot()
 
     def _sanitize_httpx_request(self, request: Any) -> None:
         """Apply endpoint and credential policy immediately before SDK send."""
@@ -478,33 +658,115 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
             if is_credential_key(str(header_name)):
                 request.headers.pop(header_name, None)
 
+    def _operation_budget(self, operation: str) -> float:
+        if operation == "query":
+            return self._query_timeout
+        if operation == "maintenance":
+            return self._maintenance_timeout
+        return self._writer_timeout
+
+    def _transport_timeout(self, remaining: float | None = None) -> Any:
+        connect = self._connect_timeout
+        read = self._read_timeout
+        write = self._write_timeout
+        pool = self._pool_timeout
+        if remaining is not None:
+            capped = max(_MIN_TRANSPORT_TIMEOUT_SECONDS, float(remaining))
+            connect = min(connect, capped)
+            read = min(read, capped)
+            write = min(write, capped)
+            pool = min(pool, capped)
+        timeout_factory = getattr(_httpx, "Timeout", None) if _httpx is not None else None
+        if callable(timeout_factory):
+            return timeout_factory(connect=connect, read=read, write=write, pool=pool)
+        return read
+
+    def close(self) -> None:
+        """Terminal lifecycle close. Idempotent; does not reopen or join the worker.
+
+        Stops accepting new hosted requests, drops OpenAI/HTTPX handles on
+        this thread, and asks an idle request worker to exit. That is
+        ordinary local close, not a per-close helper thread. A stuck SDK
+        call cannot be killed; it keeps its plugin-wide permit until the
+        vendor call returns. Shutdown can therefore return without waiting
+        for that call.
+        """
+
+        with self._client_guard:
+            self._closed = True
+            client = self._client
+            http_client = self._http_client
+            self._client = None
+            self._http_client = None
+        self._request_runner.shutdown()
+        _close_quietly(client)
+        if http_client is not None and http_client is not client:
+            _close_quietly(http_client)
+
+    def reset_transport(self) -> None:
+        """Drop HTTP/OpenAI handles without ending this embedder.
+
+        Used by connection retry and key rotation. It does not spawn closer
+        threads, does not shut the request runner, does not mark the
+        embedder closed, and does not change timeout or ``max_retries``.
+        A terminally closed embedder stays closed.
+        """
+
+        with self._client_guard:
+            if self._closed:
+                return
+            client = self._client
+            http_client = self._http_client
+            self._client = None
+            self._http_client = None
+        _close_quietly(client)
+        if http_client is not None and http_client is not client:
+            _close_quietly(http_client)
+
     def _http_client_or_raise(self) -> Any:
         if _httpx is None:
             raise RuntimeError("httpx is required for OpenAI-compatible embeddings")
-        if self._http_client is None:
-            client_factory = DefaultHttpxClient or _httpx.Client
-            self._http_client = client_factory(
-                follow_redirects=False,
-                event_hooks={"request": [self._sanitize_httpx_request]},
-            )
-        return self._http_client
+        with self._client_guard:
+            if self._closed:
+                raise RuntimeError(f"{self.provider} embedder is closed")
+            if self._http_client is None:
+                client_factory = DefaultHttpxClient or _httpx.Client
+                kwargs: dict[str, Any] = {
+                    "follow_redirects": False,
+                    "event_hooks": {"request": [self._sanitize_httpx_request]},
+                    "timeout": self._transport_timeout(),
+                }
+                try:
+                    self._http_client = client_factory(**kwargs)
+                except TypeError as exc:
+                    raise _unsupported_sdk_contract(self.provider, "HTTP client") from exc
+            return self._http_client
 
     def _client_or_raise(self):
         if not self.is_available() or OpenAI is None:
             raise RuntimeError(f"{self.provider} embedder is not configured")
-        if self._client is None:
-            self._client = OpenAI(
-                api_key=self._api_keys[self._active_key_index],
-                base_url=self._base_url,
-                http_client=self._http_client_or_raise(),
-            )
-        return self._client
+        with self._client_guard:
+            if self._closed:
+                raise RuntimeError(f"{self.provider} embedder is closed")
+            if self._client is None:
+                kwargs: dict[str, Any] = {
+                    "api_key": self._api_keys[self._active_key_index],
+                    "base_url": self._base_url,
+                    "http_client": self._http_client_or_raise(),
+                    "max_retries": _SDK_MAX_RETRIES,
+                    "timeout": self._transport_timeout(),
+                }
+                try:
+                    self._client = OpenAI(**kwargs)
+                except TypeError as exc:
+                    raise _unsupported_sdk_contract(self.provider, "OpenAI client") from exc
+            return self._client
 
     def _rotate_client_after_failure(self) -> bool:
         if len(self._api_keys) <= 1:
             return False
         self._active_key_index = (self._active_key_index + 1) % len(self._api_keys)
-        self._client = None
+        self.reset_transport()
         return True
 
     @staticmethod
@@ -565,31 +827,120 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
             )
         return [by_index[index] for index in range(expected_count)]
 
-    def _embed_with_prefix(self, texts: Iterable[str], *, prefix: str) -> list[list[float]]:
+    def _remaining_budget(self, deadline: float) -> float:
+        return deadline - time.monotonic()
+
+    def _raise_if_budget_exhausted(
+        self,
+        deadline: float,
+        *,
+        operation: str,
+        cause: Exception | None = None,
+    ) -> float:
+        remaining = self._remaining_budget(deadline)
+        if remaining > 0.0:
+            return remaining
+        error = TimeoutError(
+            f"{self.provider} {operation} embedding exceeded the "
+            f"{self._operation_budget(operation):g}s operation budget"
+        )
+        if cause is not None:
+            raise error from cause
+        raise error
+
+    def _create_embeddings(
+        self,
+        client: Any,
+        batch: list[str],
+        *,
+        timeout: Any,
+    ) -> Any:
+        request: dict[str, Any] = {
+            "model": self.model,
+            "input": batch,
+            "encoding_format": "float",
+            "timeout": timeout,
+        }
+        if self._request_dimensions:
+            request["dimensions"] = self.dimensions
+        try:
+            return client.embeddings.create(**request)
+        except TypeError as exc:
+            raise _unsupported_sdk_contract(self.provider, "embeddings.create") from exc
+
+    def _call_with_deadline(self, fn: Any, *, deadline: float, operation: str) -> Any:
+        remaining = self._raise_if_budget_exhausted(deadline, operation=operation)
+        try:
+            return self._request_runner.run(fn, timeout=remaining)
+        except EmbedderRequestClosedError:
+            raise RuntimeError(f"{self.provider} embedder is closed") from None
+        except InFlightEmbedderRequestError:
+            raise TimeoutError(
+                f"{self.provider} {operation} embedding rejected because "
+                "a request is already in flight"
+            ) from None
+        except HostedEmbedderWorkerLimitError:
+            raise TimeoutError(
+                f"{self.provider} {operation} embedding rejected because "
+                "the plugin hosted-embedding worker limit is exhausted"
+            ) from None
+        except EmbedderRequestDeadlineError:
+            # Drop half-open handles so a later recovered call builds a fresh
+            # client. Do not terminally close: the same embedder may run again
+            # after the occupied slot clears.
+            self.reset_transport()
+            raise TimeoutError(
+                f"{self.provider} {operation} embedding exceeded the "
+                f"{self._operation_budget(operation):g}s operation budget"
+            ) from None
+
+    def _embed_with_prefix(
+        self,
+        texts: Iterable[str],
+        *,
+        prefix: str,
+        operation: str = "writer",
+    ) -> list[list[float]]:
+        resolved_operation = _normalize_embed_operation(operation)
         items = [clean_text(f"{prefix}{clean_text(text)}") or " " for text in texts]
         if not items:
             return []
+        deadline = time.monotonic() + self._operation_budget(resolved_operation)
         vectors: list[list[float]] = []
         batch_size = 100
         for start in range(0, len(items), batch_size):
+            remaining = self._raise_if_budget_exhausted(
+                deadline, operation=resolved_operation
+            )
             batch = items[start : start + batch_size]
             response = None
             key_count = max(1, len(self._api_keys))
-            for retry_index in range(len(self._connection_retry_delays) + 1):
+            max_attempts = len(self._connection_retry_delays) + 1
+            for retry_index in range(max_attempts):
+                remaining = self._raise_if_budget_exhausted(
+                    deadline, operation=resolved_operation
+                )
                 connection_error: Exception | None = None
                 for key_attempt in range(key_count):
                     try:
                         client = self._client_or_raise()
-                        request: dict[str, Any] = {
-                            "model": self.model,
-                            "input": batch,
-                            "encoding_format": "float",
-                        }
-                        if self._request_dimensions:
-                            request["dimensions"] = self.dimensions
-                        response = client.embeddings.create(**request)
+                        attempt_timeout = self._transport_timeout(remaining)
+                        response = self._call_with_deadline(
+                            partial(
+                                self._create_embeddings,
+                                client,
+                                batch,
+                                timeout=attempt_timeout,
+                            ),
+                            deadline=deadline,
+                            operation=resolved_operation,
+                        )
                         break
+                    except UnsupportedEmbedderSdkError:
+                        raise
                     except UnsafeEndpointError:
+                        raise
+                    except TimeoutError:
                         raise
                     except Exception as exc:
                         if self._is_connection_error(exc):
@@ -597,7 +948,7 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
                             # Recreate the client before the next bounded retry so an
                             # on-demand local server can finish starting cleanly.
                             connection_error = exc
-                            self._client = None
+                            self.reset_transport()
                             break
                         if key_attempt + 1 >= key_count:
                             raise
@@ -605,44 +956,56 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
                 if response is not None:
                     break
                 assert connection_error is not None
-                if retry_index >= len(self._connection_retry_delays):
+                if retry_index + 1 >= max_attempts:
                     raise connection_error
-                time.sleep(self._connection_retry_delays[retry_index])
+                delay = self._connection_retry_delays[retry_index]
+                remaining = self._remaining_budget(deadline)
+                if remaining <= delay:
+                    raise TimeoutError(
+                        f"{self.provider} {resolved_operation} embedding exceeded the "
+                        f"{self._operation_budget(resolved_operation):g}s operation budget"
+                    ) from connection_error
+                time.sleep(delay)
             if response is None:
                 raise RuntimeError(
                     f"{self.provider} embedding request produced no response"
                 )
-            response_rows = list(response.data)
-            if len(response_rows) != len(batch):
-                raise RuntimeError(
-                    f"{self.provider} embedding response count {len(response_rows)} does not match input count {len(batch)}"
-                )
             response_rows = self._ordered_embedding_response_rows(
-                response_rows,
+                list(response.data),
                 expected_count=len(batch),
             )
-            for offset, row in enumerate(response_rows):
-                vector = [float(value) for value in row.embedding]
-                if len(vector) != self.dimensions:
-                    raise RuntimeError(
-                        f"{self.provider} embedding dimensions {len(vector)} do not match configured {self.dimensions} "
-                        f"at batch offset {offset}"
-                    )
-                if not all(math.isfinite(value) for value in vector):
-                    raise RuntimeError(f"{self.provider} embedding contains non-finite values at batch offset {offset}")
-                if not any(value != 0.0 for value in vector):
-                    raise RuntimeError(f"{self.provider} embedding contains a zero vector at batch offset {offset}")
-                vectors.append(vector)
-        return vectors
+            vectors.extend(
+                validate_embedding_batch(
+                    response_rows,
+                    expected_count=len(batch),
+                    expected_dimensions=self.dimensions,
+                    provider=self.provider,
+                )
+            )
+        return [
+            vector
+            for _text, vector in zip_embedding_rows(
+                items, vectors, provider=self.provider
+            )
+        ]
 
     def embed_texts(self, texts: Iterable[str]) -> list[list[float]]:
-        return self._embed_with_prefix(texts, prefix=self._document_prefix)
+        return self._embed_with_prefix(
+            texts, prefix=self._document_prefix, operation="writer"
+        )
+
+    def embed_maintenance(self, texts: Iterable[str]) -> list[list[float]]:
+        return self._embed_with_prefix(
+            texts, prefix=self._document_prefix, operation="maintenance"
+        )
 
     def embed_query(self, text: str) -> list[float]:
         return self.embed_queries([text])[0]
 
     def embed_queries(self, texts: Iterable[str]) -> list[list[float]]:
-        return self._embed_with_prefix(texts, prefix=self._query_prefix)
+        return self._embed_with_prefix(
+            texts, prefix=self._query_prefix, operation="query"
+        )
 
 
 class OpenAIEmbedder(OpenAICompatibleEmbedder):
@@ -770,10 +1133,12 @@ class SentenceTransformersEmbedder(BaseEmbedder):
             return []
         model = self._model_or_raise()
         vectors = model.encode(items, normalize_embeddings=self._normalize, convert_to_numpy=True)
-        output = [list(map(float, row)) for row in vectors]
-        if output:
-            self.info.dimensions = len(output[0])
-        return output
+        return validate_embedding_batch(
+            vectors,
+            expected_count=len(items),
+            expected_dimensions=self.dimensions,
+            provider=self.provider,
+        )
 
 
 class MiniMaxEmbedder(BaseEmbedder):
@@ -806,7 +1171,14 @@ class MiniMaxEmbedder(BaseEmbedder):
         query_type: str = "query",
         group_id: Any = None,
         group_id_env: Any = None,
-        timeout: float = 30.0,
+        timeout: Any = None,
+        connect_timeout_seconds: Any = None,
+        read_timeout_seconds: Any = None,
+        write_timeout_seconds: Any = None,
+        pool_timeout_seconds: Any = None,
+        query_timeout_seconds: Any = None,
+        writer_timeout_seconds: Any = None,
+        maintenance_timeout_seconds: Any = None,
         dimensions: int | None = None,
         allow_insecure_endpoint: bool = False,
     ) -> None:
@@ -825,7 +1197,47 @@ class MiniMaxEmbedder(BaseEmbedder):
         self._document_type = self._coerce_request_type(request_type or document_type, "db")
         self._query_type = self._coerce_request_type(query_type, "query")
         self._group_id = _resolve_optional_value(group_id, group_id_env)
-        self._timeout = float(timeout)
+        legacy_timeout = _coerce_timeout_seconds(
+            timeout,
+            _DEFAULT_WRITER_TIMEOUT_SECONDS,
+            name="timeout",
+        )
+        self._connect_timeout = _coerce_timeout_seconds(
+            connect_timeout_seconds,
+            _DEFAULT_CONNECT_TIMEOUT_SECONDS,
+            name="connect_timeout_seconds",
+        )
+        self._read_timeout = _coerce_timeout_seconds(
+            read_timeout_seconds,
+            legacy_timeout,
+            name="read_timeout_seconds",
+        )
+        self._write_timeout = _coerce_timeout_seconds(
+            write_timeout_seconds,
+            _DEFAULT_WRITE_TIMEOUT_SECONDS,
+            name="write_timeout_seconds",
+        )
+        self._pool_timeout = _coerce_timeout_seconds(
+            pool_timeout_seconds,
+            _DEFAULT_POOL_TIMEOUT_SECONDS,
+            name="pool_timeout_seconds",
+        )
+        self._query_timeout = _coerce_timeout_seconds(
+            query_timeout_seconds,
+            _DEFAULT_QUERY_TIMEOUT_SECONDS,
+            name="query_timeout_seconds",
+        )
+        self._writer_timeout = _coerce_timeout_seconds(
+            writer_timeout_seconds,
+            legacy_timeout,
+            name="writer_timeout_seconds",
+        )
+        self._maintenance_timeout = _coerce_timeout_seconds(
+            maintenance_timeout_seconds,
+            _DEFAULT_MAINTENANCE_TIMEOUT_SECONDS,
+            name="maintenance_timeout_seconds",
+        )
+        self._timeout = self._read_timeout
         self._active_key_index = 0
 
     @staticmethod
@@ -845,6 +1257,17 @@ class MiniMaxEmbedder(BaseEmbedder):
             payload["group_id_configured"] = True
         if self._allow_insecure_endpoint:
             payload["allow_insecure_endpoint"] = True
+        payload.update(
+            {
+                "connect_timeout_seconds": self._connect_timeout,
+                "read_timeout_seconds": self._read_timeout,
+                "write_timeout_seconds": self._write_timeout,
+                "pool_timeout_seconds": self._pool_timeout,
+                "query_timeout_seconds": self._query_timeout,
+                "writer_timeout_seconds": self._writer_timeout,
+                "maintenance_timeout_seconds": self._maintenance_timeout,
+            }
+        )
         return payload
 
     def _rotate_key_after_failure(self) -> bool:
@@ -853,7 +1276,34 @@ class MiniMaxEmbedder(BaseEmbedder):
         self._active_key_index = (self._active_key_index + 1) % len(self._api_keys)
         return True
 
-    def _post_embeddings(self, texts: list[str], *, request_type: str) -> list[list[float]]:
+    def _operation_budget(self, operation: str) -> float:
+        if operation == "query":
+            return self._query_timeout
+        if operation == "maintenance":
+            return self._maintenance_timeout
+        return self._writer_timeout
+
+    def _request_timeout(self, remaining: float) -> float:
+        return min(self._read_timeout, max(_MIN_TRANSPORT_TIMEOUT_SECONDS, remaining))
+
+    def _post_embeddings(
+        self,
+        texts: list[str],
+        *,
+        request_type: str,
+        operation: str = "writer",
+        deadline: float | None = None,
+    ) -> list[list[float]]:
+        resolved_operation = _normalize_embed_operation(operation)
+        resolved_deadline = deadline if deadline is not None else (
+            time.monotonic() + self._operation_budget(resolved_operation)
+        )
+        remaining = resolved_deadline - time.monotonic()
+        if remaining <= 0.0:
+            raise TimeoutError(
+                f"{self.provider} {resolved_operation} embedding exceeded the "
+                f"{self._operation_budget(resolved_operation):g}s operation budget"
+            )
         url = f"{self._base_url}/v1/embeddings"
         if self._group_id:
             url = f"{url}?{urllib.parse.urlencode({'GroupId': self._group_id})}"
@@ -862,6 +1312,12 @@ class MiniMaxEmbedder(BaseEmbedder):
         ).encode("utf-8")
         last_error: Exception | None = None
         for _ in range(max(1, len(self._api_keys))):
+            remaining = resolved_deadline - time.monotonic()
+            if remaining <= 0.0:
+                raise TimeoutError(
+                    f"{self.provider} {resolved_operation} embedding exceeded the "
+                    f"{self._operation_budget(resolved_operation):g}s operation budget"
+                )
             req = urllib.request.Request(
                 url,
                 data=body,
@@ -874,12 +1330,14 @@ class MiniMaxEmbedder(BaseEmbedder):
             try:
                 with safe_urlopen(
                     req,
-                    timeout=self._timeout,
+                    timeout=self._request_timeout(remaining),
                     allow_insecure=self._allow_insecure_endpoint,
                 ) as resp:
                     raw = resp.read().decode("utf-8")
                 payload = _json_lib.loads(raw)
             except UnsafeEndpointError:
+                raise
+            except TimeoutError:
                 raise
             except urllib.error.HTTPError as exc:  # pragma: no cover - network
                 last_error = exc
@@ -892,34 +1350,54 @@ class MiniMaxEmbedder(BaseEmbedder):
                     raise
                 continue
             vectors = payload.get("vectors") if isinstance(payload, dict) else None
-            if not vectors:
+            if vectors is None:
                 raise RuntimeError(
                     f"minimax embeddings response missing 'vectors': {payload!r}"
                 )
-            return [list(map(float, row)) for row in vectors]
+            return validate_embedding_batch(
+                vectors,
+                expected_count=len(texts),
+                expected_dimensions=self.dimensions,
+                provider=self.provider,
+            )
         assert last_error is not None
         raise last_error
 
-    def embed_texts(self, texts: Iterable[str]) -> list[list[float]]:
+    def _embed_documents(self, texts: Iterable[str], *, operation: str) -> list[list[float]]:
         items = [clean_text(text) or " " for text in texts]
         if not items:
             return []
+        deadline = time.monotonic() + self._operation_budget(operation)
         vectors: list[list[float]] = []
         # MiniMax endpoint accepts batches comfortably up to a few hundred
         # items; keep chunks conservative to stay well under request limits.
         batch_size = 64
         for start in range(0, len(items), batch_size):
             batch = items[start : start + batch_size]
-            vectors.extend(self._post_embeddings(batch, request_type=self._document_type))
-        if vectors:
-            self.info.dimensions = len(vectors[0])
-        return vectors
+            vectors.extend(
+                self._post_embeddings(
+                    batch,
+                    request_type=self._document_type,
+                    operation=operation,
+                    deadline=deadline,
+                )
+            )
+        return [
+            vector
+            for _text, vector in zip_embedding_rows(items, vectors, provider=self.provider)
+        ]
+
+    def embed_texts(self, texts: Iterable[str]) -> list[list[float]]:
+        return self._embed_documents(texts, operation="writer")
+
+    def embed_maintenance(self, texts: Iterable[str]) -> list[list[float]]:
+        return self._embed_documents(texts, operation="maintenance")
 
     def embed_query(self, text: str) -> list[float]:
         item = clean_text(text) or " "
-        vectors = self._post_embeddings([item], request_type=self._query_type)
-        if vectors:
-            self.info.dimensions = len(vectors[0])
+        vectors = self._post_embeddings(
+            [item], request_type=self._query_type, operation="query"
+        )
         return vectors[0]
 
 
@@ -947,6 +1425,13 @@ def build_embedder(config: dict[str, Any]) -> BaseEmbedder:
             prompt_profile=str(raw.get("prompt_profile") or "default-v1"),
             connection_retry_delays=raw.get("connection_retry_delays"),
             allow_insecure_endpoint=raw.get("allow_insecure_endpoint", False),
+            connect_timeout_seconds=raw.get("connect_timeout_seconds"),
+            read_timeout_seconds=raw.get("read_timeout_seconds"),
+            write_timeout_seconds=raw.get("write_timeout_seconds"),
+            pool_timeout_seconds=raw.get("pool_timeout_seconds"),
+            query_timeout_seconds=raw.get("query_timeout_seconds"),
+            writer_timeout_seconds=raw.get("writer_timeout_seconds"),
+            maintenance_timeout_seconds=raw.get("maintenance_timeout_seconds"),
         )
 
     if provider in {"sentence-transformers", "local-model", "local-embedding", "huggingface"}:
@@ -970,7 +1455,14 @@ def build_embedder(config: dict[str, Any]) -> BaseEmbedder:
             query_type=str(raw.get("query_type") or raw.get("embed_type_query") or "query"),
             group_id=raw.get("group_id"),
             group_id_env=raw.get("group_id_env"),
-            timeout=float(raw.get("timeout") or 30.0),
+            timeout=raw.get("timeout"),
+            connect_timeout_seconds=raw.get("connect_timeout_seconds"),
+            read_timeout_seconds=raw.get("read_timeout_seconds"),
+            write_timeout_seconds=raw.get("write_timeout_seconds"),
+            pool_timeout_seconds=raw.get("pool_timeout_seconds"),
+            query_timeout_seconds=raw.get("query_timeout_seconds"),
+            writer_timeout_seconds=raw.get("writer_timeout_seconds"),
+            maintenance_timeout_seconds=raw.get("maintenance_timeout_seconds"),
             dimensions=dimensions or None,
             allow_insecure_endpoint=raw.get("allow_insecure_endpoint", False),
         )

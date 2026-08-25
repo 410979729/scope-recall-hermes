@@ -11,7 +11,7 @@ Current-turn recall · Journal-first capture · Durable shared memory · Backgro
 [![CI](https://github.com/410979729/scope-recall-hermes/actions/workflows/ci.yml/badge.svg)](https://github.com/410979729/scope-recall-hermes/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Hermes Plugin](https://img.shields.io/badge/Hermes-Memory%20Provider-blue)](https://hermes-agent.nousresearch.com/docs)
-[![Python](https://img.shields.io/badge/Python-3.11%2B-blue)](pyproject.toml)
+[![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue)](pyproject.toml)
 [![Storage](https://img.shields.io/badge/Storage-SQLite%20%2B%20Vector-orange)](DESIGN.md)
 
 </div>
@@ -294,7 +294,7 @@ PYTHONPATH=/path/to/hermes-agent:$(pwd) /path/to/hermes-agent/venv/bin/python -m
 
 Hermes plugin discovery expects an **unpacked plugin directory** named with the public provider spelling: `$HERMES_HOME/plugins/scope-recall/`. The Python distribution package is `hermes-scope-recall`, the Python import/package spelling remains `scope_recall`, and the Hermes provider name remains `scope-recall`; see [`docs/naming.md`](docs/naming.md) for the naming contract.
 
-`scope-recall` V1 targets the current Hermes runtime line, which requires Python 3.11 or newer. If you download a release archive instead of cloning:
+`scope-recall` V1 targets the current Hermes runtime line, which requires Python 3.11 or 3.12. If you download a release archive instead of cloning:
 
 1. unpack it as `$HERMES_HOME/plugins/scope-recall/`
 2. run `python -m pip install -e "$HERMES_HOME/plugins/scope-recall[lancedb]"` for the default LanceDB path, or install without extras and set `vector.backend: sqlite-bruteforce` on native-sensitive hosts

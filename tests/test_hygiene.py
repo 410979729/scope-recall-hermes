@@ -14,8 +14,10 @@ class FakeVectorStore:
     def __init__(self, records):
         self._records = records
 
-    def list_records(self):
-        return dict(self._records)
+    def sample_metadata(self, *, limit=200, offset=0):
+        rows = [dict(value) for value in self._records.values()]
+        start = max(0, int(offset or 0))
+        return rows[start : start + max(0, int(limit))]
 
 
 def _insert(conn, *, memory_id, target="memory", source="tool-store", content="Memory row for hygiene testing.", allow_duplicate=False):

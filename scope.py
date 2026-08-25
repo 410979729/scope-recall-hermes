@@ -96,7 +96,7 @@ def _canonical_user_for_account(config: dict[str, Any] | None, platform: str, us
         return str(aliases[key]).strip()
 
     # Also support the issue-proposed shape:
-    # {"identities": {"joy": {"accounts": {"cli": "local"}}}}
+    # {"identities": {"example-user": {"accounts": {"cli": "local"}}}}
     for canonical, payload in _legacy_identities_config(config).items():
         if not isinstance(payload, dict):
             continue

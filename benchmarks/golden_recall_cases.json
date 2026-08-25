@@ -29,7 +29,7 @@
     },
     {
       "label": "atlas_low_value_general",
-      "content": "Temporary Project Atlas dinner note: Joy likes warm soup tonight after deployment discussion.",
+      "content": "Temporary Project Atlas dinner note: ExampleUser likes warm soup tonight after deployment discussion.",
       "target": "general",
       "memory_type": "episodic",
       "importance": 0.1,

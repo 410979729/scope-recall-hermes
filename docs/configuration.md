@@ -5,15 +5,17 @@ This file is generated from the packaged `config.json` registry. It lists every 
 
 ## `auto_adjudication`
 
+- `auto_adjudication.claim_timeout_hours` (integer; risk: `low`; restart_required: `no`) — Hours before an abandoned cross-process schedule claim may be recovered. Default: `2`
 - `auto_adjudication.enabled` (boolean; risk: `low`; restart_required: `no`) — Run the scheduled no-human candidate adjudication pass: deterministic promote/archive lanes plus a budgeted LLM grounded-review lane. Operators read run summaries, never per-item queues. Default: `true`
 - `auto_adjudication.interval_hours` (integer; risk: `low`; restart_required: `no`) — Minimum hours between scheduled adjudication passes on the truth-writer process. Default: `24`
 - `auto_adjudication.l4_budget_per_run` (integer; risk: `low`; restart_required: `no`) — Maximum held candidates re-examined against their journal evidence per pass. Default: `20`
 - `auto_adjudication.l4_enabled` (boolean; risk: `low`; restart_required: `no`) — Enable the budgeted LLM grounded-review lane for held/needs-review candidates. Uses the journal digest LLM provider; unavailable config degrades to lanes-only. Default: `true`
 - `auto_adjudication.l4_max_evidence_chars` (integer; risk: `low`; restart_required: `no`) — Maximum sanitized journal-evidence characters shown to the grounded reviewer per candidate. Default: `2400`
-- `auto_adjudication.l4_max_uncertain_rounds` (integer; risk: `low`; restart_required: `no`) — Uncertain grounded-review verdicts allowed before a candidate is archived as unresolvable instead of rotting in the queue. Default: `3`
+- `auto_adjudication.l4_max_uncertain_rounds` (integer; risk: `low`; restart_required: `no`) — Deprecated compatibility key. L4 is advisory-only; this value never archives or changes candidate lifecycle. Default: `3`
 - `auto_adjudication.max_archives_per_run` (integer; risk: `low`; restart_required: `no`) — Cap on deterministic-lane archives per adjudication pass. Default: `200`
 - `auto_adjudication.max_promotions_per_run` (integer; risk: `low`; restart_required: `no`) — Cap on deterministic-lane promotions per adjudication pass. Default: `100`
 - `auto_adjudication.promote_min_age_hours` (integer; risk: `low`; restart_required: `no`) — Minimum candidate age before the deterministic promote lane may auto-promote, so fresh extractions can still be corrected by newer evidence first. Default: `24`
+- `auto_adjudication.retry_backoff_minutes` (integer; risk: `low`; restart_required: `no`) — Minutes before retrying failed advisory L4 work or a failed deterministic pass. Default: `15`
 
 ## `auto_capture`
 
@@ -66,6 +68,10 @@ This file is generated from the packaged `config.json` registry. It lists every 
 - `capture_llm.min_user_chars` (integer; risk: `low`; restart_required: `no`) — Scope Recall configuration key `capture_llm.min_user_chars` in the `capture_llm` group. Default: `20`
 - `capture_llm.model` (string; risk: `low`; restart_required: `no`) — Scope Recall configuration key `capture_llm.model` in the `capture_llm` group. Default: `"gpt-4o-mini"`
 - `capture_llm.timeout` (number; risk: `low`; restart_required: `no`) — Scope Recall configuration key `capture_llm.timeout` in the `capture_llm` group. Default: `15.0`
+
+## `capture_queue_capacity`
+
+- `capture_queue_capacity` (integer; risk: `low`; restart_required: `no`) — Maximum unconsumed durable capture intents in SQLite. This is not the in-memory wake/control channel, which has its own small fixed maxsize. Excess enqueue attempts receive an explicit rejected or deferred status instead of silent loss. Default: `256`
 
 ## `capture_raw_user`
 
@@ -158,7 +164,6 @@ Treat chat aliases as explicit operator access-control grants.
 - `journal.enabled` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.enabled` in the `journal` group. Default: `true`
 - `journal.endpoint` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.endpoint` in the `journal` group. Default: `""`
 - `journal.extraction_attempts_quarantine` (integer; risk: `medium`; restart_required: `yes`) — Deterministic unresolved-extraction attempts (empty/filtered parses, non-retryable LLM errors) before an entry moves to the replayable rejection ledger instead of reloading forever. Transient provider failures never consume attempts. Default: `3`
-- `journal.retryable_failures_quarantine` (integer; risk: `medium`; restart_required: `yes`) — Durable cross-run retryable LLM failures (timeouts and other retryable provider errors) before an entry leaves the FIFO head for journal-recovery replay. One transient failure stays pending and does not spend the ordinary extraction-quality budget. Default: `3`
 - `journal.extractor` (string; risk: `medium`; restart_required: `yes`; choices: `llm, heuristic`) — Scope Recall configuration key `journal.extractor` in the `journal` group. Default: `"llm"`
 - `journal.llm_chunk_chars` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.llm_chunk_chars` in the `journal` group. Default: `7000`
 - `journal.llm_max_session_chars` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.llm_max_session_chars` in the `journal` group. Default: `16000`
@@ -170,6 +175,7 @@ Treat chat aliases as explicit operator access-control grants.
 - `journal.no_insert_fail_streak` (integer; risk: `medium`; restart_required: `yes`) — Doctor failure threshold for recent digest runs that processed entries but produced no durable writes for provider/schema/quality-risk reasons. Default: `3`
 - `journal.retention_days` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.retention_days` in the `journal` group. Default: `0`
 - `journal.retention_profile` (string; risk: `medium`; restart_required: `yes`; choices: `light, balanced, full`) — Semantic digest detail: light keeps only minimal durable facts, balanced preserves useful rationale and steps, and full preserves detailed durable context while raw transcript evidence remains in the journal. Default: `"balanced"`
+- `journal.retryable_failures_quarantine` (integer; risk: `medium`; restart_required: `yes`) — Durable cross-run retryable LLM failures (timeouts and other retryable provider errors) before an entry leaves the FIFO head for journal-recovery replay. One transient failure stays pending and does not spend the ordinary extraction-quality budget. Default: `3`
 - `journal.tool_trace_hard_max_chars` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.tool_trace_hard_max_chars` in the `journal` group. Default: `4000`
 - `journal.tool_trace_include_output_preview` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.tool_trace_include_output_preview` in the `journal` group. Default: `false`
 - `journal.tool_trace_max_chars` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `journal.tool_trace_max_chars` in the `journal` group. Default: `1800`
@@ -332,14 +338,22 @@ Treat chat aliases as explicit operator access-control grants.
 - `vector.embedder.api_key_env` (array; risk: `high`; restart_required: `yes`) — Environment variable names that may hold the embedding API key. Default: `["SCOPE_RECALL_GEMINI_EMBEDDING_API_KEY"]`
 - `vector.embedder.base_url` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.embedder.base_url` in the `vector` group. Default: `"https://generativelanguage.googleapis.com/v1beta/openai"`
 - `vector.embedder.base_url_env` (string; risk: `medium`; restart_required: `yes`) — Optional environment variable name that supplies the primary hosted embedding base URL. Default: `""`
-- `vector.embedder.connection_retry_delays` (array; risk: `medium`; restart_required: `yes`) — Optional bounded delays in seconds for retrying transport-level embedding connection failures (maximum 8 entries, each 0 to 300 seconds). HTTP/API errors are not retried by this schedule; set an explicit empty array to disable retries. Default: `[2.0, 4.0, 8.0]`
+- `vector.embedder.connect_timeout_seconds` (number; risk: `medium`; restart_required: `yes`) — Maximum seconds allowed to establish one hosted embedding TCP/TLS connection. Values are clamped to 0.05–300 seconds. Default: `5.0`
+- `vector.embedder.connection_retry_delays` (array; risk: `medium`; restart_required: `yes`) — Optional bounded delays in seconds for retrying transport-level embedding connection failures (maximum 8 entries, each 0 to 300 seconds). HTTP/API errors are not retried by this schedule; set an explicit empty array to disable retries. Hosted SDK retries stay at 0 so this schedule is the only retry budget. Default: `[2.0, 4.0, 8.0]`
 - `vector.embedder.dimensions` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.embedder.dimensions` in the `vector` group. Default: `3072`
 - `vector.embedder.document_prefix` (string; risk: `medium`; restart_required: `yes`) — Optional instruction prefix applied only when embedding indexed documents. Default: `""`
+- `vector.embedder.maintenance_timeout_seconds` (number; risk: `medium`; restart_required: `yes`) — Total wall-clock budget for one maintenance or full-sync embedding operation, including plugin retries. Default: `45.0`
 - `vector.embedder.model` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.embedder.model` in the `vector` group. Default: `"gemini-embedding-001"`
+- `vector.embedder.pool_timeout_seconds` (number; risk: `medium`; restart_required: `yes`) — Maximum seconds a hosted embedding request may wait for a free HTTP connection from the pool. Default: `5.0`
 - `vector.embedder.prompt_profile` (string; risk: `medium`; restart_required: `yes`) — Versioned identifier for the query/document instruction profile; changing it requires a new vector generation. Default: `"default-v1"`
 - `vector.embedder.provider` (string; risk: `medium`; restart_required: `yes`; choices: `openai-compatible, openai, sentence-transformers, local-hash`) — Scope Recall configuration key `vector.embedder.provider` in the `vector` group. Default: `"openai-compatible"`
 - `vector.embedder.query_prefix` (string; risk: `medium`; restart_required: `yes`) — Optional instruction prefix applied only when embedding retrieval queries. Default: `""`
+- `vector.embedder.query_timeout_seconds` (number; risk: `medium`; restart_required: `yes`) — Total wall-clock budget for one retrieval-query embedding operation, including plugin retries. Exhaustion fails closed so recall can fall back lexically. Default: `8.0`
+- Hosted OpenAI-compatible adapters also enforce a process-wide cap of 2 live request workers. This is the documented constant `MAX_LIVE_HOSTED_EMBEDDING_WORKERS`, not a user-tunable key. A stuck vendor SDK call consumes one slot until that call returns; Python cannot kill that thread. Excess work fails immediately so recall can fall back lexically.
+- `vector.embedder.read_timeout_seconds` (number; risk: `medium`; restart_required: `yes`) — Maximum seconds allowed to read one hosted embedding response. Each attempt is also capped by the remaining query/writer/maintenance budget. Default: `15.0`
 - `vector.embedder.request_dimensions` (boolean; risk: `medium`; restart_required: `yes`) — Send the configured output dimension to providers that support explicit dimensionality. Default: `false`
+- `vector.embedder.write_timeout_seconds` (number; risk: `medium`; restart_required: `yes`) — Maximum seconds allowed to write one hosted embedding request body. Each attempt is also capped by the remaining operation budget. Default: `15.0`
+- `vector.embedder.writer_timeout_seconds` (number; risk: `medium`; restart_required: `yes`) — Total wall-clock budget for one ordinary writer/outbox embedding operation, including plugin retries. Default: `30.0`
 - `vector.enabled` (boolean; risk: `medium`; restart_required: `yes`) — Enable the rebuildable vector companion index. Default: `true`
 - `vector.fallback_backend` (string; risk: `medium`; restart_required: `yes`; choices: `sqlite-bruteforce, disabled`) — Scope Recall configuration key `vector.fallback_backend` in the `vector` group. Default: `"sqlite-bruteforce"`
 - `vector.fallback_embedder.allow_insecure_endpoint` (boolean; risk: `high`; restart_required: `yes`) — Allow an explicitly trusted non-loopback HTTP fallback embedding endpoint. Credential-bearing headers are always stripped on HTTP. Default: `false`

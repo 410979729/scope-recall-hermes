@@ -79,7 +79,7 @@ def test_preflight_returns_direct_reuse_packet_for_safe_promoted_playbook():
     assert conn.execute("SELECT COUNT(*) FROM experience_runs").fetchone()[0] == 0
 
 
-def test_preflight_packet_and_summary_expose_stop_rules_and_evidence_anchors():
+def test_preflight_reads_legacy_stop_rule_but_emits_only_generic_operator_contract():
     conn = _conn()
     payload = _payload(
         reuse_policy={
@@ -102,7 +102,8 @@ def test_preflight_packet_and_summary_expose_stop_rules_and_evidence_anchors():
     )
 
     assert result["decision"] == "guided_reuse"
-    assert "Must stop and ask Joy" in result["packet"]
+    assert "Must stop and ask operator" in result["packet"]
+    assert "Must stop and ask Joy" not in result["packet"]
     assert "不得自动 push" in result["packet"]
     assert "Evidence anchors" in result["packet"]
     assert result["summary"] == {
@@ -113,7 +114,7 @@ def test_preflight_packet_and_summary_expose_stop_rules_and_evidence_anchors():
         "risk_level": "high",
         "preconditions": ["Identify target node and management nodes from live output.", "Confirm rollback before applying ACL."],
         "verification": ["management reaches target", "target cannot reach unrelated nodes"],
-        "must_stop_and_ask_joy": ["涉及发布或重启时必须停下问 Joy。"],
+        "must_stop_and_ask_operator": ["涉及发布或重启时必须停下问操作员。"],
         "prohibited_auto_actions": ["不得自动 push、tag、release 或 restart。"],
         "source_evidence_anchor_count": 3,
         "source_evidence_anchor_kinds": ["user_statement", "test_command", "assistant_closure"],

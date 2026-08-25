@@ -42,6 +42,10 @@ def test_auto_adjudication_is_a_recognized_truth_writer_role():
     assert "auto_adjudication" in ALLOWED_TRUTH_WRITER_ROLES
 
 
+def test_auto_adjudication_progress_is_a_recognized_truth_writer_role():
+    assert "auto_adjudication_progress" in ALLOWED_TRUTH_WRITER_ROLES
+
+
 def _provider():
     provider = load_memory_provider("scope-recall")
     assert provider is not None

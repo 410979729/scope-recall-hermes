@@ -55,6 +55,7 @@ from ...scope import (
 from ...sql_store import ensure_schema
 from ...sqlite_recovery import is_sqlite_lock_contention
 from ...truth_connection import connect_truth_database
+from ...embedders import close_embedder
 from ...write_kernel import TruthWriterLease, sanitized_truth_writer_owner
 from .storage import finish_writer_schema_setup, open_readonly_truth_connection
 
@@ -491,6 +492,14 @@ def cleanup_failed_writer_initialization(
             )
             vector_error = exc
         provider._vector_store = None
+
+    try:
+        close_embedder(getattr(provider, "_embedder", None))
+    except Exception:
+        logger.exception(
+            "Scope Recall failed-initialization embedder close failed"
+        )
+    provider._embedder = None
 
     try:
         with provider._lock:

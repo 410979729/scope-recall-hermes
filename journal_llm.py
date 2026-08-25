@@ -84,6 +84,7 @@ def _call_llm_with_retries(
     append_v1: bool = True,
     allow_insecure_endpoint: bool = False,
     thinking: dict[str, Any] | None = None,
+    system_prompt: str | None = None,
 ) -> str:
     last_error: Exception | None = None
     last_kind = "unknown"
@@ -110,6 +111,8 @@ def _call_llm_with_retries(
                 call_kwargs["allow_insecure_endpoint"] = True
             if thinking is not None:
                 call_kwargs["thinking"] = thinking
+            if system_prompt is not None:
+                call_kwargs["system_prompt"] = system_prompt
             return active_call_llm(prompt, **call_kwargs)
         except Exception as exc:
             if isinstance(exc, JournalDigestLLMError):

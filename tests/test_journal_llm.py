@@ -107,6 +107,31 @@ def test_journal_llm_threads_configured_thinking_to_call_llm(monkeypatch):
     assert captured["thinking"] == {"type": "enabled", "budget_tokens": 1024}
 
 
+
+def test_journal_llm_threads_explicit_system_prompt_to_transport(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_call_llm(_prompt: str, **kwargs: object) -> str:
+        captured.update(kwargs)
+        return "{}"
+
+    monkeypatch.setattr(journal_module, "call_llm", fake_call_llm)
+
+    result = journal_llm._call_llm_with_retries(
+        "structured-data-envelope",
+        model="test-model",
+        base_url="https://example.invalid",
+        api_key="",
+        timeout=1,
+        api_mode="chat_completions",
+        system_prompt="trusted-adjudication-policy",
+        max_attempts=1,
+        retry_delay=0,
+    )
+
+    assert result == "{}"
+    assert captured["system_prompt"] == "trusted-adjudication-policy"
+
 def test_journal_llm_omits_thinking_kwarg_for_legacy_hooks(monkeypatch):
     def legacy_call_llm(
         _prompt: str,

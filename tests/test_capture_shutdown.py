@@ -8,12 +8,13 @@ import time
 import pytest
 
 import scope_recall.capture as capture
+from scope_recall.capture_control import new_write_control_queue
 
 
 class _Provider:
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._write_queue: queue.Queue[object] = queue.Queue()
+        self._write_queue: queue.Queue[object] = new_write_control_queue()
         self._writer_thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._maintenance_stop = threading.Event()

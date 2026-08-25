@@ -250,6 +250,113 @@ def test_playbook_feedback_tool_finalizes_the_supplied_preflight_run(provider):
     assert rows[0]["finished_at"]
 
 
+def test_playbook_feedback_tool_omission_preserves_pending_preflight_truth(provider):
+    with provider._lock:
+        conn = provider._require_conn()
+        create_playbook(
+            conn,
+            playbook_id="pb_tool_preserve_pending",
+            scope_id=provider._scope_id,
+            shared_scope_id=provider._shared_scope_id,
+            payload=_payload(),
+            status="candidate",
+            confidence=0.9,
+        )
+        pending = record_experience_preflight_run(
+            conn,
+            playbook={
+                "id": "pb_tool_preserve_pending",
+                "confidence": 0.9,
+                "preconditions": [{"id": "live", "check": "verify live state"}],
+                "steps": [{"number": 1, "action": "apply verified change"}],
+            },
+            scope_id=provider._scope_id,
+            decision="direct_reuse",
+            query="Preserve the preflight receipt",
+            reasons=["live evidence anchor"],
+        )
+        before = conn.execute(
+            "SELECT decision, evidence, preconditions_checked, steps_completed "
+            "FROM experience_runs WHERE id = ?",
+            (pending["run_id"],),
+        ).fetchone()
+
+    feedback = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_playbook_feedback",
+            {
+                "id": "pb_tool_preserve_pending",
+                "run_id": pending["run_id"],
+                "outcome": "success",
+            },
+        )
+    )
+
+    assert feedback["recorded"] is True
+    with provider._lock:
+        after = provider._require_conn().execute(
+            "SELECT decision, evidence, preconditions_checked, steps_completed, outcome "
+            "FROM experience_runs WHERE id = ?",
+            (pending["run_id"],),
+        ).fetchone()
+    assert tuple(after[:4]) == tuple(before)
+    assert after["outcome"] == "success"
+
+
+def test_playbook_feedback_tool_explicit_empty_arrays_clear_pending_fields(provider):
+    with provider._lock:
+        conn = provider._require_conn()
+        create_playbook(
+            conn,
+            playbook_id="pb_tool_clear_pending",
+            scope_id=provider._scope_id,
+            shared_scope_id=provider._shared_scope_id,
+            payload=_payload(),
+            status="candidate",
+            confidence=0.9,
+        )
+        pending = record_experience_preflight_run(
+            conn,
+            playbook={
+                "id": "pb_tool_clear_pending",
+                "confidence": 0.9,
+                "preconditions": [{"id": "live", "check": "verify live state"}],
+                "steps": [{"number": 1, "action": "apply verified change"}],
+            },
+            scope_id=provider._scope_id,
+            decision="direct_reuse",
+            query="Explicitly clear stale preflight fields",
+            reasons=["old evidence"],
+        )
+
+    feedback = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_playbook_feedback",
+            {
+                "id": "pb_tool_clear_pending",
+                "run_id": pending["run_id"],
+                "outcome": "failed",
+                "decision": "no_reuse",
+                "evidence": [],
+                "preconditions_checked": [],
+                "steps_completed": [],
+            },
+        )
+    )
+
+    assert feedback["recorded"] is True
+    with provider._lock:
+        row = provider._require_conn().execute(
+            "SELECT decision, evidence, preconditions_checked, steps_completed "
+            "FROM experience_runs WHERE id = ?",
+            (pending["run_id"],),
+        ).fetchone()
+    assert row["decision"] == "no_reuse"
+    assert json.loads(row["evidence"]) == []
+    assert json.loads(row["preconditions_checked"]) == []
+    assert json.loads(row["steps_completed"]) == []
+
+
 def test_playbook_review_tool_can_dedupe_and_merge(provider):
     payload_a = _payload()
     payload_b = _payload()

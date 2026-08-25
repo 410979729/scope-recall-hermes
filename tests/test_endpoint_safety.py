@@ -775,9 +775,16 @@ def test_openai_sdk_transport_disables_redirects_and_strips_http_credentials(
     captured: dict[str, Any] = {}
 
     class FakeHttpClient:
-        def __init__(self, *, follow_redirects: bool, event_hooks: dict[str, list[Any]]) -> None:
+        def __init__(
+            self,
+            *,
+            follow_redirects: bool,
+            event_hooks: dict[str, list[Any]],
+            timeout: object = None,
+        ) -> None:
             self.follow_redirects = follow_redirects
             self.event_hooks = event_hooks
+            self.timeout = timeout
 
     class FakeHttpx:
         Client = FakeHttpClient

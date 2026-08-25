@@ -17,6 +17,7 @@ This patch candidate is cumulative since the last public release, `1.10.3`. It c
 ### Compatibility
 - Added no database schema migration. Existing governance receipts, rollback event types, package/install shape, and V1 memory semantics remain supported.
 - The feedback `run_id` field is optional; callers that do not use preflight run receipts keep the existing feedback behavior.
+- Declared Python support is the tested 3.11–3.12 range. Windows CI covers both minors plus a no-symlink-privilege product lane. GitHub Release remains the sole artifact source for the one PyPI publish path.
 
 ## [1.10.3] - 2026-08-23
 

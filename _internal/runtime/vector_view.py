@@ -1,9 +1,9 @@
 """Query-time vector status snapshot and batch embed-query variants.
 
 RuntimeComposition owns one instance. Provider keeps one-line delegates so
-legacy callers and instance monkeypatches still resolve. These two methods
-copy the accepted Provider bodies: list_records failures stay empty records,
-embed stays gated on adapter readiness, and neither opens a transaction.
+legacy callers and instance monkeypatches still resolve. Status reports only
+cached aggregates; it never lists records or deserializes vectors. Embed stays
+gated on adapter readiness, and neither method opens a transaction.
 """
 
 from __future__ import annotations
@@ -20,24 +20,18 @@ class RuntimeVectorView:
         self.adapter = adapter
 
     def vector_status_view(self) -> dict[str, Any]:
+        """Return cached vector status and aggregate counts only.
+
+        This view must not call ``list_records`` or deserialize physical
+        vectors. Full ID/cardinality audit belongs to Doctor and explicit
+        repair, not stats or ordinary status reads.
+        """
+
         adapter: Any = self.adapter
         store = getattr(adapter, "_vector_store", None)
         embedder = getattr(adapter, "_embedder", None)
         describe = getattr(embedder, "describe", None)
         vector_config = dict(getattr(adapter, "_vector_config", None) or {})
-        records: dict[str, Any] = {}
-        list_records = getattr(store, "list_records", None) if store is not None else None
-        if callable(list_records):
-            try:
-                raw_records = list_records()
-            except Exception:
-                raw_records = {}
-            if isinstance(raw_records, dict):
-                records = {
-                    str(key): dict(value) if isinstance(value, dict) else value
-                    for key, value in raw_records.items()
-                    if key
-                }
         return {
             "status": str(getattr(adapter, "_vector_status", "") or ""),
             "path": str(getattr(store, "db_path", "") or "") if store is not None else "",
@@ -52,7 +46,7 @@ class RuntimeVectorView:
             "backend": str(getattr(adapter, "_vector_backend", "") or ""),
             "sync_mode": str(vector_config.get("sync_mode") or "incremental"),
             "fallback_embedder": dict(vector_config.get("fallback_embedder") or {}),
-            "records": records,
+            "records": {},
         }
 
     def embed_query_variants(self, queries: List[str]) -> List[List[float]]:

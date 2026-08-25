@@ -192,10 +192,63 @@ def test_sqlite_bruteforce_store_upsert_search_repair(tmp_path):
         assert store.count_rows() == 2
         assert store.audit_counts() == {"physical_rows": 2, "unique_ids": 2, "duplicate_rows": 0, "duplicate_ids": 0}
         assert store.search([1.0, 0.0], scope_id="scope-a", limit=1)[0]["id"] == "a"
+        assert store.contains_id("a") is True
+        assert store.contains_id("missing") is False
 
         repaired = store.repair_records({"a": {"updated_at": "2026-01-01T00:00:00+00:00"}})
         assert repaired == 1
         assert store.list_ids() == ["a"]
+    finally:
+        store.close()
+
+
+def test_sqlite_bruteforce_equal_distance_prefers_newer_then_id(tmp_path):
+    store = SQLiteBruteForceVectorStore(
+        tmp_path / "vector.sqlite3",
+        table_name="memories",
+        dimensions=2,
+        metric="cosine",
+    )
+    store.open()
+    try:
+        store.upsert_records(
+            [
+                {
+                    "id": "older",
+                    "scope_id": "scope-a",
+                    "source": "tool-store",
+                    "target": "memory",
+                    "content": "older equal-distance memory",
+                    "summary": "older",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                    "vector": [1.0, 0.0],
+                },
+                {
+                    "id": "newer-b",
+                    "scope_id": "scope-a",
+                    "source": "tool-store",
+                    "target": "memory",
+                    "content": "newer equal-distance memory b",
+                    "summary": "newer b",
+                    "updated_at": "2026-02-01T00:00:00+00:00",
+                    "vector": [1.0, 0.0],
+                },
+                {
+                    "id": "newer-a",
+                    "scope_id": "scope-a",
+                    "source": "tool-store",
+                    "target": "memory",
+                    "content": "newer equal-distance memory a",
+                    "summary": "newer a",
+                    "updated_at": "2026-02-01T00:00:00+00:00",
+                    "vector": [1.0, 0.0],
+                },
+            ]
+        )
+
+        rows = store.search([1.0, 0.0], scope_id="scope-a", limit=3)
+
+        assert [row["id"] for row in rows] == ["newer-a", "newer-b", "older"]
     finally:
         store.close()
 

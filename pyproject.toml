@@ -7,7 +7,7 @@ name = "hermes-scope-recall"
 version = "1.10.4"
 description = "Hermes scoped memory provider with journal-first capture, SQLite truth, vector companions, and hybrid RRF retrieval."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
@@ -261,6 +261,7 @@ include = [
   "vector_generation.py",
   "vector_generation_preflight.py",
   "vector_bootstrap.py",
+  "vector_membership.py",
   "vector_migration.py",
   "vector_mutation_guard.py",
   "vector_outbox_replay.py",

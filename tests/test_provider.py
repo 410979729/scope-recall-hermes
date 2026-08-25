@@ -3760,26 +3760,25 @@ def test_vector_search_error_degrades_to_lexical_and_marks_needs_repair(provider
     assert stats["vector"]["status"] == "needs_repair"
 
 
-def test_stats_refreshes_vector_audit_counts(provider, monkeypatch):
-    provider.handle_tool_call("scope_recall_store", {"content": "Stats should refresh vector audit counts.", "target": "ops"})
+def test_stats_reports_cached_vector_counts_without_full_audit(provider, monkeypatch):
+    provider.handle_tool_call("scope_recall_store", {"content": "Stats should use cached vector counts.", "target": "ops"})
     provider.flush(timeout=5.0)
     if provider._vector_store is None:
         pytest.skip("vector store unavailable in this lane")
-    provider._vector_row_count = 0
-    provider._vector_unique_id_count = 0
-    provider._vector_duplicate_row_count = 0
 
-    monkeypatch.setattr(
-        provider._vector_store,
-        "audit_counts",
-        lambda: {"physical_rows": 7, "unique_ids": 6, "duplicate_rows": 1, "duplicate_ids": 1},
-    )
+    def boom(*_args, **_kwargs):
+        raise AssertionError("stats/status must not enumerate vectors or audit all IDs")
+
+    monkeypatch.setattr(provider._vector_store, "audit_counts", boom)
+    monkeypatch.setattr(provider._vector_store, "list_records", boom)
+    monkeypatch.setattr(provider._vector_store, "list_ids", boom)
+    monkeypatch.setattr(provider._vector_store, "count_rows", boom)
 
     stats = json.loads(provider.handle_tool_call("scope_recall_stats", {}))
 
-    assert stats["vector"]["row_count"] == 7
-    assert stats["vector"]["unique_id_count"] == 6
-    assert stats["vector"]["duplicate_row_count"] == 1
+    assert stats["vector"]["row_count"] == provider._vector_row_count
+    assert stats["vector"]["unique_id_count"] == provider._vector_unique_id_count
+    assert stats["vector"]["duplicate_row_count"] == provider._vector_duplicate_row_count
 
 
 def test_repair_tool_rebuilds_vector_companion(provider):

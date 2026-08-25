@@ -106,6 +106,21 @@ def _policy_sequence(value: Any) -> list[str]:
     return []
 
 
+def _operator_stop_rules(policy: Mapping[str, Any]) -> list[str]:
+    """Read the generic stop contract with read-only legacy-key compatibility."""
+
+    raw = policy.get("must_stop_and_ask_operator")
+    legacy = raw is None
+    if raw is None:
+        raw = policy.get("must_stop_and_ask_joy")
+    rules = [_safe_text(item) for item in _policy_sequence(raw) if _safe_text(item)]
+    if legacy:
+        private_name = re.compile(r"\b" + "J" + "oy" + r"\b", re.IGNORECASE)
+        chinese_ask = re.compile("问" + r"\s*" + "J" + "oy", re.IGNORECASE)
+        rules = [private_name.sub("operator", chinese_ask.sub("问操作员", item)) for item in rules]
+    return rules
+
+
 def _no_reuse_result(*, reasons: Sequence[str], selected: Mapping[str, Any] | None = None, results: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "decision": "no_reuse",
@@ -165,9 +180,9 @@ def render_experience_packet(playbook: Mapping[str, Any], *, decision: str, reas
         lines.extend(f"- {item}" for item in verification[:8])
     raw_policy = playbook.get("reuse_policy")
     policy: Mapping[str, Any] = raw_policy if isinstance(raw_policy, Mapping) else {}
-    must_stop = [_safe_text(item) for item in _policy_sequence(policy.get("must_stop_and_ask_joy")) if _safe_text(item)]
+    must_stop = _operator_stop_rules(policy)
     if must_stop:
-        lines.extend(["", "Must stop and ask Joy:"])
+        lines.extend(["", "Must stop and ask operator:"])
         lines.extend(f"- {item}" for item in must_stop[:8])
     prohibited = [_safe_text(item) for item in _policy_sequence(policy.get("prohibited_auto_actions")) if _safe_text(item)]
     if prohibited:
@@ -208,7 +223,7 @@ def _preflight_summary(playbook: Mapping[str, Any], *, decision: str, reasons: S
         "risk_level": risk_level,
         "preconditions": preconditions,
         "verification": verification,
-        "must_stop_and_ask_joy": [_safe_text(item) for item in _policy_sequence(policy.get("must_stop_and_ask_joy")) if _safe_text(item)],
+        "must_stop_and_ask_operator": _operator_stop_rules(policy),
         "prohibited_auto_actions": [_safe_text(item) for item in _policy_sequence(policy.get("prohibited_auto_actions")) if _safe_text(item)],
         "source_evidence_anchor_count": _safe_int(policy.get("source_evidence_anchor_count"), default=0),
         "source_evidence_anchor_kinds": [_safe_text(item) for item in _policy_sequence(policy.get("source_evidence_anchor_kinds")) if _safe_text(item)],

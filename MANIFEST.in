@@ -8,6 +8,7 @@ include SECURITY.md
 include CONTRIBUTING.md
 include .env.example
 include py.typed
+include tests/plugin_source.py
 recursive-include docs *.md
 prune docs/plans
 recursive-include _internal *.py

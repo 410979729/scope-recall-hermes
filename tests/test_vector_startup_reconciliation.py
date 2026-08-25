@@ -49,8 +49,11 @@ class _BoundedStore:
             self.records.pop(memory_id, None)
             self.calls.append(("delete", memory_id))
 
+    def contains_id(self, memory_id: str) -> bool:
+        return str(memory_id) in self.records
+
     def count_rows(self) -> int:
-        return len(self.records)
+        raise AssertionError("ordinary startup called corpus-wide count_rows")
 
     def list_records(self) -> dict[str, dict[str, Any]]:
         raise AssertionError("ordinary startup called full vector list_records")

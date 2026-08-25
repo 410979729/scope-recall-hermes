@@ -190,7 +190,7 @@ def _segment_session_entries(entries: list[JournalEntry]) -> list[list[JournalEn
 
 def _classify_target_and_type(text: str) -> tuple[str, str, list[str]]:
     lowered = text.lower()
-    if any(token in lowered for token in ["prefers", "preference", "joy prefers", "用户偏好", "希望", "偏好"]):
+    if any(token in lowered for token in ["prefers", "preference", "用户偏好", "希望", "偏好"]):
         return "user", "preference", ["preference"]
     if any(token in lowered for token in ["deploy", "restart", "systemctl", "端口", "服务", "重启", "部署", "排障"]):
         return "ops", "workflow", ["ops", "workflow"]

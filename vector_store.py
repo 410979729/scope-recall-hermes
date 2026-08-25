@@ -5,13 +5,14 @@ The store owns vector-table mechanics only; record identity, dimensions, and rep
 from __future__ import annotations
 
 import importlib
+import inspect
 import logging
 import subprocess
 import sys
 from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Protocol, runtime_checkable
+from typing import Any, Iterable, Mapping, Protocol, cast, runtime_checkable
 
 from .capture_filters import sanitize_report_text
 from .vector_mutation_guard import advisory_file_lock
@@ -73,11 +74,162 @@ class VectorStore(Protocol):
     def upsert_records(self, rows: Iterable[dict[str, Any]]) -> None: ...
     def delete(self, ids: list[str]) -> int: ...
     def delete_by_ids(self, ids: list[str]) -> None: ...
+    def contains_id(self, memory_id: str) -> bool: ...
     def list_ids(self) -> list[str]: ...
     def list_records(self) -> dict[str, dict[str, Any]]: ...
+    def sample_metadata(self, *, limit: int = 200, offset: int = 0) -> list[dict[str, Any]]: ...
     def repair_records(self, desired_records: dict[str, dict[str, Any]]) -> int: ...
     def search(self, vector: list[float], *, scope_id: str, limit: int) -> list[dict[str, Any]]: ...
+    def count_rows(self) -> int: ...
     def audit_counts(self) -> dict[str, int]: ...
+
+
+VECTOR_METADATA_COLUMNS = (
+    "id",
+    "scope_id",
+    "source",
+    "target",
+    "content",
+    "summary",
+    "updated_at",
+)
+HYGIENE_SAMPLE_HARD_LIMIT = 200
+HYGIENE_SAMPLE_PAGE_SIZE = 50
+
+
+def clamp_vector_sample_limit(
+    limit: Any,
+    *,
+    hard_limit: int = HYGIENE_SAMPLE_HARD_LIMIT,
+) -> int:
+    """Clamp a hygiene/status sample window so it cannot grow with corpus size."""
+
+    try:
+        value = int(limit)
+    except (TypeError, ValueError):
+        value = hard_limit
+    return max(0, min(value, hard_limit))
+
+
+def metadata_only_record(row: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Copy one companion row while dropping any deserialized vector payload."""
+
+    if not isinstance(row, Mapping):
+        return {}
+    record: dict[str, Any] = {}
+    for column in VECTOR_METADATA_COLUMNS:
+        if column not in row:
+            continue
+        value = row[column]
+        record[column] = "" if value is None else str(value)
+    memory_id = str(record.get("id") or row.get("id") or "")
+    if memory_id:
+        record["id"] = memory_id
+    return record
+
+
+def store_id_lookup_is_indexed(store: Any) -> bool:
+    """Return whether the store has proven an indexed id equality probe.
+
+    A ``limit(1)`` result cap is not proof. Callers must treat a missing or
+    false ``id_lookup_indexed`` flag as unindexed and skip ``contains_id``
+    when maintaining cached cardinality.
+    """
+
+    if store is None:
+        return False
+    try:
+        return getattr(store, "id_lookup_indexed", False) is True
+    except Exception:
+        return False
+
+
+def store_contains_id(store: Any, memory_id: str) -> bool | None:
+    """Probe one id with a bounded backend lookup.
+
+    ``None`` means existence is unknown. Callers must not invent a count
+    adjustment from that result, and this helper never falls back to
+    ``list_ids``, ``count_rows``, or ``audit_counts``. Ordinary replay must
+    not call this unless :func:`store_id_lookup_is_indexed` is true.
+    """
+
+    resolved = str(memory_id or "")
+    if not resolved or store is None:
+        return None
+    probe = getattr(store, "contains_id", None)
+    if not callable(probe):
+        return None
+    try:
+        return bool(probe(resolved))
+    except Exception:
+        return None
+
+
+def sample_vector_metadata(
+    store: Any,
+    *,
+    limit: int = HYGIENE_SAMPLE_HARD_LIMIT,
+    offset: int = 0,
+) -> dict[str, dict[str, Any]]:
+    """Sample metadata-only companion rows without listing or decoding vectors.
+
+    Callers that only implement ``list_records`` are ignored on purpose: that
+    API materializes every physical vector and is reserved for Doctor/repair.
+    The hard limit caps both rows consumed from the backend and unique output.
+    Duplicate ids cannot extend the loop past that cap.
+    """
+
+    if store is None:
+        return {}
+    sampler = getattr(store, "sample_metadata", None)
+    if not callable(sampler):
+        return {}
+    remaining = clamp_vector_sample_limit(limit)
+    cursor = max(0, int(offset or 0))
+    output: dict[str, dict[str, Any]] = {}
+    consumed_total = 0
+    while (
+        remaining > 0
+        and consumed_total < HYGIENE_SAMPLE_HARD_LIMIT
+        and len(output) < HYGIENE_SAMPLE_HARD_LIMIT
+    ):
+        page = min(
+            HYGIENE_SAMPLE_PAGE_SIZE,
+            remaining,
+            HYGIENE_SAMPLE_HARD_LIMIT - consumed_total,
+            HYGIENE_SAMPLE_HARD_LIMIT - len(output),
+        )
+        if page <= 0:
+            break
+        try:
+            rows = sampler(limit=page, offset=cursor)
+        except Exception:
+            break
+        if not isinstance(rows, list) or not rows:
+            break
+        page_rows = rows[:page]
+        for row in page_rows:
+            consumed_total += 1
+            remaining -= 1
+            record = metadata_only_record(row if isinstance(row, Mapping) else None)
+            memory_id = str(record.get("id") or "")
+            if memory_id:
+                output[memory_id] = record
+            if (
+                remaining <= 0
+                or consumed_total >= HYGIENE_SAMPLE_HARD_LIMIT
+                or len(output) >= HYGIENE_SAMPLE_HARD_LIMIT
+            ):
+                break
+        if (
+            len(page_rows) < page
+            or remaining <= 0
+            or consumed_total >= HYGIENE_SAMPLE_HARD_LIMIT
+            or len(output) >= HYGIENE_SAMPLE_HARD_LIMIT
+        ):
+            break
+        cursor += len(page_rows)
+    return output
 
 
 def vector_record_to_dict(record: VectorRecord | Mapping[str, Any] | dict[str, Any]) -> dict[str, Any]:
@@ -163,6 +315,321 @@ def _sql_quote(value: str) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def _lance_query_builder(table: Any) -> Any | None:
+    """Return a query builder that can take select/limit before materialization."""
+
+    search = getattr(table, "search", None)
+    if not callable(search):
+        return None
+    for args in ((), (None,)):
+        try:
+            builder = search(*args)
+        except TypeError:
+            continue
+        except Exception:
+            return None
+        if builder is None:
+            continue
+        owner = type(builder)
+        if all(callable(getattr(owner, name, None)) for name in ("select", "limit")):
+            return builder
+    return None
+
+
+def _materialize_lance_query(builder: Any) -> list[dict[str, Any]] | None:
+    """Materialize only a builder that already received projection/limit."""
+
+    to_list = getattr(builder, "to_list", None)
+    if callable(to_list):
+        try:
+            rows = to_list()
+        except Exception:
+            return None
+        return list(rows) if isinstance(rows, list) else None
+    to_arrow = getattr(builder, "to_arrow", None)
+    if callable(to_arrow):
+        try:
+            arrow = to_arrow()
+            convert = getattr(arrow, "to_pylist", None)
+            if not callable(convert):
+                return None
+            rows = convert()
+        except Exception:
+            return None
+        return list(rows) if isinstance(rows, list) else None
+    return None
+
+
+def _lance_scanner_rows(
+    table: Any,
+    *,
+    columns: list[str],
+    limit: int,
+    offset: int,
+    where: str | None = None,
+) -> list[dict[str, Any]] | None:
+    """Use Lance dataset scanner only when limit (and offset if needed) are real parameters."""
+
+    to_lance = getattr(table, "to_lance", None)
+    if not callable(to_lance):
+        return None
+    try:
+        dataset = to_lance()
+    except Exception:
+        return None
+    scanner_fn = getattr(dataset, "scanner", None)
+    if not callable(scanner_fn):
+        return None
+    try:
+        parameters = inspect.signature(scanner_fn).parameters
+    except (TypeError, ValueError):
+        return None
+    if "limit" not in parameters:
+        return None
+    if offset and "offset" not in parameters:
+        return None
+    kwargs: dict[str, Any] = {"columns": list(columns), "limit": int(limit)}
+    if "offset" in parameters:
+        kwargs["offset"] = int(offset)
+    if where and "filter" in parameters:
+        kwargs["filter"] = where
+    elif where:
+        return None
+    try:
+        scanner = scanner_fn(**kwargs)
+        to_table = getattr(scanner, "to_table", None)
+        if not callable(to_table):
+            return None
+        arrow = to_table()
+        convert = getattr(arrow, "to_pylist", None)
+        if not callable(convert):
+            return None
+        rows = convert()
+    except Exception:
+        return None
+    return list(rows) if isinstance(rows, list) else None
+
+
+def sample_lance_table_metadata(
+    table: Any,
+    *,
+    columns: Iterable[str] = VECTOR_METADATA_COLUMNS,
+    limit: int,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """Push metadata projection plus offset/limit into Lance before materialization.
+
+    Unbounded ``table.to_list`` / ``to_arrow`` / ``to_pandas`` are never used.
+    If the installed API cannot prove that bound, return no sample.
+    """
+
+    bounded = clamp_vector_sample_limit(limit)
+    start = max(0, int(offset or 0))
+    projected = [str(column) for column in columns if str(column) and str(column) != "vector"]
+    if bounded <= 0 or not projected:
+        return []
+    builder = _lance_query_builder(table)
+    if builder is not None:
+        try:
+            builder = builder.select(projected).limit(bounded)
+            offset_fn = getattr(builder, "offset", None)
+            if start and not callable(offset_fn):
+                builder = None
+            elif callable(offset_fn):
+                builder = offset_fn(start)
+        except Exception:
+            builder = None
+        if builder is not None:
+            rows = _materialize_lance_query(builder)
+            if rows is not None:
+                sampled: list[dict[str, Any]] = []
+                for row in rows[:bounded]:
+                    record = metadata_only_record(row)
+                    if record.get("id"):
+                        sampled.append(record)
+                return sampled
+    rows = _lance_scanner_rows(
+        table,
+        columns=projected,
+        limit=bounded,
+        offset=start,
+    )
+    if rows is None:
+        return []
+    sampled = []
+    for row in rows[:bounded]:
+        record = metadata_only_record(row)
+        if record.get("id"):
+            sampled.append(record)
+    return sampled
+
+
+_LANCE_VECTOR_INDEX_TYPES = {
+    "ann",
+    "diskann",
+    "fts",
+    "hnsw",
+    "inverted",
+    "ivf",
+    "ivf_flat",
+    "ivf_hnsw_pq",
+    "ivf_hnsw_sq",
+    "ivf_pq",
+    "pq",
+    "vector",
+}
+_LANCE_SCALAR_INDEX_TYPES = {
+    "bitmap",
+    "btree",
+    "label_list",
+    "scalar",
+}
+
+
+def _index_column_names(index: Any) -> list[str]:
+    raw: Any = None
+    if isinstance(index, Mapping):
+        raw = index.get("columns") or index.get("column_names") or index.get("fields")
+        if raw is None and index.get("column"):
+            raw = [index.get("column")]
+    else:
+        for attr in ("columns", "column_names", "fields"):
+            value = getattr(index, attr, None)
+            if value is not None:
+                raw = value
+                break
+        if raw is None:
+            column = getattr(index, "column", None)
+            if column is not None:
+                raw = [column]
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [raw]
+    try:
+        return [str(item) for item in raw if str(item)]
+    except TypeError:
+        return []
+
+
+def _index_type_name(index: Any) -> str:
+    if isinstance(index, Mapping):
+        value = index.get("index_type") or index.get("type") or index.get("indexType") or ""
+    else:
+        value = (
+            getattr(index, "index_type", None)
+            or getattr(index, "type", None)
+            or ""
+        )
+    return str(value or "").strip().lower().replace("-", "_")
+
+
+def _index_covers_id_scalar(index: Any) -> bool:
+    """True only for an id-only scalar/BTree/bitmap index listing."""
+
+    columns = [str(name).strip() for name in _index_column_names(index) if str(name).strip()]
+    if columns != ["id"]:
+        return False
+    index_type = _index_type_name(index)
+    if index_type in _LANCE_VECTOR_INDEX_TYPES:
+        return False
+    return not index_type or index_type in _LANCE_SCALAR_INDEX_TYPES
+
+
+def _listed_lance_indices(table: Any) -> list[Any] | None:
+    """Return index metadata only from a successful synchronous listing API.
+
+    An awaitable, missing, or failing listing is unknown, not "no index".
+    An empty list from a working API is proof that no index exists.
+    """
+
+    owners: list[Any] = [table]
+    to_lance = getattr(table, "to_lance", None)
+    if callable(to_lance):
+        try:
+            dataset = to_lance()
+        except Exception:
+            dataset = None
+        if dataset is not None:
+            owners.append(dataset)
+    for owner in owners:
+        if owner is None:
+            continue
+        for name in ("list_indices", "list_indexes"):
+            listed_fn = getattr(owner, name, None)
+            if not callable(listed_fn):
+                continue
+            try:
+                listed = listed_fn()
+            except Exception:
+                continue
+            if inspect.isawaitable(listed):
+                closer = getattr(listed, "close", None)
+                if callable(closer):
+                    try:
+                        closer()
+                    except Exception:
+                        pass
+                return None
+            if listed is None:
+                continue
+            if isinstance(listed, list):
+                return listed
+            try:
+                return list(cast(Iterable[Any], listed))
+            except TypeError:
+                return None
+    return None
+
+
+def lance_table_has_id_scalar_index(table: Any) -> bool:
+    """Return True only when Lance lists a scalar index covering ``id``."""
+
+    if table is None:
+        return False
+    listed = _listed_lance_indices(table)
+    if not listed:
+        return False
+    return any(_index_covers_id_scalar(index) for index in listed)
+
+
+def lance_table_contains_id(table: Any, memory_id: str) -> bool | None:
+    """Indexed id existence probe. ``None`` if no scalar ``id`` index is listed.
+
+    ``search().where(id).limit(1)`` is not a work bound by itself: without a
+    listed scalar index Lance may still scan the corpus. This helper therefore
+    refuses to issue that filter unless :func:`lance_table_has_id_scalar_index`
+    is true.
+    """
+
+    resolved = str(memory_id or "")
+    if not resolved:
+        return False
+    if not lance_table_has_id_scalar_index(table):
+        return None
+    builder = _lance_query_builder(table)
+    where_sql = f"id = {_sql_quote(resolved)}"
+    if builder is not None and callable(getattr(builder, "where", None)):
+        try:
+            builder = builder.select(["id"]).where(where_sql).limit(1)
+        except Exception:
+            builder = None
+        if builder is not None:
+            rows = _materialize_lance_query(builder)
+            if rows is not None:
+                return any(str(row.get("id") or "") == resolved for row in rows)
+    rows = _lance_scanner_rows(
+        table,
+        columns=["id"],
+        limit=1,
+        offset=0,
+        where=where_sql,
+    )
+    if rows is None:
+        return None
+    return any(str(row.get("id") or "") == resolved for row in rows)
+
+
 class LanceVectorStore:
     """LanceDB-backed vector companion store.
 
@@ -190,6 +657,17 @@ class LanceVectorStore:
     @property
     def dimensions(self) -> int:
         return self._dimensions
+
+    @property
+    def id_lookup_indexed(self) -> bool:
+        """True only when Lance lists a scalar index on ``id``.
+
+        Ordinary cardinality maintenance uses the SQLite membership ledger.
+        This flag exists so a proven scalar index can still serve as a
+        fallback probe; ``limit(1)`` alone never sets it.
+        """
+
+        return lance_table_has_id_scalar_index(self._table)
 
     @property
     def _write_lock_path(self) -> Path:
@@ -326,11 +804,24 @@ class LanceVectorStore:
                 checkout_latest()
             table.delete(f"id IN ({quoted})")
 
+    def contains_id(self, memory_id: str) -> bool:
+        """Return whether one id exists only when a scalar ``id`` index is listed.
+
+        Ordinary replay must not call this method to maintain counts. The
+        SQLite membership ledger is the supported incremental path.
+        """
+
+        found = lance_table_contains_id(self._require_table(), str(memory_id or ""))
+        if found is None:
+            raise RuntimeError("LanceDB cannot prove an indexed id lookup")
+        return found
+
     def delete(self, ids: list[str]) -> int:
-        before = set(self.list_ids())
-        self.delete_by_ids(ids)
-        after = set(self.list_ids())
-        return len(before - after)
+        existing = [str(item) for item in ids if str(item) and self.contains_id(str(item))]
+        if not existing:
+            return 0
+        self.delete_by_ids(existing)
+        return len(existing)
 
     def _table_rows(self, columns: list[str] | None = None) -> list[dict[str, Any]]:
         table = self._require_table()
@@ -377,6 +868,21 @@ class LanceVectorStore:
             if current is None or str(row.get("updated_at") or "") >= str(current.get("updated_at") or ""):
                 output[memory_id] = row
         return output
+
+    def sample_metadata(self, *, limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
+        """Return a bounded metadata page without projecting the vector column.
+
+        Projection and paging are pushed into Lance. If that cannot be proven,
+        the method fails closed with an empty sample instead of materializing
+        the metadata corpus.
+        """
+
+        return sample_lance_table_metadata(
+            self._require_table(),
+            columns=VECTOR_METADATA_COLUMNS,
+            limit=limit,
+            offset=offset,
+        )
 
     def audit_counts(self) -> dict[str, int]:
         ids = self.list_ids()

@@ -5,7 +5,6 @@ The fixtures keep source-tree imports and Hermes-runtime compatibility predictab
 from __future__ import annotations
 
 import os
-import shutil
 import sys
 import tempfile
 import types
@@ -13,18 +12,17 @@ from pathlib import Path
 
 import pytest
 
+from plugin_source import install_plugin_tree
+
 _TEST_HERMES_HOME = tempfile.TemporaryDirectory(prefix="scope.recall.test-home.")
 
 
 def _install_plugin() -> Path:
+    """Expose the workspace plugin to Hermes, using copy when symlink is denied."""
+
     repo_root = Path(__file__).resolve().parents[1]
     plugin_dir = Path(_TEST_HERMES_HOME.name) / "plugins" / "scope-recall"
-    plugin_dir.parent.mkdir(parents=True, exist_ok=True)
-    if not plugin_dir.exists():
-        try:
-            plugin_dir.symlink_to(repo_root, target_is_directory=True)
-        except OSError:
-            shutil.copytree(repo_root, plugin_dir)
+    install_plugin_tree(plugin_dir, repo_root)
     return repo_root
 
 

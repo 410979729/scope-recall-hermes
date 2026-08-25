@@ -24,6 +24,10 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Mapping, Sequence
 
 from .capture_filters import sanitize_report_text, sanitize_structured_value
+from .vector_membership import (
+    ensure_vector_membership_schema,
+    sync_membership_state_after_register,
+)
 
 
 VECTOR_GENERATION_SCHEMA_VERSION = 1
@@ -330,6 +334,7 @@ def ensure_vector_generation_schema(conn: sqlite3.Connection) -> None:
     for column, statement in generation_migrations.items():
         if column not in generation_columns:
             conn.execute(statement)
+    ensure_vector_membership_schema(conn)
 
 
 def generation_manifest(conn: sqlite3.Connection, generation_id: str) -> dict[str, Any] | None:
@@ -475,6 +480,12 @@ def register_generation(
         )
     manifest = generation_manifest(conn, generation_id)
     assert manifest is not None
+    sync_membership_state_after_register(
+        conn,
+        generation_id,
+        row_count=int(manifest.get("row_count") or 0),
+        unique_id_count=int(manifest.get("unique_id_count") or 0),
+    )
     return manifest
 
 

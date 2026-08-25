@@ -7,12 +7,13 @@ They still accept the live Provider object so existing monkeypatches keep workin
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from typing import Any
 
 from .capture_filters import sanitize_structured_value
+from .adjudication_schedule import adjudication_schedule_status, schedule_target_id
 from .writer_lease import sanitized_truth_writer_owner
-from .vector_runtime import refresh_vector_audit
 from .freshness import attach_freshness_metadata, fact_freshness_report, memory_freshness_map
 from .gating import compact_text
 from .graph import clamp_float, compact_context_lines, lifecycle_visible_sql, load_metadata, normalize_entity
@@ -23,6 +24,11 @@ from ._internal.memory.scope import accessible_scope_params, payload_entities, s
 from .models import recall_scope_mode
 from .operator_ledger import operator_ledger_report
 from ._internal.recall.pipeline import humanize_filter_trace, humanize_recall_components
+from .capture_intents import (
+    capture_intent_report,
+    merge_capture_queue_report,
+    queue_capacity,
+)
 from .relation_rebuild_queue import relation_rebuild_queue_report
 from .sql_store import curated_recall_item_id, iter_curated_entries  # noqa: F401
 from .storage_views import _curated_memory_allowed
@@ -107,13 +113,10 @@ def hygiene_report(provider: Any, *, limit: int = 200) -> dict[str, Any]:
     from .hygiene import build_hygiene_report
 
     with _query_lock(provider):
-        vector_view = _vector_status_view(provider)
-        records = vector_view.get("records")
-        snapshot = None
-        if isinstance(records, dict) and records:
-            snapshot = type("_VectorRecordSnapshot", (), {"list_records": staticmethod(lambda: records)})()
         return build_hygiene_report(
-            _query_conn(provider), vector_store=snapshot, limit=limit
+            _query_conn(provider),
+            vector_store=getattr(provider, "_vector_store", None),
+            limit=limit,
         )
 
 def _row_payload(row: Any) -> dict[str, Any]:
@@ -951,7 +954,10 @@ def _write_transaction_stats() -> dict[str, Any]:
 def stats_payload(provider: Any) -> dict[str, Any]:
     """Build the provider stats payload consumed by tools, dashboards, and tests.
 
-    Stats should expose runtime debt clearly while keeping examples sanitized and avoiding hidden mutations."""
+    Stats should expose runtime debt clearly while keeping examples sanitized
+    and avoiding hidden mutations. Vector status is a single aggregate snapshot;
+    this payload must not list companion records or run a second full audit.
+    """
     from . import memory_ops as _ops
 
     conn = _query_conn(provider)
@@ -1001,28 +1007,65 @@ def stats_payload(provider: Any) -> dict[str, Any]:
             conn, accessible_scope_ids=accessible_scope_params(provider)
         )
         relation_rebuild = relation_rebuild_queue_report(conn)
+        capture_capacity = queue_capacity(getattr(provider, "_config", None))
+        try:
+            capture_queue = merge_capture_queue_report(
+                capture_intent_report(conn, capacity=capture_capacity),
+                provider,
+                capacity=capture_capacity,
+            )
+        except sqlite3.OperationalError:
+            capture_queue = merge_capture_queue_report(
+                {
+                    "status": "unavailable",
+                    "capacity": capture_capacity,
+                    "depth": 0,
+                    "pending": 0,
+                    "processing": 0,
+                    "oldest_age_seconds": 0.0,
+                    "rejected": 0,
+                    "deferred": 0,
+                },
+                provider,
+                capacity=capture_capacity,
+            )
         operator_ledger = operator_ledger_report(conn)
         freshness = fact_freshness_report(conn)
+        adjudication_report = dict(
+            _runtime_status_view(provider).get("last_adjudication_report") or {}
+        )
+        writable_scope_ids = tuple(
+            str(scope_id)
+            for scope_id in (scope_view.get("writable_scope_ids") or [])
+            if str(scope_id)
+        )
+        if writable_scope_ids:
+            try:
+                adjudication_target = schedule_target_id(writable_scope_ids)
+                adjudication_report["schedule"] = adjudication_schedule_status(
+                    conn,
+                    target_id=adjudication_target,
+                )
+                adjudication_report["l4_schedule"] = adjudication_schedule_status(
+                    conn,
+                    target_id=f"{adjudication_target}:l4",
+                )
+            except sqlite3.OperationalError:
+                # Old/read-only stores may predate the governance ledger. Stats
+                # remains read-only and reports that durable schedule state is
+                # not available instead of creating schema as a side effect.
+                adjudication_report["schedule"] = {"status": "unavailable"}
+                adjudication_report["l4_schedule"] = {"status": "unavailable"}
     runtime_view = _runtime_status_view(provider)
     retrieval_view = _retrieval_status_view(provider)
-    vector_path = str(vector_view.get("path") or "")
     vector_table = str(vector_view.get("table") or "")
     vector_embedder: dict[str, Any] = _as_str_dict(vector_view.get("embedder"))
-    if vector_view.get("enabled") or vector_view.get("ready") or vector_view.get("path"):
-        refresh_vector_audit(provider, persist=False)
-        refreshed = _vector_status_view(provider)
-        vector_path = str(refreshed.get("path") or vector_path)
-        vector_table = str(refreshed.get("table") or vector_table)
-        if refreshed.get("embedder"):
-            vector_embedder = _as_str_dict(refreshed.get("embedder"))
-        vector_view = refreshed or vector_view
     if not vector_embedder:
         vector_embedder = _as_str_dict(vector_view.get("embedder"))
     failed_writes = int(runtime_view.get("writer_failed_writes") or 0)
     reported_failures = int(runtime_view.get("writer_reported_failures") or 0)
     return {
         "provider": runtime_view.get("name") or getattr(provider, "name", ""),
-        "db_path": str(runtime_view.get("db_path") or ""),
         "scope_id": scope_view.get("scope_id") or "",
         "shared_scope_id": scope_view.get("shared_scope_id") or "",
         "accessible_scope_ids": list(scope_view.get("accessible_scope_ids") or []),
@@ -1033,7 +1076,7 @@ def stats_payload(provider: Any) -> dict[str, Any]:
             ),
         },
         "write_transactions": _write_transaction_stats(),
-        "auto_adjudication": dict(runtime_view.get("last_adjudication_report") or {}),
+        "auto_adjudication": adjudication_report,
         "total_memories": total,
         "scope_memories": scoped,
         "local_scope_memories": local,
@@ -1050,6 +1093,7 @@ def stats_payload(provider: Any) -> dict[str, Any]:
         "scope_feedback_rows": feedback_rows,
         "graph": graph_stats,
         "relation_rebuild_queue": relation_rebuild,
+        "capture_queue": capture_queue,
         "operator_ledger": operator_ledger,
         "curated_memories": len(_ops.iter_curated_entries(runtime_view.get("hermes_home"))),
         "migration": dict(runtime_view.get("migration_info") or {}),
@@ -1077,7 +1121,6 @@ def stats_payload(provider: Any) -> dict[str, Any]:
             "status": str(vector_view.get("status") or ""),
             "message": str(vector_view.get("message") or ""),
             "backend": str(vector_view.get("backend") or ""),
-            "path": vector_path,
             "table": vector_table,
             "row_count": int(vector_view.get("row_count") or 0),
             "unique_id_count": int(vector_view.get("unique_id_count") or 0),

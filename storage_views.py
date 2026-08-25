@@ -5,6 +5,7 @@ These views apply lifecycle and visibility filters before recall merges candidat
 from __future__ import annotations
 
 import sqlite3
+import time
 from typing import Any
 
 from .gating import build_fts_query, compact_text, like_terms, normalized_token_set, retrieval_query_tokens
@@ -20,6 +21,7 @@ from .lexical_query import (
 from .models import RecallItem
 from .scoring import bm25_to_score, lexical_score
 from .sql_store import curated_recall_item_id, iter_curated_entries
+from .sqlite_params import chunked_sql_parameters
 from .vector_runtime import mark_vector_needs_repair
 
 # Defensive retrieval boundary: lifecycle filtering must happen in the candidate
@@ -225,14 +227,22 @@ def search_db_memories(
                     ).fetchall()
                 rows.extend(term_rows)
                 supplemental_row_ids.update(str(row["id"]) for row in term_rows)
+        def _remaining_candidate_slots() -> int:
+            return max(
+                0,
+                candidate_pool
+                - len({str(row["id"]) for row in rows if str(row["id"])}),
+            )
+
         like_query_terms = like_terms(query, tokens)
-        if like_query_terms:
+        fallback_limit = _remaining_candidate_slots()
+        if like_query_terms and fallback_limit > 0:
             clause = " OR ".join(["content LIKE ?", "summary LIKE ?"] * len(like_query_terms))
             params: list[Any] = []
             for term in like_query_terms:
                 needle = f"%{term}%"
                 params.extend([needle, needle])
-            params.extend([*_accessible_scope_params(provider), candidate_pool])
+            params.extend([*_accessible_scope_params(provider), fallback_limit])
             rows.extend(
                 conn.execute(
                     f"""
@@ -246,13 +256,14 @@ def search_db_memories(
                 ).fetchall()
             )
         alias_terms = _alias_like_terms(query, tokens)
-        if alias_terms:
+        fallback_limit = _remaining_candidate_slots()
+        if alias_terms and fallback_limit > 0:
             clause = " OR ".join(["content LIKE ?", "summary LIKE ?"] * len(alias_terms))
             params = []
             for term in alias_terms:
                 needle = f"%{term}%"
                 params.extend([needle, needle])
-            params.extend([*_accessible_scope_params(provider), candidate_pool])
+            params.extend([*_accessible_scope_params(provider), fallback_limit])
             rows.extend(
                 conn.execute(
                     f"""
@@ -328,15 +339,39 @@ def search_db_memories(
 
 
 def search_vector_memories(provider: Any, query: str, *, limit: int) -> list[RecallItem]:
-    """Embed one query, then search the active vector companion."""
+    """Embed one query, then search the active vector companion.
+
+    Query-provider failures are transient retrieval degradation, not companion
+    corruption.  A short in-process cooldown prevents a failing hosted provider
+    from being hammered while preserving automatic recovery without repair or
+    restart.
+    """
 
     if not provider._vector_ready or not provider._vector_store or not provider._embedder:
+        return []
+    now = time.monotonic()
+    degraded_until = float(
+        getattr(provider, "_vector_query_degraded_until_monotonic", 0.0) or 0.0
+    )
+    if now < degraded_until:
         return []
     try:
         query_vector = provider._embedder.embed_query(query)
     except Exception as exc:
-        mark_vector_needs_repair(provider, exc)
+        failures = min(
+            6,
+            int(getattr(provider, "_vector_query_failure_count", 0) or 0) + 1,
+        )
+        provider._vector_query_failure_count = failures
+        provider._vector_query_degraded_until_monotonic = now + min(
+            30.0,
+            float(2 ** (failures - 1)),
+        )
+        provider._vector_query_last_error = type(exc).__name__
         return []
+    provider._vector_query_failure_count = 0
+    provider._vector_query_degraded_until_monotonic = 0.0
+    provider._vector_query_last_error = ""
     return search_vector_memories_with_vector(provider, query_vector, limit=limit)
 
 
@@ -359,51 +394,91 @@ def search_vector_memories_with_vector(
         mark_vector_needs_repair(provider, exc)
         return []
     threshold = float((provider._retrieval_config or {}).get("vector_min_score") or 0.12)
-    id_metadata: dict[str, dict[str, Any]] = {}
-    row_ids = [str(row.get("id") or "") for row in rows if str(row.get("id") or "")]
-    if row_ids:
-        placeholders = ",".join("?" for _ in row_ids)
+    unique_ids = list(
+        dict.fromkeys(
+            str(row.get("id") or "")
+            for row in rows
+            if str(row.get("id") or "")
+        )
+    )
+    truth_by_id: dict[str, sqlite3.Row] = {}
+    if unique_ids:
         try:
+            scope_params = _accessible_scope_params(provider)
             with provider._lock:
-                meta_rows = provider._require_conn().execute(
-                    f"SELECT id, scope_id, created_at, metadata FROM memories WHERE id IN ({placeholders})",
-                    row_ids,
-                ).fetchall()
-            id_metadata = {}
-            for row in meta_rows:
-                metadata = load_metadata(row["metadata"])
-                metadata.setdefault("created_at", str(row["created_at"]))
-                id_metadata[str(row["id"])] = metadata
+                conn = provider._require_conn()
+                for id_chunk in chunked_sql_parameters(
+                    conn,
+                    unique_ids,
+                    reserved=len(scope_params),
+                ):
+                    id_placeholders = ",".join("?" for _ in id_chunk)
+                    truth_rows = conn.execute(
+                        f"""
+                        SELECT id, scope_id, source, target, content, summary,
+                               created_at, updated_at, metadata
+                        FROM memories
+                        WHERE id IN ({id_placeholders})
+                          AND scope_id IN ({_scope_placeholders(provider)})
+                          AND {_ACTIVE_MEMORY_SQL}
+                        """,
+                        [*id_chunk, *scope_params],
+                    ).fetchall()
+                    truth_by_id.update(
+                        {str(truth_row["id"]): truth_row for truth_row in truth_rows}
+                    )
         except Exception:
-            id_metadata = {}
+            # SQLite is the authority.  If it cannot be read and checked, no
+            # companion row is safe to surface.
+            truth_by_id = {}
     results: list[RecallItem] = []
+    companion_mismatch_count = 0
     for row in rows:
         row_id = str(row.get("id") or "")
-        if row_ids and row_id not in id_metadata:
+        truth_row = truth_by_id.get(row_id)
+        if truth_row is None:
+            companion_mismatch_count += 1
+            continue
+        companion_fields = {
+            "scope_id": str(row.get("scope_id") or ""),
+            "source": str(row.get("source") or ""),
+            "target": str(row.get("target") or ""),
+            "content": str(row.get("content") or ""),
+            "summary": str(row.get("summary") or ""),
+            "updated_at": str(row.get("updated_at") or ""),
+        }
+        if any(
+            companion_fields[field] != str(truth_row[field] or "")
+            for field in companion_fields
+        ):
+            companion_mismatch_count += 1
             continue
         distance = float(row.get("_distance") or 0.0)
         vector_score = max(0.0, 1.0 - distance)
         if vector_score < threshold:
             continue
-        metadata = dict(id_metadata.get(row_id) or {})
-        lifecycle = str(metadata.get("lifecycle") or "").strip().lower()
-        target = str(row.get("target") or "")
-        if lifecycle in _RECALL_HIDDEN_LIFECYCLE_SET and not (
-            lifecycle == "scratch" and target == "general"
-        ):
-            continue
-        metadata.update({"lexical_score": 0.0, "vector_score": vector_score, "scope_id": row.get("scope_id")})
+        metadata = _row_metadata(
+            truth_row,
+            lexical_score=0.0,
+            vector_score=vector_score,
+        )
         results.append(
             RecallItem(
-                id=row["id"],
-                content=row["content"],
-                summary=row["summary"],
-                source=row["source"],
-                target=row["target"],
+                id=truth_row["id"],
+                content=truth_row["content"],
+                summary=truth_row["summary"],
+                source=truth_row["source"],
+                target=truth_row["target"],
                 score=vector_score,
-                updated_at=row["updated_at"],
+                updated_at=truth_row["updated_at"],
                 metadata=metadata,
             )
+        )
+    if companion_mismatch_count:
+        mark_vector_needs_repair(
+            provider,
+            "vector companion rows disagree with active accessible SQLite truth "
+            f"({companion_mismatch_count} mismatch(es))",
         )
     best_by_id: dict[str, RecallItem] = {}
     for item in results:

@@ -71,6 +71,12 @@ class PGVectorStore:
         return self._dimensions
 
     @property
+    def id_lookup_indexed(self) -> bool:
+        """Companion ``id`` is the PostgreSQL primary key."""
+
+        return True
+
+    @property
     def table_name(self) -> str:
         return self._table_name
 
@@ -255,11 +261,27 @@ class PGVectorStore:
             cur.execute(f"DELETE FROM {self._quoted_table} WHERE id = ANY(%s)", (ids,))
         conn.commit()
 
+    def contains_id(self, memory_id: str) -> bool:
+        """Indexed primary-key existence probe; never counts or lists the corpus."""
+
+        resolved = str(memory_id or "")
+        if not resolved:
+            return False
+        conn = self._require_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT 1 FROM {self._quoted_table} WHERE id = %s LIMIT 1",
+                (resolved,),
+            )
+            row = cur.fetchone()
+        return row is not None
+
     def delete(self, ids: list[str]) -> int:
-        before = set(self.list_ids())
-        self.delete_by_ids(ids)
-        after = set(self.list_ids())
-        return len(before - after)
+        existing = [str(item) for item in ids if str(item) and self.contains_id(str(item))]
+        if not existing:
+            return 0
+        self.delete_by_ids(existing)
+        return len(existing)
 
     def list_ids(self) -> list[str]:
         conn = self._require_conn()
@@ -287,6 +309,40 @@ class PGVectorStore:
                 "vector": [float(value) for value in row[7]],
             }
         return output
+
+    def sample_metadata(self, *, limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
+        """Return a bounded metadata page without selecting the vector column."""
+
+        from .vector_store import clamp_vector_sample_limit
+
+        bounded = clamp_vector_sample_limit(limit)
+        start = max(0, int(offset or 0))
+        if bounded <= 0:
+            return []
+        conn = self._require_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT id, scope_id, source, target, content, summary, updated_at
+                FROM {self._quoted_table}
+                ORDER BY id
+                LIMIT %s OFFSET %s
+                """,
+                (bounded, start),
+            )
+            rows = cur.fetchall()
+        return [
+            {
+                "id": str(row[0]),
+                "scope_id": str(row[1] or ""),
+                "source": str(row[2] or ""),
+                "target": str(row[3] or ""),
+                "content": str(row[4] or ""),
+                "summary": str(row[5] or ""),
+                "updated_at": str(row[6] or ""),
+            }
+            for row in rows
+        ]
 
     def audit_counts(self) -> dict[str, int]:
         ids = self.list_ids()

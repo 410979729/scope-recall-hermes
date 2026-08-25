@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import json
+import time
 
 from plugins.memory import load_memory_provider
+from scope_recall.adjudication_schedule import (
+    claim_adjudication_schedule,
+    retry_adjudication_schedule,
+    schedule_target_id,
+)
 
 
 def _write_scope_recall_config(hermes_home, values):
@@ -125,3 +131,55 @@ def test_stats_include_last_auto_adjudication_report(tmp_path):
 
     assert stats["auto_adjudication"]["status"] == "applied"
     assert stats["auto_adjudication"]["lanes"]["promoted"] == 1
+    assert stats["auto_adjudication"]["schedule"]["status"] == "never_run"
+    assert stats["auto_adjudication"]["l4_schedule"]["status"] == "never_run"
+
+
+def test_stats_read_persistent_auto_adjudication_retry_state(tmp_path):
+    _write_scope_recall_config(
+        tmp_path,
+        {"vector": {"enabled": False}, "auto_adjudication": {"enabled": True}},
+    )
+    plugin = load_memory_provider("scope-recall")
+    assert plugin is not None
+    plugin.initialize(
+        "session-auto-adjudication-persistent-stats",
+        hermes_home=str(tmp_path),
+        platform="telegram",
+        user_id="operator",
+        agent_context="primary",
+        agent_identity="agent",
+        agent_workspace="workspace",
+    )
+    target_id = schedule_target_id(tuple(plugin._writable_scope_ids))
+    l4_target_id = f"{target_id}:l4"
+    now = time.time()
+    claim_token = claim_adjudication_schedule(
+        plugin._db_path,
+        now=now,
+        interval_hours=24.0,
+        claim_timeout_hours=2.0,
+        trigger="test",
+        target_id=l4_target_id,
+    )
+    assert claim_token
+    assert retry_adjudication_schedule(
+        plugin._db_path,
+        claim_token=claim_token,
+        scheduled_at=now,
+        trigger="test",
+        interval_hours=24.0,
+        retry_after_seconds=900.0,
+        target_id=l4_target_id,
+        retry_context={"candidate_ids": ["held"], "reason": "l4_config_error"},
+    )
+    try:
+        stats = json.loads(plugin.handle_tool_call("scope_recall_stats", {}))
+    finally:
+        plugin.shutdown()
+
+    schedule = stats["auto_adjudication"]["l4_schedule"]
+    assert schedule["status"] == "schedule_retry"
+    assert schedule["retry_due_at_unix"] == now + 900.0
+    assert schedule["consecutive_failures"] == 1
+    assert schedule["l4_config_error"] is True

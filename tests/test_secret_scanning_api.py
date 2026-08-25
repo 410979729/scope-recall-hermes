@@ -57,6 +57,28 @@ def test_unicode_shadow_preserves_benign_token_metric_exemption():
     assert contains_secret_like_text(text) is False
 
 
+@pytest.mark.parametrize(
+    "text",
+    (
+        "if claim_token is not None:",
+        "assert l4_claim_token is None",
+        "token is true",
+        "password is false",
+    ),
+)
+def test_python_sentinel_comparisons_are_not_secret_assignments(text):
+    assert secret_patterns.scan_secret_like_text(text) == ()
+    assert contains_secret_like_text(text) is False
+
+
+def test_human_readable_is_assignment_still_matches():
+    matches = secret_patterns.scan_secret_like_text(
+        "access_token is " + "Alpha1234567890Zulu"
+    )
+
+    assert any(match.name == "token_assignment" for match in matches)
+
+
 def test_release_scanner_uses_same_unicode_shadow_api_without_echoing_values(tmp_path):
     module = _release_module()
     for index, text in enumerate(OBFUSCATED_ASSIGNMENTS, 1):

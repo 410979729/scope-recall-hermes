@@ -100,3 +100,17 @@ def test_extract_entities_keeps_hinted_cjk_entities_when_jieba_is_missing():
 
     assert "自然码" in entities
     assert "双拼" in entities
+
+
+def test_user_entity_extraction_has_no_private_lowercase_name_special_case(monkeypatch):
+    import scope_recall.graph as graph_module
+
+    monkeypatch.setattr(graph_module, "_jieba_entities", lambda _text: [])
+    formerly_special_names = ("j" + "oy", "e" + "ri")
+    extracted = {
+        name: graph_module.extract_entities(f"{name} prefers tea", target="user")
+        for name in (*formerly_special_names, "alice", "bob")
+    }
+
+    assert all(values[0] == name for name, values in extracted.items())
+    assert {tuple(values[1:]) for values in extracted.values()} == {("prefers", "tea")}

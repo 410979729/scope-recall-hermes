@@ -22,7 +22,7 @@ $HERMES_HOME/plugins/scope-recall/
 
 The distribution package name is `hermes-scope-recall`, the Python import package is `scope_recall`, and the Hermes provider/plugin ID is `scope-recall`.
 
-V1 targets the current Hermes runtime line and therefore requires Python 3.11 or newer.
+V1 targets the current Hermes runtime line and therefore requires Python 3.11 or 3.12.
 
 ## Stable V1 storage contract
 

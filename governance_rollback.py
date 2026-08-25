@@ -108,6 +108,8 @@ def _before_snapshot(raw: Any) -> tuple[dict[str, Any] | None, dict[str, Any], s
     lifecycle = str(metadata.get("lifecycle") or "").strip().lower()
     if not lifecycle:
         return None, value, "missing_before_lifecycle"
+    if lifecycle == "archived":
+        return None, value, "before_lifecycle_not_restorable"
     return dict(metadata), value, ""
 
 
@@ -308,6 +310,16 @@ def rollback_cleanup_batch(
                 batch_id=batch_id,
                 timestamp=now,
             )
+            if not bool(transition_result.get("applied")):
+                target_id = str(audit["target_id"])
+                result["restore_ids"] = [
+                    memory_id
+                    for memory_id in result["restore_ids"]
+                    if memory_id != target_id
+                ]
+                result["stale_ids"].append(target_id)
+                result["skipped_stale"] = len(result["stale_ids"])
+                continue
             relation_receipt = transition_result.get("relation_restore") or {}
             result["restored_relation_count"] += int(
                 relation_receipt.get("restored") or 0

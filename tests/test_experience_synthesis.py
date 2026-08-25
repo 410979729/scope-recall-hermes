@@ -31,7 +31,8 @@ def test_synthesized_playbook_contains_weak_model_operational_sections():
     assert payload["reuse_policy"]["source_evidence_anchor_count"] == 3
     assert payload["reuse_policy"]["source_evidence_anchor_kinds"] == ["user_statement", "test_command", "assistant_closure"]
     assert payload["reuse_policy"]["allow_direct_reuse"] is True
-    assert any("Joy" in item for item in payload["reuse_policy"]["must_stop_and_ask_joy"])
+    assert "must_stop_and_ask_joy" not in payload["reuse_policy"]
+    assert any("operator" in item.lower() or "操作员" in item for item in payload["reuse_policy"]["must_stop_and_ask_operator"])
 
 
 def test_synthesized_high_risk_playbook_forbids_automatic_mutation():
@@ -51,7 +52,8 @@ def test_synthesized_high_risk_playbook_forbids_automatic_mutation():
     prohibited = "\n".join(playbook.reuse_policy["prohibited_auto_actions"])
     assert "不得自动执行" in prohibited
     assert any(step.capability_class == "local_write" for step in playbook.steps)
-    assert any("Joy" in item for item in playbook.reuse_policy["must_stop_and_ask_joy"])
+    assert "must_stop_and_ask_joy" not in playbook.reuse_policy
+    assert any("操作员" in item for item in playbook.reuse_policy["must_stop_and_ask_operator"])
 
 
 def test_synthesized_playbook_redacts_private_goal_and_treats_secret_risk_as_guided():
@@ -72,7 +74,7 @@ def test_synthesized_playbook_redacts_private_goal_and_treats_secret_risk_as_gui
     assert "[REDACTED_PATH]" in serialized
     assert playbook.reuse_policy["default_decision"] == "guided_reuse"
     assert playbook.reuse_policy["allow_direct_reuse"] is False
-    assert any("凭据" in item or "secret" in item.lower() for item in playbook.reuse_policy["must_stop_and_ask_joy"])
+    assert any("凭据" in item or "secret" in item.lower() for item in playbook.reuse_policy["must_stop_and_ask_operator"])
 
 
 def test_synthesized_playbook_marks_missing_verification_for_review():
@@ -91,4 +93,4 @@ def test_synthesized_playbook_marks_missing_verification_for_review():
     assert playbook.reuse_policy["default_decision"] == "guided_reuse"
     assert playbook.reuse_policy["allow_direct_reuse"] is False
     assert playbook.verification == ("verification_missing_requires_review",)
-    assert any("缺少验证" in item for item in playbook.reuse_policy["must_stop_and_ask_joy"])
+    assert any("缺少验证" in item for item in playbook.reuse_policy["must_stop_and_ask_operator"])

@@ -49,9 +49,12 @@ class _DummyProvider:
         self._current_turn = 10
         self.db_calls = 0
         self.vector_calls = 0
+        self.db_limits: list[int] = []
+        self.vector_limits: list[int] = []
 
     def _search_db_memories(self, query, *, limit):
         self.db_calls += 1
+        self.db_limits.append(limit)
         return [
             RecallItem(
                 id="memory-1",
@@ -71,10 +74,12 @@ class _DummyProvider:
 
     def _search_vector_memories(self, query, *, limit):
         self.vector_calls += 1
+        self.vector_limits.append(limit)
         return []
 
     def _search_vector_memories_with_vector(self, query_vector, *, limit):
         self.vector_calls += 1
+        self.vector_limits.append(limit)
         return []
 
     def _search_curated_memories(self, query):
@@ -296,6 +301,20 @@ def test_unpatched_search_collects_each_source_once() -> None:
     for stage in ("lexical", "vector", "curated", "rrf", "merge", "graph", "fact_freshness", "ranked"):
         assert stage in trace["stages"]
     assert trace["recall_mode"] == "advisory"
+
+
+def test_vector_top_k_controls_vector_depth_without_expanding_final_limit() -> None:
+    provider = _DummyProvider()
+    provider._retrieval_config["candidate_pool"] = 3
+    provider._vector_config["top_k"] = 11
+    service = RecallService(provider)
+
+    results = service.search_memories("Deploy command is uv run app.", limit=1)
+
+    assert len(results) == 1
+    assert provider.db_limits == [3]
+    assert provider.vector_limits == [11]
+    assert service.last_funnel_trace["vector_top_k"] == 11
 
 
 def test_monkeypatch_safe_item_still_binds_orchestrator(monkeypatch) -> None:

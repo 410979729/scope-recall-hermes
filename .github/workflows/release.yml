@@ -11,6 +11,10 @@ on:
         required: true
         type: string
 
+concurrency:
+  group: github-release-${{ inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -105,35 +109,34 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download reviewed release artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: scope-recall-release
-          path: release-assets
-      - name: Create or update GitHub Release
+      # Existing GitHub Release assets are immutable. A repeated tag run must
+      # not clobber bytes or re-dispatch PyPI after a prior publish.
+      - name: Refuse existing GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
         run: |
           if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release edit "${RELEASE_TAG}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --title "scope-recall ${RELEASE_TAG}" \
-              --notes-file release-assets/release-notes.md
-            gh release upload "${RELEASE_TAG}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              release-assets/dist/* \
-              release-assets/SHA256SUMS \
-              --clobber
-          else
-            gh release create "${RELEASE_TAG}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              release-assets/dist/* \
-              release-assets/SHA256SUMS \
-              --title "scope-recall ${RELEASE_TAG}" \
-              --notes-file release-assets/release-notes.md \
-              --verify-tag
+            echo "Refusing to mutate existing GitHub Release ${RELEASE_TAG}" >&2
+            exit 1
           fi
+      - name: Download reviewed release artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: scope-recall-release
+          path: release-assets
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+        run: |
+          gh release create "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            release-assets/dist/* \
+            release-assets/SHA256SUMS \
+            --title "scope-recall ${RELEASE_TAG}" \
+            --notes-file release-assets/release-notes.md \
+            --verify-tag
       - name: Trigger PyPI publish workflow
         env:
           GH_TOKEN: ${{ github.token }}

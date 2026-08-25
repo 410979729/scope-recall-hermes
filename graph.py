@@ -285,10 +285,6 @@ def extract_entities(text: str, *, target: str = "") -> list[str]:
             candidates.append(value)
     candidates.extend(_hinted_cjk_entities(text or ""))
     candidates.extend(_jieba_entities(text or ""))
-    if str(target or "").lower() == "user":
-        for token in query_tokens(text or ""):
-            if token in {"joy", "eri"}:
-                candidates.append(token)
     return _unique(candidates)
 
 

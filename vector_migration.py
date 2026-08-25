@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from .capture_filters import sanitize_report_text
+from .embedding_validation import validate_embedding_batch, zip_embedding_rows
 from .graph import load_metadata
 from .lifecycle_policy import ordinary_recall_lifecycle_visible
 from .vector_generation import (
@@ -416,22 +417,24 @@ def build_vector_generation(
             max(1, int(batch_size or 50)),
         ):
             texts = [_vector_text(row) for row in batch]
-            vectors = embedder.embed_texts(texts)
-            if len(vectors) != len(batch):
-                raise RuntimeError(
-                    f"embedding response count {len(vectors)} does not match batch size {len(batch)}"
-                )
+            embed_maintenance = getattr(embedder, "embed_maintenance", None)
+            raw_vectors = (
+                embed_maintenance(texts)
+                if callable(embed_maintenance)
+                else embedder.embed_texts(texts)
+            )
+            vectors = validate_embedding_batch(
+                raw_vectors,
+                expected_count=len(batch),
+                expected_dimensions=int(identity.dimensions),
+                provider=str(getattr(embedder, "provider", "embedder")),
+            )
             payload: list[dict[str, Any]] = []
-            for row, vector in zip(batch, vectors):
-                values = [float(value) for value in vector]
-                if len(values) != identity.dimensions:
-                    raise RuntimeError(
-                        f"embedding dimensions {len(values)} do not match generation dimensions {identity.dimensions}"
-                    )
-                if not all(math.isfinite(value) for value in values):
-                    raise RuntimeError("embedding contains non-finite values")
-                if not any(value != 0.0 for value in values):
-                    raise RuntimeError("embedding contains a zero vector")
+            for row, values in zip_embedding_rows(
+                batch,
+                vectors,
+                provider=str(getattr(embedder, "provider", "embedder")),
+            ):
                 _update_source_hash(source_digest, row)
                 payload.append(
                     {
