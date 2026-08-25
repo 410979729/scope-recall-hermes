@@ -24,29 +24,38 @@ from scope_recall.embedders import (
 
 
 @pytest.fixture(autouse=True)
-def _close_openai_compatible_embedders(monkeypatch: pytest.MonkeyPatch):
+def _close_hosted_embedders(monkeypatch: pytest.MonkeyPatch):
     """Terminal-close hosted embedders so idle workers release global permits."""
 
-    created: list[OpenAICompatibleEmbedder] = []
-    original_init = OpenAICompatibleEmbedder.__init__
+    created: list[object] = []
+    original_openai_init = OpenAICompatibleEmbedder.__init__
+    original_minimax_init = MiniMaxEmbedder.__init__
 
-    def _init(self: OpenAICompatibleEmbedder, *args, **kwargs) -> None:
-        original_init(self, *args, **kwargs)
+    def _openai_init(self: OpenAICompatibleEmbedder, *args, **kwargs) -> None:
+        original_openai_init(self, *args, **kwargs)
         created.append(self)
 
-    monkeypatch.setattr(OpenAICompatibleEmbedder, "__init__", _init)
+    def _minimax_init(self: MiniMaxEmbedder, *args, **kwargs) -> None:
+        original_minimax_init(self, *args, **kwargs)
+        created.append(self)
+
+    monkeypatch.setattr(OpenAICompatibleEmbedder, "__init__", _openai_init)
+    monkeypatch.setattr(MiniMaxEmbedder, "__init__", _minimax_init)
     yield
     for embedder in created:
-        embedder.close()
+        close = getattr(embedder, "close", None)
+        if callable(close):
+            close()
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
-            if embedder.request_resources()["workers"] == 0:
+            resources = getattr(embedder, "request_resources")()
+            if resources["workers"] == 0:
                 break
             time.sleep(0.01)
         else:
             raise AssertionError(
                 "fixture close left a live hosted worker: "
-                f"{embedder.request_resources()}"
+                f"{getattr(embedder, 'request_resources')()}"
             )
 
 

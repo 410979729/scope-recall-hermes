@@ -23,8 +23,8 @@ except ImportError:  # pragma: no cover - direct source execution fallback
 def default_hermes_home() -> str:
     """Return the profile home for portable scheduler CLI use.
 
-    Published scripts must not assume the maintainer's `.hermes-yuheng` profile;
-    operators can set HERMES_HOME, otherwise the standard Hermes home is used.
+    Published scripts must not assume a maintainer-specific profile; operators
+    can set HERMES_HOME, otherwise the standard Hermes home is used.
     """
     return os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
 

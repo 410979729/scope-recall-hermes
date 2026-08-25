@@ -22,6 +22,7 @@ DOCTOR_REQUIRED_CHECK_NAMES = (
     "memory_quality_lint",
     "memory_secret_scan",
     "nightly_digest",
+    "runtime_pipelines",
     "source_metadata",
     "sqlite_truth",
     "temporal_evolution",

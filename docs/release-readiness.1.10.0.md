@@ -40,7 +40,7 @@ Clearance condition: every mandatory source, artifact, clean-tree, CI, tagged-id
 - Vector doctor tests prove the inactive READY inventory contract.
 - Architecture tests prove one production command-port object for provider and tooling.
 - Cross-process and same-process writer-lease, digest-transaction, and peer-recovery suites from the `1.9.3` interval remain green.
-- Built wheel and sdist must omit private Beidou/shared-bridge modules, `tests/phase0/`, and `docs/internal.module-map.md`, expose version `1.10.0`, and install without relying on the source checkout.
+- Built wheel and sdist must omit private shared-bridge modules, `tests/phase0/`, and `docs/internal.module-map.md`, expose version `1.10.0`, and install without relying on the source checkout.
 
 ## Parent-run evidence (pending)
 

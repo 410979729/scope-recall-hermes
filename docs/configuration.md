@@ -71,7 +71,7 @@ This file is generated from the packaged `config.json` registry. It lists every 
 
 ## `capture_queue_capacity`
 
-- `capture_queue_capacity` (integer; risk: `low`; restart_required: `no`) — Maximum unconsumed durable capture intents in SQLite. This is not the in-memory wake/control channel, which has its own small fixed maxsize. Excess enqueue attempts receive an explicit rejected or deferred status instead of silent loss. Default: `256`
+- `capture_queue_capacity` (integer; risk: `low`; restart_required: `no`) — Maximum sanitized capture jobs held in the bounded process-local writer queue. Excess enqueue attempts receive an explicit rejected or deferred status instead of silent loss; queued payloads are not persisted. Default: `256`
 
 ## `capture_raw_user`
 
@@ -275,7 +275,7 @@ Treat chat aliases as explicit operator access-control grants.
 - `retrieval.metric` (string; risk: `medium`; restart_required: `no`; choices: `cosine, dot, l2`) — Scope Recall configuration key `retrieval.metric` in the `retrieval` group. Default: `"cosine"`
 - `retrieval.min_score` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.min_score` in the `retrieval` group. Default: `0.18`
 - `retrieval.mode` (string; risk: `medium`; restart_required: `no`; choices: `lexical, vector, hybrid`) — Recall mode: lexical, vector, or hybrid. Default: `"hybrid"`
-- `retrieval.relation_contradiction_mode` (string; risk: `medium`; restart_required: `no`; choices: `surface, suppress, penalize`) — Contradiction handling: surface keeps and warns, suppress excludes, and penalize applies relation_contradicts_penalty. Default: `"surface"`
+- `retrieval.relation_contradiction_mode` (string; risk: `medium`; restart_required: `no`; choices: `surface, suppress, penalize`) — Contradiction handling: surface keeps and warns; suppress excludes exactly one deterministic loser when both sides reach the bounded candidate set and preserves a one-sided candidate; penalize applies relation_contradicts_penalty. Default: `"surface"`
 - `retrieval.relation_contradicts_penalty` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.relation_contradicts_penalty` in the `retrieval` group. Default: `0.0`
 - `retrieval.relation_rerank_enabled` (boolean; risk: `medium`; restart_required: `no`) — Enable small relation-graph rerank bonuses after primary recall scoring. Default: `false`
 - `retrieval.relation_rerank_weight` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.relation_rerank_weight` in the `retrieval` group. Default: `0.04`

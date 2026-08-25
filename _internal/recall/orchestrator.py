@@ -57,6 +57,67 @@ def _host_callable(host: Any, name: str, fallback: Any) -> Any:
     return fn if callable(fn) else fallback
 
 
+def _deterministic_contradiction_loser_ids(
+    items: list[RecallItem],
+    relation_evidence: dict[str, dict[str, Any]],
+) -> set[str]:
+    """Choose one loser per recalled contradiction pair without double-kill."""
+
+    by_id = {item.id: item for item in items}
+    authoritative: dict[str, bool] = {}
+    pairs: set[tuple[str, str]] = set()
+    losers: set[str] = set()
+    for memory_id, item in by_id.items():
+        payload = relation_evidence.get(memory_id) or {}
+        incoming = payload.get("incoming")
+        incoming = incoming if isinstance(incoming, dict) else {}
+        authoritative[memory_id] = bool(
+            payload.get("authoritative_loser")
+            or incoming.get("supersedes")
+            or incoming.get("invalidates")
+        )
+        for direction in ("outgoing", "incoming"):
+            grouped = payload.get(direction)
+            grouped = grouped if isinstance(grouped, dict) else {}
+            rows = grouped.get("contradicts")
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                related_id = str(row.get("id") or "")
+                if related_id in by_id and related_id != memory_id:
+                    pair = (
+                        (memory_id, related_id)
+                        if memory_id < related_id
+                        else (related_id, memory_id)
+                    )
+                    pairs.add(pair)
+
+    def _priority(memory_id: str) -> tuple[float, str]:
+        item = by_id[memory_id]
+        try:
+            score = float(item.score)
+        except (TypeError, ValueError):
+            score = 0.0
+        return score, str(item.updated_at or "")
+
+    for left_id, right_id in sorted(pairs):
+        left_authoritative = authoritative.get(left_id, False)
+        right_authoritative = authoritative.get(right_id, False)
+        if left_authoritative != right_authoritative:
+            losers.add(left_id if left_authoritative else right_id)
+            continue
+        left_priority = _priority(left_id)
+        right_priority = _priority(right_id)
+        if left_priority == right_priority:
+            winner_id = min(left_id, right_id)
+        else:
+            winner_id = left_id if left_priority > right_priority else right_id
+        losers.add(right_id if winner_id == left_id else left_id)
+    return losers
+
+
 def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[RecallItem]:
     """Run the single ordinary-search orchestration and return ranked items.
 
@@ -214,6 +275,10 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
     trace["stages"]["candidate_after_policy"] = host._trace_stage(results)
     entity_graph_scores = host._entity_graph_scores(query, results)
     relation_evidence = host._persisted_relation_evidence([item.id for item in results])
+    contradiction_loser_ids = _deterministic_contradiction_loser_ids(
+        results,
+        relation_evidence,
+    )
     freshness_evidence = host._fact_freshness_evidence([item.id for item in results])
     trace["stages"]["graph"] = {
         "entity_scored_count": len(entity_graph_scores),
@@ -271,6 +336,18 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
         if contradiction_mode not in {"surface", "suppress", "penalize"}:
             contradiction_mode = "surface"
         has_contradiction = "contradicts" in relation_types
+        incoming_relations = relation_payload.get("incoming")
+        incoming_relations = (
+            incoming_relations if isinstance(incoming_relations, dict) else {}
+        )
+        authoritative_contradiction_loser = host._config_bool(
+            relation_payload.get("authoritative_loser"),
+            False,
+        ) or bool(
+            incoming_relations.get("supersedes")
+            or incoming_relations.get("invalidates")
+        )
+        contradiction_loser = item.id in contradiction_loser_ids
         relation_rerank_bonus = host._relation_rerank_bonus(relation_payload)
         base_score = max(0.0, min(1.0, quality_adjusted_score + entity_overlap + entity_distance_bonus + relation_rerank_bonus))
         freshness_payload = freshness_evidence.get(item.id)
@@ -308,6 +385,8 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
                 "relation_evidence_types": relation_types,
                 "relation_evidence_ids": relation_payload.get("ids") or [],
                 "relation_contradiction_mode": contradiction_mode,
+                "relation_contradiction_authoritative_loser": authoritative_contradiction_loser,
+                "relation_contradiction_loser": contradiction_loser,
                 "relation_contradiction_warning": (
                     "contradictory_relation_evidence_present"
                     if has_contradiction and contradiction_mode == "surface"
@@ -343,7 +422,11 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
             item.metadata = meta
             rejected.append(item)
             continue
-        if has_contradiction and contradiction_mode == "suppress":
+        if (
+            has_contradiction
+            and contradiction_mode == "suppress"
+            and contradiction_loser
+        ):
             meta["rejected_reason"] = "relation_contradiction_suppressed"
             trace["filters"]["relation_contradiction_suppressed"] += 1
             item.metadata = meta

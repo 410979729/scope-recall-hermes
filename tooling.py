@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 from tools.registry import tool_error  # type: ignore[reportMissingImports]
 
+from .capture import capture_mutation_barrier
 from .capture_filters import (
     CaptureFilterResult,
     sanitize_report_text,
@@ -134,6 +135,21 @@ class ScopeRecallToolService:
             return not self._bool_arg(args or {}, "record_run", False)
         return False
 
+    def _capture_barrier_required(
+        self, tool_name: str, args: dict[str, Any]
+    ) -> bool:
+        if tool_name == "scope_recall_forget":
+            return True
+        if tool_name == "scope_recall_dedupe":
+            return not self._bool_arg(args, "dry_run", True)
+        if tool_name == "scope_recall_forgetting_run":
+            return not self._bool_arg(args, "dry_run", True)
+        if tool_name != "scope_recall_memory":
+            return False
+        action = str((args or {}).get("action") or "").strip().lower()
+        action = action.replace("-", "_")
+        return action in {"forget", "delete", "remove"}
+
     def handle(self, tool_name: str, args: dict[str, Any]) -> str:
         normalized = self.normalize_tool_name(tool_name)
         payload = args or {}
@@ -177,6 +193,14 @@ class ScopeRecallToolService:
         handler = handlers.get(normalized)
         if self._reader_tool_allowed(normalized, payload):
             return self._invoke_handler(tool_name, normalized, handler, payload)
+        if self._capture_barrier_required(normalized, payload):
+            with capture_mutation_barrier(self._port.evidence_runtime()):
+                with self._port.writer_lifecycle_lock():
+                    if not self._port.has_positive_write_authority():
+                        return self._truth_write_blocked_error(normalized)
+                    return self._invoke_handler(
+                        tool_name, normalized, handler, payload
+                    )
         with self._port.writer_lifecycle_lock():
             if not self._port.has_positive_write_authority():
                 return self._truth_write_blocked_error(normalized)

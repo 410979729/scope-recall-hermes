@@ -205,6 +205,19 @@ def _run_l4_advisory(
     conn.row_factory = sqlite3.Row
     last_selected_id = ""
     last_checkpointed_id = ""
+    checkpoint_failed = False
+
+    def retain_retry_rows(pending_rows: Sequence[dict[str, Any]]) -> None:
+        """Keep uncheckpointed advisory work in stable retry order."""
+
+        retry_ids = summary["_l4_retry_candidate_ids"]
+        seen = {str(value) for value in retry_ids}
+        for pending_row in pending_rows:
+            memory_id = str(pending_row.get("id") or "")
+            if memory_id and memory_id not in seen:
+                retry_ids.append(memory_id)
+                seen.add(memory_id)
+
     try:
         rows.sort(
             key=lambda row: (
@@ -220,8 +233,9 @@ def _run_l4_advisory(
         prior = reviewed_fingerprints(
             conn, [str(row.get("id") or "") for row in rows]
         )
-        for row in rows:
+        for row_index, row in enumerate(rows):
             if summary["l4"]["selected"] >= budget:
+                retain_retry_rows(rows[row_index:])
                 break
             memory_id = str(row.get("id") or "")
             try:
@@ -351,29 +365,71 @@ def _run_l4_advisory(
                 verdict=verdict,
                 reason=parsed.reason,
             )
-            _checkpoint_l4_progress(
-                hermes_home=hermes_home,
-                db_path=db_path,
-                receipts=(receipt,),
-                batch_id=batch_id,
-                at=at,
-                queue_id=queue_id,
-                last_selected_id=memory_id,
-            )
+            try:
+                _checkpoint_l4_progress(
+                    hermes_home=hermes_home,
+                    db_path=db_path,
+                    receipts=(receipt,),
+                    batch_id=batch_id,
+                    at=at,
+                    queue_id=queue_id,
+                    last_selected_id=memory_id,
+                )
+            except Exception as exc:
+                # A verdict is not durable until its checkpoint commits. Roll back
+                # the in-memory success counters and retain this row plus the tail.
+                summary["l4"]["reviewed"] -= 1
+                summary["l4"][verdict] -= 1
+                summary["l4"]["advisory_only"] -= 1
+                summary["l4"]["errors"] += 1
+                summary["exceptions"].append(
+                    {
+                        "kind": "l4_checkpoint_error",
+                        "id": memory_id,
+                        "error": sanitize_report_text(str(exc))[:160],
+                    }
+                )
+                retain_retry_rows(rows[row_index:])
+                checkpoint_failed = True
+                break
             last_checkpointed_id = memory_id
     finally:
         conn.close()
 
-    if last_selected_id and last_selected_id != last_checkpointed_id:
-        _checkpoint_l4_progress(
-            hermes_home=hermes_home,
-            db_path=db_path,
-            receipts=(),
-            batch_id=batch_id,
-            at=at,
-            queue_id=queue_id,
-            last_selected_id=last_selected_id,
-        )
+    if (
+        not checkpoint_failed
+        and last_selected_id
+        and last_selected_id != last_checkpointed_id
+    ):
+        try:
+            _checkpoint_l4_progress(
+                hermes_home=hermes_home,
+                db_path=db_path,
+                receipts=(),
+                batch_id=batch_id,
+                at=at,
+                queue_id=queue_id,
+                last_selected_id=last_selected_id,
+            )
+        except Exception as exc:
+            # Cursor advancement is part of the durable L4 checkpoint. If it
+            # fails, preserve every selected row not already represented by a
+            # committed receipt so the scheduler can retry it.
+            summary["l4"]["errors"] += 1
+            summary["exceptions"].append(
+                {
+                    "kind": "l4_checkpoint_error",
+                    "id": last_selected_id,
+                    "error": sanitize_report_text(str(exc))[:160],
+                }
+            )
+            row_ids = [str(row.get("id") or "") for row in rows]
+            retry_from = (
+                row_ids.index(last_checkpointed_id) + 1
+                if last_checkpointed_id in row_ids
+                else 0
+            )
+            retain_retry_rows(rows[retry_from:])
 
 
 def run_auto_adjudication(
@@ -866,6 +922,11 @@ def run_provider_auto_adjudication(provider: Any, *, trigger: str) -> None:
         if l4_enabled
         else {}
     )
+    l4_retry_candidate_ids = tuple(
+        str(value).strip()
+        for value in (l4_retry_context.get("candidate_ids") or ())
+        if str(value).strip()
+    )
     claim_token = claim_adjudication_schedule(
         db_path,
         now=now,
@@ -875,6 +936,9 @@ def run_provider_auto_adjudication(provider: Any, *, trigger: str) -> None:
         target_id=target_id,
     )
     l4_claim_token = None
+    may_claim_l4 = l4_enabled and (
+        claim_token is not None or bool(l4_retry_candidate_ids)
+    )
     try:
         l4_claim_token = (
             claim_adjudication_schedule(
@@ -885,7 +949,7 @@ def run_provider_auto_adjudication(provider: Any, *, trigger: str) -> None:
                 trigger=f"{trigger}:l4",
                 target_id=l4_target_id,
             )
-            if l4_enabled
+            if may_claim_l4
             else None
         )
     except Exception:
@@ -905,12 +969,29 @@ def run_provider_auto_adjudication(provider: Any, *, trigger: str) -> None:
                     "after L4 claim acquisition failed"
                 )
         return
+    if claim_token is not None and l4_enabled and l4_claim_token is None:
+        try:
+            release_adjudication_schedule(
+                db_path,
+                claim_token=claim_token,
+                released_at=time.time(),
+                trigger=trigger,
+                interval_hours=interval_hours,
+                target_id=target_id,
+            )
+        except Exception:
+            logger.exception(
+                "Scope Recall failed to release primary adjudication claim "
+                "after the paired L4 claim was unavailable"
+            )
+        return
     if claim_token is None and l4_claim_token is None:
         return
     try:
         llm_call = None
         l4_config_error = False
         report: dict[str, Any] | None = None
+        lanes_committed = False
         if l4_claim_token is not None:
             try:
                 llm_call = build_l4_llm_call(
@@ -928,51 +1009,9 @@ def run_provider_auto_adjudication(provider: Any, *, trigger: str) -> None:
             lanes_committed = report.get("lanes_status") == "committed"
             if not report.get("lanes_status"):
                 lanes_committed = bool(report.get("ok"))
-            if lanes_committed:
-                completed_at = time.time()
-                finished = complete_adjudication_schedule(
-                    db_path,
-                    claim_token=claim_token,
-                    completed_at=completed_at,
-                    trigger=trigger,
-                    interval_hours=interval_hours,
-                    target_id=target_id,
-                )
-                if not finished:
-                    report = {
-                        **report,
-                        "ok": False,
-                        "status": "schedule_claim_lost",
-                    }
-                    if l4_claim_token is not None:
-                        release_adjudication_schedule(
-                            db_path,
-                            claim_token=l4_claim_token,
-                            released_at=time.time(),
-                            trigger=f"{trigger}:l4",
-                            interval_hours=interval_hours,
-                            target_id=l4_target_id,
-                        )
-                    provider._last_adjudication_report = report
-                    return
-                provider._last_adjudication_at = completed_at
-            else:
-                finished = retry_adjudication_schedule(
-                    db_path,
-                    claim_token=claim_token,
-                    scheduled_at=time.time(),
-                    trigger=trigger,
-                    interval_hours=interval_hours,
-                    retry_after_seconds=retry_backoff_seconds,
-                    target_id=target_id,
-                )
-                if not finished:
-                    report = {
-                        **report,
-                        "ok": False,
-                        "status": "schedule_claim_lost",
-                    }
 
+        # L4 owns the retry candidate IDs, so publish its terminal action
+        # before the primary schedule can be completed.
         if l4_claim_token is not None:
             if claim_token is not None:
                 assert report is not None
@@ -1026,7 +1065,11 @@ def run_provider_auto_adjudication(provider: Any, *, trigger: str) -> None:
                     l4_report.get("_l4_retry_candidate_ids") or ()
                 )
             l4_status = str((l4_report.get("l4") or {}).get("status") or "")
-            if l4_config_error or l4_status not in {"ok", "idle"}:
+            if (
+                l4_config_error
+                or retry_ids
+                or l4_status not in {"ok", "idle"}
+            ):
                 finished = retry_adjudication_schedule(
                     db_path,
                     claim_token=l4_claim_token,
@@ -1055,6 +1098,52 @@ def run_provider_auto_adjudication(provider: Any, *, trigger: str) -> None:
                 )
             if not finished:
                 assert report is not None
+                report = {
+                    **report,
+                    "ok": False,
+                    "status": "schedule_claim_lost",
+                }
+                if claim_token is not None:
+                    release_adjudication_schedule(
+                        db_path,
+                        claim_token=claim_token,
+                        released_at=time.time(),
+                        trigger=trigger,
+                        interval_hours=interval_hours,
+                        target_id=target_id,
+                    )
+                provider._last_adjudication_report = {
+                    key: value
+                    for key, value in report.items()
+                    if not key.startswith("_")
+                }
+                return
+
+        if claim_token is not None:
+            assert report is not None
+            if lanes_committed:
+                completed_at = time.time()
+                finished = complete_adjudication_schedule(
+                    db_path,
+                    claim_token=claim_token,
+                    completed_at=completed_at,
+                    trigger=trigger,
+                    interval_hours=interval_hours,
+                    target_id=target_id,
+                )
+                if finished:
+                    provider._last_adjudication_at = completed_at
+            else:
+                finished = retry_adjudication_schedule(
+                    db_path,
+                    claim_token=claim_token,
+                    scheduled_at=time.time(),
+                    trigger=trigger,
+                    interval_hours=interval_hours,
+                    retry_after_seconds=retry_backoff_seconds,
+                    target_id=target_id,
+                )
+            if not finished:
                 report = {
                     **report,
                     "ok": False,

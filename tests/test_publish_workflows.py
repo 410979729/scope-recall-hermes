@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import shutil
 from pathlib import Path
 
+import pytest
 import yaml
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 CHECK_RELEASE_PATH = PLUGIN_ROOT / "scripts" / "check.release.py"
 PYPI_WORKFLOW = PLUGIN_ROOT / ".github" / "workflows" / "pypi.yml"
 RELEASE_WORKFLOW = PLUGIN_ROOT / ".github" / "workflows" / "release.yml"
+CI_WORKFLOW = PLUGIN_ROOT / ".github" / "workflows" / "ci.yml"
+RELEASE_CONSTRAINTS = PLUGIN_ROOT / "constraints" / "release.txt"
+MANIFEST = PLUGIN_ROOT / "MANIFEST.in"
 
 
 def _load_release_check_module():
@@ -104,6 +109,43 @@ def test_release_workflow_is_per_tag_concurrent():
     assert concurrency.get("cancel-in-progress") is False
 
 
+def test_ci_and_publish_workflows_force_utf8_subprocess_environment():
+    for workflow in (CI_WORKFLOW, RELEASE_WORKFLOW, PYPI_WORKFLOW):
+        text = workflow.read_text(encoding="utf-8")
+        assert 'PYTHONUTF8: "1"' in text, workflow.name
+        assert 'PYTHONIOENCODING: "utf-8"' in text, workflow.name
+
+
+def test_release_provenance_is_bound_to_source_and_originating_workflow_run():
+    release_text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    pypi_text = PYPI_WORKFLOW.read_text(encoding="utf-8")
+
+    assert ".github/scripts/release_provenance.py create" in release_text
+    assert "RELEASE-PROVENANCE.json" in release_text
+    assert 'client_payload[source_sha]' in release_text
+    assert 'client_payload[release_run_id]' in release_text
+    assert ".github/scripts/release_provenance.py verify" in pypi_text
+    assert "actions/runs/${RELEASE_RUN_ID}" in pypi_text
+    assert "--jq '.path'" in pypi_text
+    assert "--jq '.head_sha'" in pypi_text
+    assert 'test "${DISPATCH_RUN_ID}" = "${RELEASE_RUN_ID}"' in pypi_text
+
+
+def test_release_toolchain_uses_bounded_constraints_shipped_with_source():
+    constraints = RELEASE_CONSTRAINTS.read_text(encoding="utf-8").splitlines()
+    required = ("build", "setuptools", "wheel", "twine")
+    for dependency in required:
+        line = next(item for item in constraints if item.startswith(dependency))
+        assert ">=" in line and "<" in line
+    for workflow in (RELEASE_WORKFLOW, PYPI_WORKFLOW):
+        assert "PIP_CONSTRAINT: constraints/release.txt" in workflow.read_text(
+            encoding="utf-8"
+        )
+    manifest = MANIFEST.read_text(encoding="utf-8")
+    assert "include constraints/release.txt" in manifest
+    assert "recursive-include .github/scripts *.py" in manifest
+
+
 def test_release_workflow_refuses_existing_release_without_clobber_or_dispatch():
     release_text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     refuse_at = release_text.index("Refuse existing GitHub Release")
@@ -129,3 +171,58 @@ def test_release_gate_encodes_single_pypi_artifact_path():
     release_check = _load_release_check_module()
     gate = release_check.pypi_workflow_gate_check()
     assert gate["ok"] is True, gate.get("failures")
+
+
+def test_pypi_publish_uses_validated_distribution_only_directory():
+    pypi_text = PYPI_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "stage_release_assets.py" in pypi_text
+    assert "--packages-dir release-staging/packages" in pypi_text
+    assert "--metadata-dir release-staging/metadata" in pypi_text
+    assert "python -m twine check release-staging/packages/*" in pypi_text
+    assert "release-staging/packages/*.whl" in pypi_text
+    assert "release-staging/packages/*.tar.gz" in pypi_text
+    assert "release-staging/metadata/SHA256SUMS" in pypi_text
+    assert "packages-dir: release-assets/packages/" in pypi_text
+
+
+def test_release_gate_rejects_pypi_packages_dir_that_includes_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    shutil.copy2(RELEASE_WORKFLOW, workflows / "release.yml")
+    bad = PYPI_WORKFLOW.read_text(encoding="utf-8").replace(
+        "packages-dir: release-assets/packages/",
+        "packages-dir: release-assets/",
+    )
+    (workflows / "pypi.yml").write_text(bad, encoding="utf-8")
+    release_check = _load_release_check_module()
+    monkeypatch.setattr(release_check, "ROOT", tmp_path)
+
+    gate = release_check.pypi_workflow_gate_check()
+
+    assert gate["ok"] is False
+    assert any("distribution-only" in failure for failure in gate["failures"])
+
+
+def test_release_gate_rejects_missing_tag_and_main_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    shutil.copy2(PYPI_WORKFLOW, workflows / "pypi.yml")
+    bad = RELEASE_WORKFLOW.read_text(encoding="utf-8").replace(
+        'tag_type="$(git cat-file -t "refs/tags/${RELEASE_TAG}")"',
+        'tag_type="tag"',
+    )
+    (workflows / "release.yml").write_text(bad, encoding="utf-8")
+    release_check = _load_release_check_module()
+    monkeypatch.setattr(release_check, "ROOT", tmp_path)
+
+    gate = release_check.pypi_workflow_gate_check()
+
+    assert gate["ok"] is False
+    assert any("local main ancestry" in failure for failure in gate["failures"])

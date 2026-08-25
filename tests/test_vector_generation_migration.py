@@ -33,6 +33,7 @@ from scope_recall.vector_generation_preflight import (
     physical_records_sha256,
     validate_generation_physical_store,
 )
+from scope_recall.vector_membership import membership_is_ready
 from scope_recall.vector_reconciliation import vector_reconciliation_state
 from scope_recall.vector_store import LanceVectorStore
 
@@ -187,6 +188,23 @@ def _build_sqlite_ready(storage, conn, identity, old, generation_id):
     )
     assert result["status"] == "ready"
     return storage / "vector-generations" / generation_id
+
+
+def test_shadow_build_seeds_authoritative_generation_membership(tmp_path):
+    storage, conn, identity, old = _sqlite_fixture(tmp_path)
+
+    _build_sqlite_ready(storage, conn, identity, old, "gen-membership")
+
+    assert membership_is_ready(conn, "gen-membership") is True
+    membership_ids = [
+        str(row[0])
+        for row in conn.execute(
+            "SELECT memory_id FROM vector_id_membership WHERE generation_id = ? ORDER BY memory_id",
+            ("gen-membership",),
+        ).fetchall()
+    ]
+    assert membership_ids == ["memory-0", "memory-1", "memory-2"]
+    conn.close()
 
 
 def _activate_existing_ready(storage, conn, identity, old, generation_id):
@@ -693,6 +711,7 @@ def test_shadow_build_is_ready_without_activation_then_can_activate(tmp_path):
     manifest = generation_manifest(conn, "gen-ready")
     assert manifest["status"] == "ready"
     assert manifest["row_count"] == 3
+
     store = LanceVectorStore(
         storage / "vector-generations" / "gen-ready" / "lancedb",
         table_name="memories",

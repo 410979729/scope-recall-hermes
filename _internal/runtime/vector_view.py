@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any, List
 
+from ...http_utils import safe_endpoint_display
 from .ports import RuntimeAdapterPort
 
 
@@ -32,11 +33,25 @@ class RuntimeVectorView:
         embedder = getattr(adapter, "_embedder", None)
         describe = getattr(embedder, "describe", None)
         vector_config = dict(getattr(adapter, "_vector_config", None) or {})
+        embedder_description = describe() if callable(describe) else {}
+        if isinstance(embedder_description, dict):
+            embedder_description = dict(embedder_description)
+            if embedder_description.get("base_url"):
+                embedder_description["base_url"] = safe_endpoint_display(
+                    str(embedder_description["base_url"])
+                )
+        else:
+            embedder_description = {}
+        fallback_description = dict(vector_config.get("fallback_embedder") or {})
+        if fallback_description.get("base_url"):
+            fallback_description["base_url"] = safe_endpoint_display(
+                str(fallback_description["base_url"])
+            )
         return {
             "status": str(getattr(adapter, "_vector_status", "") or ""),
             "path": str(getattr(store, "db_path", "") or "") if store is not None else "",
             "table": str(getattr(store, "table_name", "") or "") if store is not None else "",
-            "embedder": describe() if callable(describe) else {},
+            "embedder": embedder_description,
             "row_count": int(getattr(adapter, "_vector_row_count", 0) or 0),
             "unique_id_count": int(getattr(adapter, "_vector_unique_id_count", 0) or 0),
             "duplicate_row_count": int(getattr(adapter, "_vector_duplicate_row_count", 0) or 0),
@@ -45,7 +60,7 @@ class RuntimeVectorView:
             "message": str(getattr(adapter, "_vector_message", "") or ""),
             "backend": str(getattr(adapter, "_vector_backend", "") or ""),
             "sync_mode": str(vector_config.get("sync_mode") or "incremental"),
-            "fallback_embedder": dict(vector_config.get("fallback_embedder") or {}),
+            "fallback_embedder": fallback_description,
             "records": {},
         }
 

@@ -32,7 +32,7 @@ try:  # installed package / pytest package-alias path
     from scope_recall.doctor_experience import experience_config_summary, experience_report, nightly_digest_report
     from scope_recall.doctor_journal import journal_enabled_from_config, journal_report
     from scope_recall.doctor_source import source_report
-    from scope_recall.doctor_sqlite import memory_candidate_debt_report, memory_quality_lint_report, memory_secret_report, sqlite_report
+    from scope_recall.doctor_sqlite import memory_candidate_debt_report, memory_quality_lint_report, memory_secret_report, runtime_pipeline_report, sqlite_report
     from scope_recall.doctor_temporal import temporal_evolution_report
     from scope_recall.doctor_vector import disabled_vector_report, sqlite_vector_report, vector_report
     from scope_recall.response_schemas import (
@@ -46,7 +46,7 @@ except ImportError:  # pragma: no cover - direct source checkout execution fallb
     from doctor_experience import experience_config_summary, experience_report, nightly_digest_report
     from doctor_journal import journal_enabled_from_config, journal_report
     from doctor_source import source_report
-    from doctor_sqlite import memory_candidate_debt_report, memory_quality_lint_report, memory_secret_report, sqlite_report
+    from doctor_sqlite import memory_candidate_debt_report, memory_quality_lint_report, memory_secret_report, runtime_pipeline_report, sqlite_report
     from doctor_temporal import temporal_evolution_report
     from doctor_vector import disabled_vector_report, sqlite_vector_report, vector_report
     from response_schemas import (  # type: ignore
@@ -70,6 +70,7 @@ __all__ = [
     "memory_secret_report",
     "nightly_digest_report",
     "parse_args",
+    "runtime_pipeline_report",
     "redact_secret_like_text",
     "source_report",
     "sqlite_report",
@@ -136,6 +137,9 @@ def main() -> int:
         quality_payload, quality_check, quality_recommendations = memory_quality_lint_report(hermes_home)
         event_digest_payload, event_digest_check, event_digest_recommendations = event_digest_report(hermes_home, runtime_config)
         secret_payload, secret_check, secret_recommendations = memory_secret_report(hermes_home)
+        pipeline_payload, pipeline_check, pipeline_recommendations = runtime_pipeline_report(
+            hermes_home, runtime_config
+        )
         raw_journal = runtime_config.get("journal")
         journal_config = raw_journal if isinstance(raw_journal, dict) else {}
         journal_payload, journal_check, journal_recommendations = journal_report(
@@ -175,6 +179,7 @@ def main() -> int:
             "journal": journal_payload,
             "experience": experience_payload,
             "nightly_digest": nightly_payload,
+            "runtime_pipelines": pipeline_payload,
             "vector": vector_payload,
         }
         checks["config_load"] = config_check
@@ -188,6 +193,7 @@ def main() -> int:
         checks["journal_provenance"] = journal_check
         checks["experience_kernel"] = experience_check
         checks["nightly_digest"] = nightly_check
+        checks["runtime_pipelines"] = pipeline_check
         checks["vector_companion"] = vector_check
         recommendations.extend(sqlite_recommendations)
         recommendations.extend(endpoint_recommendations)
@@ -199,6 +205,7 @@ def main() -> int:
         recommendations.extend(journal_recommendations)
         recommendations.extend(experience_recommendations)
         recommendations.extend(nightly_recommendations)
+        recommendations.extend(pipeline_recommendations)
         recommendations.extend(vector_recommendations)
 
     contract_ok = True

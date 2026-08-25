@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
 from .capture_filters import sanitize_report_text
+from .gating import dedup_key
 from .memory_quality import HIDDEN_PROFILE_LIFECYCLES, quality_decision_for_memory
 
 @dataclass(frozen=True)
@@ -87,54 +88,69 @@ def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term.lower() in lowered for term in terms)
 
 
-def _normalized_conflict_text(value: str) -> str:
-    return " ".join(str(value or "").strip().lower().split())
-
-
 def _active_memory_conflict(conn: sqlite3.Connection, row: sqlite3.Row | Mapping[str, Any]) -> str:
-    """Return active memory id with same target/content, if any.
+    """Return an active row with the same indexed canonical content identity."""
 
-    Candidate auto-promotion must not silently duplicate or overwrite an already
-    active durable row. This intentionally checks exact normalized text only;
-    fuzzy/supersession relation building belongs to later governance phases.
-    """
     target = str(_row_value(row, "target", "") or "")
     scope_id = str(_row_value(row, "scope_id", "") or "")
     candidate_id = str(_row_value(row, "id", "") or "")
-    candidate_texts = {
-        _normalized_conflict_text(str(_row_value(row, "summary", "") or "")),
-        _normalized_conflict_text(str(_row_value(row, "content", "") or "")),
-    }
-    candidate_texts.discard("")
-    if not target or not scope_id or not candidate_texts:
+    candidate_key = dedup_key(str(_row_value(row, "content", "") or ""))
+    if not target or not scope_id or not candidate_key:
         return ""
     hidden_lifecycle_values = tuple(sorted(HIDDEN_PROFILE_LIFECYCLES))
     hidden_placeholders = ", ".join("?" for _ in hidden_lifecycle_values)
+    base_params = (candidate_id, scope_id, target, *hidden_lifecycle_values)
     try:
-        rows = conn.execute(
+        # Ordinary rows use idx_scope_recall_dedup and therefore never depend on
+        # a capped newest-first scan.
+        active = conn.execute(
             f"""
-            SELECT id, summary, content, metadata
+            SELECT id
             FROM memories
             WHERE id != ?
               AND scope_id = ?
               AND target = ?
               AND LOWER(COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.lifecycle') ELSE '' END, '')) NOT IN ({hidden_placeholders})
+              AND dedup_key = ?
             ORDER BY updated_at DESC, id ASC
-            LIMIT 200
+            LIMIT 1
             """,
-            (candidate_id, scope_id, target, *hidden_lifecycle_values),
-        ).fetchall()
+            (*base_params, candidate_key),
+        ).fetchone()
+        if active is not None:
+            return str(active["id"])
+
+        # Fail closed for old/malformed rows whose stored key was never
+        # backfilled or no longer matches content. This fallback is restricted
+        # to those exceptional rows; healthy stores stay on the indexed path.
+        conn.create_function(
+            "scope_recall_dedup_key",
+            1,
+            dedup_key,
+            deterministic=True,
+        )
+        active = conn.execute(
+            f"""
+            SELECT id
+            FROM memories
+            WHERE id != ?
+              AND scope_id = ?
+              AND target = ?
+              AND LOWER(COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.lifecycle') ELSE '' END, '')) NOT IN ({hidden_placeholders})
+              AND (
+                    dedup_key IS NULL
+                 OR dedup_key = ''
+                 OR dedup_key != scope_recall_dedup_key(content)
+              )
+              AND scope_recall_dedup_key(content) = ?
+            ORDER BY updated_at DESC, id ASC
+            LIMIT 1
+            """,
+            (*base_params, candidate_key),
+        ).fetchone()
     except sqlite3.Error as exc:
         raise CandidateConflictCheckError("candidate conflict query failed") from exc
-    for active in rows:
-        active_texts = {
-            _normalized_conflict_text(str(active["summary"] or "")),
-            _normalized_conflict_text(str(active["content"] or "")),
-        }
-        active_texts.discard("")
-        if candidate_texts & active_texts:
-            return str(active["id"])
-    return ""
+    return str(active["id"]) if active is not None else ""
 
 
 def classify_candidate_row(row: sqlite3.Row | Mapping[str, Any], conn: sqlite3.Connection | None = None) -> CandidateDecision:

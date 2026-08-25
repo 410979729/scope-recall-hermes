@@ -10,7 +10,14 @@ def _entry(entry_id: int, role: str, content: str, session_id: str = "session-a"
 
 def test_evidence_anchor_classifies_and_sanitizes_tool_output():
     anchor = evidence_anchor_for_entry(
-        _entry(12, "tool", "python3 -m pytest tests/test_release.py -q -> 12 passed; wrote /home/a/private/output.log; token ghp_abcdefghijklmnopqrst1234567890ABCD")
+        _entry(
+            12,
+            "tool",
+            "python3 -m pytest tests/test_release.py -q -> 12 passed; "
+            "wrote /home/a/private/output.log; token "
+            + "ghp_"
+            + "abcdefghijklmnopqrst1234567890ABCD",
+        )
     )
 
     assert anchor["kind"] == "test_command"

@@ -1,0 +1,48 @@
+# Bounded direct inputs for release jobs. The Hermes core requirements below
+# mirror HERMES_AGENT_COMMIT in the workflows so its later --no-deps source
+# install cannot resolve or replace packages outside the hash-locked closure.
+build>=1.2,<2
+setuptools>=69,<82
+wheel>=0.45,<1
+twine>=6,<7
+PyYAML>=6,<7
+jsonschema>=4.22,<5
+lancedb>=0.30.2,<0.31
+pyarrow>=24,<25
+pytest>=8,<10
+ruff>=0.12,<1
+pyright>=1.1,<2
+
+# Hermes Agent v0.19.1 / cc4cab2f592e60a197e796506de9168f74baf3ea core.
+openai==2.24.0
+certifi==2026.5.20
+python-dotenv==1.2.2
+fire==0.7.1
+httpx[socks]==0.28.1
+rich==14.3.3
+tenacity==9.1.4
+PyYAML==6.0.3
+ruamel.yaml==0.18.17
+requests==2.33.0
+jinja2==3.1.6
+pydantic==2.13.4
+prompt-toolkit==3.0.52
+croniter==6.0.0
+packaging==26.0
+Markdown==3.10.2
+PyJWT[crypto]==2.13.0
+urllib3>=2.7.0,<3
+cryptography==48.0.1
+tzdata==2025.3 ; sys_platform == 'win32'
+psutil==7.2.2
+websockets==15.0.1
+pathspec==1.1.1
+fastapi>=0.104.0,<1
+uvicorn[standard]>=0.24.0,<1
+python-multipart>=0.0.9,<1
+ptyprocess>=0.7.0,<1 ; sys_platform != 'win32'
+pywinpty>=2.0.0,<3 ; sys_platform == 'win32'
+pywin32>=306,<312 ; sys_platform == 'win32'
+Pillow==12.2.0
+concurrent-log-handler==0.9.29 ; sys_platform == 'win32'
+nemo-relay>=0.6.0,<0.7 ; (sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64') or (sys_platform == 'linux' and platform_machine == 'aarch64') or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')

@@ -271,17 +271,27 @@ class BoundedEmbedderRequestRunner:
                         if not self._accepting:
                             return
                         continue
+                value: Any = None
+                error: BaseException | None = None
                 try:
-                    job.succeed(job.fn())
+                    value = job.fn()
                 except BaseException as exc:
-                    job.fail(exc)
+                    error = exc
                 with self._guard:
                     if self._job is job:
                         self._job = None
                     if self._job is None:
                         self._wake.clear()
-                    if not self._accepting and self._job is None:
-                        return
+                    should_exit = not self._accepting and self._job is None
+                # Publish completion only after releasing the runner slot. A
+                # caller that observes ``done`` may immediately submit the next
+                # operation without racing the worker's bookkeeping.
+                if error is None:
+                    job.succeed(value)
+                else:
+                    job.fail(error)
+                if should_exit:
+                    return
         finally:
             should_release = False
             with self._guard:

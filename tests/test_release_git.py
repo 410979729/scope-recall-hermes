@@ -9,6 +9,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -207,3 +208,30 @@ def test_corrupt_git_executable_is_structured_failure_without_traceback(
     assert payload.get("error") == "prerequisite_unusable"
     assert "Traceback" not in captured.out
     assert "Traceback" not in captured.err
+
+
+def test_hanging_git_helper_is_bounded_and_structured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_hanging_git"
+    )
+    hanging = [sys.executable, "-c", "import time; time.sleep(60)"]
+    monkeypatch.setattr(
+        release_check,
+        "resolve_release_command",
+        lambda _cmd, *, env: hanging,
+    )
+
+    started = time.monotonic()
+    result = release_check.run(
+        ["git", "--version"],
+        timeout=0.1,
+    )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 5.0
+    assert result["returncode"] != 0
+    assert result["error"] == "prerequisite_timeout"
+    assert result["prerequisite"] == "git"
+    assert result["timeout_seconds"] == 0.1

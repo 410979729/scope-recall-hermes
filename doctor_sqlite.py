@@ -12,6 +12,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 try:
+    from .adjudication_schedule import adjudication_schedule_status
     from .doctor_common import contains_secret_like_text, sanitize_report_text
     from .freshness import fact_freshness_report
     from .governance_cleanup import governance_audit_coverage_report
@@ -26,6 +27,7 @@ try:
     from .sql_store import fts_integrity_report, schema_migration_status
     from .truth_connection import connect_truth_database, truth_storage_permissions
 except ImportError:  # pragma: no cover - direct source-script execution fallback
+    from adjudication_schedule import adjudication_schedule_status
     from doctor_common import contains_secret_like_text, sanitize_report_text
     from freshness import fact_freshness_report
     from governance_cleanup import governance_audit_coverage_report
@@ -524,3 +526,118 @@ def memory_secret_report(hermes_home: Path, *, sample_limit: int = 10) -> tuple[
             "Active memory contains placeholder-like database URI patterns; review them manually. Canonical capture/store secret filtering remains fail-closed."
         )
     return payload, {"ok": active_secret_like_count == 0, "failures": [f"active plaintext secret-like memory rows: {active_secret_like_count}"] if active_secret_like_count else []}, recommendations
+
+
+
+def runtime_pipeline_report(
+    hermes_home: Path,
+    runtime_config: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    """Report bounded capture configuration and persistent adjudication health.
+
+    Capture is deliberately process-local in this patch release: queue pressure is
+    returned synchronously to callers, so Doctor verifies the bounded contract
+    rather than pretending it can inspect another process's transient depth.
+    Adjudication ownership is durable and therefore inspected from the read-only
+    governance ledger for stale claims, retry storms, and L4 configuration errors.
+    """
+
+    recommendations: list[str] = []
+    failures: list[str] = []
+    try:
+        capture_capacity = int(runtime_config.get("capture_queue_capacity", 256))
+    except (TypeError, ValueError):
+        capture_capacity = 0
+    capture_ok = 8 <= capture_capacity <= 4096
+    capture = {
+        "mode": "bounded_process_local",
+        "capacity": capture_capacity,
+        "durable_backlog": False,
+        "pressure_result": "rejected",
+        "ok": capture_ok,
+    }
+    if not capture_ok:
+        failures.append("capture queue capacity is outside the validated 8..4096 range")
+        recommendations.append(
+            "Set capture_queue_capacity to a bounded value from 8 through 4096."
+        )
+
+    db_path = hermes_home / "scope-recall" / "memory.sqlite3"
+    statuses: list[dict[str, Any]] = []
+    adjudication_error = ""
+    if db_path.exists():
+        try:
+            conn = connect_truth_database(db_path, mode="ro")
+            conn.row_factory = sqlite3.Row
+            try:
+                tables = {
+                    str(row[0])
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                if "governance_audit_events" in tables:
+                    target_rows = conn.execute(
+                        """
+                        SELECT DISTINCT target_id
+                        FROM governance_audit_events
+                        WHERE event_type = 'memory_auto_adjudication'
+                          AND target_id LIKE 'auto_adjudication_schedule:%'
+                        ORDER BY target_id
+                        """
+                    ).fetchall()
+                    for row in target_rows:
+                        target_id = str(row[0] or "")
+                        status = adjudication_schedule_status(
+                            conn,
+                            target_id=target_id,
+                        )
+                        statuses.append(
+                            {
+                                "lane": "l4" if target_id.endswith(":l4") else "primary",
+                                **status,
+                            }
+                        )
+            finally:
+                conn.close()
+        except Exception as exc:
+            adjudication_error = sanitize_report_text(str(exc))[:160]
+
+    stale_claims = sum(bool(item.get("stale_claim")) for item in statuses)
+    l4_config_errors = sum(bool(item.get("l4_config_error")) for item in statuses)
+    retry_storms = sum(
+        int(item.get("consecutive_failures") or 0) >= 3 for item in statuses
+    )
+    if adjudication_error:
+        failures.append("auto-adjudication schedule ledger could not be inspected")
+        recommendations.append(
+            "Repair SQLite governance-ledger readability before trusting adjudication health."
+        )
+    if stale_claims:
+        failures.append(f"stale auto-adjudication schedule claims: {stale_claims}")
+        recommendations.append(
+            "Inspect the recorded adjudication owner before allowing the expired claim to be reclaimed."
+        )
+    if l4_config_errors:
+        failures.append(f"pending L4 configuration errors: {l4_config_errors}")
+        recommendations.append(
+            "Repair the journal LLM configuration, then let the persisted L4 retry complete."
+        )
+    if retry_storms:
+        failures.append(f"auto-adjudication retry storms: {retry_storms}")
+        recommendations.append(
+            "Inspect repeated adjudication release/retry receipts before resuming automatic review."
+        )
+
+    adjudication = {
+        "status": "error" if adjudication_error else ("ready" if statuses else "never_run"),
+        "schedule_count": len(statuses),
+        "stale_claims": stale_claims,
+        "l4_config_errors": l4_config_errors,
+        "retry_storms": retry_storms,
+        "schedules": statuses,
+    }
+    if adjudication_error:
+        adjudication["error"] = adjudication_error
+    payload = {"capture": capture, "adjudication": adjudication}
+    return payload, {"ok": not failures, "failures": failures}, recommendations

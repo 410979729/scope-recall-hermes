@@ -47,6 +47,65 @@ def _accessible_scope_params(provider: Any) -> list[str]:
     return [str(scope_id) for scope_id in provider._accessible_scope_ids]
 
 
+def _like_fallback_scan_limit(provider: Any, candidate_pool: int) -> int:
+    """Return the hard per-scope row window inspected by LIKE fallback."""
+
+    config = provider._retrieval_config or {}
+    default = max(64, max(1, int(candidate_pool)) * 8)
+    try:
+        configured = int(config.get("like_fallback_scan_limit", default))
+    except (TypeError, ValueError):
+        configured = default
+    return max(1, min(configured, 2_000))
+
+
+def _bounded_like_fallback_rows(
+    conn: sqlite3.Connection,
+    provider: Any,
+    terms: list[str],
+    *,
+    result_limit: int,
+    scan_limit: int,
+) -> list[sqlite3.Row]:
+    """Apply leading-wildcard LIKE only after an indexed recent-row bound."""
+
+    if not terms or result_limit <= 0:
+        return []
+    clause = " OR ".join(
+        ["recent.content LIKE ?", "recent.summary LIKE ?"] * len(terms)
+    )
+    needles: list[str] = []
+    for term in terms:
+        needle = f"%{term}%"
+        needles.extend([needle, needle])
+    rows: list[sqlite3.Row] = []
+    for scope_id in _accessible_scope_params(provider):
+        rows.extend(
+            conn.execute(
+                f"""
+                SELECT *
+                FROM (
+                    SELECT *
+                    FROM memories INDEXED BY idx_scope_recall_scope_updated
+                    WHERE scope_id = ? AND {_ACTIVE_MEMORY_SQL}
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                ) AS recent
+                WHERE ({clause})
+                ORDER BY recent.updated_at DESC
+                LIMIT ?
+                """,
+                [scope_id, scan_limit, *needles, result_limit],
+            ).fetchall()
+        )
+    deduped = {str(row["id"]): row for row in rows}
+    return sorted(
+        deduped.values(),
+        key=lambda row: str(row["updated_at"] or ""),
+        reverse=True,
+    )[:result_limit]
+
+
 def _alias_like_terms(query: str, tokens: list[str]) -> list[str]:
     """Return alias-expanded LIKE terms that are not already in the raw query.
 
@@ -235,46 +294,29 @@ def search_db_memories(
             )
 
         like_query_terms = like_terms(query, tokens)
+        like_scan_limit = _like_fallback_scan_limit(provider, candidate_pool)
         fallback_limit = _remaining_candidate_slots()
         if like_query_terms and fallback_limit > 0:
-            clause = " OR ".join(["content LIKE ?", "summary LIKE ?"] * len(like_query_terms))
-            params: list[Any] = []
-            for term in like_query_terms:
-                needle = f"%{term}%"
-                params.extend([needle, needle])
-            params.extend([*_accessible_scope_params(provider), fallback_limit])
             rows.extend(
-                conn.execute(
-                    f"""
-                    SELECT *
-                    FROM memories
-                    WHERE ({clause}) AND scope_id IN ({_scope_placeholders(provider)}) AND {_ACTIVE_MEMORY_SQL}
-                    ORDER BY updated_at DESC
-                    LIMIT ?
-                    """,
-                    params,
-                ).fetchall()
+                _bounded_like_fallback_rows(
+                    conn,
+                    provider,
+                    like_query_terms,
+                    result_limit=fallback_limit,
+                    scan_limit=like_scan_limit,
+                )
             )
         alias_terms = _alias_like_terms(query, tokens)
         fallback_limit = _remaining_candidate_slots()
         if alias_terms and fallback_limit > 0:
-            clause = " OR ".join(["content LIKE ?", "summary LIKE ?"] * len(alias_terms))
-            params = []
-            for term in alias_terms:
-                needle = f"%{term}%"
-                params.extend([needle, needle])
-            params.extend([*_accessible_scope_params(provider), fallback_limit])
             rows.extend(
-                conn.execute(
-                    f"""
-                    SELECT *
-                    FROM memories
-                    WHERE ({clause}) AND scope_id IN ({_scope_placeholders(provider)}) AND {_ACTIVE_MEMORY_SQL}
-                    ORDER BY updated_at DESC
-                    LIMIT ?
-                    """,
-                    params,
-                ).fetchall()
+                _bounded_like_fallback_rows(
+                    conn,
+                    provider,
+                    alias_terms,
+                    result_limit=fallback_limit,
+                    scan_limit=like_scan_limit,
+                )
             )
         # Do not backfill retrieval with arbitrary recent memories.
         # Earlier versions scanned newest rows when lexical LIKE/FTS returned too

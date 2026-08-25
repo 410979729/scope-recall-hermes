@@ -86,6 +86,8 @@ def _run_benchmark(*args: str, hermes_home_env: Path | None = None) -> subproces
         cwd=ROOT,
         env=env,
         text=True,
+        encoding="utf-8",
+        errors="strict",
         capture_output=True,
         timeout=120,
     )

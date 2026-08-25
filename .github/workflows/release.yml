@@ -21,24 +21,22 @@ permissions:
 env:
   # Hermes Agent v0.19.1 / v2026.7.30. Compatibility upgrades are reviewed explicitly.
   HERMES_AGENT_COMMIT: cc4cab2f592e60a197e796506de9168f74baf3ea
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+  PIP_CONSTRAINT: constraints/release.txt
 
 jobs:
-  build:
+  verify_release_policy:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
+      checks: read
       contents: read
     outputs:
       release_tag: ${{ steps.release_tag.outputs.release_tag }}
+      release_sha: ${{ steps.release_policy.outputs.release_sha }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: "3.11"
-          cache: pip
-      - name: Resolve release tag
+      - name: Resolve and validate release tag
         id: release_tag
         env:
           INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
@@ -48,36 +46,81 @@ jobs:
           else
             tag="${GITHUB_REF_NAME}"
           fi
-          echo "release_tag=${tag}" >> "${GITHUB_OUTPUT}"
-      - name: Validate release tag
-        env:
-          RELEASE_TAG: ${{ steps.release_tag.outputs.release_tag }}
-        run: |
-          if ! [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if ! [[ "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Invalid release tag: expected v<major>.<minor>.<patch>" >&2
             exit 1
           fi
+          echo "release_tag=${tag}" >> "${GITHUB_OUTPUT}"
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.release_tag.outputs.release_tag }}
+      - name: Verify annotated tag, local main ancestry, and required checks
+        id: release_policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release_tag.outputs.release_tag }}
+        run: |
+          tag_type="$(git cat-file -t "refs/tags/${RELEASE_TAG}")"
+          test "${tag_type}" = "tag"
+          RELEASE_SHA="$(git rev-list -n 1 "refs/tags/${RELEASE_TAG}")"
+          test "$(git rev-parse HEAD)" = "${RELEASE_SHA}"
+          echo "release_sha=${RELEASE_SHA}" >> "${GITHUB_OUTPUT}"
+          git rev-parse --verify refs/remotes/origin/main
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+
+          for required_job in \
+            windows-full-py311 \
+            windows-full-py312 \
+            windows-no-symlink-py311
+          do
+            successful="$(gh api --paginate \
+              -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_SHA}/check-runs" \
+              --jq ".check_runs[] | select(.name == \"${required_job}\" and .status == \"completed\" and .conclusion == \"success\") | .name")"
+            test "${successful}" = "${required_job}"
+          done
+
+  build:
+    needs: verify_release_policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      release_tag: ${{ needs.verify_release_policy.outputs.release_tag }}
+      release_sha: ${{ needs.verify_release_policy.outputs.release_sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.verify_release_policy.outputs.release_sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
       - name: Verify tag matches package version
         env:
-          RELEASE_TAG: ${{ steps.release_tag.outputs.release_tag }}
+          RELEASE_TAG: ${{ needs.verify_release_policy.outputs.release_tag }}
         run: |
           expected="v$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
           test "${RELEASE_TAG}" = "${expected}"
           test "$(git tag --points-at HEAD | grep -Fx "${RELEASE_TAG}")" = "${RELEASE_TAG}"
       - name: Install release dependencies
         run: |
-          python -m pip install --upgrade pip build ".[lancedb,dev]"
+          python -m pip install --require-hashes -r constraints/release-hashed.txt
+          python -m pip install --no-deps ".[lancedb,dev]"
           python .github/scripts/checkout_pinned_hermes.py
-          python -m pip install -e .hermes-agent-src
+          python -m pip install --no-deps -e .hermes-agent-src
       - name: Run tagged release gate
         env:
           PYTHONPATH: .hermes-agent-src
         run: python scripts/check.release.py --tagged-release
       - name: Build distributions and release notes
         env:
-          RELEASE_TAG: ${{ steps.release_tag.outputs.release_tag }}
+          RELEASE_TAG: ${{ needs.verify_release_policy.outputs.release_tag }}
         run: |
-          python -m build
+          python -m build --no-isolation
           python .github/scripts/extract_changelog_release_notes.py \
             --version "${RELEASE_TAG#v}" \
             --changelog CHANGELOG.md \
@@ -92,6 +135,15 @@ jobs:
               lines.append(f"{digest}  {artifact.name}")
           Path("SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY
+          python .github/scripts/release_provenance.py create \
+            --provenance RELEASE-PROVENANCE.json \
+            --repository "${GITHUB_REPOSITORY}" \
+            --source-sha "$(git rev-parse HEAD)" \
+            --source-tree "$(git rev-parse 'HEAD^{tree}')" \
+            --release-tag "${RELEASE_TAG}" \
+            --workflow-run-id "${GITHUB_RUN_ID}" \
+            --workflow-run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --packages-dir dist
       - name: Upload release distributions
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -100,12 +152,14 @@ jobs:
             dist/*
             release-notes.md
             SHA256SUMS
+            RELEASE-PROVENANCE.json
           if-no-files-found: error
           retention-days: 3
 
   publish:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
@@ -134,6 +188,7 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             release-assets/dist/* \
             release-assets/SHA256SUMS \
+            release-assets/RELEASE-PROVENANCE.json \
             --title "scope-recall ${RELEASE_TAG}" \
             --notes-file release-assets/release-notes.md \
             --verify-tag
@@ -141,8 +196,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+          SOURCE_SHA: ${{ needs.build.outputs.release_sha }}
         run: |
           gh api --method POST \
             "repos/${GITHUB_REPOSITORY}/dispatches" \
             -f event_type=scope-recall-pypi-publish \
-            -f "client_payload[tag]=${RELEASE_TAG}"
+            -f "client_payload[tag]=${RELEASE_TAG}" \
+            -f "client_payload[source_sha]=${SOURCE_SHA}" \
+            -f "client_payload[release_run_id]=${GITHUB_RUN_ID}"

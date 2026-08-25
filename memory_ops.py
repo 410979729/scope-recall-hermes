@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from .capture import store_now
+from .capture import capture_mutation_barrier, store_now
 from .writer_lease import sanitized_truth_writer_owner  # noqa: F401
 from .capture_filters import sanitize_report_text, sanitize_structured_value
 from .fact_repository import (
@@ -1082,6 +1082,26 @@ def _hard_delete_provider_memories(
 ) -> dict[str, Any]:
     """Commit hard-delete truth plus outbox and expose companion status."""
 
+    with capture_mutation_barrier(_write_target(provider)):
+        return _hard_delete_provider_memories_after_capture_flush(
+            provider,
+            ids,
+            scope_ids=scope_ids,
+            reason=reason,
+            event_type=event_type,
+        )
+
+
+def _hard_delete_provider_memories_after_capture_flush(
+    provider: Any,
+    ids: list[str],
+    *,
+    scope_ids: list[str] | None,
+    reason: str,
+    event_type: str,
+) -> dict[str, Any]:
+    """Perform hard delete while the caller excludes new capture enqueue."""
+
     with _command_lock(provider):
         require_vector_delete = vector_delete_intent_required(_write_target(provider))
 
@@ -1280,6 +1300,26 @@ def archive_memories(
     batch_id: str = "",
 ) -> dict[str, Any]:
     """Soft-archive memories, then replay companion intent outside truth lock."""
+
+    with capture_mutation_barrier(_write_target(provider)):
+        return _archive_memories_after_capture_flush(
+            provider,
+            ids,
+            reason=reason,
+            actor=actor,
+            batch_id=batch_id,
+        )
+
+
+def _archive_memories_after_capture_flush(
+    provider: Any,
+    ids: list[str],
+    *,
+    reason: str,
+    actor: str,
+    batch_id: str,
+) -> dict[str, Any]:
+    """Perform archive and vector replay under the capture mutation barrier."""
 
     payload = _archive_memories_truth(
         provider,

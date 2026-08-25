@@ -302,6 +302,60 @@ def mark_vector_needs_repair(provider: Any, exc: Exception | str) -> None:
     provider._vector_message = _sanitize_vector_message(exc)
 
 
+def _mark_vector_replay_degraded(provider: Any, exc: Exception | str) -> None:
+    """Keep a live companion retryable when one durable outbox event fails."""
+
+    provider._vector_replay_degraded = True
+    provider._vector_status = "degraded"
+    provider._vector_message = _sanitize_vector_message(exc)
+
+
+def _recover_vector_replay_state(provider: Any, result: dict[str, int]) -> None:
+    """Clear replay degradation only after the generation has no live outbox debt."""
+
+    if not bool(getattr(provider, "_vector_replay_degraded", False)):
+        return
+    if int(result.get("failed") or 0) or int(result.get("completed") or 0) < 1:
+        return
+    generation_id = str(getattr(provider, "_vector_generation_id", "") or "")
+    if not generation_id:
+        return
+    try:
+        conn = provider._require_conn()
+        lock = getattr(provider, "_lock", None)
+        if lock is None:
+            debt = conn.execute(
+                """
+                SELECT 1 FROM vector_outbox
+                WHERE generation_id = ?
+                  AND status IN ('pending', 'retry', 'processing', 'dead_letter')
+                LIMIT 1
+                """,
+                (generation_id,),
+            ).fetchone()
+        else:
+            with lock:
+                debt = conn.execute(
+                    """
+                    SELECT 1 FROM vector_outbox
+                    WHERE generation_id = ?
+                      AND status IN ('pending', 'retry', 'processing', 'dead_letter')
+                    LIMIT 1
+                    """,
+                    (generation_id,),
+                ).fetchone()
+    except Exception:
+        # Observability must fail closed: an unreadable debt ledger cannot justify
+        # advertising the companion as recovered.
+        return
+    if debt is not None:
+        return
+    provider._vector_replay_degraded = False
+    if bool(getattr(provider, "_vector_ready", False)):
+        provider._vector_status = "ready"
+        provider._vector_message = ""
+
+
 def _mark_vector_startup_degraded(provider: Any, exc: Exception | str) -> None:
     """Preserve startup's public degraded status while bounding safe detail."""
 
@@ -1356,7 +1410,7 @@ def _replay_vector_outbox_guarded(
         return {"claimed": 0, "completed": 0, "failed": 0}
 
     def on_failure(error: str) -> None:
-        mark_vector_needs_repair(provider, error)
+        _mark_vector_replay_degraded(provider, error)
         logger.warning("Scope Recall vector replay failed: %s", error)
 
     result = replay_committed_vector_events(
@@ -1392,6 +1446,7 @@ def _replay_vector_outbox_guarded(
             )
         ),
     )
+    _recover_vector_replay_state(provider, result)
     return result
 
 

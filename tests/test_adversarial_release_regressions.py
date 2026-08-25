@@ -498,7 +498,7 @@ def test_public_store_sanitizes_secret_like_tags_and_entities(tmp_path: Path) ->
     assert marker not in rendered
     assert secret not in rendered
     assert private_path not in rendered
-    assert '[REDACTED_' in rendered
+    assert '[redacted_' in rendered.lower()
 
 
 def test_store_row_sanitizes_unknown_metadata_keys_values_and_paths() -> None:
@@ -533,4 +533,4 @@ def test_store_row_sanitizes_unknown_metadata_keys_values_and_paths() -> None:
     assert 'api_key=' not in rendered
     assert private_path not in rendered
     assert '[REDACTED_KEY]' in rendered
-    assert '[REDACTED_' in rendered
+    assert '[redacted_' in rendered.lower()

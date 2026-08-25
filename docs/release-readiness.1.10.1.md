@@ -35,7 +35,7 @@ Clearance condition: every mandatory source, artifact, clean-tree, CI, tagged-id
 - Journal deferred-metric and pending-retryable tests remain deterministic without weakening production backlog-age policy.
 - POSIX descriptor-hardening tests prove once-per-process raw open across real import aliases, fail-closed identity/permission drift, fail-closed incompatible shared hardening state, hardlink alias sharing, concurrent first-open serialization, and fork/PID isolation.
 - Cross-process and same-process writer-lease suites from the `1.9.3`/`1.10.0` interval remain green.
-- Built wheel and sdist must omit private Beidou/shared-bridge modules, `tests/phase0/`, and `docs/internal.module-map.md`, expose version `1.10.1`, and install without relying on the source checkout.
+- Built wheel and sdist must omit private shared-bridge modules, `tests/phase0/`, and `docs/internal.module-map.md`, expose version `1.10.1`, and install without relying on the source checkout.
 
 ## Parent-run evidence (pending)
 

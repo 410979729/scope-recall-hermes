@@ -8,14 +8,20 @@ include SECURITY.md
 include CONTRIBUTING.md
 include .env.example
 include py.typed
-include tests/plugin_source.py
 recursive-include docs *.md
 prune docs/plans
+prune tests
 recursive-include _internal *.py
 recursive-include scripts *.py
 recursive-include scripts *.json
+recursive-include .github/scripts *.py
+include constraints/release.txt
+include constraints/release-hashed.txt
+include constraints/runtime-min.txt
+include constraints/runtime-max.txt
 recursive-include benchmarks *.json
 recursive-include examples *.jsonl
+include tests/plugin_source.py
 include tests/conftest.py
 include tests/journal_source_restore_oracles.py
 include tests/journal_source_restore_support.py

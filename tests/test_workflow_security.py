@@ -8,9 +8,12 @@ actions and the Hermes compatibility source are pinned to reviewed commits.
 from __future__ import annotations
 
 import ast
+import importlib.util
 import re
+import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -39,6 +42,15 @@ def _steps(workflow: dict):
 
 def _run_text(job: dict) -> str:
     return "\n".join(str(step.get("run") or "") for step in job.get("steps", []))
+
+
+def _checkout_helper():
+    path = ROOT / ".github" / "scripts" / "checkout_pinned_hermes.py"
+    spec = importlib.util.spec_from_file_location("checkout_pinned_hermes_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_every_reusable_action_is_pinned_to_the_reviewed_commit():
@@ -76,6 +88,56 @@ def test_ci_and_release_builds_pin_and_verify_stable_hermes_source():
         )
         assert ".github/scripts/checkout_pinned_hermes.py" in all_run_text
         assert not re.search(r"(?:--branch|checkout|fetch)[^\n]*\bmain\b", all_run_text)
+
+
+def test_checkout_helper_timeout_cleans_process_tree_and_reports_structure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    helper = _checkout_helper()
+    cleaned: list[int] = []
+
+    class HangingProcess:
+        pid = 12345
+        returncode = None
+        calls = 0
+
+        def communicate(self, timeout=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise subprocess.TimeoutExpired(["git", "fetch"], timeout)
+            self.returncode = -9
+            return "", "stopped"
+
+    monkeypatch.setattr(helper.subprocess, "Popen", lambda *args, **kwargs: HangingProcess())
+    monkeypatch.setattr(
+        helper,
+        "_terminate_process_tree",
+        lambda process: cleaned.append(process.pid),
+    )
+
+    with pytest.raises(helper.CheckoutCommandError) as caught:
+        helper._run("git", "fetch", timeout_seconds=7)
+
+    assert cleaned == [12345]
+    assert caught.value.as_dict() == {
+        "command": ["git", "fetch"],
+        "error": "command_timeout",
+        "timeout_seconds": 7,
+    }
+
+
+def test_release_jobs_have_hard_timeouts() -> None:
+    expected = {
+        "release.yml": {"verify_release_policy": 10, "build": 45, "publish": 10},
+        "pypi.yml": {"verify_release_origin": 10, "prepare": 45, "publish": 10},
+    }
+
+    for workflow_name, job_timeouts in expected.items():
+        workflow = _workflow(workflow_name)
+        assert {
+            job_name: job.get("timeout-minutes")
+            for job_name, job in workflow["jobs"].items()
+        } == job_timeouts
 
 
 def test_explicit_pytest_nodes_in_workflows_exist():
