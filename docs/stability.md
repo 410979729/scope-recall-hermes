@@ -1,6 +1,6 @@
 # Scope Recall V1 stability contract
 
-`scope-recall` 1.10.4 keeps the V1 compatibility contract on the last packaged `1.10.3` line. It hardens issue #50 follow-up behavior by restoring exact rollback metadata, rejecting malformed rollback evidence, binding governance coverage to the latest recognized receipt and current archived state, closing identified pending Experience `run_id` rows without mutating terminal playbooks, and persisting the successful `memory_auto_adjudication` throttle across provider recreation. SQLite authority, stable provider/tool identities, and the database schema are unchanged.
+`scope-recall` 1.10.5 keeps the V1 compatibility contract on the last packaged `1.10.3` line and supersedes the unpublished `1.10.4` source checkpoint. It retains the issue #50 rollback metadata, governance receipt, Experience `run_id`, and `memory_auto_adjudication` throttle fixes, then closes exact-epoch review defects in shutdown deadlines, Windows Git process-tree termination, successful-release provenance, merge/capture serialization, L4 retry retention, contradiction-chain selection, and distribution scanning. SQLite authority, stable provider/tool identities, and the database schema are unchanged.
 
 This document defines the stable V1 compatibility surface and the areas that may evolve in patch or minor releases.
 

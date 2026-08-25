@@ -138,7 +138,7 @@ class ScopeRecallToolService:
     def _capture_barrier_required(
         self, tool_name: str, args: dict[str, Any]
     ) -> bool:
-        if tool_name == "scope_recall_forget":
+        if tool_name in {"scope_recall_forget", "scope_recall_merge"}:
             return True
         if tool_name == "scope_recall_dedupe":
             return not self._bool_arg(args, "dry_run", True)
@@ -148,7 +148,7 @@ class ScopeRecallToolService:
             return False
         action = str((args or {}).get("action") or "").strip().lower()
         action = action.replace("-", "_")
-        return action in {"forget", "delete", "remove"}
+        return action in {"merge", "forget", "delete", "remove"}
 
     def handle(self, tool_name: str, args: dict[str, Any]) -> str:
         normalized = self.normalize_tool_name(tool_name)

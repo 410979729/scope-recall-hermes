@@ -1489,6 +1489,61 @@ def test_primary_claim_is_released_when_initial_l4_claim_is_unavailable(
     ]
 
 
+def test_l4_fresh_lookup_error_retries_current_and_tail_with_provider_context(
+    tmp_path, monkeypatch
+):
+    hermes_home, conn = _home(tmp_path)
+    candidate_ids = ["held-fresh-current", "held-fresh-tail"]
+    for memory_id in candidate_ids:
+        _held_candidate_with_evidence(
+            conn,
+            memory_id,
+            evidence_text=f"Complete evidence for {memory_id} remains reviewable.",
+        )
+    conn.close()
+    provider = _provider_like(hermes_home)
+    provider._config["auto_adjudication"]["l4_enabled"] = True
+    original_journal_evidence = auto_module._journal_evidence
+    lookup_counts: dict[str, int] = {}
+
+    def fail_first_fresh_lookup(*args, **kwargs):
+        memory_id = str(args[1])
+        lookup_counts[memory_id] = lookup_counts.get(memory_id, 0) + 1
+        if memory_id == candidate_ids[0] and lookup_counts[memory_id] == 2:
+            raise sqlite3.OperationalError("fresh journal lookup unavailable")
+        return original_journal_evidence(*args, **kwargs)
+
+    def supported(_prompt: str, **_kwargs) -> str:
+        return json.dumps(
+            {
+                "schema_version": L4_SCHEMA_VERSION,
+                "verdict": "supported",
+                "reason": "the linked evidence supports this candidate",
+            }
+        )
+
+    monkeypatch.setattr(auto_module, "_journal_evidence", fail_first_fresh_lookup)
+    monkeypatch.setattr(auto_module, "build_l4_llm_call", lambda *_args: supported)
+
+    run_provider_auto_adjudication(provider, trigger="fresh-lookup-error")
+
+    target = f"{schedule_target_id(provider._writable_scope_ids)}:l4"
+    receipt_conn = sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3")
+    try:
+        rows = receipt_conn.execute(
+            "SELECT action, after_json FROM governance_audit_events "
+            "WHERE event_type='memory_auto_adjudication' AND target_id=? "
+            "ORDER BY rowid",
+            (target,),
+        ).fetchall()
+    finally:
+        receipt_conn.close()
+
+    assert rows[-1][0] == "schedule_retry"
+    assert json.loads(rows[-1][1])["retry_context"]["candidate_ids"] == candidate_ids
+    assert not any(action == "schedule_release" for action, _payload in rows)
+
+
 def test_l4_retry_preserves_unselected_tail_beyond_budget(tmp_path):
     hermes_home, conn = _home(tmp_path)
     candidate_ids = [f"held-tail-{index:02d}" for index in range(25)]

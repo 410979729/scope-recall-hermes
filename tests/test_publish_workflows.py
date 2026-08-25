@@ -126,9 +126,66 @@ def test_release_provenance_is_bound_to_source_and_originating_workflow_run():
     assert 'client_payload[release_run_id]' in release_text
     assert ".github/scripts/release_provenance.py verify" in pypi_text
     assert "actions/runs/${RELEASE_RUN_ID}" in pypi_text
-    assert "--jq '.path'" in pypi_text
-    assert "--jq '.head_sha'" in pypi_text
+    assert "jq -er '.path'" in pypi_text
+    assert "jq -er '.head_sha'" in pypi_text
     assert 'test "${DISPATCH_RUN_ID}" = "${RELEASE_RUN_ID}"' in pypi_text
+
+
+def test_pypi_passes_one_verified_successful_run_snapshot_to_prepare():
+    pypi = yaml.safe_load(PYPI_WORKFLOW.read_text(encoding="utf-8"))
+    verify_job = pypi["jobs"]["verify_release_origin"]
+    prepare_job = pypi["jobs"]["prepare"]
+
+    assert verify_job["outputs"] == {
+        "source_sha": "${{ steps.release_origin.outputs.source_sha }}",
+        "release_run_id": "${{ steps.release_origin.outputs.release_run_id }}",
+        "workflow_run_status": (
+            "${{ steps.release_origin.outputs.workflow_run_status }}"
+        ),
+        "workflow_run_conclusion": (
+            "${{ steps.release_origin.outputs.workflow_run_conclusion }}"
+        ),
+    }
+    origin_step = next(
+        step
+        for step in verify_job["steps"]
+        if step.get("name") == "Verify originating release workflow run"
+    )
+    assert origin_step["id"] == "release_origin"
+    origin_run = origin_step["run"]
+    assert origin_run.count(
+        'gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RELEASE_RUN_ID}"'
+    ) == 1
+    assert 'test "${WORKFLOW_RUN_STATUS}" = "completed"' in origin_run
+    assert 'test "${WORKFLOW_RUN_CONCLUSION}" = "success"' in origin_run
+    assert '>> "${GITHUB_OUTPUT}"' in origin_run
+
+    assert prepare_job["needs"] == "verify_release_origin"
+    assert prepare_job["permissions"] == {"contents": "read"}
+    assert all(
+        "gh api" not in str(step.get("run") or "") for step in prepare_job["steps"]
+    )
+    provenance_step = next(
+        step
+        for step in prepare_job["steps"]
+        if step.get("name") == "Verify source/run-bound release provenance"
+    )
+    assert provenance_step["env"] == {
+        "RELEASE_TAG": "${{ steps.release_tag.outputs.release_tag }}",
+        "VERIFIED_SOURCE_SHA": "${{ needs.verify_release_origin.outputs.source_sha }}",
+        "VERIFIED_RELEASE_RUN_ID": (
+            "${{ needs.verify_release_origin.outputs.release_run_id }}"
+        ),
+        "WORKFLOW_RUN_STATUS": (
+            "${{ needs.verify_release_origin.outputs.workflow_run_status }}"
+        ),
+        "WORKFLOW_RUN_CONCLUSION": (
+            "${{ needs.verify_release_origin.outputs.workflow_run_conclusion }}"
+        ),
+    }
+    provenance_run = provenance_step["run"]
+    assert "--workflow-run-status \"${WORKFLOW_RUN_STATUS}\"" in provenance_run
+    assert "--workflow-run-conclusion \"${WORKFLOW_RUN_CONCLUSION}\"" in provenance_run
 
 
 def test_release_toolchain_uses_bounded_constraints_shipped_with_source():

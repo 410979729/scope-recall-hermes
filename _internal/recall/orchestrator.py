@@ -61,12 +61,11 @@ def _deterministic_contradiction_loser_ids(
     items: list[RecallItem],
     relation_evidence: dict[str, dict[str, Any]],
 ) -> set[str]:
-    """Choose one loser per recalled contradiction pair without double-kill."""
+    """Choose a deterministic conflict-free winner set for the recalled graph."""
 
     by_id = {item.id: item for item in items}
     authoritative: dict[str, bool] = {}
     pairs: set[tuple[str, str]] = set()
-    losers: set[str] = set()
     for memory_id, item in by_id.items():
         payload = relation_evidence.get(memory_id) or {}
         incoming = payload.get("incoming")
@@ -87,7 +86,7 @@ def _deterministic_contradiction_loser_ids(
                     continue
                 related_id = str(row.get("id") or "")
                 if related_id in by_id and related_id != memory_id:
-                    pair = (
+                    pair: tuple[str, str] = (
                         (memory_id, related_id)
                         if memory_id < related_id
                         else (related_id, memory_id)
@@ -102,19 +101,25 @@ def _deterministic_contradiction_loser_ids(
             score = 0.0
         return score, str(item.updated_at or "")
 
-    for left_id, right_id in sorted(pairs):
+    adjacency = {memory_id: set[str]() for memory_id in by_id}
+    forced_losers: set[str] = set()
+    for left_id, right_id in pairs:
+        adjacency[left_id].add(right_id)
+        adjacency[right_id].add(left_id)
         left_authoritative = authoritative.get(left_id, False)
         right_authoritative = authoritative.get(right_id, False)
         if left_authoritative != right_authoritative:
-            losers.add(left_id if left_authoritative else right_id)
-            continue
-        left_priority = _priority(left_id)
-        right_priority = _priority(right_id)
-        if left_priority == right_priority:
-            winner_id = min(left_id, right_id)
+            forced_losers.add(left_id if left_authoritative else right_id)
+
+    ordered_ids = sorted(memory_id for memory_id in by_id if memory_id not in forced_losers)
+    ordered_ids.sort(key=_priority, reverse=True)
+    winners: set[str] = set()
+    losers = set(forced_losers)
+    for memory_id in ordered_ids:
+        if adjacency[memory_id] & winners:
+            losers.add(memory_id)
         else:
-            winner_id = left_id if left_priority > right_priority else right_id
-        losers.add(right_id if winner_id == left_id else left_id)
+            winners.add(memory_id)
     return losers
 
 
