@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+# Historical counterexample for the removed legacy worker. The executable
+# retirement contract is covered by test_relation_rebuild_retirement.py.
+__test__ = False
+
 import json
 import sqlite3
 

@@ -100,10 +100,13 @@ def evaluate_latency_contract(
     """Evaluate portable latency evidence against a paired host baseline.
 
     The 100 ms shadow target remains visible for operators, but shared CI hosts
-    cannot enforce it as an absolute release bound: the same source can cross
-    that target solely because the runner is slower. The paired legacy query is
-    measured in the same process, so its ratio is the fail-closed regression
-    guard while an absolute miss remains explicit non-failing evidence.
+    cannot enforce it as a universal absolute release bound: the same source
+    can cross that target solely because the runner is slower. The paired
+    legacy query is measured in the same process, so its ratio is the
+    fail-closed regression guard. On a fast host, the ratio denominator is
+    floored at ``target / budget`` so an optimized near-zero legacy path cannot
+    turn a target-compliant shadow path into a false regression. Equivalently,
+    the hard bound is ``shadow <= max(target, budget * legacy)``.
     """
 
     shadow_p95_target_ms = 100.0
@@ -126,7 +129,8 @@ def evaluate_latency_contract(
     # reproduce the decision exactly at rounding boundaries.
     legacy_p95_ms = round(legacy_p95_ms, 6)
     shadow_p95_ms = round(shadow_p95_ms, 6)
-    latency_ratio = shadow_p95_ms / max(legacy_p95_ms, 0.25)
+    denominator_floor_ms = shadow_p95_target_ms / latency_ratio_budget
+    latency_ratio = shadow_p95_ms / max(legacy_p95_ms, denominator_floor_ms)
     target_misses = (
         ["shadow_p95"] if shadow_p95_ms > shadow_p95_target_ms else []
     )

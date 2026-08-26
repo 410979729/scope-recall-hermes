@@ -47,7 +47,7 @@ python scripts/benchmark.locomo.py \
 
 The three categories near 50% remain the clearest future improvement areas: multi-hop evidence completeness, temporal evidence presentation, and open-domain synthesis. We do not claim a cross-vendor ranking, because public LoCoMo evaluations use materially different models, judges, prompts, and dataset variants.
 
-Version `1.10.5` is the public patch candidate on the last packaged `1.10.3` line and supersedes the unpublished `1.10.4` source checkpoint. It retains the issue #50 rollback, governance, Experience feedback, and adjudication-throttle fixes, then closes the remaining shutdown deadline, Windows Git process-tree, successful-release provenance, merge/capture, L4 retry, contradiction-chain, and distribution-scanner defects found by exact-epoch review. SQLite authority, stable provider/tool identities, and the database schema are unchanged.
+Version `1.10.6` is the Scope Recall 2.0 Program 0 candidate on the last packaged `1.10.3` line and supersedes the unpublished `1.10.4` and `1.10.5` source checkpoints. It adds the stable `ci-required` release gate and one four-state Vector health contract, retires executable full-scope relation rebuild work, and replaces it with cap-bounded relation containment, finite focus work, terminal poison handling, content-free health, and backup-first exact operator cleanup. SQLite remains authoritative; stable provider/tool identities and ordinary recall semantics are unchanged. Schema migration `0013_relation_containment_v1_10_6` is additive.
 
 The `1.8.6` patch hardened legacy fact-freshness maintenance, Unicode secret filtering, operator portability, truth-connection ownership, lifecycle relation restore, and semantic deduplication. It preserves the 1.8.5 Windows activation-lease PID fix and includes the 1.8.4 deep-audit closure for deterministic freshness, validator, truth-store permission, operator recovery, secret scanning, and cross-platform release gates. Its 1.8.3 predecessor hardened current-state recall, canonical chat identity boundaries, Windows repair and rollback, bounded vector-outbox history, and model-calibrated vector-only filtering. The `1.8.2` release made memory startup honest and local-model tool use reliable. If a configured local embedding model cannot actually load, Scope Recall now reports the degradation and uses a compatible fallback only for a fresh generation; it never opens an existing generation with a different embedding space. It also adds `light`, `balanced`, and `full` semantic retention profiles and fixes LM Studio/llama.cpp grammar initialization without deleting structured claim, freshness, or evolution capabilities. Durable `user`, `memory`, `project`, and `ops` fact actions resolve to shared durable scope, while `general` remains local scratch on every integration path. Existing ordinary-memory behavior remains the default because the new evolution, temporal-query, and Reflection surfaces are opt-in. The `1.7.2` release published a compatibility-preserving storage and governance hardening patch: ordinary recall uses one lifecycle policy across journal, nightly, deduplication, and vector paths; vector rebuilds support immutable generations and explicit compare-and-swap activation; metadata and import provenance are sanitized before durable or operator-visible sinks; candidate, freshness, and config mutations fail closed; and folded inline data URLs are removed without losing surrounding prose. It builds on version 1.7.1's runtime-config, candidate-browser, external-bridge, and release-gate fixes. Version 1.7.0 published the productization feature set on the stable V1 release line: event-digest evidence packets, reviewable candidate extraction, read-only memory browsing, candidate governance commands, Experience-to-skill bridge helpers, optional PGVector companion support, external shared-memory bridge contracts, explicit sensitivity governance, release-gate progress output, and same-process peer-provider SQLite lock recovery for `scope_recall_store`. Version 1.6.3 closed issue #25 with conservative SQLite lock recovery and a single safe retry for `scope_recall_store` while keeping non-SQLite business errors non-retryable. Version 1.6.2 added graph-relation backfill/benchmark visibility and hardened Experience review and journal-digest bookkeeping without changing the stable V1 runtime contract. Version 1.6.1 published documentation, packaging, and release-provenance updates without changing the stable V1 runtime contract. The 1.6.0 release packages a compatibility-preserving refactor of the doctor, graph-hygiene, maintenance, digest-result, recall-pipeline, and provider-schema internals while keeping the stable V1 commercial-governance line introduced in 1.5.0. The 1.5 line includes promoted-only profile lifecycle safety, candidate-memory promotion planning, graph-hygiene repair, fail-closed vector-repair fallback handling, governance cleanup, journal recovery, an operator dashboard, repository-owned golden benchmarks, stricter release gates, fail-closed hard-delete safety, packaged benchmark fixtures, Recall Funnel observability, synthetic retrieval-regression benchmarking, and default-safe vector fallback behavior. Runtime Experience packet injection is enabled by default through `experience.prefetch_enabled=true` and can be disabled with `experience.prefetch_enabled=false`; background automatic promotion remains an explicit operator opt-in through `experience.auto_promotion_enabled=true`, and low-risk auto-promotion remains a second explicit opt-in through `experience.auto_promote_low_risk=true`. By default, successful low-risk scans create candidate playbooks, high-risk playbooks stay review-gated, and final-failure or low-signal traces are not promoted. It keeps the `scope_recall_profile` surface added in v1.3.0, compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, inline attachment-marker sanitization, the supported standalone install shape added in v1.1.0, and native-safe LanceDB probing with fresh-bootstrap SQLite vector fallback for non-AVX hosts.
 
@@ -726,7 +726,7 @@ This prevents raw identifiers containing delimiters from colliding with split sc
 
 ### Vector repair and stats
 
-SQLite is the cardinality authority. During vector sync, the provider compares SQLite ids with vector companion ids, deletes stale vector rows, collapses duplicate physical rows by id where the backend can expose them, and embeds missing/changed rows. If vector delete/upsert fails, the SQLite write is preserved and vector state becomes `needs_repair` instead of surfacing the truth-row write as failed.
+SQLite is the cardinality authority. Ordinary writes first commit a durable vector-outbox intent and then replay it against the companion. A retryable replay failure preserves both SQLite truth and its outbox intent and reports `state=degraded`; dead-letter debt, audit mismatch, duplicate physical rows, an unreadable companion, or an incompatible generation reports `state=needs_repair`. Explicit repair may compare SQLite ids with companion ids, delete stale rows, collapse duplicates, and embed missing or changed rows.
 
 `scope_recall_stats` reports:
 
@@ -735,7 +735,10 @@ SQLite is the cardinality authority. During vector sync, the provider compares S
 - `vector.row_count` — physical vector companion row count
 - `vector.unique_id_count` — distinct vector ids
 - `vector.duplicate_row_count` — extra physical rows beyond one row per id
-- `vector.status` — `ready`, `degraded`, `needs_repair`, `disabled`, or `error`
+- `vector.state` / compatibility alias `vector.status` — exactly `ready`, `degraded`, `needs_repair`, or `disabled`
+- `vector.reason_code` — stable cause without inventing a fifth state
+- `vector.auto_recoverable` / `vector.repair_required` / `vector.usable_for_query` — machine-readable action and query safety
+- `vector.debt_counts` — cached `pending`, `processing`, `retry`, `dead_letter`, and derived `replayable` counts
 
 When `vector.index_general=false` (the default), local `general` scratch rows are not expected in the vector companion. A healthy synced companion should have `vector.unique_id_count == vector.row_count`, `vector.duplicate_row_count == 0`, and vector ids matching the configured vector-indexed provider rows.
 
@@ -824,7 +827,17 @@ Schema-surface targets after the compact-profile change:
 - standard profile: 20 tools, about 10.6 KB
 - maintenance/secret schema surfaces still require their explicit safety flags
 
-Release `1.10.5` is the follow-up patch candidate on the last packaged `1.10.3` line and supersedes the unpublished `1.10.4` source checkpoint:
+Release `1.10.6` is the Scope Recall 2.0 Program 0 candidate on the last packaged `1.10.3` line and supersedes the unpublished `1.10.4` and `1.10.5` source checkpoints:
+
+- CI exposes one stable `ci-required` aggregate, and release provenance requires that exact successful check.
+- Runtime, Doctor, and stats share one four-state Vector status contract with reason, debt, recoverability, repair, and query-usability fields.
+- Release dependencies use explicit pins plus regenerated hashed constraints instead of platform-sensitive extras.
+- Executable full-scope relation enqueue/claim/drain paths are retired. `cap+1` planning performs no partial mutation, stale generated relation signals fail closed, and ordinary lexical/SQLite/vector recall continues.
+- Finite focus work has generation fencing, bounded interval/wall-clock/backoff/attempt controls, and terminal poison dispositions that do not resurrect.
+- Doctor, `scope_recall_stats`, and the dashboard expose content-free relation health. Exact legacy cleanup is dry-run-first, backup-first, receipt-bound, idempotent, and maintenance-only.
+- Additive schema migration `0013_relation_containment_v1_10_6` preserves legacy tables as readable cleanup/downgrade evidence without executing them.
+
+Release `1.10.5` was the preceding unpublished source checkpoint:
 
 - Public shutdown and cleanup share one absolute deadline and retain one tracked retryable cleanup worker.
 - Windows pinned-source checkout fails closed when process-tree termination or bounded pipe collection cannot be confirmed after timeout.
@@ -1332,7 +1345,7 @@ Current focused regression coverage includes:
 - runtime fallback from unavailable API embeddings to `local-hash`
 - vector table rebuild when embedder dimensions change
 - vector duplicate physical rows are repaired back to one row per id
-- vector delete/upsert failure preserves SQLite truth and marks vector status `needs_repair`
+- retryable vector delete/upsert replay failure preserves SQLite truth and marks vector state `degraded`; terminal dead-letter debt marks `needs_repair`
 - vector search failure degrades to lexical recall and marks vector status `needs_repair`
 - write-time exact dedupe prevents repeat SQLite rows for the same normalized content in the same scope/target
 - length-framed scope identifiers prevent delimiter-collision between user/chat/thread/session components

@@ -14,7 +14,7 @@ import scope_recall.vector_runtime as vector_runtime_module
 import scope_recall.vector_store as vector_store_module
 from _scope_recall_public_memory_port import attach_public_truth_ports
 from scope_recall import memory_ops
-from scope_recall.doctor_vector import vector_generation_report
+from scope_recall.doctor_vector import vector_generation_report, vector_report
 from scope_recall.embedders import LocalHashEmbedder
 from scope_recall.provider import MemoryProvider, ScopeRecallMemoryProvider
 from scope_recall.sql_store import ensure_schema
@@ -319,7 +319,10 @@ def test_setup_vector_layer_does_not_leak_orphan_generation_invalid_path(monkeyp
     status = memory_ops.stats_payload(provider)
     rendered_status = json.dumps(status, ensure_ascii=False)
 
-    assert provider._vector_status == "degraded"
+    assert provider._vector_status == "needs_repair"
+    assert provider._vector_reason_code == "generation_incomplete"
+    assert provider._vector_auto_recoverable is False
+    assert provider._vector_repair_required is True
     assert raw_path not in provider._vector_message
     assert raw_path not in prompt
     assert raw_path not in rendered_status
@@ -1201,6 +1204,29 @@ def test_doctor_fails_closed_on_vector_outbox_dead_letter(tmp_path):
     assert check["ok"] is False
     assert any("dead-letter" in failure for failure in check["failures"])
     assert any("requeue" in item for item in recommendations)
+
+    combined, combined_check, _ = vector_report(
+        tmp_path,
+        expected_embedder={
+            "provider": identity.provider,
+            "model": identity.model,
+            "dimensions": identity.dimensions,
+            "metric": identity.metric,
+            "prompt_profile": identity.prompt_profile,
+            "document_prefix": identity.document_prefix,
+            "query_prefix": identity.query_prefix,
+            "request_dimensions": identity.request_dimensions,
+            "available": True,
+        },
+        backend=identity.backend,
+    )
+    assert combined["state"] == "needs_repair"
+    assert combined["reason_code"] == "outbox_dead_letter"
+    assert combined["auto_recoverable"] is False
+    assert combined["repair_required"] is True
+    assert combined["usable_for_query"] is False
+    assert combined["debt_counts"]["dead_letter"] == 1
+    assert combined_check["ok"] is False
 
 
 def test_replay_failure_does_not_claim_unattempted_events():

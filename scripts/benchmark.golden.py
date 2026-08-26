@@ -38,11 +38,13 @@ except ImportError:  # pragma: no cover - direct source checkout execution fallb
 
 DEFAULT_CASES = ROOT / "benchmarks" / "curated_recall_quality_cases_v2.json"
 COPY_IGNORE_PATTERNS = (
+    ".execution",
     ".git",
     ".hermes",
     ".hermes-agent-src",
     ".pytest_cache",
     ".ruff_cache",
+    ".venv",
     "__pycache__",
     "*.pyc",
     "build",

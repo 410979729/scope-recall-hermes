@@ -41,13 +41,21 @@ if str(ROOT) not in sys.path:
 from secret_patterns import scan_secret_like_text, secret_scan_shadow  # noqa: E402
 from scripts.release_changelog import extract_version_section  # noqa: E402
 
-PACKAGE_VERSION = "1.10.5"
+PACKAGE_VERSION = "1.10.6"
 PUBLIC_RELEASE_BASELINE = "1.10.3"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 RELEASE_READINESS_DOC = f"docs/release-readiness.{PACKAGE_VERSION}.md"
-GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", ".venv"}
-LOCAL_ONLY_DIRS = {".hermes"}
+GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist"}
+LOCAL_ONLY_DIRS = {".execution", ".hermes"}
 EXTERNAL_TEST_DIRS = {".hermes-agent-src"}
+DEVELOPER_ENV_DIRS = {".venv", "venv"}
+CLEANUP_PROTECTED_DIRS = {
+    ".git",
+    *LOCAL_ONLY_DIRS,
+    *EXTERNAL_TEST_DIRS,
+    *DEVELOPER_ENV_DIRS,
+}
+RELEASE_TRAVERSAL_EXCLUDED_DIRS = CLEANUP_PROTECTED_DIRS | GENERATED_DIRS
 RELEASE_REQUIRED_MODULES = ("build", "pytest", "ruff", "wheel", "pyright", "yaml", "lancedb", "pyarrow")
 RELEASE_INVARIANT_MANIFEST = ROOT / "scripts" / "release.invariants.json"
 # Telegram supergroup/channel IDs are personal release metadata, not generic
@@ -663,12 +671,25 @@ REQUIRED_CHANGELOG_TERMS_BY_VERSION = {
         "contradiction",
         "scanner",
     ),
+    "1.10.6": (
+        "ci-required",
+        "Vector",
+        "hashed constraints",
+        "relation containment",
+        "cap+1",
+        "no partial",
+        "poison",
+        "operator cleanup",
+        "health",
+        "query zero-write",
+    ),
 }
 PUBLIC_RELEASE_BASELINES_BY_VERSION = {
     "1.10.2": "1.9.2",
     "1.10.3": "1.10.2",
     "1.10.4": "1.10.3",
     "1.10.5": "1.10.3",
+    "1.10.6": "1.10.3",
 }
 REQUIRED_CHANGELOG_TERMS = REQUIRED_CHANGELOG_TERMS_BY_VERSION.get(
     PACKAGE_VERSION, ()
@@ -929,6 +950,46 @@ def run(
     try:
         resolved_cmd = resolve_release_command(cmd, env=child_env)
         if cmd and pathlib.PurePath(str(cmd[0])).name.lower() in {"git", "git.exe"}:
+            resolved_executable = pathlib.Path(str(resolved_cmd[0]))
+            if os.name == "nt" and resolved_executable.suffix.lower() == ".exe":
+                try:
+                    with resolved_executable.open("rb") as executable_file:
+                        dos_header = executable_file.read(64)
+                        pe_offset = (
+                            int.from_bytes(dos_header[60:64], "little")
+                            if len(dos_header) >= 64
+                            else -1
+                        )
+                        if 64 <= pe_offset <= 16 * 1024 * 1024:
+                            executable_file.seek(pe_offset)
+                            pe_signature = executable_file.read(4)
+                        else:
+                            pe_signature = b""
+                except OSError as exc:
+                    winerror = getattr(exc, "winerror", None)
+                    return {
+                        "cmd": cmd,
+                        "returncode": int(winerror or exc.errno or 1),
+                        "stdout": "",
+                        "stderr": "",
+                        "error": "prerequisite_unusable",
+                        "prerequisite": resolved_executable.name,
+                        "detail": f"Git executable header is unreadable: {type(exc).__name__}",
+                        "winerror": winerror,
+                        "errno": exc.errno,
+                    }
+                if dos_header[:2] != b"MZ" or pe_signature != b"PE\0\0":
+                    return {
+                        "cmd": cmd,
+                        "returncode": 193,
+                        "stdout": "",
+                        "stderr": "",
+                        "error": "prerequisite_unusable",
+                        "prerequisite": resolved_executable.name,
+                        "detail": "WinError 193: invalid Git executable header",
+                        "winerror": 193,
+                        "errno": None,
+                    }
             return _run_git_helper(
                 resolved_cmd,
                 cwd=cwd,
@@ -1077,6 +1138,27 @@ def release_pytest_command() -> list[str]:
     return [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"]
 
 
+def release_compileall_command() -> list[str]:
+    """Compile candidate sources without entering local/private environments."""
+
+    sources: list[str] = []
+    for current, dirnames, filenames in os.walk(ROOT, topdown=True):
+        dirnames[:] = sorted(
+            name
+            for name in dirnames
+            if name not in RELEASE_TRAVERSAL_EXCLUDED_DIRS
+        )
+        current_path = pathlib.Path(current)
+        sources.extend(
+            (current_path / name).relative_to(ROOT).as_posix()
+            for name in sorted(filenames)
+            if name.endswith(".py")
+        )
+    if not sources:
+        raise RuntimeError("release compile source inventory is empty")
+    return [sys.executable, "-m", "compileall", "-q", *sorted(sources)]
+
+
 def progress(stage: str) -> None:
     """Emit machine-readable progress on stderr so long release gates are diagnosable."""
     print(
@@ -1140,7 +1222,12 @@ def _is_ignorable_git_status_line(line: str) -> bool:
         return False
     parts = pathlib.PurePosixPath(path).parts
     top_level = parts[0] if parts else ""
-    return top_level in LOCAL_ONLY_DIRS or top_level in EXTERNAL_TEST_DIRS or top_level in GENERATED_DIRS
+    return (
+        top_level in LOCAL_ONLY_DIRS
+        or top_level in EXTERNAL_TEST_DIRS
+        or top_level in DEVELOPER_ENV_DIRS
+        or top_level in GENERATED_DIRS
+    )
 
 
 def git_prerequisite_check() -> dict[str, object]:
@@ -1185,11 +1272,27 @@ def git_tree_check(*, allow_dirty: bool) -> dict[str, object]:
     ]
     untracked = [line for line in lines if line.startswith("?? ")]
     dirty = [line for line in lines if not line.startswith("?? ")]
+    tracked_result = run(
+        [
+            "git",
+            "ls-files",
+            "--",
+            *sorted(LOCAL_ONLY_DIRS | EXTERNAL_TEST_DIRS | DEVELOPER_ENV_DIRS),
+        ]
+    )
+    if tracked_result["returncode"] != 0:
+        return {"ok": False, "error": tracked_result}
+    tracked_local_only = sorted(
+        line.strip().replace("\\", "/")
+        for line in str(tracked_result["stdout"]).splitlines()
+        if line.strip()
+    )
     return {
-        "ok": allow_dirty or not lines,
+        "ok": (allow_dirty or not lines) and not tracked_local_only,
         "allow_dirty": bool(allow_dirty),
         "dirty": dirty,
         "untracked": untracked,
+        "tracked_local_only": tracked_local_only,
     }
 
 
@@ -1432,15 +1535,19 @@ _LEXICAL_V2_FIELDS = frozenset(
         "failures",
     }
 )
+_LEXICAL_SHADOW_P95_TARGET_MS = 100.0
+_LEXICAL_RELEASE_LATENCY_RATIO_BUDGET = 4.0
 
 def validate_lexical_benchmark_payload(payload: dict[str, object]) -> bool:
     """Validate the v2 release payload and recompute all derived hard gates.
 
     Absolute ``shadow_p95_ms <= 100`` is a cross-host *target* recorded via
-    structured ``target_misses``, not a universal hard gate. Hard gates remain
-    relative latency ratio, page growth, CJK/English correctness, and result caps.
-    The baseline recomputes expected ``target_misses`` and rejects contradictory
-    declarations inline.
+    structured ``target_misses``, not a universal hard gate. Relative latency
+    uses a ``target / budget`` denominator floor, making the hard bound
+    ``shadow <= max(target, budget * legacy)`` without denominator collapse on
+    fast hosts. Page growth, CJK/English correctness, and result caps remain
+    hard gates. The validator recomputes all derived evidence and rejects
+    contradictory declarations inline.
     """
 
     if (
@@ -1502,12 +1609,18 @@ def validate_lexical_benchmark_payload(payload: dict[str, object]) -> bool:
         or shadow_p50 < 0.0
         or shadow_p95 <= 0.0
         or shadow_p95 < shadow_p50
-        or not 0.0 <= latency_ratio <= 4.0
+        or not 0.0
+        <= latency_ratio
+        <= _LEXICAL_RELEASE_LATENCY_RATIO_BUDGET
         or not 1.0 <= page_growth <= 2.5
     ):
         return False
 
-    expected_ratio = shadow_p95 / max(legacy_p95, 0.25)
+    denominator_floor_ms = (
+        _LEXICAL_SHADOW_P95_TARGET_MS
+        / _LEXICAL_RELEASE_LATENCY_RATIO_BUDGET
+    )
+    expected_ratio = shadow_p95 / max(legacy_p95, denominator_floor_ms)
     expected_page_growth = shadow_pages / baseline_pages
     if not math.isclose(latency_ratio, expected_ratio, rel_tol=0.0, abs_tol=1e-6):
         return False
@@ -1532,7 +1645,11 @@ def validate_lexical_benchmark_payload(payload: dict[str, object]) -> bool:
     page_budget = _finite_payload_number(budgets, "page_growth_ratio_max")
     if shadow_target is None or ratio_budget is None or page_budget is None:
         return False
-    if shadow_target != 100.0 or ratio_budget != 4.0 or page_budget != 2.5:
+    if (
+        shadow_target != _LEXICAL_SHADOW_P95_TARGET_MS
+        or ratio_budget != _LEXICAL_RELEASE_LATENCY_RATIO_BUDGET
+        or page_budget != 2.5
+    ):
         return False
 
     target_misses = payload.get("target_misses")
@@ -1926,6 +2043,156 @@ def parse_plugin_manifest_hooks(plugin_text: str) -> list[str]:
     return hooks
 
 
+def retired_relation_rebuild_source_gate() -> dict[str, object]:
+    """Prove the historical full-scope queue has no executable worker path."""
+
+    rel = "relation_rebuild_queue.py"
+    path = ROOT / rel
+    if not path.is_file():
+        return {
+            "ok": False,
+            "findings": [{"path": rel, "line": 0, "code": "missing_source"}],
+        }
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
+    except (OSError, UnicodeError, SyntaxError) as exc:
+        return {
+            "ok": False,
+            "findings": [
+                {
+                    "path": rel,
+                    "line": int(getattr(exc, "lineno", 0) or 0),
+                    "code": "unreadable_or_invalid_source",
+                }
+            ],
+        }
+
+    allowed_functions = {
+        "_now",
+        "_table_exists",
+        "claim_relation_rebuild_events",
+        "drain_relation_rebuild_queue",
+        "enqueue_relation_rebuild",
+        "ensure_relation_rebuild_schema",
+        "relation_rebuild_debt_exists",
+        "relation_rebuild_queue_report",
+        "relation_rebuild_schema_status",
+        "resolve_relation_rebuild",
+        "seed_scope_relation_rebuilds",
+    }
+    retired_surfaces = {
+        "claim_relation_rebuild_events",
+        "drain_relation_rebuild_queue",
+        "enqueue_relation_rebuild",
+        "resolve_relation_rebuild",
+        "seed_scope_relation_rebuilds",
+    }
+    forbidden_symbols = {
+        "lifecycle_visible_sql",
+        "rebuild_extracted_relations",
+        "relation_frequency_snapshot",
+    }
+    findings: list[dict[str, object]] = []
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            functions[node.name] = node
+            if node.name not in allowed_functions:
+                findings.append(
+                    {
+                        "path": rel,
+                        "line": int(node.lineno),
+                        "code": "unexpected_executable_function",
+                        "name": node.name,
+                    }
+                )
+        elif isinstance(node, ast.ClassDef):
+            findings.append(
+                {
+                    "path": rel,
+                    "line": int(node.lineno),
+                    "code": "unexpected_executable_class",
+                    "name": node.name,
+                }
+            )
+
+    for name in sorted(retired_surfaces):
+        function = functions.get(name)
+        if function is None:
+            findings.append(
+                {
+                    "path": rel,
+                    "line": 0,
+                    "code": "missing_retired_surface",
+                    "name": name,
+                }
+            )
+            continue
+        for node in ast.walk(function):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if node.func.attr in {
+                    "commit",
+                    "execute",
+                    "executemany",
+                    "executescript",
+                    "rollback",
+                }:
+                    findings.append(
+                        {
+                            "path": rel,
+                            "line": int(getattr(node, "lineno", function.lineno)),
+                            "code": "retired_surface_can_mutate_sqlite",
+                            "name": name,
+                        }
+                    )
+            if isinstance(node, ast.Name) and node.id in forbidden_symbols:
+                findings.append(
+                    {
+                        "path": rel,
+                        "line": int(getattr(node, "lineno", function.lineno)),
+                        "code": "retired_surface_reaches_generation",
+                        "name": name,
+                    }
+                )
+        if name == "enqueue_relation_rebuild" and not any(
+            isinstance(node, ast.Raise) for node in ast.walk(function)
+        ):
+            findings.append(
+                {
+                    "path": rel,
+                    "line": int(function.lineno),
+                    "code": "retired_enqueue_not_fail_closed",
+                    "name": name,
+                }
+            )
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in forbidden_symbols:
+            findings.append(
+                {
+                    "path": rel,
+                    "line": int(getattr(node, "lineno", 0) or 0),
+                    "code": "legacy_generation_symbol_present",
+                    "name": node.id,
+                }
+            )
+    unique = {tuple(sorted(item.items())) for item in findings}
+    deduped = [dict(item) for item in unique]
+
+    def finding_line(item: dict[str, object]) -> int:
+        value = item.get("line", 0)
+        return value if isinstance(value, int) else 0
+
+    deduped.sort(
+        key=lambda item: (
+            finding_line(item),
+            str(item.get("code", "")),
+            str(item.get("name", "")),
+        )
+    )
+    return {"ok": not deduped, "findings": deduped}
+
+
 def provider_class_method_names() -> list[str]:
     tree = ast.parse(read_text("provider.py"), filename="provider.py")
     for node in tree.body:
@@ -2186,9 +2453,7 @@ def pypi_workflow_gate_check() -> dict[str, object]:
         "git rev-parse --verify refs/remotes/origin/main",
         "git merge-base --is-ancestor HEAD refs/remotes/origin/main",
         "commits/${RELEASE_SHA}/check-runs",
-        "windows-full-py311",
-        "windows-full-py312",
-        "windows-no-symlink-py311",
+        "ci-required",
     )
     if any(marker not in release_text for marker in release_policy_markers):
         failures.append(
@@ -2814,6 +3079,8 @@ def scan_tree() -> dict[str, list[str]]:
             continue
         if any(part in EXTERNAL_TEST_DIRS for part in rel.parts):
             continue
+        if any(part in DEVELOPER_ENV_DIRS for part in rel.parts):
+            continue
         if any(part in GENERATED_DIRS for part in rel.parts):
             if path.exists():
                 findings["generated_artifacts"].append(rel.as_posix())
@@ -3041,6 +3308,7 @@ def metadata_check() -> dict[str, object]:
     if forbidden_source:
         failures.append(f"forbidden private source present: {', '.join(forbidden_source)}")
     product_contract = product_contract_check()
+    relation_rebuild_gate = retired_relation_rebuild_source_gate()
     public_docs_hygiene = public_doc_hygiene_check()
     release_readiness_hygiene = release_readiness_tree_hygiene_check()
     pyright_coverage = pyright_include_check()
@@ -3095,6 +3363,11 @@ def metadata_check() -> dict[str, object]:
     product_failures = product_contract.get("failures", [])
     if not product_contract["ok"] and isinstance(product_failures, list):
         failures.extend(f"product contract: {failure}" for failure in product_failures)
+    if not relation_rebuild_gate["ok"]:
+        failures.append(
+            "retired relation rebuild source gate: "
+            + json.dumps(relation_rebuild_gate, ensure_ascii=False, sort_keys=True)
+        )
     if not public_docs_hygiene["ok"]:
         failures.append(f"public docs hygiene: {json.dumps(public_docs_hygiene, ensure_ascii=False, sort_keys=True)}")
     if not release_readiness_hygiene["ok"]:
@@ -3114,6 +3387,7 @@ def metadata_check() -> dict[str, object]:
         "missing_source": missing_source,
         "failures": failures,
         "product_contract": product_contract,
+        "retired_relation_rebuild_source_gate": relation_rebuild_gate,
         "public_docs_hygiene": public_docs_hygiene,
         "release_readiness_hygiene": release_readiness_hygiene,
         "pyright_coverage": pyright_coverage,
@@ -3319,6 +3593,9 @@ def cleanup_generated() -> None:
 
     for pattern in ["__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist", "*.egg-info"]:
         for path in sorted(ROOT.rglob(pattern), key=lambda item: len(item.parts), reverse=True):
+            rel = path.relative_to(ROOT)
+            if any(part in CLEANUP_PROTECTED_DIRS for part in rel.parts):
+                continue
             if not path.exists():
                 continue
             if path.is_dir():
@@ -3326,6 +3603,9 @@ def cleanup_generated() -> None:
             elif path.exists():
                 path.unlink()
     for path in ROOT.rglob("*.pyc"):
+        rel = path.relative_to(ROOT)
+        if any(part in CLEANUP_PROTECTED_DIRS for part in rel.parts):
+            continue
         path.unlink(missing_ok=True)
 
 
@@ -3407,7 +3687,7 @@ def main() -> int:
         ("pyright", [sys.executable, "-m", "pyright"]),
         ("release_invariants", release_invariant_command()),
         ("pytest", release_pytest_command()),
-        ("compileall", [sys.executable, "-m", "compileall", "-q", "."]),
+        ("compileall", release_compileall_command()),
     ):
         progress(f"{stage}:start")
         fail_if_bad(run(cmd, capture_output=release_stage_capture_output(stage)))

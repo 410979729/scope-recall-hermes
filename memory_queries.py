@@ -25,6 +25,8 @@ from .models import recall_scope_mode
 from .operator_ledger import operator_ledger_report
 from ._internal.recall.pipeline import humanize_filter_trace, humanize_recall_components
 from .capture_control import capture_queue_report
+from .relation_containment import relation_containment_report
+from .relation_frequency_maintenance import relation_frequency_index_report
 from .relation_rebuild_queue import relation_rebuild_queue_report
 from .sql_store import curated_recall_item_id, iter_curated_entries  # noqa: F401
 from .storage_views import _curated_memory_allowed
@@ -1013,6 +1015,11 @@ def stats_payload(provider: Any) -> dict[str, Any]:
         graph_stats = _ops.graph_relation_stats(
             conn, accessible_scope_ids=accessible_scope_params(provider)
         )
+        relation_containment = relation_containment_report(
+            conn,
+            scope_ids=accessible_scope_params(provider),
+        )
+        relation_frequency = relation_frequency_index_report(conn)
         relation_rebuild = relation_rebuild_queue_report(conn)
         capture_queue = capture_queue_report(provider)
         operator_ledger = operator_ledger_report(conn)
@@ -1078,6 +1085,8 @@ def stats_payload(provider: Any) -> dict[str, Any]:
         "scope_entities": entities,
         "scope_feedback_rows": feedback_rows,
         "graph": graph_stats,
+        "relation_containment": relation_containment,
+        "relation_frequency_index": relation_frequency,
         "relation_rebuild_queue": relation_rebuild,
         "capture_queue": capture_queue,
         "operator_ledger": operator_ledger,
@@ -1102,10 +1111,20 @@ def stats_payload(provider: Any) -> dict[str, Any]:
             "consecutive_failures": int(runtime_view.get("journal_digest_consecutive_failures") or 0),
         },
         "vector": {
+            "schema_version": str(vector_view.get("schema_version") or "vector_status.v1"),
             "enabled": bool(vector_view.get("enabled")),
             "ready": bool(vector_view.get("ready")),
+            "state": str(vector_view.get("state") or ""),
             "status": str(vector_view.get("status") or ""),
+            "reason_code": str(vector_view.get("reason_code") or ""),
+            "auto_recoverable": bool(vector_view.get("auto_recoverable")),
+            "repair_required": bool(vector_view.get("repair_required")),
+            "usable_for_query": bool(vector_view.get("usable_for_query")),
             "message": str(vector_view.get("message") or ""),
+            "debt_counts": {
+                str(key): int(value or 0)
+                for key, value in dict(vector_view.get("debt_counts") or {}).items()
+            },
             "backend": str(vector_view.get("backend") or ""),
             "table": vector_table,
             "row_count": int(vector_view.get("row_count") or 0),

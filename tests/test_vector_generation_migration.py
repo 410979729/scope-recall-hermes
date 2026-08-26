@@ -637,6 +637,48 @@ def test_doctor_initialized_unregistered_exposes_empty_inactive_generation_inven
     assert any("not registered" in item for item in recommendations)
 
 
+def test_doctor_manifests_without_pointer_require_repair(tmp_path):
+    from scope_recall.vector_generation import ensure_vector_generation_schema
+
+    storage = tmp_path / "scope-recall"
+    storage.mkdir()
+    conn = sqlite3.connect(storage / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    ensure_vector_generation_schema(conn)
+    register_generation(
+        conn,
+        generation_id="orphan-active",
+        identity=GenerationIdentity(
+            backend="sqlite-bruteforce",
+            provider="local-hash",
+            model="hash-v1",
+            dimensions=8,
+        ),
+        storage_path=".",
+        status="active",
+    )
+    conn.commit()
+    conn.close()
+
+    payload, check, recommendations = _doctor_report_without_ready_scan(tmp_path)
+
+    assert payload == {
+        "status": "generation_incomplete",
+        "registered": True,
+        "current_generation_id": "",
+        "orphan_generation_count": 1,
+        "inactive_generation_inventory": [],
+        "rebuild_from_sqlite_required": False,
+    }
+    assert check == {
+        "ok": False,
+        "failures": ["vector generation manifests exist without a current pointer"],
+    }
+    assert recommendations == [
+        "Restore the current generation pointer or CAS-activate a validated READY generation before normal runtime startup."
+    ]
+
+
 def test_doctor_missing_manifest_exposes_empty_inactive_generation_inventory(tmp_path):
     from scope_recall.vector_generation import ensure_vector_generation_schema
 

@@ -387,7 +387,14 @@ def test_scope_recall_forget_commits_truth_and_retries_when_vector_delete_fails(
 
     assert deleted == 1
     assert conn.execute("SELECT COUNT(*) FROM memories WHERE id = 'delete-row'").fetchone()[0] == 0
-    assert provider._vector_status == "needs_repair"
+    assert provider._vector_status == "degraded"
+    vector_status = provider.vector_status_view()
+    assert vector_status["state"] == "degraded"
+    assert vector_status["reason_code"] == "outbox_retryable"
+    assert vector_status["auto_recoverable"] is True
+    assert vector_status["repair_required"] is False
+    assert vector_status["usable_for_query"] is True
+    assert vector_status["debt_counts"]["retry"] == 1
     assert "[REDACTED_SECRET]" in provider._vector_message
     assert "[REDACTED_PATH]" in provider._vector_message
     assert "sk-FAILING" not in provider._vector_message
@@ -597,7 +604,8 @@ def test_scope_recall_forget_soft_archive_keeps_truth_and_retries_when_vector_de
     assert payload["archived"] == 1
     assert payload["ids"] == ["archive-row"]
     assert payload["skipped"] == []
-    assert provider._vector_status == "needs_repair"
+    assert provider._vector_status == "degraded"
+    assert provider.vector_status_view()["reason_code"] == "outbox_retryable"
     row = conn.execute("SELECT metadata FROM memories WHERE id = 'archive-row'").fetchone()
     assert json.loads(row["metadata"])["lifecycle"] == "archived"
     assert conn.execute("SELECT COUNT(*) FROM governance_audit_events WHERE batch_id = 'forget-vector-fail'").fetchone()[0] == 1
@@ -734,7 +742,8 @@ def test_dedupe_scope_only_commits_truth_and_reports_vector_retry():
     assert payload["vector_pending"] is True
     assert payload["vector_error"]
     assert conn.execute("SELECT COUNT(*) FROM memories WHERE id IN ('dupe-new', 'dupe-old')").fetchone()[0] == 1
-    assert provider._vector_status == "needs_repair"
+    assert provider._vector_status == "degraded"
+    assert provider.vector_status_view()["debt_counts"]["retry"] == 1
 
 
 def test_dedupe_global_commits_truth_and_reports_vector_retry():
@@ -753,7 +762,8 @@ def test_dedupe_global_commits_truth_and_reports_vector_retry():
     assert payload["vector_pending"] is True
     assert payload["vector_error"]
     assert conn.execute("SELECT COUNT(*) FROM memories WHERE id IN ('dupe-new', 'dupe-old')").fetchone()[0] == 1
-    assert provider._vector_status == "needs_repair"
+    assert provider._vector_status == "degraded"
+    assert provider.vector_status_view()["debt_counts"]["retry"] == 1
 
 
 def test_dedupe_global_vector_and_sql_delete_happen_under_provider_lock():

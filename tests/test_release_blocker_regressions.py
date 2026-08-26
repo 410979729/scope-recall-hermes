@@ -335,7 +335,10 @@ def test_active_fallback_generation_requires_explicit_fallback_configuration(tmp
 
     manifest = current_generation(conn)
     assert provider._vector_ready is False
-    assert provider._vector_status == "degraded"
+    assert provider._vector_status == "needs_repair"
+    assert provider._vector_reason_code == "identity_mismatch"
+    assert provider._vector_auto_recoverable is False
+    assert provider._vector_repair_required is True
     assert provider._vector_store is None
     assert manifest is not None and manifest["backend"] == "sqlite-bruteforce"
     assert not (tmp_path / "vector.sqlite3").exists()

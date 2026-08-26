@@ -698,7 +698,18 @@ def initialize_read_only_runtime(provider: Any) -> None:
         provider._conn = None
     provider._vector_enabled = False
     provider._vector_ready = False
-    provider._vector_status = "reader_mode"
+    provider._vector_status = "disabled"
+    provider._vector_reason_code = "reader_mode"
+    provider._vector_auto_recoverable = False
+    provider._vector_repair_required = False
+    provider._vector_usable_for_query = False
+    provider._vector_debt_counts = {
+        "pending": 0,
+        "processing": 0,
+        "retry": 0,
+        "dead_letter": 0,
+        "replayable": 0,
+    }
     provider._vector_message = (
         "vector companion is owned by the writer-lease process"
     )

@@ -1,6 +1,6 @@
 # Scope Recall V1 stability contract
 
-`scope-recall` 1.10.5 keeps the V1 compatibility contract on the last packaged `1.10.3` line and supersedes the unpublished `1.10.4` source checkpoint. It retains the issue #50 rollback metadata, governance receipt, Experience `run_id`, and `memory_auto_adjudication` throttle fixes, then closes exact-epoch review defects in shutdown deadlines, Windows Git process-tree termination, successful-release provenance, merge/capture serialization, L4 retry retention, contradiction-chain selection, and distribution scanning. SQLite authority, stable provider/tool identities, and the database schema are unchanged.
+`scope-recall` 1.10.6 keeps the V1 compatibility contract on the last packaged `1.10.3` line and supersedes the unpublished `1.10.4` and `1.10.5` source checkpoints. It retains their cumulative governance, rollback, scheduling, shutdown, provenance, and distribution fixes, adds a stable `ci-required` gate and one four-state Vector status contract, and replaces executable full-scope relation rebuild work with finite relation containment and backup-first operator cleanup. SQLite authority, stable provider/tool identities, and ordinary recall semantics are unchanged. Additive migration `0013_relation_containment_v1_10_6` records health, focus work, and terminal dispositions while keeping legacy tables readable but non-executable.
 
 This document defines the stable V1 compatibility surface and the areas that may evolve in patch or minor releases.
 
@@ -51,6 +51,8 @@ Stable V1 guarantees:
 - WAL deployments should use SQLite `3.51.3+` or a fixed backport (`3.50.7` or `3.44.6`); versions `3.7.0` through `3.51.2` otherwise contain SQLite's documented rare WAL-reset corruption race. Scope Recall can preserve its own lock boundaries but cannot replace the SQLite library linked into Python.
 
 Schema evolution policy:
+
+Vector companion status is an additive stable contract. Public runtime state is exactly `ready`, `degraded`, `needs_repair`, or `disabled`; detailed causes stay in `reason_code`. Retryable durable replay debt is `degraded`, while dead-letter, audit mismatch, duplicate rows, unreadable storage, incompatible generation, and unrecoverable divergence are `needs_repair`. Stats and Doctor also preserve `auto_recoverable`, `repair_required`, `usable_for_query`, `message`, and aggregate `debt_counts`. Ordinary recall must retain SQLite/lexical fallback when vector query use is unsafe.
 
 - patch/minor releases may add nullable columns, indexes, metadata fields, or migration ledger fields
 - patch/minor releases must preserve existing V1 `memories` rows

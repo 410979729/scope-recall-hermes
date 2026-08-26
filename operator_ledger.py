@@ -50,7 +50,9 @@ _REQUIRED_COLUMNS = {
     "updated_at",
 }
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
-_GENERIC_RECEIPT_KINDS = frozenset({"journal.source_restore"})
+_GENERIC_RECEIPT_KINDS = frozenset(
+    {"journal.source_restore", "relation.legacy_cleanup"}
+)
 _PLAYBOOK_RECEIPT_SCHEMA = "playbook_operator_receipt.v2"
 _OPERATOR_RECEIPT_SCHEMA = "operator_receipt.v1"
 

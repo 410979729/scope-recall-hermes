@@ -1611,7 +1611,7 @@ def test_nightly_duplicate_cleanup_uses_shared_replay_without_direct_vector_dele
     assert conn.execute("SELECT COUNT(*) FROM vector_outbox WHERE status = 'pending'").fetchone()[0] == 1
     assert replay_calls == [(vector_runtime, 1)]
     assert vector_runtime._vector_store.deleted_ids == []
-    assert vector_runtime._vector_status == "needs_repair"
+    assert vector_runtime._vector_status == "degraded"
     assert vector_runtime._vector_message == "nightly duplicate vector outbox replay failed"
     assert "secret123456789" not in vector_runtime._vector_message
     assert "/tmp/hermes" not in vector_runtime._vector_message

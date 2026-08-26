@@ -69,7 +69,7 @@ from .truth_connection import connect_truth_database
 from .transaction_guard import prepare_network_boundary, release_snapshot_transaction
 from .writer_lease import TruthWriterBusyError, TruthWriterLease
 from .vector_runtime import (
-    mark_vector_needs_repair,
+    mark_vector_replay_degraded,
     replay_vector_outbox,
     setup_vector_layer,
     vector_delete_intent_required,
@@ -260,6 +260,17 @@ class DigestVectorRuntime:
         self._vector_enabled = False
         self._vector_ready = False
         self._vector_status = "disabled"
+        self._vector_reason_code = "disabled_by_config"
+        self._vector_auto_recoverable = False
+        self._vector_repair_required = False
+        self._vector_usable_for_query = False
+        self._vector_debt_counts: dict[str, int] = {
+            "pending": 0,
+            "processing": 0,
+            "retry": 0,
+            "dead_letter": 0,
+            "replayable": 0,
+        }
         self._vector_message = ""
         self._vector_row_count = 0
         self._vector_unique_id_count = 0
@@ -1699,15 +1710,19 @@ def cleanup_exact_duplicates(conn: sqlite3.Connection, scope: ScopeProfile, vect
                 vector_runtime,
                 limit=max(1, int(result.get("outbox_enqueued") or 1)),
             )
-            if int(replay_result.get("failed") or 0) > 0:
-                mark_vector_needs_repair(
+            if (
+                int(replay_result.get("failed") or 0) > 0
+                and str(getattr(vector_runtime, "_vector_status", "") or "")
+                not in {"degraded", "needs_repair"}
+            ):
+                mark_vector_replay_degraded(
                     vector_runtime,
                     "nightly duplicate vector outbox replay failed",
                 )
         return int(result["deleted"])
     except Exception as exc:
         if vector_runtime is not None and require_vector_delete:
-            mark_vector_needs_repair(vector_runtime, exc)
+            mark_vector_replay_degraded(vector_runtime, exc)
         raise RuntimeError("nightly duplicate hard delete did not commit safely") from exc
 
 

@@ -50,7 +50,7 @@ from .sql_store import (
 from .sqlite_params import chunked_sql_parameters
 from .vector_generation import enqueue_current_vector_event
 from .vector_runtime import (
-    mark_vector_needs_repair,
+    mark_vector_replay_degraded,
     refresh_vector_audit,  # noqa: F401
     replay_vector_outbox,
     setup_vector_layer,
@@ -693,7 +693,7 @@ def update_memory(
         try:
             replay_vector_outbox(_write_target(provider))
         except Exception as exc:
-            mark_vector_needs_repair(_write_target(provider), exc)
+            mark_vector_replay_degraded(_write_target(provider), exc)
             logger.warning(
                 "Scope Recall vector outbox replay failed after atomic update: %s",
                 exc,
@@ -890,7 +890,7 @@ def merge_memories(
     try:
         replay_vector_outbox(_write_target(provider))
     except Exception as exc:
-        mark_vector_needs_repair(_write_target(provider), exc)
+        mark_vector_replay_degraded(_write_target(provider), exc)
         logger.warning(
             "Scope Recall vector outbox replay failed after atomic merge: %s",
             exc,
@@ -1334,7 +1334,7 @@ def _archive_memories_after_capture_flush(
         payload["vector_replay"] = replay_vector_outbox(_write_target(provider))
     except Exception as exc:
         safe_error = sanitize_report_text(str(exc))
-        mark_vector_needs_repair(_write_target(provider), safe_error)
+        mark_vector_replay_degraded(_write_target(provider), safe_error)
         payload["vector_replay"] = {
             "completed": 0,
             "failed": 1,

@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 import sqlite3
 import time
-from typing import Any, Iterable, Sequence, cast
+from typing import Any, Iterable, Mapping, Sequence, cast
 
 from .capture_filters import sanitize_report_text
 from .embedders import build_embedder, close_embedder
@@ -52,6 +52,7 @@ from .vector_store import (
     native_vector_dependency_status,
     normalize_vector_backend,
 )
+from .vector_status import normalize_vector_debt_counts, vector_status_contract
 
 logger = logging.getLogger(__name__)
 
@@ -296,18 +297,100 @@ def _sanitize_vector_message(value: Exception | str, *, limit: int = _VECTOR_STA
     return sanitize_report_text(str(value))[:limit]
 
 
-def mark_vector_needs_repair(provider: Any, exc: Exception | str) -> None:
-    provider._vector_ready = False
-    provider._vector_status = "needs_repair"
-    provider._vector_message = _sanitize_vector_message(exc)
+def _set_vector_status(
+    provider: Any,
+    *,
+    state: str,
+    reason_code: str,
+    message: Exception | str = "",
+    ready: bool | None = None,
+    usable_for_query: bool | None = None,
+    debt_counts: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Apply the single canonical vector status contract to a runtime."""
+
+    contract = vector_status_contract(
+        state=state,
+        reason_code=reason_code,
+        message=_sanitize_vector_message(message) if message else "",
+        debt_counts=(
+            debt_counts
+            if debt_counts is not None
+            else getattr(provider, "_vector_debt_counts", None)
+        ),
+        usable_for_query=usable_for_query,
+    )
+    if ready is not None:
+        provider._vector_ready = bool(ready)
+    provider._vector_status = contract["state"]
+    provider._vector_reason_code = contract["reason_code"]
+    provider._vector_auto_recoverable = contract["auto_recoverable"]
+    provider._vector_repair_required = contract["repair_required"]
+    provider._vector_usable_for_query = contract["usable_for_query"]
+    provider._vector_message = contract["message"]
+    provider._vector_debt_counts = contract["debt_counts"]
+    return contract
+
+
+def _refresh_vector_debt_counts(provider: Any) -> dict[str, int]:
+    """Refresh cached aggregate outbox debt after a mutation/replay boundary."""
+
+    generation_id = str(getattr(provider, "_vector_generation_id", "") or "")
+    if not generation_id:
+        debt = normalize_vector_debt_counts(None)
+        provider._vector_debt_counts = debt
+        return debt
+    try:
+        conn = provider._require_conn()
+        lock = getattr(provider, "_lock", None)
+        if lock is None:
+            debt = vector_outbox_backlog_status(conn, generation_id=generation_id)
+        else:
+            with lock:
+                debt = vector_outbox_backlog_status(conn, generation_id=generation_id)
+    except Exception:
+        return normalize_vector_debt_counts(
+            getattr(provider, "_vector_debt_counts", None)
+        )
+    normalized = normalize_vector_debt_counts(debt)
+    provider._vector_debt_counts = normalized
+    return normalized
+
+
+def mark_vector_needs_repair(
+    provider: Any,
+    exc: Exception | str,
+    *,
+    reason_code: str = "repair_required",
+    usable_for_query: bool = False,
+) -> None:
+    _set_vector_status(
+        provider,
+        state="needs_repair",
+        reason_code=reason_code,
+        message=exc,
+        ready=False,
+        usable_for_query=usable_for_query,
+    )
 
 
 def _mark_vector_replay_degraded(provider: Any, exc: Exception | str) -> None:
     """Keep a live companion retryable when one durable outbox event fails."""
 
     provider._vector_replay_degraded = True
-    provider._vector_status = "degraded"
-    provider._vector_message = _sanitize_vector_message(exc)
+    _set_vector_status(
+        provider,
+        state="degraded",
+        reason_code="outbox_retryable",
+        message=exc,
+        usable_for_query=bool(getattr(provider, "_vector_ready", False)),
+    )
+
+
+def mark_vector_replay_degraded(provider: Any, exc: Exception | str) -> None:
+    """Public mutation-boundary helper for durable, retryable replay debt."""
+
+    _mark_vector_replay_degraded(provider, exc)
 
 
 def _recover_vector_replay_state(provider: Any, result: dict[str, int]) -> None:
@@ -320,48 +403,52 @@ def _recover_vector_replay_state(provider: Any, result: dict[str, int]) -> None:
     generation_id = str(getattr(provider, "_vector_generation_id", "") or "")
     if not generation_id:
         return
-    try:
-        conn = provider._require_conn()
-        lock = getattr(provider, "_lock", None)
-        if lock is None:
-            debt = conn.execute(
-                """
-                SELECT 1 FROM vector_outbox
-                WHERE generation_id = ?
-                  AND status IN ('pending', 'retry', 'processing', 'dead_letter')
-                LIMIT 1
-                """,
-                (generation_id,),
-            ).fetchone()
-        else:
-            with lock:
-                debt = conn.execute(
-                    """
-                    SELECT 1 FROM vector_outbox
-                    WHERE generation_id = ?
-                      AND status IN ('pending', 'retry', 'processing', 'dead_letter')
-                    LIMIT 1
-                    """,
-                    (generation_id,),
-                ).fetchone()
-    except Exception:
-        # Observability must fail closed: an unreadable debt ledger cannot justify
-        # advertising the companion as recovered.
+    debt = _refresh_vector_debt_counts(provider)
+    if debt["dead_letter"]:
+        mark_vector_needs_repair(
+            provider,
+            "vector outbox contains dead-letter debt",
+            reason_code="outbox_dead_letter",
+        )
         return
-    if debt is not None:
+    if debt["replayable"]:
         return
     provider._vector_replay_degraded = False
     if bool(getattr(provider, "_vector_ready", False)):
-        provider._vector_status = "ready"
-        provider._vector_message = ""
+        _set_vector_status(
+            provider,
+            state="ready",
+            reason_code="healthy",
+            ready=True,
+            usable_for_query=True,
+            debt_counts=debt,
+        )
 
 
 def _mark_vector_startup_degraded(provider: Any, exc: Exception | str) -> None:
     """Preserve startup's public degraded status while bounding safe detail."""
 
-    provider._vector_ready = False
-    provider._vector_status = "degraded"
-    provider._vector_message = _sanitize_vector_message(exc)
+    _set_vector_status(
+        provider,
+        state="degraded",
+        reason_code="startup_unavailable",
+        message=exc,
+        ready=False,
+        usable_for_query=False,
+    )
+
+
+def _mark_vector_startup_failure(provider: Any, exc: Exception) -> None:
+    """Separate permanent generation incompatibility from transient startup loss."""
+
+    if isinstance(exc, GenerationCompatibilityError):
+        mark_vector_needs_repair(
+            provider,
+            exc,
+            reason_code="identity_mismatch",
+        )
+    else:
+        _mark_vector_startup_degraded(provider, exc)
 
 
 def _normalize_vector_backend(value: Any) -> str:
@@ -547,9 +634,14 @@ def setup_vector_layer(provider: Any) -> None:
         logger.debug("Scope Recall embedder close during setup failed", exc_info=True)
     provider._vector_enabled = config_bool(provider._vector_config or {}, "enabled", False)
     provider._vector_backend = str((provider._vector_config or {}).get("backend") or "lancedb")
-    provider._vector_ready = False
-    provider._vector_status = "disabled"
-    provider._vector_message = ""
+    _set_vector_status(
+        provider,
+        state="disabled",
+        reason_code="disabled_by_config",
+        ready=False,
+        usable_for_query=False,
+        debt_counts={},
+    )
     provider._vector_row_count = 0
     provider._vector_unique_id_count = 0
     provider._vector_duplicate_row_count = 0
@@ -561,15 +653,18 @@ def setup_vector_layer(provider: Any) -> None:
     if not provider._vector_enabled:
         return
     if provider._storage_dir is None:
-        provider._vector_status = "error"
-        provider._vector_message = "storage not initialized"
+        mark_vector_needs_repair(
+            provider,
+            "storage not initialized",
+            reason_code="storage_uninitialized",
+        )
         return
 
     conn = provider._require_conn()
     try:
         manifest_hint = current_generation(conn)
     except Exception as exc:
-        _mark_vector_startup_degraded(provider, exc)
+        _mark_vector_startup_failure(provider, exc)
         return
     if manifest_hint is None:
         runtime_config = getattr(provider, "_config", None)
@@ -585,15 +680,23 @@ def setup_vector_layer(provider: Any) -> None:
                 truth_conn=conn,
             )
         except Exception as exc:
-            _mark_vector_startup_degraded(provider, exc)
+            _mark_vector_startup_failure(provider, exc)
             return
         bootstrap_status = str(bootstrap_receipt.get("status") or "")
         if bootstrap_status not in {"ready", "existing"}:
             reason = str(bootstrap_receipt.get("reason") or "bootstrap unavailable")
-            _mark_vector_startup_degraded(
-                provider,
-                f"vector generation bootstrap unavailable: {reason}",
-            )
+            message = f"vector generation bootstrap unavailable: {reason}"
+            explicit_migration_required = bool(
+                bootstrap_receipt.get("explicit_migration_required")
+            ) or "explicit_migration_required" in reason
+            if explicit_migration_required:
+                mark_vector_needs_repair(
+                    provider,
+                    message,
+                    reason_code="generation_incomplete",
+                )
+            else:
+                _mark_vector_startup_degraded(provider, message)
             return
         if bootstrap_status == "ready":
             selection = str(bootstrap_receipt.get("selection") or "primary")
@@ -620,10 +723,13 @@ def setup_vector_layer(provider: Any) -> None:
     selected_identity: GenerationIdentity | None = None
     candidate_failures: list[str] = []
     fallback_incompatible = False
+    compatibility_failure_seen = False
+    candidate_unavailability_seen = False
     for label, candidate_config in candidate_specs:
         try:
             candidate_embedder = build_embedder(candidate_config)
         except Exception as exc:
+            candidate_unavailability_seen = True
             candidate_failures.append(
                 f"{label}_embedder_build_failed:{_sanitize_vector_message(exc)}"
             )
@@ -637,6 +743,7 @@ def setup_vector_layer(provider: Any) -> None:
             )
             continue
         if not available:
+            candidate_unavailability_seen = True
             close_embedder(candidate_embedder)
             candidate_failures.append(f"{label}_embedder_unavailable")
             continue
@@ -647,6 +754,7 @@ def setup_vector_layer(provider: Any) -> None:
                 candidate_config,
             )
         except Exception as exc:
+            candidate_unavailability_seen = True
             close_embedder(candidate_embedder)
             candidate_failures.append(
                 f"{label}_embedder_identity_failed:{_sanitize_vector_message(exc)}"
@@ -668,6 +776,7 @@ def setup_vector_layer(provider: Any) -> None:
                 ),
             )
         except GenerationCompatibilityError as exc:
+            compatibility_failure_seen = True
             close_embedder(candidate_embedder)
             candidate_failures.append(
                 f"{label}_embedding_space_incompatible:"
@@ -678,6 +787,7 @@ def setup_vector_layer(provider: Any) -> None:
         try:
             candidate_embedder.probe_readiness()
         except Exception as exc:
+            candidate_unavailability_seen = True
             close_embedder(candidate_embedder)
             candidate_failures.append(
                 f"{label}_embedder_readiness_failed:{_sanitize_vector_message(exc)}"
@@ -690,6 +800,7 @@ def setup_vector_layer(provider: Any) -> None:
                 candidate_config,
             )
         except Exception as exc:
+            candidate_unavailability_seen = True
             close_embedder(candidate_embedder)
             candidate_failures.append(
                 f"{label}_embedder_identity_failed:{_sanitize_vector_message(exc)}"
@@ -701,6 +812,7 @@ def setup_vector_layer(provider: Any) -> None:
                 replace(candidate_identity, backend=manifest_backend),
             )
         except GenerationCompatibilityError as exc:
+            compatibility_failure_seen = True
             close_embedder(candidate_embedder)
             candidate_failures.append(
                 f"{label}_embedding_space_incompatible:"
@@ -728,7 +840,14 @@ def setup_vector_layer(provider: Any) -> None:
             reason = "no ready configured embedder matches the active vector generation"
         if candidate_failures:
             reason = f"{reason}: {';'.join(candidate_failures)}"
-        _mark_vector_startup_degraded(provider, reason)
+        if compatibility_failure_seen and not candidate_unavailability_seen:
+            mark_vector_needs_repair(
+                provider,
+                reason,
+                reason_code="identity_mismatch",
+            )
+        else:
+            _mark_vector_startup_degraded(provider, reason)
         return
 
     provider._embedder = selected_embedder
@@ -736,7 +855,7 @@ def setup_vector_layer(provider: Any) -> None:
         existing_manifest = _select_generation_storage(provider, selected_identity)
     except Exception as exc:
         close_embedder(provider._embedder)
-        _mark_vector_startup_degraded(provider, exc)
+        _mark_vector_startup_failure(provider, exc)
         return
 
     if existing_manifest is None:
@@ -769,6 +888,19 @@ def setup_vector_layer(provider: Any) -> None:
         # sweeps remain explicit repair/doctor work; they are never hidden here.
         reconciliation = run_bounded_vector_reconciliation(provider)
         provider._vector_reconciliation = reconciliation
+        provider._vector_debt_counts = normalize_vector_debt_counts(reconciliation)
+        if int(reconciliation.get("dead_letter") or 0) > 0:
+            mark_vector_needs_repair(
+                provider,
+                "vector outbox contains dead-lettered startup debt; inspect with "
+                "python scripts/requeue.vector_dead_letter.py --dry-run",
+                reason_code="outbox_dead_letter",
+            )
+            close_embedder(provider._embedder)
+            if provider._vector_store is not None:
+                provider._vector_store.close()
+            provider._vector_store = None
+            return
         if (
             str(reconciliation.get("status") or "").strip().lower() == "failed"
             or int(reconciliation.get("failed") or 0) > 0
@@ -776,11 +908,6 @@ def setup_vector_layer(provider: Any) -> None:
             raise RuntimeError(
                 str(reconciliation.get("error") or "")
                 or "bounded vector outbox replay failed during startup"
-            )
-        if int(reconciliation.get("dead_letter") or 0) > 0:
-            raise RuntimeError(
-                "vector outbox contains dead-lettered startup debt; inspect with "
-                "python scripts/requeue.vector_dead_letter.py --dry-run"
             )
         replayed = int(reconciliation.get("completed") or 0)
         planned = int(reconciliation.get("planned") or 0)
@@ -790,7 +917,7 @@ def setup_vector_layer(provider: Any) -> None:
                 f"bounded vector startup planned {planned} and replayed {replayed} event(s)",
             )
     except Exception as exc:
-        _mark_vector_startup_degraded(provider, exc)
+        _mark_vector_startup_failure(provider, exc)
         close_embedder(provider._embedder)
         if provider._vector_store is not None:
             try:
@@ -800,10 +927,15 @@ def setup_vector_layer(provider: Any) -> None:
         provider._vector_store = None
         return
 
-    provider._vector_ready = True
-    provider._vector_status = "ready"
-    if not provider._vector_message:
-        provider._vector_message = ""
+    _set_vector_status(
+        provider,
+        state="ready",
+        reason_code="healthy",
+        message=provider._vector_message,
+        ready=True,
+        usable_for_query=True,
+        debt_counts=provider._vector_debt_counts,
+    )
 
 
 def vector_delete_intent_required(provider: Any) -> bool:
@@ -1446,7 +1578,15 @@ def _replay_vector_outbox_guarded(
             )
         ),
     )
-    _recover_vector_replay_state(provider, result)
+    debt = _refresh_vector_debt_counts(provider)
+    if debt["dead_letter"]:
+        mark_vector_needs_repair(
+            provider,
+            "vector outbox contains dead-letter debt",
+            reason_code="outbox_dead_letter",
+        )
+    else:
+        _recover_vector_replay_state(provider, result)
     return result
 
 

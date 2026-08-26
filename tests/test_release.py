@@ -221,6 +221,52 @@ def test_release_tree_scanner_does_not_exempt_force_added_sensitive_files(
     assert secret not in "\n".join(findings)
 
 
+def test_release_tree_scanner_skips_local_execution_evidence(
+    tmp_path,
+    monkeypatch,
+):
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_local_execution_evidence"
+    )
+    evidence = tmp_path / ".execution" / "LOCAL_ENVIRONMENT_MAP.json"
+    evidence.parent.mkdir()
+    private_path = "".join(("F", ":", "/Agents/private"))
+    evidence.write_text(
+        json.dumps({"private_path": private_path}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(release_check, "ROOT", tmp_path)
+
+    assert release_check.scan_tree() == {
+        "generated_artifacts": [],
+        "secrets": [],
+        "private_paths": [],
+    }
+
+
+def test_release_tree_scanner_skips_untracked_developer_environment(
+    tmp_path,
+    monkeypatch,
+):
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_developer_environment"
+    )
+    package = tmp_path / ".venv" / "Lib" / "site-packages" / "private_package"
+    package.mkdir(parents=True)
+    fake_token = "".join(("g", "h", "p", "_", "a" * 36))
+    (package / "local.py").write_text(
+        f"TOKEN = {fake_token!r}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(release_check, "ROOT", tmp_path)
+
+    assert release_check.scan_tree() == {
+        "generated_artifacts": [],
+        "secrets": [],
+        "private_paths": [],
+    }
+
+
 def test_packaged_tool_trace_skip_names_preserve_default_safety_set():
     config_module = importlib.import_module(f"{PACKAGE_NAME}.config")
     packaged = json.loads((PLUGIN_ROOT / "config.json").read_text(encoding="utf-8"))
@@ -438,7 +484,7 @@ def test_release_invariant_manifest_is_versioned_unique_and_executable():
 
     manifest = release_check.release_invariant_manifest()
     assert manifest["schema"] == "scope-recall.release-invariants.v1"
-    assert manifest["suite_count"] == 12
+    assert manifest["suite_count"] == 13
     assert manifest["node_count"] >= 50
     suites = manifest["suites"]
     suite_ids = {suite["id"] for suite in suites}
@@ -454,6 +500,7 @@ def test_release_invariant_manifest_is_versioned_unique_and_executable():
         "seventh-independent-audit-2026-07-release-blockers",
         "sixteenth-independent-audit-performance-liveness-blockers",
         "seventeenth-independent-audit-security-transaction-liveness-blockers",
+        "program0-g0-stabilization-contracts",
         "lexical-shadow-and-windows-rollout-release-blockers",
     } == suite_ids
     nodes = [node for suite in suites for node in suite["nodes"]]
@@ -473,11 +520,23 @@ def test_release_invariant_manifest_is_versioned_unique_and_executable():
         in nodes
     )
     assert (
-        "tests/test_relation_queue_liveness.py::test_relation_queue_defers_when_frequency_receipt_cas_loses_cross_connection_race"
+        "tests/test_program0_relation_containment.py::test_frequency_work_generation_never_reuses_after_change_row_is_consumed"
         in nodes
     )
     assert (
-        "tests/test_relation_queue_liveness.py::test_expired_relation_leases_dead_letter_and_yield_to_later_work"
+        "tests/test_program0_relation_containment.py::test_frequency_poison_terminally_blocks_dependent_focus_work"
+        in nodes
+    )
+    assert (
+        "tests/test_relation_cleanup_program0.py::test_cleanup_apply_is_backup_first_committed_and_idempotently_replayed"
+        in nodes
+    )
+    assert (
+        "tests/test_relation_cleanup_program0.py::test_cleanup_does_not_restore_ready_while_focus_work_remains"
+        in nodes
+    )
+    assert (
+        "tests/test_release.py::test_release_cleanup_preserves_repo_local_environments"
         in nodes
     )
     assert (
@@ -490,6 +549,14 @@ def test_release_invariant_manifest_is_versioned_unique_and_executable():
     )
     assert (
         "tests/test_lexical_cjk_golden.py::test_held_out_chinese_golden_shadow_channel_metrics"
+        in nodes
+    )
+    assert (
+        "tests/test_lexical_benchmark.py::test_lexical_latency_contract_uses_target_derived_floor_on_fast_hosts"
+        in nodes
+    )
+    assert (
+        "tests/test_release.py::test_release_lexical_v2_accepts_target_bounded_fast_host_payload"
         in nodes
     )
     assert (
@@ -622,13 +689,16 @@ def test_release_identity_requires_version_newer_than_latest_tag():
     assert "mutually exclusive" in conflicting_modes["error"]
 
 
-def test_v1105_release_candidate_identity_surfaces_are_consistent():
+def test_v1106_release_candidate_identity_surfaces_are_consistent():
     """Bind the source candidate to every authoritative version surface."""
 
-    expected_version = "1.10.5"
-    release_check = _load_release_check_module("scope_recall_check_release_v1105_identity")
+    expected_version = "1.10.6"
+    release_check = _load_release_check_module("scope_recall_check_release_v1106_identity")
     lexical_generation = importlib.import_module(
         f"{PACKAGE_NAME}.lexical_generation"
+    )
+    relation_containment = importlib.import_module(
+        f"{PACKAGE_NAME}.relation_containment"
     )
     plugin_manifest = (PLUGIN_ROOT / "plugin.yaml").read_text(encoding="utf-8")
     changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -638,44 +708,35 @@ def test_v1105_release_candidate_identity_surfaces_are_consistent():
     assert _package_version() == expected_version
     assert f"version: {expected_version}" in plugin_manifest
     assert release_check.PACKAGE_VERSION == expected_version
-    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.10.5.md"
+    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.1.10.6.md"
     assert (PLUGIN_ROOT / release_check.RELEASE_READINESS_DOC).is_file()
     assert f"## [{expected_version}]" in changelog
     assert f"Version `{expected_version}`" in readme
     assert f"`scope-recall` {expected_version}" in stability
     assert lexical_generation.LEXICAL_SCHEMA_VERSION == 10812
     assert lexical_generation.LEXICAL_MIGRATION_PLUGIN_VERSION == "1.9.0"
+    assert relation_containment.RELATION_CONTAINMENT_SCHEMA_VERSION == 10813
+    assert relation_containment.RELATION_CONTAINMENT_MIGRATION_PLUGIN_VERSION == "1.10.6"
 
     identity = release_check.release_version_identity_check(
         tags=["v1.8.7", "v1.9.2", "v1.10.2", "v1.10.3"]
     )
     assert identity["ok"] is True
     assert identity["release_eligible"] is True
-    assert identity["expected_release_tag"] == "v1.10.5"
+    assert identity["expected_release_tag"] == "v1.10.6"
     assert identity["latest_release_tag"] == "v1.10.3"
 
 
-def test_v1105_changelog_starts_at_the_last_public_release():
-    release_check = _load_release_check_module("scope_recall_check_release_v1105_changelog")
+def test_v1106_changelog_starts_at_the_last_public_release():
+    release_check = _load_release_check_module("scope_recall_check_release_v1106_changelog")
 
-    assert release_check.PACKAGE_VERSION == "1.10.5"
+    assert release_check.PACKAGE_VERSION == "1.10.6"
     assert release_check.PUBLIC_RELEASE_BASELINE == "1.10.3"
     changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    section = release_check.changelog_section(changelog, "1.10.5")
+    section = release_check.changelog_section(changelog, "1.10.6")
     assert "since the last public release, `1.10.3`" in section
-    assert "#50" in section
-    assert "memory_auto_adjudication" in section
-    assert "metadata" in section
-    assert "receipt" in section
-    assert "run_id" in section
-    assert "throttle" in section
-    assert "shutdown" in section
-    assert "process tree" in section
-    assert "workflow" in section
-    assert "merge" in section
-    assert "retry" in section
-    assert "contradiction" in section
-    assert "scanner" in section
+    for term in release_check.REQUIRED_CHANGELOG_TERMS:
+        assert term in section
     historical = release_check.changelog_section(changelog, "1.10.2")
     assert "since the last public release, `1.9.2`" in historical
     historical_gate = release_check.changelog_completeness_check(
@@ -686,38 +747,39 @@ def test_v1105_changelog_starts_at_the_last_public_release():
     assert historical_gate["missing_terms"] == []
 
 
-def test_v1105_public_wording_covers_post_release_audit_fixes():
-    """Every current public surface must describe the generic audit fixes."""
+def test_v1106_public_wording_covers_program0_contracts():
+    """Every current public surface must describe the Program 0 boundary."""
 
     release_check = _load_release_check_module(
-        "scope_recall_check_release_v1105_audit_fixes"
+        "scope_recall_check_release_v1106_program0"
     )
     changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     surfaces = {
-        "changelog": release_check.changelog_section(changelog, "1.10.5"),
+        "changelog": release_check.changelog_section(changelog, "1.10.6"),
         "readme": (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8"),
         "stability": (PLUGIN_ROOT / "docs" / "stability.md").read_text(encoding="utf-8"),
-        "readiness": (PLUGIN_ROOT / "docs" / "release-readiness.1.10.5.md").read_text(
+        "readiness": (PLUGIN_ROOT / "docs" / "release-readiness.1.10.6.md").read_text(
             encoding="utf-8"
         ),
     }
     for name, text in surfaces.items():
         lowered = text.lower()
-        assert "memory_auto_adjudication" in text, name
-        assert "governance" in lowered, name
-        assert "rollback" in lowered, name
-        assert "throttle" in lowered, name
+        assert "ci-required" in text, name
+        assert "vector" in lowered, name
+        assert "relation" in lowered, name
+        assert "containment" in lowered, name
+        assert "cleanup" in lowered, name
 
 
-def test_v1105_public_surfaces_name_1103_as_the_public_baseline():
-    release_check = _load_release_check_module("scope_recall_check_release_v1105_baseline_truth")
+def test_v1106_public_surfaces_name_1103_as_the_public_baseline():
+    release_check = _load_release_check_module("scope_recall_check_release_v1106_baseline_truth")
 
     truth = release_check.public_release_baseline_truth_check()
     assert truth["ok"] is True, truth
     assert release_check.PUBLIC_RELEASE_BASELINE == "1.10.3"
     readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
     stability = (PLUGIN_ROOT / "docs" / "stability.md").read_text(encoding="utf-8")
-    readiness = (PLUGIN_ROOT / "docs" / "release-readiness.1.10.5.md").read_text(encoding="utf-8")
+    readiness = (PLUGIN_ROOT / "docs" / "release-readiness.1.10.6.md").read_text(encoding="utf-8")
     assert "last packaged `1.10.3`" in readme
     assert "last packaged `1.10.3`" in stability
     assert "Public release baseline: `1.10.3`." in readiness
@@ -985,13 +1047,16 @@ def test_changelog_completeness_gate_requires_current_release_terms():
     assert failed["section_found"] is False
     assert failed["missing_terms"] == list(release_check.REQUIRED_CHANGELOG_TERMS)
     assert set(failed["missing_terms"]) == {
-        "shutdown",
-        "process tree",
-        "workflow",
-        "merge",
-        "retry",
-        "contradiction",
-        "scanner",
+        "ci-required",
+        "Vector",
+        "hashed constraints",
+        "relation containment",
+        "cap+1",
+        "no partial",
+        "poison",
+        "operator cleanup",
+        "health",
+        "query zero-write",
     }
 
     missing_baseline = (
@@ -1205,15 +1270,15 @@ def test_release_git_tree_check_ignores_ci_runtime_checkout(monkeypatch):
     release_check = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(release_check)
 
-    monkeypatch.setattr(
-        release_check,
-        "run",
-        lambda _cmd: {
-            "returncode": 0,
-            "stdout": "?? .hermes-agent-src/\n?? docs/new.md\n M README.md\n",
-            "stderr": "",
-        },
-    )
+    def fake_run(cmd):
+        stdout = (
+            ""
+            if cmd[:2] == ["git", "ls-files"]
+            else "?? .hermes-agent-src/\n?? docs/new.md\n M README.md\n"
+        )
+        return {"returncode": 0, "stdout": stdout, "stderr": ""}
+
+    monkeypatch.setattr(release_check, "run", fake_run)
 
     result = release_check.git_tree_check(allow_dirty=False)
 
@@ -1230,15 +1295,50 @@ def test_release_git_tree_check_allows_only_known_scratch(monkeypatch):
     release_check = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(release_check)
 
-    monkeypatch.setattr(
-        release_check,
-        "run",
-        lambda _cmd: {"returncode": 0, "stdout": "?? .hermes-agent-src/\n?? .hermes/\n?? build/\n", "stderr": ""},
-    )
+    def fake_run(cmd):
+        stdout = (
+            ""
+            if cmd[:2] == ["git", "ls-files"]
+            else "?? .hermes-agent-src/\n?? .execution/\n?? .hermes/\n?? build/\n"
+        )
+        return {"returncode": 0, "stdout": stdout, "stderr": ""}
+
+    monkeypatch.setattr(release_check, "run", fake_run)
 
     result = release_check.git_tree_check(allow_dirty=False)
 
-    assert result == {"ok": True, "allow_dirty": False, "dirty": [], "untracked": []}
+    assert result == {
+        "ok": True,
+        "allow_dirty": False,
+        "dirty": [],
+        "untracked": [],
+        "tracked_local_only": [],
+    }
+
+
+def test_release_git_tree_check_rejects_tracked_local_only_evidence(monkeypatch):
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_tracked_execution_evidence"
+    )
+
+    def fake_run(cmd):
+        stdout = (
+            ".execution/LOCAL_ENVIRONMENT_MAP.json\n"
+            ".venv/Lib/site-packages/private.py\n"
+            if cmd[:2] == ["git", "ls-files"]
+            else ""
+        )
+        return {"returncode": 0, "stdout": stdout, "stderr": ""}
+
+    monkeypatch.setattr(release_check, "run", fake_run)
+
+    result = release_check.git_tree_check(allow_dirty=True)
+
+    assert result["ok"] is False
+    assert result["tracked_local_only"] == [
+        ".execution/LOCAL_ENVIRONMENT_MAP.json",
+        ".venv/Lib/site-packages/private.py",
+    ]
 
 
 def test_doctor_script_reports_source_versions():
@@ -1835,6 +1935,53 @@ def test_release_gate_product_contract_is_clean():
     assert product_contract["ok"] is True, product_contract["failures"]
 
 
+def test_release_gate_proves_retired_relation_rebuild_has_no_worker_body():
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_retired_relation_rebuild"
+    )
+
+    result = release_check.retired_relation_rebuild_source_gate()
+
+    assert result == {"ok": True, "findings": []}
+
+
+def test_retired_relation_rebuild_gate_rejects_hidden_sql_worker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_retired_relation_rebuild_adversarial"
+    )
+    monkeypatch.setattr(release_check, "ROOT", tmp_path)
+    (tmp_path / "relation_rebuild_queue.py").write_text(
+        """
+def enqueue_relation_rebuild(conn, **kwargs):
+    conn.execute('INSERT INTO relation_rebuild_queue DEFAULT VALUES')
+
+def resolve_relation_rebuild(conn, **kwargs):
+    return 0
+
+def claim_relation_rebuild_events(conn, **kwargs):
+    return []
+
+def drain_relation_rebuild_queue(conn, **kwargs):
+    return {'disabled': True}
+
+def seed_scope_relation_rebuilds(conn, **kwargs):
+    return {'disabled': True}
+""",
+        encoding="utf-8",
+    )
+
+    result = release_check.retired_relation_rebuild_source_gate()
+
+    assert result["ok"] is False
+    assert any(
+        finding["code"] == "retired_surface_can_mutate_sqlite"
+        for finding in result["findings"]
+    )
+
+
 
 def test_pypi_workflow_runs_release_gate_before_publish():
     pypi_workflow = (PLUGIN_ROOT / ".github" / "workflows" / "pypi.yml").read_text(encoding="utf-8")
@@ -1889,20 +2036,64 @@ def test_release_gate_runs_ruff_and_pyright_checks():
     assert '[sys.executable, "-m", "pyright"]' in release_script
 
 
-def test_release_cleanup_preserves_repo_local_venv(monkeypatch, tmp_path):
+def test_release_compileall_excludes_local_private_environments(
+    monkeypatch,
+    tmp_path,
+):
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_compileall_boundary"
+    )
+    (tmp_path / "root.py").write_text("ROOT = True\n", encoding="utf-8")
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "module.py").write_text("MODULE = True\n", encoding="utf-8")
+    for directory in release_check.RELEASE_TRAVERSAL_EXCLUDED_DIRS:
+        protected = tmp_path / directory
+        protected.mkdir(parents=True, exist_ok=True)
+        (protected / "private.py").write_text("PRIVATE = True\n", encoding="utf-8")
+    monkeypatch.setattr(release_check, "ROOT", tmp_path)
+
+    command = release_check.release_compileall_command()
+
+    assert command[:4] == [sys.executable, "-m", "compileall", "-q"]
+    assert command[4:] == ["package/module.py", "root.py"]
+
+
+def test_release_cleanup_preserves_repo_local_environments(monkeypatch, tmp_path):
     release_check = _load_release_check_module("scope_recall_check_release_cleanup")
     monkeypatch.setattr(release_check, "ROOT", tmp_path)
-    sentinel = tmp_path / ".venv" / "sentinel.txt"
-    sentinel.parent.mkdir(parents=True)
-    sentinel.write_text("keep developer virtualenv\n", encoding="utf-8")
+    protected_sentinels = []
+    for directory in (
+        ".venv",
+        "venv",
+        ".hermes-agent-src",
+        ".execution",
+        ".hermes",
+        ".git",
+    ):
+        sentinel = (
+            tmp_path
+            / directory
+            / "Lib"
+            / "site-packages"
+            / "build"
+            / "__init__.py"
+        )
+        sentinel.parent.mkdir(parents=True)
+        sentinel.write_text("keep protected local state\n", encoding="utf-8")
+        protected_sentinels.append(sentinel)
     pycache = tmp_path / "pkg" / "__pycache__"
     pycache.mkdir(parents=True)
     (pycache / "mod.pyc").write_bytes(b"pyc")
+    generated_build = tmp_path / "pkg" / "build"
+    generated_build.mkdir()
+    (generated_build / "generated.txt").write_text("remove\n", encoding="utf-8")
 
     release_check.cleanup_generated()
 
-    assert sentinel.is_file()
+    assert all(sentinel.is_file() for sentinel in protected_sentinels)
     assert not pycache.exists()
+    assert not generated_build.exists()
 
 
 def test_release_cleanup_removes_current_sdist_staging_root(monkeypatch, tmp_path):
@@ -2375,7 +2566,13 @@ def test_vector_store_preserves_active_generation_when_embedder_dimensions_chang
     )
     try:
         assert plugin._vector_store is None
-        assert plugin._vector_status == "degraded"
+        assert plugin._vector_status == "needs_repair"
+        status = plugin.vector_status_view()
+        assert status["state"] == "needs_repair"
+        assert status["reason_code"] == "identity_mismatch"
+        assert status["auto_recoverable"] is False
+        assert status["repair_required"] is True
+        assert status["usable_for_query"] is False
         assert "identity mismatch" in plugin._vector_message
         manifest = plugin._require_conn().execute(
             "SELECT backend, dimensions FROM vector_generations "
@@ -2931,6 +3128,24 @@ def test_release_lexical_v2_payload_validation_fails_closed() -> None:
         shadow_to_legacy_p95_ratio=1.0,
         target_misses=[],
     )
+    changed(
+        "obsolete_fast_host_ratio",
+        legacy_p50_ms=0.9,
+        legacy_p95_ms=1.3848,
+        shadow_p50_ms=30.0,
+        shadow_p95_ms=81.7871,
+        shadow_to_legacy_p95_ratio=59.060586,
+        target_misses=[],
+    )
+    changed(
+        "fast_host_target_regression",
+        legacy_p50_ms=0.9,
+        legacy_p95_ms=1.3848,
+        shadow_p50_ms=30.0,
+        shadow_p95_ms=100.1,
+        shadow_to_legacy_p95_ratio=4.004,
+        target_misses=["shadow_p95"],
+    )
     changed("inconsistent_page_growth", page_growth_ratio=1.0)
     changed("missing_target_miss", target_misses=[])
     changed("spurious_target_miss_when_met", shadow_p95_ms=99.0, target_misses=["shadow_p95"], shadow_to_legacy_p95_ratio=1.087231)
@@ -2989,6 +3204,26 @@ def test_release_lexical_v2_absolute_shadow_p95_target_miss_is_not_hard_gate() -
     assert release_check.validate_lexical_benchmark_payload(absolute_miss) is True
 
 
+def test_release_lexical_v2_accepts_target_bounded_fast_host_payload() -> None:
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_lexical_v2_fast_host"
+    )
+
+    payload = _valid_lexical_v2_payload()
+    payload.update(
+        {
+            "legacy_p50_ms": 0.9,
+            "legacy_p95_ms": 1.3848,
+            "shadow_p50_ms": 30.0,
+            "shadow_p95_ms": 81.7871,
+            "shadow_to_legacy_p95_ratio": 3.271484,
+            "target_misses": [],
+        }
+    )
+
+    assert release_check.validate_lexical_benchmark_payload(payload) is True
+
+
 def test_release_lexical_v2_accepts_producer_rounding_boundaries() -> None:
     release_check = _load_release_check_module(
         "scope_recall_check_release_lexical_v2_rounding"
@@ -3012,7 +3247,7 @@ def test_release_lexical_v2_accepts_producer_rounding_boundaries() -> None:
             "legacy_p95_ms": 0.500789,
             "shadow_p50_ms": 0.4,
             "shadow_p95_ms": 0.410686,
-            "shadow_to_legacy_p95_ratio": 0.820078,
+            "shadow_to_legacy_p95_ratio": 0.016427,
             "target_misses": [],
         }
     )

@@ -11,6 +11,7 @@ import tomllib
 import zipfile
 
 import pytest
+from packaging.requirements import Requirement
 
 from scope_recall import memory_queries
 
@@ -347,6 +348,30 @@ def test_release_dependencies_are_bounded_and_hash_locked() -> None:
         )
         assert "pip install --require-hashes -r constraints/release-hashed.txt" in workflow
         assert 'pip install --no-deps ".[lancedb,dev]"' in workflow
+
+
+def test_release_constraints_have_no_extras_and_preserve_runtime_extra_closure() -> None:
+    requirements = [
+        Requirement(line)
+        for raw in (ROOT / "constraints" / "release.txt").read_text(
+            encoding="utf-8"
+        ).splitlines()
+        if (line := raw.strip()) and not line.startswith("#")
+    ]
+    assert all(not requirement.extras for requirement in requirements)
+
+    names = {requirement.name.lower() for requirement in requirements}
+    assert {
+        "colorama",
+        "cryptography",
+        "httptools",
+        "python-dotenv",
+        "pyyaml",
+        "socksio",
+        "uvloop",
+        "watchfiles",
+        "websockets",
+    } <= names
 
 
 def test_release_workflows_do_not_resolve_after_hash_locked_install() -> None:

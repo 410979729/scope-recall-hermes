@@ -1,0 +1,25 @@
+{
+  "schema_version": "scope-recall.repository-census-anomalies.v1",
+  "program": "Program 0",
+  "blocking_anomalies": [],
+  "reviewed_non_blocking_anomalies": [
+    {
+      "id": "RC-A001",
+      "paths": [
+        "relation_rebuild_queue.py"
+      ],
+      "classification": "retained_compatibility_surface",
+      "disposition": "The legacy table and report surface remain readable, while enqueue, claim, seed, and drain execution are fail-closed or inert. Removal is not authorized in Program 0."
+    },
+    {
+      "id": "RC-A002",
+      "paths": [
+        "docs/release-readiness.1.10.2.md",
+        "docs/release-readiness.1.10.3.md",
+        "docs/release-readiness.1.10.5.md"
+      ],
+      "classification": "historical_release_evidence",
+      "disposition": "Historical release-readiness notes are retained as source history and are not interpreted as the current 1.10.6 contract."
+    }
+  ]
+}

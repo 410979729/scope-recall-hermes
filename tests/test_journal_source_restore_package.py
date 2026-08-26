@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import tarfile
+import tempfile
 import venv
 import zipfile
 from pathlib import Path
@@ -50,12 +51,36 @@ def _clean_env(*, extra: dict[str, str] | None = None) -> dict[str, str]:
     env = {
         key: value
         for key, value in os.environ.items()
-        if key not in {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"}
+        if key
+        not in {
+            "PYTHONPATH",
+            "PYTHONHOME",
+            "PYTEST_ADDOPTS",
+            "PYTEST_PLUGINS",
+            "VIRTUAL_ENV",
+        }
     }
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     if extra:
         env.update(extra)
     return env
+
+
+def test_clean_env_drops_parent_python_and_pytest_state(monkeypatch) -> None:
+    for key in ("PYTHONPATH", "PYTHONHOME", "PYTEST_ADDOPTS", "PYTEST_PLUGINS", "VIRTUAL_ENV"):
+        monkeypatch.setenv(key, "must-not-leak")
+
+    env = _clean_env(extra={"SCOPE_RECALL_TEST_MARKER": "preserved"})
+
+    assert not {
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTEST_ADDOPTS",
+        "PYTEST_PLUGINS",
+        "VIRTUAL_ENV",
+    }.intersection(env)
+    assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert env["SCOPE_RECALL_TEST_MARKER"] == "preserved"
 
 
 def _copy_sources(dest: Path) -> Path:
@@ -64,6 +89,7 @@ def _copy_sources(dest: Path) -> Path:
         ROOT,
         dest,
         ignore=shutil.ignore_patterns(
+            ".execution",
             ".git",
             ".hermes-agent-src",
             "__pycache__",
@@ -159,26 +185,48 @@ def test_real_sdist_and_installed_wheel_source_restore(tmp_path: Path) -> None:
     )
     assert tester_ready.returncode == 0, tester_ready.stdout + "\n" + tester_ready.stderr
     tester_env = _clean_env(extra={"PYTHONPATH": str(extracted)})
-    collect = subprocess.run(
-        [str(tester_python), "-m", "pytest", "--collect-only", "-q", *SOURCE_RESTORE_PYTEST],
-        cwd=str(extracted),
-        capture_output=True,
-        text=True,
-        env=tester_env,
-        check=False,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
-    )
-    assert collect.returncode == 0, collect.stdout + "\n" + collect.stderr
-    ran = subprocess.run(
-        [str(tester_python), "-m", "pytest", "-q", *SOURCE_RESTORE_PYTEST],
-        cwd=str(extracted),
-        capture_output=True,
-        text=True,
-        env=tester_env,
-        check=False,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
-    )
-    assert ran.returncode == 0, ran.stdout + "\n" + ran.stderr
+    # Keep the nested pytest root short on Windows.  A path under this already
+    # nested build fixture can exceed legacy Win32 limits used by lock/receipt
+    # subprocesses even though the product paths themselves are valid.
+    with tempfile.TemporaryDirectory(prefix="sr-sdist-pytest-") as nested_raw:
+        nested_basetemp = Path(nested_raw)
+        collect = subprocess.run(
+            [
+                str(tester_python),
+                "-m",
+                "pytest",
+                "--collect-only",
+                "-q",
+                "--basetemp",
+                str(nested_basetemp / "collect"),
+                *SOURCE_RESTORE_PYTEST,
+            ],
+            cwd=str(extracted),
+            capture_output=True,
+            text=True,
+            env=tester_env,
+            check=False,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        assert collect.returncode == 0, collect.stdout + "\n" + collect.stderr
+        ran = subprocess.run(
+            [
+                str(tester_python),
+                "-m",
+                "pytest",
+                "-q",
+                "--basetemp",
+                str(nested_basetemp / "run"),
+                *SOURCE_RESTORE_PYTEST,
+            ],
+            cwd=str(extracted),
+            capture_output=True,
+            text=True,
+            env=tester_env,
+            check=False,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        assert ran.returncode == 0, ran.stdout + "\n" + ran.stderr
 
     venv_dir = tmp_path / "wheel-venv"
     venv.create(venv_dir, with_pip=True, clear=True)

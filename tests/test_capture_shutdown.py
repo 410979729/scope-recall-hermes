@@ -122,18 +122,41 @@ def test_idle_maintenance_skips_durable_unit_after_shutdown_requested(
     provider._conn = object()
     provider._require_conn = lambda: provider._conn
     mutations: list[str] = []
-    monkeypatch.setattr(capture, "relation_frequency_debt_exists", lambda _conn: True)
     monkeypatch.setattr(
         capture,
         "drain_relation_frequency_work",
         lambda *_args, **_kwargs: mutations.append("frequency") or {},
     )
-    monkeypatch.setattr(capture, "relation_rebuild_debt_exists", lambda _conn: False)
 
     provider._shutdown_requested.set()
     capture._drain_relation_rebuild_debt(provider)
 
     assert mutations == []
+
+
+def test_idle_relation_maintenance_applies_one_configured_bound_to_all_lanes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _Provider()
+    provider._config["relation_rebuild_chunk_pairs"] = 17
+    provider._conn = object()
+    provider._require_conn = lambda: provider._conn
+    observed: dict[str, object] = {}
+
+    monkeypatch.setattr(capture, "has_positive_write_authority", lambda _provider: True)
+
+    def capture_bounds(_conn: object, **kwargs: object) -> dict[str, int]:
+        observed.update(kwargs)
+        return {"failed": 0}
+
+    monkeypatch.setattr(capture, "drain_relation_frequency_work", capture_bounds)
+
+    capture._drain_relation_rebuild_debt_locked(provider)
+
+    assert observed["change_limit"] == 17
+    assert observed["focus_limit"] == 17
+    assert observed["backfill_limit"] == 17
+    assert observed["reclassification_limit"] == 17
 
 
 def test_idle_maintenance_unit_holds_lifecycle_against_shutdown(
@@ -155,9 +178,7 @@ def test_idle_maintenance_unit_holds_lifecycle_against_shutdown(
         mutations.append("frequency")
         return {}
 
-    monkeypatch.setattr(capture, "relation_frequency_debt_exists", lambda _conn: True)
     monkeypatch.setattr(capture, "drain_relation_frequency_work", pausing_frequency_work)
-    monkeypatch.setattr(capture, "relation_rebuild_debt_exists", lambda _conn: False)
 
     def run_drain() -> None:
         capture._drain_relation_rebuild_debt(provider)

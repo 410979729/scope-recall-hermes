@@ -22,6 +22,7 @@ _COPY_IGNORE = shutil.ignore_patterns(
     ".ruff_cache",
     "__pycache__",
     ".hermes-agent-src",
+    ".execution",
     "build",
     "dist",
     "*.egg-info",

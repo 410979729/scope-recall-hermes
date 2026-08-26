@@ -250,6 +250,10 @@ def _build_fixture(path: Path, rows: int) -> tuple[sqlite3.Connection, dict[str,
         ),
     )
     conn.commit()
+    # The fixture writes truth rows directly, bypassing the ordinary mutation
+    # path that synchronizes additive companion state.  Complete that fixture
+    # migration before measuring a subsequent, already-current startup.
+    ensure_schema(conn)
     build_seconds = time.perf_counter() - started
     second_start_changes_before = conn.total_changes
     second_start_started = time.perf_counter()
@@ -258,11 +262,13 @@ def _build_fixture(path: Path, rows: int) -> tuple[sqlite3.Connection, dict[str,
     second_start_write_delta = conn.total_changes - second_start_changes_before
     second_start_budget = MAX_SECOND_START_SECONDS_BY_SIZE.get(rows, 5.0)
     if second_start_write_delta != 0:
+        conn.close()
         raise AssertionError(
             "complete temporal DB second-start unexpectedly wrote "
             f"{second_start_write_delta} rows"
         )
     if second_start_seconds > second_start_budget:
+        conn.close()
         raise AssertionError(
             "complete temporal DB second-start exceeded budget: "
             f"{second_start_seconds:.4f}s > {second_start_budget:.4f}s"
@@ -473,7 +479,7 @@ def run_benchmark(*, sizes: tuple[int, ...], rounds: int) -> dict[str, Any]:
         scenarios = [_scenario(root, rows, rounds=rounds) for rows in sizes]
         return {
             "schema_version": "scope-recall.temporal-scale.v2",
-            "candidate_version": "1.10.5",
+            "candidate_version": "1.10.6",
             "live_database_used": False,
             "sizes": list(sizes),
             "rounds_per_query": rounds,
