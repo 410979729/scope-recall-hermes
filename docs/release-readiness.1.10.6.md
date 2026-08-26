@@ -35,6 +35,7 @@ This public maintainer note records the `1.10.6` Program 0 patch requirements si
 - Source/AST inspection must prove that full-scope force fan-out is absent and cannot be hidden behind a renamed worker.
 - Focused tests must cover cap+1, no partial mutation, backoff, wall-clock bounds, generation fencing, terminal non-resurrection, poison isolation, query zero-write, and cleanup dry-run/apply/replay.
 - Scale evidence must include bounded 2k and 10k cases plus a 100k analytical upper-bound proof.
+- The CJK release benchmark must collect 20 rounds (100 timed query observations) while retaining the 100 ms target, 4x paired latency guard, and 2.5x page-growth guard.
 - Full pytest, Ruff, Pyright, `git diff --check`, compile checks, benchmark invariants, wheel/sdist inspection, fresh-environment import/CLI smoke, and the repository release checker must pass on the same source epoch.
 - Public wheel and sdist must omit deployment overlays and expose version `1.10.6`.
 - Independent review must bind its verdict to the final source manifest and SHA-256 before any publication decision.

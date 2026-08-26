@@ -8,6 +8,7 @@ FTS5 trigram expression, and scores reviewed substring evidence without I/O.
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 
 _CJK_RUN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
 
@@ -35,8 +36,19 @@ def cjk_query_ngrams(query: str, *, limit: int = 24) -> list[str]:
     return terms
 
 
-def trigram_fts_query(query: str, tokens: list[str]) -> str:
-    """Build a bounded OR query suitable for the FTS5 trigram tokenizer."""
+def trigram_fts_query(
+    query: str,
+    tokens: list[str],
+    *,
+    common_cjk_bigrams: Collection[str] = (),
+) -> str:
+    """Build a bounded OR query suitable for the FTS5 trigram tokenizer.
+
+    A CJK candidate made entirely from corpus-wide common bigrams carries no
+    discriminating evidence.  Callers may suppress those candidates before
+    FTS rank evaluation while retaining every candidate with at least one rare
+    adjacent bigram.  ASCII tokens are never affected by this filter.
+    """
 
     candidates = cjk_query_ngrams(query, limit=16)
     for token in tokens:
@@ -45,10 +57,20 @@ def trigram_fts_query(query: str, tokens: list[str]) -> str:
             candidates.append(normalized)
         if len(candidates) >= 24:
             break
+    common_bigrams = frozenset(str(term) for term in common_cjk_bigrams)
+
+    def only_common_cjk_bigrams(term: str) -> bool:
+        if not common_bigrams or len(term) < 3 or _CJK_RUN.fullmatch(term) is None:
+            return False
+        return all(
+            term[index : index + 2] in common_bigrams
+            for index in range(len(term) - 1)
+        )
+
     quoted = [
         f'"{term.replace(chr(34), chr(34) * 2)}"'
         for term in candidates
-        if len(term) >= 3
+        if len(term) >= 3 and not only_common_cjk_bigrams(term)
     ]
     return " OR ".join(quoted[:24])
 

@@ -3048,7 +3048,7 @@ def test_release_benchmark_gate_accepts_lexical_50k_release_contract(monkeypatch
 
     assert result["ok"] is True, result
     assert result["lexical_cjk_metrics"]["rows"] == 50_000
-    assert result["lexical_cjk_metrics"]["rounds"] == 3
+    assert result["lexical_cjk_metrics"]["rounds"] == 20
     assert result["lexical_cjk_metrics"]["target_misses"] == ["shadow_p95"]
 
     temporal_scale_payload = json_payloads["scripts/benchmark.temporal_scale.py"]
@@ -3079,7 +3079,7 @@ def _valid_lexical_v2_payload() -> dict[str, object]:
         "passed": True,
         "contract_mode": "release",
         "rows": 50_000,
-        "rounds": 3,
+        "rounds": 20,
         "limit": 10,
         "cjk_queries": 3,
         "cjk_expected_found": 3,
@@ -3157,6 +3157,7 @@ def test_release_lexical_v2_payload_validation_fails_closed() -> None:
     changed("nan_latency", shadow_p95_ms=float("nan"))
     changed("infinite_latency", shadow_p95_ms=float("inf"))
     changed("too_many_rounds", rounds=101)
+    changed("insufficient_release_rounds", rounds=19)
     changed("zero_results", max_result_count=0)
     changed(
         "zero_latency",

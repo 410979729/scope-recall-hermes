@@ -50,6 +50,12 @@ _ENGLISH_QUERIES = (
     "exact credential stripping",
 )
 
+# Five queries across twenty rounds yield one hundred timed observations.  With
+# nearest-rank p95 that keeps an isolated scheduler pause from becoming the
+# percentile itself, while a consistently slow query still occupies enough of
+# the sample to fail the unchanged latency contract.
+DEFAULT_RELEASE_ROUNDS = 20
+
 
 class _Provider:
     """Small provider surface required by the production storage view."""
@@ -78,7 +84,7 @@ def _parse_args() -> argparse.Namespace:
     # Release-contract defaults: the strict gate must prove the shadow channel
     # at real scale (50k rows), not only a 2k smoke corpus.
     parser.add_argument("--rows", type=int, default=50_000)
-    parser.add_argument("--rounds", type=int, default=3)
+    parser.add_argument("--rounds", type=int, default=DEFAULT_RELEASE_ROUNDS)
     parser.add_argument("--limit", type=int, default=10)
     return parser.parse_args()
 
@@ -297,7 +303,7 @@ def run_benchmark(*, rows: int, rounds: int, limit: int) -> dict[str, Any]:
         shadow_p50 = _percentile(shadow_times, 0.50)
         shadow_p95 = _percentile(shadow_times, 0.95)
         page_growth = shadow_pages / max(baseline_pages, 1)
-        release_contract = rows >= 50_000 and rounds >= 3
+        release_contract = rows >= 50_000 and rounds >= DEFAULT_RELEASE_ROUNDS
         latency_contract = evaluate_latency_contract(
             legacy_p95_ms=legacy_p95,
             shadow_p95_ms=shadow_p95,
