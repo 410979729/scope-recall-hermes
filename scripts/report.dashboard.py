@@ -162,6 +162,29 @@ def build_dashboard(source_root: Path, hermes_home: Path, *, previous_path: Path
     if not memory_quality_lint and isinstance(sqlite_payload.get("memory_quality_lint"), dict):
         memory_quality_lint = dict(sqlite_payload.get("memory_quality_lint") or {})
     schema_migration = sqlite_payload.get("schema_migrations") if isinstance(sqlite_payload.get("schema_migrations"), dict) else {}
+    raw_relation_containment = sqlite_payload.get("relation_containment")
+    relation_containment = (
+        dict(raw_relation_containment)
+        if isinstance(raw_relation_containment, dict)
+        else {}
+    )
+    raw_relation_frequency = sqlite_payload.get("relation_frequency_index")
+    relation_frequency = (
+        dict(raw_relation_frequency)
+        if isinstance(raw_relation_frequency, dict)
+        else {}
+    )
+    raw_relation_rebuild = sqlite_payload.get("relation_rebuild_queue")
+    relation_rebuild = (
+        dict(raw_relation_rebuild)
+        if isinstance(raw_relation_rebuild, dict)
+        else {}
+    )
+    relation_scopes = [
+        item
+        for item in (relation_containment.get("scopes") or [])
+        if isinstance(item, dict)
+    ]
     freshness = experience_payload.get("fact_freshness") if isinstance(experience_payload.get("fact_freshness"), dict) else {}
     ok = all(bool(check.get("ok")) for check in checks.values())
     summary = {
@@ -195,7 +218,33 @@ def build_dashboard(source_root: Path, hermes_home: Path, *, previous_path: Path
         "fact_freshness_expired": freshness.get("expired", (freshness.get("by_status") or {}).get("expired", 0)),
         "fact_freshness_total": freshness.get("total", freshness.get("tracked_facts", 0)),
         "schema_migration_current": bool(schema_migration.get("current")),
-        "vector_status": vector_payload.get("status"),
+        "relation_state": relation_containment.get(
+            "state", relation_containment.get("status", "")
+        ),
+        "relation_scope_count": relation_containment.get(
+            "scope_count", len(relation_scopes)
+        ),
+        "relation_pending": sum(int(item.get("pending") or 0) for item in relation_scopes),
+        "relation_processing": sum(int(item.get("processing") or 0) for item in relation_scopes),
+        "relation_retry": sum(int(item.get("retry") or 0) for item in relation_scopes),
+        "relation_poisoned": sum(int(item.get("poisoned") or 0) for item in relation_scopes),
+        "relation_operator_action_scopes": sum(
+            bool(item.get("operator_action_required")) for item in relation_scopes
+        ),
+        "relation_auto_recoverable_scopes": sum(
+            bool(item.get("auto_recoverable")) for item in relation_scopes
+        ),
+        "relation_stale_generation_count": sum(
+            int(item.get("stale_generation_count") or 0) for item in relation_scopes
+        ),
+        "relation_oldest_age_seconds": max(
+            (float(item.get("oldest_age_seconds") or 0.0) for item in relation_scopes),
+            default=0.0,
+        ),
+        "relation_legacy_unresolved": int(relation_rebuild.get("unresolved") or 0),
+        "relation_frequency_dirty": int(relation_frequency.get("dirty_memories") or 0),
+        "relation_focus_pending": int(relation_frequency.get("focus_pending") or 0),
+        "vector_status": vector_payload.get("state", vector_payload.get("status")),
         "vector_backend": vector_payload.get("backend", backend),
         "experience_needs_review": experience_funnel.get("needs_review", 0),
         "experience_quarantined": experience_funnel.get("quarantined", 0),
@@ -225,6 +274,9 @@ def build_dashboard(source_root: Path, hermes_home: Path, *, previous_path: Path
             "memory_quality_lint": memory_quality_lint,
             "event_digest": event_digest_payload,
             "schema_migration": schema_migration,
+            "relation_containment": relation_containment,
+            "relation_frequency_index": relation_frequency,
+            "relation_rebuild_queue": relation_rebuild,
             "freshness": freshness,
             "memory_secret_scan": secret_payload,
             "experience": experience_payload,
@@ -270,6 +322,14 @@ def render_markdown(payload: dict[str, Any]) -> str:
         ("Event digest audit missing", "event_digest_audit_missing"),
         ("Fact freshness needs live check", "fact_freshness_needs_live_check"),
         ("Schema migration current", "schema_migration_current"),
+        ("Relation state", "relation_state"),
+        ("Relation scopes", "relation_scope_count"),
+        ("Relation pending", "relation_pending"),
+        ("Relation retry", "relation_retry"),
+        ("Relation poisoned", "relation_poisoned"),
+        ("Relation operator-action scopes", "relation_operator_action_scopes"),
+        ("Relation stale generations", "relation_stale_generation_count"),
+        ("Relation legacy unresolved", "relation_legacy_unresolved"),
         ("Vector status", "vector_status"),
         ("Vector backend", "vector_backend"),
         ("Experience needs_review", "experience_needs_review"),

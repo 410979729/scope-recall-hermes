@@ -70,9 +70,7 @@ jobs:
           git merge-base --is-ancestor HEAD refs/remotes/origin/main
 
           for required_job in \
-            windows-full-py311 \
-            windows-full-py312 \
-            windows-no-symlink-py311
+            ci-required
           do
             successful="$(gh api --paginate \
               -H 'Accept: application/vnd.github+json' \

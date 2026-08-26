@@ -42,11 +42,22 @@ def attach_public_truth_ports(fake: Any) -> Any:
         }
 
     def vector_status_view() -> dict[str, Any]:
+        state = str(getattr(fake, "_vector_status", "") or "disabled")
         return {
             "enabled": bool(getattr(fake, "_vector_enabled", False)),
             "ready": bool(getattr(fake, "_vector_ready", False)),
-            "status": str(getattr(fake, "_vector_status", "") or ""),
+            "state": state,
+            "status": state,
+            "reason_code": str(
+                getattr(fake, "_vector_reason_code", "") or "test_fixture"
+            ),
+            "auto_recoverable": state in {"ready", "degraded"},
+            "repair_required": state == "needs_repair",
+            "usable_for_query": bool(
+                getattr(fake, "_vector_usable_for_query", state == "ready")
+            ),
             "message": str(getattr(fake, "_vector_message", "") or ""),
+            "debt_counts": dict(getattr(fake, "_vector_debt_counts", None) or {}),
             "backend": str(getattr(fake, "_vector_backend", "") or ""),
             "path": str(getattr(fake, "_vector_path", "") or ""),
             "table": str(getattr(fake, "_vector_table", "") or ""),

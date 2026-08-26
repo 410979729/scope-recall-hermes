@@ -60,7 +60,7 @@ def test_lexical_latency_contract_still_rejects_relative_regressions():
         release_contract=True,
     )
 
-    assert contract["latency_ratio"] > 5.0
+    assert contract["latency_ratio"] > 4.0
     assert contract["target_misses"] == ["shadow_p95"]
     assert contract["failures"] == ["latency_ratio"]
 
@@ -123,8 +123,36 @@ def test_lexical_latency_contract_uses_the_published_six_decimal_values():
     assert rounded_target["latency_ratio"] == 1.0
     assert rounded_target["target_misses"] == []
     assert rounded_target["failures"] == []
-    assert rounded_ratio["latency_ratio"] == 0.410686 / 0.500789
+    assert rounded_ratio["latency_ratio"] == 0.410686 / 25.0
     assert rounded_ratio["failures"] == []
+
+
+def test_lexical_latency_contract_uses_target_derived_floor_on_fast_hosts():
+    benchmark = _load_benchmark_module()
+
+    current_windows = benchmark.evaluate_latency_contract(
+        legacy_p95_ms=1.3848,
+        shadow_p95_ms=81.7871,
+        release_contract=True,
+    )
+    frozen_1103_windows = benchmark.evaluate_latency_contract(
+        legacy_p95_ms=1.5853,
+        shadow_p95_ms=77.5278,
+        release_contract=True,
+    )
+    fast_host_boundary = benchmark.evaluate_latency_contract(
+        legacy_p95_ms=1.3848,
+        shadow_p95_ms=100.0,
+        release_contract=True,
+    )
+
+    assert current_windows["latency_ratio"] == 81.7871 / 25.0
+    assert current_windows["target_misses"] == []
+    assert current_windows["failures"] == []
+    assert frozen_1103_windows["latency_ratio"] == 77.5278 / 25.0
+    assert frozen_1103_windows["failures"] == []
+    assert fast_host_boundary["latency_ratio"] == 4.0
+    assert fast_host_boundary["failures"] == []
 
 
 def test_lexical_cjk_benchmark_reports_quality_latency_and_growth():

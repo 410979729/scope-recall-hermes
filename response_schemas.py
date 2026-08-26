@@ -4,6 +4,8 @@ Update these identifiers only when top-level response meaning or required fields
 
 from __future__ import annotations
 
+from .vector_status import VECTOR_STATUS_SCHEMA_VERSION
+
 """Stable public JSON response schema-version identifiers.
 
 These constants version the top-level shape of operator-facing reports. They are
@@ -41,6 +43,7 @@ PUBLIC_RESPONSE_SCHEMA_VERSIONS = {
     "experience_replay": EXPERIENCE_REPLAY_RESPONSE_SCHEMA_VERSION,
     "forgetting_report": FORGETTING_REPORT_SCHEMA_VERSION,
     "forgetting_run": FORGETTING_RUN_SCHEMA_VERSION,
+    "vector_status": VECTOR_STATUS_SCHEMA_VERSION,
 }
 
 

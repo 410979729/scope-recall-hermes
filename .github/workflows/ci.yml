@@ -199,3 +199,23 @@ jobs:
         env:
           PYTHONPATH: .hermes-agent-src
         run: python scripts/check.release.py --development-snapshot
+
+  ci-required:
+    name: ci-required
+    if: ${{ always() }}
+    permissions: {}
+    needs:
+      - test
+      - macos-lancedb-smoke
+      - windows-no-symlink
+      - windows-installer
+      - release-gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every CI dependency to succeed
+        run: |
+          test "${{ needs.test.result }}" = "success"
+          test "${{ needs.macos-lancedb-smoke.result }}" = "success"
+          test "${{ needs.windows-no-symlink.result }}" = "success"
+          test "${{ needs.windows-installer.result }}" = "success"
+          test "${{ needs.release-gate.result }}" = "success"

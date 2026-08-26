@@ -61,6 +61,43 @@ class FakeDoctor:
                 "schema_migrations": {"current": True, "version": 4},
                 "candidate_debt": {"count": 3, "oldest_age_hours": 12.5},
                 "memory_quality_lint": {"active_hits": 2, "high_severity": 1},
+                "relation_containment": {
+                    "status": "blocked",
+                    "state": "blocked",
+                    "scope_count": 2,
+                    "scopes": [
+                        {
+                            "scope_id": "scope-a",
+                            "state": "degraded",
+                            "pending": 3,
+                            "processing": 0,
+                            "retry": 1,
+                            "poisoned": 0,
+                            "operator_action_required": False,
+                            "auto_recoverable": True,
+                            "stale_generation_count": 1,
+                            "oldest_age_seconds": 12.5,
+                        },
+                        {
+                            "scope_id": "scope-b",
+                            "state": "blocked",
+                            "pending": 1,
+                            "processing": 0,
+                            "retry": 0,
+                            "poisoned": 1,
+                            "operator_action_required": True,
+                            "auto_recoverable": False,
+                            "stale_generation_count": 1,
+                            "oldest_age_seconds": 20.0,
+                        },
+                    ],
+                },
+                "relation_frequency_index": {
+                    "status": "debt",
+                    "dirty_memories": 4,
+                    "focus_pending": 2,
+                },
+                "relation_rebuild_queue": {"status": "debt", "unresolved": 1},
             },
             {"ok": False, "failures": ["candidate debt"]},
             ["review candidates"],
@@ -152,7 +189,10 @@ class FakeFallbackReadyDoctor(FakeDoctor):
         assert index_general is True
         return (
             {
-                "status": "fallback_ready",
+                "state": "ready",
+                "status": "ready",
+                "reason_code": "fallback_ready",
+                "diagnostic_status": "fallback_ready",
                 "backend": backend,
                 "ready": True,
                 "primary": {"status": "needs_repair", "error": "No module named 'lancedb'"},
@@ -204,13 +244,29 @@ def test_dashboard_payload_has_schema_severity_sections_and_trend(monkeypatch, t
     assert payload["summary"]["fact_freshness_expired"] == 1
     assert payload["summary"]["fact_freshness_total"] == 11
     assert payload["summary"]["config_load_errors"] == 0
+    assert payload["summary"]["relation_state"] == "blocked"
+    assert payload["summary"]["relation_scope_count"] == 2
+    assert payload["summary"]["relation_pending"] == 4
+    assert payload["summary"]["relation_retry"] == 1
+    assert payload["summary"]["relation_poisoned"] == 1
+    assert payload["summary"]["relation_operator_action_scopes"] == 1
+    assert payload["summary"]["relation_auto_recoverable_scopes"] == 1
+    assert payload["summary"]["relation_stale_generation_count"] == 2
+    assert payload["summary"]["relation_oldest_age_seconds"] == 20.0
+    assert payload["summary"]["relation_legacy_unresolved"] == 1
+    assert payload["summary"]["relation_frequency_dirty"] == 4
+    assert payload["summary"]["relation_focus_pending"] == 2
     assert payload["sections"]["config_load"] == {"errors": []}
     assert payload["sections"]["candidate_debt"]["count"] == 3
     assert payload["sections"]["memory_quality_lint"]["high_severity"] == 1
     assert payload["sections"]["schema_migration"]["current"] is True
+    assert payload["sections"]["relation_containment"]["state"] == "blocked"
+    assert payload["sections"]["relation_frequency_index"]["dirty_memories"] == 4
+    assert payload["sections"]["relation_rebuild_queue"]["unresolved"] == 1
     assert payload["sections"]["freshness"]["by_status"]["expired"] == 1
     assert payload["trend"]["journal_unprocessed"]["delta"] == -9
     assert payload["trend"]["candidate_debt_count"]["delta"] == 2
+    assert "Relation operator-action scopes: `1`" in dashboard.render_markdown(payload)
 
 
 def test_dashboard_surfaces_runtime_config_load_errors(monkeypatch, tmp_path):
@@ -258,7 +314,7 @@ def test_dashboard_treats_configured_sqlite_vector_fallback_as_healthy(monkeypat
     assert payload["ok"] is True
     assert payload["severity"] == "OK"
     assert payload["checks"]["vector_companion"] == {"ok": True, "failures": []}
-    assert payload["summary"]["vector_status"] == "fallback_ready"
+    assert payload["summary"]["vector_status"] == "ready"
     assert payload["summary"]["vector_backend"] == "lancedb"
     assert payload["sections"]["vector"]["fallback_backend"] == "sqlite-bruteforce"
     assert payload["sections"]["vector"]["fallback"]["status"] == "ready"

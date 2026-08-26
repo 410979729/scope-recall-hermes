@@ -34,16 +34,11 @@ from .capture_filters import (
 from .capture_outcomes import ensure_outcome_accounted, handle_capture_enqueue
 from .memory_mutation import MemoryMutationService
 from .models import recall_scope_mode
-from .relation_frequency_maintenance import (
-    drain_relation_frequency_work,
-    relation_frequency_debt_exists,
-)
-from .relation_rebuild_queue import (
-    drain_relation_rebuild_queue,
-    relation_rebuild_debt_exists,
-)
+from .relation_frequency_maintenance import drain_relation_frequency_work
+from .relation_containment import record_relation_lock_contention
 from .scope import canonical_user_id
 from .sql_store import store_row
+from .sqlite_recovery import is_sqlite_lock_contention
 from .vector_runtime import replay_vector_outbox
 from . import write_kernel as write_kernel_mod
 from .write_kernel import (
@@ -59,7 +54,6 @@ _WRITE_KERNEL_REEXPORT_COMPAT = (
     hold_positive_write_authority,
     require_positive_write_authority,
 )
-
 logger = logging.getLogger(__name__)
 
 
@@ -161,9 +155,28 @@ def _capture_store_authority(
 
 
 def _drain_relation_rebuild_debt(provider: Any) -> None:
-    """Run one bounded idle maintenance tick under lifecycle authority."""
+    """Run one bounded idle tick without waiting behind foreground authority."""
 
-    with _writer_lifecycle_lock(provider):
+    lifecycle_lock = _writer_lifecycle_lock(provider)
+    acquire = getattr(lifecycle_lock, "acquire", None)
+    release = getattr(lifecycle_lock, "release", None)
+    if callable(acquire) and callable(release):
+        if not bool(acquire(blocking=False)):
+            provider._relation_maintenance_lock_contention_skips = int(
+                getattr(provider, "_relation_maintenance_lock_contention_skips", 0)
+                or 0
+            ) + 1
+            provider._relation_maintenance_consecutive_failures = int(
+                getattr(provider, "_relation_maintenance_consecutive_failures", 0)
+                or 0
+            ) + 1
+            return
+        try:
+            _drain_relation_rebuild_debt_locked(provider)
+        finally:
+            release()
+        return
+    with lifecycle_lock:
         _drain_relation_rebuild_debt_locked(provider)
 
 
@@ -205,30 +218,104 @@ def _drain_relation_rebuild_debt_locked(provider: Any) -> None:
         return
     if not bool(provider._config.get("relation_extraction_enabled", True)):
         return
-    configured_pairs = int(
-        provider._config.get("relation_rebuild_chunk_pairs", 250) or 250
-    )
-    pair_limit = max(1, min(configured_pairs, 1000))
-    with provider._lock:
-        conn = provider._require_conn()
-        if relation_frequency_debt_exists(conn):
-            drain_relation_frequency_work(
-                conn,
-                change_limit=pair_limit,
-                backfill_limit=pair_limit,
-                reclassification_limit=pair_limit,
-                commit=True,
-            )
-        if not relation_rebuild_debt_exists(conn):
+    write_queue = getattr(provider, "_write_queue", None)
+    if write_queue is not None and callable(getattr(write_queue, "qsize", None)):
+        if int(write_queue.qsize() or 0) > 0:
+            provider._relation_maintenance_busy_skips = int(
+                getattr(provider, "_relation_maintenance_busy_skips", 0) or 0
+            ) + 1
+            provider._relation_maintenance_consecutive_failures = int(
+                getattr(provider, "_relation_maintenance_consecutive_failures", 0)
+                or 0
+            ) + 1
             return
-        result = drain_relation_rebuild_queue(
-            conn,
-            max_events=1,
-            pair_limit=pair_limit,
-            lease_seconds=120,
+    if int(getattr(provider, "_capture_queue_processing", 0) or 0) > 0:
+        provider._relation_maintenance_busy_skips = int(
+            getattr(provider, "_relation_maintenance_busy_skips", 0) or 0
+        ) + 1
+        provider._relation_maintenance_consecutive_failures = int(
+            getattr(provider, "_relation_maintenance_consecutive_failures", 0)
+            or 0
+        ) + 1
+        return
+
+    config = provider._config
+    configured_pairs = int(config.get("relation_rebuild_chunk_pairs", 250) or 250)
+    pair_limit = max(1, min(configured_pairs, 1000))
+    wall_clock_seconds = max(
+        0.05,
+        min(float(config.get("relation_maintenance_wall_clock_seconds", 0.5) or 0.5), 10.0),
+    )
+    deadline = time.monotonic() + wall_clock_seconds
+    provider_lock = getattr(provider, "_lock", None)
+    acquired = True
+    if provider_lock is not None:
+        acquired = bool(provider_lock.acquire(blocking=False))
+    if not acquired:
+        provider._relation_maintenance_lock_contention_skips = int(
+            getattr(provider, "_relation_maintenance_lock_contention_skips", 0) or 0
+        ) + 1
+        provider._relation_maintenance_consecutive_failures = int(
+            getattr(provider, "_relation_maintenance_consecutive_failures", 0) or 0
+        ) + 1
+        return
+    try:
+        conn = provider._require_conn()
+        deferred_contention = int(
+            getattr(provider, "_relation_maintenance_lock_contention_skips", 0) or 0
         )
+        if deferred_contention:
+            record_relation_lock_contention(
+                conn,
+                scope_ids=getattr(provider, "_accessible_scope_ids", None),
+                count=deferred_contention,
+            )
+            provider._relation_maintenance_lock_contention_skips = 0
+        result = drain_relation_frequency_work(
+            conn,
+            change_limit=pair_limit,
+            focus_limit=pair_limit,
+            backfill_limit=pair_limit,
+            reclassification_limit=pair_limit,
+            relation_candidate_cap=max(
+                1,
+                min(
+                    int(config.get("relation_reclassification_candidate_cap", 250) or 250),
+                    5000,
+                ),
+            ),
+            relation_max_attempts=max(
+                1,
+                min(int(config.get("relation_maintenance_max_attempts", 5) or 5), 20),
+            ),
+            wall_clock_seconds=wall_clock_seconds,
+            backoff_base_seconds=max(
+                0.1,
+                float(config.get("relation_maintenance_backoff_base_seconds", 5.0) or 5.0),
+            ),
+            backoff_max_seconds=max(
+                float(config.get("relation_maintenance_backoff_base_seconds", 5.0) or 5.0),
+                float(config.get("relation_maintenance_backoff_max_seconds", 300.0) or 300.0),
+            ),
+            deadline_monotonic=deadline,
+            commit=True,
+        )
+        provider._relation_maintenance_consecutive_failures = 0
+    except Exception as exc:
+        if is_sqlite_lock_contention(exc):
+            provider._relation_maintenance_lock_contention_skips = int(
+                getattr(provider, "_relation_maintenance_lock_contention_skips", 0)
+                or 0
+            ) + 1
+        provider._relation_maintenance_consecutive_failures = int(
+            getattr(provider, "_relation_maintenance_consecutive_failures", 0) or 0
+        ) + 1
+        raise
+    finally:
+        if provider_lock is not None:
+            provider_lock.release()
     if int(result.get("failed", 0) or 0):
-        logger.warning("Scope Recall relation rebuild chunk failed: %s", result)
+        logger.warning("Scope Recall relation containment tick failed: %s", result)
 
 
 def start_writer(provider: Any) -> None:
@@ -287,7 +374,29 @@ def writer_loop(provider: Any) -> None:
             last_drain = float(
                 getattr(provider, "_last_relation_rebuild_drain", 0.0) or 0.0
             )
-            if now - last_drain >= 1.0:
+            config = getattr(provider, "_config", {}) or {}
+            base_interval = max(
+                1.0,
+                min(
+                    float(config.get("relation_maintenance_interval_seconds", 30.0) or 30.0),
+                    3600.0,
+                ),
+            )
+            failures = max(
+                0,
+                int(getattr(provider, "_relation_maintenance_consecutive_failures", 0) or 0),
+            )
+            backoff_base = max(
+                0.1,
+                float(config.get("relation_maintenance_backoff_base_seconds", 5.0) or 5.0),
+            )
+            backoff_max = max(
+                backoff_base,
+                float(config.get("relation_maintenance_backoff_max_seconds", 300.0) or 300.0),
+            )
+            retry_delay = min(backoff_max, backoff_base * (2 ** min(failures, 12)))
+            maintenance_interval = max(base_interval, retry_delay if failures else 0.0)
+            if now - last_drain >= maintenance_interval:
                 provider._last_relation_rebuild_drain = now
                 try:
                     _drain_relation_rebuild_debt(provider)

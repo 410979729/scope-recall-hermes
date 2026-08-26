@@ -42,8 +42,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--apply", action="store_true", help="delete orphan rows; default is read-only dry-run")
     parser.add_argument("--dry-run", action="store_true", help="explicit read-only dry-run (default; accepted for operator convenience)")
     parser.add_argument("--json", action="store_true", help="emit JSON output (accepted for operator convenience)")
-    parser.add_argument("--seed-relations", action="store_true", help="with --apply, enqueue one rebuild event per visible memory")
-    parser.add_argument("--drain-relations", action="store_true", help="with --apply, process bounded queued relation chunks")
+    parser.add_argument(
+        "--seed-relations",
+        action="store_true",
+        help="retired compatibility flag; fails closed without enqueueing work",
+    )
+    parser.add_argument(
+        "--drain-relations",
+        action="store_true",
+        help="retired compatibility flag; fails closed without draining legacy work",
+    )
     parser.add_argument("--scope-id", action="append", default=[], help="scope to seed; repeat for multiple scopes")
     parser.add_argument("--max-events", type=int, default=100, help="maximum relation chunks to drain")
     parser.add_argument("--pair-limit", type=int, default=250, help="maximum focus/peer pairs per relation chunk")

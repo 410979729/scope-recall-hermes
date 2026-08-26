@@ -20,6 +20,68 @@ from .vector_generation_preflight import (
     validate_generation_for_activation,
 )
 from .vector_store import native_vector_dependency_status, normalize_vector_backend
+from .vector_status import normalize_vector_debt_counts, vector_status_contract
+
+
+_GENERATION_REPAIR_REASONS = {
+    "generation_incomplete",
+    "identity_mismatch",
+    "outbox_dead_letter",
+    "reconciliation_failed",
+}
+
+
+def _canonical_doctor_vector_status(
+    payload: dict[str, Any],
+    generation: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge backend/generation diagnostics into the public four-state view."""
+
+    backend_status = str(payload.get("status") or "").strip().lower()
+    generation_status = str(generation.get("status") or "").strip().lower()
+    diagnostic_status = generation_status if generation_status not in {
+        "",
+        "absent",
+        "legacy_unregistered",
+        "ready",
+    } else backend_status
+    usable = bool(payload.get("ready"))
+
+    if generation_status in _GENERATION_REPAIR_REASONS:
+        state = "needs_repair"
+        reason_code = generation_status
+        usable = False
+    elif generation_status == "provider_unavailable":
+        state = "degraded"
+        reason_code = generation_status
+        usable = False
+    elif generation_status == "outbox_backlog":
+        state = "degraded"
+        reason_code = generation_status
+    elif backend_status in {"ready", "fallback_ready"}:
+        state = "ready"
+        reason_code = "healthy" if backend_status == "ready" else "fallback_ready"
+    elif backend_status == "fallback_not_initialized":
+        state = "degraded"
+        reason_code = backend_status
+        usable = False
+    else:
+        state = "needs_repair"
+        reason_code = backend_status or "companion_unavailable"
+        usable = False
+
+    outbox_counts = dict(generation.get("outbox_status_counts") or {})
+    contract = vector_status_contract(
+        state=state,
+        reason_code=reason_code,
+        message=str(payload.get("error") or ""),
+        debt_counts=normalize_vector_debt_counts(outbox_counts),
+        usable_for_query=usable,
+    )
+    payload.update(contract)
+    payload["diagnostic_status"] = diagnostic_status
+    payload["ready"] = state == "ready" or (state == "degraded" and usable)
+    return payload
 
 def lancedb_table_names(db: Any) -> list[str]:
     """Return table names across LanceDB list_tables API shapes."""
@@ -799,6 +861,25 @@ def vector_generation_report(
             "SELECT value, updated_at FROM vector_generation_state WHERE key = 'current_generation'"
         ).fetchone()
         if pointer is None:
+            manifest_count = int(
+                conn.execute("SELECT COUNT(*) FROM vector_generations").fetchone()[0]
+            )
+            if manifest_count:
+                failure = "vector generation manifests exist without a current pointer"
+                failures.append(failure)
+                return (
+                    {
+                        "status": "generation_incomplete",
+                        "registered": True,
+                        "current_generation_id": "",
+                        "orphan_generation_count": manifest_count,
+                        **_empty_inactive_generation_contract(),
+                    },
+                    {"ok": False, "failures": failures},
+                    [
+                        "Restore the current generation pointer or CAS-activate a validated READY generation before normal runtime startup."
+                    ],
+                )
             recommendations.append(
                 "Vector generation tables are initialized but the legacy companion is not registered; register it before any model/backend migration."
             )
@@ -1110,9 +1191,17 @@ def vector_report(
         *[str(item) for item in (check.get("failures") or [])],
         *[str(item) for item in (generation_check.get("failures") or [])],
     ]
+    payload = _canonical_doctor_vector_status(payload, generation_payload)
     return payload, {"ok": not failures, "failures": failures}, [*recommendations, *generation_recommendations]
 
 
 def disabled_vector_report() -> tuple[dict[str, Any], dict[str, Any], list[str]]:
-    payload = {"enabled": False, "status": "disabled", "ready": False}
+    payload = {
+        "enabled": False,
+        "ready": False,
+        **vector_status_contract(
+            state="disabled",
+            reason_code="disabled_by_config",
+        ),
+    }
     return payload, {"ok": True, "failures": []}, []

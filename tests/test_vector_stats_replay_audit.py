@@ -199,11 +199,27 @@ def test_stats_succeeds_when_list_records_raises() -> None:
     conn = _truth_conn()
     store = _ForbiddenEnumerationStore(physical_rows=4)
     provider = _stats_provider(conn, store)
+    before_changes = conn.total_changes
 
     payload = stats_payload(provider)
 
+    assert conn.total_changes == before_changes
+    assert payload["relation_containment"]["scope_count"] == 2
+    assert payload["relation_containment"]["state"] == "blocked"
+    assert payload["relation_frequency_index"]["status"] == "ready"
+    assert payload["relation_rebuild_queue"]["status"] == "ready"
     assert payload["vector"]["row_count"] == 4
     assert payload["vector"]["unique_id_count"] == 4
+    assert {
+        "state",
+        "reason_code",
+        "auto_recoverable",
+        "repair_required",
+        "usable_for_query",
+        "message",
+        "debt_counts",
+    } <= set(payload["vector"])
+    assert payload["vector"]["state"] == "ready"
     assert payload["vector"]["status"] == "ready"
     assert "list_records" not in store.calls
     assert "audit_counts" not in store.calls
@@ -631,6 +647,55 @@ def test_transient_replay_failure_stays_retryable_and_recovers_runtime_state() -
     assert provider._vector_status == "ready"
     assert provider._vector_message == ""
     assert "memory-transient" in store.records
+
+
+def test_replay_dead_letter_escalates_to_repair_and_cannot_auto_recover() -> None:
+    conn = _truth_conn()
+    ensure_vector_generation_schema(conn)
+    store = _ForbiddenEnumerationStore()
+    provider = _ordinary_replay_fixture(
+        conn,
+        store,
+        memory_id="memory-terminal",
+        event_key="terminal-write",
+        operation="upsert",
+        content="terminal embedding failure",
+        timestamp="2026-08-24T00:00:00+00:00",
+    )
+
+    class FailingEmbedder:
+        dimensions = 2
+        provider = "terminal"
+
+        def embed(self, _text: str) -> list[float]:
+            raise RuntimeError("terminal synthetic failure")
+
+    provider._embedder = FailingEmbedder()
+    provider._vector_ready = True
+    provider._vector_status = "ready"
+    conn.execute(
+        "UPDATE vector_outbox SET attempts = 7 WHERE event_key = ?",
+        ("terminal-write",),
+    )
+    conn.commit()
+
+    result = replay_vector_outbox(provider)
+    status = RuntimeVectorView(provider).vector_status_view()
+
+    assert result == {"claimed": 1, "completed": 0, "failed": 1}
+    assert status["state"] == "needs_repair"
+    assert status["reason_code"] == "outbox_dead_letter"
+    assert status["auto_recoverable"] is False
+    assert status["repair_required"] is True
+    assert status["usable_for_query"] is False
+    assert status["debt_counts"]["dead_letter"] == 1
+
+    assert replay_vector_outbox(provider) == {
+        "claimed": 0,
+        "completed": 0,
+        "failed": 0,
+    }
+    assert provider._vector_status == "needs_repair"
 
 
 def test_successful_exact_replay_does_not_hide_unrelated_outbox_debt() -> None:

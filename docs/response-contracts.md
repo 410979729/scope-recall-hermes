@@ -22,6 +22,12 @@ These versions are lightweight response-contract identifiers, not full JSON Sche
   - Required top-level keys: `schema_version`, `ok`, `severity`, `generated_at`, `sections`
   - Purpose: compact operator dashboard for candidate debt, quality lint, schema, freshness, and Experience health.
 
+## Vector status object
+
+`scope_recall_stats.vector`, the combined Doctor vector section, and the dashboard vector summary use `vector_status.v1`. Required fields are `schema_version`, `state`, `reason_code`, `auto_recoverable`, `repair_required`, `usable_for_query`, `message`, and `debt_counts`. `state` is exactly one of `ready`, `degraded`, `needs_repair`, or `disabled`; runtime `status` is retained as a compatibility alias with the same value. Backend/generation-specific Doctor detail is reported separately as `diagnostic_status` and nested diagnostic objects.
+
+`debt_counts` contains non-negative `pending`, `processing`, `retry`, `dead_letter`, and derived `replayable` counts. Consumers must branch on the structured fields rather than message prose.
+
 - `golden_benchmark_report.v1`
   - Producer: `scripts/benchmark.golden.py`
   - Required top-level keys: `schema_version`, `passed`, `query_count`, `failures`, `results`, `golden_name`, `case_file`, `hermes_home`

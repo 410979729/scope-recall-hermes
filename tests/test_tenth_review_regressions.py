@@ -336,7 +336,7 @@ def _insert_relation_scope_rows(
     conn.commit()
 
 
-def test_large_focus_sync_is_bounded_and_enqueues_durable_rebuild() -> None:
+def test_large_scope_without_affected_postings_creates_no_legacy_rebuild() -> None:
     from scope_recall.relation_extraction import sync_extracted_relations_for_memory
     from scope_recall.sql_store import ensure_schema
 
@@ -361,19 +361,14 @@ def test_large_focus_sync_is_bounded_and_enqueues_durable_rebuild() -> None:
 
     assert result["ok"] is True
     assert result["blocked"] is False
-    assert result["deferred"] is True
+    assert result["deferred"] is False
+    assert result["status"] == "synced"
     assert int(result["compared_pairs"]) <= 8
-    queued = conn.execute(
-        """
-        SELECT status, cursor_memory_id
-        FROM relation_rebuild_queue
-        WHERE scope_id='large-scope' AND focus_memory_id='focus-large'
-        """
-    ).fetchone()
-    assert tuple(queued) == ("pending", "")
+    assert result["selected_peer_count"] == result["total_peer_count"] == 0
+    assert conn.execute("SELECT COUNT(*) FROM relation_rebuild_queue").fetchone()[0] == 0
 
 
-def test_large_scope_update_commits_truth_and_relation_debt(
+def test_large_scope_update_commits_truth_without_legacy_relation_debt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -422,15 +417,14 @@ def test_large_scope_update_commits_truth_and_relation_debt(
             "SELECT content FROM memories WHERE id='focus-update'"
         ).fetchone()
         assert "updated truth survives" in str(persisted[0])
-        queued = conn.execute(
-            """
-            SELECT status
-            FROM relation_rebuild_queue
-            WHERE focus_memory_id='focus-update'
-            """
+        assert (
+            conn.execute("SELECT COUNT(*) FROM relation_rebuild_queue").fetchone()[0]
+            == 0
+        )
+        focus_work = conn.execute(
+            "SELECT status FROM relation_focus_work WHERE memory_id='focus-update'"
         ).fetchone()
-        assert queued is not None
-        assert queued[0] in {"pending", "processing", "completed"}
+        assert focus_work is None
     finally:
         plugin.shutdown()
 
@@ -474,14 +468,16 @@ def test_store_rolls_back_truth_when_relation_debt_cannot_persist(
             ),
             "outbox": int(conn.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0]),
         }
-        store_service = plugin._store_now.__func__.__globals__["store_memory_now"]
-        sync_fn = store_service.__globals__["sync_extracted_relations_for_memory"]
-
         def fail_debt(*_args: Any, **_kwargs: Any) -> int:
             raise RuntimeError("injected relation debt persistence failure")
 
+        store_service = plugin._store_now.__func__.__globals__["store_memory_now"]
+        store_now_fn = store_service.__globals__["store_now"]
+        store_row_fn = store_now_fn.__globals__["store_row"]
         monkeypatch.setitem(
-            sync_fn.__globals__, "enqueue_relation_rebuild", fail_debt
+            store_row_fn.__globals__,
+            "sync_relation_frequency_memory",
+            fail_debt,
         )
         with pytest.raises(
             RuntimeError, match="injected relation debt persistence failure"
@@ -507,11 +503,10 @@ def test_store_rolls_back_truth_when_relation_debt_cannot_persist(
         plugin.shutdown()
 
 
-def test_relation_rebuild_worker_recovers_expired_claim_and_converges() -> None:
+def test_retired_relation_rebuild_worker_never_claims_or_mutates_debt() -> None:
     from scope_recall.relation_rebuild_queue import (
         claim_relation_rebuild_events,
         drain_relation_rebuild_queue,
-        enqueue_relation_rebuild,
         relation_rebuild_queue_report,
     )
     from scope_recall.sql_store import ensure_schema
@@ -525,60 +520,58 @@ def test_relation_rebuild_worker_recovers_expired_claim_and_converges() -> None:
         focus_id="queue-focus",
         peer_count=5,
     )
-    enqueue_relation_rebuild(
-        conn,
-        scope_id="queue-scope",
-        focus_memory_id="queue-focus",
-        requested_updated_at="2026-07-19T00:00:00+00:00",
-        reason="tenth-review-crash-recovery",
-        commit=True,
+    conn.execute(
+        """
+        INSERT INTO relation_rebuild_queue(
+            scope_id, focus_memory_id, requested_updated_at, reason,
+            status, available_at, created_at, updated_at
+        ) VALUES(
+            'queue-scope', 'queue-focus', '2026-07-19T00:00:00+00:00',
+            'retired worker fixture', 'processing',
+            '2026-07-19T00:00:00+00:00', '2026-07-19T00:00:00+00:00',
+            '2026-07-19T00:00:00+00:00'
+        )
+        """
+    )
+    conn.commit()
+    before = tuple(
+        conn.execute(
+            "SELECT status, processed_pairs, cursor_memory_id FROM relation_rebuild_queue"
+        ).fetchone()
     )
 
     claimed = claim_relation_rebuild_events(
         conn,
-        worker_id="crashed-worker",
+        worker_id="retired-worker",
         limit=1,
         lease_seconds=0,
         commit=True,
     )
-    assert len(claimed) == 1
-    assert claimed[0]["status"] == "processing"
-
-    totals = {"claimed": 0, "chunks_completed": 0, "events_completed": 0, "failed": 0}
-    for _ in range(5):
-        result = drain_relation_rebuild_queue(
-            conn,
-            max_events=1,
-            pair_limit=2,
-            lease_seconds=0,
-        )
-        for key in totals:
-            totals[key] += int(result[key])
-        if relation_rebuild_queue_report(conn)["unresolved"] == 0:
-            break
+    result = drain_relation_rebuild_queue(
+        conn,
+        max_events=1,
+        pair_limit=2,
+        lease_seconds=0,
+    )
 
     report = relation_rebuild_queue_report(conn)
-    assert totals["failed"] == 0
-    assert totals["events_completed"] == 1
-    assert report["unresolved"] == 0
-    assert report["completed"] == 1
-    row = conn.execute(
-        """
-        SELECT status, processed_pairs, cursor_memory_id
-        FROM relation_rebuild_queue
-        WHERE focus_memory_id='queue-focus'
-        """
-    ).fetchone()
-    assert row["status"] == "completed"
-    assert int(row["processed_pairs"]) == 5
-    assert row["cursor_memory_id"] == "peer-0004"
+    after = tuple(
+        conn.execute(
+            "SELECT status, processed_pairs, cursor_memory_id FROM relation_rebuild_queue"
+        ).fetchone()
+    )
+    assert claimed == []
+    assert result["disabled"] is True
+    assert result["reason_code"] == "legacy_unbounded_drain_disabled"
+    assert report["unresolved"] == 1
+    assert report["processing"] == 1
+    assert after == before
 
 
 def test_sqlite_doctor_surfaces_relation_debt_and_fails_dead_letter(
     tmp_path: Path,
 ) -> None:
     from scope_recall.doctor_sqlite import sqlite_report
-    from scope_recall.relation_rebuild_queue import enqueue_relation_rebuild
     from scope_recall.sql_store import ensure_schema
 
     db_dir = tmp_path / "scope-recall"
@@ -593,14 +586,20 @@ def test_sqlite_doctor_surfaces_relation_debt_and_fails_dead_letter(
         focus_id="doctor-focus",
         peer_count=0,
     )
-    enqueue_relation_rebuild(
-        conn,
-        scope_id="doctor-scope",
-        focus_memory_id="doctor-focus",
-        requested_updated_at="2026-07-19T00:00:00+00:00",
-        reason="doctor visibility fixture",
-        commit=True,
+    conn.execute(
+        """
+        INSERT INTO relation_rebuild_queue(
+            scope_id, focus_memory_id, requested_updated_at, reason,
+            status, available_at, created_at, updated_at
+        ) VALUES(
+            'doctor-scope', 'doctor-focus', '2026-07-19T00:00:00+00:00',
+            'doctor visibility fixture', 'pending',
+            '2026-07-19T00:00:00+00:00', '2026-07-19T00:00:00+00:00',
+            '2026-07-19T00:00:00+00:00'
+        )
+        """
     )
+    conn.commit()
     conn.close()
 
     payload, check, recommendations = sqlite_report(tmp_path)
@@ -608,8 +607,10 @@ def test_sqlite_doctor_surfaces_relation_debt_and_fails_dead_letter(
     debt = payload["relation_rebuild_queue"]
     assert debt["pending"] == 1
     assert debt["unresolved"] == 1
-    assert check["ok"] is True
-    assert any("Relation rebuild debt" in item for item in recommendations)
+    assert payload["relation_containment"]["status"] == "blocked"
+    assert check["ok"] is False
+    assert any("Retired relation rebuild debt" in item for item in recommendations)
+    assert any("exact operator cleanup" in item for item in check["failures"])
 
     writer = sqlite3.connect(db_path)
     writer.execute(
@@ -625,7 +626,7 @@ def test_sqlite_doctor_surfaces_relation_debt_and_fails_dead_letter(
     failed_payload, failed_check, _failed_recommendations = sqlite_report(tmp_path)
     assert failed_payload["relation_rebuild_queue"]["dead_letter"] == 1
     assert failed_check["ok"] is False
-    assert any("dead-letter" in item for item in failed_check["failures"])
+    assert any("dead_letter=1" in item for item in failed_check["failures"])
 
 
 def test_operator_ledger_recovers_file_written_before_mirror_state(

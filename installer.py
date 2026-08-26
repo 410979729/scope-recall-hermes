@@ -70,6 +70,7 @@ REQUIRED_PLUGIN_FILES = (
     "config.json",
 )
 _EXCLUDED_DIR_NAMES = {
+    ".execution",
     ".git",
     ".hermes-agent-src",
     ".mypy_cache",

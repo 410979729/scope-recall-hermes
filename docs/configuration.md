@@ -243,9 +243,33 @@ Treat chat aliases as explicit operator access-control grants.
 
 - `relation_extraction_max_pairs` (integer; risk: `medium`; restart_required: `yes`) — Maximum comparison budget for one relation extraction operation (1 to 5000 pairs). Default: `1000`
 
+## `relation_maintenance_backoff_base_seconds`
+
+- `relation_maintenance_backoff_base_seconds` (number; risk: `medium`; restart_required: `yes`) — Initial retry delay for failed bounded relation maintenance work (0.1 to 3600 seconds). Default: `5.0`
+
+## `relation_maintenance_backoff_max_seconds`
+
+- `relation_maintenance_backoff_max_seconds` (number; risk: `medium`; restart_required: `yes`) — Maximum retry delay for failed bounded relation maintenance work (1 to 86400 seconds). Default: `300.0`
+
+## `relation_maintenance_interval_seconds`
+
+- `relation_maintenance_interval_seconds` (number; risk: `medium`; restart_required: `yes`) — Minimum interval between bounded relation maintenance ticks (1 to 3600 seconds). Default: `30.0`
+
+## `relation_maintenance_max_attempts`
+
+- `relation_maintenance_max_attempts` (integer; risk: `medium`; restart_required: `yes`) — Maximum attempts before failed relation maintenance work becomes terminal poison (1 to 20 attempts). Default: `5`
+
+## `relation_maintenance_wall_clock_seconds`
+
+- `relation_maintenance_wall_clock_seconds` (number; risk: `medium`; restart_required: `yes`) — Wall-clock budget for one bounded relation maintenance tick (0.05 to 10 seconds). Default: `0.5`
+
 ## `relation_rebuild_chunk_pairs`
 
-- `relation_rebuild_chunk_pairs` (integer; risk: `medium`; restart_required: `yes`) — Maximum relation pairs processed by one background rebuild chunk (1 to 1000 pairs). Default: `250`
+- `relation_rebuild_chunk_pairs` (integer; risk: `medium`; restart_required: `yes`) — Maximum items processed by one bounded relation maintenance lane (1 to 1000 items); retained as the compatibility name for finite change, focus, backfill, and reclassification work. Default: `250`
+
+## `relation_reclassification_candidate_cap`
+
+- `relation_reclassification_candidate_cap` (integer; risk: `medium`; restart_required: `yes`) — Maximum affected candidates inspected before reclassification refuses the entire mutation without partial work (1 to 5000 candidates). Default: `250`
 
 ## `relation_sync_neighbor_limit`
 

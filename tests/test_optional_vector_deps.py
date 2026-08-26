@@ -78,7 +78,10 @@ def test_doctor_vector_report_accepts_configured_sqlite_fallback_when_lancedb_un
     )
 
     assert check == {"ok": True, "failures": []}
-    assert payload["status"] == "fallback_ready"
+    assert payload["state"] == "ready"
+    assert payload["status"] == "ready"
+    assert payload["reason_code"] == "fallback_ready"
+    assert payload["diagnostic_status"] == "fallback_ready"
     assert payload["primary"]["ready"] is False
     assert payload["fallback"]["backend"] == "sqlite-bruteforce"
     assert payload["fallback"]["ready"] is True

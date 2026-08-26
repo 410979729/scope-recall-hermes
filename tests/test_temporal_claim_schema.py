@@ -14,6 +14,10 @@ from scope_recall.operator_ledger import (
     OPERATOR_LEDGER_MIGRATION_ID,
     OPERATOR_LEDGER_SCHEMA_VERSION,
 )
+from scope_recall.relation_containment import (
+    RELATION_CONTAINMENT_MIGRATION_ID,
+    RELATION_CONTAINMENT_SCHEMA_VERSION,
+)
 from scope_recall.relation_frequency_index import (
     RELATION_FREQUENCY_FAILURE_MIGRATION_ID,
     RELATION_FREQUENCY_FAILURE_SCHEMA_VERSION,
@@ -172,10 +176,11 @@ def test_fresh_schema_creates_fact_tables_columns_indexes_and_ledger():
     assert (
         ledger["user_version"]
         == SCHEMA_VERSION
-        == LEXICAL_SCHEMA_VERSION
+        == RELATION_CONTAINMENT_SCHEMA_VERSION
     )
     assert (
         SCHEMA_VERSION
+        > LEXICAL_SCHEMA_VERSION
         > RELATION_FREQUENCY_FAILURE_SCHEMA_VERSION
         > RELATION_REBUILD_EXPIRY_SCHEMA_VERSION
         > VECTOR_RECONCILIATION_SCHEMA_VERSION
@@ -196,6 +201,7 @@ def test_fresh_schema_creates_fact_tables_columns_indexes_and_ledger():
         RELATION_REBUILD_EXPIRY_MIGRATION_ID,
         RELATION_FREQUENCY_FAILURE_MIGRATION_ID,
         LEXICAL_MIGRATION_ID,
+        RELATION_CONTAINMENT_MIGRATION_ID,
     ]
     assert all(len(str(row["checksum"])) == 64 for row in ledger["applied_migrations"])
 

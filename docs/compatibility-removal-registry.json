@@ -1,0 +1,42 @@
+{
+  "schema_version": "scope-recall.compatibility-removal-registry.v1",
+  "candidate_version": "1.10.6",
+  "entries": [
+    {
+      "id": "CR-001",
+      "surface": "relation_rebuild_queue schema and report readers",
+      "paths": [
+        "relation_rebuild_queue.py",
+        "relation_containment.py"
+      ],
+      "status": "retained_fail_closed",
+      "execution_contract": "Legacy enqueue, claim, seed, and drain work cannot schedule or execute full-scope rebuilds.",
+      "removal_epoch": "not_scheduled",
+      "removal_gate": "Human maintainer approval plus migration, rollback, package, CI, and Hermes smoke evidence."
+    },
+    {
+      "id": "CR-002",
+      "surface": "relation_rebuild_chunk_pairs configuration key",
+      "paths": [
+        "config.json",
+        "config.py",
+        "docs/configuration.md"
+      ],
+      "status": "retained_ignored",
+      "execution_contract": "The key remains parseable for older configurations but cannot re-enable retired full-scope work.",
+      "removal_epoch": "not_scheduled",
+      "removal_gate": "Observed configuration telemetry and explicit compatibility approval."
+    },
+    {
+      "id": "CR-003",
+      "surface": "vector status compatibility alias",
+      "paths": [
+        "vector_status.py"
+      ],
+      "status": "retained_alias",
+      "execution_contract": "The public status field is always identical to the canonical four-state state field.",
+      "removal_epoch": "not_scheduled",
+      "removal_gate": "Published deprecation window and downstream consumer migration evidence."
+    }
+  ]
+}

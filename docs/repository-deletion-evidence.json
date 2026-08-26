@@ -1,0 +1,13 @@
+{
+  "schema_version": "scope-recall.repository-deletion-evidence.v1",
+  "program": "Program 0",
+  "base_commit": "f63c953d8c4ca3c8185671ff0a3cb67579c30b60",
+  "deleted_files": [],
+  "deletion_authorized": false,
+  "verification": {
+    "expected_deleted_file_count": 0,
+    "required_command": "git diff --diff-filter=D --name-only f63c953d8c4ca3c8185671ff0a3cb67579c30b60...HEAD",
+    "status": "no_deletions_planned"
+  },
+  "note": "Program 0 repository governance forbids file deletion. Executable legacy relation rebuild behavior was retired in place so schema, reports, rollback evidence, and compatibility readers remain available."
+}

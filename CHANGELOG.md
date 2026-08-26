@@ -4,6 +4,27 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [1.10.6] - 2026-08-26
+
+This patch candidate is cumulative since the last public release, `1.10.3`, and supersedes the unpublished `1.10.4` and `1.10.5` source checkpoints. It completes Scope Recall 2.0 Program 0A/0B without crossing G0: release controls are deterministic, Vector status has one public contract, and legacy relation fan-out is replaced by finite relation containment.
+
+### Added
+- Added the stable `ci-required` aggregate job and made release provenance depend on that single branch-protection check.
+- Added one four-state Vector status contract (`ready`, `degraded`, `needs_repair`, `disabled`) with stable reason, debt, recoverability, repair, and query-usability fields across runtime, Doctor, and stats.
+- Added additive relation containment state, generation-bound focus work, terminal dispositions, content-free health, and backup-first exact operator cleanup receipts.
+- Added source/AST retirement gates, 2k/10k bounded regressions, a 100k analytical upper-bound gate, and cleanup dry-run/apply/replay coverage.
+
+### Changed
+- Replaced optional dependency extras in the release lock input with explicit direct pins and regenerated hashed constraints for reproducible Windows/Linux resolution.
+- Made the CJK lexical latency gate portable on fast SQLite hosts by flooring the paired denominator at the declared target divided by the ratio budget. The hard bound is now equivalently `shadow_p95 <= max(100 ms, 4 * legacy_p95)`, preserving the 4x guard on slower hosts while preventing a near-zero legacy baseline from rejecting a target-compliant shadow path.
+- Retired all executable full-scope relation rebuild enqueue/claim/drain paths. Affected-work planning now uses cap+1, performs no partial mutation when the cap is exceeded, and excludes stale generated relation signals while ordinary lexical/SQLite/vector recall continues.
+- Bounded foreground-idle relation maintenance by configurable interval, shared wall-clock budget, finite batch limits, contention backoff, and maximum attempts; poison work becomes terminal and does not resurrect automatically.
+- Exposed relation pending/retry/poison/operator-action health through Doctor, `scope_recall_stats`, and the dashboard while preserving the query zero-write contract.
+
+### Compatibility
+- Preserved SQLite as truth, stable provider/tool identities, package/install shape, scope routing, and ordinary recall semantics.
+- Added only additive schema migration `0013_relation_containment_v1_10_6`; the retired legacy relation tables remain readable for exact backup-first cleanup and downgrade evidence but are never executed by the runtime.
+
 ## [1.10.5] - 2026-08-25
 
 This patch candidate is cumulative since the last public release, `1.10.3`, and supersedes the unpublished `1.10.4` source checkpoint. It closes the remaining bounded-concurrency, release-provenance, and distribution-scanner defects found by exact-epoch review while retaining the issue #50 contract, without changing SQLite authority or stable provider/tool identities.

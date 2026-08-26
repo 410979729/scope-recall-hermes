@@ -222,6 +222,17 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._vector_enabled = False
         self._vector_ready = False
         self._vector_status = "disabled"
+        self._vector_reason_code = "disabled_by_config"
+        self._vector_auto_recoverable = False
+        self._vector_repair_required = False
+        self._vector_usable_for_query = False
+        self._vector_debt_counts: dict[str, int] = {
+            "pending": 0,
+            "processing": 0,
+            "retry": 0,
+            "dead_letter": 0,
+            "replayable": 0,
+        }
         self._vector_message = ""
         self._vector_row_count = 0
         self._vector_unique_id_count = 0

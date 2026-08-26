@@ -62,6 +62,7 @@ _REQUIRED_TABLES = {
     "relation_indexed_memories",
     "relation_entity_postings",
     "relation_scope_entity_frequency",
+    "relation_frequency_generations",
     "relation_frequency_changes",
     "relation_frequency_backfill",
     "relation_scope_reclassification",
@@ -71,6 +72,69 @@ _REQUIRED_TRIGGERS = {
     "trg_relation_frequency_insert",
     "trg_relation_frequency_update",
     "trg_relation_frequency_delete",
+}
+_REQUIRED_TABLE_COLUMNS = {
+    "relation_indexed_memories": {
+        "memory_id",
+        "scope_id",
+        "updated_at",
+        "visible",
+        "entities_json",
+        "entities_sha256",
+        "indexed_at",
+    },
+    "relation_entity_postings": {"scope_id", "entity", "memory_id"},
+    "relation_scope_entity_frequency": {
+        "scope_id",
+        "entity",
+        "document_count",
+        "updated_at",
+    },
+    "relation_frequency_generations": {
+        "memory_id",
+        "last_generation",
+        "updated_at",
+    },
+    "relation_frequency_changes": {
+        "memory_id",
+        "old_scope_id",
+        "new_scope_id",
+        "work_generation",
+        "requested_at",
+    },
+    "relation_frequency_failures": {
+        "memory_id",
+        "work_generation",
+        "work_revision",
+        "old_scope_id",
+        "new_scope_id",
+        "attempts",
+        "status",
+        "last_error",
+        "last_failed_at",
+    },
+    "relation_frequency_backfill": {
+        "scope_id",
+        "status",
+        "cursor_memory_id",
+        "processed_memories",
+        "created_at",
+        "updated_at",
+        "completed_at",
+    },
+    "relation_scope_reclassification": {
+        "scope_id",
+        "active_revision",
+        "next_revision",
+        "status",
+        "cursor_memory_id",
+        "pass_processed_memories",
+        "total_processed_memories",
+        "pass_number",
+        "requested_at",
+        "updated_at",
+        "completed_at",
+    },
 }
 
 
@@ -112,14 +176,22 @@ def _entities_hash(entities_json: str) -> str:
     return hashlib.sha256(str(entities_json).encode("utf-8")).hexdigest()
 
 
-def _decode_entities(raw: Any) -> set[str]:
+def _decode_indexed_entities(raw: Any, stored_sha256: Any) -> set[str]:
+    encoded = str(raw)
+    if not str(stored_sha256 or "") or _entities_hash(encoded) != str(stored_sha256):
+        raise RuntimeError("relation frequency index receipt mismatch")
     try:
-        parsed = json.loads(str(raw or "[]"))
-    except Exception:
-        return set()
-    if not isinstance(parsed, list):
-        return set()
-    return {str(item) for item in parsed if isinstance(item, str) and str(item)}
+        parsed = json.loads(encoded)
+    except Exception as exc:
+        raise RuntimeError("relation frequency index receipt is invalid") from exc
+    if not isinstance(parsed, list) or any(
+        not isinstance(item, str) or not item for item in parsed
+    ):
+        raise RuntimeError("relation frequency index receipt is invalid")
+    entities = {str(item) for item in parsed}
+    if len(entities) != len(parsed) or _entities_json(entities) != encoded:
+        raise RuntimeError("relation frequency index receipt is not canonical")
+    return entities
 
 
 def ensure_relation_frequency_index_schema(conn: sqlite3.Connection) -> None:
@@ -160,10 +232,18 @@ def ensure_relation_frequency_index_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_relation_frequency_threshold
             ON relation_scope_entity_frequency(scope_id, document_count, entity);
 
+        CREATE TABLE IF NOT EXISTS relation_frequency_generations (
+            memory_id TEXT PRIMARY KEY,
+            last_generation INTEGER NOT NULL CHECK(last_generation > 0),
+            updated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS relation_frequency_changes (
             memory_id TEXT PRIMARY KEY,
             old_scope_id TEXT NOT NULL DEFAULT '',
             new_scope_id TEXT NOT NULL DEFAULT '',
+            work_generation INTEGER NOT NULL DEFAULT 1
+                CHECK(work_generation > 0),
             requested_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_relation_frequency_changes_old_scope
@@ -173,6 +253,9 @@ def ensure_relation_frequency_index_schema(conn: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS relation_frequency_failures (
             memory_id TEXT PRIMARY KEY,
+            work_generation INTEGER NOT NULL DEFAULT 0
+                CHECK(work_generation >= 0),
+            work_revision TEXT NOT NULL DEFAULT '',
             old_scope_id TEXT NOT NULL DEFAULT '',
             new_scope_id TEXT NOT NULL DEFAULT '',
             attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
@@ -215,6 +298,75 @@ def ensure_relation_frequency_index_schema(conn: sqlite3.Connection) -> None:
             ON relation_scope_reclassification(status, updated_at, scope_id);
         """,
     )
+    change_columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(relation_frequency_changes)")
+    }
+    if "work_generation" not in change_columns:
+        conn.execute(
+            "ALTER TABLE relation_frequency_changes "
+            "ADD COLUMN work_generation INTEGER NOT NULL DEFAULT 1 "
+            "CHECK(work_generation > 0)"
+        )
+    conn.execute(
+        """
+        INSERT INTO relation_frequency_generations(
+            memory_id, last_generation, updated_at
+        )
+        SELECT memory_id, MAX(1, work_generation), requested_at
+        FROM relation_frequency_changes
+        WHERE 1
+        ON CONFLICT(memory_id) DO UPDATE SET
+            last_generation=excluded.last_generation,
+            updated_at=excluded.updated_at
+        WHERE excluded.last_generation > relation_frequency_generations.last_generation
+           OR (
+                excluded.last_generation = relation_frequency_generations.last_generation
+                AND excluded.updated_at > relation_frequency_generations.updated_at
+           )
+        """
+    )
+    failure_columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(relation_frequency_failures)")
+    }
+    had_failure_revision = "work_revision" in failure_columns
+    if "work_generation" not in failure_columns:
+        conn.execute(
+            "ALTER TABLE relation_frequency_failures "
+            "ADD COLUMN work_generation INTEGER NOT NULL DEFAULT 0 "
+            "CHECK(work_generation >= 0)"
+        )
+        if had_failure_revision:
+            conn.execute(
+                """
+                UPDATE relation_frequency_failures
+                SET work_generation=COALESCE(
+                    (SELECT c.work_generation
+                     FROM relation_frequency_changes c
+                     WHERE c.memory_id=relation_frequency_failures.memory_id
+                       AND c.requested_at=relation_frequency_failures.work_revision
+                       AND c.old_scope_id=relation_frequency_failures.old_scope_id
+                       AND c.new_scope_id=relation_frequency_failures.new_scope_id),
+                    0
+                )
+                """
+            )
+    if "work_revision" not in failure_columns:
+        conn.execute(
+            "ALTER TABLE relation_frequency_failures "
+            "ADD COLUMN work_revision TEXT NOT NULL DEFAULT ''"
+        )
+        conn.execute(
+            """
+            UPDATE relation_frequency_failures
+            SET work_revision=COALESCE(
+                (SELECT c.requested_at FROM relation_frequency_changes c
+                 WHERE c.memory_id=relation_frequency_failures.memory_id),
+                ''
+            )
+            """
+        )
     if not _table_exists(conn, "memories"):
         return
 
@@ -238,12 +390,21 @@ def ensure_relation_frequency_index_schema(conn: sqlite3.Connection) -> None:
                 strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                 strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
             );
-            INSERT INTO relation_frequency_changes(
-                memory_id, old_scope_id, new_scope_id, requested_at
+            INSERT INTO relation_frequency_generations(
+                memory_id, last_generation, updated_at
             ) VALUES(
-                NEW.id, '', NEW.scope_id,
-                strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                NEW.id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
             )
+            ON CONFLICT(memory_id) DO UPDATE SET
+                last_generation=relation_frequency_generations.last_generation+1,
+                updated_at=excluded.updated_at;
+            INSERT INTO relation_frequency_changes(
+                memory_id, old_scope_id, new_scope_id,
+                work_generation, requested_at
+            )
+            SELECT NEW.id, '', NEW.scope_id, last_generation,
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            FROM relation_frequency_generations WHERE memory_id=NEW.id
             ON CONFLICT(memory_id) DO UPDATE SET
                 old_scope_id=CASE
                     WHEN relation_frequency_changes.old_scope_id<>''
@@ -251,6 +412,7 @@ def ensure_relation_frequency_index_schema(conn: sqlite3.Connection) -> None:
                     ELSE excluded.old_scope_id
                 END,
                 new_scope_id=excluded.new_scope_id,
+                work_generation=excluded.work_generation,
                 requested_at=excluded.requested_at;
         END;
 
@@ -274,12 +436,21 @@ def ensure_relation_frequency_index_schema(conn: sqlite3.Connection) -> None:
                 strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                 strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
             );
-            INSERT INTO relation_frequency_changes(
-                memory_id, old_scope_id, new_scope_id, requested_at
+            INSERT INTO relation_frequency_generations(
+                memory_id, last_generation, updated_at
             ) VALUES(
-                NEW.id, OLD.scope_id, NEW.scope_id,
-                strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                NEW.id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
             )
+            ON CONFLICT(memory_id) DO UPDATE SET
+                last_generation=relation_frequency_generations.last_generation+1,
+                updated_at=excluded.updated_at;
+            INSERT INTO relation_frequency_changes(
+                memory_id, old_scope_id, new_scope_id,
+                work_generation, requested_at
+            )
+            SELECT NEW.id, OLD.scope_id, NEW.scope_id, last_generation,
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            FROM relation_frequency_generations WHERE memory_id=NEW.id
             ON CONFLICT(memory_id) DO UPDATE SET
                 old_scope_id=CASE
                     WHEN relation_frequency_changes.old_scope_id<>''
@@ -287,18 +458,28 @@ def ensure_relation_frequency_index_schema(conn: sqlite3.Connection) -> None:
                     ELSE excluded.old_scope_id
                 END,
                 new_scope_id=excluded.new_scope_id,
+                work_generation=excluded.work_generation,
                 requested_at=excluded.requested_at;
         END;
 
         CREATE TRIGGER trg_relation_frequency_delete
         AFTER DELETE ON memories
         BEGIN
-            INSERT INTO relation_frequency_changes(
-                memory_id, old_scope_id, new_scope_id, requested_at
+            INSERT INTO relation_frequency_generations(
+                memory_id, last_generation, updated_at
             ) VALUES(
-                OLD.id, OLD.scope_id, '',
-                strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                OLD.id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
             )
+            ON CONFLICT(memory_id) DO UPDATE SET
+                last_generation=relation_frequency_generations.last_generation+1,
+                updated_at=excluded.updated_at;
+            INSERT INTO relation_frequency_changes(
+                memory_id, old_scope_id, new_scope_id,
+                work_generation, requested_at
+            )
+            SELECT OLD.id, OLD.scope_id, '', last_generation,
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            FROM relation_frequency_generations WHERE memory_id=OLD.id
             ON CONFLICT(memory_id) DO UPDATE SET
                 old_scope_id=CASE
                     WHEN relation_frequency_changes.old_scope_id<>''
@@ -306,6 +487,7 @@ def ensure_relation_frequency_index_schema(conn: sqlite3.Connection) -> None:
                     ELSE excluded.old_scope_id
                 END,
                 new_scope_id='',
+                work_generation=excluded.work_generation,
                 requested_at=excluded.requested_at;
         END;
         """,
@@ -346,16 +528,27 @@ def relation_frequency_index_schema_status(conn: sqlite3.Connection) -> dict[str
         ).fetchall()
     }
     missing_tables = sorted(_REQUIRED_TABLES - tables)
+    missing_columns: dict[str, list[str]] = {}
+    for table, expected_columns in _REQUIRED_TABLE_COLUMNS.items():
+        if table not in tables:
+            continue
+        actual_columns = {
+            str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")
+        }
+        missing = sorted(expected_columns - actual_columns)
+        if missing:
+            missing_columns[table] = missing
     missing_triggers = (
         sorted(_REQUIRED_TRIGGERS - triggers)
         if "memories" in tables
         else []
     )
     return {
-        "current": not missing_tables and not missing_triggers,
+        "current": not missing_tables and not missing_triggers and not missing_columns,
         "schema_version": RELATION_FREQUENCY_FAILURE_SCHEMA_VERSION,
         "missing_tables": missing_tables,
         "missing_triggers": missing_triggers,
+        "missing_columns": missing_columns,
         "failures": {
             "retry": int(
                 conn.execute(
@@ -373,6 +566,127 @@ def relation_frequency_index_schema_status(conn: sqlite3.Connection) -> dict[str
             else 0,
         },
     }
+
+
+def supersede_relation_frequency_failure(
+    conn: sqlite3.Connection,
+    memory_id: str,
+    *,
+    work_generation: int | None = None,
+    requested_at: str | None = None,
+) -> bool:
+    """Dispose an older failed generation before processing exact newer work."""
+
+    clean_id = str(memory_id or "").strip()
+    if not clean_id:
+        raise ValueError("memory_id is required")
+    if not (
+        _table_exists(conn, "relation_frequency_changes")
+        and _table_exists(conn, "relation_frequency_failures")
+    ):
+        return False
+    change = conn.execute(
+        """
+        SELECT old_scope_id, new_scope_id, work_generation, requested_at
+        FROM relation_frequency_changes WHERE memory_id=?
+        """,
+        (clean_id,),
+    ).fetchone()
+    if change is None:
+        return False
+    current_generation = int(change[2] or 0)
+    current_revision = str(change[3] or "")
+    if work_generation is not None and current_generation != int(work_generation):
+        return False
+    if requested_at is not None and current_revision != str(requested_at):
+        return False
+    failure = conn.execute(
+        """
+        SELECT work_generation, work_revision, old_scope_id, new_scope_id,
+               attempts, status, last_error, last_failed_at
+        FROM relation_frequency_failures WHERE memory_id=?
+        """,
+        (clean_id,),
+    ).fetchone()
+    if failure is None or int(failure[0] or 0) == current_generation:
+        return False
+    if not _table_exists(conn, "relation_work_dispositions"):
+        raise RuntimeError("relation disposition schema is required for supersession")
+    document = {
+        "memory_sha256": hashlib.sha256(clean_id.encode("utf-8")).hexdigest(),
+        "prior_generation": int(failure[0] or 0),
+        "next_generation": current_generation,
+        "prior_revision": str(failure[1] or ""),
+        "next_revision": current_revision,
+        "prior_status": str(failure[5] or ""),
+        "prior_attempts": int(failure[4] or 0),
+        "prior_failed_at": str(failure[7] or ""),
+        "prior_error_sha256": hashlib.sha256(
+            str(failure[6] or "").encode("utf-8")
+        ).hexdigest(),
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            document,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    operation_id = f"frequency-supersede-{fingerprint[:32]}"
+    conn.execute(
+        """
+        INSERT INTO relation_work_dispositions(
+            work_kind, work_key, work_revision, scope_id, prior_status,
+            prior_updated_at, terminal_state, reason_code, attempts,
+            lease_expirations, operation_id, request_fingerprint, disposed_at
+        ) VALUES(
+            'frequency_change', ?, ?, ?, ?, ?, 'superseded',
+            'superseded_by_frequency_change_revision', ?, 0, ?, ?, ?
+        )
+        ON CONFLICT(work_kind, work_key, work_revision) DO NOTHING
+        """,
+        (
+            clean_id,
+            str(int(failure[0] or 0)),
+            str(failure[3] or failure[2] or change[1] or change[0] or ""),
+            str(failure[5] or ""),
+            str(failure[7] or ""),
+            max(0, int(failure[4] or 0)),
+            operation_id,
+            fingerprint,
+            _now_iso(),
+        ),
+    )
+    changed = conn.execute(
+        """
+        DELETE FROM relation_frequency_failures
+        WHERE memory_id=? AND work_generation=? AND work_revision=? AND old_scope_id=?
+          AND new_scope_id=? AND attempts=? AND status=? AND last_error=?
+          AND last_failed_at=?
+          AND EXISTS(
+              SELECT 1 FROM relation_frequency_changes c
+              WHERE c.memory_id=? AND c.work_generation=? AND c.requested_at=?
+          )
+        """,
+        (
+            clean_id,
+            int(failure[0] or 0),
+            str(failure[1] or ""),
+            str(failure[2] or ""),
+            str(failure[3] or ""),
+            int(failure[4] or 0),
+            str(failure[5] or ""),
+            str(failure[6] or ""),
+            str(failure[7] or ""),
+            clean_id,
+            current_generation,
+            current_revision,
+        ),
+    ).rowcount
+    if changed != 1:
+        raise RuntimeError("relation frequency failure changed during supersession")
+    return True
 
 
 def _stored_blocked_entities(
@@ -440,70 +754,71 @@ def _scope_has_dirty_rows(conn: sqlite3.Connection, scope_id: str) -> bool:
     )
 
 
+def _scope_has_failure_status(
+    conn: sqlite3.Connection,
+    scope_id: str,
+    status: str,
+) -> bool:
+    return (
+        conn.execute(
+            """
+            SELECT 1
+            FROM relation_frequency_failures f
+            LEFT JOIN relation_frequency_changes c ON c.memory_id=f.memory_id
+            LEFT JOIN relation_indexed_memories i ON i.memory_id=f.memory_id
+            LEFT JOIN memories m ON m.id=f.memory_id
+            WHERE f.status=?
+              AND (f.old_scope_id=? OR f.new_scope_id=?
+                OR c.old_scope_id=? OR c.new_scope_id=?
+                OR i.scope_id=? OR m.scope_id=?)
+            LIMIT 1
+            """,
+            (str(status), *(str(scope_id),) * 6),
+        ).fetchone()
+        is not None
+    )
+
+
+def relation_frequency_scope_failure_status(
+    conn: sqlite3.Connection,
+    scope_id: str,
+) -> str:
+    """Return the strongest durable failure state affecting one scope."""
+
+    scope = str(scope_id or "").strip()
+    if not scope:
+        return ""
+    if _scope_has_failure_status(conn, scope, "dead_letter"):
+        return "dead_letter"
+    if _scope_has_failure_status(conn, scope, "retry"):
+        return "retry"
+    return ""
+
+
+def _scope_has_failure_rows(conn: sqlite3.Connection, scope_id: str) -> bool:
+    return bool(relation_frequency_scope_failure_status(conn, scope_id))
+
+
 def _schedule_scope_reclassification(
     conn: sqlite3.Connection,
     *,
     scope_id: str,
     revision: int,
 ) -> None:
-    now = _now_iso()
-    row = conn.execute(
-        """
-        SELECT status, cursor_memory_id, pass_processed_memories,
-               active_revision, next_revision
-        FROM relation_scope_reclassification WHERE scope_id=?
-        """,
-        (str(scope_id),),
-    ).fetchone()
-    if row is None:
-        conn.execute(
-            """
-            INSERT INTO relation_scope_reclassification(
-                scope_id, active_revision, next_revision, status,
-                cursor_memory_id, pass_processed_memories,
-                total_processed_memories, pass_number,
-                requested_at, updated_at, completed_at
-            ) VALUES(?, ?, 0, 'pending', '', 0, 0, 1, ?, ?, NULL)
-            """,
-            (str(scope_id), int(revision), now, now),
-        )
-        return
-    in_progress = str(row[0]) == "pending" and (
-        bool(str(row[1] or "")) or int(row[2] or 0) > 0
-    )
-    if in_progress:
-        conn.execute(
-            """
-            UPDATE relation_scope_reclassification
-            SET next_revision=MAX(next_revision, ?), requested_at=?, updated_at=?
-            WHERE scope_id=?
-            """,
-            (int(revision), now, now, str(scope_id)),
-        )
-        return
-    if int(row[3] or 0) == int(revision) and str(row[0]) == "pending":
-        return
-    conn.execute(
-        """
-        UPDATE relation_scope_reclassification
-        SET active_revision=?, next_revision=0, status='pending',
-            cursor_memory_id='', pass_processed_memories=0,
-            pass_number=pass_number+1, requested_at=?, updated_at=?, completed_at=NULL
-        WHERE scope_id=?
-        """,
-        (int(revision), now, now, str(scope_id)),
-    )
+    """Retired compatibility hook; Program 0 containment owns policy deltas."""
+
+    del conn, scope_id, revision
 
 
 def refresh_relation_scope_frequency_receipt(conn: sqlite3.Connection, scope_id: str) -> dict[str, Any] | None:
     scope = str(scope_id or "")
     if not scope or not _scope_backfill_complete(conn, scope):
         return None
-    if _scope_has_dirty_rows(conn, scope):
+    if _scope_has_dirty_rows(conn, scope) or _scope_has_failure_rows(conn, scope):
         return None
     row = conn.execute(
         """
-        SELECT corpus_revision, visible_memory_count
+        SELECT corpus_revision, visible_memory_count, statistics_revision
         FROM relation_scope_statistics WHERE scope_id=?
         """,
         (scope,),
@@ -534,11 +849,44 @@ def refresh_relation_scope_frequency_receipt(conn: sqlite3.Connection, scope_id:
         # read.  Returning its receipt would let relation work bind a stale
         # high-frequency policy; callers must defer and retry from fresh truth.
         return None
-    if old_blocked is not None and old_blocked != blocked:
-        _schedule_scope_reclassification(
+    try:
+        from .relation_containment import (
+            ensure_relation_containment_schema,
+            establish_relation_scope_baseline,
+            record_relation_scope_target,
+        )
+    except ImportError:  # pragma: no cover - direct source-script fallback
+        from relation_containment import (  # type: ignore[no-redef]
+            ensure_relation_containment_schema,
+            establish_relation_scope_baseline,
+            record_relation_scope_target,
+        )
+    ensure_relation_containment_schema(conn)
+    pristine_zero_baseline = conn.execute(
+        """
+        SELECT 1 FROM relation_scope_containment
+        WHERE scope_id=? AND state='degraded'
+          AND reason_code='frequency_receipt_stale'
+          AND active_revision=0 AND target_revision=0
+          AND attempts_total=0 AND target_attempts=0
+        """,
+        (scope,),
+    ).fetchone()
+    if pristine_zero_baseline is not None:
+        establish_relation_scope_baseline(
             conn,
             scope_id=scope,
             revision=revision,
+            blocked_entities=blocked,
+        )
+    else:
+        record_relation_scope_target(
+            conn,
+            scope_id=scope,
+            prior_statistics_revision=max(0, int(row[2] or 0)),
+            target_revision=revision,
+            old_blocked_entities=old_blocked or set(),
+            new_blocked_entities=blocked,
         )
     return {
         "scope_id": scope,
@@ -627,16 +975,39 @@ def sync_relation_frequency_memory(
     if not _table_exists(conn, "relation_indexed_memories"):
         raise RuntimeError("relation frequency schema is not initialized")
 
+    change = conn.execute(
+        """
+        SELECT work_generation, requested_at
+        FROM relation_frequency_changes WHERE memory_id=?
+        """,
+        (clean_id,),
+    ).fetchone()
+    work_generation = int(change[0] or 0) if change is not None else 0
+    work_revision = str(change[1] or "") if change is not None else ""
+    if change is not None:
+        supersede_relation_frequency_failure(
+            conn,
+            clean_id,
+            work_generation=work_generation,
+            requested_at=work_revision,
+        )
+
     old = conn.execute(
         """
-        SELECT scope_id, visible, entities_json
+        SELECT scope_id, visible, entities_json, entities_sha256
         FROM relation_indexed_memories WHERE memory_id=?
         """,
         (clean_id,),
     ).fetchone()
     old_scope = str(old[0] or "") if old is not None else ""
     old_visible = bool(int(old[1] or 0)) if old is not None else False
-    old_entities = _decode_entities(old[2]) if old_visible and old is not None else set()
+    if old is None:
+        old_entities: set[str] = set()
+    else:
+        decoded_old_entities = _decode_indexed_entities(old[2], old[3])
+        if not old_visible and decoded_old_entities:
+            raise RuntimeError("hidden relation frequency index row contains entities")
+        old_entities = decoded_old_entities if old_visible else set()
 
     current = conn.execute(
         """
@@ -741,9 +1112,31 @@ def sync_relation_frequency_memory(
                 now,
             ),
         )
-    conn.execute("DELETE FROM relation_frequency_changes WHERE memory_id=?", (clean_id,))
-
     affected_scopes = sorted({scope for scope in (old_scope, new_scope) if scope})
+    focus_queued = False
+    if change is not None and affected_scopes:
+        try:
+            from .relation_containment import enqueue_relation_focus_work
+        except ImportError:  # pragma: no cover - direct source-script fallback
+            from relation_containment import enqueue_relation_focus_work
+        focus_queued = enqueue_relation_focus_work(
+            conn,
+            memory_id=clean_id,
+            work_generation=work_generation,
+            work_revision=work_revision,
+            scope_ids=affected_scopes,
+        )
+    if change is not None:
+        deleted_change = conn.execute(
+            """
+            DELETE FROM relation_frequency_changes
+            WHERE memory_id=? AND work_generation=? AND requested_at=?
+            """,
+            (clean_id, work_generation, work_revision),
+        ).rowcount
+        if deleted_change != 1:
+            raise RuntimeError("relation frequency change advanced during sync")
+
     receipts: dict[str, dict[str, Any] | None] = {}
     if refresh_receipts:
         for scope in affected_scopes:
@@ -756,6 +1149,9 @@ def sync_relation_frequency_memory(
         "new_visible": new_visible,
         "removed_entities": len(removed),
         "added_entities": len(added),
+        "work_generation": work_generation,
+        "work_revision": work_revision,
+        "focus_queued": focus_queued,
         "receipts": receipts,
     }
 
@@ -766,49 +1162,15 @@ def relation_frequency_snapshot(
     *,
     bounded_repair_limit: int = 32,
 ) -> dict[str, Any] | None:
-    """Return an O(1)+blocked-result snapshot when one scope index is current.
+    """Return a strictly read-only receipt when one scope index is current."""
 
-    A small dirty-id backlog may be repaired synchronously for direct-SQL test or
-    recovery compatibility.  Legacy backfill is never hidden here: callers must
-    defer relation work until the background cursor reaches completion.
-    """
-
+    del bounded_repair_limit  # compatibility only; repair is maintenance-owned
     scope = str(scope_id or "").strip()
     if not scope or not _scope_backfill_complete(conn, scope):
         return None
-    bounded = max(0, min(int(bounded_repair_limit), 256))
-    query_only = bool(int(conn.execute("PRAGMA query_only").fetchone()[0] or 0))
-    dirty = _scope_has_dirty_rows(conn, scope)
-    if not dirty:
-        receipt = load_scope_frequency_receipt(conn, scope)
-        if receipt is not None:
-            return receipt
-        if query_only:
-            return None
-    if dirty and bounded and not query_only:
-        rows = conn.execute(
-            """
-            SELECT memory_id FROM relation_frequency_changes
-            WHERE old_scope_id=? OR new_scope_id=?
-            ORDER BY requested_at, memory_id
-            LIMIT ?
-            """,
-            (scope, scope, bounded + 1),
-        ).fetchall()
-        if len(rows) > bounded:
-            return None
-        for row in rows:
-            sync_relation_frequency_memory(
-                conn,
-                str(row[0]),
-                refresh_receipts=False,
-            )
-    if _scope_has_dirty_rows(conn, scope):
+    if _scope_has_dirty_rows(conn, scope) or _scope_has_failure_rows(conn, scope):
         return None
-    refreshed = refresh_relation_scope_frequency_receipt(conn, scope)
-    if refreshed is not None:
-        return refreshed
-    return None
+    return load_scope_frequency_receipt(conn, scope)
 
 
 def relation_frequency_snapshots_by_scope(
@@ -834,93 +1196,10 @@ def bounded_relation_peer_ids(
     blocked_entities: set[str],
     limit: int,
 ) -> tuple[list[str], bool]:
-    """Select posting-list peers and a recent fallback without a scope COUNT/scan."""
+    """Fail closed; callers must use the exact containment pair planner."""
 
-    clean_id = str(memory_id or "")
-    scopes = sorted({str(scope) for scope in scope_ids if str(scope)})
-    bounded = max(1, min(int(limit), 5000))
-    if not clean_id or not scopes:
-        return [], False
-    placeholders = ",".join("?" for _ in scopes)
-    entity_rows = conn.execute(
-        f"""
-        SELECT entity FROM relation_entity_postings
-        WHERE memory_id=? AND scope_id IN ({placeholders})
-        ORDER BY entity
-        """,
-        (clean_id, *scopes),
-    ).fetchall()
-    entities = [str(row[0]) for row in entity_rows if str(row[0]) not in blocked_entities]
-    selected: list[str] = []
-    selected_set: set[str] = set()
-    per_entity_limit = max(2, min(bounded + 1, (bounded // max(1, len(entities))) + 2))
-    for entity in entities:
-        rows = conn.execute(
-            f"""
-            SELECT memory_id
-            FROM relation_entity_postings
-            WHERE scope_id IN ({placeholders}) AND entity=? AND memory_id<>?
-            ORDER BY memory_id
-            LIMIT ?
-            """,
-            (*scopes, entity, clean_id, per_entity_limit),
-        ).fetchall()
-        for row in rows:
-            peer_id = str(row[0])
-            if peer_id not in selected_set:
-                selected_set.add(peer_id)
-                selected.append(peer_id)
-                if len(selected) >= bounded:
-                    break
-        if len(selected) >= bounded:
-            break
-
-    remaining = bounded - len(selected)
-    if remaining > 0:
-        exclusion = [clean_id, *selected]
-        exclusion_placeholders = ",".join("?" for _ in exclusion)
-        try:
-            from .graph import lifecycle_visible_sql
-        except ImportError:  # pragma: no cover
-            from graph import lifecycle_visible_sql
-        rows = conn.execute(
-            f"""
-            SELECT m.id
-            FROM memories m
-            WHERE m.scope_id IN ({placeholders})
-              AND m.id NOT IN ({exclusion_placeholders})
-              AND {lifecycle_visible_sql('m')}
-            ORDER BY m.updated_at DESC, m.id DESC
-            LIMIT ?
-            """,
-            (*scopes, *exclusion, remaining),
-        ).fetchall()
-        for row in rows:
-            peer_id = str(row[0])
-            if peer_id not in selected_set:
-                selected_set.add(peer_id)
-                selected.append(peer_id)
-
-    exclusion = [clean_id, *selected]
-    exclusion_placeholders = ",".join("?" for _ in exclusion)
-    try:
-        from .graph import lifecycle_visible_sql
-    except ImportError:  # pragma: no cover
-        from graph import lifecycle_visible_sql
-    has_more = (
-        conn.execute(
-            f"""
-            SELECT 1 FROM memories m
-            WHERE m.scope_id IN ({placeholders})
-              AND m.id NOT IN ({exclusion_placeholders})
-              AND {lifecycle_visible_sql('m')}
-            LIMIT 1
-            """,
-            (*scopes, *exclusion),
-        ).fetchone()
-        is not None
-    )
-    return selected, has_more
+    del conn, memory_id, scope_ids, blocked_entities, limit
+    return [], True
 
 
 __all__ = [
@@ -933,11 +1212,12 @@ __all__ = [
     "RELATION_FREQUENCY_INDEX_MIGRATION_PLUGIN_VERSION",
     "RELATION_FREQUENCY_INDEX_SCHEMA_VERSION",
     "RelationFrequencyIndexNotReady",
-    "bounded_relation_peer_ids",
     "ensure_relation_frequency_index_schema",
     "refresh_relation_scope_frequency_receipt",
     "relation_frequency_index_schema_status",
+    "relation_frequency_scope_failure_status",
     "relation_frequency_snapshot",
     "relation_frequency_snapshots_by_scope",
+    "supersede_relation_frequency_failure",
     "sync_relation_frequency_memory",
 ]

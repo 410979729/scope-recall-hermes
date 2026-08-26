@@ -288,6 +288,11 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
     trace["stages"]["graph"] = {
         "entity_scored_count": len(entity_graph_scores),
         "relation_evidence_count": sum(int((payload or {}).get("count") or 0) for payload in relation_evidence.values()),
+        "generated_signal_disabled_count": sum(
+            1
+            for payload in relation_evidence.values()
+            if bool((payload or {}).get("generated_signal_disabled"))
+        ),
     }
     trace["stages"]["fact_freshness"] = {
         "tracked_count": len(freshness_evidence),
@@ -389,6 +394,15 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
                 "relation_evidence_count": int(relation_payload.get("count") or 0),
                 "relation_evidence_types": relation_types,
                 "relation_evidence_ids": relation_payload.get("ids") or [],
+                "relation_signal_disabled": bool(
+                    relation_payload.get("generated_signal_disabled")
+                ),
+                "relation_signal_reason": str(
+                    relation_payload.get("generated_signal_reason") or ""
+                ),
+                "relation_scope_state": str(
+                    relation_payload.get("relation_scope_state") or ""
+                ),
                 "relation_contradiction_mode": contradiction_mode,
                 "relation_contradiction_authoritative_loser": authoritative_contradiction_loser,
                 "relation_contradiction_loser": contradiction_loser,

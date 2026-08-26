@@ -10,6 +10,7 @@ dist/
 *.pyc
 .venv/
 venv/
+.hermes-agent-src/
 .DS_Store
 
 # Runtime/state artifacts must never be published.
@@ -26,3 +27,6 @@ review-report.*.md
 
 # Hermes local planning/session scratch.
 .hermes/
+
+# Local execution evidence and private audit artifacts.
+.execution/
