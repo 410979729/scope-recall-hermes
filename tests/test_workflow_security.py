@@ -91,6 +91,15 @@ def test_ci_and_release_builds_pin_and_verify_stable_hermes_source():
         assert ".github/scripts/checkout_pinned_hermes.py" in all_run_text
         assert not re.search(r"(?:--branch|checkout|fetch)[^\n]*\bmain\b", all_run_text)
 
+    ci_workflow = _workflow("ci.yml")
+    full_matrix_checkout = [
+        step
+        for step in ci_workflow["jobs"]["test"]["steps"]
+        if str(step.get("uses") or "").startswith("actions/checkout@")
+    ]
+    assert len(full_matrix_checkout) == 1
+    assert full_matrix_checkout[0].get("with", {}).get("fetch-depth") == 0
+
 
 def test_checkout_helper_timeout_cleans_process_tree_and_reports_structure(
     monkeypatch: pytest.MonkeyPatch,
