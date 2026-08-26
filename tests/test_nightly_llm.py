@@ -208,6 +208,30 @@ def test_nightly_llm_retry_reports_actual_attempt_count_for_non_retryable_errors
     assert "auth after 3 attempt(s)" not in message
 
 
+def test_nightly_llm_missing_api_key_is_non_retryable_without_sleep(monkeypatch):
+    import scope_recall.nightly_llm as nightly_llm
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(nightly_llm.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    with pytest.raises(nightly_llm.NightlyDigestLLMError) as excinfo:
+        nightly_llm.call_llm_with_retries(
+            "prompt",
+            model="test-model",
+            base_url="https://api.openai.com",
+            api_key="",
+            timeout=60,
+            api_mode="chat_completions",
+            max_attempts=3,
+            retry_delay=1,
+        )
+
+    assert excinfo.value.attempts == 1
+    assert excinfo.value.error_kind == "auth"
+    assert excinfo.value.retryable is False
+    assert sleeps == []
+
+
 def test_nightly_llm_retry_preserves_endpoint_policy_classification(monkeypatch):
     import scope_recall.nightly_llm as nightly_llm
     from scope_recall.http_utils import UnsafeEndpointError

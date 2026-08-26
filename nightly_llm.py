@@ -42,6 +42,10 @@ class NightlyDigestLLMError(RuntimeError):
         self.retryable = retryable
 
 
+class MissingLLMCredentialError(RuntimeError):
+    """Raised when an authenticated digest transport has no credential."""
+
+
 def config_bool_value(value: Any, default: bool = False) -> bool:
     if value is None:
         return default
@@ -634,7 +638,7 @@ def call_llm(
     thinking: dict[str, Any] | None = None,
 ) -> str:
     if not api_key:
-        raise RuntimeError("API key not found for nightly digest")
+        raise MissingLLMCredentialError("API key not found for nightly digest")
     mode = normalize_digest_api_mode(api_mode, provider="", base_url=base_url)
     if mode == "codex_responses":
         return call_codex_responses_llm(
@@ -676,6 +680,8 @@ def call_llm(
 def classify_llm_error(exc: Exception) -> tuple[str, bool]:
     if isinstance(exc, NightlyDigestLLMError):
         return exc.error_kind, exc.retryable
+    if isinstance(exc, MissingLLMCredentialError):
+        return "auth", False
     if isinstance(exc, UnsafeEndpointError):
         return "endpoint_policy", False
     message = str(exc or "").lower()
@@ -687,7 +693,19 @@ def classify_llm_error(exc: Exception) -> tuple[str, bool]:
         return "server", True
     if any(token in message for token in ("connection", "network", "temporarily", "reset by peer", "remote end closed")):
         return "network", True
-    if any(token in message for token in ("401", "403", "unauthorized", "forbidden", "invalid api key", "permission")):
+    if any(
+        token in message
+        for token in (
+            "401",
+            "403",
+            "unauthorized",
+            "forbidden",
+            "invalid api key",
+            "api key not found",
+            "missing api key",
+            "permission",
+        )
+    ):
         return "auth", False
     if any(token in message for token in ("402", "quota", "billing", "insufficient_quota")):
         return "quota", False
