@@ -17,6 +17,7 @@ This patch candidate is cumulative since the last public release, `1.10.3`, and 
 ### Changed
 - Replaced optional dependency extras in the release lock input with explicit direct pins and regenerated hashed constraints for reproducible Windows/Linux resolution.
 - Made the CJK lexical latency gate portable on fast SQLite hosts by flooring the paired denominator at the declared target divided by the ratio budget. The hard bound is now equivalently `shadow_p95 <= max(100 ms, 4 * legacy_p95)`, preserving the 4x guard on slower hosts while preventing a near-zero legacy baseline from rejecting a target-compliant shadow path.
+- Raised the default graceful-shutdown budget from 3 to 10 seconds while retaining one absolute deadline and every explicit timeout override, so legitimate cleanup on a loaded Windows host is not misclassified as a stuck teardown.
 - Retired all executable full-scope relation rebuild enqueue/claim/drain paths. Affected-work planning now uses cap+1, performs no partial mutation when the cap is exceeded, and excludes stale generated relation signals while ordinary lexical/SQLite/vector recall continues.
 - Bounded foreground-idle relation maintenance by configurable interval, shared wall-clock budget, finite batch limits, contention backoff, and maximum attempts; poison work becomes terminal and does not resurrect automatically.
 - Exposed relation pending/retry/poison/operator-action health through Doctor, `scope_recall_stats`, and the dashboard while preserving the query zero-write contract.

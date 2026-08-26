@@ -237,6 +237,49 @@ def test_public_shutdown_shares_one_deadline_between_writer_and_digest(
     assert provider._shutdown_finalized is True
 
 
+def test_public_shutdown_default_keeps_windows_cleanup_headroom(
+    tmp_path, monkeypatch
+) -> None:
+    provider = _provider(tmp_path)
+    writer_timeouts: list[float] = []
+    digest_timeouts: list[float] = []
+    now = {"value": 1000.0}
+
+    def fake_monotonic() -> float:
+        return now["value"]
+
+    def loaded_windows_writer(_provider, *, timeout: float) -> None:
+        writer_timeouts.append(timeout)
+        now["value"] += 3.5
+
+    monkeypatch.setattr(
+        process_lifecycle_mod,
+        "time",
+        SimpleNamespace(monotonic=fake_monotonic),
+    )
+    monkeypatch.setattr(
+        provider_module,
+        "shutdown_writer",
+        loaded_windows_writer,
+    )
+    monkeypatch.setattr(
+        provider._background_work(),
+        "join_digest",
+        lambda timeout: digest_timeouts.append(timeout),
+    )
+    monkeypatch.setattr(
+        provider,
+        "_cleanup_failed_writer_initialization",
+        lambda **_kwargs: True,
+    )
+
+    provider.shutdown()
+
+    assert writer_timeouts == pytest.approx([10.0])
+    assert digest_timeouts == pytest.approx([6.5])
+    assert provider._shutdown_finalized is True
+
+
 def test_public_shutdown_total_deadline_covers_blocking_vector_cleanup(
     tmp_path, monkeypatch
 ) -> None:
