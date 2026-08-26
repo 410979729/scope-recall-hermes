@@ -64,6 +64,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BUSY_TIMEOUT_SECONDS = 10.0
 DEFAULT_FRESHNESS_BACKFILL_LIMIT = 500
+DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 10.0
 _MISSING = object()
 
 
@@ -778,7 +779,9 @@ def _promote_under_lifecycle_lock(provider: Any) -> None:
         _call_provider(provider, "_initialize_read_only_runtime", default=lambda: initialize_read_only_runtime(provider))
 
 
-def shutdown_provider_process(provider: Any, *, timeout: float = 3.0) -> None:
+def shutdown_provider_process(
+    provider: Any, *, timeout: float = DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
+) -> None:
     """Quiesce writer and digest work, then close shared resources.
 
     Writer and digest shutdown is a fail-closed barrier: if a worker does
@@ -878,5 +881,10 @@ class ProcessLifecycle:
     def promote_to_writer(self, provider: Any) -> None:
         promote_reader_to_writer(provider)
 
-    def shutdown(self, provider: Any, *, timeout: float = 3.0) -> None:
+    def shutdown(
+        self,
+        provider: Any,
+        *,
+        timeout: float = DEFAULT_SHUTDOWN_TIMEOUT_SECONDS,
+    ) -> None:
         shutdown_provider_process(provider, timeout=timeout)

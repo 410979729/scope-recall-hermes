@@ -33,6 +33,7 @@ from .capture_llm import extract_capture_candidates
 from .config import load_runtime_config, save_runtime_config
 from .journal import ensure_journal_schema, run_journal_digest
 from ._internal.runtime.composition import RuntimeComposition, assemble_runtime
+from ._internal.runtime.process_lifecycle import DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
 from ._internal.runtime import peer_recovery as _peer_recovery
 from ._internal.runtime.truth_session import TruthSession
 from ._internal.runtime.background import BackgroundWork
@@ -742,7 +743,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
     def recall_service_view(self) -> Any:
         return self._recall_service
 
-    def shutdown(self, *, timeout: float = 3.0) -> None:
+    def shutdown(
+        self, *, timeout: float = DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
+    ) -> None:
         self._bind_composition().shutdown(timeout=timeout)
 
     def flush(self, timeout: float = 2.0) -> bool:

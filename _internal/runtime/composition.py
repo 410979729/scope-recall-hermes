@@ -9,7 +9,7 @@ from .background import BackgroundWork
 from .bootstrap import RuntimeBootstrap
 from .command_adapter import bind_provider_command_adapter
 from .ports import MemoryCommandPort, RuntimeAdapterPort, ToolRuntimePort
-from .process_lifecycle import ProcessLifecycle
+from .process_lifecycle import DEFAULT_SHUTDOWN_TIMEOUT_SECONDS, ProcessLifecycle
 from .tool_port import bind_tool_runtime_port
 from .truth_session import TruthSession
 from .vector_view import RuntimeVectorView
@@ -78,7 +78,9 @@ class RuntimeComposition:
 
         self.lifecycle.promote_to_writer(self.adapter)
 
-    def shutdown(self, *, timeout: float = 3.0) -> None:
+    def shutdown(
+        self, *, timeout: float = DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
+    ) -> None:
         self.lifecycle.shutdown(self.adapter, timeout=timeout)
 
 
