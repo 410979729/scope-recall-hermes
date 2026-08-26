@@ -1537,6 +1537,7 @@ _LEXICAL_V2_FIELDS = frozenset(
 )
 _LEXICAL_SHADOW_P95_TARGET_MS = 100.0
 _LEXICAL_RELEASE_LATENCY_RATIO_BUDGET = 4.0
+_LEXICAL_RELEASE_MIN_ROUNDS = 20
 
 def validate_lexical_benchmark_payload(payload: dict[str, object]) -> bool:
     """Validate the v2 release payload and recompute all derived hard gates.
@@ -1572,7 +1573,7 @@ def validate_lexical_benchmark_payload(payload: dict[str, object]) -> bool:
     if (
         rows != 50_000
         or rounds is None
-        or not 3 <= rounds <= 100
+        or not _LEXICAL_RELEASE_MIN_ROUNDS <= rounds <= 100
         or limit != 10
         or cjk_queries != 3
         or cjk_found != cjk_queries

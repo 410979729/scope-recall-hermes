@@ -28,3 +28,23 @@ def test_trigram_query_is_bounded_and_quotes_fts_terms():
     assert '"oauth"' in query
     assert '"redirect"' in query
     assert query.count(" OR ") < 24
+
+
+def test_trigram_query_suppresses_only_all_common_cjk_candidates():
+    query = trigram_fts_query(
+        "数据库迁移方案",
+        ["数据库迁移方案", "oauth"],
+        common_cjk_bigrams={"数据", "据库"},
+    )
+
+    assert '"数据库"' not in query
+    assert '"据库迁"' in query
+    assert '"数据库迁移方案"' in query
+    assert '"oauth"' in query
+
+    common_only = trigram_fts_query(
+        "数据库",
+        ["数据库"],
+        common_cjk_bigrams={"数据", "据库"},
+    )
+    assert common_only == ""

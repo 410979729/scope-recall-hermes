@@ -35,6 +35,18 @@ def _load_benchmark_module():
     return module
 
 
+def test_lexical_release_default_has_a_stable_p95_sample(monkeypatch):
+    benchmark = _load_benchmark_module()
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--json"])
+
+    args = benchmark._parse_args()
+
+    query_count = len(benchmark._CJK_QUERIES) + len(benchmark._ENGLISH_QUERIES)
+    assert args.rows == 50_000
+    assert args.rounds == benchmark.DEFAULT_RELEASE_ROUNDS == 20
+    assert query_count * args.rounds == 100
+
+
 def test_lexical_latency_contract_treats_absolute_p95_as_a_cross_host_target():
     benchmark = _load_benchmark_module()
 
