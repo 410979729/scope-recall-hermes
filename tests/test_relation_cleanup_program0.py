@@ -261,7 +261,12 @@ def test_cleanup_refuses_windows_junction_backup_namespace(
         candidate = Path(value)
         return candidate.name == "backups" or bool(real_isjunction(value))
 
-    monkeypatch.setattr(cleanup.os.path, "isjunction", report_backup_junction)
+    monkeypatch.setattr(
+        cleanup.os.path,
+        "isjunction",
+        report_backup_junction,
+        raising=False,
+    )
     with pytest.raises(RuntimeError, match="failed before commit"):
         _apply(path, plan, operation_id="junction-fixture")
 
