@@ -318,6 +318,12 @@ class ProviderToolRuntimeAdapter:
         return run_reflection_tool(self, args=dict(args))
 
     def mark_vector_needs_repair(self, reason: str) -> None:
+        composition = getattr(self._host, "_composition", None)
+        vector = getattr(composition, "vector", None)
+        mark = getattr(vector, "mark_needs_repair", None)
+        if callable(mark):
+            mark(reason)
+            return
         from ...vector_runtime import mark_vector_needs_repair
 
         mark_vector_needs_repair(self._host, reason)

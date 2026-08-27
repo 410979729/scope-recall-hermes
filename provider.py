@@ -664,7 +664,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         }
 
     def vector_status_view(self) -> dict[str, Any]:
-        return self._bind_composition().vector_view.vector_status_view()
+        return cast(
+            dict[str, Any], self._bind_composition().vector.status_payload()
+        )
 
     def retrieval_status_view(self) -> dict[str, Any]:
         config = dict(getattr(self, "_retrieval_config", None) or {})
@@ -866,7 +868,12 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         )
 
     def _embed_query_variants(self, queries: List[str]) -> List[List[float]]:
-        return self._bind_composition().vector_view.embed_query_variants(queries)
+        return [
+            list(row)
+            for row in self._bind_composition().vector.embed_query_variants(
+                tuple(queries)
+            )
+        ]
 
     def _search_vector_memories(self, query: str, *, limit: int) -> List[RecallItem]:
         return search_vector_memories(self, query, limit=limit)

@@ -19,6 +19,7 @@ from scope_recall._internal.application.capture_journal import (
 from scope_recall._internal.application.memory_commands import MemoryCommandApplication
 from scope_recall._internal.application.memory_queries import MemoryQueryApplication
 from scope_recall._internal.application.runtime_state import RuntimeStateSnapshot
+from scope_recall._internal.application.vector_service import VectorApplication
 from scope_recall._internal.recall import orchestrator as orchestrator_module
 from scope_recall._internal.recall import pipeline as recall_pipeline
 from scope_recall._internal.runtime.command_adapter import ProviderCommandAdapter
@@ -192,6 +193,7 @@ def test_composition_exposes_typed_capture_and_journal_services() -> None:
     provider = ScopeRecallMemoryProvider()
     assert type(provider._composition.capture) is CaptureApplication
     assert type(provider._composition.journal) is JournalApplication
+    assert type(provider._composition.vector) is VectorApplication
 
 
 def test_isolated_host_keeps_legacy_command_port_fallback(monkeypatch) -> None:
@@ -260,6 +262,7 @@ def test_application_query_and_state_contracts_stay_provider_neutral() -> None:
         "_internal/application/capture_journal.py",
         "_internal/application/memory_queries.py",
         "_internal/application/runtime_state.py",
+        "_internal/application/vector_service.py",
     ):
         source = (PLUGIN_ROOT / rel).read_text(encoding="utf-8")
         tree = ast.parse(source)
