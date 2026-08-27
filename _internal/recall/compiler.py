@@ -151,6 +151,19 @@ class RecallCandidate:
     def evidence_score(self) -> int:
         return len(self.evidence_kinds)
 
+    @property
+    def ordering_evidence_score(self) -> int:
+        """Count only independent retrieval channels for packet ordering.
+
+        Relation, temporal, curated-source, and current-truth annotations stay
+        visible in the packet but cannot silently acquire ranking authority.
+        """
+
+        return sum(
+            kind in {"lexical", "vector", "fusion"}
+            for kind in self.evidence_kinds
+        )
+
 
 @dataclass(frozen=True)
 class CandidateSet:
@@ -321,9 +334,9 @@ def _evidence_stage(
     return sorted(
         output,
         key=lambda candidate: (
-            candidate.truth_state in CURRENT_TRUTH_STATES,
-            candidate.evidence_score,
+            candidate.ordering_evidence_score,
             candidate.item.score,
+            candidate.truth_state in CURRENT_TRUTH_STATES,
             -candidate.ordinal,
         ),
         reverse=True,
