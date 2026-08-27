@@ -128,4 +128,3 @@ class MemoryCommandApplication:
 
     def fact_owned(self, request: FactOwnedMemoryIdsRequest) -> list[str]:
         return self._gateway.fact_owned(request)
-

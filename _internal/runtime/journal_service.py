@@ -51,4 +51,3 @@ class ProviderJournalAdapter:
 
 def bind_journal_gateway(host: Any) -> JournalGateway:
     return ProviderJournalAdapter(host)
-

@@ -35,4 +35,3 @@ class VectorApplication:
 
     def mark_needs_repair(self, reason: str) -> None:
         self._gateway.mark_needs_repair(reason)
-

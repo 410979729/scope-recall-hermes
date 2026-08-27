@@ -53,4 +53,3 @@ def bind_vector_gateway(
     host: RuntimeAdapterPort, view: RuntimeVectorView
 ) -> VectorGateway:
     return ProviderVectorAdapter(host, view)
-
