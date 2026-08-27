@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
-from typing import Any, Mapping
+from contextlib import contextmanager, nullcontext
+from typing import Any, Iterator, Mapping
 
 from .ports import FactToolPort, MemoryCommandPort, ToolRuntimePort
 
@@ -173,15 +173,20 @@ class ProviderToolRuntimeAdapter:
     def vector_store_view(self) -> Any:
         return getattr(self._host, "_vector_store", None)
 
-    def writer_lifecycle_lock(self) -> Any:
-        from ...write_kernel import _writer_lifecycle_lock
+    @contextmanager
+    def write_access(self, *, capture_barrier: bool) -> Iterator[bool]:
+        """Hold the existing capture/lifecycle order without exposing either lock."""
 
-        return _writer_lifecycle_lock(self._host)
+        from ...capture import capture_mutation_barrier as mutation_barrier
+        from ...write_kernel import (
+            _writer_lifecycle_lock,
+            has_positive_write_authority,
+        )
 
-    def has_positive_write_authority(self) -> bool:
-        from ...write_kernel import has_positive_write_authority
-
-        return has_positive_write_authority(self._host)
+        barrier = mutation_barrier(self._host) if capture_barrier else nullcontext()
+        with barrier:
+            with _writer_lifecycle_lock(self._host):
+                yield has_positive_write_authority(self._host)
 
     def rollback_conn_after_error(self, context: str) -> Any:
         return _optional_call(self._host, "_rollback_conn_after_error", context)
@@ -271,10 +276,6 @@ class ProviderToolRuntimeAdapter:
 
     def reflection_transport(self) -> Any:
         return getattr(self._host, "_reflection_transport", None)
-
-    def evidence_runtime(self) -> Any:
-        return self._host
-
 
 def bind_tool_runtime_port(
     obj: Any, *, command_port: MemoryCommandPort | None = None

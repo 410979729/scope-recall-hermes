@@ -251,6 +251,13 @@ def test_command_kernel_has_no_legacy_write_target_or_memory_ops_dependency() ->
     assert "write_kernel" not in source
 
 
+def test_tooling_does_not_unwrap_runtime_or_writer_lock() -> None:
+    tooling_source = (PLUGIN_ROOT / "tooling.py").read_text(encoding="utf-8")
+    assert "evidence_runtime" not in tooling_source
+    assert "writer_lifecycle_lock" not in tooling_source
+    assert "capture_mutation_barrier" not in tooling_source
+
+
 def test_touched_internals_import_canonical_modules_not_shims() -> None:
     assert orchestrator_module.recall_pipeline is recall_pipeline
     assert orchestrator_module.recall_pipeline.__name__ == "scope_recall._internal.recall.pipeline"

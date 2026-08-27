@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import AbstractContextManager
 from typing import Any, Mapping, Protocol, runtime_checkable
 
 from ..application.memory_commands import (
@@ -168,9 +169,9 @@ class ToolRuntimePort(MemoryQueryPort, FactToolPort, Protocol):
 
     def vector_store_view(self) -> Any: ...
 
-    def writer_lifecycle_lock(self) -> Any: ...
-
-    def has_positive_write_authority(self) -> bool: ...
+    def write_access(
+        self, *, capture_barrier: bool
+    ) -> AbstractContextManager[bool]: ...
 
     def rollback_conn_after_error(self, context: str) -> Any: ...
 
@@ -223,9 +224,6 @@ class ToolRuntimePort(MemoryQueryPort, FactToolPort, Protocol):
     def hermes_home_path(self) -> Any: ...
 
     def reflection_transport(self) -> Any: ...
-
-    def evidence_runtime(self) -> Any: ...
-
 
 @runtime_checkable
 class ToolRouterPort(Protocol):
