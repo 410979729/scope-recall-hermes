@@ -316,6 +316,35 @@ def test_empty_replay_skips_after_replay_hook() -> None:
     assert store.calls == []
 
 
+def test_replay_claim_does_not_adopt_existing_transaction() -> None:
+    conn = _truth_conn()
+    ensure_vector_generation_schema(conn)
+    conn.commit()
+    store = _ForbiddenEnumerationStore()
+
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute("CREATE TABLE caller_owned_probe(value TEXT)")
+    conn.execute("INSERT INTO caller_owned_probe(value) VALUES ('uncommitted')")
+
+    with pytest.raises(RuntimeError, match="claim requires an idle SQLite connection"):
+        replay_committed_vector_events(
+            conn,
+            generation_id="gen-existing-transaction",
+            vector_store=store,
+            embedder=_Embedder(),
+            vector_text=lambda summary, content: f"{summary}\n{content}".strip(),
+            should_index_row=lambda _target, _metadata: True,
+            mutation_context=nullcontext,
+        )
+
+    assert conn.in_transaction is True
+    assert store.calls == []
+    conn.rollback()
+    assert conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='caller_owned_probe'"
+    ).fetchone() is None
+
+
 def test_empty_runtime_replay_skips_explicit_audit_hook() -> None:
     conn = _truth_conn()
     ensure_vector_generation_schema(conn)

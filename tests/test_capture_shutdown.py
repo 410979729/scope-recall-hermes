@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import queue
+import sqlite3
 import threading
 import time
 
@@ -157,6 +158,43 @@ def test_idle_relation_maintenance_applies_one_configured_bound_to_all_lanes(
     assert observed["focus_limit"] == 17
     assert observed["backfill_limit"] == 17
     assert observed["reclassification_limit"] == 17
+
+
+def test_idle_relation_maintenance_does_not_adopt_existing_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _Provider()
+    provider._truth_writer_role = "owner"
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    provider._conn = conn
+    provider._require_conn = lambda: conn
+    calls = {"drain": 0}
+
+    monkeypatch.setattr(capture, "has_positive_write_authority", lambda _provider: True)
+
+    def unexpected_drain(*_args, **_kwargs):
+        calls["drain"] += 1
+        return {}
+
+    monkeypatch.setattr(capture, "drain_relation_frequency_work", unexpected_drain)
+
+    try:
+        conn.execute("CREATE TABLE transaction_probe(value TEXT)")
+        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("INSERT INTO transaction_probe(value) VALUES ('caller-owned')")
+
+        capture._drain_relation_rebuild_debt_locked(provider)
+
+        assert calls["drain"] == 0
+        assert conn.in_transaction is True
+        assert provider._relation_maintenance_busy_skips == 1
+        conn.rollback()
+        assert conn.execute("SELECT COUNT(*) FROM transaction_probe").fetchone()[0] == 0
+    finally:
+        if conn.in_transaction:
+            conn.rollback()
+        conn.close()
 
 
 def test_idle_maintenance_unit_holds_lifecycle_against_shutdown(
