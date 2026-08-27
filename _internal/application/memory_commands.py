@@ -70,6 +70,14 @@ class FactOwnedMemoryIdsRequest:
     ids: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class PrivacyPurgeRequest:
+    action: str
+    ids: tuple[str, ...] = ()
+    operation_id: str = ""
+    confirmation: str = ""
+
+
 @runtime_checkable
 class MemoryCommandGateway(Protocol):
     def store(self, request: StoreMemoryRequest) -> tuple[str, bool, str]: ...
@@ -91,6 +99,8 @@ class MemoryCommandGateway(Protocol):
     def repair(self) -> dict[str, object]: ...
 
     def fact_owned(self, request: FactOwnedMemoryIdsRequest) -> list[str]: ...
+
+    def purge(self, request: PrivacyPurgeRequest) -> dict[str, object]: ...
 
 
 class MemoryCommandApplication:
@@ -128,3 +138,6 @@ class MemoryCommandApplication:
 
     def fact_owned(self, request: FactOwnedMemoryIdsRequest) -> list[str]:
         return self._gateway.fact_owned(request)
+
+    def purge(self, request: PrivacyPurgeRequest) -> dict[str, object]:
+        return self._gateway.purge(request)

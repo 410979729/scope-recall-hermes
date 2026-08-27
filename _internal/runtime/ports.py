@@ -14,6 +14,7 @@ from ..application.memory_commands import (
     FeedbackMemoryRequest,
     GovernMemoriesRequest,
     MergeMemoriesRequest,
+    PrivacyPurgeRequest,
     StoreMemoryRequest,
     UpdateMemoryRequest,
 )
@@ -113,6 +114,8 @@ class MemoryCommandPort(Protocol):
 
     def fact_owned(self, request: FactOwnedMemoryIdsRequest) -> list[str]: ...
 
+    def purge(self, request: PrivacyPurgeRequest) -> dict[str, object]: ...
+
 
 @runtime_checkable
 class RuntimeAdapterPort(MemoryQueryPort, Protocol):
@@ -190,6 +193,8 @@ class ToolRuntimePort(MemoryQueryPort, FactToolPort, Protocol):
     def feedback_memory(self, *args: Any, **kwargs: Any) -> Any: ...
 
     def fact_owned_memory_ids(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    def purge_memories(self, *args: Any, **kwargs: Any) -> Any: ...
 
     def dedupe_memories(self, *args: Any, **kwargs: Any) -> Any: ...
 

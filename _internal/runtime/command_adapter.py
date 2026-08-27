@@ -13,6 +13,7 @@ from ..application.memory_commands import (
     GovernMemoriesRequest,
     MemoryCommandGateway,
     MergeMemoriesRequest,
+    PrivacyPurgeRequest,
     StoreMemoryRequest,
     UpdateMemoryRequest,
 )
@@ -124,6 +125,20 @@ class ProviderCommandAdapter:
 
     def fact_owned(self, request: FactOwnedMemoryIdsRequest) -> list[str]:
         return list(memory_ops.fact_owned_memory_ids(self._host, list(request.ids)))
+
+    def purge(self, request: PrivacyPurgeRequest) -> dict[str, object]:
+        from ...privacy_purge import run_privacy_purge
+
+        return cast(
+            dict[str, object],
+            run_privacy_purge(
+                self._host,
+                action=request.action,
+                ids=request.ids,
+                operation_id=request.operation_id,
+                confirmation=request.confirmation,
+            ),
+        )
 
 
 def bind_provider_command_adapter(obj: Any) -> MemoryCommandGateway:

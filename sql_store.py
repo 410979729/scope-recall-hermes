@@ -43,6 +43,14 @@ from .operator_ledger import (
     ensure_operator_ledger_schema,
     operator_ledger_schema_status,
 )
+from .privacy_purge_schema import (
+    PRIVACY_PURGE_MIGRATION_DESCRIPTION,
+    PRIVACY_PURGE_MIGRATION_ID,
+    PRIVACY_PURGE_MIGRATION_PLUGIN_VERSION,
+    PRIVACY_PURGE_SCHEMA_VERSION,
+    ensure_privacy_purge_schema,
+    privacy_purge_schema_status,
+)
 from .relation_containment import (
     RELATION_CONTAINMENT_MIGRATION_DESCRIPTION,
     RELATION_CONTAINMENT_MIGRATION_ID,
@@ -119,7 +127,7 @@ from .vector_reconciliation import (
 )
 
 ENTRY_DELIMITER = "\n§\n"
-SCHEMA_VERSION = RELATION_POLICY_GENERATION_SCHEMA_VERSION
+SCHEMA_VERSION = PRIVACY_PURGE_SCHEMA_VERSION
 BASELINE_SCHEMA_VERSION = 10600
 BASELINE_MIGRATION_ID = "0001_baseline_v1_6_0"
 BASELINE_MIGRATION_PLUGIN_VERSION = "1.6.0"
@@ -215,6 +223,12 @@ EXPECTED_SCHEMA_MIGRATIONS: tuple[dict[str, Any], ...] = (
         "description": RELATION_POLICY_GENERATION_MIGRATION_DESCRIPTION,
         "schema_version": RELATION_POLICY_GENERATION_SCHEMA_VERSION,
     },
+    {
+        "id": PRIVACY_PURGE_MIGRATION_ID,
+        "plugin_version": PRIVACY_PURGE_MIGRATION_PLUGIN_VERSION,
+        "description": PRIVACY_PURGE_MIGRATION_DESCRIPTION,
+        "schema_version": PRIVACY_PURGE_SCHEMA_VERSION,
+    },
 )
 
 
@@ -282,6 +296,7 @@ def ensure_schema_migrations(conn: sqlite3.Connection) -> None:
     ensure_vector_reconciliation_schema(conn)
     ensure_operator_ledger_schema(conn)
     ensure_lexical_generation_schema(conn)
+    ensure_privacy_purge_schema(conn)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -416,6 +431,7 @@ def schema_migration_status(conn: sqlite3.Connection) -> dict[str, Any]:
     vector_reconciliation_status = vector_reconciliation_schema_status(conn)
     operator_status = operator_ledger_schema_status(conn)
     lexical_status = lexical_schema_status(conn)
+    privacy_purge_status = privacy_purge_schema_status(conn)
     return {
         "schema_version": SCHEMA_VERSION,
         "user_version": user_version,
@@ -432,6 +448,7 @@ def schema_migration_status(conn: sqlite3.Connection) -> dict[str, Any]:
             and bool(vector_reconciliation_status["current"])
             and bool(operator_status["current"])
             and bool(lexical_status["current"])
+            and bool(privacy_purge_status["current"])
         ),
         "newer_schema": newer_schema,
         "missing_migrations": missing,
@@ -445,6 +462,7 @@ def schema_migration_status(conn: sqlite3.Connection) -> dict[str, Any]:
         "vector_reconciliation": vector_reconciliation_status,
         "operator_ledger": operator_status,
         "lexical_generation": lexical_status,
+        "privacy_purge": privacy_purge_status,
     }
 
 
@@ -499,6 +517,7 @@ def ensure_schema(conn: sqlite3.Connection, *, commit: bool = True) -> None:
 
     ensure_vector_generation_schema(conn)
     ensure_vector_reconciliation_schema(conn)
+    ensure_privacy_purge_schema(conn)
     ensure_schema_migrations(conn)
     rebuild_fts_if_empty(conn, commit=False)
     backfill_memory_entities(conn)

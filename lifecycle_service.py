@@ -391,6 +391,8 @@ def transition_memory_lifecycle(
     timestamp: str = "",
     fact_mutation_authority: str = "",
     replace_metadata: bool = False,
+    audit_content_free: bool = False,
+    audit_target_id: str = "",
 ) -> dict[str, Any]:
     """Apply one lifecycle transition under a savepoint without committing.
 
@@ -674,16 +676,33 @@ def transition_memory_lifecycle(
         if relation_restore["requested"]:
             after["relation_restore"] = relation_restore
         event_id = f"gov_{uuid.uuid4().hex}"
+        audit_before = before
+        audit_after = after
+        if audit_content_free:
+            audit_before = {
+                "target_hash": str(audit_target_id or ""),
+                "content_hash": hashlib.sha256(
+                    str(row["content"] or "").encode("utf-8")
+                ).hexdigest(),
+                "lifecycle": current_lifecycle,
+                "updated_at": current_updated_at,
+            }
+            audit_after = {
+                "target_hash": str(audit_target_id or ""),
+                "content_hash": audit_before["content_hash"],
+                "lifecycle": effective_lifecycle,
+                "updated_at": at,
+            }
         record_governance_audit_event(
             conn,
             event_id=event_id,
             event_type=operation.legacy_event_type,
             action=operation.legacy_action,
             scope_id=str(row["scope_id"] or ""),
-            target_id=memory_id,
+            target_id=str(audit_target_id or memory_id),
             batch_id=str(batch_id or ""),
-            before=before,
-            after=after,
+            before=audit_before,
+            after=audit_after,
             reason=str(reason or "lifecycle transition"),
             actor=str(actor or "scope-recall:lifecycle"),
             dry_run=False,

@@ -22,6 +22,7 @@ from .memory_commands import (
     MemoryCommandApplication,
     MemoryCommandGateway,
     MergeMemoriesRequest,
+    PrivacyPurgeRequest,
     StoreMemoryRequest,
     UpdateMemoryRequest,
 )
@@ -59,6 +60,7 @@ __all__ = [
     "MemoryCommandApplication",
     "MemoryCommandGateway",
     "MergeMemoriesRequest",
+    "PrivacyPurgeRequest",
     "StoreMemoryRequest",
     "UpdateMemoryRequest",
     "AuthoritySnapshot",

@@ -132,6 +132,9 @@ class ScopeRecallToolService:
             return not self._bool_arg(args or {}, "propose_memory", False)
         if tool_name == "scope_recall_experience_preflight":
             return not self._bool_arg(args or {}, "record_run", False)
+        if tool_name == "scope_recall_purge":
+            action = str((args or {}).get("action") or "").strip().lower()
+            return action.replace("-", "_") in {"plan", "status"}
         return False
 
     def _capture_barrier_required(
@@ -143,6 +146,9 @@ class ScopeRecallToolService:
             return not self._bool_arg(args, "dry_run", True)
         if tool_name == "scope_recall_forgetting_run":
             return not self._bool_arg(args, "dry_run", True)
+        if tool_name == "scope_recall_purge":
+            action = str((args or {}).get("action") or "").strip().lower()
+            return action.replace("-", "_") in {"deny", "erase"}
         if tool_name != "scope_recall_memory":
             return False
         action = str((args or {}).get("action") or "").strip().lower()
@@ -188,6 +194,7 @@ class ScopeRecallToolService:
             "scope_recall_experience_promote": self._handle_experience_promote,
             "scope_recall_forgetting_report": self._handle_forgetting_report,
             "scope_recall_forgetting_run": self._handle_forgetting_run,
+            "scope_recall_purge": self._handle_purge,
         }
         handler = handlers.get(normalized)
         if self._reader_tool_allowed(normalized, payload):
@@ -697,6 +704,44 @@ class ScopeRecallToolService:
         return self._json(
             self._port.archive_memories(
                 ids, reason=reason, actor="scope_recall_forget"
+            )
+        )
+
+    def _handle_purge(self, args: dict[str, Any]) -> str:
+        if not self._operator_mode_enabled():
+            return tool_error(
+                "scope_recall_purge requires maintenance_tools_enabled=true"
+            )
+        raw_config = self._port.config_view().get("purge")
+        purge_config = raw_config if isinstance(raw_config, dict) else {}
+        if not config_bool(purge_config, "enabled", True):
+            return tool_error("privacy purge is disabled by purge.enabled=false")
+        action = str(args.get("action") or "").strip().lower().replace("-", "_")
+        try:
+            ids = self._memory_ids_arg(args)
+        except _MemoryIdsArgumentError as exc:
+            return tool_error(
+                str(exc),
+                invalid_arguments=True,
+                field=exc.field,
+                constraint=exc.constraint,
+            )
+        if action in {"plan", "deny"} and not ids:
+            return tool_error("exact ids are required for purge plan or deny")
+        if action in {"status", "erase"} and ids:
+            return tool_error("ids are not accepted for purge status or erase")
+        operation_id = str(args.get("operation_id") or "").strip()
+        if action in {"status", "deny", "erase"} and not operation_id:
+            return tool_error(f"operation_id is required for purge {action}")
+        confirmation = str(args.get("confirmation") or "").strip()
+        if action in {"deny", "erase"} and not confirmation:
+            return tool_error(f"confirmation is required for purge {action}")
+        return self._json(
+            self._port.purge_memories(
+                action=action,
+                ids=ids,
+                operation_id=operation_id,
+                confirmation=confirmation,
             )
         )
 

@@ -90,6 +90,7 @@ FORGETTING_ARCHIVE: Final = "memory.forgetting.archive"
 FORGETTING_RESTORE: Final = "memory.forgetting.restore"
 SCOPE_FORGET_ARCHIVE: Final = "memory.scope_forget.archive"
 SCOPE_FORGET_RESTORE: Final = "memory.scope_forget.restore"
+PRIVACY_PURGE_DENY: Final = "memory.privacy_purge.deny"
 AUTO_ADJUDICATION_ARCHIVE: Final = "memory.auto_adjudication.archive"
 AUTO_ADJUDICATION_RESTORE: Final = "memory.auto_adjudication.restore"
 AUTO_ADJUDICATION_PROMOTE: Final = "memory.auto_adjudication.promote"
@@ -204,6 +205,15 @@ _OPERATIONS: Final = (
         legacy_event_type="scope_recall_forget",
         legacy_action="rollback_soft_archive",
         authorization_policy="evidence_bound_rollback",
+    ),
+    _operation(
+        PRIVACY_PURGE_DENY,
+        target_state="archived",
+        legacy_event_type="privacy_purge",
+        legacy_action="deny",
+        authorization_policy="explicit_maintenance_confirmation",
+        fact_authority_required=True,
+        receipt_policy=SYNTHETIC_RECEIPT,
     ),
     _operation(
         AUTO_ADJUDICATION_ARCHIVE,
@@ -485,6 +495,10 @@ LIFECYCLE_PRODUCER_CENSUS: Final = (
             HARD_DELETE_EXPLICIT,
             HARD_DELETE_DEDUPE,
         ),
+    ),
+    LifecycleProducerBinding(
+        "privacy_purge.py",
+        (PRIVACY_PURGE_DENY,),
     ),
     LifecycleProducerBinding(
         "nightly_digest.py:cleanup_exact_duplicates",

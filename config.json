@@ -203,6 +203,9 @@
     "archive_duplicates": true,
     "hard_delete_sensitive": false
   },
+  "purge": {
+    "enabled": true
+  },
   "curated_memory": {
     "mode": "single-user",
     "allowed_user_ids": []

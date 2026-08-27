@@ -12,6 +12,7 @@ from ..application.memory_commands import (
     FeedbackMemoryRequest,
     GovernMemoriesRequest,
     MergeMemoriesRequest,
+    PrivacyPurgeRequest,
     StoreMemoryRequest,
     UpdateMemoryRequest,
 )
@@ -262,6 +263,31 @@ class _LegacyPersistCommandPort:
             raise AttributeError("fact_owned_memory_ids")
         return cast(list[str], fn(list(request.ids)))
 
+    def purge(self, request: PrivacyPurgeRequest) -> dict[str, object]:
+        fn = getattr(self._host, "_privacy_purge", None)
+        if callable(fn):
+            return cast(
+                dict[str, object],
+                fn(
+                    action=request.action,
+                    ids=list(request.ids),
+                    operation_id=request.operation_id,
+                    confirmation=request.confirmation,
+                ),
+            )
+        from ...privacy_purge import run_privacy_purge
+
+        return cast(
+            dict[str, object],
+            run_privacy_purge(
+                self._host,
+                action=request.action,
+                ids=request.ids,
+                operation_id=request.operation_id,
+                confirmation=request.confirmation,
+            ),
+        )
+
 
 def bind_memory_command_port(obj: Any) -> MemoryCommandPort:
     """Wrap isolated-host persist hooks. Production uses composition.command_port."""
@@ -366,6 +392,19 @@ class CommandKernel:
 
     def fact_owned(self, port: MemoryCommandPort, ids: list[str]) -> list[str]:
         return port.fact_owned(FactOwnedMemoryIdsRequest(tuple(ids)))
+
+    def purge(
+        self,
+        port: MemoryCommandPort,
+        *,
+        action: str,
+        ids: list[str] | tuple[str, ...] = (),
+        operation_id: str = "",
+        confirmation: str = "",
+    ) -> dict[str, object]:
+        return port.purge(
+            PrivacyPurgeRequest(action, tuple(ids), operation_id, confirmation)
+        )
 
 
 class RuntimeKernel(QueryKernel, CommandKernel):

@@ -213,6 +213,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "archive_duplicates": True,
         "hard_delete_sensitive": False,
     },
+    "purge": {
+        "enabled": True,
+    },
     "curated_memory": {
         "mode": "single-user",
         "allowed_user_ids": [],
