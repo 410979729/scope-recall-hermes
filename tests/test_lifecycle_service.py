@@ -8,6 +8,14 @@ import sqlite3
 import pytest
 
 from scope_recall.freshness import upsert_memory_freshness
+from scope_recall.lifecycle_registry import (
+    BENCHMARK_MARK_LIFECYCLE,
+    GOVERNANCE_CLASSIFY_METADATA,
+    HARD_DELETE_DEFAULT,
+    MEMORY_CLEANUP_ARCHIVE,
+    MEMORY_CLEANUP_RESTORE,
+    UnknownLifecycleOperationError,
+)
 from scope_recall.lifecycle_service import LifecycleConflictError, hard_delete_memories, transition_memory_lifecycle
 from scope_recall.sql_store import ensure_schema, store_row
 from scope_recall.vector_generation import GenerationIdentity, bootstrap_legacy_generation
@@ -96,8 +104,7 @@ def test_hidden_transition_updates_all_companions_in_one_transaction(tmp_path):
         metadata_updates={"archived_by": "test", "archived_reason": "atomic transition"},
         actor="test",
         reason="atomic transition",
-        event_type="test_lifecycle",
-        action="soft_archive",
+        operation_id=MEMORY_CLEANUP_ARCHIVE,
         batch_id="batch-a",
     )
     conn.commit()
@@ -122,8 +129,7 @@ def test_candidate_transition_enqueues_vector_delete(tmp_path):
         lifecycle="candidate",
         actor="test",
         reason="requires review",
-        event_type="test_candidate_transition",
-        action="mark_candidate",
+        operation_id=BENCHMARK_MARK_LIFECYCLE,
     )
     conn.commit()
 
@@ -151,8 +157,7 @@ def test_identical_lifecycle_transition_is_a_true_noop(tmp_path):
         metadata_updates=metadata,
         actor="test",
         reason="repeat governance",
-        event_type="test_repeat_governance",
-        action="promote",
+        operation_id=GOVERNANCE_CLASSIFY_METADATA,
     )
     conn.commit()
 
@@ -179,8 +184,7 @@ def test_transition_sanitizes_metadata_updates_before_truth_write(tmp_path):
         metadata_updates={"archive_reason": "api_key=sk-" + marker + " " + private_path},
         actor="test",
         reason="api_key=sk-" + marker + " " + private_path,
-        event_type="test_sanitized_transition",
-        action="soft_archive",
+        operation_id=MEMORY_CLEANUP_ARCHIVE,
     )
     conn.commit()
 
@@ -204,7 +208,7 @@ def test_transition_failure_rolls_back_truth_and_every_companion(tmp_path):
         """
         CREATE TRIGGER fail_lifecycle_audit
         BEFORE INSERT ON governance_audit_events
-        WHEN NEW.event_type = 'test_failure'
+        WHEN NEW.event_type = 'memory_cleanup'
         BEGIN
             SELECT RAISE(ABORT, 'injected audit failure');
         END
@@ -220,8 +224,7 @@ def test_transition_failure_rolls_back_truth_and_every_companion(tmp_path):
             lifecycle="archived",
             actor="test",
             reason="inject failure",
-            event_type="test_failure",
-            action="soft_archive",
+            operation_id=MEMORY_CLEANUP_ARCHIVE,
         )
     conn.rollback()
 
@@ -243,7 +246,7 @@ def test_hard_delete_commits_audit_outbox_and_never_calls_direct_vector_callback
         require_vector_delete=True,
         actor="test",
         reason="secret-like-content",
-        event_type="test_hard_delete",
+        operation_id=HARD_DELETE_DEFAULT,
         batch_id="hard-delete-success",
     )
 
@@ -292,7 +295,7 @@ def test_hard_delete_audit_failure_rolls_back_before_vector_side_effect(tmp_path
             require_vector_delete=True,
             actor="test",
             reason="inject audit failure",
-            event_type="test_hard_delete",
+            operation_id=HARD_DELETE_DEFAULT,
             batch_id="hard-delete-audit-failure",
         )
 
@@ -326,7 +329,7 @@ def test_hard_delete_outbox_failure_rolls_back_before_vector_side_effect(tmp_pat
             require_vector_delete=True,
             actor="test",
             reason="inject outbox failure",
-            event_type="test_hard_delete",
+            operation_id=HARD_DELETE_DEFAULT,
             batch_id="hard-delete-outbox-failure",
         )
 
@@ -360,7 +363,7 @@ def test_hard_delete_truth_failure_rolls_back_before_vector_callback(tmp_path):
             require_vector_delete=True,
             actor="test",
             reason="inject pre-callback SQL failure",
-            event_type="test_hard_delete",
+            operation_id=HARD_DELETE_DEFAULT,
             batch_id="hard-delete-truth-failure",
         )
 
@@ -387,8 +390,7 @@ def test_transition_replace_metadata_is_opt_in_and_drops_unspecified_keys(tmp_pa
         },
         actor="test",
         reason="archive then restore",
-        event_type="test_replace_metadata",
-        action="soft_archive",
+        operation_id=MEMORY_CLEANUP_ARCHIVE,
     )
     conn.commit()
 
@@ -409,8 +411,7 @@ def test_transition_replace_metadata_is_opt_in_and_drops_unspecified_keys(tmp_pa
         metadata_updates=restore_metadata,
         actor="test",
         reason="default merge keeps leftovers",
-        event_type="test_replace_metadata",
-        action="restore_merge",
+        operation_id=MEMORY_CLEANUP_RESTORE,
     )
     conn.commit()
     merged_metadata = json.loads(conn.execute("SELECT metadata FROM memories WHERE id = 'subject'").fetchone()[0])
@@ -432,8 +433,7 @@ def test_transition_replace_metadata_is_opt_in_and_drops_unspecified_keys(tmp_pa
         },
         actor="test",
         reason="re-archive for exact replace",
-        event_type="test_replace_metadata",
-        action="soft_archive",
+        operation_id=MEMORY_CLEANUP_ARCHIVE,
     )
     conn.commit()
 
@@ -446,8 +446,7 @@ def test_transition_replace_metadata_is_opt_in_and_drops_unspecified_keys(tmp_pa
         replace_metadata=True,
         actor="test",
         reason="exact restore",
-        event_type="test_replace_metadata",
-        action="restore_exact",
+        operation_id=MEMORY_CLEANUP_RESTORE,
     )
     conn.commit()
     restored = json.loads(conn.execute("SELECT metadata FROM memories WHERE id = 'subject'").fetchone()[0])
@@ -474,8 +473,7 @@ def test_transition_replace_metadata_preserves_legacy_absent_lifecycle_exactly(t
         metadata_updates={"archive_reason": "fixture"},
         actor="test",
         reason="archive",
-        event_type="test_replace_metadata",
-        action="soft_archive",
+        operation_id=MEMORY_CLEANUP_ARCHIVE,
     )
     conn.commit()
 
@@ -489,8 +487,7 @@ def test_transition_replace_metadata_preserves_legacy_absent_lifecycle_exactly(t
         replace_metadata=True,
         actor="test",
         reason="exact legacy restore",
-        event_type="test_replace_metadata",
-        action="restore_exact",
+        operation_id=MEMORY_CLEANUP_RESTORE,
     )
     conn.commit()
 
@@ -520,8 +517,7 @@ def test_transition_replace_metadata_rejects_lifecycle_mismatch_without_side_eff
             replace_metadata=True,
             actor="test",
             reason="mismatched exact replacement",
-            event_type="test_replace_metadata",
-            action="restore_exact",
+            operation_id=BENCHMARK_MARK_LIFECYCLE,
         )
     conn.rollback()
 
@@ -547,11 +543,86 @@ def test_transition_cas_conflict_has_zero_side_effects(tmp_path):
             expected_updated_at="1970-01-01T00:00:00+00:00",
             actor="test",
             reason="stale review",
-            event_type="test_conflict",
-            action="soft_archive",
+            operation_id=MEMORY_CLEANUP_ARCHIVE,
         )
     conn.rollback()
 
     assert captured.value.current_updated_at == current
+    assert _counts(conn) == before
+    conn.close()
+
+
+def test_registered_v1_raw_receipt_identity_matches_operation_id(tmp_path):
+    operation_root = tmp_path / "operation"
+    raw_root = tmp_path / "raw"
+    operation_root.mkdir()
+    raw_root.mkdir()
+    operation_conn, _generation_id = _fixture(operation_root)
+    raw_conn, _generation_id = _fixture(raw_root)
+
+    operation_conn.execute("BEGIN IMMEDIATE")
+    transition_memory_lifecycle(
+        operation_conn,
+        memory_id="subject",
+        lifecycle="archived",
+        actor="test",
+        reason="identity differential",
+        operation_id=MEMORY_CLEANUP_ARCHIVE,
+        batch_id="identity-differential",
+        timestamp="2026-08-27T00:00:00+00:00",
+    )
+    operation_conn.commit()
+
+    raw_conn.execute("BEGIN IMMEDIATE")
+    transition_memory_lifecycle(
+        raw_conn,
+        memory_id="subject",
+        lifecycle="archived",
+        actor="test",
+        reason="identity differential",
+        event_type="memory_cleanup",
+        action="soft_archive",
+        batch_id="identity-differential",
+        timestamp="2026-08-27T00:00:00+00:00",
+    )
+    raw_conn.commit()
+
+    columns = "event_type, action, batch_id, reason, actor, dry_run, created_at"
+    operation_receipt = operation_conn.execute(
+        f"SELECT {columns} FROM governance_audit_events WHERE target_id='subject'"
+    ).fetchone()
+    raw_receipt = raw_conn.execute(
+        f"SELECT {columns} FROM governance_audit_events WHERE target_id='subject'"
+    ).fetchone()
+    assert tuple(operation_receipt) == tuple(raw_receipt)
+    operation_snapshots = operation_conn.execute(
+        "SELECT before_json, after_json FROM governance_audit_events WHERE target_id='subject'"
+    ).fetchone()
+    raw_snapshots = raw_conn.execute(
+        "SELECT before_json, after_json FROM governance_audit_events WHERE target_id='subject'"
+    ).fetchone()
+    assert [set(json.loads(value)) for value in operation_snapshots] == [
+        set(json.loads(value)) for value in raw_snapshots
+    ]
+    operation_conn.close()
+    raw_conn.close()
+
+
+def test_unregistered_raw_receipt_fails_before_transaction_or_mutation(tmp_path):
+    conn, _generation_id = _fixture(tmp_path)
+    before = _counts(conn)
+
+    with pytest.raises(UnknownLifecycleOperationError, match="unregistered"):
+        transition_memory_lifecycle(
+            conn,
+            memory_id="subject",
+            lifecycle="archived",
+            actor="test",
+            reason="must fail closed",
+            event_type="third_party_writer",
+            action="archive",
+        )
+
+    assert conn.in_transaction is False
     assert _counts(conn) == before
     conn.close()

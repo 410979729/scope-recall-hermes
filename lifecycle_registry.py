@@ -21,6 +21,10 @@ class InvalidLifecycleRegistryError(RuntimeError):
     """The static lifecycle registry violates its construction contract."""
 
 
+class InvalidLifecycleTransitionError(ValueError):
+    """A registered operation cannot perform the requested state transition."""
+
+
 @dataclass(frozen=True, slots=True)
 class LifecycleOperation:
     operation_id: str
@@ -512,6 +516,41 @@ def rollback_operation_for_event_type(event_type: str) -> LifecycleOperation:
     rollback_id = candidates[0].rollback_operation_id
     assert rollback_id is not None
     return resolve_lifecycle_operation(rollback_id)
+
+
+def validate_lifecycle_transition(
+    operation: LifecycleOperation,
+    *,
+    current_state: str,
+    target_state: str,
+) -> None:
+    """Validate state movement without weakening receipt-bound restore semantics."""
+
+    current = str(current_state or "active").strip().lower()
+    target = str(target_state or "").strip().lower()
+    if ANY_STATE not in operation.allowed_from_states and current not in operation.allowed_from_states:
+        raise InvalidLifecycleTransitionError(
+            f"{operation.operation_id} refuses lifecycle transition from {current}"
+        )
+    expected = operation.target_state
+    if expected == DELETED_STATE:
+        if target != DELETED_STATE:
+            raise InvalidLifecycleTransitionError(
+                f"{operation.operation_id} is destructive, not a lifecycle transition"
+            )
+        return
+    if expected == CURRENT_STATE:
+        allowed = target == current
+    elif expected == REQUESTED_STATE:
+        allowed = bool(target)
+    elif expected == RECEIPT_BEFORE_STATE:
+        allowed = current == "archived" and bool(target) and target != "archived"
+    else:
+        allowed = target == expected
+    if not allowed:
+        raise InvalidLifecycleTransitionError(
+            f"{operation.operation_id} targets {expected}, not {target or '<empty>'}"
+        )
 
 
 def validate_lifecycle_registry() -> tuple[str, ...]:
