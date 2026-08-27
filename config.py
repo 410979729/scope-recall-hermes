@@ -174,7 +174,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         r"<available_skills>[\s\S]*?</available_skills>",
     ],
     "enable_tools": True,
-    "tool_schema_profile": "compact",
+    "tool_schema_profile": "core",
     "tool_schema_extra_tools": [],
     "maintenance_tools_enabled": False,
     "secret_index_tools_enabled": False,

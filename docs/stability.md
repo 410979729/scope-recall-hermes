@@ -96,7 +96,12 @@ V1 keeps these behavior boundaries stable:
 
 ## Stable V1 tool surface
 
-The following tool names are stable for V1. `tool_schema_profile="compact"` exposes only the compact default subset in ordinary prompts, while legacy individual tools remain direct-call compatible and can be re-exposed with `tool_schema_profile="standard"` or `tool_schema_extra_tools`.
+The following tool names remain stable throughout 2.0.x.
+`tool_schema_profile="core"` exposes only the compact default subset in
+ordinary prompts, while legacy individual tools remain direct-call compatible
+and can be re-exposed with `tool_schema_profile="compatibility"` or
+`tool_schema_extra_tools`. The old `compact` and `standard` profile values
+remain accepted aliases for `core` and `compatibility`.
 
 - `scope_recall_store`
 - `scope_recall_store_secret_index`

@@ -18,7 +18,9 @@ def _names(schemas: list[dict]) -> list[str]:
 
 
 def _load_release_check_module():
-    spec = importlib.util.spec_from_file_location("scope_recall_check_release_provider_schemas", CHECK_RELEASE_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "scope_recall_check_release_provider_schemas", CHECK_RELEASE_PATH
+    )
     assert spec is not None
     assert spec.loader is not None
     release_check = importlib.util.module_from_spec(spec)
@@ -50,7 +52,7 @@ def test_provider_config_schema_contract_contains_existing_keys():
     } <= keys
 
 
-def test_compact_tool_schema_profile_is_default_and_secondary_context_is_disabled():
+def test_core_tool_schema_profile_is_default_and_secondary_context_is_disabled():
     assert _names(build_tool_schemas({})) == [
         "scope_recall_store",
         "scope_recall_search",
@@ -63,8 +65,55 @@ def test_compact_tool_schema_profile_is_default_and_secondary_context_is_disable
     assert build_tool_schemas({"enable_tools": False}) == []
 
 
+def test_canonical_profiles_preserve_aliases_and_do_not_elevate_feature_gates():
+    core = set(_names(build_tool_schemas({"tool_schema_profile": "core"})))
+    compact = set(_names(build_tool_schemas({"tool_schema_profile": "compact"})))
+    compatibility = set(
+        _names(build_tool_schemas({"tool_schema_profile": "compatibility"}))
+    )
+    standard = set(_names(build_tool_schemas({"tool_schema_profile": "standard"})))
+    developer = set(_names(build_tool_schemas({"tool_schema_profile": "developer"})))
+    maintenance_closed = set(
+        _names(build_tool_schemas({"tool_schema_profile": "maintenance"}))
+    )
+    extension_closed = set(
+        _names(
+            build_tool_schemas(
+                {
+                    "tool_schema_profile": "extension",
+                    "experience": {"enabled": False},
+                }
+            )
+        )
+    )
+    extension_open = set(
+        _names(
+            build_tool_schemas(
+                {
+                    "tool_schema_profile": "extension",
+                    "experience": {"enabled": True},
+                }
+            )
+        )
+    )
+
+    assert core == compact
+    assert compatibility == standard
+    assert maintenance_closed == core
+    assert extension_closed == core
+    assert {"scope_recall_probe", "scope_recall_stats"} <= developer
+    assert "scope_recall_update" not in developer
+    assert "scope_recall_purge" not in maintenance_closed
+    assert "scope_recall_playbook_search" not in extension_closed
+    assert "scope_recall_playbook_search" in extension_open
+
+
 def test_standard_tool_schema_includes_experience_when_enabled():
-    names = _names(build_tool_schemas({"tool_schema_profile": "standard", "experience": {"enabled": True}}))
+    names = _names(
+        build_tool_schemas(
+            {"tool_schema_profile": "standard", "experience": {"enabled": True}}
+        )
+    )
 
     assert "scope_recall_probe" in names
     assert "scope_recall_related" in names
@@ -81,9 +130,10 @@ def test_store_schema_requires_one_atomic_fact_or_cohesive_topic_per_call():
     )
 
     assert "one atomic fact" in schema["description"].lower()
-    assert "separate calls" in schema["parameters"]["properties"]["content"][
-        "description"
-    ].lower()
+    assert (
+        "separate calls"
+        in schema["parameters"]["properties"]["content"]["description"].lower()
+    )
 
 
 def test_maintenance_schema_exposure_is_independent_from_experience():
@@ -125,7 +175,9 @@ def test_release_stable_tool_names_cover_schema_profiles():
     release_check = _load_release_check_module()
     stable_names = set(release_check.STABLE_TOOL_NAMES)
     compact_names = set(_names(build_tool_schemas({})))
-    standard_names = set(_names(build_tool_schemas({"tool_schema_profile": "standard"})))
+    standard_names = set(
+        _names(build_tool_schemas({"tool_schema_profile": "standard"}))
+    )
     maintenance_names = set(
         _names(
             build_tool_schemas(
@@ -178,9 +230,7 @@ def test_maintenance_secret_and_extra_tools_are_opt_in_without_duplicates():
 def test_temporal_fact_read_tool_is_feature_gated_in_both_profiles():
     assert "scope_recall_fact" not in _names(build_tool_schemas({}))
 
-    compact = _names(
-        build_tool_schemas({"temporal_queries": {"enabled": True}})
-    )
+    compact = _names(build_tool_schemas({"temporal_queries": {"enabled": True}}))
     standard = _names(
         build_tool_schemas(
             {
@@ -199,16 +249,10 @@ def test_temporal_fact_read_tool_is_feature_gated_in_both_profiles():
 def test_evolve_tool_requires_maintenance_and_extra_tools_cannot_bypass_gates():
     bypass = _names(
         build_tool_schemas(
-            {
-                "tool_schema_extra_tools": (
-                    "scope_recall_fact,scope_recall_evolve"
-                )
-            }
+            {"tool_schema_extra_tools": ("scope_recall_fact,scope_recall_evolve")}
         )
     )
-    maintenance = _names(
-        build_tool_schemas({"maintenance_tools_enabled": True})
-    )
+    maintenance = _names(build_tool_schemas({"maintenance_tools_enabled": True}))
 
     assert "scope_recall_fact" not in bypass
     assert "scope_recall_evolve" not in bypass

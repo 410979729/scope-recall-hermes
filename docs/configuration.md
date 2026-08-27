@@ -210,6 +210,10 @@ Treat chat aliases as explicit operator access-control grants.
 
 - `per_turn_extraction.enabled` (boolean; risk: `low`; restart_required: `no`) — Scope Recall configuration key `per_turn_extraction.enabled` in the `per_turn_extraction` group. Default: `false`
 
+## `purge`
+
+- `purge.enabled` (boolean; risk: `medium`; restart_required: `no`) — Enable the explicit deny-first privacy purge maintenance surface. maintenance_tools_enabled and exact two-phase confirmations remain required. Default: `true`
+
 ## `query_char_limit`
 
 - `query_char_limit` (integer; risk: `low`; restart_required: `no`) — Scope Recall configuration key `query_char_limit` in the `query_char_limit` group. Default: `1000`
@@ -369,7 +373,7 @@ Treat chat aliases as explicit operator access-control grants.
 
 ## `tool_schema_profile`
 
-- `tool_schema_profile` (string; risk: `low`; restart_required: `yes`; choices: `compact, standard`) — Scope Recall configuration key `tool_schema_profile` in the `tool_schema_profile` group. Default: `"compact"`
+- `tool_schema_profile` (string; risk: `low`; restart_required: `yes`; choices: `core, compatibility, maintenance, developer, extension, compact, standard`) — Select the Primary Agent schema profile. Profiles never grant maintenance or extension authority; compact and standard remain 2.0.x aliases. Default: `"core"`
 
 ## `vector`
 
