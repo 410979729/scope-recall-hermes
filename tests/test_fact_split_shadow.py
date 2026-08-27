@@ -1,4 +1,4 @@
-"""Program 3C historical SplitPlan shadow and atomic-apply contracts."""
+"""Historical SplitPlan shadow and atomic-apply contracts."""
 
 from __future__ import annotations
 

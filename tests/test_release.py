@@ -587,19 +587,19 @@ def test_release_invariant_manifest_is_versioned_unique_and_executable():
         in nodes
     )
     assert (
-        "tests/test_program0_relation_containment.py::test_frequency_work_generation_never_reuses_after_change_row_is_consumed"
+        "tests/test_relation_containment.py::test_frequency_work_generation_never_reuses_after_change_row_is_consumed"
         in nodes
     )
     assert (
-        "tests/test_program0_relation_containment.py::test_frequency_poison_terminally_blocks_dependent_focus_work"
+        "tests/test_relation_containment.py::test_frequency_poison_terminally_blocks_dependent_focus_work"
         in nodes
     )
     assert (
-        "tests/test_relation_cleanup_program0.py::test_cleanup_apply_is_backup_first_committed_and_idempotently_replayed"
+        "tests/test_relation_cleanup.py::test_cleanup_apply_is_backup_first_committed_and_idempotently_replayed"
         in nodes
     )
     assert (
-        "tests/test_relation_cleanup_program0.py::test_cleanup_does_not_restore_ready_while_focus_work_remains"
+        "tests/test_relation_cleanup.py::test_cleanup_does_not_restore_ready_while_focus_work_remains"
         in nodes
     )
     assert (
@@ -862,7 +862,7 @@ def test_ruff_lint_contract_is_explicit_across_toolchain_upgrades():
     assert ruff["extend-exclude"] == [".hermes-agent-src"]
 
 
-def test_program1a_internal_packages_are_release_packaged() -> None:
+def test_application_and_compatibility_packages_are_release_packaged() -> None:
     pyproject = tomllib.loads(
         (PLUGIN_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     )
@@ -873,7 +873,7 @@ def test_program1a_internal_packages_are_release_packaged() -> None:
     } <= packages
 
     release_check = _load_release_check_module(
-        "scope_recall_check_release_program1a_packages"
+        "scope_recall_check_release_application_packages"
     )
     assert {
         "scope_recall/_internal/application/memory_commands.py",

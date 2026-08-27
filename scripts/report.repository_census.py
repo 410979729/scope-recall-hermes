@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the deterministic local repository census required by Program 0.
+"""Generate the deterministic local repository census for repository governance.
 
 The full inventory is intentionally local-only.  It records relative paths,
 content hashes, sizes, and coarse lifecycle roles; it never copies file

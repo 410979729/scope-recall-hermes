@@ -1,4 +1,4 @@
-"""Repository-governance tests for the Program 0 local census."""
+"""Repository-governance tests for the canonical local census."""
 
 from __future__ import annotations
 
@@ -85,7 +85,8 @@ def test_repository_census_schema_and_committed_governance_are_coherent() -> Non
     )
     assert schema["properties"]["files"]["items"]["$ref"] == "#/$defs/fileEntry"
     assert anomalies["blocking_anomalies"] == []
-    assert deletion["base_commit"] == "f63c953d8c4ca3c8185671ff0a3cb67579c30b60"
+    assert deletion["program"] == "Program 6A"
+    assert deletion["base_commit"] == "b155932a7d7de535746c51dcc0ba7085d5e66f1b"
     assert deletion["deleted_files"] == []
     assert deletion["deletion_authorized"] is False
     assert {entry["id"] for entry in compatibility["entries"]} == {
@@ -109,7 +110,7 @@ def test_repository_census_refuses_unignored_in_tree_output() -> None:
         )
 
 
-def test_program0_deletion_evidence_matches_worktree_delta() -> None:
+def test_repository_deletion_evidence_matches_worktree_delta() -> None:
     census = _load_census_module()
     deleted = census._run_git(
         ROOT,
@@ -117,7 +118,7 @@ def test_program0_deletion_evidence_matches_worktree_delta() -> None:
             "diff",
             "--diff-filter=D",
             "--name-only",
-            "f63c953d8c4ca3c8185671ff0a3cb67579c30b60",
+            "b155932a7d7de535746c51dcc0ba7085d5e66f1b",
             "--",
         ],
     )

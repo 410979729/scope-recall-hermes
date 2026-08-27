@@ -1,4 +1,4 @@
-"""Program 1B Observe contracts for lifecycle registry convergence."""
+"""Observe contracts for lifecycle registry convergence."""
 
 from __future__ import annotations
 

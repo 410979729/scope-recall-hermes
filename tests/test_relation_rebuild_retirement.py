@@ -1,4 +1,4 @@
-"""Program 0 fail-closed contract for the retired full-scope rebuild queue."""
+"""Fail-closed contract for the retired full-scope rebuild queue."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Program 1A compatibility must be explicit, owned, tested, and removable."""
+"""Compatibility shims must be explicit, owned, tested, and removable."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def _split_reference(reference: str) -> tuple[str, str]:
     return path, symbol
 
 
-def test_program1a_compatibility_registry_is_complete() -> None:
+def test_compatibility_registry_is_complete() -> None:
     assert validate_compatibility_registry() == ()
     assert {item.shim_id for item in COMPATIBILITY_REGISTRY} == set(
         ALL_COMPATIBILITY_IDS

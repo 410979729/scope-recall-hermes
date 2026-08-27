@@ -1,13 +1,36 @@
 {
   "schema_version": "scope-recall.repository-deletion-evidence.v1",
-  "program": "Program 0",
-  "base_commit": "f63c953d8c4ca3c8185671ff0a3cb67579c30b60",
+  "program": "Program 6A",
+  "base_commit": "b155932a7d7de535746c51dcc0ba7085d5e66f1b",
   "deleted_files": [],
   "deletion_authorized": false,
   "verification": {
     "expected_deleted_file_count": 0,
-    "required_command": "git diff --diff-filter=D --name-only f63c953d8c4ca3c8185671ff0a3cb67579c30b60...HEAD",
-    "status": "no_deletions_planned"
+    "required_command": "git diff --diff-filter=D --name-only b155932a7d7de535746c51dcc0ba7085d5e66f1b...HEAD",
+    "status": "no_high_confidence_deletions"
   },
-  "note": "Program 0 repository governance forbids file deletion. Executable legacy relation rebuild behavior was retired in place so schema, reports, rollback evidence, and compatibility readers remain available."
+  "canonicalized_test_paths": [
+    {
+      "from": "tests/test_program0_relation_containment.py",
+      "to": "tests/test_relation_containment.py"
+    },
+    {
+      "from": "tests/test_relation_cleanup_program0.py",
+      "to": "tests/test_relation_cleanup.py"
+    },
+    {
+      "from": "tests/test_program1a_compatibility_registry.py",
+      "to": "tests/test_compatibility_registry.py"
+    },
+    {
+      "from": "tests/test_program1a_external_behavior_differential.py",
+      "to": "tests/test_external_behavior_differential.py"
+    }
+  ],
+  "candidate_review": {
+    "high_confidence_candidates": [],
+    "static_reference_evidence": "No tracked file was both unreferenced and outside package, CLI, CI, release, migration, repair, and rollback surfaces.",
+    "dynamic_surface_evidence": "Census, package-source discovery, release invariant node ids, compatibility registry strings, and workflow/script references were reviewed before disposition."
+  },
+  "note": "Program 6A preserved every tracked file because none met the two-independent-evidence deletion threshold. Historical test names were canonicalized as Git renames, retaining all executable coverage."
 }
