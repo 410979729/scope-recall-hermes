@@ -18,6 +18,7 @@ from .governance_rollback import (
     snapshot_memory_row,
 )
 from .lifecycle_service import transition_memory_lifecycle
+from .lifecycle_registry import MEMORY_CLEANUP_ARCHIVE
 from .maintenance_ops import json_dumps_stable, make_batch_id, now_utc_iso
 from .sql_store import ensure_schema, record_governance_audit_event
 
@@ -282,8 +283,7 @@ def apply_cleanup(
             expected_updated_at=str(row["updated_at"] or ""),
             actor=actor,
             reason=item["reason"],
-            event_type="memory_cleanup",
-            action="soft_archive",
+            operation_id=MEMORY_CLEANUP_ARCHIVE,
             batch_id=batch,
             timestamp=now,
         )

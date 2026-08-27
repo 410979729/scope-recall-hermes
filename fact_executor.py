@@ -32,6 +32,7 @@ from .fact_repository import (
 )
 from .freshness import upsert_memory_freshness
 from .graph_relations import upsert_relation
+from .lifecycle_registry import FACT_EVOLUTION_RETRACT, FACT_EVOLUTION_SUPERSEDE
 from .lifecycle_service import LifecycleConflictError, transition_memory_lifecycle
 from .sql_store import record_governance_audit_event, store_row
 from .vector_generation import current_generation_id, enqueue_vector_event
@@ -831,8 +832,7 @@ def execute_fact_plan(
                     expected_lifecycle=_target_lifecycle(target_rows[memory_id]),
                     actor=context.actor,
                     reason=plan.proposal.reason,
-                    event_type="fact_evolution",
-                    action="supersede_old",
+                    operation_id=FACT_EVOLUTION_SUPERSEDE,
                     batch_id=plan.action_id,
                     timestamp=timestamp,
                     fact_mutation_authority=FACT_EXECUTOR_MUTATION_AUTHORITY,
@@ -918,8 +918,7 @@ def execute_fact_plan(
                     expected_lifecycle=_target_lifecycle(target_rows[memory_id]),
                     actor=context.actor,
                     reason=plan.proposal.reason,
-                    event_type="fact_evolution",
-                    action="retract",
+                    operation_id=FACT_EVOLUTION_RETRACT,
                     batch_id=plan.action_id,
                     timestamp=timestamp,
                     fact_mutation_authority=FACT_EXECUTOR_MUTATION_AUTHORITY,

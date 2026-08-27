@@ -36,6 +36,13 @@ from .lifecycle_policy import (
     PROFILE_HIDDEN_LIFECYCLES,
     ordinary_recall_lifecycle_visible_sql,
 )
+from .lifecycle_registry import (
+    GOVERNANCE_CLASSIFY_METADATA,
+    HARD_DELETE_DEDUPE,
+    HARD_DELETE_EXPLICIT,
+    HARD_DELETE_MERGE_SOURCE,
+    SCOPE_FORGET_ARCHIVE,
+)
 from .models import recall_scope_mode, resolve_store_scope_mode  # noqa: F401
 from .memory_text_merge import automatic_merge_is_safe
 from .memory_mutation import MemoryMutationService
@@ -1002,8 +1009,7 @@ def govern_memories(
                     expected_lifecycle=expected_lifecycle,
                     actor="scope-recall-governance",
                     reason="governance metadata classification",
-                    event_type="memory_governance",
-                    action="classify_metadata",
+                    operation_id=GOVERNANCE_CLASSIFY_METADATA,
                 )
     review_candidates = sorted(
         review_candidates,
@@ -1040,7 +1046,7 @@ def delete_memories(
             require_vector_delete=require_vector_delete,
             actor="scope-recall-memory-ops",
             reason="atomic memory merge source delete",
-            event_type="scope_recall_merge_source_delete",
+            operation_id=HARD_DELETE_MERGE_SOURCE,
             batch_id=f"merge_delete_{uuid.uuid4().hex}",
             commit=False,
         )
@@ -1050,7 +1056,7 @@ def delete_memories(
         requested_ids,
         scope_ids=_domain_writable_scope_ids(provider),
         reason="explicit memory hard delete",
-        event_type="scope_recall_hard_delete",
+        operation_id=HARD_DELETE_EXPLICIT,
     )
     return int(result["deleted"])
 
@@ -1061,7 +1067,7 @@ def _hard_delete_provider_memories(
     *,
     scope_ids: list[str] | None,
     reason: str,
-    event_type: str,
+    operation_id: str,
 ) -> dict[str, Any]:
     """Commit hard-delete truth plus outbox and expose companion status."""
 
@@ -1071,7 +1077,7 @@ def _hard_delete_provider_memories(
             ids,
             scope_ids=scope_ids,
             reason=reason,
-            event_type=event_type,
+            operation_id=operation_id,
         )
 
 
@@ -1081,7 +1087,7 @@ def _hard_delete_provider_memories_after_capture_flush(
     *,
     scope_ids: list[str] | None,
     reason: str,
-    event_type: str,
+    operation_id: str,
 ) -> dict[str, Any]:
     """Perform hard delete while the caller excludes new capture enqueue."""
 
@@ -1096,7 +1102,7 @@ def _hard_delete_provider_memories_after_capture_flush(
             require_vector_delete=require_vector_delete,
             actor="scope-recall-memory-ops",
             reason=reason,
-            event_type=event_type,
+            operation_id=operation_id,
             batch_id=f"hard_delete_{uuid.uuid4().hex}",
         )
     replay_result = (
@@ -1239,8 +1245,7 @@ def _archive_memories_truth(
                     expected_updated_at=str(row["updated_at"] or ""),
                     actor=actor or "scope_recall_forget",
                     reason=reason or "scope_recall_forget",
-                    event_type="scope_recall_forget",
-                    action="soft_archive",
+                    operation_id=SCOPE_FORGET_ARCHIVE,
                     batch_id=batch,
                     timestamp=now,
                 )
@@ -1351,7 +1356,7 @@ def dedupe_memories(provider: Any, *, dry_run: bool = True, scope_only: bool = T
         delete_ids,
         scope_ids=_domain_writable_scope_ids(provider) if scope_only else None,
         reason="exact duplicate cleanup",
-        event_type="memory_dedupe_hard_delete",
+        operation_id=HARD_DELETE_DEDUPE,
     )
     payload.update(
         {

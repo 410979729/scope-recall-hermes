@@ -12,6 +12,7 @@ from typing import Any, Protocol, Sequence
 
 from .capture_filters import contains_secret_like_text, sanitize_report_text, should_capture_text
 from .gating import compact_text
+from .lifecycle_registry import FORGETTING_ARCHIVE, HARD_DELETE_FORGETTING
 from .lifecycle_service import hard_delete_memories, transition_memory_lifecycle
 from .maintenance_ops import json_dumps_stable, make_batch_id, now_utc_iso
 from .response_schemas import FORGETTING_REPORT_SCHEMA_VERSION, FORGETTING_RUN_SCHEMA_VERSION
@@ -265,8 +266,7 @@ def _archive_memory(
         expected_updated_at=str(row["updated_at"] or ""),
         actor=actor,
         reason=reason,
-        event_type="forgetting",
-        action="soft_archive",
+        operation_id=FORGETTING_ARCHIVE,
         batch_id=batch_id,
         timestamp=at,
     )
@@ -395,7 +395,7 @@ def run_forgetting(
                 require_vector_delete=not allow_sql_delete_without_vector,
                 actor=actor,
                 reason="secret-like-content",
-                event_type="forgetting",
+                operation_id=HARD_DELETE_FORGETTING,
                 batch_id=batch,
                 timestamp=now,
             )

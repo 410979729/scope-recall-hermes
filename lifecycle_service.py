@@ -440,11 +440,6 @@ def transition_memory_lifecycle(
         current_lifecycle = (
             str(before_metadata.get("lifecycle") or "active").strip().lower()
         )
-        validate_lifecycle_transition(
-            operation,
-            current_state=current_lifecycle,
-            target_state=lifecycle,
-        )
         if current_lifecycle != lifecycle:
             require_fact_mutation_authority(
                 conn,
@@ -473,6 +468,11 @@ def transition_memory_lifecycle(
                 expected_lifecycle=str(expected_lifecycle),
                 current_lifecycle=current_lifecycle,
             )
+        validate_lifecycle_transition(
+            operation,
+            current_state=current_lifecycle,
+            target_state=lifecycle,
+        )
         before_relations = _relations(conn, memory_id)
         before = _snapshot(row, metadata=before_metadata, relations=before_relations)
         at = timestamp or now_iso()

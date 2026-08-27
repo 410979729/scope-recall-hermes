@@ -42,6 +42,7 @@ from .http_utils import (
     redact_sensitive as _shared_redact_sensitive,
 )
 from .lifecycle_service import hard_delete_memories
+from .lifecycle_registry import HARD_DELETE_NIGHTLY_DEDUPE
 from .lifecycle_policy import durable_lifecycle_visible_sql, ordinary_recall_lifecycle_visible_sql
 from .maintenance_lease import install_activation_lease_authorizer
 from .memory_admission import automatic_admission_metadata
@@ -1702,7 +1703,7 @@ def cleanup_exact_duplicates(conn: sqlite3.Connection, scope: ScopeProfile, vect
             require_vector_delete=require_vector_delete,
             actor="scope-recall-nightly-digest",
             reason="exact duplicate cleanup",
-            event_type="nightly_duplicate_hard_delete",
+            operation_id=HARD_DELETE_NIGHTLY_DEDUPE,
             batch_id=f"nightly_dedupe_{uuid.uuid4().hex}",
         )
         if vector_runtime is not None and require_vector_delete:

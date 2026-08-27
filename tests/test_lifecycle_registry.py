@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
 import pytest
 
 from scope_recall.governance_cleanup import RECOGNIZED_ARCHIVE_RECEIPTS
@@ -15,6 +18,22 @@ from scope_recall.lifecycle_registry import (
     lifecycle_registry_report,
     resolve_lifecycle_operation,
     validate_lifecycle_registry,
+)
+
+PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+LIFECYCLE_PRODUCER_FILES = (
+    "candidate_review.py",
+    "auto_adjudication.py",
+    "forgetting.py",
+    "governance_cleanup.py",
+    "fact_executor.py",
+    "governance_rollback.py",
+    "memory_ops.py",
+    "nightly_digest.py",
+    "scripts/promote.memory_candidates.py",
+    "scripts/migrate.legacy_hygiene.py",
+    "scripts/benchmark.golden.py",
+    "scripts/benchmark.retrieval_regression.py",
 )
 
 
@@ -65,3 +84,28 @@ def test_registry_health_report_is_doctor_safe() -> None:
         "default_rollback_event_count": 4,
         "errors": [],
     }
+
+
+def test_all_lifecycle_producers_select_operation_id_without_raw_receipt_fields() -> None:
+    calls: list[tuple[str, int, str]] = []
+    for relative_path in LIFECYCLE_PRODUCER_FILES:
+        tree = ast.parse((PLUGIN_ROOT / relative_path).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            function_name = ""
+            if isinstance(node.func, ast.Name):
+                function_name = node.func.id
+            elif isinstance(node.func, ast.Attribute):
+                function_name = node.func.attr
+            if function_name not in {
+                "transition_memory_lifecycle",
+                "hard_delete_memories",
+            }:
+                continue
+            keyword_names = {keyword.arg for keyword in node.keywords}
+            assert "operation_id" in keyword_names, (relative_path, node.lineno)
+            assert "event_type" not in keyword_names, (relative_path, node.lineno)
+            assert "action" not in keyword_names, (relative_path, node.lineno)
+            calls.append((relative_path, node.lineno, function_name))
+    assert len(calls) == 17

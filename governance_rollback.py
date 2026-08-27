@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Sequence
 
 from .lifecycle_service import transition_memory_lifecycle
+from .lifecycle_registry import rollback_operation_for_event_type
 from .maintenance_ops import now_utc_iso
 from .sql_store import ensure_schema
 
@@ -305,8 +306,9 @@ def rollback_cleanup_batch(
                 expected_lifecycle="archived",
                 actor=actor,
                 reason=str(audit["reason"] or "rollback"),
-                event_type=str(audit["event_type"] or "memory_cleanup"),
-                action="rollback_soft_archive",
+                operation_id=rollback_operation_for_event_type(
+                    str(audit["event_type"] or "memory_cleanup")
+                ).operation_id,
                 batch_id=batch_id,
                 timestamp=now,
             )
