@@ -24,21 +24,29 @@ and always includes `scope_id`. Two current conflicting candidates remain in
 the packet and are marked as a conflict; the read side does not invent a
 winner.
 
-All three product switches default off and are independent:
+The product switches remain independent. Program 5 makes only canonical
+current-truth filtering default-on; the token budgeter and Recall Packet
+renderer stay default-off until their own product decisions:
 
-- `recall_compiler.current_truth_enabled` activates only canonical stale/current
-  filtering;
+- `recall_compiler.current_truth_enabled` defaults on and activates only
+  canonical stale/current filtering; setting it to `false` restores the V1
+  ordering without changing stored truth;
 - `recall_compiler.budgeter_enabled` activates packet token limits;
 - `recall_compiler.renderer_enabled` activates evidence/diversity packet order
   and the new prompt renderer.
 
-With all switches off, ordinary results and the V1 prompt renderer remain the
-compatibility authority. The compiler still calculates a bounded aggregate
+With all switches explicitly off, ordinary results and the V1 prompt renderer
+remain the compatibility authority. The compiler still calculates a bounded aggregate
 shadow record from the same `CandidateSet`. That record contains counts,
 estimated tokens, booleans, and elapsed time only—never query text, candidate
 IDs, summaries, Evidence text, or the CandidateSet fingerprint. Complete
 paired item diffs require the explicit `isolated=True` API and are reserved for
 offline tests and `scripts/benchmark.recall_compiler.py`.
+
+The historical `current_truth_removed` trace field remains the decontented
+shadow count. `active_current_truth_removed` is the active-product count, so an
+operator can prove that the explicit rollback switch stopped filtering without
+disabling shadow comparison.
 
 The token estimator is deterministic and intentionally conservative: each
 non-ASCII code point costs one token, while ASCII costs one token per four code

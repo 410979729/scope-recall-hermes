@@ -336,9 +336,8 @@ def test_compiler_flags_do_not_trigger_a_second_retrieval() -> None:
     assert compiler_trace["renderer_enabled"] is True
 
 
-def test_current_truth_switch_removes_stale_claim_projection_without_query_write() -> None:
+def test_current_truth_default_removes_stale_claim_projection_without_query_write() -> None:
     provider = _DummyProvider()
-    provider._config["recall_compiler"] = {"current_truth_enabled": True}
     shared = {
         "scope_id": provider._shared_scope_id,
         "fact_claim_key": "fact:joy-city",
@@ -381,10 +380,59 @@ def test_current_truth_switch_removes_stale_claim_projection_without_query_write
     assert provider.vector_calls == 1
     compiler_trace = service.last_funnel_trace["stages"]["compiler"]
     assert compiler_trace["current_truth_removed"] == 1
+    assert compiler_trace["active_current_truth_removed"] == 1
     assert not any(
         str(key).startswith("recall_packet_")
         for key in (results[0].metadata or {})
     )
+
+
+def test_current_truth_default_has_an_explicit_v1_rollback_switch() -> None:
+    provider = _DummyProvider()
+    provider._config["recall_compiler"] = {"current_truth_enabled": False}
+    shared = {
+        "scope_id": provider._shared_scope_id,
+        "fact_claim_key": "fact:joy-city",
+    }
+    stale = RecallItem(
+        id="city-old",
+        content="Joy lives in Mumbai.",
+        summary="Joy lives in Mumbai.",
+        source="tool-store",
+        target="memory",
+        score=0.95,
+        updated_at="2026-01-01T00:00:00+00:00",
+        metadata={**shared, "fact_claim_id": "claim-old", "lexical_score": 0.95},
+    )
+    current = RecallItem(
+        id="city-current",
+        content="Joy lives in Tokyo.",
+        summary="Joy lives in Tokyo.",
+        source="tool-store",
+        target="memory",
+        score=0.75,
+        updated_at="2026-08-01T00:00:00+00:00",
+        metadata={**shared, "fact_claim_id": "claim-current", "lexical_score": 0.75},
+    )
+
+    def collect_once(_query, *, limit):
+        provider.db_calls += 1
+        return [stale, current][:limit]
+
+    provider._search_db_memories = collect_once  # type: ignore[method-assign]
+    service = RecallService(provider)
+    service._fact_freshness_evidence = lambda _ids: {  # type: ignore[method-assign]
+        "city-old": {"status": "stale", "fact_key": "legacy-city", "truth_type": "factual"},
+        "city-current": {"status": "current", "fact_key": "legacy-city", "truth_type": "factual"},
+    }
+
+    results = service.search_memories("Where does Joy live now?", limit=5)
+
+    assert {item.id for item in results} == {"city-old", "city-current"}
+    assert len(results) == 2
+    assert service.last_funnel_trace["stages"]["compiler"]["current_truth_enabled"] is False
+    assert service.last_funnel_trace["stages"]["compiler"]["current_truth_removed"] == 1
+    assert service.last_funnel_trace["stages"]["compiler"]["active_current_truth_removed"] == 0
 
 
 def test_vector_top_k_controls_vector_depth_without_expanding_final_limit() -> None:

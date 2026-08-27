@@ -112,7 +112,7 @@
     "shadow_enabled": false
   },
   "recall_compiler": {
-    "current_truth_enabled": false,
+    "current_truth_enabled": true,
     "budgeter_enabled": false,
     "renderer_enabled": false,
     "token_budget": 320,
