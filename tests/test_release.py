@@ -389,6 +389,8 @@ def test_memory_governance_modules_are_release_packaged_and_type_checked():
         assert module in release_check.REQUIRED_SOURCE_FILES
         assert f"scope_recall/{module}" in release_check.REQUIRED_WHEEL
         assert module not in pyright["missing_pyright_include"]
+    assert "docs/lifecycle.registry.md" in release_check.REQUIRED_SOURCE_FILES
+    assert "scope_recall/docs/lifecycle.registry.md" in release_check.REQUIRED_WHEEL
 
 
 def test_lifecycle_registry_contract_is_release_packaged_and_type_checked():
@@ -402,8 +404,19 @@ def test_lifecycle_registry_contract_is_release_packaged_and_type_checked():
         assert module in release_check.REQUIRED_SOURCE_FILES
         assert f"scope_recall/{module}" in release_check.REQUIRED_WHEEL
         assert module not in pyright["missing_pyright_include"]
-    assert "docs/lifecycle.registry.md" in release_check.REQUIRED_SOURCE_FILES
-    assert "scope_recall/docs/lifecycle.registry.md" in release_check.REQUIRED_WHEEL
+
+
+def test_durable_work_contract_is_release_packaged_and_type_checked():
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_durable_work"
+    )
+
+    pyright = release_check.pyright_include_check()
+    assert "durable_work.py" in release_check.REQUIRED_SOURCE_FILES
+    assert "scope_recall/durable_work.py" in release_check.REQUIRED_WHEEL
+    assert "durable_work.py" not in pyright["missing_pyright_include"]
+    assert "docs/durable-work.md" in release_check.REQUIRED_SOURCE_FILES
+    assert "scope_recall/docs/durable-work.md" in release_check.REQUIRED_WHEEL
 
 
 def test_sqlite_backup_module_is_release_packaged_and_type_checked():
