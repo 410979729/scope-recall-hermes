@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager, nullcontext
 from typing import Any, Iterator, Mapping
 
+from ..application.memory_queries import MemoryQueryApplication
 from .ports import FactToolPort, MemoryCommandPort, ToolRuntimePort
 
 
@@ -29,6 +30,11 @@ def _assembled_command_port(host: Any) -> MemoryCommandPort | None:
     return getattr(composition, "command_port", None) if composition is not None else None
 
 
+def _assembled_query_port(host: Any) -> MemoryQueryApplication | None:
+    composition = getattr(host, "_composition", None)
+    return getattr(composition, "query_port", None) if composition is not None else None
+
+
 class ProviderToolRuntimeAdapter:
     """Central compat face over the current Provider. D2 may replace the thin doors.
 
@@ -38,9 +44,16 @@ class ProviderToolRuntimeAdapter:
     wrapper so ``store_now`` / ``_store_now`` hooks still intercept.
     """
 
-    def __init__(self, host: Any, *, command_port: MemoryCommandPort | None = None) -> None:
+    def __init__(
+        self,
+        host: Any,
+        *,
+        command_port: MemoryCommandPort | None = None,
+        query_port: MemoryQueryApplication | None = None,
+    ) -> None:
         self._host = host
         self._bound_command_port = command_port
+        self._bound_query_port = query_port
 
     def _resolve_command_port(self) -> MemoryCommandPort:
         if self._bound_command_port is not None:
@@ -56,6 +69,16 @@ class ProviderToolRuntimeAdapter:
         from .kernel import COMMAND_KERNEL
 
         return COMMAND_KERNEL
+
+    def _resolve_query_port(self) -> MemoryQueryApplication | None:
+        if self._bound_query_port is not None:
+            return self._bound_query_port
+        return _assembled_query_port(self._host)
+
+    def _query_kernel(self) -> Any:
+        from .kernel import KERNEL
+
+        return KERNEL
 
     def query_connection(self) -> Any:
         fn = getattr(self._host, "query_connection", None)
@@ -230,33 +253,63 @@ class ProviderToolRuntimeAdapter:
         return self._command_kernel().repair(self._resolve_command_port(), *args, **kwargs)
 
     def hygiene_report(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().hygiene(query_port, *args, **kwargs)
         return _call(self._host, "_hygiene_report", *args, **kwargs)
 
     def stats_payload(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().stats(query_port, *args, **kwargs)
         return _call(self._host, "_stats_payload", *args, **kwargs)
 
     def inspect_memory(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().inspect(query_port, *args, **kwargs)
         return _call(self._host, "_inspect_memory", *args, **kwargs)
 
     def explain_query(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().explain(query_port, *args, **kwargs)
         return _call(self._host, "_explain_query", *args, **kwargs)
 
     def export_memories(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().export(query_port, *args, **kwargs)
         return _call(self._host, "_export_memories", *args, **kwargs)
 
     def context_payload(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().context(query_port, *args, **kwargs)
         return _call(self._host, "_context_payload", *args, **kwargs)
 
     def profile_payload(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().profile(query_port, *args, **kwargs)
         return _call(self._host, "_profile_payload", *args, **kwargs)
 
     def probe_entity(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().probe(query_port, *args, **kwargs)
         return _call(self._host, "_probe_entity", *args, **kwargs)
 
     def related_entities(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().related(query_port, *args, **kwargs)
         return _call(self._host, "_related_entities", *args, **kwargs)
 
     def benchmark_queries(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().benchmark(query_port, *args, **kwargs)
         return _call(self._host, "_benchmark_queries", *args, **kwargs)
 
     def run_reflection(self, args: Mapping[str, Any]) -> Any:
@@ -278,18 +331,27 @@ class ProviderToolRuntimeAdapter:
         return getattr(self._host, "_reflection_transport", None)
 
 def bind_tool_runtime_port(
-    obj: Any, *, command_port: MemoryCommandPort | None = None
+    obj: Any,
+    *,
+    command_port: MemoryCommandPort | None = None,
+    query_port: MemoryQueryApplication | None = None,
 ) -> ToolRuntimePort:
     if isinstance(obj, ProviderToolRuntimeAdapter):
         if command_port is not None and obj._bound_command_port is None:
             obj._bound_command_port = command_port
+        if query_port is not None and obj._bound_query_port is None:
+            obj._bound_query_port = query_port
         return obj
     existing = getattr(getattr(obj, "_composition", None), "tool_port", None)
     if isinstance(existing, ProviderToolRuntimeAdapter) and existing._host is obj:
         if command_port is not None and existing._bound_command_port is None:
             existing._bound_command_port = command_port
+        if query_port is not None and existing._bound_query_port is None:
+            existing._bound_query_port = query_port
         return existing
-    return ProviderToolRuntimeAdapter(obj, command_port=command_port)
+    return ProviderToolRuntimeAdapter(
+        obj, command_port=command_port, query_port=query_port
+    )
 
 
 def bind_fact_tool_port(obj: Any) -> FactToolPort:

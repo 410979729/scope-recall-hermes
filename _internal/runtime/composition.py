@@ -48,7 +48,9 @@ class RuntimeComposition:
         self._command_port: MemoryCommandPort = MemoryCommandApplication(command_gateway)
         self._query_port = MemoryQueryApplication(query_gateway)
         self.tool_port: ToolRuntimePort = bind_tool_runtime_port(
-            adapter, command_port=self._command_port
+            adapter,
+            command_port=self._command_port,
+            query_port=self._query_port,
         )
 
     @property
