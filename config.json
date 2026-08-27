@@ -108,6 +108,9 @@
     "tool_mode": "preview",
     "maintenance_mode": "preview"
   },
+  "fact_backfill": {
+    "shadow_enabled": false
+  },
   "temporal_queries": {
     "enabled": false,
     "timezone": "UTC",

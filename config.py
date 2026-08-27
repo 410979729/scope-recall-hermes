@@ -118,6 +118,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "tool_mode": "preview",
         "maintenance_mode": "preview",
     },
+    "fact_backfill": {
+        "shadow_enabled": False,
+    },
     "temporal_queries": {
         "enabled": False,
         "timezone": "UTC",
