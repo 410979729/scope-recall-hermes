@@ -23,6 +23,8 @@ def test_program1a_compatibility_registry_is_complete() -> None:
     assert {item.shim_id for item in COMPATIBILITY_REGISTRY} == set(
         PROGRAM_1A_COMPATIBILITY_IDS
     )
+    assert {item.remove_after for item in COMPATIBILITY_REGISTRY} == {"2.1.0"}
+    assert all(item.removal_condition for item in COMPATIBILITY_REGISTRY)
 
 
 def test_registered_sources_usage_and_tests_exist() -> None:
@@ -34,4 +36,3 @@ def test_registered_sources_usage_and_tests_exist() -> None:
             path, symbol = _split_reference(reference)
             referenced_source = (PLUGIN_ROOT / path).read_text(encoding="utf-8")
             assert symbol in referenced_source, f"{item.shim_id}: {reference}"
-

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 
 @dataclass(frozen=True, slots=True)
@@ -13,6 +14,7 @@ class CompatibilityShim:
     replacement: str
     usage_evidence: tuple[str, ...]
     remove_after: str
+    removal_condition: str
     tests: tuple[str, ...]
 
 
@@ -26,7 +28,8 @@ COMPATIBILITY_REGISTRY: tuple[CompatibilityShim, ...] = (
             "_internal/runtime/composition.py:RuntimeComposition",
             "provider.py:def _store_now",
         ),
-        remove_after="provider adapter no longer owns legacy memory_ops state",
+        remove_after="2.1.0",
+        removal_condition="provider adapter no longer owns legacy memory_ops state",
         tests=(
             "tests/test_arch_convergence_command_port.py:test_provider_and_tooling_entries_use_same_command_port_object",
         ),
@@ -36,10 +39,9 @@ COMPATIBILITY_REGISTRY: tuple[CompatibilityShim, ...] = (
         owner="program-1a-runtime-boundary",
         source="_internal/runtime/kernel.py:_LegacyPersistCommandPort",
         replacement="explicit MemoryCommandGateway supplied by external hosts",
-        usage_evidence=(
-            "_internal/runtime/tool_port.py:def _resolve_command_port",
-        ),
-        remove_after="external host compatibility window closes after 2.0",
+        usage_evidence=("_internal/runtime/tool_port.py:def _resolve_command_port",),
+        remove_after="2.1.0",
+        removal_condition="external host compatibility window closes after 2.0",
         tests=(
             "tests/test_arch_convergence_command_port.py:test_isolated_host_keeps_legacy_command_port_fallback",
         ),
@@ -49,10 +51,9 @@ COMPATIBILITY_REGISTRY: tuple[CompatibilityShim, ...] = (
         owner="program-1a-runtime-boundary",
         source="_internal/runtime/query_adapter.py:ProviderQueryAdapter",
         replacement="typed query repositories and read models",
-        usage_evidence=(
-            "_internal/runtime/composition.py:def query_port",
-        ),
-        remove_after="legacy memory_queries accepts typed repositories",
+        usage_evidence=("_internal/runtime/composition.py:def query_port",),
+        remove_after="2.1.0",
+        removal_condition="legacy memory_queries accepts typed repositories",
         tests=(
             "tests/test_arch_convergence_command_port.py:test_composition_exposes_typed_query_application_and_runtime_snapshot",
         ),
@@ -66,7 +67,8 @@ COMPATIBILITY_REGISTRY: tuple[CompatibilityShim, ...] = (
             "_internal/runtime/composition.py:self.tool_port",
             "tooling.py:ScopeRecallToolService",
         ),
-        remove_after="all legacy maintenance handlers use semantic application ports",
+        remove_after="2.1.0",
+        removal_condition="all legacy maintenance handlers use semantic application ports",
         tests=(
             "tests/test_arch_convergence_command_port.py:test_tool_runtime_reuses_assembled_query_application",
             "tests/test_readonly_follower_tools.py:test_readonly_follower_default_denies_writes_and_unknown_tools",
@@ -81,7 +83,8 @@ COMPATIBILITY_REGISTRY: tuple[CompatibilityShim, ...] = (
             "memory_queries.py:_require_port_method",
             "memory_ops.py:_require_command_method",
         ),
-        remove_after="legacy query and mutation modules move behind repositories",
+        remove_after="2.1.0",
+        removal_condition="legacy query and mutation modules move behind repositories",
         tests=(
             "tests/test_public_memory_port.py:test_private_only_fake_still_raises_typeerror_for_public_ports",
         ),
@@ -91,10 +94,9 @@ COMPATIBILITY_REGISTRY: tuple[CompatibilityShim, ...] = (
         owner="program-1a-runtime-boundary",
         source="_internal/runtime/capture_service.py:ProviderCaptureAdapter",
         replacement="typed capture state and queue ports",
-        usage_evidence=(
-            "_internal/runtime/composition.py:self.capture",
-        ),
-        remove_after="capture runtime state leaves the Hermes adapter",
+        usage_evidence=("_internal/runtime/composition.py:self.capture",),
+        remove_after="2.1.0",
+        removal_condition="capture runtime state leaves the Hermes adapter",
         tests=(
             "tests/test_digest_transaction_boundary.py:test_sync_turn_capture_llm_releases_duplicate_journal_transaction",
         ),
@@ -104,10 +106,9 @@ COMPATIBILITY_REGISTRY: tuple[CompatibilityShim, ...] = (
         owner="program-1a-runtime-boundary",
         source="_internal/runtime/journal_service.py:ProviderJournalAdapter",
         replacement="typed journal repository and digest scheduler ports",
-        usage_evidence=(
-            "_internal/runtime/composition.py:self.journal",
-        ),
-        remove_after="journal state leaves the Hermes adapter",
+        usage_evidence=("_internal/runtime/composition.py:self.journal",),
+        remove_after="2.1.0",
+        removal_condition="journal state leaves the Hermes adapter",
         tests=(
             "tests/test_provider.py:test_on_pre_compress_stages_sanitized_messages_in_journal_without_direct_memory",
         ),
@@ -117,12 +118,23 @@ COMPATIBILITY_REGISTRY: tuple[CompatibilityShim, ...] = (
         owner="program-1a-runtime-boundary",
         source="_internal/runtime/vector_service.py:ProviderVectorAdapter",
         replacement="typed vector generation state and companion ports",
-        usage_evidence=(
-            "_internal/runtime/composition.py:self.vector",
-        ),
-        remove_after="vector generation state leaves the Hermes adapter",
+        usage_evidence=("_internal/runtime/composition.py:self.vector",),
+        remove_after="2.1.0",
+        removal_condition="vector generation state leaves the Hermes adapter",
         tests=(
             "tests/test_vector_stats_replay_audit.py:test_vector_status_view_never_calls_list_records",
+        ),
+    ),
+    CompatibilityShim(
+        shim_id="provider-vector-runtime-state-adapter",
+        owner="program-1a-runtime-boundary",
+        source="_internal/runtime/vector_runtime_state.py:ProviderVectorRuntimeState",
+        replacement="typed vector repositories and generation state owned outside Provider",
+        usage_evidence=("vector_runtime.py:bind_provider_vector_runtime",),
+        remove_after="2.1.0",
+        removal_condition="legacy vector algorithms no longer require Provider-backed state",
+        tests=(
+            "tests/test_arch_convergence_command_port.py:test_vector_runtime_uses_explicit_compatibility_state",
         ),
     ),
     CompatibilityShim(
@@ -134,7 +146,8 @@ COMPATIBILITY_REGISTRY: tuple[CompatibilityShim, ...] = (
             "_internal/runtime/capture_service.py:_provider_hook",
             "_internal/runtime/vector_service.py:_provider_hook",
         ),
-        remove_after="legacy monkeypatch and plugin-loader compatibility window closes",
+        remove_after="2.1.0",
+        removal_condition="legacy monkeypatch and plugin-loader compatibility window closes",
         tests=(
             "tests/test_digest_transaction_boundary.py:test_sync_turn_capture_llm_releases_duplicate_journal_transaction",
             "tests/test_arch_convergence_command_port.py:test_touched_internals_import_canonical_modules_not_shims",
@@ -153,6 +166,7 @@ PROGRAM_1A_COMPATIBILITY_IDS = frozenset(
         "provider-capture-adapter",
         "provider-journal-adapter",
         "provider-vector-adapter",
+        "provider-vector-runtime-state-adapter",
         "provider-module-hook-anchors",
     }
 )
@@ -174,8 +188,10 @@ def validate_compatibility_registry() -> tuple[str, ...]:
             errors.append(f"{item.shim_id}: missing replacement")
         if not item.usage_evidence:
             errors.append(f"{item.shim_id}: missing usage evidence")
-        if not item.remove_after:
-            errors.append(f"{item.shim_id}: missing remove-after")
+        if re.fullmatch(r"\d+\.\d+\.\d+", item.remove_after) is None:
+            errors.append(f"{item.shim_id}: remove-after must be a release version")
+        if not item.removal_condition:
+            errors.append(f"{item.shim_id}: missing removal condition")
         if not item.tests:
             errors.append(f"{item.shim_id}: missing tests")
     return tuple(errors)
