@@ -65,3 +65,7 @@ replayed before writer use after any restore.
 This document describes a source candidate only. It does not authorize merge,
 tag, GitHub Release, PyPI publication, deployment, live migration, live repair,
 or changes to an active Hermes instance.
+
+Clearance condition: an independent review must bind an approval verdict to
+the exact candidate manifest and exact successful remote CI before any later
+merge, tag, release, publication, or deployment authorization is considered.

@@ -123,6 +123,7 @@ remain accepted aliases for `core` and `compatibility`.
 - `scope_recall_repair`
 - `scope_recall_stats`
 - `scope_recall_inspect`
+- `scope_recall_inspector`
 - `scope_recall_explain`
 - `scope_recall_benchmark`
 - `scope_recall_playbook_create`
