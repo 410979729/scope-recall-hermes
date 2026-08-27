@@ -12,6 +12,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+from scope_recall._internal.application.capture_journal import (
+    CaptureApplication,
+    JournalApplication,
+)
 from scope_recall._internal.application.memory_commands import MemoryCommandApplication
 from scope_recall._internal.application.memory_queries import MemoryQueryApplication
 from scope_recall._internal.application.runtime_state import RuntimeStateSnapshot
@@ -184,6 +188,12 @@ def test_composition_exposes_typed_query_application_and_runtime_snapshot() -> N
     assert snapshot.scope.accessible_scope_ids == ()
 
 
+def test_composition_exposes_typed_capture_and_journal_services() -> None:
+    provider = ScopeRecallMemoryProvider()
+    assert type(provider._composition.capture) is CaptureApplication
+    assert type(provider._composition.journal) is JournalApplication
+
+
 def test_isolated_host_keeps_legacy_command_port_fallback(monkeypatch) -> None:
     calls: list[dict[str, Any]] = []
     ports: list[object] = []
@@ -247,6 +257,7 @@ def test_application_command_contract_stays_provider_neutral() -> None:
 
 def test_application_query_and_state_contracts_stay_provider_neutral() -> None:
     for rel in (
+        "_internal/application/capture_journal.py",
         "_internal/application/memory_queries.py",
         "_internal/application/runtime_state.py",
     ):

@@ -1,5 +1,17 @@
 """Application use cases and their provider-neutral contracts."""
 
+from .capture_journal import (
+    CaptureApplication,
+    CaptureGateway,
+    CaptureTurnPlan,
+    CaptureTurnRequest,
+    JournalApplication,
+    JournalGateway,
+    JournalMessagesRequest,
+    JournalStageResult,
+    JournalTurnRequest,
+)
+
 from .memory_commands import (
     ArchiveMemoriesRequest,
     DedupeMemoriesRequest,
@@ -33,6 +45,10 @@ from .runtime_state import (
 )
 
 __all__ = [
+    "CaptureApplication",
+    "CaptureGateway",
+    "CaptureTurnPlan",
+    "CaptureTurnRequest",
     "ArchiveMemoriesRequest",
     "DedupeMemoriesRequest",
     "DeleteMemoriesRequest",
@@ -54,6 +70,11 @@ __all__ = [
     "InspectMemoryRequest",
     "MemoryQueryApplication",
     "MemoryQueryGateway",
+    "JournalApplication",
+    "JournalGateway",
+    "JournalMessagesRequest",
+    "JournalStageResult",
+    "JournalTurnRequest",
     "ProfileQueryRequest",
     "RuntimeStateSnapshot",
     "ScopeSnapshot",
