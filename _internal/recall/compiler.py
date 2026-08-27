@@ -159,10 +159,17 @@ class RecallCandidate:
         visible in the packet but cannot silently acquire ranking authority.
         """
 
-        return sum(
+        score = sum(
             kind in {"lexical", "vector", "fusion"}
             for kind in self.evidence_kinds
         )
+        metadata = _metadata(self.item)
+        if (
+            "curated" in self.evidence_kinds
+            and _text(metadata.get("memory_type")).lower() == "preference"
+        ):
+            score += 1
+        return score
 
 
 @dataclass(frozen=True)

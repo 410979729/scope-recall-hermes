@@ -260,6 +260,33 @@ def test_nonretrieval_evidence_cannot_override_upstream_score_authority() -> Non
     assert [item.item.id for item in packet.items] == ["strong", "weak-annotated"]
 
 
+def test_curated_user_preference_is_the_only_curated_ordering_signal() -> None:
+    generic = _item("generic", score=0.90, metadata={"lexical_score": 0.90})
+    curated_resource = _item(
+        "curated-resource",
+        score=0.30,
+        source="builtin-curated",
+        metadata={"lexical_score": 0.30, "memory_type": "resource"},
+    )
+    curated_preference = _item(
+        "curated-preference",
+        score=0.20,
+        source="builtin-curated",
+        metadata={"lexical_score": 0.20, "memory_type": "preference"},
+    )
+
+    packet = compile_recall_packet(
+        CandidateSet.from_items([generic, curated_resource, curated_preference]),
+        _policy(diversity_enabled=False),
+    )
+
+    assert [item.item.id for item in packet.items] == [
+        "curated-preference",
+        "generic",
+        "curated-resource",
+    ]
+
+
 def test_budgeter_bounds_packet_and_truncates_without_touching_content() -> None:
     long_summary = "记忆" * 200
     original = _item("long", summary=long_summary)
