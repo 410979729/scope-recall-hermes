@@ -155,6 +155,23 @@ def test_tool_service_on_provider_reuses_assembled_command_port(monkeypatch) -> 
     assert not isinstance(seen[0][1], _LegacyPersistCommandPort)
 
 
+def test_tool_runtime_reuses_assembled_query_application(monkeypatch) -> None:
+    provider = ScopeRecallMemoryProvider()
+    assembled = provider._composition.query_port
+    seen: list[object] = []
+
+    def spy(port: object, **kwargs: object) -> dict[str, object]:
+        seen.append(port)
+        return {"query": kwargs.get("query")}
+
+    monkeypatch.setattr(COMMAND_KERNEL, "context", spy)
+    payload = provider._composition.tool_port.context_payload(
+        query="typed query route", limit=3, max_chars=300
+    )
+    assert payload == {"query": "typed query route"}
+    assert seen == [assembled]
+
+
 def test_composition_exposes_typed_query_application_and_runtime_snapshot() -> None:
     provider = ScopeRecallMemoryProvider()
     query_port = provider._composition.query_port
