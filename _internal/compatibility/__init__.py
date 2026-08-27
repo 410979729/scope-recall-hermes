@@ -13,4 +13,3 @@ __all__ = [
     "CompatibilityShim",
     "validate_compatibility_registry",
 ]
-

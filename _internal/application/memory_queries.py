@@ -128,4 +128,3 @@ class MemoryQueryApplication:
 
     def stats(self) -> dict[str, object]:
         return self._gateway.stats()
-
