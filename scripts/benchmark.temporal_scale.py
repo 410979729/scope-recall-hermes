@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib
 import importlib.util
 import json
 import math
@@ -35,18 +34,21 @@ MAX_SECOND_START_SECONDS_BY_SIZE = {
 def _bootstrap_source_package() -> None:
     """Prefer this checkout even when an older scope_recall is installed."""
 
-    if str(ROOT.parent) not in sys.path:
-        sys.path.insert(0, str(ROOT.parent))
-    try:
-        importlib.import_module("scope_recall.fact_repository")
-        return
-    except ImportError:
-        for name in list(sys.modules):
-            if name == "scope_recall" or name.startswith("scope_recall."):
-                sys.modules.pop(name, None)
+    source_init = (ROOT / "__init__.py").resolve()
+    loaded_package = sys.modules.get("scope_recall")
+    loaded_file = getattr(loaded_package, "__file__", None)
+    if loaded_file is not None:
+        try:
+            if Path(loaded_file).resolve() == source_init:
+                return
+        except OSError:
+            pass
+    for name in list(sys.modules):
+        if name == "scope_recall" or name.startswith("scope_recall."):
+            sys.modules.pop(name, None)
     spec = importlib.util.spec_from_file_location(
         "scope_recall",
-        ROOT / "__init__.py",
+        source_init,
         submodule_search_locations=[str(ROOT)],
     )
     if spec is None or spec.loader is None:
