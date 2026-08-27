@@ -40,6 +40,8 @@ class FactProjectionInvariantError(TemporalConflictError):
 
 
 FACT_EXECUTOR_MUTATION_AUTHORITY = "fact_executor"
+FACT_EXECUTOR_PENDING_SUCCESSOR_AUTHORITY = "fact_executor:pending_successor"
+MAX_SUCCESSOR_CHAIN_DEPTH = 10_000
 
 
 class FactMutationAuthorityError(RuntimeError):
@@ -608,6 +610,235 @@ def _get_claim_unscoped(
     return claims[0] if claims else None
 
 
+def assert_successor_chain_invariant(
+    conn: sqlite3.Connection,
+    *,
+    predecessor_claim_id: str,
+    successor_claim_id: str,
+    pending_successor_scope_id: str = "",
+    pending_successor_fact_key: str = "",
+    pending_successor_authority: str = "",
+) -> None:
+    """Reject dangling, cross-identity, retired-target, and arbitrary cycles.
+
+    The Fact Executor may close a predecessor immediately before inserting one
+    exact successor inside the same transaction.  That narrow pending case is
+    bound to the predecessor's scope/fact identity and the deferred foreign key;
+    ordinary repository/import callers must supply an already-existing target.
+    """
+
+    predecessor = _get_claim_unscoped(conn, predecessor_claim_id)
+    if predecessor is None:
+        raise TemporalValidationError("predecessor claim does not exist")
+    successor_id = _required_text(
+        successor_claim_id,
+        field="successor_claim_id",
+        max_chars=160,
+    )
+    if successor_id == predecessor.claim_id:
+        raise TemporalValidationError("claim cannot supersede itself")
+
+    visited = {predecessor.claim_id}
+    current_id = successor_id
+    depth = 0
+    deferred_state_error = ""
+    while True:
+        if current_id in visited:
+            raise TemporalConflictError("successor chain would create a cycle")
+        visited.add(current_id)
+        successor = _get_claim_unscoped(conn, current_id)
+        if successor is None:
+            pending_allowed = (
+                depth == 0
+                and pending_successor_authority
+                == FACT_EXECUTOR_PENDING_SUCCESSOR_AUTHORITY
+                and str(pending_successor_scope_id or "").strip()
+                == predecessor.scope_id
+                and str(pending_successor_fact_key or "").strip()
+                == predecessor.fact_key
+            )
+            if pending_allowed:
+                return
+            raise TemporalValidationError("successor claim does not exist")
+        if successor.scope_id != predecessor.scope_id:
+            raise TemporalValidationError(
+                "successor must share predecessor scope and fact key"
+            )
+        if successor.fact_key != predecessor.fact_key:
+            raise TemporalValidationError(
+                "successor must share predecessor scope and fact key"
+            )
+
+        outgoing = str(successor.superseded_by_claim_id or "").strip()
+        if depth == 0 and (
+            successor.status not in _INSERTABLE_CLAIM_STATUSES
+            or successor.retired_at is not None
+            or outgoing
+        ):
+            deferred_state_error = "successor claim must be active and terminal"
+        if successor.status in _INSERTABLE_CLAIM_STATUSES:
+            if successor.retired_at is not None or outgoing:
+                deferred_state_error = (
+                    deferred_state_error or "active successor chain state is invalid"
+                )
+        elif successor.status == "superseded":
+            if successor.retired_at is None or not outgoing:
+                deferred_state_error = (
+                    deferred_state_error or "retired successor chain state is invalid"
+                )
+        else:
+            deferred_state_error = (
+                deferred_state_error or "successor cannot target a retracted claim"
+            )
+        if outgoing:
+            current_id = outgoing
+            depth += 1
+            if depth > MAX_SUCCESSOR_CHAIN_DEPTH:
+                raise TemporalConflictError("successor chain exceeds safe depth")
+            continue
+        if deferred_state_error:
+            raise TemporalValidationError(deferred_state_error)
+        return
+
+
+def fact_successor_integrity_report(
+    conn: sqlite3.Connection,
+    *,
+    sample_limit: int = 20,
+) -> dict[str, Any]:
+    """Return a decontented full-graph successor invariant report."""
+
+    if type(sample_limit) is not int or not 1 <= sample_limit <= 100:
+        raise TemporalValidationError("sample_limit must be between 1 and 100")
+    rows = conn.execute(
+        """
+        SELECT claim_id, scope_id, fact_key, status, retired_at,
+               superseded_by_claim_id
+        FROM fact_claims
+        ORDER BY claim_id
+        """
+    ).fetchall()
+    records: dict[str, dict[str, str | None]] = {}
+    for row in rows:
+        claim_id = str(row[0] or "")
+        records[claim_id] = {
+            "scope_id": str(row[1] or ""),
+            "fact_key": str(row[2] or ""),
+            "status": str(row[3] or ""),
+            "retired_at": str(row[4]) if row[4] is not None else None,
+            "successor_id": str(row[5]) if row[5] is not None else None,
+        }
+
+    count_names = (
+        "self_cycle_count",
+        "dangling_successor_count",
+        "cross_scope_successor_count",
+        "cross_fact_successor_count",
+        "invalid_predecessor_state_count",
+        "invalid_successor_state_count",
+        "missing_successor_count",
+    )
+    counts = {name: 0 for name in count_names}
+    samples: list[dict[str, str]] = []
+
+    def add(kind: str, claim_id: str, successor_id: str = "") -> None:
+        counts[kind] += 1
+        if len(samples) >= sample_limit:
+            return
+        sample = {
+            "kind": kind.removesuffix("_count"),
+            "claim_id_hash": hashlib.sha256(claim_id.encode("utf-8")).hexdigest(),
+        }
+        if successor_id:
+            sample["successor_id_hash"] = hashlib.sha256(
+                successor_id.encode("utf-8")
+            ).hexdigest()
+        samples.append(sample)
+
+    edge_count = 0
+    for claim_id, record in records.items():
+        successor_id = str(record["successor_id"] or "")
+        status = str(record["status"] or "")
+        retired_at = record["retired_at"]
+        if not successor_id:
+            if status == "superseded":
+                add("missing_successor_count", claim_id)
+            continue
+        edge_count += 1
+        if status != "superseded" or retired_at is None:
+            add("invalid_predecessor_state_count", claim_id, successor_id)
+        if successor_id == claim_id:
+            add("self_cycle_count", claim_id, successor_id)
+        successor = records.get(successor_id)
+        if successor is None:
+            add("dangling_successor_count", claim_id, successor_id)
+            continue
+        if successor["scope_id"] != record["scope_id"]:
+            add("cross_scope_successor_count", claim_id, successor_id)
+        if successor["fact_key"] != record["fact_key"]:
+            add("cross_fact_successor_count", claim_id, successor_id)
+        successor_status = str(successor["status"] or "")
+        successor_retired_at = successor["retired_at"]
+        successor_outgoing = str(successor["successor_id"] or "")
+        successor_state_valid = (
+            successor_status in _INSERTABLE_CLAIM_STATUSES
+            and successor_retired_at is None
+            and not successor_outgoing
+        ) or (
+            successor_status == "superseded"
+            and successor_retired_at is not None
+            and bool(successor_outgoing)
+        )
+        if not successor_state_valid:
+            add("invalid_successor_state_count", claim_id, successor_id)
+
+    completed: set[str] = set()
+    cycle_components: list[tuple[str, ...]] = []
+    cycle_claim_ids: set[str] = set()
+    for start in records:
+        if start in completed:
+            continue
+        path: list[str] = []
+        path_positions: dict[str, int] = {}
+        current = start
+        while current in records and current not in completed:
+            if current in path_positions:
+                cycle = tuple(path[path_positions[current] :])
+                cycle_components.append(cycle)
+                cycle_claim_ids.update(cycle)
+                break
+            path_positions[current] = len(path)
+            path.append(current)
+            next_id = str(records[current]["successor_id"] or "")
+            if not next_id:
+                break
+            current = next_id
+        completed.update(path)
+
+    for cycle in cycle_components:
+        if len(samples) >= sample_limit:
+            break
+        samples.append(
+            {
+                "kind": "successor_cycle",
+                "claim_id_hash": hashlib.sha256(
+                    min(cycle).encode("utf-8")
+                ).hexdigest(),
+            }
+        )
+    violation_count = sum(counts.values()) + len(cycle_components)
+    return {
+        "checked_claim_count": len(records),
+        "checked_edge_count": edge_count,
+        **counts,
+        "cycle_component_count": len(cycle_components),
+        "cycle_claim_count": len(cycle_claim_ids),
+        "violation_count": violation_count,
+        "violation_sample": samples,
+        "violations_truncated": violation_count > len(samples),
+    }
+
+
 def get_claim(
     conn: sqlite3.Connection,
     claim_id: str,
@@ -1156,6 +1387,11 @@ def close_claim_interval(
     status: str = "superseded",
     superseded_by_claim_id: str = "",
     expected_status: str = "current",
+    expected_scope_id: str = "",
+    expected_fact_key: str = "",
+    pending_successor_scope_id: str = "",
+    pending_successor_fact_key: str = "",
+    pending_successor_authority: str = "",
 ) -> FactClaim:
     """CAS-close one adopted claim without deleting it or committing."""
 
@@ -1172,6 +1408,25 @@ def close_claim_interval(
     existing = _get_claim_unscoped(conn, claim_id)
     if existing is None:
         raise TemporalValidationError("claim_id does not exist")
+    if existing.status != normalized_expected or existing.retired_at is not None:
+        raise TemporalConflictError("claim status/retired CAS conflict")
+    if existing.superseded_by_claim_id is not None:
+        raise TemporalConflictError("claim already has a successor")
+    normalized_expected_scope = (
+        _required_text(expected_scope_id, field="expected_scope_id", max_chars=240)
+        if expected_scope_id
+        else existing.scope_id
+    )
+    normalized_expected_fact_key = (
+        _required_text(expected_fact_key, field="expected_fact_key", max_chars=160)
+        if expected_fact_key
+        else existing.fact_key
+    )
+    if (
+        existing.scope_id != normalized_expected_scope
+        or existing.fact_key != normalized_expected_fact_key
+    ):
+        raise TemporalConflictError("claim scope/fact CAS conflict")
     normalized_retired_at = _normalize_timestamp(
         retired_at,
         field="retired_at",
@@ -1202,20 +1457,14 @@ def close_claim_interval(
     if normalized_status == "superseded" and successor is None:
         raise TemporalValidationError("superseded claim requires a successor")
     if successor is not None:
-        successor_claim = _get_claim_unscoped(conn, successor)
-        if successor_claim is not None:
-            if (
-                successor_claim.scope_id != existing.scope_id
-                or successor_claim.fact_key != existing.fact_key
-            ):
-                raise TemporalValidationError(
-                    "successor must share predecessor scope and fact key"
-                )
-            if (
-                successor_claim.status not in _INSERTABLE_CLAIM_STATUSES
-                or successor_claim.retired_at is not None
-            ):
-                raise TemporalValidationError("successor claim must be active")
+        assert_successor_chain_invariant(
+            conn,
+            predecessor_claim_id=existing.claim_id,
+            successor_claim_id=successor,
+            pending_successor_scope_id=pending_successor_scope_id,
+            pending_successor_fact_key=pending_successor_fact_key,
+            pending_successor_authority=pending_successor_authority,
+        )
 
     _validated_valid_to_provenance(existing)
     closure_metadata = dict(existing.metadata)
@@ -1243,6 +1492,7 @@ def close_claim_interval(
         SET valid_to = ?, retired_at = ?, status = ?,
             superseded_by_claim_id = ?, metadata = ?
         WHERE claim_id = ? AND status = ? AND retired_at IS NULL
+          AND scope_id = ? AND fact_key = ?
         """,
         (
             normalized_valid_to,
@@ -1252,6 +1502,8 @@ def close_claim_interval(
             _metadata_json(closure_metadata),
             existing.claim_id,
             normalized_expected,
+            normalized_expected_scope,
+            normalized_expected_fact_key,
         ),
     )
     if cursor.rowcount != 1:
@@ -1269,6 +1521,8 @@ def retract_claim(
     retired_at: Any,
     valid_to: Any = None,
     expected_status: str = "current",
+    expected_scope_id: str = "",
+    expected_fact_key: str = "",
 ) -> FactClaim:
     return close_claim_interval(
         conn,
@@ -1277,6 +1531,8 @@ def retract_claim(
         valid_to=valid_to,
         status="retracted",
         expected_status=expected_status,
+        expected_scope_id=expected_scope_id,
+        expected_fact_key=expected_fact_key,
     )
 
 
@@ -1575,15 +1831,18 @@ __all__ = [
     "ClaimEvidence",
     "FactClaim",
     "FactProjectionInvariantError",
+    "MAX_SUCCESSOR_CHAIN_DEPTH",
     "TemporalConflictError",
     "TemporalFactError",
     "TemporalValidationError",
     "assert_canonical_projection_pair",
+    "assert_successor_chain_invariant",
     "claim_history",
     "claims_as_of",
     "close_claim_interval",
     "current_claims",
     "current_claims_for_scopes",
+    "fact_successor_integrity_report",
     "get_claim",
     "get_claims_by_ids",
     "insert_claim",

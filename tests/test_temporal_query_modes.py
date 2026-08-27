@@ -10,6 +10,7 @@ import pytest
 
 from scope_recall.fact_identity import canonical_fact_key
 from scope_recall.fact_repository import (
+    FACT_EXECUTOR_PENDING_SUCCESSOR_AUTHORITY,
     close_claim_interval,
     insert_claim,
     link_claim_evidence,
@@ -108,6 +109,9 @@ def _seed_chain(conn: sqlite3.Connection) -> None:
         retired_at="2026-03-02T00:00:00+00:00",
         status="superseded",
         superseded_by_claim_id="claim-new",
+        pending_successor_scope_id="scope-a",
+        pending_successor_fact_key=canonical_fact_key("Asha", "lives in"),
+        pending_successor_authority=FACT_EXECUTOR_PENDING_SUCCESSOR_AUTHORITY,
     )
     _insert(
         conn,
@@ -374,6 +378,9 @@ def test_known_at_bounds_predecessor_relationships_by_closure_time():
         retired_at="2026-03-02T00:00:00+00:00",
         status="superseded",
         superseded_by_claim_id="claim-successor",
+        pending_successor_scope_id="scope-a",
+        pending_successor_fact_key=canonical_fact_key("Asha", "lives in"),
+        pending_successor_authority=FACT_EXECUTOR_PENDING_SUCCESSOR_AUTHORITY,
     )
     _insert(
         conn,
@@ -433,6 +440,9 @@ def test_predecessor_cutoff_requires_successor_recorded_by_known_at():
         retired_at="2026-03-01T00:00:00+00:00",
         valid_to="2026-02-01T00:00:00+00:00",
         superseded_by_claim_id="claim-late-successor",
+        pending_successor_scope_id="scope-a",
+        pending_successor_fact_key=canonical_fact_key("Asha", "lives in"),
+        pending_successor_authority=FACT_EXECUTOR_PENDING_SUCCESSOR_AUTHORITY,
     )
     _insert(
         conn,
