@@ -14,7 +14,13 @@ from .fact_repository import require_fact_mutation_authority
 from .freshness import upsert_memory_freshness
 from .graph import lifecycle_is_hidden, load_metadata, sync_memory_entities
 from .graph_relations import evaluate_relation_policy, upsert_relation
+from .lifecycle_compat import resolve_lifecycle_request
 from .lifecycle_policy import ordinary_recall_lifecycle_visible
+from .lifecycle_registry import (
+    DELETED_STATE,
+    HARD_DELETE_DEFAULT,
+    validate_lifecycle_transition,
+)
 from .relation_frequency_index import sync_relation_frequency_memory
 from .sql_store import delete_rows, now_iso, record_governance_audit_event
 from .sqlite_params import chunked_sql_parameters
@@ -66,7 +72,8 @@ def hard_delete_memories(
     require_vector_delete: bool = True,
     actor: str,
     reason: str,
-    event_type: str = "memory_hard_delete",
+    operation_id: str = "",
+    event_type: str = "",
     batch_id: str = "",
     timestamp: str = "",
     fact_mutation_authority: str = "",
@@ -81,6 +88,14 @@ def hard_delete_memories(
     belong exclusively to the committed-outbox executor.
     """
 
+    operation = resolve_lifecycle_request(
+        operation_id=operation_id,
+        legacy_event_type=event_type,
+        legacy_action="hard_delete" if event_type else "",
+        default_operation_id=HARD_DELETE_DEFAULT,
+    )
+    if operation.target_state != DELETED_STATE:
+        raise ValueError(f"{operation.operation_id} is not a hard-delete operation")
     clean_ids = list(
         dict.fromkeys(
             str(memory_id).strip() for memory_id in memory_ids if str(memory_id).strip()
@@ -167,7 +182,16 @@ def hard_delete_memories(
                 "ids": [],
                 "event_ids": [],
                 "outbox_enqueued": 0,
-            }
+                }
+        for row in rows:
+            validate_lifecycle_transition(
+                operation,
+                current_state=str(
+                    load_metadata(row["metadata"] or "{}").get("lifecycle")
+                    or "active"
+                ),
+                target_state=DELETED_STATE,
+            )
         require_fact_mutation_authority(
             conn,
             scoped_ids,
@@ -192,8 +216,8 @@ def hard_delete_memories(
             record_governance_audit_event(
                 conn,
                 event_id=event_id,
-                event_type=str(event_type or "memory_hard_delete"),
-                action="hard_delete",
+                event_type=operation.legacy_event_type,
+                action=operation.legacy_action,
                 scope_id=str(row["scope_id"] or ""),
                 target_id=memory_id,
                 batch_id=str(batch_id or ""),
@@ -360,8 +384,9 @@ def transition_memory_lifecycle(
     expected_lifecycle: str = "",
     actor: str,
     reason: str,
-    event_type: str,
-    action: str,
+    operation_id: str = "",
+    event_type: str = "",
+    action: str = "",
     batch_id: str = "",
     timestamp: str = "",
     fact_mutation_authority: str = "",
@@ -382,6 +407,19 @@ def transition_memory_lifecycle(
     lifecycle = str(lifecycle or "").strip().lower()
     if not memory_id or not lifecycle:
         raise ValueError("memory_id and lifecycle are required")
+    operation = resolve_lifecycle_request(
+        operation_id=operation_id,
+        legacy_event_type=event_type,
+        legacy_action=action,
+    )
+    if operation.target_state == DELETED_STATE:
+        raise ValueError(
+            f"{operation.operation_id} must use hard_delete_memories"
+        )
+    if operation.fact_authority_required and not str(fact_mutation_authority).strip():
+        raise PermissionError(
+            f"{operation.operation_id} requires explicit fact mutation authority"
+        )
     started_outer_transaction = not bool(getattr(conn, "in_transaction", False))
     if started_outer_transaction:
         conn.execute("BEGIN IMMEDIATE")
@@ -401,6 +439,11 @@ def transition_memory_lifecycle(
         current_updated_at = str(row["updated_at"] or "")
         current_lifecycle = (
             str(before_metadata.get("lifecycle") or "active").strip().lower()
+        )
+        validate_lifecycle_transition(
+            operation,
+            current_state=current_lifecycle,
+            target_state=lifecycle,
         )
         if current_lifecycle != lifecycle:
             require_fact_mutation_authority(
@@ -634,8 +677,8 @@ def transition_memory_lifecycle(
         record_governance_audit_event(
             conn,
             event_id=event_id,
-            event_type=str(event_type or "memory_lifecycle_transition"),
-            action=str(action or lifecycle),
+            event_type=operation.legacy_event_type,
+            action=operation.legacy_action,
             scope_id=str(row["scope_id"] or ""),
             target_id=memory_id,
             batch_id=str(batch_id or ""),

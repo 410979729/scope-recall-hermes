@@ -14,6 +14,11 @@ from typing import Any
 import pytest
 
 from _scope_recall_public_memory_port import attach_public_truth_ports
+from scope_recall.lifecycle_registry import (
+    BENCHMARK_MARK_LIFECYCLE,
+    MEMORY_CLEANUP_ARCHIVE,
+    MEMORY_CLEANUP_RESTORE,
+)
 from scope_recall.lifecycle_service import hard_delete_memories, transition_memory_lifecycle
 from scope_recall.memory_ops import dedupe_memories
 from scope_recall.sql_store import ensure_schema, store_row
@@ -463,8 +468,7 @@ def _relation_fixture(tmp_path: Path, *, peer_scope: str = "scope-a") -> tuple[s
         lifecycle="archived",
         actor="test",
         reason="archive before rollback",
-        event_type="rollback_fixture",
-        action="soft_archive",
+        operation_id=MEMORY_CLEANUP_ARCHIVE,
     )
     conn.commit()
     return conn, relation
@@ -479,8 +483,7 @@ def _restore_subject(conn: sqlite3.Connection, relation: dict[str, object]) -> d
         restore_relations=[relation],
         actor="test",
         reason="rollback relation",
-        event_type="rollback_fixture",
-        action="rollback_soft_archive",
+        operation_id=MEMORY_CLEANUP_RESTORE,
     )
     conn.commit()
     return result
@@ -496,8 +499,11 @@ def test_relation_rollback_skips_hidden_peer(tmp_path, peer_lifecycle):
         lifecycle=peer_lifecycle,
         actor="test",
         reason="hide peer",
-        event_type="rollback_fixture",
-        action="hide_peer",
+        operation_id=(
+            MEMORY_CLEANUP_ARCHIVE
+            if peer_lifecycle == "archived"
+            else BENCHMARK_MARK_LIFECYCLE
+        ),
     )
     conn.commit()
 
