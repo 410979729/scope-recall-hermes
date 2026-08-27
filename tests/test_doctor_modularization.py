@@ -30,6 +30,7 @@ def test_doctor_cli_is_thin_wrapper():
         "doctor_journal",
         "doctor_vector",
         "doctor_experience",
+        "doctor_extensions",
     ):
         assert module_name in source
 
@@ -52,6 +53,7 @@ def test_doctor_modules_importable_from_source_checkout():
         "doctor_journal": ["journal_enabled_from_config", "journal_report"],
         "doctor_vector": ["vector_report", "disabled_vector_report"],
         "doctor_experience": ["experience_config_summary", "experience_report", "nightly_digest_report"],
+        "doctor_extensions": ["extension_report"],
     }
 
     for module_name, function_names in expected.items():

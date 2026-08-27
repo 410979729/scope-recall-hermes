@@ -842,6 +842,10 @@ Schema-surface targets:
 Exact candidate measurements and content-free governance counters are documented
 in [`docs/tool-profiles.2.0.md`](docs/tool-profiles.2.0.md).
 
+Optional Graph, Experience, Playbook, Reflection, and External Bridge boundaries
+and their disable/Doctor paths are documented in
+[`docs/extensions.2.0.md`](docs/extensions.2.0.md).
+
 Release `1.10.6` is the Scope Recall 2.0 Program 0 candidate on the last packaged `1.10.3` line and supersedes the unpublished `1.10.4` and `1.10.5` source checkpoints:
 
 - CI exposes one stable `ci-required` aggregate, and release provenance requires that exact successful check.

@@ -34,7 +34,7 @@ from ...desktop_principal import (
     is_desktop_platform,
     resolve_desktop_principal,
 )
-from ...experience_store import backfill_skill_anchors
+from ..experience.runtime import backfill_skill_anchors
 from ...freshness import backfill_untracked_memory_freshness
 from ...gating import config_bool
 from ...journal import ensure_journal_schema
@@ -532,11 +532,16 @@ def initialize_writer_runtime(provider: Any) -> None:
             context="startup writer initialization",
         )
         raise
-    try:
-        _module_attr(provider, "backfill_skill_anchors", backfill_skill_anchors)(conn)
-    except Exception:
-        _call_provider(provider, "_rollback_conn_after_error", "skill-anchor backfill")
-        logger.exception("Scope Recall skill-anchor backfill failed")
+    raw_experience = getattr(provider, "_config", {}).get("experience")
+    experience_config = raw_experience if isinstance(raw_experience, dict) else {}
+    if config_bool(experience_config, "enabled", True):
+        try:
+            _module_attr(provider, "backfill_skill_anchors", backfill_skill_anchors)(
+                conn
+            )
+        except Exception:
+            _call_provider(provider, "_rollback_conn_after_error", "skill-anchor backfill")
+            logger.exception("Scope Recall skill-anchor backfill failed")
     _module_attr(provider, "finish_writer_schema_setup", finish_writer_schema_setup)(
         provider,
         conn,

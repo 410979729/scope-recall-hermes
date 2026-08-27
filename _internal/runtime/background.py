@@ -155,9 +155,6 @@ class BackgroundWork:
         )
 
     def maybe_promote(self, *, trigger: str) -> None:
-        from ...experience_promotion import promote_experiences
-        from ..experience.runtime import run_experience_promotion
-
         provider = self._provider
         shutdown = getattr(provider, "_shutdown_requested", None)
         is_set = getattr(shutdown, "is_set", None)
@@ -175,6 +172,8 @@ class BackgroundWork:
             return
         if not config_bool(experience_config, "auto_promotion_enabled", False):
             return
+        from ..experience.runtime import run_experience_promotion
+
         try:
             limit_sessions = int(experience_config.get("auto_promotion_limit_sessions") or 20)
         except (TypeError, ValueError):
@@ -183,7 +182,6 @@ class BackgroundWork:
             result = run_experience_promotion(
                 provider,
                 limit_sessions=max(1, limit_sessions),
-                promote_fn=promote_experiences,
             )
             logger.info("Scope Recall auto experience promotion after %s: %s", trigger, result)
         except Exception:
