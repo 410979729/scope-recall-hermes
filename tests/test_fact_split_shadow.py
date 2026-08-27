@@ -217,7 +217,7 @@ def test_shadow_builder_rejects_tampered_claim_identity_and_secret_span() -> Non
     conn.execute(
         "UPDATE memories SET content = ?, summary = ? WHERE id = 'mixed-source'",
         (
-            "Joy lives in sk-abcdefghijklmnopqrstuvwxyz123456. "
+            "Joy lives in api_key=legacy_token_example_12345. "
             "Joy prefers concise reports.",
             "secret",
         ),
