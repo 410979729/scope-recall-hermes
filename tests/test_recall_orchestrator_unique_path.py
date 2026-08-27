@@ -292,6 +292,10 @@ def test_unpatched_search_collects_each_source_once() -> None:
     service = RecallService(provider)
     results = service.search_memories("Deploy command is uv run app.", limit=5)
     assert [item.id for item in results] == ["memory-1"]
+    assert not any(
+        str(key).startswith("recall_packet_")
+        for key in (results[0].metadata or {})
+    )
     assert provider.db_calls == 1
     assert provider.vector_calls == 1
     trace = service.last_funnel_trace
@@ -300,7 +304,87 @@ def test_unpatched_search_collects_each_source_once() -> None:
     assert "temporal_stale_removed" in (PLUGIN_ROOT / "_internal" / "recall" / "orchestrator.py").read_text(encoding="utf-8")
     for stage in ("lexical", "vector", "curated", "rrf", "merge", "graph", "fact_freshness", "ranked"):
         assert stage in trace["stages"]
+    compiler_trace = trace["stages"]["compiler"]
+    assert compiler_trace["same_candidate_set"] is True
+    assert "memory-1" not in str(compiler_trace)
     assert trace["recall_mode"] == "advisory"
+
+
+def test_compiler_flags_do_not_trigger_a_second_retrieval() -> None:
+    provider = _DummyProvider()
+    provider._config["recall_compiler"] = {
+        "current_truth_enabled": True,
+        "budgeter_enabled": True,
+        "renderer_enabled": True,
+        "token_budget": 160,
+        "per_item_token_budget": 40,
+    }
+    service = RecallService(provider)
+
+    results = service.search_memories("Deploy command is uv run app.", limit=5)
+
+    assert [item.id for item in results] == ["memory-1"]
+    assert any(
+        str(key).startswith("recall_packet_")
+        for key in (results[0].metadata or {})
+    )
+    assert provider.db_calls == 1
+    assert provider.vector_calls == 1
+    compiler_trace = service.last_funnel_trace["stages"]["compiler"]
+    assert compiler_trace["current_truth_enabled"] is True
+    assert compiler_trace["budgeter_enabled"] is True
+    assert compiler_trace["renderer_enabled"] is True
+
+
+def test_current_truth_switch_removes_stale_claim_projection_without_query_write() -> None:
+    provider = _DummyProvider()
+    provider._config["recall_compiler"] = {"current_truth_enabled": True}
+    shared = {
+        "scope_id": provider._shared_scope_id,
+        "fact_claim_key": "fact:joy-city",
+    }
+    stale = RecallItem(
+        id="city-old",
+        content="Joy lives in Mumbai.",
+        summary="Joy lives in Mumbai.",
+        source="tool-store",
+        target="memory",
+        score=0.95,
+        updated_at="2026-01-01T00:00:00+00:00",
+        metadata={**shared, "fact_claim_id": "claim-old", "lexical_score": 0.95},
+    )
+    current = RecallItem(
+        id="city-current",
+        content="Joy lives in Tokyo.",
+        summary="Joy lives in Tokyo.",
+        source="tool-store",
+        target="memory",
+        score=0.75,
+        updated_at="2026-08-01T00:00:00+00:00",
+        metadata={**shared, "fact_claim_id": "claim-current", "lexical_score": 0.75},
+    )
+    def collect_once(_query, *, limit):
+        provider.db_calls += 1
+        return [stale, current][:limit]
+
+    provider._search_db_memories = collect_once  # type: ignore[method-assign]
+    service = RecallService(provider)
+    service._fact_freshness_evidence = lambda _ids: {  # type: ignore[method-assign]
+        "city-old": {"status": "stale", "fact_key": "legacy-city", "truth_type": "factual"},
+        "city-current": {"status": "current", "fact_key": "legacy-city", "truth_type": "factual"},
+    }
+
+    results = service.search_memories("Where does Joy live now?", limit=5)
+
+    assert [item.id for item in results] == ["city-current"]
+    assert provider.db_calls == 1
+    assert provider.vector_calls == 1
+    compiler_trace = service.last_funnel_trace["stages"]["compiler"]
+    assert compiler_trace["current_truth_removed"] == 1
+    assert not any(
+        str(key).startswith("recall_packet_")
+        for key in (results[0].metadata or {})
+    )
 
 
 def test_vector_top_k_controls_vector_depth_without_expanding_final_limit() -> None:

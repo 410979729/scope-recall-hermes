@@ -111,6 +111,34 @@ def test_prompt_rendering_redacts_legacy_secret_like_summary() -> None:
     assert "[REDACTED_SECRET]" in rendered
 
 
+def test_recall_packet_renderer_has_an_independent_flag() -> None:
+    provider = _Provider(
+        [
+            RecallItem(
+                id="packet-item",
+                content="The deploy command is uv run app.",
+                summary="The deploy command is uv run app.",
+                source="tool-store",
+                target="project",
+                score=0.9,
+                updated_at="2026-07-22T00:00:00+00:00",
+                metadata={"lexical_score": 0.9},
+            )
+        ]
+    )
+    provider._config["recall_compiler"] = {"renderer_enabled": True}
+
+    rendered = render_current_turn_recall(
+        provider,
+        "Please recall the deploy command from durable memory.",
+    )
+
+    assert rendered.startswith("## Scope Recall Packet\n")
+    payload = json.loads(rendered.splitlines()[2])
+    assert payload["schema"] == "scope_recall.recall_packet.v1"
+    assert payload["items"][0]["evidence"] == ["lexical"]
+
+
 def test_prefetch_recall_failure_is_fail_soft(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

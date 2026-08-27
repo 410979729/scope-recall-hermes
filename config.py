@@ -121,6 +121,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "fact_backfill": {
         "shadow_enabled": False,
     },
+    "recall_compiler": {
+        "current_truth_enabled": False,
+        "budgeter_enabled": False,
+        "renderer_enabled": False,
+        "token_budget": 320,
+        "per_item_token_budget": 96,
+    },
     "temporal_queries": {
         "enabled": False,
         "timezone": "UTC",

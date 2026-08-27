@@ -510,6 +510,7 @@ def _new_memory_and_claim(
         {
             "memory_type": projection_memory_type,
             "fact_key": claim.fact_key,
+            "fact_claim_key": claim.fact_key,
             "fact_claim_id": claim_id,
             "evolution_action_id": plan.action_id,
             "evolution_action": plan.proposal.action.value,
