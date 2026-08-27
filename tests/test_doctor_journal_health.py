@@ -528,7 +528,7 @@ def test_doctor_sqlite_report_surfaces_governance_audit_coverage(tmp_path):
     coverage = payload["governance_audit_coverage"]
     assert payload["lifecycle_registry"] == {
         "status": "ready",
-        "operation_count": 30,
+        "operation_count": 33,
         "producer_count": 13,
         "archive_coverage_receipt_count": 8,
         "default_rollback_event_count": 4,

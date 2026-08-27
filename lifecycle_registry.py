@@ -57,6 +57,7 @@ CURRENT_STATE: Final = "$current"
 REQUESTED_STATE: Final = "$requested"
 RECEIPT_BEFORE_STATE: Final = "$receipt_before"
 DELETED_STATE: Final = "$deleted"
+NEW_STATE: Final = "$new"
 
 TRANSITION_PROJECTIONS: Final = (
     "sqlite_truth",
@@ -73,6 +74,14 @@ DELETE_PROJECTIONS: Final = (
     "governance_audit",
 )
 AUDIT_ONLY_PROJECTIONS: Final = ("governance_audit",)
+FACT_PROJECTIONS: Final = (
+    "sqlite_truth",
+    "fact_claims",
+    "fact_evidence",
+    "freshness",
+    "vector_outbox",
+    "governance_audit",
+)
 
 
 MEMORY_CLEANUP_ARCHIVE: Final = "memory.cleanup.archive"
@@ -91,6 +100,9 @@ CANDIDATE_REVIEW_PROMOTE: Final = "memory.candidate_review.promote"
 CANDIDATE_REVIEW_SUPERSEDE: Final = "memory.candidate_review.supersede"
 FACT_EVOLUTION_SUPERSEDE: Final = "fact.evolution.supersede_memory"
 FACT_EVOLUTION_RETRACT: Final = "fact.evolution.retract_memory"
+FACT_EVOLUTION_ADOPT: Final = "fact.evolution.adopt"
+FACT_EVOLUTION_SUPERSEDE_CLAIM: Final = "fact.evolution.supersede_claim"
+FACT_EVOLUTION_ENRICH: Final = "fact.evolution.enrich"
 GOVERNANCE_CLASSIFY_METADATA: Final = "memory.governance.classify_metadata"
 LEGACY_HYGIENE_ARCHIVE: Final = "memory.legacy_hygiene.archive_scratch"
 LEGACY_HYGIENE_NORMALIZE: Final = "memory.legacy_hygiene.normalize_metadata"
@@ -280,6 +292,38 @@ _OPERATIONS: Final = (
         fact_authority_required=True,
     ),
     _operation(
+        FACT_EVOLUTION_ADOPT,
+        domain="fact",
+        allowed_from_states=(NEW_STATE,),
+        target_state="active",
+        legacy_event_type="fact_evolution",
+        legacy_action="add",
+        authorization_policy="fact_executor",
+        fact_authority_required=True,
+        projection_effects=FACT_PROJECTIONS,
+    ),
+    _operation(
+        FACT_EVOLUTION_SUPERSEDE_CLAIM,
+        domain="fact",
+        allowed_from_states=(NEW_STATE,),
+        target_state="active",
+        legacy_event_type="fact_evolution",
+        legacy_action="supersede",
+        authorization_policy="fact_executor",
+        fact_authority_required=True,
+        projection_effects=FACT_PROJECTIONS,
+    ),
+    _operation(
+        FACT_EVOLUTION_ENRICH,
+        domain="fact",
+        target_state=CURRENT_STATE,
+        legacy_event_type="fact_evolution",
+        legacy_action="enrich",
+        authorization_policy="fact_executor",
+        fact_authority_required=True,
+        projection_effects=FACT_PROJECTIONS,
+    ),
+    _operation(
         GOVERNANCE_CLASSIFY_METADATA,
         target_state=CURRENT_STATE,
         legacy_event_type="memory_governance",
@@ -415,7 +459,13 @@ LIFECYCLE_PRODUCER_CENSUS: Final = (
     ),
     LifecycleProducerBinding(
         "fact_executor.py:execute_evolution_plan",
-        (FACT_EVOLUTION_SUPERSEDE, FACT_EVOLUTION_RETRACT),
+        (
+            FACT_EVOLUTION_ADOPT,
+            FACT_EVOLUTION_SUPERSEDE_CLAIM,
+            FACT_EVOLUTION_ENRICH,
+            FACT_EVOLUTION_SUPERSEDE,
+            FACT_EVOLUTION_RETRACT,
+        ),
     ),
     LifecycleProducerBinding(
         "governance_rollback.py:rollback_cleanup_batch",
