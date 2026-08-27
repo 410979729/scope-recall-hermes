@@ -14,6 +14,10 @@ from typing import Any
 from .lifecycle_policy import DURABLE_HIDDEN_LIFECYCLES, ordinary_recall_lifecycle_visible
 from .capture_filters import sanitize_report_text
 from .vector_generation import resolve_generation_storage_root
+from .vector_durable_work import (
+    disabled_vector_outbox_durable_health,
+    vector_outbox_durable_health,
+)
 from .vector_generation_preflight import (
     sanitize_generation_identifier,
     sanitize_outward_preflight_report,
@@ -829,7 +833,14 @@ def vector_generation_report(
     db_path = hermes_home / "scope-recall" / "memory.sqlite3"
     if not db_path.exists():
         return (
-            {"status": "absent", "registered": False, **_empty_inactive_generation_contract()},
+            {
+                "status": "absent",
+                "registered": False,
+                "durable_work": disabled_vector_outbox_durable_health(
+                    reason_code="truth_database_absent"
+                ),
+                **_empty_inactive_generation_contract(),
+            },
             {"ok": True, "failures": []},
             [],
         )
@@ -852,6 +863,9 @@ def vector_generation_report(
                     "status": "legacy_unregistered",
                     "registered": False,
                     "missing_tables": sorted(required - tables),
+                    "durable_work": disabled_vector_outbox_durable_health(
+                        reason_code="schema_missing"
+                    ),
                     **_empty_inactive_generation_contract(),
                 },
                 {"ok": True, "failures": []},
@@ -873,6 +887,9 @@ def vector_generation_report(
                         "registered": True,
                         "current_generation_id": "",
                         "orphan_generation_count": manifest_count,
+                        "durable_work": disabled_vector_outbox_durable_health(
+                            reason_code="no_active_generation"
+                        ),
                         **_empty_inactive_generation_contract(),
                     },
                     {"ok": False, "failures": failures},
@@ -888,6 +905,9 @@ def vector_generation_report(
                     "status": "legacy_unregistered",
                     "registered": False,
                     "current_generation_id": "",
+                    "durable_work": disabled_vector_outbox_durable_health(
+                        reason_code="no_active_generation"
+                    ),
                     **_empty_inactive_generation_contract(),
                 },
                 {"ok": True, "failures": []},
@@ -905,6 +925,7 @@ def vector_generation_report(
                     "status": "generation_incomplete",
                     "registered": True,
                     "current_generation_id": current_id,
+                    "durable_work": vector_outbox_durable_health(conn, current_id),
                     **_empty_inactive_generation_contract(),
                 },
                 {"ok": False, "failures": failures},
@@ -1157,6 +1178,7 @@ def vector_generation_report(
             "inactive_outbox_status_counts": inactive_outbox_counts,
             "outbox_backlog": backlog,
             "outbox_dead_letters": dead_letters,
+            "durable_work": vector_outbox_durable_health(conn, current_id),
             "reconciliation": reconciliation,
             "failed_migration_receipts": failed_receipts,
         }

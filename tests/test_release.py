@@ -432,6 +432,19 @@ def test_relation_policy_generation_is_release_packaged_and_type_checked():
     assert "scope_recall/docs/relation-generation.md" in release_check.REQUIRED_WHEEL
 
 
+def test_vector_durable_work_is_release_packaged_and_type_checked():
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_vector_durable_work"
+    )
+
+    pyright = release_check.pyright_include_check()
+    assert "vector_durable_work.py" in release_check.REQUIRED_SOURCE_FILES
+    assert "scope_recall/vector_durable_work.py" in release_check.REQUIRED_WHEEL
+    assert "vector_durable_work.py" not in pyright["missing_pyright_include"]
+    assert "docs/vector-durable-work.md" in release_check.REQUIRED_SOURCE_FILES
+    assert "scope_recall/docs/vector-durable-work.md" in release_check.REQUIRED_WHEEL
+
+
 def test_sqlite_backup_module_is_release_packaged_and_type_checked():
     release_check = _load_release_check_module("scope_recall_check_release_sqlite_backup")
 
