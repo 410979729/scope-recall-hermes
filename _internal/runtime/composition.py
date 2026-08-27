@@ -9,6 +9,7 @@ from ..application.capture_journal import CaptureApplication, JournalApplication
 from ..application.memory_commands import MemoryCommandApplication
 from ..application.memory_queries import MemoryQueryApplication
 from ..application.runtime_state import RuntimeStateSnapshot
+from ..application.vector_service import VectorApplication
 from .background import BackgroundWork
 from .bootstrap import RuntimeBootstrap
 from .capture_service import bind_capture_gateway
@@ -20,6 +21,7 @@ from .query_adapter import bind_provider_query_adapter
 from .tool_port import bind_tool_runtime_port
 from .truth_session import TruthSession
 from .vector_view import RuntimeVectorView
+from .vector_service import bind_vector_gateway
 
 
 def _adapter_provider_module(adapter: RuntimeAdapterPort) -> Any:
@@ -46,6 +48,7 @@ class RuntimeComposition:
         self.lifecycle = lifecycle if lifecycle is not None else ProcessLifecycle()
         self.bootstrap = RuntimeBootstrap(adapter)
         self.vector_view = RuntimeVectorView(adapter)
+        self.vector = VectorApplication(bind_vector_gateway(adapter, self.vector_view))
         self.capture = CaptureApplication(bind_capture_gateway(adapter))
         self.journal = JournalApplication(bind_journal_gateway(adapter))
         command_gateway = bind_provider_command_adapter(adapter)
@@ -74,8 +77,6 @@ class RuntimeComposition:
         """Own vector / capture-writer startup. Not Provider."""
 
         from ...capture import start_writer as default_start_writer
-        from ...vector_runtime import setup_vector_layer as default_setup_vector_layer
-
         adapter = self.adapter
         provider_mod = _adapter_provider_module(adapter)
 
@@ -83,7 +84,7 @@ class RuntimeComposition:
             fn = getattr(provider_mod, name, None) if provider_mod is not None else None
             return fn if callable(fn) else default
 
-        _hook("setup_vector_layer", default_setup_vector_layer)(adapter)
+        self.vector.setup()
         _hook("start_writer", default_start_writer)(adapter)
 
     def initialize(self, session_id: str, **kwargs: Any) -> None:

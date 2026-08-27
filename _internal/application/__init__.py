@@ -43,6 +43,7 @@ from .runtime_state import (
     ScopeSnapshot,
     VectorSnapshot,
 )
+from .vector_service import VectorApplication, VectorGateway
 
 __all__ = [
     "CaptureApplication",
@@ -79,4 +80,6 @@ __all__ = [
     "RuntimeStateSnapshot",
     "ScopeSnapshot",
     "VectorSnapshot",
+    "VectorApplication",
+    "VectorGateway",
 ]
