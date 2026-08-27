@@ -82,26 +82,10 @@ from ._internal.memory.scope import (  # noqa: E402
 )
 
 
-def _write_target(provider: Any) -> Any:
-    """Return the Provider-shaped domain object declared by MemoryCommandPort."""
-
-    getter = getattr(provider, "write_target", None)
-    if callable(getter):
-        target = getter()
-        if target is not None:
-            return target
-    return provider
-
-
 def _require_command_method(provider: Any, name: str) -> Any:
     getter = getattr(provider, name, None)
     if callable(getter):
         return getter
-    target = _write_target(provider)
-    if target is not provider:
-        getter = getattr(target, name, None)
-        if callable(getter):
-            return getter
     raise TypeError(f"MemoryCommandPort.{name} is required")
 
 
@@ -142,7 +126,7 @@ def _domain_writable_scope_ids(provider: Any) -> list[str]:
         raw = getter()
         values = list(raw) if isinstance(raw, (list, tuple)) else []
         return [str(item) for item in values if str(item)]
-    return _writable_scope_params(_write_target(provider))
+    return _writable_scope_params(provider)
 
 
 def _domain_writable_placeholders(provider: Any) -> str:
@@ -222,8 +206,7 @@ def _rollback_provider_conn_after_error(provider: Any, context: str) -> None:
     if callable(rollback):
         rollback(context)
         return
-    target = _write_target(provider)
-    rollback = getattr(target, "rollback_conn_after_error", None)
+    rollback = getattr(provider, "rollback_conn_after_error", None)
     if callable(rollback):
         rollback(context)
 
@@ -347,7 +330,7 @@ def store_memory_now(
         )
 
     memory_id, inserted, relation_result = store_now(
-        _write_target(provider),
+        provider,
         content=content,
         source=source,
         target=target,
@@ -595,7 +578,7 @@ def update_memory(
     only after truth commits.
     """
 
-    mutation = MemoryMutationService(_write_target(provider))
+    mutation = MemoryMutationService(provider)
     updated = False
     summary = ""
     updated_at = ""
@@ -691,9 +674,9 @@ def update_memory(
 
     if updated:
         try:
-            replay_vector_outbox(_write_target(provider))
+            replay_vector_outbox(provider)
         except Exception as exc:
-            mark_vector_replay_degraded(_write_target(provider), exc)
+            mark_vector_replay_degraded(provider, exc)
             logger.warning(
                 "Scope Recall vector outbox replay failed after atomic update: %s",
                 exc,
@@ -715,7 +698,7 @@ def merge_memories(
             str(memory_id) for memory_id in source_ids if str(memory_id).strip()
         )
     )
-    mutation = MemoryMutationService(_write_target(provider))
+    mutation = MemoryMutationService(provider)
     summary = ""
     updated_at = ""
     requested_target = ""
@@ -888,9 +871,9 @@ def merge_memories(
         raise
 
     try:
-        replay_vector_outbox(_write_target(provider))
+        replay_vector_outbox(provider)
     except Exception as exc:
-        mark_vector_replay_degraded(_write_target(provider), exc)
+        mark_vector_replay_degraded(provider, exc)
         logger.warning(
             "Scope Recall vector outbox replay failed after atomic merge: %s",
             exc,
@@ -1002,7 +985,7 @@ def govern_memories(
         write_conn = _command_conn(provider)
         if write_conn.in_transaction:
             write_conn.rollback()
-        with MemoryMutationService(_write_target(provider)).transaction() as write_conn:
+        with MemoryMutationService(provider).transaction() as write_conn:
             for (
                 metadata_json,
                 memory_id,
@@ -1048,7 +1031,7 @@ def delete_memories(
     if not requested_ids:
         return 0
     if transaction_conn is not None:
-        require_vector_delete = vector_delete_intent_required(_write_target(provider))
+        require_vector_delete = vector_delete_intent_required(provider)
         result = hard_delete_memories(
             transaction_conn,
             memory_ids=requested_ids,
@@ -1082,7 +1065,7 @@ def _hard_delete_provider_memories(
 ) -> dict[str, Any]:
     """Commit hard-delete truth plus outbox and expose companion status."""
 
-    with capture_mutation_barrier(_write_target(provider)):
+    with capture_mutation_barrier(provider):
         return _hard_delete_provider_memories_after_capture_flush(
             provider,
             ids,
@@ -1103,7 +1086,7 @@ def _hard_delete_provider_memories_after_capture_flush(
     """Perform hard delete while the caller excludes new capture enqueue."""
 
     with _command_lock(provider):
-        require_vector_delete = vector_delete_intent_required(_write_target(provider))
+        require_vector_delete = vector_delete_intent_required(provider)
 
         result = hard_delete_memories(
             _command_conn(provider),
@@ -1117,7 +1100,7 @@ def _hard_delete_provider_memories_after_capture_flush(
             batch_id=f"hard_delete_{uuid.uuid4().hex}",
         )
     replay_result = (
-        replay_vector_outbox(_write_target(provider))
+        replay_vector_outbox(provider)
         if require_vector_delete
         else {"claimed": 0, "completed": 0, "failed": 0}
     )
@@ -1182,7 +1165,7 @@ def _archive_memories_truth(
         return payload
     now = datetime.now(timezone.utc).isoformat()
     try:
-        with MemoryMutationService(_write_target(provider)).transaction() as conn:
+        with MemoryMutationService(provider).transaction() as conn:
             scope_params = _domain_writable_scope_ids(provider)
             rows: list[Any] = []
             for id_chunk in chunked_sql_parameters(
@@ -1301,7 +1284,7 @@ def archive_memories(
 ) -> dict[str, Any]:
     """Soft-archive memories, then replay companion intent outside truth lock."""
 
-    with capture_mutation_barrier(_write_target(provider)):
+    with capture_mutation_barrier(provider):
         return _archive_memories_after_capture_flush(
             provider,
             ids,
@@ -1331,10 +1314,10 @@ def _archive_memories_after_capture_flush(
     if not payload.get("ids"):
         return payload
     try:
-        payload["vector_replay"] = replay_vector_outbox(_write_target(provider))
+        payload["vector_replay"] = replay_vector_outbox(provider)
     except Exception as exc:
         safe_error = sanitize_report_text(str(exc))
-        mark_vector_replay_degraded(_write_target(provider), safe_error)
+        mark_vector_replay_degraded(provider, safe_error)
         payload["vector_replay"] = {
             "completed": 0,
             "failed": 1,
@@ -1383,7 +1366,7 @@ def dedupe_memories(provider: Any, *, dry_run: bool = True, scope_only: bool = T
 
 
 def repair_vector(provider: Any) -> dict[str, Any]:
-    target = _write_target(provider)
+    target = provider
     setup_vector_layer(target)
     return {
         "repaired": _command_vector_status(provider).get("status") == "ready",
@@ -1408,7 +1391,7 @@ def feedback_memory(
             "id": memory_id,
         }
 
-    with MemoryMutationService(_write_target(provider)).transaction() as conn:
+    with MemoryMutationService(provider).transaction() as conn:
         row = conn.execute(
             f"SELECT * FROM memories WHERE id = ? AND scope_id IN ({_domain_writable_placeholders(provider)})",
             [memory_id, *_domain_writable_scope_ids(provider)],

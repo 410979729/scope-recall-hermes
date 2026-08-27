@@ -1121,10 +1121,6 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         """Public cleanup declared by MemoryCommandPort."""
         self._rollback_conn_after_error(context)
 
-    def write_target(self) -> object:
-        """Provider-shaped domain target for memory_ops / write_kernel / shared bridge."""
-        return self
-
     def config_view(self) -> dict[str, Any]:
         return dict(self._config)
 

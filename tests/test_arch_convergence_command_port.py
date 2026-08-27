@@ -289,6 +289,23 @@ def test_tooling_does_not_unwrap_runtime_or_writer_lock() -> None:
     assert "capture_mutation_barrier" not in tooling_source
 
 
+def test_production_runtime_has_no_generic_unwrap_escape_hatches() -> None:
+    for rel in (
+        "memory_ops.py",
+        "provider.py",
+        "reflection_tooling.py",
+        "_internal/application/memory_commands.py",
+        "_internal/application/memory_queries.py",
+        "_internal/runtime/command_adapter.py",
+        "_internal/runtime/kernel.py",
+        "_internal/runtime/ports.py",
+        "_internal/runtime/tool_port.py",
+    ):
+        source = (PLUGIN_ROOT / rel).read_text(encoding="utf-8")
+        assert "write_target" not in source, rel
+        assert "evidence_runtime" not in source, rel
+
+
 def test_touched_internals_import_canonical_modules_not_shims() -> None:
     assert orchestrator_module.recall_pipeline is recall_pipeline
     assert orchestrator_module.recall_pipeline.__name__ == "scope_recall._internal.recall.pipeline"
