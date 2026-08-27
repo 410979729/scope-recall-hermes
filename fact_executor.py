@@ -32,7 +32,14 @@ from .fact_repository import (
 )
 from .freshness import upsert_memory_freshness
 from .graph_relations import upsert_relation
-from .lifecycle_registry import FACT_EVOLUTION_RETRACT, FACT_EVOLUTION_SUPERSEDE
+from .lifecycle_registry import (
+    FACT_EVOLUTION_ADOPT,
+    FACT_EVOLUTION_ENRICH,
+    FACT_EVOLUTION_RETRACT,
+    FACT_EVOLUTION_SUPERSEDE,
+    FACT_EVOLUTION_SUPERSEDE_CLAIM,
+    resolve_lifecycle_operation,
+)
 from .lifecycle_service import LifecycleConflictError, transition_memory_lifecycle
 from .sql_store import record_governance_audit_event, store_row
 from .vector_generation import current_generation_id, enqueue_vector_event
@@ -600,11 +607,17 @@ def _new_memory_and_claim(
         )
 
     event_id = _stable_id("factgov", f"{plan.action_id}:successor")
+    operation = resolve_lifecycle_operation(
+        {
+            EvolutionAction.ADD: FACT_EVOLUTION_ADOPT,
+            EvolutionAction.SUPERSEDE: FACT_EVOLUTION_SUPERSEDE_CLAIM,
+        }[plan.proposal.action]
+    )
     record_governance_audit_event(
         conn,
         event_id=event_id,
-        event_type="fact_evolution",
-        action=plan.proposal.action.value,
+        event_type=operation.legacy_event_type,
+        action=operation.legacy_action,
         scope_id=context.scope_id,
         target_id=memory_id,
         batch_id=plan.action_id,
@@ -654,11 +667,12 @@ def _link_enrichment(
             receipt=receipt,
         )
         event_id = _stable_id("factgov", f"{plan.action_id}:enrich:{memory_id}")
+        operation = resolve_lifecycle_operation(FACT_EVOLUTION_ENRICH)
         record_governance_audit_event(
             conn,
             event_id=event_id,
-            event_type="fact_evolution",
-            action="enrich",
+            event_type=operation.legacy_event_type,
+            action=operation.legacy_action,
             scope_id=context.scope_id,
             target_id=memory_id,
             batch_id=plan.action_id,
