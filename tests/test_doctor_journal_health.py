@@ -119,6 +119,11 @@ def test_journal_report_surfaces_digest_health_and_batch_policy(tmp_path):
         journal_config={"max_entries_per_digest": 80, "dynamic_backlog_threshold": 500, "max_entries_per_digest_ceiling": 1200},
     )
 
+    assert payload["durable_work"]["state"] == "needs_repair"
+    assert payload["durable_work"]["item_counts"]["poisoned"] == 1
+    assert payload["durable_work"]["retry"]["retry_count"] == 1
+    assert payload["durable_work"]["lease"]["mode"] == "process_lifetime_os_lock"
+
     assert check["ok"] is True
     health = payload["digest_health"]
     assert health["status"] == "degraded"
