@@ -27,6 +27,10 @@ from scope_recall.relation_frequency_index import (
     RELATION_FREQUENCY_FAILURE_MIGRATION_ID,
     RELATION_FREQUENCY_INDEX_MIGRATION_ID,
 )
+from scope_recall.relation_policy_generation import (
+    RELATION_POLICY_GENERATION_MIGRATION_ID,
+    RELATION_POLICY_GENERATION_SCHEMA_VERSION,
+)
 from scope_recall.relation_rebuild_queue import (
     RELATION_REBUILD_EXPIRY_MIGRATION_ID,
     RELATION_REBUILD_LEASE_MIGRATION_ID,
@@ -68,6 +72,7 @@ def test_schema_migration_status_reports_baseline_after_ensure_schema():
         RELATION_FREQUENCY_FAILURE_MIGRATION_ID,
         LEXICAL_MIGRATION_ID,
         RELATION_CONTAINMENT_MIGRATION_ID,
+        RELATION_POLICY_GENERATION_MIGRATION_ID,
     ]
     assert after["current"] is True
     assert after["user_version"] == after["schema_version"]
@@ -85,10 +90,12 @@ def test_schema_migration_status_reports_baseline_after_ensure_schema():
         RELATION_FREQUENCY_FAILURE_MIGRATION_ID,
         LEXICAL_MIGRATION_ID,
         RELATION_CONTAINMENT_MIGRATION_ID,
+        RELATION_POLICY_GENERATION_MIGRATION_ID,
     ]
-    assert after["schema_version"] == RELATION_CONTAINMENT_SCHEMA_VERSION
+    assert after["schema_version"] == RELATION_POLICY_GENERATION_SCHEMA_VERSION
     assert after["lexical_generation"]["current"] is True
     assert after["relation_containment"]["current"] is True
+    assert after["relation_policy_generation"]["current"] is True
     tables = {
         str(row[0])
         for row in conn.execute(
@@ -97,6 +104,52 @@ def test_schema_migration_status_reports_baseline_after_ensure_schema():
     }
     assert {"lexical_generations", "lexical_generation_state"} <= tables
     assert LEXICAL_SHADOW_TABLE not in tables
+
+
+def test_relation_policy_generation_migration_upgrades_pre_0014_in_place():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    historical_checksums = {
+        str(row["id"]): str(row["checksum"])
+        for row in conn.execute(
+            "SELECT id, checksum FROM schema_migrations WHERE id <> ? ORDER BY id",
+            (RELATION_POLICY_GENERATION_MIGRATION_ID,),
+        ).fetchall()
+    }
+    for table in (
+        "relation_edge_provenance",
+        "relation_generation_items",
+        "relation_policy_generations",
+    ):
+        conn.execute(f"DROP TABLE {table}")
+    conn.execute(
+        "DELETE FROM schema_migrations WHERE id=?",
+        (RELATION_POLICY_GENERATION_MIGRATION_ID,),
+    )
+    conn.execute(f"PRAGMA user_version = {RELATION_CONTAINMENT_SCHEMA_VERSION}")
+    conn.commit()
+
+    before = schema_migration_status(conn)
+    assert before["current"] is False
+    assert before["missing_migrations"] == [RELATION_POLICY_GENERATION_MIGRATION_ID]
+    assert before["relation_policy_generation"]["current"] is False
+
+    ensure_schema(conn)
+    after = schema_migration_status(conn)
+    restored_checksums = {
+        str(row["id"]): str(row["checksum"])
+        for row in conn.execute(
+            "SELECT id, checksum FROM schema_migrations WHERE id <> ? ORDER BY id",
+            (RELATION_POLICY_GENERATION_MIGRATION_ID,),
+        ).fetchall()
+    }
+
+    assert after["current"] is True
+    assert after["missing_migrations"] == []
+    assert after["relation_policy_generation"]["current"] is True
+    assert restored_checksums == historical_checksums
+    conn.close()
 
 
 def test_relation_lease_token_migration_upgrades_pre_0005_queue_in_place():

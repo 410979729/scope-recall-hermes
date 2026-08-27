@@ -48,6 +48,14 @@ from .relation_containment import (
     ensure_relation_containment_schema,
     relation_containment_schema_status,
 )
+from .relation_policy_generation import (
+    RELATION_POLICY_GENERATION_MIGRATION_DESCRIPTION,
+    RELATION_POLICY_GENERATION_MIGRATION_ID,
+    RELATION_POLICY_GENERATION_MIGRATION_PLUGIN_VERSION,
+    RELATION_POLICY_GENERATION_SCHEMA_VERSION,
+    ensure_relation_policy_generation_schema,
+    relation_policy_generation_schema_status,
+)
 from .relation_frequency_index import (
     RELATION_FREQUENCY_FAILURE_MIGRATION_DESCRIPTION,
     RELATION_FREQUENCY_FAILURE_MIGRATION_ID,
@@ -108,7 +116,7 @@ from .vector_reconciliation import (
 )
 
 ENTRY_DELIMITER = "\n§\n"
-SCHEMA_VERSION = RELATION_CONTAINMENT_SCHEMA_VERSION
+SCHEMA_VERSION = RELATION_POLICY_GENERATION_SCHEMA_VERSION
 BASELINE_SCHEMA_VERSION = 10600
 BASELINE_MIGRATION_ID = "0001_baseline_v1_6_0"
 BASELINE_MIGRATION_PLUGIN_VERSION = "1.6.0"
@@ -198,6 +206,12 @@ EXPECTED_SCHEMA_MIGRATIONS: tuple[dict[str, Any], ...] = (
         "description": RELATION_CONTAINMENT_MIGRATION_DESCRIPTION,
         "schema_version": RELATION_CONTAINMENT_SCHEMA_VERSION,
     },
+    {
+        "id": RELATION_POLICY_GENERATION_MIGRATION_ID,
+        "plugin_version": RELATION_POLICY_GENERATION_MIGRATION_PLUGIN_VERSION,
+        "description": RELATION_POLICY_GENERATION_MIGRATION_DESCRIPTION,
+        "schema_version": RELATION_POLICY_GENERATION_SCHEMA_VERSION,
+    },
 )
 
 
@@ -261,6 +275,7 @@ def ensure_schema_migrations(conn: sqlite3.Connection) -> None:
     ensure_relation_rebuild_schema(conn)
     ensure_relation_frequency_index_schema(conn)
     ensure_relation_containment_schema(conn)
+    ensure_relation_policy_generation_schema(conn)
     ensure_vector_reconciliation_schema(conn)
     ensure_operator_ledger_schema(conn)
     ensure_lexical_generation_schema(conn)
@@ -394,6 +409,7 @@ def schema_migration_status(conn: sqlite3.Connection) -> dict[str, Any]:
     relation_status = relation_rebuild_schema_status(conn)
     relation_frequency_status = relation_frequency_index_schema_status(conn)
     relation_containment_status = relation_containment_schema_status(conn)
+    relation_policy_generation_status = relation_policy_generation_schema_status(conn)
     vector_reconciliation_status = vector_reconciliation_schema_status(conn)
     operator_status = operator_ledger_schema_status(conn)
     lexical_status = lexical_schema_status(conn)
@@ -409,6 +425,7 @@ def schema_migration_status(conn: sqlite3.Connection) -> dict[str, Any]:
             and bool(relation_status["current"])
             and bool(relation_frequency_status["current"])
             and bool(relation_containment_status["current"])
+            and bool(relation_policy_generation_status["current"])
             and bool(vector_reconciliation_status["current"])
             and bool(operator_status["current"])
             and bool(lexical_status["current"])
@@ -421,6 +438,7 @@ def schema_migration_status(conn: sqlite3.Connection) -> dict[str, Any]:
         "relation_rebuild_queue": relation_status,
         "relation_frequency_index": relation_frequency_status,
         "relation_containment": relation_containment_status,
+        "relation_policy_generation": relation_policy_generation_status,
         "vector_reconciliation": vector_reconciliation_status,
         "operator_ledger": operator_status,
         "lexical_generation": lexical_status,

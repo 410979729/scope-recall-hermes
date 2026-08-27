@@ -52,6 +52,17 @@ except ImportError:  # pragma: no cover - direct source-script execution fallbac
         record_relation_focus_failure,
     )
 
+try:
+    from .relation_policy_generation import (
+        drain_relation_policy_generation,
+        restore_program0_relation_containment,
+    )
+except ImportError:  # pragma: no cover - direct source-script execution fallback
+    from relation_policy_generation import (  # type: ignore[no-redef]
+        drain_relation_policy_generation,
+        restore_program0_relation_containment,
+    )
+
 
 logger = logging.getLogger(__name__)
 _MAX_CHANGE_ATTEMPTS = 3
@@ -497,6 +508,7 @@ def drain_relation_frequency_work(
     reclassification_limit: int = 250,
     relation_candidate_cap: int = 250,
     relation_max_attempts: int = 5,
+    relation_policy_generation_enabled: bool = False,
     wall_clock_seconds: float = 0.5,
     backoff_base_seconds: float = 5.0,
     backoff_max_seconds: float = 300.0,
@@ -537,17 +549,35 @@ def drain_relation_frequency_work(
                 "failed": 0,
             }
         else:
-            containment = drain_relation_containment_scope(
-                conn,
-                candidate_cap=relation_candidate_cap,
-                max_attempts=relation_max_attempts,
-                wall_clock_seconds=wall_clock_seconds,
-                backoff_base_seconds=backoff_base_seconds,
-                backoff_max_seconds=backoff_max_seconds,
-                deadline_monotonic=deadline,
-                clock=clock,
-                commit=False,
-            )
+            if relation_policy_generation_enabled:
+                containment = drain_relation_policy_generation(
+                    conn,
+                    item_limit=max(1, min(int(change_limit), 1000)),
+                    candidate_cap=relation_candidate_cap,
+                    max_attempts=relation_max_attempts,
+                    wall_clock_seconds=wall_clock_seconds,
+                    backoff_base_seconds=backoff_base_seconds,
+                    backoff_max_seconds=backoff_max_seconds,
+                    deadline_monotonic=deadline,
+                    clock=clock,
+                    commit=False,
+                )
+            else:
+                restore_program0_relation_containment(
+                    conn,
+                    candidate_cap=relation_candidate_cap,
+                )
+                containment = drain_relation_containment_scope(
+                    conn,
+                    candidate_cap=relation_candidate_cap,
+                    max_attempts=relation_max_attempts,
+                    wall_clock_seconds=wall_clock_seconds,
+                    backoff_base_seconds=backoff_base_seconds,
+                    backoff_max_seconds=backoff_max_seconds,
+                    deadline_monotonic=deadline,
+                    clock=clock,
+                    commit=False,
+                )
         if clock() >= deadline:
             focused = 0
         else:

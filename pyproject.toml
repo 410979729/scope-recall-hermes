@@ -228,6 +228,7 @@ include = [
   "retention_profiles.py",
   "relation_entity_policy.py",
   "relation_extraction.py",
+  "relation_policy_generation.py",
   "relation_frequency_index.py",
   "relation_frequency_maintenance.py",
   "relation_rebuild_queue.py",

@@ -24,6 +24,7 @@ try:
     from .operator_ledger import operator_ledger_report
     from .relation_containment import relation_containment_report
     from .relation_frequency_maintenance import relation_frequency_index_report
+    from .relation_policy_generation import relation_policy_generation_report
     from .relation_rebuild_queue import relation_rebuild_queue_report
     from .secret_patterns import scan_secret_like_text
     from .sql_store import fts_integrity_report, schema_migration_status
@@ -41,6 +42,7 @@ except ImportError:  # pragma: no cover - direct source-script execution fallbac
     from operator_ledger import operator_ledger_report
     from relation_containment import relation_containment_report
     from relation_frequency_maintenance import relation_frequency_index_report
+    from relation_policy_generation import relation_policy_generation_report
     from relation_rebuild_queue import relation_rebuild_queue_report
     from secret_patterns import scan_secret_like_text
     from sql_store import fts_integrity_report, schema_migration_status
@@ -94,6 +96,7 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
             operator_ledger = operator_ledger_report(conn)
             relation_containment = relation_containment_report(conn)
             relation_frequency = relation_frequency_index_report(conn)
+            relation_generation = relation_policy_generation_report(conn)
             relation_rebuild = relation_rebuild_queue_report(conn)
             lexical_generation = lexical_generation_report(conn)
             schema_migrations = schema_migration_status(conn)
@@ -310,6 +313,16 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
             "Relation containment is degraded but auto-recoverable; keep bounded background maintenance running and verify progress before release."
         )
 
+    if bool(relation_generation.get("operator_action_required")):
+        failures.append(
+            "relation policy generation requires operator action: "
+            f"reason={relation_generation.get('reason_code') or 'unknown'}"
+        )
+    elif str(relation_generation.get("state") or "") == "degraded":
+        recommendations.append(
+            "Relation policy generation has auto-recoverable durable debt; keep bounded maintenance running and verify oldest age and progress."
+        )
+
     if operator_ledger["status"] == "schema_missing":
         recommendations.append(
             "Operator ledger schema is missing; initialize with the current provider before relying on filesystem receipts."
@@ -362,6 +375,7 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
         "operator_ledger": operator_ledger,
         "relation_containment": relation_containment,
         "relation_frequency_index": relation_frequency,
+        "relation_policy_generation": relation_generation,
         "relation_rebuild_queue": relation_rebuild,
         "lexical_generation": lexical_generation,
         "schema_migrations": schema_migrations,

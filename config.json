@@ -88,6 +88,7 @@
   "relation_sync_neighbor_limit": 32,
   "relation_rebuild_chunk_pairs": 250,
   "relation_reclassification_candidate_cap": 250,
+  "relation_policy_generation_enabled": false,
   "relation_maintenance_interval_seconds": 30.0,
   "relation_maintenance_wall_clock_seconds": 0.5,
   "relation_maintenance_max_attempts": 5,
