@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from typing import Any
 
+from ..application.memory_commands import MemoryCommandApplication
 from .background import BackgroundWork
 from .bootstrap import RuntimeBootstrap
 from .command_adapter import bind_provider_command_adapter
@@ -39,7 +40,8 @@ class RuntimeComposition:
         self.lifecycle = lifecycle if lifecycle is not None else ProcessLifecycle()
         self.bootstrap = RuntimeBootstrap(adapter)
         self.vector_view = RuntimeVectorView(adapter)
-        self._command_port: MemoryCommandPort = bind_provider_command_adapter(adapter)
+        command_gateway = bind_provider_command_adapter(adapter)
+        self._command_port: MemoryCommandPort = MemoryCommandApplication(command_gateway)
         self.tool_port: ToolRuntimePort = bind_tool_runtime_port(
             adapter, command_port=self._command_port
         )

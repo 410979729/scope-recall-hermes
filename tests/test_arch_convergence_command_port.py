@@ -1,9 +1,8 @@
 """Architecture-convergence: one production command-port route.
 
-These tests fail on the live dual assembly (ProviderCommandAdapter vs
-``_LegacyPersistCommandPort``), inward shim imports, and sys.modules
-lookups. They must stay runtime/identity checks, not source-shape stand-ins
-for the command-port unification.
+These tests protect the single production application-command route, the
+isolated-host compatibility fallback, inward shim imports, and sys.modules
+lookups.
 """
 
 from __future__ import annotations
@@ -13,6 +12,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from scope_recall._internal.application.memory_commands import MemoryCommandApplication
 from scope_recall._internal.recall import orchestrator as orchestrator_module
 from scope_recall._internal.recall import pipeline as recall_pipeline
 from scope_recall._internal.runtime.command_adapter import ProviderCommandAdapter
@@ -132,7 +132,8 @@ def test_provider_and_tooling_entries_use_same_command_port_object(monkeypatch) 
     assert tooling_ports == [assembled] * len(_COMMAND_SPY_METHODS)
     assert all(port is assembled for port in provider_ports)
     assert all(port is assembled for port in tooling_ports)
-    assert type(assembled) is ProviderCommandAdapter
+    assert type(assembled) is MemoryCommandApplication
+    assert type(assembled._gateway) is ProviderCommandAdapter
     assert not isinstance(assembled, _LegacyPersistCommandPort)
     assert all(not isinstance(port, _LegacyPersistCommandPort) for port in tooling_ports)
 
@@ -189,6 +190,35 @@ def test_isolated_host_keeps_legacy_command_port_fallback(monkeypatch) -> None:
     assert ports
     assert all(isinstance(port, _LegacyPersistCommandPort) for port in ports)
     assert all(not isinstance(port, ProviderCommandAdapter) for port in ports)
+
+
+def test_application_command_contract_stays_provider_neutral() -> None:
+    source = (PLUGIN_ROOT / "_internal/application/memory_commands.py").read_text(
+        encoding="utf-8"
+    )
+    tree = ast.parse(source)
+    imported_names = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    }
+    identifier_names = {
+        node.id for node in ast.walk(tree) if isinstance(node, ast.Name)
+    }
+    forbidden_imports = {"sqlite3", "threading", "provider", "runtime_adapter"}
+    assert imported_names.isdisjoint(forbidden_imports)
+    assert "Any" not in source
+    assert "Provider" not in identifier_names
+    assert "Connection" not in source
+    assert "Lock" not in source
+
+
+def test_command_kernel_has_no_legacy_write_target_or_memory_ops_dependency() -> None:
+    source = (PLUGIN_ROOT / "_internal/runtime/kernel.py").read_text(encoding="utf-8")
+    assert "write_target" not in source
+    assert "memory_ops" not in source
+    assert "write_kernel" not in source
 
 
 def test_touched_internals_import_canonical_modules_not_shims() -> None:

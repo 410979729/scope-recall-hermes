@@ -5,6 +5,18 @@ from __future__ import annotations
 import sqlite3
 from typing import Any, Mapping, Protocol, runtime_checkable
 
+from ..application.memory_commands import (
+    ArchiveMemoriesRequest,
+    DedupeMemoriesRequest,
+    DeleteMemoriesRequest,
+    FactOwnedMemoryIdsRequest,
+    FeedbackMemoryRequest,
+    GovernMemoriesRequest,
+    MergeMemoriesRequest,
+    StoreMemoryRequest,
+    UpdateMemoryRequest,
+)
+
 
 @runtime_checkable
 class QueryLock(Protocol):
@@ -77,87 +89,28 @@ class MemoryQueryPort(
 
 
 @runtime_checkable
-class MemoryCommandPort(TruthStorePort, ScopeContextPort, VectorViewPort, Protocol):
-    """Typed command surface for CommandKernel. Distinct from a bare Provider.
+class MemoryCommandPort(Protocol):
+    """Provider-neutral application command surface."""
 
-    CommandKernel calls only these declared methods. memory_ops and
-    write_kernel use write_target() when they still need the Provider-shaped
-    domain object. Cleanup, config, scope, and authority stay public here.
-    """
+    def store(self, request: StoreMemoryRequest) -> tuple[str, bool, str]: ...
 
-    def rollback_conn_after_error(self, context: str) -> None: ...
+    def update(self, request: UpdateMemoryRequest) -> tuple[bool, str, str]: ...
 
-    def write_target(self) -> object: ...
+    def merge(self, request: MergeMemoriesRequest) -> dict[str, object]: ...
 
-    def store_now(
-        self,
-        *,
-        content: str,
-        source: str,
-        target: str,
-        session_id: str,
-        metadata: dict[str, object] | None = None,
-        allow_duplicate: bool = False,
-        semantic_merge: bool = False,
-        scope_mode: str | None = None,
-    ) -> tuple[str, bool, str]: ...
+    def archive(self, request: ArchiveMemoriesRequest) -> dict[str, object]: ...
 
-    def command_update_memory(
-        self, memory_id: str, content: str, target: str | None = None
-    ) -> tuple[bool, str, str]: ...
+    def delete(self, request: DeleteMemoriesRequest) -> int: ...
 
-    def command_merge_memories(
-        self,
-        target_id: str,
-        source_ids: list[str],
-        content: str | None = None,
-        target: str | None = None,
-    ) -> dict[str, object]: ...
+    def feedback(self, request: FeedbackMemoryRequest) -> dict[str, object]: ...
 
-    def command_archive_memories(
-        self,
-        ids: list[str],
-        *,
-        reason: str = "scope_recall_forget",
-        actor: str = "scope_recall_forget",
-        batch_id: str = "",
-    ) -> dict[str, object]: ...
+    def govern(self, request: GovernMemoriesRequest) -> dict[str, object]: ...
 
-    def command_delete_memories(self, ids: list[str]) -> int: ...
+    def dedupe(self, request: DedupeMemoriesRequest) -> dict[str, object]: ...
 
-    def command_feedback_memory(
-        self, *, memory_id: str, rating: str, note: str = ""
-    ) -> dict[str, object]: ...
+    def repair(self) -> dict[str, object]: ...
 
-    def command_govern_memories(
-        self, *, dry_run: bool = True, scope_only: bool = True
-    ) -> dict[str, object]: ...
-
-    def command_dedupe_memories(
-        self, *, dry_run: bool = True, scope_only: bool = True
-    ) -> dict[str, object]: ...
-
-    def command_repair_vector(self) -> dict[str, object]: ...
-
-    def fact_owned_memory_ids(self, ids: list[str]) -> list[str]: ...
-
-    def clean_text(self, text: object) -> str: ...
-
-    def config_view(self) -> dict[str, object]: ...
-
-    def config_value(self, key: str, default: object = None) -> object: ...
-
-    def scope_id(self) -> str: ...
-
-    def shared_scope_id(self) -> str: ...
-
-    def shared_pool_scope_id(self) -> str: ...
-
-    def writable_scope_ids(self) -> list[str]: ...
-
-    def has_positive_write_authority(self) -> bool: ...
-
-    def writer_lifecycle_lock(self) -> object: ...
+    def fact_owned(self, request: FactOwnedMemoryIdsRequest) -> list[str]: ...
 
 
 @runtime_checkable
