@@ -93,6 +93,11 @@ _DESCRIPTION_OVERRIDES = {
     "fact_evolution.tool_mode": "Resident public tool-lane mode. Caller evidence remains non-authoritative until a runtime-owned evidence registry is available; provider reload is required.",
     "fact_evolution.maintenance_mode": "Explicit maintenance-lane mode. reviewed_apply permits maintenance-gated operator corrections and is high risk; provider reload is required.",
     "fact_backfill.shadow_enabled": "Enable read-only historical SplitPlan shadow generation. Shadow artifacts remain non-authoritative; applying one exact plan still requires an explicit plan-bound approval, source CAS, and the atomic Fact Executor boundary.",
+    "recall_compiler.current_truth_enabled": "Use the Context Compiler current-truth stage on the unique retrieved CandidateSet. Disabled keeps the V1 result order while shadow metrics remain content-free.",
+    "recall_compiler.budgeter_enabled": "Apply the Recall Packet token budget to the unique retrieved CandidateSet. Disabled preserves the V1 item-limit behavior.",
+    "recall_compiler.renderer_enabled": "Enable the Recall Packet prompt renderer. Disabled preserves the byte-compatible V1 prompt renderer.",
+    "recall_compiler.token_budget": "Maximum estimated prompt tokens in one compiled Recall Packet.",
+    "recall_compiler.per_item_token_budget": "Maximum estimated summary tokens contributed by one compiled Recall Packet item.",
     "forgetting.archive_assistant_scratch": "Classify general-target assistant prose scratch as soft-archive candidates.",
     "forgetting.archive_duplicates": "Classify older duplicate memories as soft-archive candidates.",
     "forgetting.archive_very_short": "Classify very short non-preference memories as soft-archive candidates.",
@@ -141,6 +146,7 @@ _MEDIUM_RISK_PREFIXES = (
     "identity.",
     "relation_",
     "fact_backfill.",
+    "recall_compiler.",
 )
 _RESTART_PREFIXES = (
     "identity.desktop_principal",
@@ -170,6 +176,9 @@ _RESTART_OVERRIDES = {
     "fact_evolution.tool_mode": True,
     "fact_evolution.maintenance_mode": True,
     "fact_backfill.shadow_enabled": False,
+    "recall_compiler.current_truth_enabled": False,
+    "recall_compiler.budgeter_enabled": False,
+    "recall_compiler.renderer_enabled": False,
 }
 _CHOICES = {
     "automatic_digest_default_lifecycle": ["candidate", "promoted"],

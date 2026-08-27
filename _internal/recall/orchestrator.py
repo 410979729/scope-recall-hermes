@@ -12,6 +12,7 @@ import time
 from typing import Any
 
 from . import pipeline as recall_pipeline
+from .compiler import CandidateSet, CompilerPolicy, compile_recall_packet
 from ...freshness import CURRENT_STATUSES, STALE_STATUSES, attach_freshness_metadata
 from ...gating import matched_query_intent_terms
 from ...graph import apply_quality_weight, entity_overlap_bonus
@@ -36,6 +37,7 @@ REQUIRED_TRACE_STAGES = (
     "merge",
     "graph",
     "fact_freshness",
+    "compiler",
     "ranked",
 )
 REQUIRED_FILTER_KEYS = (
@@ -350,6 +352,22 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
         incoming_relations = (
             incoming_relations if isinstance(incoming_relations, dict) else {}
         )
+        contradiction_related_ids: set[str] = set()
+        for grouped_relations in (
+            relation_payload.get("outgoing"),
+            relation_payload.get("incoming"),
+        ):
+            if not isinstance(grouped_relations, dict):
+                continue
+            contradiction_rows = grouped_relations.get("contradicts")
+            if not isinstance(contradiction_rows, list):
+                continue
+            for contradiction_row in contradiction_rows:
+                if not isinstance(contradiction_row, dict):
+                    continue
+                related_id = str(contradiction_row.get("id") or "").strip()
+                if related_id and related_id != item.id:
+                    contradiction_related_ids.add(related_id)
         authoritative_contradiction_loser = host._config_bool(
             relation_payload.get("authoritative_loser"),
             False,
@@ -394,6 +412,7 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
                 "relation_evidence_count": int(relation_payload.get("count") or 0),
                 "relation_evidence_types": relation_types,
                 "relation_evidence_ids": relation_payload.get("ids") or [],
+                "relation_contradiction_ids": sorted(contradiction_related_ids),
                 "relation_signal_disabled": bool(
                     relation_payload.get("generated_signal_disabled")
                 ),
@@ -529,11 +548,94 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
         )
     if ranking_warnings:
         trace["ranking_warnings"] = ranking_warnings
-    returned = (
-        sanitize_recall_window(ranked, limit=bounded_limit)
-        if sanitize_output
-        else ranked[:bounded_limit]
+    compiler_started_at = time.perf_counter()
+    provider_config = getattr(host.provider, "_config", {})
+    raw_compiler_cfg = (
+        provider_config.get("recall_compiler", {})
+        if isinstance(provider_config, dict)
+        else {}
     )
+    compiler_cfg = raw_compiler_cfg if isinstance(raw_compiler_cfg, dict) else {}
+    current_truth_enabled = host._config_bool(
+        compiler_cfg.get("current_truth_enabled"), False
+    )
+    budgeter_enabled = host._config_bool(
+        compiler_cfg.get("budgeter_enabled"), False
+    )
+    renderer_enabled = host._config_bool(
+        compiler_cfg.get("renderer_enabled"), False
+    )
+    try:
+        token_budget = int(compiler_cfg.get("token_budget") or 320)
+    except (TypeError, ValueError):
+        token_budget = 320
+    try:
+        per_item_token_budget = int(
+            compiler_cfg.get("per_item_token_budget") or 96
+        )
+    except (TypeError, ValueError):
+        per_item_token_budget = 96
+
+    # Both the compatibility output and the candidate compiler consume this
+    # one typed set.  Neither branch can collect lexical/vector candidates.
+    candidate_set = CandidateSet.from_items(ranked)
+    legacy_packet = compile_recall_packet(
+        candidate_set,
+        CompilerPolicy(
+            limit=bounded_limit,
+            token_budget=token_budget,
+            per_item_token_budget=per_item_token_budget,
+            current_truth_enabled=False,
+            evidence_order_enabled=False,
+            diversity_enabled=False,
+            budgeter_enabled=False,
+            annotations_enabled=False,
+        ),
+    )
+    shadow_packet = compile_recall_packet(
+        candidate_set,
+        CompilerPolicy(
+            limit=bounded_limit,
+            token_budget=token_budget,
+            per_item_token_budget=per_item_token_budget,
+        ),
+    )
+    active_packet = compile_recall_packet(
+        candidate_set,
+        CompilerPolicy(
+            limit=bounded_limit,
+            token_budget=token_budget,
+            per_item_token_budget=per_item_token_budget,
+            current_truth_enabled=current_truth_enabled,
+            evidence_order_enabled=renderer_enabled,
+            diversity_enabled=renderer_enabled,
+            budgeter_enabled=budgeter_enabled,
+            annotations_enabled=renderer_enabled,
+        ),
+    )
+    active_items = active_packet.as_recall_items()
+    returned = (
+        sanitize_recall_window(active_items, limit=bounded_limit)
+        if sanitize_output
+        else active_items[:bounded_limit]
+    )
+    legacy_top_five = [item.item.id for item in legacy_packet.items[:5]]
+    shadow_top_five = {item.item.id for item in shadow_packet.items[:5]}
+    trace["stages"]["compiler"] = {
+        **shadow_packet.aggregate_metrics(),
+        "same_candidate_set": (
+            legacy_packet.candidate_fingerprint
+            == shadow_packet.candidate_fingerprint
+            == active_packet.candidate_fingerprint
+        ),
+        "top5_overlap_count": sum(
+            1 for memory_id in legacy_top_five if memory_id in shadow_top_five
+        ),
+        "current_truth_enabled": current_truth_enabled,
+        "budgeter_enabled": budgeter_enabled,
+        "renderer_enabled": renderer_enabled,
+    }
+    trace["timings_ms"]["compiler"] = host._elapsed_ms(compiler_started_at)
     trace["stages"]["ranked"] = host._trace_stage(ranked)
     trace["final"] = recall_pipeline.final_trace_payload(returned=returned, ranked_rejected=ranked_rejected)
     trace["timings_ms"]["total"] = host._elapsed_ms(started_at)

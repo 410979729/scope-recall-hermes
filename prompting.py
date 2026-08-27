@@ -9,6 +9,12 @@ from typing import Any
 
 from .capture_filters import redact_secret_like_text
 from .gating import compact_text, config_bool, should_skip_retrieval
+from ._internal.recall.compiler import (
+    CandidateSet,
+    CompilerPolicy,
+    compile_recall_packet,
+    render_recall_packet,
+)
 from .models import RecallItem
 
 
@@ -32,6 +38,36 @@ def render_current_turn_recall(provider: Any, query: str) -> str:
         return ""
 
     provider._mark_recalled([item.id for item in selected])
+    provider_config = getattr(provider, "_config", {})
+    raw_compiler_config = (
+        provider_config.get("recall_compiler", {})
+        if isinstance(provider_config, dict)
+        else {}
+    )
+    compiler_config = (
+        raw_compiler_config if isinstance(raw_compiler_config, dict) else {}
+    )
+    if config_bool(compiler_config, "renderer_enabled", False):
+        token_budget = _positive_config_int(
+            compiler_config, "token_budget", 320
+        )
+        per_item_token_budget = _positive_config_int(
+            compiler_config, "per_item_token_budget", 96
+        )
+        packet = compile_recall_packet(
+            CandidateSet.from_items(selected),
+            CompilerPolicy(
+                limit=len(selected),
+                token_budget=token_budget,
+                per_item_token_budget=per_item_token_budget,
+                current_truth_enabled=False,
+                evidence_order_enabled=False,
+                diversity_enabled=False,
+                budgeter_enabled=False,
+            ),
+        )
+        return render_recall_packet(packet)
+
     payload = json.dumps(
         [
             {
@@ -67,6 +103,13 @@ def render_current_turn_recall(provider: Any, query: str) -> str:
 
 def _should_attempt_recall(provider: Any) -> bool:
     return config_bool(provider._config, "auto_recall", True) and provider._scope.agent_context == "primary"
+
+
+def _positive_config_int(config: dict[str, Any], key: str, default: int) -> int:
+    try:
+        return max(1, int(config.get(key) or default))
+    except (TypeError, ValueError):
+        return int(default)
 
 
 def _drop_recently_recalled(provider: Any, results: list[RecallItem]) -> list[RecallItem]:

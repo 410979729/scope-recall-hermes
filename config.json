@@ -111,6 +111,13 @@
   "fact_backfill": {
     "shadow_enabled": false
   },
+  "recall_compiler": {
+    "current_truth_enabled": false,
+    "budgeter_enabled": false,
+    "renderer_enabled": false,
+    "token_budget": 320,
+    "per_item_token_budget": 96
+  },
   "temporal_queries": {
     "enabled": false,
     "timezone": "UTC",
