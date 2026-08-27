@@ -1,4 +1,4 @@
-"""Program 0A regression coverage for the public four-state vector contract."""
+"""Regression coverage for the public four-state vector contract."""
 
 from __future__ import annotations
 

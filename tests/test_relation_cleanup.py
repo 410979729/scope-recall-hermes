@@ -1,4 +1,4 @@
-"""Program 0 operator-cleanup fencing, replay, and recovery contracts."""
+"""Relation operator-cleanup fencing, replay, and recovery contracts."""
 
 from __future__ import annotations
 

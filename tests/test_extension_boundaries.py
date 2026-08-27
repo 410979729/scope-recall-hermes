@@ -1,4 +1,4 @@
-"""Program 5E extension boundaries remain optional, inspectable, and inert."""
+"""Extension boundaries remain optional, inspectable, and inert."""
 
 from __future__ import annotations
 

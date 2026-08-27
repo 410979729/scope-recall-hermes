@@ -1,4 +1,4 @@
-"""Program 5F Recall Inspector contracts."""
+"""Recall Inspector contracts."""
 
 from __future__ import annotations
 

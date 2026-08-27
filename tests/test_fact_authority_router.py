@@ -1,4 +1,4 @@
-"""Program 3A regressions for strict Fact authority routing."""
+"""Regressions for strict Fact authority routing."""
 
 from __future__ import annotations
 

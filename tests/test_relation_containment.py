@@ -1,4 +1,4 @@
-"""Program 0 relation containment invariants and regression counterexamples."""
+"""Relation containment invariants and regression counterexamples."""
 
 from __future__ import annotations
 

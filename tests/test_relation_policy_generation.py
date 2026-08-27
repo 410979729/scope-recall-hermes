@@ -495,7 +495,7 @@ def test_retry_generation_respects_item_backoff_without_empty_reclaims(
     conn.close()
 
 
-def test_program0_rollback_clears_active_generation_health_without_history_loss() -> None:
+def test_generation_rollback_clears_active_health_without_history_loss() -> None:
     conn = _conn()
     for suffix in ("a", "b", "c"):
         _insert_memory(
@@ -533,7 +533,7 @@ def test_program0_rollback_clears_active_generation_health_without_history_loss(
     conn.close()
 
 
-def test_program0_rollback_supersedes_inflight_generation_before_handoff() -> None:
+def test_generation_rollback_supersedes_inflight_work_before_handoff() -> None:
     conn = _conn()
     _insert_memory(
         conn,

@@ -148,8 +148,8 @@
       "id": "sixteenth-independent-audit-performance-liveness-blockers",
       "nodes": [
         "tests/test_relation_frequency_incremental.py::test_immediate_relation_sync_never_scans_all_truth_in_a_large_scope",
-        "tests/test_program0_relation_containment.py::test_background_drain_consumes_every_focus_before_scope_is_ready",
-        "tests/test_program0_relation_containment.py::test_frequency_work_generation_never_reuses_after_change_row_is_consumed",
+        "tests/test_relation_containment.py::test_background_drain_consumes_every_focus_before_scope_is_ready",
+        "tests/test_relation_containment.py::test_frequency_work_generation_never_reuses_after_change_row_is_consumed",
         "tests/test_vector_startup_reconciliation.py::test_setup_entrypoint_contains_no_full_reconciliation_or_audit_call",
         "tests/test_vector_startup_reconciliation.py::test_startup_reconciliation_touches_only_one_twenty_five_row_page",
         "tests/test_vector_startup_reconciliation.py::test_existing_outbox_backlog_blocks_truth_page_and_watermark_advance",
@@ -162,9 +162,9 @@
       "nodes": [
         "tests/test_capture_filters.py::test_sensitive_token_prefix_cannot_be_whitelisted_by_metric_suffix",
         "tests/test_doctor_secret_scan.py::test_doctor_detects_sensitive_token_prefix_with_metric_suffix",
-        "tests/test_program0_relation_containment.py::test_new_corpus_revision_supersedes_blocked_focus_target",
-        "tests/test_program0_relation_containment.py::test_new_generation_supersedes_terminal_frequency_failure",
-        "tests/test_program0_relation_containment.py::test_frequency_poison_terminally_blocks_dependent_focus_work",
+        "tests/test_relation_containment.py::test_new_corpus_revision_supersedes_blocked_focus_target",
+        "tests/test_relation_containment.py::test_new_generation_supersedes_terminal_frequency_failure",
+        "tests/test_relation_containment.py::test_frequency_poison_terminally_blocks_dependent_focus_work",
         "tests/test_relation_frequency_incremental.py::test_relation_frequency_poison_row_does_not_block_healthy_rows",
         "tests/test_schema_migrations.py::test_relation_lease_expiry_budget_migration_upgrades_pre_0010_in_place"
       ]
@@ -172,12 +172,12 @@
     {
       "id": "program0-g0-stabilization-contracts",
       "nodes": [
-        "tests/test_program0_relation_containment.py::test_frequency_snapshot_is_zero_write_even_on_writable_connection",
-        "tests/test_program0_relation_containment.py::test_scope_move_deletes_generated_cross_scope_edge_before_ready",
-        "tests/test_relation_cleanup_program0.py::test_cleanup_apply_is_backup_first_committed_and_idempotently_replayed",
-        "tests/test_relation_cleanup_program0.py::test_cleanup_does_not_restore_ready_while_focus_work_remains",
-        "tests/test_relation_cleanup_program0.py::test_cleanup_revalidates_truth_identity_after_acquiring_lease",
-        "tests/test_relation_cleanup_program0.py::test_cleanup_refuses_windows_junction_backup_namespace",
+        "tests/test_relation_containment.py::test_frequency_snapshot_is_zero_write_even_on_writable_connection",
+        "tests/test_relation_containment.py::test_scope_move_deletes_generated_cross_scope_edge_before_ready",
+        "tests/test_relation_cleanup.py::test_cleanup_apply_is_backup_first_committed_and_idempotently_replayed",
+        "tests/test_relation_cleanup.py::test_cleanup_does_not_restore_ready_while_focus_work_remains",
+        "tests/test_relation_cleanup.py::test_cleanup_revalidates_truth_identity_after_acquiring_lease",
+        "tests/test_relation_cleanup.py::test_cleanup_refuses_windows_junction_backup_namespace",
         "tests/test_relation_rebuild_retirement.py::test_every_legacy_execution_surface_is_a_zero_write_refusal",
         "tests/test_release.py::test_release_gate_proves_retired_relation_rebuild_has_no_worker_body",
         "tests/test_vector_status_contract.py::test_vector_state_boolean_matrix",

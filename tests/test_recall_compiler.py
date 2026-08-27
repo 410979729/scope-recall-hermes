@@ -1,4 +1,4 @@
-"""Program 4 Context Compiler characterization and shadow contracts."""
+"""Context Compiler characterization and shadow contracts."""
 
 from __future__ import annotations
 

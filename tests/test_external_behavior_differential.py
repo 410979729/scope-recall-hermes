@@ -1,4 +1,4 @@
-"""Program 1A typed query boundaries preserve the frozen public payloads."""
+"""Typed query boundaries preserve the frozen public payloads."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def differential_provider(tmp_path: Path):
     provider = load_memory_provider("scope-recall")
     assert provider is not None
     provider.initialize(
-        "program1a-differential",
+        "query-boundary-differential",
         hermes_home=str(tmp_path),
         platform="cli",
         agent_context="primary",
@@ -47,7 +47,7 @@ def differential_provider(tmp_path: Path):
             provider.handle_tool_call(
                 "scope_recall_store",
                 {
-                    "content": "Program 1A preserves the public query contract exactly.",
+                    "content": "Typed query boundaries preserve the public query contract exactly.",
                     "target": "project",
                 },
             )
