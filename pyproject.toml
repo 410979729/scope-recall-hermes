@@ -61,6 +61,8 @@ include-package-data = true
 packages = [
   "scope_recall",
   "scope_recall._internal",
+  "scope_recall._internal.application",
+  "scope_recall._internal.compatibility",
   "scope_recall._internal.runtime",
   "scope_recall._internal.contracts",
   "scope_recall._internal.journal",

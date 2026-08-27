@@ -795,6 +795,27 @@ def test_ruff_lint_contract_is_explicit_across_toolchain_upgrades():
     assert ruff["extend-exclude"] == [".hermes-agent-src"]
 
 
+def test_program1a_internal_packages_are_release_packaged() -> None:
+    pyproject = tomllib.loads(
+        (PLUGIN_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    packages = set(pyproject["tool"]["setuptools"]["packages"])
+    assert {
+        "scope_recall._internal.application",
+        "scope_recall._internal.compatibility",
+    } <= packages
+
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_program1a_packages"
+    )
+    assert {
+        "scope_recall/_internal/application/memory_commands.py",
+        "scope_recall/_internal/application/memory_queries.py",
+        "scope_recall/_internal/application/runtime_state.py",
+        "scope_recall/_internal/compatibility/registry.py",
+    } <= release_check.REQUIRED_WHEEL
+
+
 def test_productization_artifacts_are_release_gate_listed():
     release_check = _load_release_check_module("scope_recall_check_release_productization_artifacts")
 
