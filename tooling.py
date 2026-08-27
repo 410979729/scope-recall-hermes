@@ -12,7 +12,6 @@ from typing import Any, Callable
 
 from tools.registry import tool_error  # type: ignore[reportMissingImports]
 
-from .capture import capture_mutation_barrier
 from .capture_filters import (
     CaptureFilterResult,
     sanitize_report_text,
@@ -193,16 +192,10 @@ class ScopeRecallToolService:
         handler = handlers.get(normalized)
         if self._reader_tool_allowed(normalized, payload):
             return self._invoke_handler(tool_name, normalized, handler, payload)
-        if self._capture_barrier_required(normalized, payload):
-            with capture_mutation_barrier(self._port.evidence_runtime()):
-                with self._port.writer_lifecycle_lock():
-                    if not self._port.has_positive_write_authority():
-                        return self._truth_write_blocked_error(normalized)
-                    return self._invoke_handler(
-                        tool_name, normalized, handler, payload
-                    )
-        with self._port.writer_lifecycle_lock():
-            if not self._port.has_positive_write_authority():
+        with self._port.write_access(
+            capture_barrier=self._capture_barrier_required(normalized, payload)
+        ) as write_allowed:
+            if not write_allowed:
                 return self._truth_write_blocked_error(normalized)
             return self._invoke_handler(tool_name, normalized, handler, payload)
 
