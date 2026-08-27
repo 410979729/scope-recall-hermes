@@ -266,16 +266,20 @@ def vector_outbox_durable_health(
 
 
 def disabled_vector_outbox_durable_health(
-    *, reason_code: str, generation_id: str = ""
+    *,
+    reason_code: str,
+    generation_id: str = "",
+    state: str = "disabled",
+    operator_action_required: bool = False,
 ) -> dict[str, Any]:
     """Return the stable shared envelope when no outbox can be observed."""
 
     report = durable_work_health(
         domain_type=VECTOR_OUTBOX_DOMAIN_TYPE,
-        state="disabled",
+        state=state,
         reason_code=reason_code,
         auto_recoverable=False,
-        operator_action_required=False,
+        operator_action_required=operator_action_required,
         fairness={"strategy": "causal_event_id_ascending"},
     )
     report.update(

@@ -40,6 +40,8 @@ NIGHTLY_DURABLE_POLICY_VERSION = "nightly-run-source.v1"
 JOURNAL_DURABLE_DOMAIN = "journal_digest"
 NIGHTLY_DURABLE_DOMAIN = "nightly_digest"
 DEFAULT_JOURNAL_MAX_ATTEMPTS = 3
+JOURNAL_DURABLE_OWNER_ROLES = frozenset({"journal_digest", "provider"})
+NIGHTLY_DURABLE_OWNER_ROLES = frozenset({"nightly_digest"})
 
 _HANDLED_FALLBACK_CLASSIFICATIONS = {
     "accepted_fallback",
@@ -311,7 +313,7 @@ def journal_durable_health(
             policy_version=JOURNAL_DURABLE_POLICY_VERSION,
             reason_code="schema_missing",
             storage_dir=storage_dir,
-            domain_roles={"journal_digest"},
+            domain_roles=JOURNAL_DURABLE_OWNER_ROLES,
         )
     columns = {
         str(row[1])
@@ -333,7 +335,7 @@ def journal_durable_health(
             reason_code="schema_incomplete",
             state="needs_repair",
             storage_dir=storage_dir,
-            domain_roles={"journal_digest"},
+            domain_roles=JOURNAL_DURABLE_OWNER_ROLES,
         )
 
     row = conn.execute(
@@ -369,9 +371,10 @@ def journal_durable_health(
         )
         SELECT
             SUM(CASE WHEN processed_run_id='' AND retryable_failures=0 THEN 1 ELSE 0 END),
-            SUM(CASE WHEN (processed_run_id='' AND retryable_failures>0)
-                          OR (processed_run_id<>'' AND active_retry_exhausted=1
-                              AND active_dead_letter=0)
+            SUM(CASE WHEN processed_run_id='' AND retryable_failures>0
+                     THEN 1 ELSE 0 END),
+            SUM(CASE WHEN processed_run_id<>'' AND active_retry_exhausted=1
+                          AND active_dead_letter=0
                      THEN 1 ELSE 0 END),
             SUM(CASE WHEN processed_run_id<>'' AND active_dead_letter=1 THEN 1 ELSE 0 END),
             SUM(CASE WHEN processed_run_id<>'' AND active_dead_letter=0
@@ -387,14 +390,16 @@ def journal_durable_health(
         """
     ).fetchone()
     pending = int(row[0] or 0) if row else 0
-    retry = int(row[1] or 0) if row else 0
-    poisoned = int(row[2] or 0) if row else 0
-    completed = int(row[3] or 0) if row else 0
-    oldest = str(row[4] or "") if row else ""
-    pending_scopes = int(row[5] or 0) if row else 0
-    pending_sessions = int(row[6] or 0) if row else 0
-    max_retryable_failures = int(row[7] or 0) if row else 0
-    last_entry_progress = str(row[8] or "") if row else ""
+    auto_retry = int(row[1] or 0) if row else 0
+    retry_exhausted = int(row[2] or 0) if row else 0
+    retry = auto_retry + retry_exhausted
+    poisoned = int(row[3] or 0) if row else 0
+    completed = int(row[4] or 0) if row else 0
+    oldest = str(row[5] or "") if row else ""
+    pending_scopes = int(row[6] or 0) if row else 0
+    pending_sessions = int(row[7] or 0) if row else 0
+    max_retryable_failures = int(row[8] or 0) if row else 0
+    last_entry_progress = str(row[9] or "") if row else ""
 
     latest = _row_mapping(
         conn.execute(
@@ -426,6 +431,11 @@ def journal_durable_health(
         reason_code = "dead_letter_recovery_debt"
         auto_recoverable = False
         operator_action_required = True
+    elif retry_exhausted:
+        state = "blocked"
+        reason_code = "retry_exhausted_recovery_required"
+        auto_recoverable = False
+        operator_action_required = True
     elif retry:
         state = "degraded"
         reason_code = "retry_debt_present"
@@ -453,7 +463,7 @@ def journal_durable_health(
         operator_action_required = False
 
     lease = native_digest_lease_snapshot(
-        storage_dir, domain_roles={"journal_digest"}
+        storage_dir, domain_roles=JOURNAL_DURABLE_OWNER_ROLES
     )
     report = durable_work_health(
         domain_type=JOURNAL_DURABLE_DOMAIN,
@@ -482,6 +492,8 @@ def journal_durable_health(
             "lease": lease,
             "retry": {
                 "retry_count": retry,
+                "auto_retry_count": auto_retry,
+                "retry_exhausted_count": retry_exhausted,
                 "poisoned_count": poisoned,
                 "max_retryable_failures": max_retryable_failures,
             },
@@ -615,7 +627,7 @@ def nightly_durable_health(
             policy_version=NIGHTLY_DURABLE_POLICY_VERSION,
             reason_code="schema_missing",
             storage_dir=storage_dir,
-            domain_roles={"nightly_digest"},
+            domain_roles=NIGHTLY_DURABLE_OWNER_ROLES,
         )
     latest = _row_mapping(
         conn.execute(
@@ -629,7 +641,7 @@ def nightly_durable_health(
         )
     )
     lease = native_digest_lease_snapshot(
-        storage_dir, domain_roles={"nightly_digest"}
+        storage_dir, domain_roles=NIGHTLY_DURABLE_OWNER_ROLES
     )
     if latest is None:
         report = durable_work_health(
@@ -733,8 +745,10 @@ def nightly_durable_health(
 __all__ = [
     "DEFAULT_JOURNAL_MAX_ATTEMPTS",
     "JOURNAL_DURABLE_DOMAIN",
+    "JOURNAL_DURABLE_OWNER_ROLES",
     "JOURNAL_DURABLE_POLICY_VERSION",
     "NIGHTLY_DURABLE_DOMAIN",
+    "NIGHTLY_DURABLE_OWNER_ROLES",
     "NIGHTLY_DURABLE_POLICY_VERSION",
     "journal_durable_health",
     "journal_entry_descriptor",

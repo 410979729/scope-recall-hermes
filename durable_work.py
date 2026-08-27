@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -104,12 +105,18 @@ def _utc_datetime(value: str, field_name: str) -> datetime:
 
 def _freeze_value(value: Any) -> Any:
     if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError("durable work snapshot keys must be strings")
         return MappingProxyType(
-            {str(key): _freeze_value(item) for key, item in value.items()}
+            {key: _freeze_value(item) for key, item in value.items()}
         )
     if isinstance(value, (list, tuple)):
         return tuple(_freeze_value(item) for item in value)
-    if isinstance(value, (str, int, float, bool)) or value is None:
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("durable work snapshots require finite numbers")
+        return value
+    if isinstance(value, (str, int, bool)) or value is None:
         return value
     raise TypeError(f"durable work snapshots must be JSON-compatible, got {type(value).__name__}")
 
@@ -132,11 +139,15 @@ def _frozen_mapping(value: Mapping[str, Any] | None) -> Mapping[str, Any]:
 def canonical_snapshot_hash(value: Mapping[str, Any]) -> str:
     """Return the stable SHA-256 identity for a JSON-compatible snapshot."""
 
+    frozen = _freeze_value(value)
+    if not isinstance(frozen, Mapping):  # pragma: no cover - type contract
+        raise TypeError("snapshot must be a mapping")
     encoded = json.dumps(
-        _thaw_value(value),
+        _thaw_value(frozen),
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
+        allow_nan=False,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -237,8 +248,8 @@ class DurableWorkLease:
             _positive_int(self.bounded_item_budget, "bounded_item_budget"),
         )
         wall_clock = float(self.bounded_wall_clock_budget)
-        if wall_clock <= 0:
-            raise ValueError("bounded_wall_clock_budget must be positive")
+        if not math.isfinite(wall_clock) or wall_clock <= 0:
+            raise ValueError("bounded_wall_clock_budget must be finite and positive")
         object.__setattr__(self, "bounded_wall_clock_budget", wall_clock)
 
     def expired(self, *, now: datetime | None = None) -> bool:
@@ -422,8 +433,10 @@ def durable_work_health(
         _utc_datetime(last_progress_at, "last_progress_at")
     age = float(oldest_age_seconds)
     rate = float(progress_rate)
-    if age < 0 or rate < 0:
-        raise ValueError("oldest_age_seconds and progress_rate must be non-negative")
+    if not math.isfinite(age) or not math.isfinite(rate) or age < 0 or rate < 0:
+        raise ValueError(
+            "oldest_age_seconds and progress_rate must be finite and non-negative"
+        )
     counts = {
         item_state: _non_negative_int(
             (item_counts or {}).get(item_state, 0), f"item_counts.{item_state}"

@@ -206,6 +206,37 @@ def test_shared_health_envelope_is_content_free_and_complete() -> None:
     assert health["fairness"]["scope"] == "oldest_first"
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_contract_rejects_non_finite_json_numbers(value: float) -> None:
+    with pytest.raises(ValueError, match="finite numbers"):
+        canonical_snapshot_hash({"invalid": value})
+    with pytest.raises(ValueError, match="finite and positive"):
+        DurableWorkLease(
+            worker_id="worker-a",
+            lease_token="lease-invalid",
+            lease_generation=1,
+            lease_expires_at=(
+                datetime.now(timezone.utc) + timedelta(minutes=1)
+            ).isoformat(),
+            bounded_item_budget=1,
+            bounded_wall_clock_budget=value,
+        )
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        durable_work_health(
+            domain_type="relation_policy_generation",
+            state="degraded",
+            reason_code="invalid_metric",
+            oldest_age_seconds=value,
+            auto_recoverable=True,
+            operator_action_required=False,
+        )
+
+
+def test_contract_rejects_non_string_snapshot_keys_before_hashing() -> None:
+    with pytest.raises(TypeError, match="keys must be strings"):
+        canonical_snapshot_hash({1: "integer-key", "1": "string-key"})  # type: ignore[dict-item]
+
+
 def test_contract_layer_owns_no_sql_or_universal_payload_table() -> None:
     source = (ROOT / "durable_work.py").read_text(encoding="utf-8").lower()
     assert "import sqlite3" not in source

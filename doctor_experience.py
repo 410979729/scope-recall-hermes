@@ -12,6 +12,7 @@ from typing import Any
 try:
     from .digest_durable_work import (
         NIGHTLY_DURABLE_DOMAIN,
+        NIGHTLY_DURABLE_OWNER_ROLES,
         NIGHTLY_DURABLE_POLICY_VERSION,
         nightly_durable_health,
         unavailable_digest_health,
@@ -21,6 +22,7 @@ try:
 except ImportError:  # pragma: no cover - direct source-script execution fallback
     from digest_durable_work import (  # type: ignore
         NIGHTLY_DURABLE_DOMAIN,
+        NIGHTLY_DURABLE_OWNER_ROLES,
         NIGHTLY_DURABLE_POLICY_VERSION,
         nightly_durable_health,
         unavailable_digest_health,
@@ -345,7 +347,7 @@ def nightly_digest_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, 
                 policy_version=NIGHTLY_DURABLE_POLICY_VERSION,
                 reason_code="truth_database_absent",
                 storage_dir=storage_dir,
-                domain_roles={"nightly_digest"},
+                domain_roles=NIGHTLY_DURABLE_OWNER_ROLES,
             ),
         }, {"ok": False, "failures": [f"SQLite truth DB not found: {db_path}"]}, [
             "Initialize scope-recall or restore memory.sqlite3 before trusting nightly digest status."
@@ -367,7 +369,7 @@ def nightly_digest_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, 
                         policy_version=NIGHTLY_DURABLE_POLICY_VERSION,
                         reason_code="schema_missing",
                         storage_dir=storage_dir,
-                        domain_roles={"nightly_digest"},
+                        domain_roles=NIGHTLY_DURABLE_OWNER_ROLES,
                     ),
                 }, {"ok": True, "failures": []}, ["Run scripts/nightly-digest.py once if this deployment uses nightly digest consolidation."]
             durable_health = nightly_durable_health(
@@ -410,7 +412,7 @@ def nightly_digest_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, 
                 reason_code="health_read_error",
                 state="needs_repair",
                 storage_dir=storage_dir,
-                domain_roles={"nightly_digest"},
+                domain_roles=NIGHTLY_DURABLE_OWNER_ROLES,
             ),
         }, {"ok": False, "failures": [f"nightly digest health error: {exc}"]}, recommendations
 

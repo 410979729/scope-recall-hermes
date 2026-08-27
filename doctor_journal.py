@@ -12,6 +12,7 @@ from typing import Any
 try:
     from .digest_durable_work import (
         JOURNAL_DURABLE_DOMAIN,
+        JOURNAL_DURABLE_OWNER_ROLES,
         JOURNAL_DURABLE_POLICY_VERSION,
         journal_durable_health,
         unavailable_digest_health,
@@ -21,6 +22,7 @@ try:
 except ImportError:  # pragma: no cover - direct source-script execution fallback
     from digest_durable_work import (  # type: ignore
         JOURNAL_DURABLE_DOMAIN,
+        JOURNAL_DURABLE_OWNER_ROLES,
         JOURNAL_DURABLE_POLICY_VERSION,
         journal_durable_health,
         unavailable_digest_health,
@@ -257,7 +259,7 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
                 policy_version=JOURNAL_DURABLE_POLICY_VERSION,
                 reason_code="disabled_by_config",
                 storage_dir=storage_dir,
-                domain_roles={"journal_digest"},
+                domain_roles=JOURNAL_DURABLE_OWNER_ROLES,
             ),
         }, {"ok": True, "failures": []}, recommendations
     if not db_path.exists():
@@ -270,7 +272,7 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
                 policy_version=JOURNAL_DURABLE_POLICY_VERSION,
                 reason_code="truth_database_absent",
                 storage_dir=storage_dir,
-                domain_roles={"journal_digest"},
+                domain_roles=JOURNAL_DURABLE_OWNER_ROLES,
             ),
         }, {"ok": False, "failures": [f"SQLite truth DB not found: {db_path}"]}, recommendations
 
@@ -293,7 +295,7 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
                         policy_version=JOURNAL_DURABLE_POLICY_VERSION,
                         reason_code="schema_missing",
                         storage_dir=storage_dir,
-                        domain_roles={"journal_digest"},
+                        domain_roles=JOURNAL_DURABLE_OWNER_ROLES,
                     ),
                 }, {"ok": False, "failures": [f"journal tables missing: {missing}"]}, recommendations
 
@@ -563,7 +565,7 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
                 reason_code="health_read_error",
                 state="needs_repair",
                 storage_dir=storage_dir,
-                domain_roles={"journal_digest"},
+                domain_roles=JOURNAL_DURABLE_OWNER_ROLES,
             ),
         }, {"ok": False, "failures": [f"journal health error: {exc}"]}, recommendations
 

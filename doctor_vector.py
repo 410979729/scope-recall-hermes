@@ -888,7 +888,9 @@ def vector_generation_report(
                         "current_generation_id": "",
                         "orphan_generation_count": manifest_count,
                         "durable_work": disabled_vector_outbox_durable_health(
-                            reason_code="no_active_generation"
+                            reason_code="generation_pointer_missing",
+                            state="needs_repair",
+                            operator_action_required=True,
                         ),
                         **_empty_inactive_generation_contract(),
                     },
@@ -928,6 +930,8 @@ def vector_generation_report(
                     "durable_work": disabled_vector_outbox_durable_health(
                         reason_code="current_generation_manifest_missing",
                         generation_id=current_id,
+                        state="needs_repair",
+                        operator_action_required=True,
                     ),
                     **_empty_inactive_generation_contract(),
                 },
