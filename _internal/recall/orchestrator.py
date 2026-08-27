@@ -560,7 +560,7 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
         compiler_cfg, "current_truth_enabled", True
     )
     budgeter_enabled = config_bool(compiler_cfg, "budgeter_enabled", False)
-    renderer_enabled = config_bool(compiler_cfg, "renderer_enabled", False)
+    renderer_enabled = config_bool(compiler_cfg, "renderer_enabled", True)
     try:
         token_budget = int(compiler_cfg.get("token_budget") or 320)
     except (TypeError, ValueError):

@@ -114,7 +114,7 @@
   "recall_compiler": {
     "current_truth_enabled": true,
     "budgeter_enabled": false,
-    "renderer_enabled": false,
+    "renderer_enabled": true,
     "token_budget": 320,
     "per_item_token_budget": 96
   },

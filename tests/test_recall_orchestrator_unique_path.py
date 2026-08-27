@@ -292,7 +292,7 @@ def test_unpatched_search_collects_each_source_once() -> None:
     service = RecallService(provider)
     results = service.search_memories("Deploy command is uv run app.", limit=5)
     assert [item.id for item in results] == ["memory-1"]
-    assert not any(
+    assert any(
         str(key).startswith("recall_packet_")
         for key in (results[0].metadata or {})
     )
@@ -306,6 +306,7 @@ def test_unpatched_search_collects_each_source_once() -> None:
         assert stage in trace["stages"]
     compiler_trace = trace["stages"]["compiler"]
     assert compiler_trace["same_candidate_set"] is True
+    assert compiler_trace["renderer_enabled"] is True
     assert "memory-1" not in str(compiler_trace)
     assert trace["recall_mode"] == "advisory"
 
