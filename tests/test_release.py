@@ -1292,8 +1292,8 @@ def test_default_config_includes_documented_retrieval_top_k():
 
     assert source_config["retrieval"]["top_k"] == 5
     assert config_module.DEFAULT_CONFIG["retrieval"]["top_k"] == source_config["retrieval"]["top_k"]
-    assert source_config["tool_schema_profile"] == "compact"
-    assert config_module.DEFAULT_CONFIG["tool_schema_profile"] == "compact"
+    assert source_config["tool_schema_profile"] == "core"
+    assert config_module.DEFAULT_CONFIG["tool_schema_profile"] == "core"
     assert source_config["tool_schema_extra_tools"] == []
     assert config_module.DEFAULT_CONFIG["tool_schema_extra_tools"] == []
     assert source_config["recall_compiler"]["current_truth_enabled"] is True

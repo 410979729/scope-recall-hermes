@@ -106,6 +106,7 @@ _DESCRIPTION_OVERRIDES = {
     "forgetting.hard_delete_sensitive": "Second safety gate for sensitive-data hard deletion; apply also requires an explicit hard_delete request.",
     "forgetting.soft_archive_default": "Default whether forgetting apply archives soft candidates; each call may explicitly override it.",
     "purge.enabled": "Enable the explicit deny-first privacy purge maintenance surface. maintenance_tools_enabled and exact two-phase confirmations remain required.",
+    "tool_schema_profile": "Select the Primary Agent schema profile. Profiles never grant maintenance or extension authority; compact and standard remain 2.0.x aliases.",
     "retrieval.relation_contradiction_mode": "Contradiction handling: surface keeps and warns; suppress excludes exactly one deterministic loser when both sides reach the bounded candidate set and preserves a one-sided candidate; penalize applies relation_contradicts_penalty.",
 }
 
@@ -184,7 +185,15 @@ _RESTART_OVERRIDES = {
 }
 _CHOICES = {
     "automatic_digest_default_lifecycle": ["candidate", "promoted"],
-    "tool_schema_profile": ["compact", "standard"],
+    "tool_schema_profile": [
+        "core",
+        "compatibility",
+        "maintenance",
+        "developer",
+        "extension",
+        "compact",
+        "standard",
+    ],
     "retrieval.mode": ["lexical", "vector", "hybrid"],
     "retrieval.include_general": ["never", "same-scope", "always"],
     "retrieval.metric": ["cosine", "dot", "l2"],

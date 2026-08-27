@@ -31,7 +31,11 @@ def provider(tmp_path):
 
 
 def _store(provider, content: str, target: str = "memory") -> dict:
-    return json.loads(provider.handle_tool_call("scope_recall_store", {"content": content, "target": target}))
+    return json.loads(
+        provider.handle_tool_call(
+            "scope_recall_store", {"content": content, "target": target}
+        )
+    )
 
 
 def _schema_names(provider) -> set[str]:
@@ -74,8 +78,30 @@ def test_default_schema_surface_uses_compact_core_tools(provider):
     assert "scope_recall_benchmark" not in names
     assert "scope_recall_experience_stats" not in names
 
-    assert "secret_index_tools_enabled=true" in provider.handle_tool_call("scope_recall_store_secret_index", {"label": "test"})
+    assert "secret_index_tools_enabled=true" in provider.handle_tool_call(
+        "scope_recall_store_secret_index", {"label": "test"}
+    )
     assert "provider" in provider.handle_tool_call("scope_recall_stats", {})
+
+
+def test_tool_governance_telemetry_is_content_free(provider):
+    _store(provider, "Tool governance telemetry fixture.", "project")
+    provider.handle_tool_call("lancepro_search", {"query": "telemetry fixture"})
+
+    payload = json.loads(provider.handle_tool_call("scope_recall_stats", {}))
+    governance = payload["tool_governance"]
+    search = governance["usage"]["scope_recall_search"]
+
+    assert governance["profile"] == "core"
+    assert governance["schema_budget"]["tool_count"] == 6
+    assert governance["content_free"] is True
+    assert search["call_count"] == 1
+    assert search["success_count"] == 1
+    assert search["error_count"] == 0
+    assert search["alias_usage_count"] == 1
+    assert search["last_used_version"]
+    assert search["maintenance_dependency"] is False
+    assert "telemetry fixture" not in json.dumps(governance).lower()
 
 
 def test_standard_schema_profile_restores_legacy_read_only_tools(tmp_path):
@@ -105,11 +131,17 @@ def test_standard_schema_profile_restores_legacy_read_only_tools(tmp_path):
         plugin.shutdown()
 
 
-def test_schema_extra_tools_expose_selected_diagnostics_without_standard_profile(tmp_path):
+def test_schema_extra_tools_expose_selected_diagnostics_without_standard_profile(
+    tmp_path,
+):
     plugin = _provider_with_config(
         tmp_path,
         {
-            "tool_schema_extra_tools": ["scope_recall_stats", "scope_recall_benchmark", "scope_recall_store_secret_index"],
+            "tool_schema_extra_tools": [
+                "scope_recall_stats",
+                "scope_recall_benchmark",
+                "scope_recall_store_secret_index",
+            ],
             "vector": {"enabled": False},
         },
     )
@@ -147,45 +179,90 @@ def test_secret_index_schema_surface_is_explicit_opt_in(tmp_path):
 
 
 def test_compact_memory_and_entity_tools_dispatch_to_legacy_operations(provider):
-    created = _store(provider, "Compact schema memory entity AlphaProject prefers exact-id operations.", "project")
+    created = _store(
+        provider,
+        "Compact schema memory entity AlphaProject prefers exact-id operations.",
+        "project",
+    )
     assert created["stored"] is True
 
-    inspected = json.loads(provider.handle_tool_call("scope_recall_memory", {"action": "inspect", "id": created["id"]}))
+    inspected = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_memory", {"action": "inspect", "id": created["id"]}
+        )
+    )
     assert inspected["found"] is True
     assert inspected["memory"]["id"] == created["id"]
 
-    feedback = json.loads(provider.handle_tool_call("scope_recall_memory", {"action": "feedback", "id": created["id"], "rating": "helpful"}))
+    feedback = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_memory",
+            {"action": "feedback", "id": created["id"], "rating": "helpful"},
+        )
+    )
     assert feedback["updated"] is True
 
-    entity_probe = json.loads(provider.handle_tool_call("scope_recall_entity", {"action": "probe", "entity": "AlphaProject", "limit": 5}))
+    entity_probe = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_entity",
+            {"action": "probe", "entity": "AlphaProject", "limit": 5},
+        )
+    )
     assert entity_probe["count"] >= 1
 
-    related = json.loads(provider.handle_tool_call("scope_recall_entity", {"action": "related", "entity": "AlphaProject", "limit": 5}))
+    related = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_entity",
+            {"action": "related", "entity": "AlphaProject", "limit": 5},
+        )
+    )
     assert "related" in related
 
     updated = json.loads(
         provider.handle_tool_call(
             "scope_recall_memory",
-            {"action": "update", "id": created["id"], "content": "Compact schema memory update keeps AlphaProject searchable."},
+            {
+                "action": "update",
+                "id": created["id"],
+                "content": "Compact schema memory update keeps AlphaProject searchable.",
+            },
         )
     )
     assert updated["updated"] is True
 
-    archived = json.loads(provider.handle_tool_call("scope_recall_memory", {"action": "forget", "id": created["id"], "reason": "test cleanup"}))
+    archived = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_memory",
+            {"action": "forget", "id": created["id"], "reason": "test cleanup"},
+        )
+    )
     assert archived["archived"] == 1
     assert archived["deleted"] == 0
     assert archived["receipt"]["action"] == "soft_archive"
-    inspected_after = json.loads(provider.handle_tool_call("scope_recall_memory", {"action": "inspect", "id": created["id"]}))
+    inspected_after = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_memory", {"action": "inspect", "id": created["id"]}
+        )
+    )
     assert inspected_after["found"] is True
     assert inspected_after["memory"]["metadata"]["lifecycle"] == "archived"
 
 
 def test_scope_recall_forget_hard_delete_requires_maintenance_tools(provider):
-    created = _store(provider, "Hard delete should require maintenance mode.", "project")
+    created = _store(
+        provider, "Hard delete should require maintenance mode.", "project"
+    )
 
-    payload = json.loads(provider.handle_tool_call("scope_recall_forget", {"id": created["id"], "hard_delete": True}))
+    payload = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_forget", {"id": created["id"], "hard_delete": True}
+        )
+    )
 
-    assert payload["error"] == "scope_recall_forget hard_delete requires maintenance_tools_enabled=true"
+    assert (
+        payload["error"]
+        == "scope_recall_forget hard_delete requires maintenance_tools_enabled=true"
+    )
 
 
 def test_tool_handler_fallback_errors_are_sanitized(monkeypatch):
@@ -193,7 +270,9 @@ def test_tool_handler_fallback_errors_are_sanitized(monkeypatch):
     secret = "sk-" + "TOOLHANDLERSECRET123456"
 
     def boom(_args):
-        raise RuntimeError(f"provider failed api_key={secret} {'/tmp/' + 'hermes-secret-path'}")
+        raise RuntimeError(
+            f"provider failed api_key={secret} {'/tmp/' + 'hermes-secret-path'}"
+        )
 
     monkeypatch.setattr(service, "_handle_stats", boom)
 
@@ -207,7 +286,9 @@ def test_tool_handler_fallback_errors_are_sanitized(monkeypatch):
 
 
 def test_tool_store_uses_capture_filter_for_secret_like_content(provider):
-    payload = _store(provider, "api_key = public-test-token should not become memory", "memory")
+    payload = _store(
+        provider, "api_key = public-test-token should not become memory", "memory"
+    )
 
     assert payload["stored"] is False
     assert payload["skipped"] is True
@@ -215,7 +296,9 @@ def test_tool_store_uses_capture_filter_for_secret_like_content(provider):
 
 
 def test_tool_update_uses_capture_filter_for_secret_like_content(provider):
-    created = _store(provider, "Joy prefers read-only SQLite viewers for memory inspection.", "user")
+    created = _store(
+        provider, "Joy prefers read-only SQLite viewers for memory inspection.", "user"
+    )
     assert created["stored"] is True
 
     payload = json.loads(
@@ -234,11 +317,16 @@ def test_tool_update_uses_capture_filter_for_secret_like_content(provider):
     assert payload["skip_reason"] == "plaintext_secret_rejected"
 
     provider.on_turn_start(1, "What does Joy prefer for memory inspection?")
-    assert "read-only sqlite viewers" in provider.prefetch("What does Joy prefer for memory inspection?").lower()
+    assert (
+        "read-only sqlite viewers"
+        in provider.prefetch("What does Joy prefer for memory inspection?").lower()
+    )
 
 
 def test_tool_merge_uses_capture_filter_for_runtime_wrappers(provider):
-    created = _store(provider, "Joy prefers stable memory facts over raw chat wrappers.", "project")
+    created = _store(
+        provider, "Joy prefers stable memory facts over raw chat wrappers.", "project"
+    )
     assert created["stored"] is True
 
     payload = json.loads(

@@ -322,7 +322,7 @@ Minimal default shape:
   "auto_recall": true,
   "auto_capture": true,
   "enable_tools": true,
-  "tool_schema_profile": "compact",
+  "tool_schema_profile": "core",
   "tool_schema_extra_tools": [],
   "maintenance_tools_enabled": false,
   "secret_index_tools_enabled": false,
@@ -788,7 +788,8 @@ This is a local deterministic governance layer, not a remote LLM extraction pipe
 
 ## Provider tools
 
-Primary-agent default tools use `tool_schema_profile: "compact"` to keep the base request small:
+Primary-agent default tools use `tool_schema_profile: "core"` to keep the base
+request small:
 
 ```text
 scope_recall_store
@@ -799,33 +800,47 @@ scope_recall_memory
 scope_recall_entity
 ```
 
-The compact profile replaces several overlapping schemas with two dispatch tools:
+The core profile replaces several overlapping schemas with two dispatch tools:
 
 - `scope_recall_memory(action=...)` covers `inspect`, `feedback`, `update`, `merge`, and `forget` by exact id.
 - `scope_recall_entity(action=...)` covers `probe` and `related` entity graph reads.
 
-Legacy individual tools remain direct-call compatible. To expose the pre-compact schema surface, set:
+Legacy individual tools remain direct-call compatible. To expose the pre-core
+schema surface, set the canonical compatibility profile:
 
 ```json
 {
-  "tool_schema_profile": "standard"
+  "tool_schema_profile": "compatibility"
 }
 ```
 
-To keep compact mode but expose selected diagnostics, use `tool_schema_extra_tools`:
+To keep core mode but expose selected diagnostics, use `tool_schema_extra_tools`:
 
 ```json
 {
-  "tool_schema_profile": "compact",
+  "tool_schema_profile": "core",
   "tool_schema_extra_tools": ["scope_recall_stats", "scope_recall_benchmark"]
 }
 ```
 
-Schema-surface targets after the compact-profile change:
+The final 2.0 profiles are `core`, `compatibility`, `maintenance`, `developer`,
+and `extension`. `compact` remains an alias for `core`; `standard`, `legacy`,
+and `compat` remain aliases for `compatibility` throughout 2.0.x. Selecting a
+profile cannot enable maintenance writes, secrets, temporal queries,
+reflection, or Experience by itself; their existing local feature gates still
+apply.
 
-- default compact: 6 tools, about 4.7 KB of JSON schema in repo-local measurement
-- standard profile: 20 tools, about 10.6 KB
+Schema-surface targets:
+
+- default core: 6 tools within the historical compact schema budget
+- compatibility: the historical standard surface without renamed or removed tools
+- developer: core plus read-only diagnostics
+- maintenance: core plus only locally authorized maintenance tools
+- extension: core plus only separately enabled extension tools
 - maintenance/secret schema surfaces still require their explicit safety flags
+
+Exact candidate measurements and content-free governance counters are documented
+in [`docs/tool-profiles.2.0.md`](docs/tool-profiles.2.0.md).
 
 Release `1.10.6` is the Scope Recall 2.0 Program 0 candidate on the last packaged `1.10.3` line and supersedes the unpublished `1.10.4` and `1.10.5` source checkpoints:
 
