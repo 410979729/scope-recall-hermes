@@ -30,6 +30,7 @@ try:  # installed package / pytest package-alias path
     from scope_recall.doctor_event_digest import event_digest_report
     from scope_recall.doctor_endpoint import endpoint_policy_report
     from scope_recall.doctor_experience import experience_config_summary, experience_report, nightly_digest_report
+    from scope_recall.doctor_extensions import extension_report
     from scope_recall.doctor_journal import journal_enabled_from_config, journal_report
     from scope_recall.doctor_source import source_report
     from scope_recall.doctor_sqlite import memory_candidate_debt_report, memory_quality_lint_report, memory_secret_report, runtime_pipeline_report, sqlite_report
@@ -44,6 +45,7 @@ except ImportError:  # pragma: no cover - direct source checkout execution fallb
     from doctor_event_digest import event_digest_report
     from doctor_endpoint import endpoint_policy_report
     from doctor_experience import experience_config_summary, experience_report, nightly_digest_report
+    from doctor_extensions import extension_report
     from doctor_journal import journal_enabled_from_config, journal_report
     from doctor_source import source_report
     from doctor_sqlite import memory_candidate_debt_report, memory_quality_lint_report, memory_secret_report, runtime_pipeline_report, sqlite_report
@@ -60,6 +62,7 @@ __all__ = [
     "endpoint_policy_report",
     "experience_config_summary",
     "experience_report",
+    "extension_report",
     "expected_embedder_from_config",
     "journal_enabled_from_config",
     "journal_report",
@@ -149,6 +152,9 @@ def main() -> int:
         )
         experience_payload, experience_check, experience_recommendations = experience_report(hermes_home)
         experience_payload["config"] = experience_config_summary(runtime_config)
+        extension_payload, extension_check, extension_recommendations = extension_report(
+            runtime_config
+        )
         nightly_payload, nightly_check, nightly_recommendations = nightly_digest_report(hermes_home)
         if vector_enabled_from_config(runtime_config):
             backend = vector_backend_from_config(runtime_config)
@@ -178,6 +184,7 @@ def main() -> int:
             "memory_secret_scan": secret_payload,
             "journal": journal_payload,
             "experience": experience_payload,
+            "extensions": extension_payload,
             "nightly_digest": nightly_payload,
             "runtime_pipelines": pipeline_payload,
             "vector": vector_payload,
@@ -192,6 +199,7 @@ def main() -> int:
         checks["memory_secret_scan"] = secret_check
         checks["journal_provenance"] = journal_check
         checks["experience_kernel"] = experience_check
+        checks["extensions"] = extension_check
         checks["nightly_digest"] = nightly_check
         checks["runtime_pipelines"] = pipeline_check
         checks["vector_companion"] = vector_check
@@ -204,6 +212,7 @@ def main() -> int:
         recommendations.extend(secret_recommendations)
         recommendations.extend(journal_recommendations)
         recommendations.extend(experience_recommendations)
+        recommendations.extend(extension_recommendations)
         recommendations.extend(nightly_recommendations)
         recommendations.extend(pipeline_recommendations)
         recommendations.extend(vector_recommendations)

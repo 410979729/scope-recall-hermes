@@ -59,6 +59,7 @@ from ._internal.runtime.storage import (
     truth_has_unprocessed_journal,
 )
 from ._internal.experience.runtime import (
+    backfill_skill_anchors,
     run_experience_preflight,
 )
 from ._internal.journal.tool_trace import tool_journal_content
@@ -110,7 +111,6 @@ from .tooling import ScopeRecallToolService
 from .truth_connection import connect_truth_database
 from .vector_bootstrap import bootstrap_fresh_vector_companion
 from .vector_runtime import setup_vector_layer
-from .experience_store import backfill_skill_anchors
 from .freshness import backfill_untracked_memory_freshness
 
 logger = logging.getLogger(__name__)

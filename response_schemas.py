@@ -19,6 +19,7 @@ DOCTOR_REQUIRED_CHECK_NAMES = (
     "endpoint_policy",
     "event_digest",
     "experience_kernel",
+    "extensions",
     "journal_provenance",
     "memory_candidate_debt",
     "memory_quality_lint",
