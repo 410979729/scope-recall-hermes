@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import sqlite3
 
@@ -22,6 +23,7 @@ from scope_recall.fact_executor import (
     execute_fact_plan,
 )
 from scope_recall.fact_repository import (
+    TemporalValidationError,
     claims_as_of,
     current_claims,
     get_claim,
@@ -350,6 +352,15 @@ def test_add_applies_all_mandatory_surfaces_in_one_committed_transaction():
     assert result.status == "applied"
     assert result.receipt["memory_ids"] == ["memory-new"]
     assert result.receipt["claim_ids"] == ["claim-new"]
+    assert result.receipt["projection_pairs"] == [
+        {
+            "memory_id": "memory-new",
+            "claim_id": "claim-new",
+            "scope_id": "scope-a",
+            "fact_key": _proposal(EvolutionAction.ADD).claim.fact_key,  # type: ignore[union-attr]
+            "memory_type": "factual",
+        }
+    ]
     assert _counts(conn) == {
         "memories": 1,
         "memories_fts": 1,
@@ -363,6 +374,16 @@ def test_add_applies_all_mandatory_surfaces_in_one_committed_transaction():
     }
     outbox_payload = conn.execute("SELECT payload FROM vector_outbox").fetchone()[0]
     assert "Bangalore" not in str(outbox_payload)
+    projection = conn.execute(
+        "SELECT metadata, content, summary FROM memories WHERE id = 'memory-new'"
+    ).fetchone()
+    projection_metadata = json.loads(str(projection[0]))
+    assert projection_metadata["memory_type"] == "factual"
+    assert projection_metadata["fact_claim_id"] == "claim-new"
+    assert str(projection[1]) and str(projection[2])
+    assert conn.execute(
+        "SELECT COUNT(*) FROM fact_claims WHERE memory_id = 'memory-new'"
+    ).fetchone()[0] == 1
 
 
 def test_same_idempotency_key_replays_without_duplicate_side_effects():
@@ -515,7 +536,13 @@ def test_stale_expected_version_rolls_back_without_partial_successor():
 
 @pytest.mark.parametrize(
     "failure_stage",
-    ["after_memory_insert", "after_claim_insert", "after_companions", "before_receipt"],
+    [
+        "after_memory_insert",
+        "after_claim_insert",
+        "after_projection_invariant",
+        "after_companions",
+        "before_receipt",
+    ],
 )
 def test_injected_failure_rolls_back_every_surface(failure_stage: str):
     conn = _conn()
@@ -533,6 +560,98 @@ def test_injected_failure_rolls_back_every_surface(failure_stage: str):
             _policy(plan),
             _context(),
             fault_injector=inject,
+        )
+
+    assert _counts(conn) == before
+
+
+def test_projection_postcondition_rolls_back_a_second_claim_on_new_projection():
+    conn = _conn()
+    plan = _plan(EvolutionAction.ADD)
+    before = _counts(conn)
+
+    def inject(stage: str) -> None:
+        if stage != "after_claim_insert":
+            return
+        insert_claim(
+            conn,
+            claim_id="claim-unexpected-second",
+            memory_id="memory-new",
+            scope_id="scope-a",
+            subject="Asha",
+            predicate="favorite color",
+            value="Blue",
+            recorded_at=AT,
+            confidence=0.9,
+            source_type="corruption_fixture",
+            source_ref="program-3b",
+        )
+
+    with pytest.raises(
+        FactExecutionConflictError,
+        match="must own exactly one Claim",
+    ):
+        execute_fact_plan(
+            conn,
+            plan,
+            _policy(plan),
+            _context(),
+            fault_injector=inject,
+        )
+
+    assert _counts(conn) == before
+
+
+def test_fact_claim_cannot_be_durable_without_a_memory_projection():
+    conn = _conn()
+
+    with pytest.raises(TemporalValidationError, match="memory_id does not exist"):
+        insert_claim(
+            conn,
+            claim_id="claim-without-projection",
+            memory_id="missing-projection",
+            scope_id="scope-a",
+            subject="Asha",
+            predicate="lives in",
+            value="Bangalore",
+            recorded_at=AT,
+            confidence=0.9,
+            source_type="program-3b",
+            source_ref="missing-projection",
+        )
+    conn.rollback()
+
+
+def test_executor_rejects_non_claim_backed_projection_type_without_writes():
+    conn = _conn()
+    plan = _plan(EvolutionAction.ADD)
+    before = _counts(conn)
+
+    with pytest.raises(FactExecutionError, match="Claim-backed memory type"):
+        execute_fact_plan(
+            conn,
+            plan,
+            _policy(plan),
+            replace(_context(), metadata={"memory_type": "workflow"}),
+        )
+
+    assert _counts(conn) == before
+
+
+def test_executor_rolls_back_a_claim_whose_projection_would_be_hidden():
+    conn = _conn()
+    plan = _plan(EvolutionAction.ADD)
+    before = _counts(conn)
+
+    with pytest.raises(FactExecutionConflictError, match="not recall-visible"):
+        execute_fact_plan(
+            conn,
+            plan,
+            _policy(plan),
+            replace(
+                _context(),
+                memory_content="Asha has a temporary home in Bangalore.",
+            ),
         )
 
     assert _counts(conn) == before

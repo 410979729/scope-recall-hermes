@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
@@ -138,6 +139,34 @@ def test_application_use_case_fails_closed_with_zero_writes(memory_type: object)
     assert "memory_type_not_claim_authoritative" in result.receipt["reason_codes"]
     for table in ("memories", "fact_claims", "fact_action_receipts"):
         assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    "memory_type",
+    ["factual", "preference", "project", "resource", "constraint"],
+)
+def test_application_use_case_preserves_canonical_projection_type(memory_type: str):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+
+    result = _execute(conn, memory_type=memory_type)
+
+    assert result.applied is True
+    assert len(result.receipt["projection_pairs"]) == 1
+    pair = result.receipt["projection_pairs"][0]
+    assert pair["memory_type"] == memory_type
+    metadata = json.loads(
+        str(
+            conn.execute(
+                "SELECT metadata FROM memories WHERE id = ?",
+                (pair["memory_id"],),
+            ).fetchone()[0]
+        )
+    )
+    assert metadata["memory_type"] == memory_type
+    assert metadata["fact_claim_id"] == pair["claim_id"]
     conn.close()
 
 
