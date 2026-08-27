@@ -5,12 +5,15 @@ from __future__ import annotations
 import sys
 from typing import Any
 
+from ..application.capture_journal import CaptureApplication, JournalApplication
 from ..application.memory_commands import MemoryCommandApplication
 from ..application.memory_queries import MemoryQueryApplication
 from ..application.runtime_state import RuntimeStateSnapshot
 from .background import BackgroundWork
 from .bootstrap import RuntimeBootstrap
+from .capture_service import bind_capture_gateway
 from .command_adapter import bind_provider_command_adapter
+from .journal_service import bind_journal_gateway
 from .ports import MemoryCommandPort, RuntimeAdapterPort, ToolRuntimePort
 from .process_lifecycle import DEFAULT_SHUTDOWN_TIMEOUT_SECONDS, ProcessLifecycle
 from .query_adapter import bind_provider_query_adapter
@@ -43,6 +46,8 @@ class RuntimeComposition:
         self.lifecycle = lifecycle if lifecycle is not None else ProcessLifecycle()
         self.bootstrap = RuntimeBootstrap(adapter)
         self.vector_view = RuntimeVectorView(adapter)
+        self.capture = CaptureApplication(bind_capture_gateway(adapter))
+        self.journal = JournalApplication(bind_journal_gateway(adapter))
         command_gateway = bind_provider_command_adapter(adapter)
         query_gateway = bind_provider_query_adapter(adapter)
         self._command_port: MemoryCommandPort = MemoryCommandApplication(command_gateway)

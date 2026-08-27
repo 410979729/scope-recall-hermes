@@ -10,14 +10,11 @@ import queue
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from agent.memory_provider import MemoryProvider  # type: ignore[reportMissingImports]
 
 from .capture import (
-    capture_turn_fallbacks,
-    capture_turn_llm_candidates,
-    flush_writer,
     shutdown_writer,
     start_writer,
 )
@@ -28,8 +25,7 @@ from .write_kernel import (
     holding_truth_writer_lease,
     sanitized_truth_writer_owner,
 )
-from .capture_filters import sanitize_capture_text, should_capture_text
-from .capture_llm import extract_capture_candidates
+from .capture_llm import extract_capture_candidates  # noqa: F401 - compatibility hook
 from .config import load_runtime_config, save_runtime_config
 from .journal import ensure_journal_schema, run_journal_digest
 from ._internal.runtime.composition import RuntimeComposition, assemble_runtime
@@ -46,7 +42,12 @@ from .maintenance_lease import (
 )
 from .embedders import BaseEmbedder
 from .gating import clean_text, config_bool, dedup_key, normalize_query, should_skip_retrieval
-from .governance import extract_candidates
+from .governance import extract_candidates  # noqa: F401 - compatibility hook
+from ._internal.application.capture_journal import (
+    CaptureTurnRequest,
+    JournalMessagesRequest,
+    JournalTurnRequest,
+)
 from ._internal.runtime.kernel import KERNEL
 from ._internal.runtime.hooks import observe_memory_write
 from ._internal.runtime.storage import (
@@ -59,11 +60,6 @@ from ._internal.runtime.storage import (
 )
 from ._internal.experience.runtime import (
     run_experience_preflight,
-)
-from ._internal.journal.runtime import (
-    append_session_tool_journal_entries,
-    append_turn_journal_entries,
-    stage_pre_compress_journal_entries,
 )
 from ._internal.journal.tool_trace import tool_journal_content
 from .memory_ops import (
@@ -457,45 +453,21 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         if self._scope.agent_context != "primary":
             return
 
-        clean_user = sanitize_capture_text(self._clean_text(user_content))
-        clean_assistant = sanitize_capture_text(self._clean_text(assistant_content))
-        min_capture = int(self._config_value("min_capture_length", 40))
-        user_filter = should_capture_text(clean_user, self._config)
-        assistant_filter = should_capture_text(clean_assistant, self._config)
-        journal_filter_config = dict(self._config)
-        journal_filter_config["capture_hard_max_chars"] = -1
-        journal_user_filter = should_capture_text(clean_user, journal_filter_config)
-        journal_assistant_filter = should_capture_text(clean_assistant, journal_filter_config)
-        if journal_user_filter.allowed or journal_assistant_filter.allowed:
-            if append_turn_journal_entries(
-                self,
-                clean_user=clean_user,
-                clean_assistant=clean_assistant,
-                user_allowed=journal_user_filter.allowed,
-                assistant_allowed=journal_assistant_filter.allowed,
+        runtime = self._bind_composition()
+        plan = runtime.capture.prepare_turn(
+            CaptureTurnRequest(user_content, assistant_content)
+        )
+        if plan.journal_user_allowed or plan.journal_assistant_allowed:
+            if runtime.journal.append_turn(
+                JournalTurnRequest(
+                    clean_user=plan.clean_user,
+                    clean_assistant=plan.clean_assistant,
+                    user_allowed=plan.journal_user_allowed,
+                    assistant_allowed=plan.journal_assistant_allowed,
+                )
             ):
                 self._maybe_start_background_journal_digest()
-
-        # ── LLM semantic extraction (preferred when explicitly enabled) ──
-        llm_extracted, capture_policy_blocked = capture_turn_llm_candidates(
-            self,
-            clean_user=clean_user,
-            clean_assistant=clean_assistant,
-            user_allowed=user_filter.allowed,
-            assistant_allowed=assistant_filter.allowed,
-            extract_fn=extract_capture_candidates,
-        )
-        capture_turn_fallbacks(
-            self,
-            clean_user=clean_user,
-            clean_assistant=clean_assistant,
-            user_allowed=user_filter.allowed,
-            assistant_allowed=assistant_filter.allowed,
-            llm_extracted=llm_extracted,
-            capture_policy_blocked=capture_policy_blocked,
-            min_capture=min_capture,
-            extract_candidates_fn=extract_candidates,
-        )
+        runtime.capture.capture_turn(plan)
 
     def _event_digest_config(self) -> dict[str, Any]:
         raw = self._config.get("event_digest")
@@ -511,7 +483,11 @@ class ScopeRecallMemoryProvider(MemoryProvider):
 
         The hook should be compact and safe because it is injected into compression prompts, not treated as new user truth.
         """
-        appended, roles = stage_pre_compress_journal_entries(self, messages)
+        staged = self._bind_composition().journal.stage_pre_compress(
+            self._journal_messages_request(messages)
+        )
+        appended = staged.appended
+        roles = staged.roles
         if not appended:
             return ""
         self._dry_run_event_candidates(kind="pre_compress", messages=messages)
@@ -552,7 +528,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         if self._truth_writes_blocked():
             return
         self._append_session_tool_journal(messages)
-        flush_writer(self, timeout=3.0)
+        self._bind_composition().capture.flush(3.0)
         self._run_session_end_journal_digest()
 
     def _journal_config(self) -> dict[str, Any]:
@@ -560,7 +536,17 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         return raw_journal if isinstance(raw_journal, dict) else {}
 
     def _append_session_tool_journal(self, messages: List[Dict[str, Any]]) -> None:
-        append_session_tool_journal_entries(self, messages)
+        self._bind_composition().journal.append_session_tools(
+            self._journal_messages_request(messages)
+        )
+
+    @staticmethod
+    def _journal_messages_request(
+        messages: List[Dict[str, Any]],
+    ) -> JournalMessagesRequest:
+        return JournalMessagesRequest(
+            tuple(cast(dict[str, object], dict(message)) for message in messages)
+        )
 
     def _tool_journal_content(self, message: Dict[str, Any]) -> str:
         """Decide how much tool result content should be captured into the journal."""
@@ -751,7 +737,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
     def flush(self, timeout: float = 2.0) -> bool:
         if self._runtime_memory_disabled():
             return True
-        return flush_writer(self, timeout=timeout)
+        return self._bind_composition().capture.flush(timeout)
 
     def _search_db_memories(self, query: str, *, limit: int) -> List[RecallItem]:
         return search_db_memories(self, query, limit=limit)
