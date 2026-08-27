@@ -139,6 +139,7 @@ include = [
   "doctor_sqlite.py",
   "doctor_temporal.py",
   "digest_state.py",
+  "durable_work.py",
   "write_kernel.py",
   "doctor_vector.py",
   "doctor_event_digest.py",
