@@ -281,21 +281,37 @@ def classify_memory(text: str, target: str = "memory", source: str = "") -> dict
     }
 
 
-def merge_metadata(metadata_payload: dict[str, Any], raw_metadata: Any) -> dict[str, Any]:
-    """Merge caller metadata without allowing loose callers to weaken policy fields."""
+def merge_metadata(
+    metadata_payload: dict[str, Any],
+    raw_metadata: Any,
+    *,
+    reviewed_fact_lifecycle: str = "",
+) -> dict[str, Any]:
+    """Merge caller metadata without allowing loose callers to weaken policy fields.
 
-    if not raw_metadata:
-        return metadata_payload
-    try:
-        user_metadata = json.loads(raw_metadata) if isinstance(raw_metadata, str) else raw_metadata
-    except Exception:
-        metadata_payload["raw_metadata"] = str(raw_metadata)
-        return metadata_payload
-    if not isinstance(user_metadata, dict):
-        metadata_payload["raw_metadata"] = str(raw_metadata)
-        return metadata_payload
+    ``reviewed_fact_lifecycle`` is supplied only after the durable store boundary
+    validates Fact Executor authority and Claim identity.  Keeping the resulting
+    lifecycle decision here preserves the single audited lifecycle-planner
+    boundary instead of turning the generic SQL writer into a second planner.
+    """
 
-    for meta_key, value in user_metadata.items():
+    user_metadata: dict[str, Any] | None = None
+    if raw_metadata:
+        try:
+            parsed_metadata = (
+                json.loads(raw_metadata)
+                if isinstance(raw_metadata, str)
+                else raw_metadata
+            )
+        except Exception:
+            metadata_payload["raw_metadata"] = str(raw_metadata)
+        else:
+            if isinstance(parsed_metadata, dict):
+                user_metadata = parsed_metadata
+            else:
+                metadata_payload["raw_metadata"] = str(raw_metadata)
+
+    for meta_key, value in (user_metadata or {}).items():
         if meta_key == "entities":
             current_value = metadata_payload.get("entities")
             base_values = current_value if isinstance(current_value, list) else []
@@ -343,6 +359,10 @@ def merge_metadata(metadata_payload: dict[str, Any], raw_metadata: Any) -> dict[
             continue
         else:
             metadata_payload[meta_key] = value
+
+    normalized_fact_lifecycle = str(reviewed_fact_lifecycle or "").strip().lower()
+    if normalized_fact_lifecycle in {"active", "promoted"}:
+        metadata_payload["lifecycle"] = normalized_fact_lifecycle
     return metadata_payload
 
 

@@ -1092,7 +1092,7 @@ def store_row(
             return str(existing["id"]), str(existing["summary"]), now, False
 
     classified_metadata = dict(classify_memory(content, target, source))
-    metadata_payload = merge_metadata(dict(classified_metadata), metadata)
+    reviewed_fact_lifecycle = ""
     if requested_fact_metadata is not None:
         requested_lifecycle = str(
             requested_fact_metadata.get("lifecycle") or ""
@@ -1106,7 +1106,12 @@ def store_row(
             # A reviewed Claim may promote the otherwise-scratch ``general``
             # projection. Temporary/expiring content stays provisional so the
             # Executor postcondition rejects and rolls the whole unit back.
-            metadata_payload["lifecycle"] = requested_lifecycle
+            reviewed_fact_lifecycle = requested_lifecycle
+    metadata_payload = merge_metadata(
+        dict(classified_metadata),
+        metadata,
+        reviewed_fact_lifecycle=reviewed_fact_lifecycle,
+    )
     metadata_payload = merge_artifact_metadata(metadata_payload, content)
     safe_metadata, _ = sanitize_structured_value(metadata_payload)
     metadata_payload = safe_metadata if isinstance(safe_metadata, dict) else {}
