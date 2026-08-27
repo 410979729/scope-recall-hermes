@@ -76,7 +76,7 @@ from .memory_ops import (
     govern_memories,  # noqa: F401
     merge_memories,  # noqa: F401
     repair_vector,  # noqa: F401
-    store_memory_now,
+    store_memory_now,  # noqa: F401 - compatibility patch point resolved by command gateway
     update_memory,  # noqa: F401
 )
 from .migration import migrate_legacy_scope_recall_storage
@@ -768,8 +768,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         semantic_merge: bool = False,
         scope_mode: str | None = None,
     ) -> tuple[str, bool, str]:
-        # Inject this function's store_memory_now so globals patches reach
-        # CommandKernel. Authority, one schedule, and rollback stay there.
+        # The compatibility gateway resolves this module's store_memory_now at
+        # execution time so existing patch points remain valid.
         return KERNEL.store(
             self._composition.command_port,
             content=content,
@@ -779,7 +779,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             metadata=metadata,
             allow_duplicate=allow_duplicate,
             semantic_merge=semantic_merge,
-            scope_mode=scope_mode, store_memory_now=store_memory_now,
+            scope_mode=scope_mode,
         )
 
     def _find_semantic_merge_candidate(

@@ -211,7 +211,9 @@ class ProviderToolRuntimeAdapter:
         return self._command_kernel().feedback(self._resolve_command_port(), *args, **kwargs)
 
     def fact_owned_memory_ids(self, *args: Any, **kwargs: Any) -> Any:
-        return _call(self._host, "_fact_owned_memory_ids", *args, **kwargs)
+        return self._command_kernel().fact_owned(
+            self._resolve_command_port(), *args, **kwargs
+        )
 
     def dedupe_memories(self, *args: Any, **kwargs: Any) -> Any:
         return self._command_kernel().dedupe(self._resolve_command_port(), *args, **kwargs)
