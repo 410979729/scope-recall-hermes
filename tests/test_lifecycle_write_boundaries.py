@@ -18,6 +18,7 @@ ALLOWED_METADATA_SQL = {
     ("lifecycle_service.py", "transition_memory_lifecycle"),
     ("journal.py", "_merge_metadata"),
     ("nightly_digest.py", "merge_candidate_metadata"),
+    ("privacy_purge.py", "_redact_journal_sources"),
 }
 ALLOWED_LIFECYCLE_PLANNERS = {
     ("governance.py", "merge_metadata"),
@@ -27,7 +28,10 @@ ALLOWED_LIFECYCLE_PLANNERS = {
     ("scripts/migrate.legacy_hygiene.py", "planned_updates"),
 }
 ALLOWED_HARD_DELETE_SQL = {("sql_store.py", "delete_rows")}
-ALLOWED_DELETE_ROWS_CALLS = {("lifecycle_service.py", "hard_delete_memories")}
+ALLOWED_DELETE_ROWS_CALLS = {
+    ("lifecycle_service.py", "hard_delete_memories"),
+    ("privacy_purge.py", "erase_privacy_purge"),
+}
 
 
 GENERATED_SOURCE_ROOTS = {

@@ -29,6 +29,7 @@ LIFECYCLE_PRODUCER_FILES = (
     "fact_executor.py",
     "governance_rollback.py",
     "memory_ops.py",
+    "privacy_purge.py",
     "nightly_digest.py",
     "scripts/promote.memory_candidates.py",
     "scripts/migrate.legacy_hygiene.py",
@@ -39,21 +40,21 @@ LIFECYCLE_PRODUCER_FILES = (
 
 def test_registry_is_complete_and_well_formed() -> None:
     assert validate_lifecycle_registry() == ()
-    assert len(LIFECYCLE_REGISTRY) == 33
+    assert len(LIFECYCLE_REGISTRY) == 34
     assert all(operation.operation_id == operation_id for operation_id, operation in LIFECYCLE_REGISTRY.items())
     assert all(operation.allowed_from_states for operation in LIFECYCLE_REGISTRY.values())
     assert all(operation.projection_effects for operation in LIFECYCLE_REGISTRY.values())
 
 
 def test_current_producer_census_resolves_only_registered_operations() -> None:
-    assert len(LIFECYCLE_PRODUCER_CENSUS) == 13
+    assert len(LIFECYCLE_PRODUCER_CENSUS) == 14
     producer_ids = {
         operation_id
         for binding in LIFECYCLE_PRODUCER_CENSUS
         for operation_id in binding.operation_ids
     }
     assert producer_ids <= set(LIFECYCLE_REGISTRY)
-    assert len(producer_ids) == 31
+    assert len(producer_ids) == 32
 
 
 def test_observe_archive_coverage_is_exactly_legacy_equivalent() -> None:
@@ -78,8 +79,8 @@ def test_unknown_operation_id_fails_closed() -> None:
 def test_registry_health_report_is_doctor_safe() -> None:
     assert lifecycle_registry_report() == {
         "status": "ready",
-        "operation_count": 33,
-        "producer_count": 13,
+        "operation_count": 34,
+        "producer_count": 14,
         "archive_coverage_receipt_count": 8,
         "default_rollback_event_count": 4,
         "errors": [],
@@ -108,7 +109,7 @@ def test_all_lifecycle_producers_select_operation_id_without_raw_receipt_fields(
             assert "event_type" not in keyword_names, (relative_path, node.lineno)
             assert "action" not in keyword_names, (relative_path, node.lineno)
             calls.append((relative_path, node.lineno, function_name))
-    assert len(calls) == 17
+    assert len(calls) == 19
 
 
 def test_fact_and_backfill_receipt_producers_derive_legacy_identity_from_registry() -> None:

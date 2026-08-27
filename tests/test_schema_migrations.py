@@ -29,7 +29,10 @@ from scope_recall.relation_frequency_index import (
 )
 from scope_recall.relation_policy_generation import (
     RELATION_POLICY_GENERATION_MIGRATION_ID,
-    RELATION_POLICY_GENERATION_SCHEMA_VERSION,
+)
+from scope_recall.privacy_purge_schema import (
+    PRIVACY_PURGE_MIGRATION_ID,
+    PRIVACY_PURGE_SCHEMA_VERSION,
 )
 from scope_recall.relation_rebuild_queue import (
     RELATION_REBUILD_EXPIRY_MIGRATION_ID,
@@ -73,6 +76,7 @@ def test_schema_migration_status_reports_baseline_after_ensure_schema():
         LEXICAL_MIGRATION_ID,
         RELATION_CONTAINMENT_MIGRATION_ID,
         RELATION_POLICY_GENERATION_MIGRATION_ID,
+        PRIVACY_PURGE_MIGRATION_ID,
     ]
     assert after["current"] is True
     assert after["user_version"] == after["schema_version"]
@@ -91,11 +95,13 @@ def test_schema_migration_status_reports_baseline_after_ensure_schema():
         LEXICAL_MIGRATION_ID,
         RELATION_CONTAINMENT_MIGRATION_ID,
         RELATION_POLICY_GENERATION_MIGRATION_ID,
+        PRIVACY_PURGE_MIGRATION_ID,
     ]
-    assert after["schema_version"] == RELATION_POLICY_GENERATION_SCHEMA_VERSION
+    assert after["schema_version"] == PRIVACY_PURGE_SCHEMA_VERSION
     assert after["lexical_generation"]["current"] is True
     assert after["relation_containment"]["current"] is True
     assert after["relation_policy_generation"]["current"] is True
+    assert after["privacy_purge"]["current"] is True
     tables = {
         str(row[0])
         for row in conn.execute(

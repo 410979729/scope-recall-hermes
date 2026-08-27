@@ -88,11 +88,18 @@ def export_memories(
     provider: Any, *, fmt: str = "jsonl", scope_only: bool = True
 ) -> dict[str, Any]:
     conn = _query_conn(provider)
+    purge_hidden = (
+        "NOT (json_valid(metadata) "
+        "AND COALESCE(json_extract(metadata, '$.purge_denied'), 0) = 1)"
+    )
     if scope_only:
-        where = f"WHERE scope_id IN ({scope_placeholders(provider)})"
+        where = (
+            f"WHERE scope_id IN ({scope_placeholders(provider)}) "
+            f"AND {purge_hidden}"
+        )
         params: tuple[Any, ...] = tuple(accessible_scope_params(provider))
     else:
-        where = ""
+        where = f"WHERE {purge_hidden}"
         params = ()
     with _query_lock(provider):
         rows = conn.execute(

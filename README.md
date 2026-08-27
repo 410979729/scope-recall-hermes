@@ -1039,6 +1039,7 @@ scope_recall_playbook_review
 scope_recall_experience_promote
 scope_recall_forgetting_report
 scope_recall_forgetting_run
+scope_recall_purge
 scope_recall_evolve
 ```
 
@@ -1179,6 +1180,7 @@ Example `scope_recall_stats` shape:
 | `scope_recall_govern` | Operator-only: review tier distribution and decay/archive candidates |
 | `scope_recall_hygiene` | Operator-only, read-only: report memory-quality cleanup/promotion candidates without modifying rows |
 | `scope_recall_repair` | Operator-only: repair/rebuild the configured vector companion from SQLite truth |
+| `scope_recall_purge` | Operator-only: plan, deny, and physically erase exact memories with two bound confirmations and restore-safe tombstones |
 | `scope_recall_fact` | Opt-in, read-only: query scoped current, as-of, or cited fact history views |
 | `scope_recall_reflect` | Opt-in, read-only by default: synthesize bounded cross-memory observations and inferences with evidence-pack citations |
 | `scope_recall_evolve` | Operator-only: preview or request locally authorized fact evolution; defaults to dry-run and cannot elevate configured policy |

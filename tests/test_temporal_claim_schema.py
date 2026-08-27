@@ -27,6 +27,10 @@ from scope_recall.relation_policy_generation import (
     RELATION_POLICY_GENERATION_MIGRATION_ID,
     RELATION_POLICY_GENERATION_SCHEMA_VERSION,
 )
+from scope_recall.privacy_purge_schema import (
+    PRIVACY_PURGE_MIGRATION_ID,
+    PRIVACY_PURGE_SCHEMA_VERSION,
+)
 from scope_recall.relation_rebuild_queue import (
     RELATION_REBUILD_EXPIRY_MIGRATION_ID,
     RELATION_REBUILD_EXPIRY_SCHEMA_VERSION,
@@ -180,10 +184,11 @@ def test_fresh_schema_creates_fact_tables_columns_indexes_and_ledger():
     assert (
         ledger["user_version"]
         == SCHEMA_VERSION
-        == RELATION_POLICY_GENERATION_SCHEMA_VERSION
+        == PRIVACY_PURGE_SCHEMA_VERSION
     )
     assert (
         SCHEMA_VERSION
+        > RELATION_POLICY_GENERATION_SCHEMA_VERSION
         > RELATION_CONTAINMENT_SCHEMA_VERSION
         > LEXICAL_SCHEMA_VERSION
         > RELATION_FREQUENCY_FAILURE_SCHEMA_VERSION
@@ -208,6 +213,7 @@ def test_fresh_schema_creates_fact_tables_columns_indexes_and_ledger():
         LEXICAL_MIGRATION_ID,
         RELATION_CONTAINMENT_MIGRATION_ID,
         RELATION_POLICY_GENERATION_MIGRATION_ID,
+        PRIVACY_PURGE_MIGRATION_ID,
     ]
     assert all(len(str(row["checksum"])) == 64 for row in ledger["applied_migrations"])
 

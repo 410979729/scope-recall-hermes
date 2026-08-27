@@ -94,6 +94,7 @@ def test_maintenance_schema_exposure_is_independent_from_experience():
         "scope_recall_hygiene",
         "scope_recall_forgetting_report",
         "scope_recall_forgetting_run",
+        "scope_recall_purge",
     }
     experience_maintenance = {
         "scope_recall_playbook_create",

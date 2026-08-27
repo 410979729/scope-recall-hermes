@@ -105,6 +105,7 @@ _DESCRIPTION_OVERRIDES = {
     "forgetting.enabled": "Enable forgetting report and apply tools; disabled tools fail closed.",
     "forgetting.hard_delete_sensitive": "Second safety gate for sensitive-data hard deletion; apply also requires an explicit hard_delete request.",
     "forgetting.soft_archive_default": "Default whether forgetting apply archives soft candidates; each call may explicitly override it.",
+    "purge.enabled": "Enable the explicit deny-first privacy purge maintenance surface. maintenance_tools_enabled and exact two-phase confirmations remain required.",
     "retrieval.relation_contradiction_mode": "Contradiction handling: surface keeps and warns; suppress excludes exactly one deterministic loser when both sides reach the bounded candidate set and preserves a one-sided candidate; penalize applies relation_contradicts_penalty.",
 }
 
@@ -142,6 +143,7 @@ _MEDIUM_RISK_PREFIXES = (
     "experience.",
     "reflection.",
     "forgetting.",
+    "purge.",
     "shared_pool.",
     "identity.",
     "relation_",

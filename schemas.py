@@ -433,6 +433,47 @@ SCOPE_RECALL_FORGET_SCHEMA = {
     },
 }
 
+SCOPE_RECALL_PURGE_SCHEMA = {
+    "name": "scope_recall_purge",
+    "description": (
+        "Explicit two-phase privacy purge for exact memory ids. Maintenance-only: "
+        "plan is zero-write, deny commits an irreversible visibility tombstone, and "
+        "erase performs idempotent physical removal after a second confirmation."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["plan", "status", "deny", "erase"],
+            },
+            "id": {
+                "type": "string",
+                "maxLength": MAX_MEMORY_ID_LENGTH,
+                "description": "One exact memory id for plan or deny.",
+            },
+            "ids": {
+                "type": "array",
+                "maxItems": MAX_MEMORY_IDS_PER_REQUEST,
+                "items": {"type": "string", "maxLength": MAX_MEMORY_ID_LENGTH},
+                "description": "Exact memory ids for plan or deny.",
+            },
+            "operation_id": {
+                "type": "string",
+                "maxLength": 96,
+                "description": "Plan-generated operation id; required after plan.",
+            },
+            "confirmation": {
+                "type": "string",
+                "maxLength": 64,
+                "description": "Exact phase confirmation returned by plan or deny.",
+            },
+        },
+        "required": ["action"],
+        "additionalProperties": False,
+    },
+}
+
 SCOPE_RECALL_UPDATE_SCHEMA = {
     "name": "scope_recall_update",
     "description": "Update a Scope Recall memory by id within the current accessible scope set.",

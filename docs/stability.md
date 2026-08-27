@@ -80,6 +80,7 @@ V1 keeps these behavior boundaries stable:
 - Experience Kernel create/review and maintenance promotion tools are hidden and fail closed unless `maintenance_tools_enabled=true`; ordinary read-only search/inspect/preflight/stats and scoped feedback tools remain available when `experience.enabled=true`.
 - automatic experience promotion is opt-in after successful journal digest through `experience.auto_promotion_enabled=false` by default; when enabled, it still requires evidence-backed task traces with final successful closure, writes task episodes, creates playbook candidates by default because `experience.auto_promote_low_risk=false`, and keeps high-risk or final-failure playbooks gated by status/review. Set `experience.auto_promote_low_risk=true` only to auto-promote low-risk verified playbooks.
 - forgetting tools are hidden and fail closed unless `maintenance_tools_enabled=true`; `scope_recall_forgetting_report` is read-only, and `scope_recall_forgetting_run` defaults to dry-run/soft archive rather than physical deletion
+- `scope_recall_purge` is maintenance-only and uses two exact confirmations: Phase A commits an irreversible deny tombstone before Phase B performs idempotent physical erasure; immutable content-free receipts support restore-time deny replay
 - `scope_recall_playbook_create` only writes `candidate`; promotion requires `scope_recall_playbook_review`, and direct reuse is blocked by confidence, reuse-policy, stale-fact, and risky-capability gates
 - `scope_recall_store_secret_index` may store searchable credential indexes, vault references, and non-reversible fingerprint prefixes, but plaintext secret values must not be stored in SQLite content, metadata, FTS, vector text, exports, logs, or chat replies
 - durable `user`/`memory`/`project`/`ops` rows are shared across windows/chats for the same platform + agent workspace + agent identity + user id by default
@@ -129,6 +130,7 @@ The following tool names are stable for V1. `tool_schema_profile="compact"` expo
 - `scope_recall_experience_promote`
 - `scope_recall_forgetting_report`
 - `scope_recall_forgetting_run`
+- `scope_recall_purge`
 - `scope_recall_fact`
 - `scope_recall_evolve`
 - `scope_recall_reflect`

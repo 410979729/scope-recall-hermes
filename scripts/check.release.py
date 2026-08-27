@@ -642,6 +642,7 @@ STABLE_TOOL_NAMES = {
     "scope_recall_experience_promote",
     "scope_recall_forgetting_report",
     "scope_recall_forgetting_run",
+    "scope_recall_purge",
     "scope_recall_fact",
     "scope_recall_evolve",
     "scope_recall_reflect",

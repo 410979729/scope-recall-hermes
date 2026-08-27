@@ -88,6 +88,8 @@ def build_external_memory_export(
         WHERE target IN ({target_placeholders}){scope_sql}
           AND LOWER(COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.lifecycle') END, 'promoted'))
               NOT IN ({hidden_placeholders})
+          AND NOT (json_valid(metadata)
+              AND COALESCE(json_extract(metadata, '$.purge_denied'), 0) = 1)
         ORDER BY updated_at DESC, id ASC
         LIMIT ?
         """,

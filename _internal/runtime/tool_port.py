@@ -243,6 +243,11 @@ class ProviderToolRuntimeAdapter:
             self._resolve_command_port(), *args, **kwargs
         )
 
+    def purge_memories(self, *args: Any, **kwargs: Any) -> Any:
+        return self._command_kernel().purge(
+            self._resolve_command_port(), *args, **kwargs
+        )
+
     def dedupe_memories(self, *args: Any, **kwargs: Any) -> Any:
         return self._command_kernel().dedupe(self._resolve_command_port(), *args, **kwargs)
 
