@@ -10,7 +10,12 @@ from ..application.capture_journal import (
     CaptureTurnPlan,
     CaptureTurnRequest,
 )
-from ...capture import capture_turn_fallbacks, capture_turn_llm_candidates, flush_writer
+from ...capture import (
+    capture_turn_fallbacks,
+    capture_turn_llm_candidates,
+    flush_writer,
+    start_writer as default_start_writer,
+)
 from ...capture_filters import sanitize_capture_text, should_capture_text
 from ...capture_llm import extract_capture_candidates as default_extract_capture_candidates
 from ...gating import clean_text
@@ -28,6 +33,10 @@ class ProviderCaptureAdapter:
 
     def __init__(self, host: Any) -> None:
         self._host = host
+
+    def start_writer(self) -> None:
+        operation = _provider_hook(self._host, "start_writer", default_start_writer)
+        operation(self._host)
 
     def prepare_turn(self, request: CaptureTurnRequest) -> CaptureTurnPlan:
         runtime_config = dict(getattr(self._host, "_config", {}) or {})

@@ -44,6 +44,8 @@ class JournalStageResult:
 
 @runtime_checkable
 class CaptureGateway(Protocol):
+    def start_writer(self) -> None: ...
+
     def prepare_turn(self, request: CaptureTurnRequest) -> CaptureTurnPlan: ...
 
     def capture_turn(self, plan: CaptureTurnPlan) -> None: ...
@@ -65,6 +67,9 @@ class JournalGateway(Protocol):
 class CaptureApplication:
     def __init__(self, gateway: CaptureGateway) -> None:
         self._gateway = gateway
+
+    def start_writer(self) -> None:
+        self._gateway.start_writer()
 
     def prepare_turn(self, request: CaptureTurnRequest) -> CaptureTurnPlan:
         return self._gateway.prepare_turn(request)
@@ -90,4 +95,3 @@ class JournalApplication:
         self, request: JournalMessagesRequest
     ) -> JournalStageResult:
         return self._gateway.stage_pre_compress(request)
-

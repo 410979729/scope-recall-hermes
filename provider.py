@@ -179,7 +179,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._config: dict[str, Any] = {}
         self._retrieval_config: dict[str, Any] = {}
         self._vector_config: dict[str, Any] = {}
-        self._composition = assemble_runtime(self)
+        self._composition = assemble_runtime(
+            self, truth_cls=TruthSession, background_cls=BackgroundWork
+        )
         self._truth = self._composition.truth
         self._lock = threading.RLock()
         self._write_queue: queue.Queue[Any] = new_write_queue()
@@ -909,7 +911,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             composition = getattr(self, "_composition", None)
             if composition is not None:
                 return composition
-            composition = assemble_runtime(self)
+            composition = assemble_runtime(
+                self, truth_cls=TruthSession, background_cls=BackgroundWork
+            )
             object.__setattr__(self, "_composition", composition)
             object.__setattr__(self, "_truth", composition.truth)
             object.__setattr__(self, "_background", composition.background)
