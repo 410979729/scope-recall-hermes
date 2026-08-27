@@ -18,7 +18,7 @@ from .governance_rollback import (
     snapshot_memory_row,
 )
 from .lifecycle_service import transition_memory_lifecycle
-from .lifecycle_registry import MEMORY_CLEANUP_ARCHIVE
+from .lifecycle_registry import MEMORY_CLEANUP_ARCHIVE, archive_coverage_receipts
 from .maintenance_ops import json_dumps_stable, make_batch_id, now_utc_iso
 from .sql_store import ensure_schema, record_governance_audit_event
 
@@ -29,18 +29,7 @@ TEMPLATE_NOISE_REASONS = {
     "transcript.role-prefix-assistant",
 }
 
-RECOGNIZED_ARCHIVE_RECEIPTS: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("memory_cleanup", "soft_archive"),
-        ("forgetting", "soft_archive"),
-        ("scope_recall_forget", "soft_archive"),
-        ("memory_cleanup", "legacy_archive_backfill"),
-        ("memory_candidate_promotion", "archive"),
-        ("memory_auto_adjudication", "archive"),
-        ("memory_quality_lint", "archive_lint_hit"),
-        ("memory_quality_cleanup", "archive_active_lint_hit"),
-    }
-)
+RECOGNIZED_ARCHIVE_RECEIPTS = archive_coverage_receipts()
 
 
 def _now_iso() -> str:
