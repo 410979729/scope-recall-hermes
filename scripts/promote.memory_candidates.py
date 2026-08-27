@@ -35,6 +35,7 @@ from scope_recall.candidate_promotion import candidate_debt_report, candidate_ro
 from scope_recall.candidate_review import transition_candidate_metadata  # noqa: E402
 from scope_recall.capture_filters import sanitize_report_text  # noqa: E402
 from scope_recall.lifecycle_service import LifecycleConflictError, transition_memory_lifecycle  # noqa: E402
+from scope_recall.lifecycle_registry import CANDIDATE_PROMOTION_ARCHIVE, CANDIDATE_PROMOTION_PROMOTE  # noqa: E402
 from scope_recall.maintenance_ops import connect_memory_db, effective_apply, memory_db_path  # noqa: E402
 from scope_recall.sql_store import ensure_governance_schema  # noqa: E402
 from scope_recall.vector_runtime import queued_vector_outbox_receipt  # noqa: E402
@@ -249,8 +250,10 @@ def promote_memory_candidates(
                     expected_lifecycle=str(before_metadata.get("lifecycle") or "candidate"),
                     actor="scripts/promote.memory_candidates.py",
                     reason=effective_reason,
-                    event_type="memory_candidate_promotion",
-                    action=effective_action,
+                    operation_id={
+                        "archive": CANDIDATE_PROMOTION_ARCHIVE,
+                        "promote": CANDIDATE_PROMOTION_PROMOTE,
+                    }[effective_action],
                     batch_id=batch,
                     timestamp=at,
                 )

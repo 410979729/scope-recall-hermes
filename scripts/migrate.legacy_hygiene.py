@@ -36,6 +36,7 @@ if PACKAGE_NAME not in sys.modules:
 from scope_recall_legacy_hygiene_runtime.gating import compact_text  # noqa: E402
 from scope_recall_legacy_hygiene_runtime.governance import classify_memory  # noqa: E402
 from scope_recall_legacy_hygiene_runtime.lifecycle_service import transition_memory_lifecycle  # noqa: E402
+from scope_recall_legacy_hygiene_runtime.lifecycle_registry import LEGACY_HYGIENE_ARCHIVE, LEGACY_HYGIENE_NORMALIZE  # noqa: E402
 from scope_recall_legacy_hygiene_runtime.sql_store import ensure_schema  # noqa: E402
 from scope_recall_legacy_hygiene_runtime.truth_connection import connect_truth_database  # noqa: E402
 
@@ -189,8 +190,10 @@ def apply_lifecycle_updates(
             expected_updated_at=str(row["updated_at"] or ""),
             actor="scope-recall-legacy-hygiene",
             reason=action.replace("_", "-"),
-            event_type="legacy_hygiene",
-            action=action,
+            operation_id={
+                "archive_legacy_scratch": LEGACY_HYGIENE_ARCHIVE,
+                "normalize_durable_metadata": LEGACY_HYGIENE_NORMALIZE,
+            }[action],
             batch_id=f"legacy-hygiene:{migrated_at}",
             timestamp=migrated_at,
         )

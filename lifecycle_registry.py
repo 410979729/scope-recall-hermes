@@ -295,7 +295,7 @@ _OPERATIONS: Final = (
     ),
     _operation(
         LEGACY_HYGIENE_NORMALIZE,
-        target_state=CURRENT_STATE,
+        target_state=REQUESTED_STATE,
         legacy_event_type="legacy_hygiene",
         legacy_action="normalize_durable_metadata",
         authorization_policy="migration_apply",
