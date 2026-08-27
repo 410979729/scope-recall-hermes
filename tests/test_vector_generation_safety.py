@@ -1201,6 +1201,10 @@ def test_doctor_fails_closed_on_vector_outbox_dead_letter(tmp_path):
     )
     assert payload["status"] == "outbox_dead_letter"
     assert payload["outbox_dead_letters"] == 1
+    assert payload["durable_work"]["state"] == "needs_repair"
+    assert payload["durable_work"]["reason_code"] == "dead_letter_present"
+    assert payload["durable_work"]["item_counts"]["poisoned"] == 1
+    assert payload["durable_work"]["operator_action_required"] is True
     assert check["ok"] is False
     assert any("dead-letter" in failure for failure in check["failures"])
     assert any("requeue" in item for item in recommendations)
