@@ -63,6 +63,14 @@ def test_memory_evolution_fixture_covers_required_scenarios() -> None:
     }
 
 
+def test_benchmark_import_preserves_active_checkout_package_alias() -> None:
+    active_package = sys.modules["scope_recall"]
+
+    _module()
+
+    assert sys.modules["scope_recall"] is active_package
+
+
 def test_memory_evolution_benchmark_meets_release_thresholds() -> None:
     result = _module().run_benchmark(CASES)
     assert result["passed"] is True

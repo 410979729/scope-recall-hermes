@@ -43,6 +43,12 @@ def _bootstrap_source_package() -> None:
                 return
         except OSError:
             pass
+    for loaded_path in getattr(loaded_package, "__path__", ()):
+        try:
+            if Path(loaded_path).resolve() == ROOT.resolve():
+                return
+        except OSError:
+            pass
     for name in list(sys.modules):
         if name == "scope_recall" or name.startswith("scope_recall."):
             sys.modules.pop(name, None)
