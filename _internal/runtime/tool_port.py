@@ -315,7 +315,7 @@ class ProviderToolRuntimeAdapter:
     def run_reflection(self, args: Mapping[str, Any]) -> Any:
         from ...reflection_tooling import run_reflection_tool
 
-        return run_reflection_tool(self, args=dict(args))
+        return run_reflection_tool(self._host, args=dict(args))
 
     def mark_vector_needs_repair(self, reason: str) -> None:
         composition = getattr(self._host, "_composition", None)

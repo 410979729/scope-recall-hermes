@@ -510,7 +510,7 @@ def run_reflection_tool(host: Any, *, args: dict[str, Any]) -> dict[str, Any]:
         minimum=0,
         maximum=1,
     )
-    evidence_host = port.evidence_runtime()
+    evidence_host = host
     conn: sqlite3.Connection = port.query_connection()
     before_changes = conn.total_changes
     pack = build_reflection_evidence_pack(
