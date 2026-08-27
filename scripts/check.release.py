@@ -41,7 +41,7 @@ if str(ROOT) not in sys.path:
 from secret_patterns import scan_secret_like_text, secret_scan_shadow  # noqa: E402
 from scripts.release_changelog import extract_version_section  # noqa: E402
 
-PACKAGE_VERSION = "1.10.6"
+PACKAGE_VERSION = "2.0.0"
 PUBLIC_RELEASE_BASELINE = "1.10.3"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 RELEASE_READINESS_DOC = f"docs/release-readiness.{PACKAGE_VERSION}.md"
@@ -175,6 +175,7 @@ REQUIRED_SOURCE_FILES = {
     "plugin.yaml",
     "config.json",
     "scripts/release.invariants.json",
+    "scripts/release.candidate_rehearsals.json",
     "cli.py",
     "config_schema.py",
     "desktop_principal.py",
@@ -472,6 +473,7 @@ REQUIRED_WHEEL = {
     "scope_recall/plugin.yaml",
     "scope_recall/config.json",
     "scope_recall/scripts/release.invariants.json",
+    "scope_recall/scripts/release.candidate_rehearsals.json",
     "scope_recall/digest_quality.py",
     "scope_recall/digest_pollution.py",
     "scope_recall/digest_run_results.py",
@@ -706,6 +708,19 @@ REQUIRED_CHANGELOG_TERMS_BY_VERSION = {
         "health",
         "query zero-write",
     ),
+    "2.0.0": (
+        "Fact authority",
+        "legacy projection",
+        "relation generation",
+        "DurableWork",
+        "Recall Packet",
+        "current truth",
+        "deny-first",
+        "tool profiles",
+        "extension boundaries",
+        "Recall Inspector",
+        "N-1",
+    ),
 }
 PUBLIC_RELEASE_BASELINES_BY_VERSION = {
     "1.10.2": "1.9.2",
@@ -713,6 +728,7 @@ PUBLIC_RELEASE_BASELINES_BY_VERSION = {
     "1.10.4": "1.10.3",
     "1.10.5": "1.10.3",
     "1.10.6": "1.10.3",
+    "2.0.0": "1.10.3",
 }
 REQUIRED_CHANGELOG_TERMS = REQUIRED_CHANGELOG_TERMS_BY_VERSION.get(
     PACKAGE_VERSION, ()

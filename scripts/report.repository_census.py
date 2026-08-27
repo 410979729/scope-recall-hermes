@@ -122,7 +122,7 @@ def classify_path(path: str) -> tuple[str, str]:
     if path.startswith("examples/"):
         return "example", "reference"
     if path.startswith("docs/") or path.endswith(".md"):
-        if path.startswith("docs/release-readiness.") and not path.endswith("1.10.6.md"):
+        if path.startswith("docs/release-readiness.") and not path.endswith("2.0.0.md"):
             return "documentation", "historical"
         return "documentation", "reference"
     if path.startswith("_internal/") or path.endswith(".py"):

@@ -4,6 +4,26 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-27
+
+This release candidate is cumulative since the last public release, `1.10.3`. It completes the Scope Recall 2.0 product contract while preserving SQLite truth, stable V1 provider/tool identities, additive migration, and the N-1/N/N-1 compatibility window.
+
+### Added
+- Added strict Fact authority on the existing Fact Ledger with atomic legacy projection dual-write, explicit split planning, evidence checks, and fail-closed conflict handling.
+- Added finite relation generation and shared DurableWork terminal-state/Doctor contracts without creating a second scheduler or durable work authority.
+- Added one production Recall Packet compiler with current truth selection, conflict exposure, evidence ordering, deterministic diversity, and bounded token budgeting.
+- Added deny-first two-phase Purge, governed tool profiles, optional extension boundaries, and a developer-only read-only Recall Inspector over the exact production packet.
+
+### Changed
+- Made current truth, Recall Packet rendering, and token budgeting the coherent 2.0 recall defaults while retaining independent rollback switches.
+- Kept the default core tool profile within the historical compact schema budget; compatibility, maintenance, developer, and extension surfaces remain separately governed.
+- Canonicalized historical construction-phase test names and regenerated repository governance evidence without deleting coverage or lowering release gates.
+
+### Compatibility
+- Preserved legacy projection reads and writes for N-1 interoperability; no claim-only durable user data is allowed in 2.0.x.
+- Preserved stable V1 tool names and aliases, scope isolation, current-turn recall, read-only followers, one-writer authority, and rebuildable vector companions.
+- Kept all migration IDs immutable and additive. Normal rollback disables product switches and reverts code without restoring the whole database; purge tombstones remain deny-authoritative.
+
 ## [1.10.6] - 2026-08-26
 
 This patch candidate is cumulative since the last public release, `1.10.3`, and supersedes the unpublished `1.10.4` and `1.10.5` source checkpoints. It completes Scope Recall 2.0 Program 0A/0B without crossing G0: release controls are deterministic, Vector status has one public contract, and legacy relation fan-out is replaced by finite relation containment.

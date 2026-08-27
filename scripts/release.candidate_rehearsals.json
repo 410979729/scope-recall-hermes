@@ -1,0 +1,55 @@
+{
+  "schema_version": "scope-recall.release-candidate-rehearsals.v1",
+  "candidate_version": "2.0.0",
+  "requires_full_ci": true,
+  "active_instance_allowed": false,
+  "gates": [
+    {
+      "id": "activity_snapshot_migration",
+      "purpose": "Upgrade a verified isolated N-1 activity snapshot while proving the source database is byte-for-byte unchanged.",
+      "node_ids": [
+        "tests/test_release_candidate_rehearsals.py::test_activity_snapshot_upgrade_preserves_source_and_payload",
+        "tests/test_sqlite_backup.py::test_verified_online_backup_healthy_path_records_health_and_logical_equivalence"
+      ]
+    },
+    {
+      "id": "n_minus_one_n_n_minus_one",
+      "purpose": "Prove N-1 preflight, N dual-write projection compatibility, and deny-by-default legacy authority routing.",
+      "node_ids": [
+        "tests/test_upgrade_compatibility.py::test_n_minus_one_isolation_key_passes_read_only_upgrade_preflight",
+        "tests/test_schema_migrations.py::test_relation_policy_generation_migration_upgrades_pre_0014_in_place",
+        "tests/test_fact_executor.py::test_add_applies_all_mandatory_surfaces_in_one_committed_transaction",
+        "tests/test_fact_authority_router.py::test_missing_unknown_legacy_aliases_and_projection_marker_never_authorize_claim"
+      ]
+    },
+    {
+      "id": "purge_restore_replay",
+      "purpose": "Prove a restored copy reinstates deny state before any writer can use it.",
+      "node_ids": [
+        "tests/test_privacy_purge.py::test_restore_replay_reinstates_deny_before_writer_use"
+      ]
+    },
+    {
+      "id": "readonly_canary",
+      "purpose": "Prove the read-only follower denies writes and unknown tools by default.",
+      "node_ids": [
+        "tests/test_readonly_follower_tools.py::test_readonly_follower_default_denies_writes_and_unknown_tools"
+      ]
+    },
+    {
+      "id": "writer_canary",
+      "purpose": "Prove the writer loads through Hermes discovery and exposes a current schema before activation is considered.",
+      "node_ids": [
+        "tests/test_installer.py::test_installer_runtime_verify_loads_provider_tools_and_schema",
+        "tests/test_installer.py::test_installed_plugin_loads_through_hermes_memory_discovery"
+      ]
+    },
+    {
+      "id": "rollback_rehearsal",
+      "purpose": "Prove rollback restores the verified backup and preserves the displaced candidate as a backup.",
+      "node_ids": [
+        "tests/test_installer.py::test_installer_rollback_restores_backup_and_backs_up_current_plugin"
+      ]
+    }
+  ]
+}
