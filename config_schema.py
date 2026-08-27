@@ -92,6 +92,7 @@ _DESCRIPTION_OVERRIDES = {
     "fact_evolution.journal_mode": "Journal lane mode loaded by each scheduled invocation. preview is medium risk; auto_apply is high risk and may persist durable memory.",
     "fact_evolution.tool_mode": "Resident public tool-lane mode. Caller evidence remains non-authoritative until a runtime-owned evidence registry is available; provider reload is required.",
     "fact_evolution.maintenance_mode": "Explicit maintenance-lane mode. reviewed_apply permits maintenance-gated operator corrections and is high risk; provider reload is required.",
+    "fact_backfill.shadow_enabled": "Enable read-only historical SplitPlan shadow generation. Shadow artifacts remain non-authoritative; applying one exact plan still requires an explicit plan-bound approval, source CAS, and the atomic Fact Executor boundary.",
     "forgetting.archive_assistant_scratch": "Classify general-target assistant prose scratch as soft-archive candidates.",
     "forgetting.archive_duplicates": "Classify older duplicate memories as soft-archive candidates.",
     "forgetting.archive_very_short": "Classify very short non-preference memories as soft-archive candidates.",
@@ -139,6 +140,7 @@ _MEDIUM_RISK_PREFIXES = (
     "shared_pool.",
     "identity.",
     "relation_",
+    "fact_backfill.",
 )
 _RESTART_PREFIXES = (
     "identity.desktop_principal",
@@ -167,6 +169,7 @@ _RESTART_OVERRIDES = {
     "fact_evolution.journal_mode": False,
     "fact_evolution.tool_mode": True,
     "fact_evolution.maintenance_mode": True,
+    "fact_backfill.shadow_enabled": False,
 }
 _CHOICES = {
     "automatic_digest_default_lifecycle": ["candidate", "promoted"],

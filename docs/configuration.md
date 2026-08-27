@@ -112,6 +112,10 @@ This file is generated from the packaged `config.json` registry. It lists every 
 - `experience.promotion_min_tool_entries` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `experience.promotion_min_tool_entries` in the `experience` group. Default: `1`
 - `experience.promotion_require_verification` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `experience.promotion_require_verification` in the `experience` group. Default: `true`
 
+## `fact_backfill`
+
+- `fact_backfill.shadow_enabled` (boolean; risk: `medium`; restart_required: `no`) — Enable read-only historical SplitPlan shadow generation. Shadow artifacts remain non-authoritative; applying one exact plan still requires an explicit plan-bound approval, source CAS, and the atomic Fact Executor boundary. Default: `false`
+
 ## `fact_evolution`
 
 - `fact_evolution.enabled` (boolean; risk: `high`; restart_required: `yes`) — Enable structured Fact Evolution. This switch is high risk because an already configured apply mode can persist durable memory immediately; resident providers require reload. Default: `false`
