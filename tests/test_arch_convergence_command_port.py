@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from scope_recall._internal.application.memory_commands import MemoryCommandApplication
+from scope_recall._internal.application.memory_queries import MemoryQueryApplication
+from scope_recall._internal.application.runtime_state import RuntimeStateSnapshot
 from scope_recall._internal.recall import orchestrator as orchestrator_module
 from scope_recall._internal.recall import pipeline as recall_pipeline
 from scope_recall._internal.runtime.command_adapter import ProviderCommandAdapter
@@ -153,6 +155,18 @@ def test_tool_service_on_provider_reuses_assembled_command_port(monkeypatch) -> 
     assert not isinstance(seen[0][1], _LegacyPersistCommandPort)
 
 
+def test_composition_exposes_typed_query_application_and_runtime_snapshot() -> None:
+    provider = ScopeRecallMemoryProvider()
+    query_port = provider._composition.query_port
+    assert type(query_port) is MemoryQueryApplication
+    snapshot = provider._composition.runtime_state
+    assert type(snapshot) is RuntimeStateSnapshot
+    assert snapshot.status == "uninitialized"
+    assert snapshot.authority.writer_role == "unknown"
+    assert snapshot.authority.writer_authorized is False
+    assert snapshot.scope.accessible_scope_ids == ()
+
+
 def test_isolated_host_keeps_legacy_command_port_fallback(monkeypatch) -> None:
     calls: list[dict[str, Any]] = []
     ports: list[object] = []
@@ -212,6 +226,22 @@ def test_application_command_contract_stays_provider_neutral() -> None:
     assert "Provider" not in identifier_names
     assert "Connection" not in source
     assert "Lock" not in source
+
+
+def test_application_query_and_state_contracts_stay_provider_neutral() -> None:
+    for rel in (
+        "_internal/application/memory_queries.py",
+        "_internal/application/runtime_state.py",
+    ):
+        source = (PLUGIN_ROOT / rel).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        identifiers = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+        assert "Any" not in identifiers
+        assert "Provider" not in identifiers
+        assert "Connection" not in source
+        assert "Lock" not in source
+        assert "getattr(" not in source
+        assert "sys.modules" not in source
 
 
 def test_command_kernel_has_no_legacy_write_target_or_memory_ops_dependency() -> None:
