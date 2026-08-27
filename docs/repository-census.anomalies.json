@@ -19,7 +19,7 @@
         "docs/release-readiness.1.10.5.md"
       ],
       "classification": "historical_release_evidence",
-      "disposition": "Historical release-readiness notes are retained as source history and are not interpreted as the current 1.10.6 contract."
+      "disposition": "Historical release-readiness notes are retained as source history and are not interpreted as the current 2.0.0 contract."
     }
   ]
 }

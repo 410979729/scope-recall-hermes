@@ -1,6 +1,6 @@
 {
   "schema_version": "scope-recall.compatibility-removal-registry.v1",
-  "candidate_version": "1.10.6",
+  "candidate_version": "2.0.0",
   "entries": [
     {
       "id": "CR-001",
