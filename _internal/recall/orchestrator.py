@@ -557,7 +557,7 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
     )
     compiler_cfg = raw_compiler_cfg if isinstance(raw_compiler_cfg, dict) else {}
     current_truth_enabled = config_bool(
-        compiler_cfg, "current_truth_enabled", False
+        compiler_cfg, "current_truth_enabled", True
     )
     budgeter_enabled = config_bool(compiler_cfg, "budgeter_enabled", False)
     renderer_enabled = config_bool(compiler_cfg, "renderer_enabled", False)
@@ -619,6 +619,9 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
     shadow_top_five = {item.item.id for item in shadow_packet.items[:5]}
     trace["stages"]["compiler"] = {
         **shadow_packet.aggregate_metrics(),
+        "active_current_truth_removed": min(
+            active_packet.current_truth_removed, 1000
+        ),
         "same_candidate_set": (
             legacy_packet.candidate_fingerprint
             == shadow_packet.candidate_fingerprint

@@ -217,7 +217,7 @@ Treat chat aliases as explicit operator access-control grants.
 ## `recall_compiler`
 
 - `recall_compiler.budgeter_enabled` (boolean; risk: `medium`; restart_required: `no`) — Apply the Recall Packet token budget to the unique retrieved CandidateSet. Disabled preserves the V1 item-limit behavior. Default: `false`
-- `recall_compiler.current_truth_enabled` (boolean; risk: `medium`; restart_required: `no`) — Use the Context Compiler current-truth stage on the unique retrieved CandidateSet. Disabled keeps the V1 result order while shadow metrics remain content-free. Default: `false`
+- `recall_compiler.current_truth_enabled` (boolean; risk: `medium`; restart_required: `no`) — Use the Context Compiler current-truth stage on the unique retrieved CandidateSet. Disabled keeps the V1 result order while shadow metrics remain content-free. Default: `true`
 - `recall_compiler.per_item_token_budget` (integer; risk: `medium`; restart_required: `no`) — Maximum estimated summary tokens contributed by one compiled Recall Packet item. Default: `96`
 - `recall_compiler.renderer_enabled` (boolean; risk: `medium`; restart_required: `no`) — Enable the Recall Packet prompt renderer. Disabled preserves the byte-compatible V1 prompt renderer. Default: `false`
 - `recall_compiler.token_budget` (integer; risk: `medium`; restart_required: `no`) — Maximum estimated prompt tokens in one compiled Recall Packet. Default: `320`

@@ -122,7 +122,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "shadow_enabled": False,
     },
     "recall_compiler": {
-        "current_truth_enabled": False,
+        "current_truth_enabled": True,
         "budgeter_enabled": False,
         "renderer_enabled": False,
         "token_budget": 320,
