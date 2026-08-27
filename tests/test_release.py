@@ -1142,16 +1142,17 @@ def test_changelog_completeness_gate_requires_current_release_terms():
     assert failed["section_found"] is False
     assert failed["missing_terms"] == list(release_check.REQUIRED_CHANGELOG_TERMS)
     assert set(failed["missing_terms"]) == {
-        "ci-required",
-        "Vector",
-        "hashed constraints",
-        "relation containment",
-        "cap+1",
-        "no partial",
-        "poison",
-        "operator cleanup",
-        "health",
-        "query zero-write",
+        "Fact authority",
+        "legacy projection",
+        "relation generation",
+        "DurableWork",
+        "Recall Packet",
+        "current truth",
+        "deny-first",
+        "tool profiles",
+        "extension boundaries",
+        "Recall Inspector",
+        "N-1",
     }
 
     missing_baseline = (
@@ -1281,7 +1282,7 @@ def test_current_release_and_benchmark_docs_match_runtime_defaults():
         encoding="utf-8"
     )
 
-    assert f"Release `{current}`" in readme
+    assert f"Release candidate `{current}`" in readme
     assert f"At the selected `{vector_only_floor:.2f}` default" in benchmark
 
 
@@ -2021,9 +2022,21 @@ def test_release_gate_stable_tool_names_cover_schema_surfaces_and_dispatch():
     release_check = _load_release_check_module("scope_recall_check_release_tool_contract")
     surfaces = release_check.provider_tool_schema_names_by_surface()
 
-    for surface in ("compact", "standard", "experience", "maintenance", "all_referenced"):
+    for surface in (
+        "core",
+        "compatibility",
+        "maintenance",
+        "developer",
+        "extension",
+        "experience",
+        "compact",
+        "standard",
+        "all_referenced",
+    ):
         assert set(surfaces[surface]) <= release_check.STABLE_TOOL_NAMES
-    assert {"scope_recall_memory", "scope_recall_entity"} <= set(surfaces["compact"])
+    assert {"scope_recall_memory", "scope_recall_entity"} <= set(surfaces["core"])
+    assert surfaces["compact"] == surfaces["core"]
+    assert surfaces["standard"] == surfaces["compatibility"]
     assert release_check.STABLE_TOOL_NAMES <= set(release_check.tool_dispatcher_names())
 
 

@@ -382,7 +382,7 @@ def test_current_truth_default_removes_stale_claim_projection_without_query_writ
     compiler_trace = service.last_funnel_trace["stages"]["compiler"]
     assert compiler_trace["current_truth_removed"] == 1
     assert compiler_trace["active_current_truth_removed"] == 1
-    assert not any(
+    assert any(
         str(key).startswith("recall_packet_")
         for key in (results[0].metadata or {})
     )

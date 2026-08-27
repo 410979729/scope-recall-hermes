@@ -8,7 +8,6 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -159,6 +158,9 @@ def _schema_fingerprints(root: Path) -> dict[str, object]:
         ensure_schema,
         schema_migration_status,
     )
+    from scope_recall.truth_connection import (  # pyright: ignore[reportMissingImports]
+        connect_truth_database,
+    )
 
     config_schema = build_config_schema()
     enabled = {
@@ -174,8 +176,7 @@ def _schema_fingerprints(root: Path) -> dict[str, object]:
         )
         for profile in CANONICAL_PROFILES
     }
-    connection = sqlite3.connect(":memory:")
-    connection.row_factory = sqlite3.Row
+    connection = connect_truth_database(":memory:", mode="rwc")
     try:
         ensure_schema(connection)
         schema_rows = [

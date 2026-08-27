@@ -12,6 +12,7 @@ from typing import Any
 from scope_recall import doctor_sqlite  # type: ignore[attr-defined]
 from scope_recall.lexical_generation import LEXICAL_MIGRATION_ID
 from scope_recall.operator_ledger import OPERATOR_LEDGER_MIGRATION_ID
+from scope_recall.privacy_purge_schema import PRIVACY_PURGE_MIGRATION_ID
 from scope_recall.relation_containment import RELATION_CONTAINMENT_MIGRATION_ID
 from scope_recall.relation_policy_generation import (
     RELATION_POLICY_GENERATION_MIGRATION_ID,
@@ -78,6 +79,7 @@ def test_sqlite_report_opens_truth_db_read_only(tmp_path, monkeypatch):
         LEXICAL_MIGRATION_ID,
         RELATION_CONTAINMENT_MIGRATION_ID,
         RELATION_POLICY_GENERATION_MIGRATION_ID,
+        PRIVACY_PURGE_MIGRATION_ID,
     ]
     assert payload["relation_frequency_index"]["status"] == "schema_missing"
     assert check == {"ok": True, "failures": []}

@@ -2278,7 +2278,7 @@ def schema_constant_tool_names() -> dict[str, str]:
 
 
 def provider_tool_schema_names_by_surface() -> dict[str, list[str]]:
-    """Read compact/standard/experience/maintenance names from the live spec.
+    """Read canonical 2.0 profile names from the live tool specification.
 
     Tool schemas are assembled from ``TOOL_SPECS`` in
     ``_internal/contracts/tool_runtime_spec.py``. Historical list names in
@@ -2287,12 +2287,9 @@ def provider_tool_schema_names_by_surface() -> dict[str, list[str]]:
 
     spec_path = "_internal/contracts/tool_runtime_spec.py"
     tree = ast.parse(read_text(spec_path), filename=spec_path)
-    surfaces: dict[str, list[str]] = {
-        "compact": [],
-        "standard": [],
-        "experience": [],
-        "maintenance": [],
-    }
+    profiles = ("core", "compatibility", "maintenance", "developer", "extension")
+    surfaces: dict[str, list[str]] = {profile: [] for profile in profiles}
+    surfaces["experience"] = []
     referenced: list[str] = []
 
     def _string_set(node: ast.AST) -> set[str]:
@@ -2330,14 +2327,19 @@ def provider_tool_schema_names_by_surface() -> dict[str, list[str]]:
         for keyword in node.keywords:
             if keyword.arg == "feature_gate" and isinstance(keyword.value, ast.Constant):
                 feature_gate = str(keyword.value.value or "")
-        if "compact" in spec_surfaces:
-            surfaces["compact"].append(name)
-        if "standard" in spec_surfaces:
-            surfaces["standard"].append(name)
+        for profile in profiles:
+            if profile in spec_surfaces:
+                surfaces[profile].append(name)
         if feature_gate.startswith("experience") or "experience" in spec_surfaces:
             surfaces["experience"].append(name)
         if "maintenance" in spec_surfaces or "maintenance" in feature_gate:
             surfaces["maintenance"].append(name)
+    for surface, names in tuple(surfaces.items()):
+        surfaces[surface] = list(dict.fromkeys(names))
+    # Keep the historical release-check vocabulary as aliases only. Runtime
+    # normalization maps compact->core and standard->compatibility.
+    surfaces["compact"] = list(surfaces["core"])
+    surfaces["standard"] = list(surfaces["compatibility"])
     surfaces["all_referenced"] = sorted(referenced)
     return surfaces
 

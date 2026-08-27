@@ -239,6 +239,27 @@ def test_dedupe_evidence_order_and_diversity_are_deterministic() -> None:
     assert ids.index("duplicate-weak") < ids.index("second-project")
 
 
+def test_nonretrieval_evidence_cannot_override_upstream_score_authority() -> None:
+    strong = _item("strong", score=0.90, metadata={"lexical_score": 0.90})
+    weak_annotated = _item(
+        "weak-annotated",
+        score=0.20,
+        source="builtin-curated",
+        metadata={
+            "lexical_score": 0.20,
+            "relation_evidence_count": 1,
+            "temporal_evidence_count": 1,
+        },
+    )
+
+    packet = compile_recall_packet(
+        CandidateSet.from_items([weak_annotated, strong]),
+        _policy(diversity_enabled=False),
+    )
+
+    assert [item.item.id for item in packet.items] == ["strong", "weak-annotated"]
+
+
 def test_budgeter_bounds_packet_and_truncates_without_touching_content() -> None:
     long_summary = "记忆" * 200
     original = _item("long", summary=long_summary)
