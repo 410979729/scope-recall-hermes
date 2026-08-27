@@ -1,4 +1,4 @@
-"""Single inventory of compatibility retained by Program 1A."""
+"""Single inventory of compatibility retained by architecture convergence."""
 
 from __future__ import annotations
 
@@ -153,6 +153,22 @@ COMPATIBILITY_REGISTRY: tuple[CompatibilityShim, ...] = (
             "tests/test_arch_convergence_command_port.py:test_touched_internals_import_canonical_modules_not_shims",
         ),
     ),
+    CompatibilityShim(
+        shim_id="legacy-lifecycle-receipt-adapter",
+        owner="program-1b-lifecycle-registry",
+        source="lifecycle_compat.py:resolve_lifecycle_request",
+        replacement="registered operation_id selected by every lifecycle producer",
+        usage_evidence=(
+            "lifecycle_service.py:resolve_lifecycle_request",
+            "lifecycle_registry.py:LIFECYCLE_PRODUCER_CENSUS",
+        ),
+        remove_after="2.1.0",
+        removal_condition="the 2.0 V1 raw event/action compatibility window closes",
+        tests=(
+            "tests/test_lifecycle_service.py:test_registered_v1_raw_receipt_identity_matches_operation_id",
+            "tests/test_lifecycle_service.py:test_unregistered_raw_receipt_fails_before_transaction_or_mutation",
+        ),
+    ),
 )
 
 
@@ -171,14 +187,22 @@ PROGRAM_1A_COMPATIBILITY_IDS = frozenset(
     }
 )
 
+PROGRAM_1B_COMPATIBILITY_IDS = frozenset(
+    {
+        "legacy-lifecycle-receipt-adapter",
+    }
+)
+
+ALL_COMPATIBILITY_IDS = PROGRAM_1A_COMPATIBILITY_IDS | PROGRAM_1B_COMPATIBILITY_IDS
+
 
 def validate_compatibility_registry() -> tuple[str, ...]:
     errors: list[str] = []
     ids = [item.shim_id for item in COMPATIBILITY_REGISTRY]
     if len(ids) != len(set(ids)):
         errors.append("duplicate shim_id")
-    if set(ids) != PROGRAM_1A_COMPATIBILITY_IDS:
-        errors.append("Program 1A compatibility set mismatch")
+    if set(ids) != ALL_COMPATIBILITY_IDS:
+        errors.append("compatibility set mismatch")
     for item in COMPATIBILITY_REGISTRY:
         if not item.owner:
             errors.append(f"{item.shim_id}: missing owner")

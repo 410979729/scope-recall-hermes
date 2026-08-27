@@ -18,6 +18,7 @@ try:
     from .governance_cleanup import governance_audit_coverage_report
     from .graph_hygiene import graph_hygiene_counts, remaining_graph_hygiene_rows
     from .lexical_generation import lexical_generation_report
+    from .lifecycle_registry import lifecycle_registry_report
     from .maintenance_lease import activation_lease_status
     from .memory_quality import memory_quality_report
     from .operator_ledger import operator_ledger_report
@@ -34,6 +35,7 @@ except ImportError:  # pragma: no cover - direct source-script execution fallbac
     from governance_cleanup import governance_audit_coverage_report
     from graph_hygiene import graph_hygiene_counts, remaining_graph_hygiene_rows
     from lexical_generation import lexical_generation_report
+    from lifecycle_registry import lifecycle_registry_report
     from maintenance_lease import activation_lease_status
     from memory_quality import memory_quality_report
     from operator_ledger import operator_ledger_report
@@ -49,13 +51,20 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
 
     The check must distinguish source-code schema readiness from the live database migration state."""
     recommendations: list[str] = []
+    registry_report = lifecycle_registry_report()
     storage_dir = hermes_home / "scope-recall"
     db_path = storage_dir / "memory.sqlite3"
     if not db_path.exists():
         recommendations.append(
             "SQLite truth DB is missing; initialize scope-recall or restore memory.sqlite3 before running scripts/repair.vector_index.py."
         )
-        sqlite_payload = {"path": str(db_path), "status": "missing", "memory_count": 0, "tables": []}
+        sqlite_payload = {
+            "path": str(db_path),
+            "status": "missing",
+            "memory_count": 0,
+            "tables": [],
+            "lifecycle_registry": registry_report,
+        }
         return sqlite_payload, {"ok": False, "failures": [f"SQLite truth DB not found: {db_path}"]}, recommendations
 
     activation_lease = activation_lease_status(db_path)
@@ -94,11 +103,23 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
             conn.close()
     except Exception as exc:
         recommendations.append("Repair or restore the SQLite truth DB before rebuilding the vector companion.")
-        sqlite_payload = {"path": str(db_path), "status": "error", "error": str(exc), "memory_count": 0, "tables": []}
+        sqlite_payload = {
+            "path": str(db_path),
+            "status": "error",
+            "error": str(exc),
+            "memory_count": 0,
+            "tables": [],
+            "lifecycle_registry": registry_report,
+        }
         return sqlite_payload, {"ok": False, "failures": [f"SQLite truth DB error: {exc}"]}, recommendations
 
     orphan_graph_rows = remaining_graph_hygiene_rows(graph_hygiene)
     failures: list[str] = []
+    if str(registry_report.get("status") or "") != "ready":
+        failures.append("lifecycle registry is invalid")
+        recommendations.append(
+            "Repair the lifecycle registry contract before allowing lifecycle writers."
+        )
     lease_status = str(activation_lease.get("status") or "absent")
     if lease_status == "stale":
         failures.append("stale activation maintenance lease blocks SQLite writers")
@@ -344,6 +365,7 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
         "relation_rebuild_queue": relation_rebuild,
         "lexical_generation": lexical_generation,
         "schema_migrations": schema_migrations,
+        "lifecycle_registry": registry_report,
         "governance_audit_coverage": governance_audit_coverage,
         "fact_freshness": freshness_report,
     }

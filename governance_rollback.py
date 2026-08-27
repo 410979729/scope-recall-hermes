@@ -14,16 +14,14 @@ from dataclasses import dataclass
 from typing import Any, Sequence
 
 from .lifecycle_service import transition_memory_lifecycle
-from .lifecycle_registry import rollback_operation_for_event_type
+from .lifecycle_registry import (
+    default_rollback_event_actions,
+    rollback_operation_for_event_type,
+)
 from .maintenance_ops import now_utc_iso
 from .sql_store import ensure_schema
 
-DEFAULT_ROLLBACK_EVENT_ACTIONS = {
-    "memory_cleanup": "soft_archive",
-    "forgetting": "soft_archive",
-    "scope_recall_forget": "soft_archive",
-    "memory_auto_adjudication": "archive",
-}
+DEFAULT_ROLLBACK_EVENT_ACTIONS = dict(default_rollback_event_actions())
 
 _BOUND_FIELDS = (
     "id",

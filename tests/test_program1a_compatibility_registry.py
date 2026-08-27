@@ -5,8 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from scope_recall._internal.compatibility.registry import (
+    ALL_COMPATIBILITY_IDS,
     COMPATIBILITY_REGISTRY,
     PROGRAM_1A_COMPATIBILITY_IDS,
+    PROGRAM_1B_COMPATIBILITY_IDS,
     validate_compatibility_registry,
 )
 
@@ -21,8 +23,10 @@ def _split_reference(reference: str) -> tuple[str, str]:
 def test_program1a_compatibility_registry_is_complete() -> None:
     assert validate_compatibility_registry() == ()
     assert {item.shim_id for item in COMPATIBILITY_REGISTRY} == set(
-        PROGRAM_1A_COMPATIBILITY_IDS
+        ALL_COMPATIBILITY_IDS
     )
+    assert len(PROGRAM_1A_COMPATIBILITY_IDS) == 10
+    assert PROGRAM_1B_COMPATIBILITY_IDS == {"legacy-lifecycle-receipt-adapter"}
     assert {item.remove_after for item in COMPATIBILITY_REGISTRY} == {"2.1.0"}
     assert all(item.removal_condition for item in COMPATIBILITY_REGISTRY)
 
