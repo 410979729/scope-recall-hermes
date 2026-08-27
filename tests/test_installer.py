@@ -1959,6 +1959,7 @@ def test_installer_runtime_verify_reports_schema_ledger_repair_steps_without_rei
         "0011_relation_frequency_failure_queue_v1_8_0",
         "0012_lexical_shadow_index_v1_9_0",
         "0013_relation_containment_v1_10_6",
+        "0014_relation_policy_generation_v1_10_6",
     ]
     assert "SQLite schema migration ledger is not current" in verify_result["failures"]
     assert any("migrate status" in step for step in verify_result["next_steps"])

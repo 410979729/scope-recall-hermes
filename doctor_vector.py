@@ -925,7 +925,10 @@ def vector_generation_report(
                     "status": "generation_incomplete",
                     "registered": True,
                     "current_generation_id": current_id,
-                    "durable_work": vector_outbox_durable_health(conn, current_id),
+                    "durable_work": disabled_vector_outbox_durable_health(
+                        reason_code="current_generation_manifest_missing",
+                        generation_id=current_id,
+                    ),
                     **_empty_inactive_generation_contract(),
                 },
                 {"ok": False, "failures": failures},

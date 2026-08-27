@@ -578,8 +578,24 @@ def _doctor_report_without_ready_scan(tmp_path):
     )
 
 
+def _remove_and_check_durable_work(
+    payload: dict[str, object], *, state: str, reason_code: str
+) -> None:
+    durable = payload.pop("durable_work")
+    assert isinstance(durable, dict)
+    assert durable["schema_version"] == "durable_work.v1"
+    assert durable["domain_type"] == "vector_causal_outbox"
+    assert durable["state"] == state
+    assert durable["reason_code"] == reason_code
+
+
 def test_doctor_absent_db_exposes_empty_inactive_generation_inventory(tmp_path):
     payload, check, recommendations = _doctor_report_without_ready_scan(tmp_path)
+    _remove_and_check_durable_work(
+        payload,
+        state="disabled",
+        reason_code="truth_database_absent",
+    )
     assert payload == {
         "status": "absent",
         "registered": False,
@@ -599,6 +615,11 @@ def test_doctor_legacy_unregistered_exposes_empty_inactive_generation_inventory(
     conn.close()
 
     payload, check, recommendations = _doctor_report_without_ready_scan(tmp_path)
+    _remove_and_check_durable_work(
+        payload,
+        state="disabled",
+        reason_code="schema_missing",
+    )
     assert payload == {
         "status": "legacy_unregistered",
         "registered": False,
@@ -626,6 +647,11 @@ def test_doctor_initialized_unregistered_exposes_empty_inactive_generation_inven
     conn.close()
 
     payload, check, recommendations = _doctor_report_without_ready_scan(tmp_path)
+    _remove_and_check_durable_work(
+        payload,
+        state="disabled",
+        reason_code="no_active_generation",
+    )
     assert payload == {
         "status": "legacy_unregistered",
         "registered": False,
@@ -662,6 +688,12 @@ def test_doctor_manifests_without_pointer_require_repair(tmp_path):
 
     payload, check, recommendations = _doctor_report_without_ready_scan(tmp_path)
 
+    _remove_and_check_durable_work(
+        payload,
+        state="disabled",
+        reason_code="no_active_generation",
+    )
+
     assert payload == {
         "status": "generation_incomplete",
         "registered": True,
@@ -694,6 +726,11 @@ def test_doctor_missing_manifest_exposes_empty_inactive_generation_inventory(tmp
     conn.close()
 
     payload, check, recommendations = _doctor_report_without_ready_scan(tmp_path)
+    _remove_and_check_durable_work(
+        payload,
+        state="disabled",
+        reason_code="current_generation_manifest_missing",
+    )
     assert payload == {
         "status": "generation_incomplete",
         "registered": True,
