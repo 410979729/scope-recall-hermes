@@ -21,7 +21,10 @@ from .capture_filters import (
 from .gating import compact_text, dedup_key
 from .governance import classify_memory, merge_metadata
 from .graph import backfill_memory_entities, ensure_graph_schema, sync_memory_entities
-from .fact_repository import require_fact_mutation_authority
+from .fact_repository import (
+    FACT_EXECUTOR_MUTATION_AUTHORITY,
+    require_fact_mutation_authority,
+)
 from .freshness import upsert_memory_freshness
 from .lifecycle_policy import ordinary_recall_lifecycle_visible, ordinary_recall_lifecycle_visible_sql
 from .lexical_generation import (
@@ -985,6 +988,7 @@ def store_row(
     commit: bool = True,
     timestamp: str = "",
     enqueue_vector_intent: bool = True,
+    fact_projection_authority: str = "",
 ) -> tuple[str, str, str, bool]:
 
     """Insert one durable memory row into the SQLite truth store.
@@ -1002,6 +1006,34 @@ def store_row(
     content = enrich_content_with_artifact_anchors(content)
     summary = compact_text(content, 220)
     key = dedup_key(content)
+    requested_fact_metadata: dict[str, Any] | None = None
+    if fact_projection_authority:
+        if fact_projection_authority != FACT_EXECUTOR_MUTATION_AUTHORITY:
+            raise PermissionError(
+                "initial canonical fact Projection requires Fact Executor authority"
+            )
+        try:
+            raw_fact_metadata = (
+                json.loads(metadata) if isinstance(metadata, str) else metadata
+            )
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("canonical fact Projection metadata is invalid") from exc
+        if not isinstance(raw_fact_metadata, dict):
+            raise ValueError("canonical fact Projection metadata must be an object")
+        requested_fact_metadata = raw_fact_metadata
+        requested_lifecycle = str(
+            requested_fact_metadata.get("lifecycle") or ""
+        ).strip().lower()
+        if requested_lifecycle not in {"active", "promoted"}:
+            raise ValueError(
+                "initial canonical fact Projection must be recall-visible"
+            )
+        if not str(requested_fact_metadata.get("fact_claim_id") or "").strip() or not str(
+            requested_fact_metadata.get("fact_claim_key") or ""
+        ).strip():
+            raise ValueError(
+                "initial canonical fact Projection requires Claim identity"
+            )
     if not allow_duplicate:
         existing = conn.execute(
             f"""
@@ -1059,7 +1091,22 @@ def store_row(
                 raise
             return str(existing["id"]), str(existing["summary"]), now, False
 
-    metadata_payload = merge_metadata(dict(classify_memory(content, target, source)), metadata)
+    classified_metadata = dict(classify_memory(content, target, source))
+    metadata_payload = merge_metadata(dict(classified_metadata), metadata)
+    if requested_fact_metadata is not None:
+        requested_lifecycle = str(
+            requested_fact_metadata.get("lifecycle") or ""
+        ).strip().lower()
+        classification_blocks_visibility = (
+            str(classified_metadata.get("lifecycle") or "").strip().lower()
+            == "candidate"
+            or bool(classified_metadata.get("expires_at"))
+        )
+        if not classification_blocks_visibility:
+            # A reviewed Claim may promote the otherwise-scratch ``general``
+            # projection. Temporary/expiring content stays provisional so the
+            # Executor postcondition rejects and rolls the whole unit back.
+            metadata_payload["lifecycle"] = requested_lifecycle
     metadata_payload = merge_artifact_metadata(metadata_payload, content)
     safe_metadata, _ = sanitize_structured_value(metadata_payload)
     metadata_payload = safe_metadata if isinstance(safe_metadata, dict) else {}
