@@ -14,6 +14,7 @@ from ..application.memory_queries import (
     InspectMemoryRequest,
     MemoryQueryGateway,
     ProfileQueryRequest,
+    RecallInspectorRequest,
 )
 from ..application.runtime_state import (
     AuthoritySnapshot,
@@ -34,6 +35,7 @@ from ...memory_queries import (
     related_entities,
     stats_payload,
 )
+from ...recall_inspector import inspect_recall
 
 
 def _mapping(value: object) -> Mapping[str, Any]:
@@ -133,6 +135,19 @@ class ProviderQueryAdapter:
         return cast(
             dict[str, object],
             explain_query(self._adapter, query=request.query, limit=request.limit),
+        )
+
+    def inspector(self, request: RecallInspectorRequest) -> dict[str, object]:
+        return cast(
+            dict[str, object],
+            inspect_recall(
+                self._adapter,
+                query=request.query,
+                limit=request.limit,
+                recall_mode=request.recall_mode,
+                include_content=request.include_content,
+                output_format=request.output_format,
+            ),
         )
 
     def export(self, request: ExportMemoriesRequest) -> dict[str, object]:

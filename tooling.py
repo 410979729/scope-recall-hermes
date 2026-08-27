@@ -108,6 +108,7 @@ class ScopeRecallToolService:
             "scope_recall_stats",
             "scope_recall_inspect",
             "scope_recall_explain",
+            "scope_recall_inspector",
             "scope_recall_related",
             "scope_recall_entity",
             "scope_recall_probe",
@@ -196,6 +197,7 @@ class ScopeRecallToolService:
             "scope_recall_stats": self._handle_stats,
             "scope_recall_inspect": self._handle_inspect,
             "scope_recall_explain": self._handle_explain,
+            "scope_recall_inspector": self._handle_recall_inspector,
             "scope_recall_benchmark": self._handle_benchmark,
             "scope_recall_fact": self._handle_fact,
             "scope_recall_evolve": self._handle_evolve,
@@ -1091,6 +1093,26 @@ class ScopeRecallToolService:
         if isinstance(payload, dict):
             payload.setdefault("humanized", True)
         return self._json(payload)
+
+    def _handle_recall_inspector(self, args: dict[str, Any]) -> str:
+        query = self._clean_query(args)
+        if not query:
+            return tool_error("query is required")
+        recall_mode = str(args.get("recall_mode") or "advisory").strip().lower()
+        if recall_mode not in {"advisory", "strict"}:
+            return tool_error("recall_mode must be advisory or strict")
+        output_format = str(args.get("format") or "json").strip().lower()
+        if output_format not in {"json", "text"}:
+            return tool_error("format must be json or text")
+        return self._json(
+            self._port.recall_inspector(
+                query=query,
+                limit=self._limit(args),
+                recall_mode=recall_mode,
+                include_content=self._bool_arg(args, "include_content", False),
+                output_format=output_format,
+            )
+        )
 
     def _handle_benchmark(self, args: dict[str, Any]) -> str:
         char_limit = int(self._port.config_value("query_char_limit", 1000))

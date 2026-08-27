@@ -81,6 +81,9 @@ class RecallService:
         self._last_funnel_trace: ContextVar[dict[str, Any] | None] = ContextVar(
             f"{prefix}.funnel_trace", default=None
         )
+        self._last_recall_packet: ContextVar[Any] = ContextVar(
+            f"{prefix}.recall_packet", default=None
+        )
         self._last_evidence_set_trace: ContextVar[dict[str, Any] | None] = ContextVar(
             f"{prefix}.evidence_set_trace", default=None
         )
@@ -103,6 +106,16 @@ class RecallService:
     @last_funnel_trace.setter
     def last_funnel_trace(self, value: dict[str, Any]) -> None:
         self._last_funnel_trace.set(dict(value or {}))
+
+    @property
+    def last_recall_packet(self) -> Any:
+        """Return the exact active packet from this context's latest search."""
+
+        return self._last_recall_packet.get()
+
+    @last_recall_packet.setter
+    def last_recall_packet(self, value: Any) -> None:
+        self._last_recall_packet.set(value)
 
     @property
     def last_evidence_set_trace(self) -> dict[str, Any]:

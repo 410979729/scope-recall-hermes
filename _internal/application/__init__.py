@@ -37,6 +37,7 @@ from .memory_queries import (
     MemoryQueryApplication,
     MemoryQueryGateway,
     ProfileQueryRequest,
+    RecallInspectorRequest,
 )
 from .runtime_state import (
     AuthoritySnapshot,
@@ -79,6 +80,7 @@ __all__ = [
     "JournalStageResult",
     "JournalTurnRequest",
     "ProfileQueryRequest",
+    "RecallInspectorRequest",
     "RuntimeStateSnapshot",
     "ScopeSnapshot",
     "VectorSnapshot",

@@ -363,6 +363,44 @@ SCOPE_RECALL_SEARCH_SCHEMA = {
     },
 }
 
+SCOPE_RECALL_INSPECTOR_SCHEMA = {
+    "name": "scope_recall_inspector",
+    "description": (
+        "Explain the exact production Recall Packet for one read-only search, "
+        "including provenance, truth state, token cost, confidence, timeline, "
+        "and non-executing correction/archive/purge plans."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Search query."},
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20,
+                "default": 5,
+            },
+            "recall_mode": {
+                "type": "string",
+                "enum": ["advisory", "strict"],
+                "default": "advisory",
+            },
+            "include_content": {
+                "type": "boolean",
+                "default": False,
+                "description": "Include sanitized memory content; summaries are always shown.",
+            },
+            "format": {
+                "type": "string",
+                "enum": ["json", "text"],
+                "default": "json",
+            },
+        },
+        "required": ["query"],
+        "additionalProperties": False,
+    },
+}
+
 SCOPE_RECALL_MEMORY_SCHEMA = {
     "name": "scope_recall_memory",
     "description": "Compact memory operations: inspect, feedback, update, merge, or forget by exact id.",

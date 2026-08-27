@@ -45,6 +45,15 @@ class ExplainQueryRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class RecallInspectorRequest:
+    query: str
+    limit: int = 5
+    recall_mode: str = "advisory"
+    include_content: bool = False
+    output_format: str = "json"
+
+
+@dataclass(frozen=True, slots=True)
 class ExportMemoriesRequest:
     fmt: str = "jsonl"
     scope_only: bool = True
@@ -81,6 +90,8 @@ class MemoryQueryGateway(Protocol):
 
     def explain(self, request: ExplainQueryRequest) -> dict[str, object]: ...
 
+    def inspector(self, request: RecallInspectorRequest) -> dict[str, object]: ...
+
     def export(self, request: ExportMemoriesRequest) -> dict[str, object]: ...
 
     def hygiene(self, request: HygieneQueryRequest) -> dict[str, object]: ...
@@ -116,6 +127,9 @@ class MemoryQueryApplication:
 
     def explain(self, request: ExplainQueryRequest) -> dict[str, object]:
         return self._gateway.explain(request)
+
+    def inspector(self, request: RecallInspectorRequest) -> dict[str, object]:
+        return self._gateway.inspector(request)
 
     def export(self, request: ExportMemoriesRequest) -> dict[str, object]:
         return self._gateway.export(request)

@@ -26,6 +26,7 @@ from ..application.memory_queries import (
     InspectMemoryRequest,
     MemoryQueryApplication,
     ProfileQueryRequest,
+    RecallInspectorRequest,
 )
 from .ports import MemoryCommandPort
 
@@ -78,6 +79,26 @@ class QueryKernel:
         self, port: MemoryQueryApplication, *, query: str, limit: int = 5
     ) -> dict[str, object]:
         return port.explain(ExplainQueryRequest(query, limit))
+
+    def inspector(
+        self,
+        port: MemoryQueryApplication,
+        *,
+        query: str,
+        limit: int = 5,
+        recall_mode: str = "advisory",
+        include_content: bool = False,
+        output_format: str = "json",
+    ) -> dict[str, object]:
+        return port.inspector(
+            RecallInspectorRequest(
+                query=query,
+                limit=limit,
+                recall_mode=recall_mode,
+                include_content=include_content,
+                output_format=output_format,
+            )
+        )
 
     def stats(self, port: MemoryQueryApplication) -> dict[str, object]:
         return port.stats()
