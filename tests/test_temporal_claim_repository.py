@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
 
 from scope_recall.sql_store import ensure_schema
 from scope_recall.fact_repository import (
+    FACT_EXECUTOR_PENDING_SUCCESSOR_AUTHORITY,
     TemporalConflictError,
     TemporalValidationError,
+    assert_successor_chain_invariant,
     claim_history,
     claims_as_of,
     close_claim_interval,
     current_claims,
     current_claims_for_scopes,
+    fact_successor_integrity_report,
     get_claim,
     get_claims_by_ids,
     insert_claim,
@@ -167,6 +171,8 @@ def test_supersede_chain_supports_current_as_of_history_and_delayed_ingestion():
         valid_from="2026-01-01T00:00:00+00:00",
         recorded_at="2026-03-01T00:00:00+00:00",
     )
+    old_claim = get_claim(conn, "claim-old", scope_ids=["scope-a"])
+    assert old_claim is not None
     close_claim_interval(
         conn,
         claim_id="claim-old",
@@ -174,6 +180,9 @@ def test_supersede_chain_supports_current_as_of_history_and_delayed_ingestion():
         retired_at="2026-03-02T00:00:00+00:00",
         status="superseded",
         superseded_by_claim_id="claim-new",
+        pending_successor_scope_id=old_claim.scope_id,
+        pending_successor_fact_key=old_claim.fact_key,
+        pending_successor_authority=FACT_EXECUTOR_PENDING_SUCCESSOR_AUTHORITY,
     )
     _insert(
         conn,
@@ -620,14 +629,13 @@ def test_deferred_successor_invariants_fail_atomically():
     conn.commit()
 
     conn.execute("BEGIN")
-    close_claim_interval(
-        conn,
-        claim_id="predecessor-deferred",
-        retired_at="2026-04-01T00:00:00+00:00",
-        superseded_by_claim_id="missing-successor",
-    )
-    with pytest.raises(sqlite3.IntegrityError):
-        conn.commit()
+    with pytest.raises(TemporalValidationError, match="does not exist"):
+        close_claim_interval(
+            conn,
+            claim_id="predecessor-deferred",
+            retired_at="2026-04-01T00:00:00+00:00",
+            superseded_by_claim_id="missing-successor",
+        )
     conn.rollback()
     restored = get_claim(
         conn,
@@ -639,11 +647,16 @@ def test_deferred_successor_invariants_fail_atomically():
     assert restored.superseded_by_claim_id is None
 
     conn.execute("BEGIN")
+    predecessor = get_claim(conn, "predecessor-deferred", scope_ids=["scope-a"])
+    assert predecessor is not None
     close_claim_interval(
         conn,
         claim_id="predecessor-deferred",
         retired_at="2026-04-01T00:00:00+00:00",
         superseded_by_claim_id="future-cross-successor",
+        pending_successor_scope_id=predecessor.scope_id,
+        pending_successor_fact_key=predecessor.fact_key,
+        pending_successor_authority=FACT_EXECUTOR_PENDING_SUCCESSOR_AUTHORITY,
     )
     with pytest.raises(TemporalConflictError, match="successor invariant"):
         _insert(
@@ -663,6 +676,121 @@ def test_deferred_successor_invariants_fail_atomically():
     assert restored is not None
     assert restored.status == "current"
     assert restored.superseded_by_claim_id is None
+
+
+def test_successor_full_chain_rejects_arbitrary_cycle_and_cas_drift():
+    conn = _conn()
+    for suffix in ("a", "b", "c", "d"):
+        _memory(conn, f"memory-chain-{suffix}")
+        _insert(
+            conn,
+            claim_id=f"claim-chain-{suffix}",
+            memory_id=f"memory-chain-{suffix}",
+            value=suffix,
+            predicate="hobby",
+            cardinality="multi",
+        )
+    for predecessor, successor, day in (
+        ("a", "b", "01"),
+        ("b", "c", "02"),
+        ("c", "d", "03"),
+    ):
+        close_claim_interval(
+            conn,
+            claim_id=f"claim-chain-{predecessor}",
+            retired_at=f"2026-04-{day}T00:00:00+00:00",
+            superseded_by_claim_id=f"claim-chain-{successor}",
+        )
+
+    assert fact_successor_integrity_report(conn)["violation_count"] == 0
+    with pytest.raises(TemporalConflictError, match="cycle"):
+        assert_successor_chain_invariant(
+            conn,
+            predecessor_claim_id="claim-chain-d",
+            successor_claim_id="claim-chain-a",
+        )
+    with pytest.raises(TemporalConflictError, match="scope/fact CAS"):
+        close_claim_interval(
+            conn,
+            claim_id="claim-chain-d",
+            retired_at="2026-04-04T00:00:00+00:00",
+            superseded_by_claim_id="claim-chain-a",
+            expected_scope_id="scope-other",
+            expected_fact_key="fact:wrong",
+        )
+    current = get_claim(conn, "claim-chain-d", scope_ids=["scope-a"])
+    assert current is not None and current.status == "current"
+
+
+def test_successor_integrity_report_classifies_decontented_corruption():
+    conn = _conn()
+    fixtures = (
+        ("self", "scope-a", "hobby"),
+        ("dangling", "scope-a", "hobby"),
+        ("cross-scope-pred", "scope-a", "hobby"),
+        ("cross-scope-target", "scope-b", "hobby"),
+        ("cross-fact-pred", "scope-a", "hobby"),
+        ("cross-fact-target", "scope-a", "employer"),
+        ("invalid-target-pred", "scope-a", "hobby"),
+        ("invalid-target", "scope-a", "hobby"),
+        ("missing-link", "scope-a", "hobby"),
+    )
+    for suffix, scope_id, predicate in fixtures:
+        _memory(conn, f"memory-corrupt-{suffix}", scope_id)
+        _insert(
+            conn,
+            claim_id=f"claim-corrupt-{suffix}",
+            memory_id=f"memory-corrupt-{suffix}",
+            value=suffix,
+            scope_id=scope_id,
+            predicate=predicate,
+            cardinality="multi",
+        )
+    conn.execute("DROP TRIGGER trg_fact_claims_successor_match_on_update")
+    for predecessor, successor in (
+        ("self", "self"),
+        ("dangling", "absent"),
+        ("cross-scope-pred", "cross-scope-target"),
+        ("cross-fact-pred", "cross-fact-target"),
+        ("invalid-target-pred", "invalid-target"),
+    ):
+        conn.execute(
+            """
+            UPDATE fact_claims
+            SET superseded_by_claim_id = ?, status = 'superseded',
+                retired_at = '2026-04-01T00:00:00+00:00'
+            WHERE claim_id = ?
+            """,
+            (f"claim-corrupt-{successor}", f"claim-corrupt-{predecessor}"),
+        )
+    conn.execute(
+        """
+        UPDATE fact_claims
+        SET status = 'retracted', retired_at = '2026-04-01T00:00:00+00:00'
+        WHERE claim_id = 'claim-corrupt-invalid-target'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE fact_claims
+        SET status = 'superseded', retired_at = '2026-04-01T00:00:00+00:00'
+        WHERE claim_id = 'claim-corrupt-missing-link'
+        """
+    )
+    before = conn.total_changes
+
+    report = fact_successor_integrity_report(conn)
+
+    assert conn.total_changes == before
+    assert report["self_cycle_count"] == 1
+    assert report["dangling_successor_count"] == 1
+    assert report["cross_scope_successor_count"] == 1
+    assert report["cross_fact_successor_count"] == 1
+    assert report["invalid_successor_state_count"] >= 1
+    assert report["missing_successor_count"] == 1
+    assert report["cycle_component_count"] == 1
+    assert report["violation_count"] >= 7
+    assert "claim-corrupt-" not in json.dumps(report, sort_keys=True)
 
 
 def test_raw_sql_rejects_inactive_existing_and_deferred_successors():

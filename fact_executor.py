@@ -25,6 +25,7 @@ from .fact_actions import EvolutionAction, EvolutionPlan, EvolutionResult
 from .fact_authority import is_fact_projection_marker, route_fact_authority
 from .fact_repository import (
     FACT_EXECUTOR_MUTATION_AUTHORITY,
+    FACT_EXECUTOR_PENDING_SUCCESSOR_AUTHORITY,
     TemporalConflictError,
     assert_canonical_projection_pair,
     close_claim_interval,
@@ -858,6 +859,13 @@ def execute_fact_plan(
                         valid_to=claim.valid_from or None,
                         status="superseded",
                         superseded_by_claim_id=successor_claim_id,
+                        expected_scope_id=context.scope_id,
+                        expected_fact_key=claim.fact_key,
+                        pending_successor_scope_id=context.scope_id,
+                        pending_successor_fact_key=claim.fact_key,
+                        pending_successor_authority=(
+                            FACT_EXECUTOR_PENDING_SUCCESSOR_AUTHORITY
+                        ),
                     )
                 transition = transition_memory_lifecycle(
                     conn,
@@ -933,6 +941,9 @@ def execute_fact_plan(
             )
 
         elif action is EvolutionAction.RETRACT:
+            retract_claim_draft = plan.proposal.claim
+            if retract_claim_draft is None:
+                raise FactExecutionError("claim is required for retraction")
             for memory_id, claim_ids in target_claim_ids.items():
                 _link_runtime_provenance(
                     conn,
@@ -948,6 +959,8 @@ def execute_fact_plan(
                         claim_id=claim_id,
                         retired_at=timestamp,
                         valid_to=effective_at,
+                        expected_scope_id=context.scope_id,
+                        expected_fact_key=retract_claim_draft.fact_key,
                     )
                 transition = transition_memory_lifecycle(
                     conn,

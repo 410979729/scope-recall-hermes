@@ -65,10 +65,12 @@ from scope_recall.nightly_digest import (  # noqa: E402
 )
 from scope_recall.scope import build_scope_id, build_shared_scope_id  # noqa: E402
 from scope_recall.fact_repository import (  # noqa: E402
+    FACT_EXECUTOR_PENDING_SUCCESSOR_AUTHORITY,
     close_claim_interval,
     insert_claim,
     retract_claim,
 )
+from scope_recall.fact_identity import canonical_fact_key  # noqa: E402
 from scope_recall.sql_store import ensure_schema  # noqa: E402
 from scope_recall.temporal_query import query_fact_views  # noqa: E402
 
@@ -199,6 +201,11 @@ def _transition_case(case: dict[str, Any]) -> dict[str, Any]:
             retired_at=case["recorded_after"],
             status="superseded",
             superseded_by_claim_id=successor_claim,
+            pending_successor_scope_id=scope_id,
+            pending_successor_fact_key=canonical_fact_key(
+                case["subject"], case["predicate"]
+            ),
+            pending_successor_authority=FACT_EXECUTOR_PENDING_SUCCESSOR_AUTHORITY,
         )
         _insert_current_claim(
             conn,
@@ -357,6 +364,11 @@ def _delayed_case(case: dict[str, Any]) -> dict[str, Any]:
             retired_at=case["recorded_after"],
             status="superseded",
             superseded_by_claim_id=successor_claim,
+            pending_successor_scope_id="scope-a",
+            pending_successor_fact_key=canonical_fact_key(
+                case["subject"], case["predicate"]
+            ),
+            pending_successor_authority=FACT_EXECUTOR_PENDING_SUCCESSOR_AUTHORITY,
         )
         _insert_current_claim(
             conn,
