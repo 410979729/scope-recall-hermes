@@ -18,6 +18,11 @@ from scope_recall.maintenance_lease import activation_lease_path
 
 ROOT = Path(__file__).resolve().parents[1]
 SUBPROCESS_TIMEOUT_SECONDS = 300
+# The installed-sdist rehearsal runs six complete source-restore test modules
+# in a nested interpreter.  Windows Python 3.11 can legitimately take just
+# over five minutes for that workload on a hosted runner, while the surrounding
+# install/build/CLI probes should retain their tighter five-minute ceiling.
+NESTED_PYTEST_TIMEOUT_SECONDS = 600
 REQUIRED_RUNTIME = (
     "journal_source_restore.py",
     "journal_source_restore_snapshot.py",
@@ -224,7 +229,7 @@ def test_real_sdist_and_installed_wheel_source_restore(tmp_path: Path) -> None:
             text=True,
             env=tester_env,
             check=False,
-            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+            timeout=NESTED_PYTEST_TIMEOUT_SECONDS,
         )
         assert ran.returncode == 0, ran.stdout + "\n" + ran.stderr
 
