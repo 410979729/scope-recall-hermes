@@ -6,11 +6,14 @@ import sys
 from typing import Any
 
 from ..application.memory_commands import MemoryCommandApplication
+from ..application.memory_queries import MemoryQueryApplication
+from ..application.runtime_state import RuntimeStateSnapshot
 from .background import BackgroundWork
 from .bootstrap import RuntimeBootstrap
 from .command_adapter import bind_provider_command_adapter
 from .ports import MemoryCommandPort, RuntimeAdapterPort, ToolRuntimePort
 from .process_lifecycle import DEFAULT_SHUTDOWN_TIMEOUT_SECONDS, ProcessLifecycle
+from .query_adapter import bind_provider_query_adapter
 from .tool_port import bind_tool_runtime_port
 from .truth_session import TruthSession
 from .vector_view import RuntimeVectorView
@@ -41,14 +44,20 @@ class RuntimeComposition:
         self.bootstrap = RuntimeBootstrap(adapter)
         self.vector_view = RuntimeVectorView(adapter)
         command_gateway = bind_provider_command_adapter(adapter)
+        query_gateway = bind_provider_query_adapter(adapter)
         self._command_port: MemoryCommandPort = MemoryCommandApplication(command_gateway)
+        self._query_port = MemoryQueryApplication(query_gateway)
         self.tool_port: ToolRuntimePort = bind_tool_runtime_port(
             adapter, command_port=self._command_port
         )
 
     @property
-    def query_port(self) -> RuntimeAdapterPort:
-        return self.adapter
+    def query_port(self) -> MemoryQueryApplication:
+        return self._query_port
+
+    @property
+    def runtime_state(self) -> RuntimeStateSnapshot:
+        return self._query_port.runtime_state()
 
     @property
     def command_port(self) -> MemoryCommandPort:

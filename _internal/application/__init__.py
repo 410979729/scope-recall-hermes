@@ -13,6 +13,24 @@ from .memory_commands import (
     StoreMemoryRequest,
     UpdateMemoryRequest,
 )
+from .memory_queries import (
+    BenchmarkQueriesRequest,
+    ContextQueryRequest,
+    EntityQueryRequest,
+    ExplainQueryRequest,
+    ExportMemoriesRequest,
+    HygieneQueryRequest,
+    InspectMemoryRequest,
+    MemoryQueryApplication,
+    MemoryQueryGateway,
+    ProfileQueryRequest,
+)
+from .runtime_state import (
+    AuthoritySnapshot,
+    RuntimeStateSnapshot,
+    ScopeSnapshot,
+    VectorSnapshot,
+)
 
 __all__ = [
     "ArchiveMemoriesRequest",
@@ -26,5 +44,18 @@ __all__ = [
     "MergeMemoriesRequest",
     "StoreMemoryRequest",
     "UpdateMemoryRequest",
+    "AuthoritySnapshot",
+    "BenchmarkQueriesRequest",
+    "ContextQueryRequest",
+    "EntityQueryRequest",
+    "ExplainQueryRequest",
+    "ExportMemoriesRequest",
+    "HygieneQueryRequest",
+    "InspectMemoryRequest",
+    "MemoryQueryApplication",
+    "MemoryQueryGateway",
+    "ProfileQueryRequest",
+    "RuntimeStateSnapshot",
+    "ScopeSnapshot",
+    "VectorSnapshot",
 ]
-

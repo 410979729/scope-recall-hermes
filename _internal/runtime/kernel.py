@@ -15,53 +15,122 @@ from ..application.memory_commands import (
     StoreMemoryRequest,
     UpdateMemoryRequest,
 )
-from .ports import MemoryCommandPort, MemoryQueryPort
-from ...memory_queries import (
-    benchmark_queries,
-    context_payload,
-    explain_query,
-    export_memories,
-    hygiene_report,
-    inspect_memory,
-    probe_entity,
-    profile_payload,
-    related_entities,
-    stats_payload,
+from ..application.memory_queries import (
+    BenchmarkQueriesRequest,
+    ContextQueryRequest,
+    EntityQueryRequest,
+    ExplainQueryRequest,
+    ExportMemoriesRequest,
+    HygieneQueryRequest,
+    InspectMemoryRequest,
+    MemoryQueryApplication,
+    ProfileQueryRequest,
 )
+from .ports import MemoryCommandPort
 
 
 class QueryKernel:
     """Thin query/diagnostic facade used by the Hermes adapter."""
 
-    def context(self, port: MemoryQueryPort, **kwargs: Any) -> dict[str, Any]:
-        return context_payload(port, **kwargs)
+    def context(
+        self,
+        port: MemoryQueryApplication,
+        *,
+        query: str,
+        limit: int = 5,
+        max_chars: int = 900,
+    ) -> dict[str, object]:
+        return port.context(ContextQueryRequest(query, limit, max_chars))
 
-    def profile(self, port: MemoryQueryPort, **kwargs: Any) -> dict[str, Any]:
-        return profile_payload(port, **kwargs)
+    def profile(
+        self,
+        port: MemoryQueryApplication,
+        *,
+        query: str = "",
+        entity: str = "",
+        targets: list[str] | None = None,
+        include_general: bool = False,
+        include_candidates: bool = False,
+        include_curated: bool = True,
+        limit: int = 5,
+        max_chars: int = 1200,
+    ) -> dict[str, object]:
+        return port.profile(
+            ProfileQueryRequest(
+                query=query,
+                entity=entity,
+                targets=tuple(targets) if targets is not None else None,
+                include_general=include_general,
+                include_candidates=include_candidates,
+                include_curated=include_curated,
+                limit=limit,
+                max_chars=max_chars,
+            )
+        )
 
-    def inspect(self, port: MemoryQueryPort, **kwargs: Any) -> dict[str, Any]:
-        return inspect_memory(port, **kwargs)
+    def inspect(
+        self, port: MemoryQueryApplication, *, memory_id: str
+    ) -> dict[str, object]:
+        return port.inspect(InspectMemoryRequest(memory_id))
 
-    def explain(self, port: MemoryQueryPort, **kwargs: Any) -> dict[str, Any]:
-        return explain_query(port, **kwargs)
+    def explain(
+        self, port: MemoryQueryApplication, *, query: str, limit: int = 5
+    ) -> dict[str, object]:
+        return port.explain(ExplainQueryRequest(query, limit))
 
-    def stats(self, port: MemoryQueryPort) -> dict[str, Any]:
-        return stats_payload(port)
+    def stats(self, port: MemoryQueryApplication) -> dict[str, object]:
+        return port.stats()
 
-    def probe(self, port: MemoryQueryPort, **kwargs: Any) -> dict[str, Any]:
-        return probe_entity(port, **kwargs)
+    def probe(
+        self, port: MemoryQueryApplication, *, entity: str, limit: int = 10
+    ) -> dict[str, object]:
+        return port.probe(EntityQueryRequest(entity, limit))
 
-    def related(self, port: MemoryQueryPort, **kwargs: Any) -> dict[str, Any]:
-        return related_entities(port, **kwargs)
+    def related(
+        self, port: MemoryQueryApplication, *, entity: str, limit: int = 12
+    ) -> dict[str, object]:
+        return port.related(EntityQueryRequest(entity, limit))
 
-    def export(self, port: MemoryQueryPort, **kwargs: Any) -> dict[str, Any]:
-        return export_memories(port, **kwargs)
+    def export(
+        self,
+        port: MemoryQueryApplication,
+        *,
+        fmt: str = "jsonl",
+        scope_only: bool = True,
+    ) -> dict[str, object]:
+        return port.export(ExportMemoriesRequest(fmt, scope_only))
 
-    def hygiene(self, port: MemoryQueryPort, **kwargs: Any) -> dict[str, Any]:
-        return hygiene_report(port, **kwargs)
+    def hygiene(
+        self, port: MemoryQueryApplication, *, limit: int = 200
+    ) -> dict[str, object]:
+        return port.hygiene(HygieneQueryRequest(limit))
 
-    def benchmark(self, port: MemoryQueryPort, **kwargs: Any) -> dict[str, Any]:
-        return benchmark_queries(port, **kwargs)
+    def benchmark(
+        self,
+        port: MemoryQueryApplication,
+        *,
+        queries: list[str] | None = None,
+        cases: list[dict[str, Any]] | None = None,
+        limit: int = 5,
+        auto_explain_on_fail: bool = False,
+        include_trace: bool = False,
+        prompt_budget_chars: int = 0,
+    ) -> dict[str, object]:
+        typed_cases = (
+            tuple(cast(dict[str, object], dict(case)) for case in cases)
+            if cases is not None
+            else None
+        )
+        return port.benchmark(
+            BenchmarkQueriesRequest(
+                queries=tuple(queries) if queries is not None else None,
+                cases=typed_cases,
+                limit=limit,
+                auto_explain_on_fail=auto_explain_on_fail,
+                include_trace=include_trace,
+                prompt_budget_chars=prompt_budget_chars,
+            )
+        )
 
 
 class _LegacyPersistCommandPort:
