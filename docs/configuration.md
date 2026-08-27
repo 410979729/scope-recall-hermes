@@ -271,6 +271,10 @@ Treat chat aliases as explicit operator access-control grants.
 
 - `relation_reclassification_candidate_cap` (integer; risk: `medium`; restart_required: `yes`) — Maximum affected candidates inspected before reclassification refuses the entire mutation without partial work (1 to 5000 candidates). Default: `250`
 
+## `relation_policy_generation_enabled`
+
+- `relation_policy_generation_enabled` (boolean; risk: `medium`; restart_required: `yes`) — Enable Program 2 finite, leased relation policy generations. Default `false` preserves Program 0 containment execution. Default: `false`
+
 ## `relation_sync_neighbor_limit`
 
 - `relation_sync_neighbor_limit` (integer; risk: `medium`; restart_required: `yes`) — Maximum local peers synchronously compared during a foreground memory mutation (1 to 256 peers). Default: `32`

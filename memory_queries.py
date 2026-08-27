@@ -27,6 +27,7 @@ from ._internal.recall.pipeline import humanize_filter_trace, humanize_recall_co
 from .capture_control import capture_queue_report
 from .relation_containment import relation_containment_report
 from .relation_frequency_maintenance import relation_frequency_index_report
+from .relation_policy_generation import relation_policy_generation_report
 from .relation_rebuild_queue import relation_rebuild_queue_report
 from .sql_store import curated_recall_item_id, iter_curated_entries  # noqa: F401
 from .storage_views import _curated_memory_allowed
@@ -1020,6 +1021,7 @@ def stats_payload(provider: Any) -> dict[str, Any]:
             scope_ids=accessible_scope_params(provider),
         )
         relation_frequency = relation_frequency_index_report(conn)
+        relation_generation = relation_policy_generation_report(conn)
         relation_rebuild = relation_rebuild_queue_report(conn)
         capture_queue = capture_queue_report(provider)
         operator_ledger = operator_ledger_report(conn)
@@ -1087,6 +1089,7 @@ def stats_payload(provider: Any) -> dict[str, Any]:
         "graph": graph_stats,
         "relation_containment": relation_containment,
         "relation_frequency_index": relation_frequency,
+        "relation_policy_generation": relation_generation,
         "relation_rebuild_queue": relation_rebuild,
         "capture_queue": capture_queue,
         "operator_ledger": operator_ledger,

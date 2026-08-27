@@ -42,6 +42,7 @@ _DESCRIPTION_OVERRIDES = {
     "relation_maintenance_wall_clock_seconds": "Wall-clock budget for one bounded relation maintenance tick (0.05 to 10 seconds).",
     "relation_rebuild_chunk_pairs": "Maximum items processed by one bounded relation maintenance lane (1 to 1000 items); retained as the compatibility name for finite change, focus, backfill, and reclassification work.",
     "relation_reclassification_candidate_cap": "Maximum affected candidates inspected before reclassification refuses the entire mutation without partial work (1 to 5000 candidates).",
+    "relation_policy_generation_enabled": "Enable Program 2 finite, leased relation policy generations. Default false preserves Program 0 containment execution.",
     "retrieval.mode": "Recall mode: lexical, vector, or hybrid.",
     "retrieval.relation_rerank_enabled": "Enable small relation-graph rerank bonuses after primary recall scoring.",
     "retrieval.vector_only_min_score": "Minimum score for vector-only candidates to survive recall filtering.",

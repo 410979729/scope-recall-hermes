@@ -32,6 +32,7 @@ from .capture_filters import (
     should_capture_text,
 )
 from .capture_outcomes import ensure_outcome_accounted, handle_capture_enqueue
+from .gating import config_bool
 from .memory_mutation import MemoryMutationService
 from .models import recall_scope_mode
 from .relation_frequency_maintenance import drain_relation_frequency_work
@@ -287,6 +288,9 @@ def _drain_relation_rebuild_debt_locked(provider: Any) -> None:
             relation_max_attempts=max(
                 1,
                 min(int(config.get("relation_maintenance_max_attempts", 5) or 5), 20),
+            ),
+            relation_policy_generation_enabled=config_bool(
+                config, "relation_policy_generation_enabled", False
             ),
             wall_clock_seconds=wall_clock_seconds,
             backoff_base_seconds=max(
@@ -904,8 +908,6 @@ def capture_turn_fallbacks(
     extract_candidates_fn: Callable[..., Any],
 ) -> None:
     """Legacy regex/raw capture fallbacks after LLM capture."""
-
-    from .gating import config_bool
 
     extracted = False
     per_turn_cfg = provider._config.get("per_turn_extraction") if isinstance(provider._config.get("per_turn_extraction"), dict) else {}
