@@ -19,6 +19,7 @@ from .capture_filters import (
     sanitize_report_text,
     sanitize_structured_value,
 )
+from .fact_authority import memory_type_is_claim_backed
 from .fact_identity import FactIdentityError, build_fact_identity, canonical_fact_key
 from .sqlite_params import chunked_sql_parameters
 
@@ -32,6 +33,10 @@ class TemporalValidationError(TemporalFactError):
 
 class TemporalConflictError(TemporalFactError):
     """Raised when a write would violate identity, CAS, or interval rules."""
+
+
+class FactProjectionInvariantError(TemporalConflictError):
+    """A new canonical Claim and its owned memory Projection diverged."""
 
 
 FACT_EXECUTOR_MUTATION_AUTHORITY = "fact_executor"
@@ -134,6 +139,141 @@ def require_fact_mutation_authority(
     ownership = fact_ownership_for_memories(conn, memory_ids)
     if ownership:
         raise FactMutationAuthorityError(operation, ownership)
+
+
+def assert_canonical_projection_pair(
+    conn: sqlite3.Connection,
+    *,
+    memory_id: str,
+    claim_id: str,
+    scope_id: str,
+    fact_key: str,
+    memory_type: str,
+) -> dict[str, str]:
+    """Assert the frozen one Claim/one Projection postcondition.
+
+    Historical mixed rows remain representable for the Program 3 shadow split,
+    so this is deliberately an Executor postcondition rather than a global
+    ``UNIQUE(memory_id)`` migration.  It also proves that both legacy and Claim
+    FTS projections plus freshness were written inside the same transaction.
+    """
+
+    expected_memory_id = str(memory_id or "").strip()
+    expected_claim_id = str(claim_id or "").strip()
+    expected_scope_id = str(scope_id or "").strip()
+    expected_fact_key = str(fact_key or "").strip()
+    expected_memory_type = str(memory_type or "").strip().casefold()
+    if not all(
+        (
+            expected_memory_id,
+            expected_claim_id,
+            expected_scope_id,
+            expected_fact_key,
+            expected_memory_type,
+        )
+    ) or not memory_type_is_claim_backed(expected_memory_type):
+        raise FactProjectionInvariantError(
+            "canonical projection identifiers and fact identity are required"
+        )
+
+    memory_row = conn.execute(
+        "SELECT scope_id, metadata, content, summary FROM memories WHERE id = ?",
+        (expected_memory_id,),
+    ).fetchone()
+    if memory_row is None:
+        raise FactProjectionInvariantError("canonical memory Projection is missing")
+    if str(memory_row[0] or "") != expected_scope_id:
+        raise FactProjectionInvariantError("canonical Projection scope diverged from Claim")
+    try:
+        metadata = json.loads(str(memory_row[1] or "{}"))
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise FactProjectionInvariantError(
+            "canonical Projection metadata is not valid JSON"
+        ) from exc
+    if not isinstance(metadata, Mapping):
+        raise FactProjectionInvariantError("canonical Projection metadata is not an object")
+    if not str(memory_row[2] or "").strip() or not str(memory_row[3] or "").strip():
+        raise FactProjectionInvariantError(
+            "canonical Projection is not readable by the legacy memory surface"
+        )
+    if str(metadata.get("memory_type") or "") != expected_memory_type:
+        raise FactProjectionInvariantError(
+            "canonical Projection memory type diverged from the authority route"
+        )
+    if str(metadata.get("fact_claim_id") or "") != expected_claim_id:
+        raise FactProjectionInvariantError("canonical Projection points to a different Claim")
+    if str(metadata.get("fact_key") or "") != expected_fact_key:
+        raise FactProjectionInvariantError("canonical Projection fact identity diverged")
+    if str(metadata.get("lifecycle") or "") not in {"active", "promoted"}:
+        raise FactProjectionInvariantError("canonical Projection is not recall-visible")
+
+    claim_rows = conn.execute(
+        """
+        SELECT claim_id, scope_id, fact_key, status, retired_at
+        FROM fact_claims
+        WHERE memory_id = ?
+        ORDER BY claim_id
+        """,
+        (expected_memory_id,),
+    ).fetchall()
+    if len(claim_rows) != 1:
+        raise FactProjectionInvariantError(
+            "canonical Projection must own exactly one Claim"
+        )
+    only_claim = claim_rows[0]
+    if str(only_claim[0] or "") != expected_claim_id:
+        raise FactProjectionInvariantError("canonical Projection owns an unexpected Claim")
+    if str(only_claim[1] or "") != expected_scope_id:
+        raise FactProjectionInvariantError("canonical Claim scope diverged from Projection")
+    if str(only_claim[2] or "") != expected_fact_key:
+        raise FactProjectionInvariantError("canonical Claim fact identity diverged")
+    if str(only_claim[3] or "") != "current" or only_claim[4] is not None:
+        raise FactProjectionInvariantError("canonical Claim is not current")
+
+    companion_counts = {
+        "memory FTS": int(
+            conn.execute(
+                "SELECT COUNT(*) FROM memories_fts WHERE memory_id = ?",
+                (expected_memory_id,),
+            ).fetchone()[0]
+        ),
+        "Claim FTS membership": int(
+            conn.execute(
+                "SELECT COUNT(*) FROM fact_claims_fts_membership WHERE claim_id = ?",
+                (expected_claim_id,),
+            ).fetchone()[0]
+        ),
+        "Claim FTS": int(
+            conn.execute(
+                "SELECT COUNT(*) FROM fact_claims_fts WHERE claim_id = ?",
+                (expected_claim_id,),
+            ).fetchone()[0]
+        ),
+        "freshness": int(
+            conn.execute(
+                """
+                SELECT COUNT(*) FROM fact_freshness
+                WHERE subject_type = 'memory' AND subject_id = ?
+                """,
+                (expected_memory_id,),
+            ).fetchone()[0]
+        ),
+    }
+    missing_or_duplicate = [
+        name for name, count in companion_counts.items() if count != 1
+    ]
+    if missing_or_duplicate:
+        raise FactProjectionInvariantError(
+            "canonical Projection companions diverged: "
+            + ", ".join(missing_or_duplicate)
+        )
+    return {
+        "memory_id": expected_memory_id,
+        "claim_id": expected_claim_id,
+        "scope_id": expected_scope_id,
+        "fact_key": expected_fact_key,
+        "memory_type": expected_memory_type,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -1434,9 +1574,11 @@ def claim_history(
 __all__ = [
     "ClaimEvidence",
     "FactClaim",
+    "FactProjectionInvariantError",
     "TemporalConflictError",
     "TemporalFactError",
     "TemporalValidationError",
+    "assert_canonical_projection_pair",
     "claim_history",
     "claims_as_of",
     "close_claim_interval",

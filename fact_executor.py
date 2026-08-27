@@ -22,9 +22,11 @@ from .capture_filters import (
 )
 from .evolution_policy import EvolutionPolicyDecision
 from .fact_actions import EvolutionAction, EvolutionPlan, EvolutionResult
+from .fact_authority import is_fact_projection_marker, route_fact_authority
 from .fact_repository import (
     FACT_EXECUTOR_MUTATION_AUTHORITY,
     TemporalConflictError,
+    assert_canonical_projection_pair,
     close_claim_interval,
     insert_claim,
     link_claim_evidence,
@@ -490,15 +492,27 @@ def _new_memory_and_claim(
     content = context.memory_content.strip() or (
         f"{claim.subject} {claim.predicate}: {claim.display_value}"
     )
+    authority_route = route_fact_authority(context.metadata.get("memory_type"))
+    if authority_route.claim_backed:
+        projection_memory_type = authority_route.canonical_type
+    elif is_fact_projection_marker(context.metadata.get("memory_type")):
+        # Direct internal callers before Program 3 used this projection marker.
+        # Their trusted Executor path remains readable as the canonical factual
+        # subtype, but the marker itself never grants authority at the router.
+        projection_memory_type = "factual"
+    else:
+        raise FactExecutionError(
+            "new canonical Projection requires a Claim-backed memory type"
+        )
     metadata = dict(context.metadata)
     metadata.update(
         {
-            "memory_type": "fact",
+            "memory_type": projection_memory_type,
             "fact_key": claim.fact_key,
             "fact_claim_id": claim_id,
             "evolution_action_id": plan.action_id,
             "evolution_action": plan.proposal.action.value,
-            "lifecycle": "active",
+            "lifecycle": "promoted",
         }
     )
     safe_metadata, _ = sanitize_structured_value(metadata)
@@ -633,6 +647,17 @@ def _new_memory_and_claim(
         created_at=timestamp,
     )
     receipt["audit_event_ids"].append(event_id)
+    receipt["projection_pairs"].append(
+        assert_canonical_projection_pair(
+            conn,
+            memory_id=memory_id,
+            claim_id=claim_id,
+            scope_id=context.scope_id,
+            fact_key=claim.fact_key,
+            memory_type=projection_memory_type,
+        )
+    )
+    _fault(fault_injector, "after_projection_invariant")
     return memory_id, claim_id
 
 
@@ -812,6 +837,7 @@ def execute_fact_plan(
             "audit_event_ids": [],
             "vector_outbox_keys": [],
             "vector_outbox_events": [],
+            "projection_pairs": [],
             "replayed": False,
         }
 
