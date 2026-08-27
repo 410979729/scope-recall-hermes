@@ -133,7 +133,6 @@ COMPATIBILITY_REGISTRY: tuple[CompatibilityShim, ...] = (
         usage_evidence=(
             "_internal/runtime/capture_service.py:_provider_hook",
             "_internal/runtime/vector_service.py:_provider_hook",
-            "_internal/runtime/composition.py:_adapter_provider_module",
         ),
         remove_after="legacy monkeypatch and plugin-loader compatibility window closes",
         tests=(

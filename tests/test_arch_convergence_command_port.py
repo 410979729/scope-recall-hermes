@@ -306,6 +306,15 @@ def test_production_runtime_has_no_generic_unwrap_escape_hatches() -> None:
         assert "evidence_runtime" not in source, rel
 
 
+def test_composition_root_uses_only_explicit_injection() -> None:
+    source = (PLUGIN_ROOT / "_internal/runtime/composition.py").read_text(
+        encoding="utf-8"
+    )
+    assert "sys.modules" not in source
+    assert "getattr(" not in source
+    assert "_adapter_provider_module" not in source
+
+
 def test_touched_internals_import_canonical_modules_not_shims() -> None:
     assert orchestrator_module.recall_pipeline is recall_pipeline
     assert orchestrator_module.recall_pipeline.__name__ == "scope_recall._internal.recall.pipeline"
