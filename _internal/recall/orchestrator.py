@@ -14,7 +14,7 @@ from typing import Any
 from . import pipeline as recall_pipeline
 from .compiler import CandidateSet, CompilerPolicy, compile_recall_packet
 from ...freshness import CURRENT_STATUSES, STALE_STATUSES, attach_freshness_metadata
-from ...gating import matched_query_intent_terms
+from ...gating import config_bool, matched_query_intent_terms
 from ...graph import apply_quality_weight, entity_overlap_bonus
 from ...models import RecallItem
 from .ports import RecallSearchHost
@@ -556,15 +556,11 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
         else {}
     )
     compiler_cfg = raw_compiler_cfg if isinstance(raw_compiler_cfg, dict) else {}
-    current_truth_enabled = host._config_bool(
-        compiler_cfg.get("current_truth_enabled"), False
+    current_truth_enabled = config_bool(
+        compiler_cfg, "current_truth_enabled", False
     )
-    budgeter_enabled = host._config_bool(
-        compiler_cfg.get("budgeter_enabled"), False
-    )
-    renderer_enabled = host._config_bool(
-        compiler_cfg.get("renderer_enabled"), False
-    )
+    budgeter_enabled = config_bool(compiler_cfg, "budgeter_enabled", False)
+    renderer_enabled = config_bool(compiler_cfg, "renderer_enabled", False)
     try:
         token_budget = int(compiler_cfg.get("token_budget") or 320)
     except (TypeError, ValueError):
@@ -635,7 +631,9 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
         "budgeter_enabled": budgeter_enabled,
         "renderer_enabled": renderer_enabled,
     }
-    trace["timings_ms"]["compiler"] = host._elapsed_ms(compiler_started_at)
+    trace["timings_ms"]["compiler"] = round(
+        (time.perf_counter() - compiler_started_at) * 1000.0, 3
+    )
     trace["stages"]["ranked"] = host._trace_stage(ranked)
     trace["final"] = recall_pipeline.final_trace_payload(returned=returned, ranked_rejected=ranked_rejected)
     trace["timings_ms"]["total"] = host._elapsed_ms(started_at)

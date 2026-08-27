@@ -539,6 +539,7 @@ def _new_memory_and_claim(
         commit=False,
         timestamp=timestamp,
         enqueue_vector_intent=False,
+        fact_projection_authority=FACT_EXECUTOR_MUTATION_AUTHORITY,
     )
     if not inserted or stored_id != memory_id:
         raise FactExecutionConflictError("successor memory insert did not create the expected row")
