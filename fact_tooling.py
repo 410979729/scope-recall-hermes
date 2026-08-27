@@ -23,6 +23,7 @@ from .fact_actions import (
     EvolutionProposal,
     parse_evolution_proposal,
 )
+from .fact_authority import is_fact_projection_marker
 from .fact_evolution import (
     execute_pipeline_proposal,
     memory_type_uses_fact_evolution,
@@ -74,6 +75,27 @@ def _writable_scope_ids(provider: Any) -> list[str]:
     if not output:
         raise FactToolError("structured fact writable scopes are unavailable")
     return output
+
+
+def _memory_type_allows_tool_proposal(
+    *,
+    memory_type: Any,
+    proposal: EvolutionProposal,
+) -> bool:
+    """Reject obvious lane mismatches; the Application Use Case proves ownership."""
+
+    if memory_type_uses_fact_evolution(memory_type):
+        return True
+    return (
+        is_fact_projection_marker(memory_type)
+        and proposal.action
+        in {
+            EvolutionAction.ENRICH,
+            EvolutionAction.SUPERSEDE,
+            EvolutionAction.RETRACT,
+        }
+        and bool(proposal.target_ids)
+    )
 
 
 def _canonical_source_key(
@@ -239,7 +261,7 @@ def execute_structured_store(
 ) -> dict[str, Any]:
     """Execute an explicit factual store envelope without changing legacy calls."""
 
-    memory_type = str(args.get("memory_type") or "factual")
+    memory_type = str(args.get("memory_type") or "")
     if not memory_type_uses_fact_evolution(memory_type):
         raise FactToolError("structured evolution requires a factual memory_type")
     scope_id = _scope_id_for_mode(provider, scope_mode)
@@ -357,8 +379,6 @@ def execute_structured_update(
     memory_type = str(
         args.get("memory_type") or existing_metadata.get("memory_type") or ""
     )
-    if not memory_type_uses_fact_evolution(memory_type):
-        raise FactToolError("structured evolution requires a factual memory_type")
     current_scope_id = str(row["scope_id"] or "")
     current_scope_mode = _row_scope_mode(provider, current_scope_id)
     actual_target = str(target or row["target"] or "memory")
@@ -381,6 +401,11 @@ def execute_structured_update(
     )
     if proposal.action is EvolutionAction.ADD:
         raise FactToolError("structured update cannot use add; use supersede or enrich")
+    if not _memory_type_allows_tool_proposal(
+        memory_type=memory_type,
+        proposal=proposal,
+    ):
+        raise FactToolError("structured evolution requires a factual memory_type")
     with _fact_port(provider).query_lock():
         is_replay = pipeline_receipt_exists(
             _fact_port(provider).query_connection(),
@@ -529,9 +554,7 @@ def execute_maintenance_evolution(
         provider,
         proposal_payload,
     )
-    memory_type = str(proposal_payload.get("memory_type") or "factual")
-    if not memory_type_uses_fact_evolution(memory_type):
-        raise FactToolError("maintenance evolution requires a factual memory_type")
+    memory_type = str(proposal_payload.get("memory_type") or "")
 
     parser_payload = {
         key: value
@@ -544,6 +567,11 @@ def execute_maintenance_evolution(
         trusted_scope_id=scope_id,
         allowed_target_ids=target_ids or None,
     )
+    if not _memory_type_allows_tool_proposal(
+        memory_type=memory_type,
+        proposal=proposal,
+    ):
+        raise FactToolError("maintenance evolution requires a factual memory_type")
     content = _fact_port(provider).clean_text(str(proposal_payload.get("content") or ""))
     if proposal.action in {EvolutionAction.ADD, EvolutionAction.SUPERSEDE} and not content:
         raise FactToolError("proposal.content is required for add or supersede")
