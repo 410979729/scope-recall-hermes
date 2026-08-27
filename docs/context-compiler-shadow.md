@@ -24,16 +24,17 @@ and always includes `scope_id`. Two current conflicting candidates remain in
 the packet and are marked as a conflict; the read side does not invent a
 winner.
 
-The product switches remain independent. Program 5 makes only canonical
-current-truth filtering default-on; the token budgeter and Recall Packet
-renderer stay default-off until their own product decisions:
+The product switches remain independent. Program 5 makes canonical
+current-truth filtering and the Recall Packet renderer default-on in separate
+changes; the token budgeter stays default-off until its own product decision:
 
 - `recall_compiler.current_truth_enabled` defaults on and activates only
   canonical stale/current filtering; setting it to `false` restores the V1
   ordering without changing stored truth;
 - `recall_compiler.budgeter_enabled` activates packet token limits;
-- `recall_compiler.renderer_enabled` activates evidence/diversity packet order
-  and the new prompt renderer.
+- `recall_compiler.renderer_enabled` defaults on and activates
+  evidence/diversity packet order and the new prompt renderer; setting it to
+  `false` restores the V1 prompt renderer independently.
 
 With all switches explicitly off, ordinary results and the V1 prompt renderer
 remain the compatibility authority. The compiler still calculates a bounded aggregate

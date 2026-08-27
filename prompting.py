@@ -47,7 +47,7 @@ def render_current_turn_recall(provider: Any, query: str) -> str:
     compiler_config = (
         raw_compiler_config if isinstance(raw_compiler_config, dict) else {}
     )
-    if config_bool(compiler_config, "renderer_enabled", False):
+    if config_bool(compiler_config, "renderer_enabled", True):
         token_budget = _positive_config_int(
             compiler_config, "token_budget", 320
         )
