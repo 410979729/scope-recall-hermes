@@ -153,12 +153,18 @@ _REQUIRED_TRIGGERS = frozenset(
     {
         "trg_relation_generation_terminal_no_revive",
         "trg_relation_generation_transition",
+        "trg_relation_generation_identity_immutable",
         "trg_relation_generation_set_immutable",
+        "trg_relation_generation_delete_immutable",
         "trg_relation_generation_items_insert_building",
         "trg_relation_generation_item_identity_immutable",
+        "trg_relation_generation_item_policy_immutable",
         "trg_relation_generation_item_transition",
         "trg_relation_generation_item_terminal_no_revive",
+        "trg_relation_generation_item_terminal_receipt_immutable",
+        "trg_relation_generation_item_delete_immutable",
         "trg_relation_edge_provenance_immutable",
+        "trg_relation_edge_provenance_delete_immutable",
     }
 )
 
@@ -403,6 +409,44 @@ def ensure_relation_policy_generation_schema(conn: sqlite3.Connection) -> None:
             SELECT RAISE(ABORT, 'relation generation item set is immutable');
         END;
 
+        CREATE TRIGGER IF NOT EXISTS trg_relation_generation_identity_immutable
+        BEFORE UPDATE OF generation_id, scope_id, idempotency_key,
+                         scope_snapshot_json, authority_snapshot_json,
+                         policy_version, relation_revision,
+                         source_corpus_revision, frozen_upper_bound,
+                         old_blocked_entities_json,
+                         old_blocked_entities_sha256,
+                         new_blocked_entities_json,
+                         new_blocked_entities_sha256,
+                         delta_json, delta_sha256, max_attempts, created_at
+        ON {_GENERATION_TABLE}
+        WHEN NEW.generation_id <> OLD.generation_id
+          OR NEW.scope_id <> OLD.scope_id
+          OR NEW.idempotency_key <> OLD.idempotency_key
+          OR NEW.scope_snapshot_json <> OLD.scope_snapshot_json
+          OR NEW.authority_snapshot_json <> OLD.authority_snapshot_json
+          OR NEW.policy_version <> OLD.policy_version
+          OR NEW.relation_revision <> OLD.relation_revision
+          OR NEW.source_corpus_revision <> OLD.source_corpus_revision
+          OR NEW.frozen_upper_bound <> OLD.frozen_upper_bound
+          OR NEW.old_blocked_entities_json <> OLD.old_blocked_entities_json
+          OR NEW.old_blocked_entities_sha256 <> OLD.old_blocked_entities_sha256
+          OR NEW.new_blocked_entities_json <> OLD.new_blocked_entities_json
+          OR NEW.new_blocked_entities_sha256 <> OLD.new_blocked_entities_sha256
+          OR NEW.delta_json <> OLD.delta_json
+          OR NEW.delta_sha256 <> OLD.delta_sha256
+          OR NEW.max_attempts <> OLD.max_attempts
+          OR NEW.created_at <> OLD.created_at
+        BEGIN
+            SELECT RAISE(ABORT, 'relation generation identity is immutable');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_relation_generation_delete_immutable
+        BEFORE DELETE ON {_GENERATION_TABLE}
+        BEGIN
+            SELECT RAISE(ABORT, 'relation generation history is immutable');
+        END;
+
         CREATE TRIGGER IF NOT EXISTS trg_relation_generation_items_insert_building
         BEFORE INSERT ON {_ITEM_TABLE}
         WHEN COALESCE((
@@ -415,7 +459,8 @@ def ensure_relation_policy_generation_schema(conn: sqlite3.Connection) -> None:
 
         CREATE TRIGGER IF NOT EXISTS trg_relation_generation_item_identity_immutable
         BEFORE UPDATE OF generation_id, item_id, item_ordinal,
-                         left_memory_id, right_memory_id, pair_key
+                         left_memory_id, right_memory_id, pair_key,
+                         max_attempts, created_at
         ON {_ITEM_TABLE}
         WHEN NEW.generation_id <> OLD.generation_id
           OR NEW.item_id <> OLD.item_id
@@ -423,6 +468,16 @@ def ensure_relation_policy_generation_schema(conn: sqlite3.Connection) -> None:
           OR NEW.left_memory_id <> OLD.left_memory_id
           OR NEW.right_memory_id <> OLD.right_memory_id
           OR NEW.pair_key <> OLD.pair_key
+          OR NEW.max_attempts <> OLD.max_attempts
+          OR NEW.created_at <> OLD.created_at
+        BEGIN
+            SELECT RAISE(ABORT, 'relation generation item identity is immutable');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_relation_generation_item_policy_immutable
+        BEFORE UPDATE OF max_attempts, created_at ON {_ITEM_TABLE}
+        WHEN NEW.max_attempts <> OLD.max_attempts
+          OR NEW.created_at <> OLD.created_at
         BEGIN
             SELECT RAISE(ABORT, 'relation generation item identity is immutable');
         END;
@@ -452,8 +507,31 @@ def ensure_relation_policy_generation_schema(conn: sqlite3.Connection) -> None:
             SELECT RAISE(ABORT, 'terminal relation generation item cannot be revived');
         END;
 
+        CREATE TRIGGER IF NOT EXISTS trg_relation_generation_item_terminal_receipt_immutable
+        BEFORE UPDATE OF receipt_json, completed_at ON {_ITEM_TABLE}
+        WHEN OLD.state IN ('completed','poisoned','cancelled','superseded')
+             AND (
+                  NEW.receipt_json <> OLD.receipt_json
+               OR NEW.completed_at <> OLD.completed_at
+             )
+        BEGIN
+            SELECT RAISE(ABORT, 'terminal relation generation item receipt is immutable');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_relation_generation_item_delete_immutable
+        BEFORE DELETE ON {_ITEM_TABLE}
+        BEGIN
+            SELECT RAISE(ABORT, 'relation generation item history is immutable');
+        END;
+
         CREATE TRIGGER IF NOT EXISTS trg_relation_edge_provenance_immutable
         BEFORE UPDATE ON {_PROVENANCE_TABLE}
+        BEGIN
+            SELECT RAISE(ABORT, 'relation edge provenance is immutable');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_relation_edge_provenance_delete_immutable
+        BEFORE DELETE ON {_PROVENANCE_TABLE}
         BEGIN
             SELECT RAISE(ABORT, 'relation edge provenance is immutable');
         END;
@@ -554,12 +632,14 @@ def restore_program0_relation_containment(
     *,
     candidate_cap: int,
 ) -> int:
-    """Re-stage only an exact Program 2 blocked target for Program 0 rollback.
+    """Re-stage only an exact Program 2 target for Program 0 rollback.
 
-    Poisoned Program 2 work may be handed back once because Program 0 owns a
-    separate atomic execution path.  A cap-blocked target is handed back only
-    when the configured cap increased beyond both recorded caps; if Program 0
-    blocks at that new cap, another tick cannot create an unbounded retry loop.
+    In-flight Program 2 work is first terminated as superseded, then handed to
+    Program 0 in the same transaction.  Poisoned Program 2 work may be handed
+    back once because Program 0 owns a separate atomic execution path.  A
+    cap-blocked target is handed back only when the configured cap increased
+    beyond both recorded caps; if Program 0 blocks at that new cap, another
+    tick cannot create an unbounded retry loop.
     """
 
     if not relation_policy_generation_schema_status(conn)["current"]:
@@ -567,21 +647,20 @@ def restore_program0_relation_containment(
     cap = max(1, min(int(candidate_cap), 5000))
     rows = conn.execute(
         f"""
-        SELECT c.scope_id, c.active_revision, c.target_revision,
+        SELECT g.generation_id, g.state,
+               c.scope_id, c.active_revision, c.target_revision,
                c.active_blocked_entities_json,
                c.active_blocked_entities_sha256,
                c.target_blocked_entities_json,
                c.target_blocked_entities_sha256,
-               c.reason_code, c.candidate_cap
+               c.reason_code, c.candidate_cap, c.state
         FROM relation_scope_containment c
         JOIN {_GENERATION_TABLE} g
           ON g.scope_id=c.scope_id
          AND g.relation_revision=c.target_revision
          AND g.policy_version=?
         JOIN relation_scope_statistics s ON s.scope_id=c.scope_id
-        WHERE c.state='blocked'
-          AND c.target_revision>c.active_revision
-          AND g.state IN ('blocked','poisoned')
+        WHERE c.target_revision>c.active_revision
           AND g.old_blocked_entities_json=c.active_blocked_entities_json
           AND g.old_blocked_entities_sha256=c.active_blocked_entities_sha256
           AND g.new_blocked_entities_json=c.target_blocked_entities_json
@@ -591,16 +670,31 @@ def restore_program0_relation_containment(
           AND s.blocked_entities_json=c.target_blocked_entities_json
           AND s.blocked_entities_sha256=c.target_blocked_entities_sha256
           AND (
-               c.reason_code IN (
-                   'relation_generation_item_poisoned',
-                   'relation_generation_item_set_mismatch'
-               )
-            OR (
-                   c.reason_code='affected_candidate_cap_exceeded'
-               AND ?>c.candidate_cap
-               AND ?>g.frozen_upper_bound
-            )
-        )
+                (
+                    c.state='degraded'
+                    AND c.reason_code IN (
+                        'relation_generation_pending',
+                        'relation_generation_retry',
+                        'relation_generation_dependency_unavailable'
+                    )
+                    AND g.state IN ('building','pending','processing','retry')
+                )
+             OR (
+                    c.state='blocked'
+                    AND g.state IN ('blocked','poisoned')
+                    AND (
+                         c.reason_code IN (
+                             'relation_generation_item_poisoned',
+                             'relation_generation_item_set_mismatch'
+                         )
+                      OR (
+                             c.reason_code='affected_candidate_cap_exceeded'
+                         AND ?>c.candidate_cap
+                         AND ?>g.frozen_upper_bound
+                      )
+                    )
+                )
+          )
         ORDER BY c.updated_at, c.scope_id
         LIMIT 1
         """,
@@ -609,7 +703,18 @@ def restore_program0_relation_containment(
     restored = 0
     now = _now_iso()
     for row in rows:
-        restored += conn.execute(
+        generation_id = str(row[0])
+        generation_state = str(row[1])
+        containment_state = str(row[11])
+        savepoint = f"relation_generation_program0_rollback_{uuid.uuid4().hex}"
+        conn.execute(f"SAVEPOINT {savepoint}")
+        if generation_state in {"building", "pending", "processing", "retry"}:
+            _supersede_generation(
+                conn,
+                generation_id,
+                reason_code="program0_rollback",
+            )
+        changed = conn.execute(
             """
             UPDATE relation_scope_containment
             SET state='degraded', reason_code='relation_policy_revision_pending',
@@ -620,22 +725,29 @@ def restore_program0_relation_containment(
               AND active_blocked_entities_sha256=?
               AND target_blocked_entities_json=?
               AND target_blocked_entities_sha256=?
-              AND state='blocked' AND reason_code=? AND candidate_cap=?
+              AND state=? AND reason_code=? AND candidate_cap=?
             """,
             (
                 cap,
                 now,
-                str(row[0]),
-                int(row[1]),
-                int(row[2]),
-                str(row[3]),
-                str(row[4]),
+                str(row[2]),
+                int(row[3]),
+                int(row[4]),
                 str(row[5]),
                 str(row[6]),
                 str(row[7]),
-                int(row[8]),
+                str(row[8]),
+                containment_state,
+                str(row[9]),
+                int(row[10]),
             ),
         ).rowcount
+        if changed != 1:
+            conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            continue
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        restored += 1
     return restored
 
 
@@ -1197,6 +1309,39 @@ def _supersede_generation(
         """,
         (now, now, generation_id),
     )
+    generation = conn.execute(
+        f"SELECT state FROM {_GENERATION_TABLE} WHERE generation_id=?",
+        (generation_id,),
+    ).fetchone()
+    if generation is not None and str(generation[0]) == "building":
+        pair_keys = [
+            str(row[0])
+            for row in conn.execute(
+                f"""
+                SELECT pair_key FROM {_ITEM_TABLE}
+                WHERE generation_id=? ORDER BY item_ordinal
+                """,
+                (generation_id,),
+            )
+        ]
+        conn.execute(
+            f"""
+            UPDATE {_GENERATION_TABLE}
+            SET item_set_hash=?, item_total=?, state='superseded', reason_code=?,
+                lease_owner='', lease_token='', lease_expires_at='',
+                completed_at=?, updated_at=?
+            WHERE generation_id=? AND state='building'
+            """,
+            (
+                canonical_snapshot_hash({"pairs": pair_keys}),
+                len(pair_keys),
+                reason_code,
+                now,
+                now,
+                generation_id,
+            ),
+        )
+        return
     conn.execute(
         f"""
         UPDATE {_GENERATION_TABLE}
@@ -1912,7 +2057,7 @@ def relation_policy_generation_report(conn: sqlite3.Connection) -> dict[str, Any
         operator_required = False
     else:
         state = "ready"
-        reason = ""
+        reason = "healthy"
         auto_recoverable = True
         operator_required = False
     oldest_value = str(oldest[0] or "") if oldest is not None else ""

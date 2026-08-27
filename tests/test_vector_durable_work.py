@@ -190,3 +190,16 @@ def test_disabled_vector_health_keeps_the_shared_schema_stable():
     assert health["reason_code"] == "truth_database_absent"
     assert health["runnable_count"] == 0
     assert health["native_status_counts"] == {}
+
+
+def test_unobservable_registered_vector_state_can_fail_closed_for_repair():
+    health = disabled_vector_outbox_durable_health(
+        reason_code="current_generation_manifest_missing",
+        generation_id="missing-generation",
+        state="needs_repair",
+        operator_action_required=True,
+    )
+
+    assert health["state"] == "needs_repair"
+    assert health["operator_action_required"] is True
+    assert health["auto_recoverable"] is False

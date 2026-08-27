@@ -176,6 +176,47 @@ def test_journal_health_unifies_retry_poison_age_and_fairness():
     conn.close()
 
 
+def test_journal_retry_exhausted_requires_explicit_operator_recovery():
+    conn = _journal_connection()
+    _insert_journal_entry(
+        conn,
+        entry_id=1,
+        created_at="2026-08-27T10:00:00+00:00",
+        processed_run_id="run-retry-exhausted",
+        retryable_failures=3,
+    )
+    conn.execute(
+        """
+        INSERT INTO journal_digest_runs(
+            id, started_at, finished_at, status, extractor, processed_entries,
+            inserted, updated, skipped, metadata
+        ) VALUES ('run-retry-exhausted', '2026-08-27T10:00:00+00:00',
+                  '2026-08-27T10:01:00+00:00', 'retry_scheduled', 'llm',
+                  1, 0, 0, 1, '{}')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO journal_rejections(
+            journal_entry_id, run_id, reason, candidate, created_at
+        ) VALUES (1, 'run-retry-exhausted', 'retry-exhausted:timeout', '',
+                  '2026-08-27T10:01:00+00:00')
+        """
+    )
+    conn.commit()
+
+    health = journal_durable_health(conn)
+
+    assert health["state"] == "blocked"
+    assert health["reason_code"] == "retry_exhausted_recovery_required"
+    assert health["auto_recoverable"] is False
+    assert health["operator_action_required"] is True
+    assert health["item_counts"]["retry"] == 1
+    assert health["retry"]["auto_retry_count"] == 0
+    assert health["retry"]["retry_exhausted_count"] == 1
+    conn.close()
+
+
 def _nightly_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -299,3 +340,19 @@ def test_native_lease_snapshot_is_role_only_and_does_not_invent_tokens(tmp_path)
     assert lease["owner_matches_domain"] is True
     assert lease["lease_token_persisted"] is False
     assert private_value not in json.dumps(lease)
+
+
+def test_journal_health_recognizes_provider_owned_background_lease(tmp_path):
+    conn = _journal_connection()
+    storage = tmp_path / "scope-recall"
+    storage.mkdir()
+    (storage / ".truth-writer.lease.info").write_text(
+        json.dumps({"role": "provider"}),
+        encoding="utf-8",
+    )
+
+    health = journal_durable_health(conn, storage_dir=storage)
+
+    assert health["lease"]["owner_role"] == "provider"
+    assert health["lease"]["owner_matches_domain"] is True
+    conn.close()

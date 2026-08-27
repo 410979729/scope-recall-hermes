@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 import pytest
 
 import scope_recall.relation_frequency_maintenance as maintenance
+import scope_recall.relation_policy_generation as relation_policy_generation
+from scope_recall.durable_work import canonical_snapshot_hash
 from scope_recall.relation_containment import (
     establish_relation_scope_baseline,
     record_relation_scope_target,
@@ -206,6 +208,76 @@ def test_materialization_freezes_finite_pair_identity_and_item_set() -> None:
     with pytest.raises(sqlite3.IntegrityError, match="invalid.*transition"):
         conn.execute(
             "UPDATE relation_policy_generations SET state='completed' WHERE generation_id=?",
+            (generation_id,),
+        )
+    conn.close()
+
+
+def test_generation_identity_items_and_provenance_are_sql_immutable() -> None:
+    conn = _conn()
+    _insert_memory(
+        conn,
+        memory_id="memory-a",
+        content="Application A depends on database x for durable storage.",
+    )
+    _insert_memory(
+        conn,
+        memory_id="memory-b",
+        content="Database x is the operational database service for Application A.",
+    )
+    _stage_target(conn, old_blocked={"database x"}, new_blocked=set())
+    created = materialize_relation_policy_generation(conn, candidate_cap=10)
+    generation_id = str(created["generation_id"])
+
+    with pytest.raises(sqlite3.IntegrityError, match="identity is immutable"):
+        conn.execute(
+            "UPDATE relation_policy_generations "
+            "SET authority_snapshot_json='{}' WHERE generation_id=?",
+            (generation_id,),
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="item identity is immutable"):
+        conn.execute(
+            "UPDATE relation_generation_items SET max_attempts=max_attempts+1 "
+            "WHERE generation_id=?",
+            (generation_id,),
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="item history is immutable"):
+        conn.execute(
+            "DELETE FROM relation_generation_items WHERE generation_id=?",
+            (generation_id,),
+        )
+    conn.execute(
+        """
+        INSERT INTO relation_edge_provenance(
+            relation_identity, generation_id, policy_version, support_kind,
+            support_entities_json, evidence_hash, reviewed, manual, created_at
+        ) VALUES ('fixture-relation', ?, ?, 'fixture', '[]', ?, 0, 0,
+                  '2026-08-27T05:00:00+00:00')
+        """,
+        (generation_id, RELATION_POLICY_VERSION, "a" * 64),
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="provenance is immutable"):
+        conn.execute(
+            "DELETE FROM relation_edge_provenance WHERE generation_id=?",
+            (generation_id,),
+        )
+    conn.commit()
+
+    completed = drain_relation_policy_generation(
+        conn,
+        candidate_cap=10,
+        wall_clock_seconds=5.0,
+    )
+    assert completed["status"] in {"ready", "degraded"}
+    with pytest.raises(sqlite3.IntegrityError, match="receipt is immutable"):
+        conn.execute(
+            "UPDATE relation_generation_items SET receipt_json='{}' "
+            "WHERE generation_id=?",
+            (generation_id,),
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="history is immutable"):
+        conn.execute(
+            "DELETE FROM relation_policy_generations WHERE generation_id=?",
             (generation_id,),
         )
     conn.close()
@@ -458,6 +530,89 @@ def test_program0_rollback_clears_active_generation_health_without_history_loss(
     assert health["state"] == "ready"
     assert health["active_generation_counts"] == {}
     assert health["generation_counts"]["blocked"] == 1
+    conn.close()
+
+
+def test_program0_rollback_supersedes_inflight_generation_before_handoff() -> None:
+    conn = _conn()
+    _insert_memory(
+        conn,
+        memory_id="memory-a",
+        content="Application A depends on database x for durable storage.",
+    )
+    _insert_memory(
+        conn,
+        memory_id="memory-b",
+        content="Database x is the operational database service for Application A.",
+    )
+    _, target = _stage_target(
+        conn, old_blocked={"database x"}, new_blocked=set()
+    )
+    created = materialize_relation_policy_generation(conn, candidate_cap=10)
+    assert created["status"] == "pending"
+
+    rollback = maintenance.drain_relation_frequency_work(
+        conn,
+        relation_candidate_cap=10,
+        relation_policy_generation_enabled=False,
+        wall_clock_seconds=5.0,
+    )
+    generation = conn.execute(
+        "SELECT state, reason_code FROM relation_policy_generations"
+    ).fetchone()
+    containment = conn.execute(
+        "SELECT active_revision, target_revision FROM relation_scope_containment "
+        "WHERE scope_id='scope-a'"
+    ).fetchone()
+    health = relation_policy_generation_report(conn)
+
+    assert rollback["containment"]["attempted"] == 1
+    assert rollback["containment"]["completed"] == 1
+    assert generation["state"] == "superseded"
+    assert generation["reason_code"] == "program0_rollback"
+    assert containment["active_revision"] == containment["target_revision"] == target
+    assert health["state"] == "ready"
+    assert health["active_generation_counts"] == {}
+    conn.close()
+
+
+def test_supersede_helper_closes_building_generation() -> None:
+    conn = _conn()
+    now = "2026-08-27T05:00:00+00:00"
+    conn.execute(
+        """
+        INSERT INTO relation_policy_generations(
+            generation_id, scope_id, idempotency_key,
+            scope_snapshot_json, authority_snapshot_json, policy_version,
+            relation_revision, source_corpus_revision, frozen_upper_bound,
+            old_blocked_entities_json, old_blocked_entities_sha256,
+            new_blocked_entities_json, new_blocked_entities_sha256,
+            delta_json, delta_sha256, item_set_hash, item_total,
+            state, max_attempts, created_at, updated_at
+        ) VALUES (
+            'generation-building', 'scope-a', 'building-key', '{}', '{}', ?,
+            1, 0, 10, '[]', ?, '[]', ?, '[]', ?, '', 0,
+            'building', 3, ?, ?
+        )
+        """,
+        (RELATION_POLICY_VERSION, "a" * 64, "a" * 64, "a" * 64, now, now),
+    )
+
+    relation_policy_generation._supersede_generation(
+        conn, "generation-building", reason_code="program0_rollback"
+    )
+
+    row = conn.execute(
+        "SELECT state, reason_code, item_set_hash, item_total "
+        "FROM relation_policy_generations "
+        "WHERE generation_id='generation-building'"
+    ).fetchone()
+    assert tuple(row) == (
+        "superseded",
+        "program0_rollback",
+        canonical_snapshot_hash({"pairs": []}),
+        0,
+    )
     conn.close()
 
 

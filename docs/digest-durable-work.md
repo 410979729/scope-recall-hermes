@@ -16,8 +16,10 @@ content, rejection text, or provider error text.
 
 Health preserves the native oldest-entry/session-cursor scheduler. It reports
 pending scope/session counts, oldest active debt, stable retry/poison counts,
-and the latest native run receipt. Explicit journal recovery remains the only
-way to reopen processed retry/dead-letter evidence.
+and the latest native run receipt. Unprocessed retryable failures remain
+auto-recoverable, while active `retry-exhausted` evidence reports blocked with
+operator action required. Explicit journal recovery remains the only way to
+reopen processed retry/dead-letter evidence.
 
 ## Nightly mapping
 

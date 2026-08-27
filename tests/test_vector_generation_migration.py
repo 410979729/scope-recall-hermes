@@ -690,8 +690,8 @@ def test_doctor_manifests_without_pointer_require_repair(tmp_path):
 
     _remove_and_check_durable_work(
         payload,
-        state="disabled",
-        reason_code="no_active_generation",
+        state="needs_repair",
+        reason_code="generation_pointer_missing",
     )
 
     assert payload == {
@@ -728,7 +728,7 @@ def test_doctor_missing_manifest_exposes_empty_inactive_generation_inventory(tmp
     payload, check, recommendations = _doctor_report_without_ready_scan(tmp_path)
     _remove_and_check_durable_work(
         payload,
-        state="disabled",
+        state="needs_repair",
         reason_code="current_generation_manifest_missing",
     )
     assert payload == {
