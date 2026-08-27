@@ -263,17 +263,24 @@ def _drain_relation_rebuild_debt_locked(provider: Any) -> None:
     try:
         conn = provider._require_conn()
         # The shared provider connection can carry a transaction opened by a
-        # foreground caller after it releases ``provider._lock``.  Idle
+        # foreground caller after it releases the provider lock.  Idle
         # maintenance must not adopt that transaction: the bounded drain uses
         # ``commit=True`` and would otherwise commit work it does not own.
         if bool(getattr(conn, "in_transaction", False)):
-            provider._relation_maintenance_busy_skips = int(
-                getattr(provider, "_relation_maintenance_busy_skips", 0) or 0
-            ) + 1
-            provider._relation_maintenance_consecutive_failures = int(
-                getattr(provider, "_relation_maintenance_consecutive_failures", 0)
-                or 0
-            ) + 1
+            setattr(
+                provider,
+                "_relation_maintenance_busy_skips",
+                int(getattr(provider, "_relation_maintenance_busy_skips", 0) or 0) + 1,
+            )
+            setattr(
+                provider,
+                "_relation_maintenance_consecutive_failures",
+                int(
+                    getattr(provider, "_relation_maintenance_consecutive_failures", 0)
+                    or 0
+                )
+                + 1,
+            )
             return
         deferred_contention = int(
             getattr(provider, "_relation_maintenance_lock_contention_skips", 0) or 0
