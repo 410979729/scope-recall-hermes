@@ -281,6 +281,12 @@ class ProviderToolRuntimeAdapter:
             return self._query_kernel().explain(query_port, *args, **kwargs)
         return _call(self._host, "_explain_query", *args, **kwargs)
 
+    def recall_inspector(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is None:
+            raise RuntimeError("Recall Inspector requires the application query port")
+        return self._query_kernel().inspector(query_port, *args, **kwargs)
+
     def export_memories(self, *args: Any, **kwargs: Any) -> Any:
         query_port = self._resolve_query_port()
         if query_port is not None:

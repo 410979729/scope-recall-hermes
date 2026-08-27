@@ -635,6 +635,7 @@ STABLE_TOOL_NAMES = {
     "scope_recall_stats",
     "scope_recall_inspect",
     "scope_recall_explain",
+    "scope_recall_inspector",
     "scope_recall_benchmark",
     "scope_recall_playbook_create",
     "scope_recall_playbook_search",

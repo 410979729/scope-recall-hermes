@@ -39,8 +39,11 @@ class RecallServiceView(Protocol):
 
     last_rejected_candidates: Any
     last_funnel_trace: Any
+    last_recall_packet: Any
 
-    def search_memories(self, query: str, limit: int = 5) -> Any: ...
+    def search_memories(
+        self, query: str, *, limit: int = 5, recall_mode: str = "advisory"
+    ) -> Any: ...
 
 
 @runtime_checkable
@@ -209,6 +212,8 @@ class ToolRuntimePort(MemoryQueryPort, FactToolPort, Protocol):
     def inspect_memory(self, *args: Any, **kwargs: Any) -> Any: ...
 
     def explain_query(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    def recall_inspector(self, *args: Any, **kwargs: Any) -> Any: ...
 
     def export_memories(self, *args: Any, **kwargs: Any) -> Any: ...
 

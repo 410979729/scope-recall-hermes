@@ -141,6 +141,7 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
     # Diagnostics describe one search only; never leak a prior temporal
     # query into a later request where the feature gate is disabled.
     host.last_temporal_query_diagnostics = {}
+    host.last_recall_packet = None
     retrieval_cfg = host.provider._retrieval_config or {}
     plan = recall_pipeline.build_search_plan(
         limit=limit,
@@ -640,5 +641,6 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
     trace["stages"]["ranked"] = host._trace_stage(ranked)
     trace["final"] = recall_pipeline.final_trace_payload(returned=returned, ranked_rejected=ranked_rejected)
     trace["timings_ms"]["total"] = host._elapsed_ms(started_at)
+    host.last_recall_packet = active_packet
     host.last_funnel_trace = trace
     return returned
