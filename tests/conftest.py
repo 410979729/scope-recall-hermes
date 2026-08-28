@@ -19,7 +19,8 @@ from scripts.execution_boundary import (
     validate_execution_boundary,
 )
 
-_REAL_HOME = Path.home().resolve(strict=False)
+_DECLARED_REAL_HOME = str(os.environ.get("SCOPE_RECALL_REAL_HOME") or "").strip()
+_REAL_HOME = Path(_DECLARED_REAL_HOME or Path.home()).resolve(strict=False)
 _ACTIVE_HERMES_HOME = ambient_active_hermes_home(real_home=_REAL_HOME)
 _TEST_BOUNDARY = tempfile.TemporaryDirectory(prefix="scope.recall.test-boundary.")
 _TEST_ROOT = Path(_TEST_BOUNDARY.name)
@@ -28,9 +29,12 @@ _TEST_TEMP = _TEST_ROOT / "temp"
 _TEST_TARGETS = {
     "HOME": _TEST_ROOT / "user-home",
     "USERPROFILE": _TEST_ROOT / "user-home",
+    "APPDATA": _TEST_ROOT / "appdata",
     "LOCALAPPDATA": _TEST_ROOT / "local-appdata",
     "TEMP": _TEST_TEMP,
     "TMP": _TEST_TEMP,
+    "XDG_CONFIG_HOME": _TEST_ROOT / "xdg-config",
+    "XDG_CACHE_HOME": _TEST_ROOT / "xdg-cache",
     "HERMES_HOME": _TEST_HERMES_HOME,
     "SCOPE_RECALL_DB": _TEST_ROOT / "truth" / "memory.sqlite3",
     "SCOPE_RECALL_LOG_DIR": _TEST_ROOT / "logs",
@@ -43,8 +47,8 @@ validate_execution_boundary(
     active_hermes_home=_ACTIVE_HERMES_HOME,
     real_home=_REAL_HOME,
 )
-for _target in set(_TEST_TARGETS.values()):
-    if _target.suffix:
+for _name, _target in _TEST_TARGETS.items():
+    if _name in {"SCOPE_RECALL_DB", "SCOPE_RECALL_PLUGIN_DIR"}:
         _target.parent.mkdir(parents=True, exist_ok=True)
     else:
         _target.mkdir(parents=True, exist_ok=True)

@@ -155,6 +155,8 @@ def test_candidate_evidence_assets_are_release_packaged() -> None:
     assert "scripts/build.release_candidate.py" in release_check.REQUIRED_SOURCE_FILES
     assert "scripts/release_candidate_artifacts.py" in release_check.REQUIRED_SOURCE_FILES
     assert "scripts/probe.hermes_compatibility.py" in release_check.REQUIRED_SOURCE_FILES
+    assert "scripts/release_test_honesty.py" in release_check.REQUIRED_SOURCE_FILES
+    assert "scripts/run.release_validation.py" in release_check.REQUIRED_SOURCE_FILES
     assert "scripts/release.candidate_rehearsals.json" in release_check.REQUIRED_SOURCE_FILES
     assert "scope_recall/scripts/report.candidate_manifest.py" in release_check.REQUIRED_WHEEL
     assert "scope_recall/scripts/build.release_candidate.py" in release_check.REQUIRED_WHEEL
@@ -166,6 +168,8 @@ def test_candidate_evidence_assets_are_release_packaged() -> None:
         "scope_recall/scripts/probe.hermes_compatibility.py"
         in release_check.REQUIRED_WHEEL
     )
+    assert "scope_recall/scripts/release_test_honesty.py" in release_check.REQUIRED_WHEEL
+    assert "scope_recall/scripts/run.release_validation.py" in release_check.REQUIRED_WHEEL
     assert (
         "scope_recall/scripts/release.candidate_rehearsals.json"
         in release_check.REQUIRED_WHEEL
