@@ -24,9 +24,12 @@ def test_isolated_test_environment_declares_every_write_surface() -> None:
         for key in (
             "HOME",
             "USERPROFILE",
+            "APPDATA",
             "LOCALAPPDATA",
             "TEMP",
             "TMP",
+            "XDG_CONFIG_HOME",
+            "XDG_CACHE_HOME",
             "HERMES_HOME",
             "SCOPE_RECALL_DB",
             "SCOPE_RECALL_LOG_DIR",

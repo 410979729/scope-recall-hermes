@@ -1,0 +1,131 @@
+"""Exact pytest accounting contracts for final release evidence."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "scripts" / "release_test_honesty.py"
+
+
+def _load_module():
+    spec = importlib.util.spec_from_file_location(
+        "scope_recall_release_test_honesty_test",
+        SCRIPT,
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _report(
+    node_id: str,
+    outcome: str,
+    *,
+    when: str = "call",
+    reason: str = "",
+    was_xfail: bool = False,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        nodeid=node_id,
+        outcome=outcome,
+        when=when,
+        longrepr=("file.py", 1, reason) if reason else "",
+        wasxfail=was_xfail,
+    )
+
+
+def test_plugin_writes_exact_pass_skip_xfail_and_xpass_accounting(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    output = tmp_path / "honesty.json"
+    plugin = module.ReleaseTestHonestyPlugin(
+        output=output,
+        source_commit="a" * 40,
+        source_tree="b" * 40,
+        timeout_overrides=[],
+        first_failure_fixes=[],
+    )
+    plugin.pytest_sessionstart(SimpleNamespace())
+    plugin.pytest_runtest_logreport(_report("tests/test_a.py::test_pass", "passed"))
+    plugin.pytest_runtest_logreport(
+        _report("tests/test_a.py::test_skip", "skipped", reason="platform unavailable")
+    )
+    plugin.pytest_runtest_logreport(
+        _report("tests/test_a.py::test_xfail", "skipped", was_xfail=True)
+    )
+    plugin.pytest_runtest_logreport(
+        _report("tests/test_a.py::test_xpass", "passed", was_xfail=True)
+    )
+    plugin.pytest_sessionfinish(SimpleNamespace(testscollected=4), 0)
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["collected"] == 4
+    assert payload["passed"] == 1
+    assert payload["skipped"] == [
+        {
+            "node_id": "tests/test_a.py::test_skip",
+            "reason": "platform unavailable",
+        }
+    ]
+    assert payload["xfail"] == 1
+    assert payload["xpass"] == 1
+    assert payload["rerun_count"] == 0
+    assert payload["source_commit"] == "a" * 40
+    assert payload["source_tree"] == "b" * 40
+
+
+def test_plugin_environment_is_explicit_and_rejects_malformed_arrays(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    environment = {
+        module.OUTPUT_ENV: str(tmp_path / "honesty.json"),
+        module.SOURCE_COMMIT_ENV: "a" * 40,
+        module.SOURCE_TREE_ENV: "b" * 40,
+        module.TIMEOUTS_ENV: "[]",
+        module.FAILURE_FIXES_ENV: "[]",
+    }
+
+    plugin = module.build_plugin_from_environment(environment)
+    assert plugin is not None
+    assert plugin.source_commit == "a" * 40
+    assert plugin.source_tree == "b" * 40
+
+    environment[module.TIMEOUTS_ENV] = "{}"
+    with pytest.raises(RuntimeError, match="JSON array"):
+        module.build_plugin_from_environment(environment)
+
+
+def test_plugin_counts_non_call_failure_as_error_and_rerun_honestly(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    plugin = module.ReleaseTestHonestyPlugin(
+        output=tmp_path / "honesty.json",
+        source_commit="a" * 40,
+        source_tree="b" * 40,
+        timeout_overrides=[],
+        first_failure_fixes=[],
+    )
+
+    plugin.pytest_runtest_logreport(
+        _report("tests/test_a.py::test_setup", "failed", when="setup")
+    )
+    plugin.pytest_runtest_logreport(
+        _report("tests/test_a.py::test_retry", "rerun")
+    )
+    payload = plugin.payload(collected=2)
+
+    assert payload["errors"] == 1
+    assert payload["failed"] == 0
+    assert payload["rerun_count"] == 1

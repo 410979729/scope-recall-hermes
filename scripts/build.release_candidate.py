@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import importlib.util
 import json
 import os
@@ -17,19 +18,40 @@ import tomllib
 from types import ModuleType
 from typing import Mapping, Sequence
 
-from scripts.execution_boundary import (  # pyright: ignore[reportMissingImports]
-    ambient_active_hermes_home,
-    validate_execution_boundary,
-)
-from scripts.release_candidate_artifacts import (  # pyright: ignore[reportMissingImports]
-    ArtifactVerificationError,
-    archive_member_manifest,
-    artifact_name_findings,
-    read_archive_members,
-    sha256_file,
-    verify_sdist_source_correspondence,
-    verify_wheel_source_correspondence,
-)
+try:
+    from scripts.execution_boundary import (  # pyright: ignore[reportMissingImports]
+        ambient_active_hermes_home,
+        validate_execution_boundary,
+    )
+    from scripts.release_candidate_artifacts import (  # pyright: ignore[reportMissingImports]
+        ArtifactVerificationError,
+        archive_member_manifest,
+        artifact_name_findings,
+        read_archive_members,
+        sha256_file,
+        verify_sdist_source_correspondence,
+        verify_wheel_source_correspondence,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name not in {
+        "scripts",
+        "scripts.execution_boundary",
+        "scripts.release_candidate_artifacts",
+    }:
+        raise
+    from execution_boundary import (  # pyright: ignore[reportMissingImports]
+        ambient_active_hermes_home,
+        validate_execution_boundary,
+    )
+    from release_candidate_artifacts import (  # pyright: ignore[reportMissingImports]
+        ArtifactVerificationError,
+        archive_member_manifest,
+        artifact_name_findings,
+        read_archive_members,
+        sha256_file,
+        verify_sdist_source_correspondence,
+        verify_wheel_source_correspondence,
+    )
 
 
 PROVENANCE_SCHEMA_VERSION = "scope-recall.build-provenance.v1"
@@ -70,6 +92,7 @@ def _run(
     log_path: Path | None = None,
 ) -> dict[str, object]:
     started = time.monotonic()
+    started_at = datetime.now(timezone.utc).isoformat()
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
         completed = subprocess.run(
@@ -94,6 +117,7 @@ def _run(
             f"command failed before completion: {type(exc).__name__}"
         ) from exc
     duration = time.monotonic() - started
+    finished_at = datetime.now(timezone.utc).isoformat()
     if log_path is not None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text(completed.stdout or "", encoding="utf-8", newline="\n")
@@ -101,7 +125,12 @@ def _run(
         raise ReleaseCandidateBuildError(
             f"command exited {completed.returncode}: {Path(command[0]).name}"
         )
-    return {"exit_code": completed.returncode, "duration_seconds": round(duration, 3)}
+    return {
+        "exit_code": completed.returncode,
+        "duration_seconds": round(duration, 3),
+        "started_at": started_at,
+        "finished_at": finished_at,
+    }
 
 
 def _repository_identity(candidate: ModuleType, root: Path) -> dict[str, object]:
@@ -240,6 +269,12 @@ def _isolated_environment(
     values = {
         "HOME": home,
         "USERPROFILE": home,
+        "APPDATA": boundary / "appdata",
+        "LOCALAPPDATA": boundary / "local-appdata",
+        "TEMP": boundary / "temp",
+        "TMP": boundary / "temp",
+        "XDG_CONFIG_HOME": boundary / "xdg-config",
+        "XDG_CACHE_HOME": boundary / "xdg-cache",
         "HERMES_HOME": hermes_home,
         "SCOPE_RECALL_DB": boundary / "truth.sqlite3",
         "SCOPE_RECALL_LOG_DIR": boundary / "logs",
@@ -251,8 +286,8 @@ def _isolated_environment(
         targets=values,
         active_hermes_home=active_hermes_home or ambient_active_hermes_home(),
     )
-    for path in values.values():
-        if path.suffix:
+    for name, path in values.items():
+        if name in {"SCOPE_RECALL_DB", "SCOPE_RECALL_PLUGIN_DIR"}:
             path.parent.mkdir(parents=True, exist_ok=True)
         else:
             path.mkdir(parents=True, exist_ok=True)
@@ -309,6 +344,7 @@ def _verify_install(
         [sys.executable, "-m", "venv", str(venv_root)],
         cwd=workspace,
         timeout=INSTALL_TIMEOUT_SECONDS,
+        env=env,
         log_path=create_log,
     )
     python = _venv_python(venv_root)
@@ -473,6 +509,10 @@ def build_release_candidate(
         workspace = Path(workspace_text)
         build_dir = workspace / "dist"
         build_dir.mkdir()
+        build_environment = _isolated_environment(
+            workspace / "boundary-build",
+            active_hermes_home=active_hermes_home,
+        )
         stages: dict[str, object] = {}
         build_command = [
             sys.executable,
@@ -488,6 +528,7 @@ def build_release_candidate(
             build_command,
             cwd=resolved,
             timeout=BUILD_TIMEOUT_SECONDS,
+            env=build_environment,
             log_path=staging / "BUILD.log",
         )
         built_wheel, built_sdist = _select_distribution_artifacts(build_dir, version)
@@ -564,6 +605,40 @@ def build_release_candidate(
         }
         provenance_path = staging / "BUILD_PROVENANCE.json"
         _write_json(provenance_path, provenance)
+        wheel_provenance = provenance.get("wheel")
+        if not isinstance(wheel_provenance, dict):
+            raise ReleaseCandidateBuildError("wheel provenance is missing")
+        wheel_doctor = wheel_install.get("doctor")
+        if not isinstance(wheel_doctor, dict):
+            raise ReleaseCandidateBuildError("wheel Doctor stage receipt is missing")
+        _write_json(
+            staging / "DOCTOR.json",
+            {
+                "schema_version": "scope-recall.doctor-receipt.v1",
+                "source_commit": identity["commit"],
+                "source_tree": identity["tree"],
+                "artifact_sha256": wheel_provenance["sha256"],
+                "started_at": wheel_doctor["started_at"],
+                "finished_at": wheel_doctor["finished_at"],
+                "command": [
+                    "python",
+                    "<installed-wheel>/scripts/doctor.py",
+                    "--json",
+                    "--source-root",
+                    "<installed-wheel>",
+                ],
+                "exit_code": wheel_doctor["exit_code"],
+                "environment_boundary": {
+                    "hermes_home_kind": "isolated",
+                    "database_kind": "isolated",
+                    "active_instance_touched": False,
+                },
+                "result": "passed",
+                "raw_log_sha256": sha256_file(
+                    staging / "INSTALL_WHEEL_DOCTOR.log"
+                ),
+            },
+        )
         manifest = candidate.build_candidate_manifest(
             resolved,
             provenance_path=provenance_path,

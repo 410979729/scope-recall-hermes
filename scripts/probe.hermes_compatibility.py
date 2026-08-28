@@ -275,6 +275,12 @@ def build_probe_receipt(
         targets = {
             "HOME": boundary / "user-home",
             "USERPROFILE": boundary / "user-home",
+            "APPDATA": boundary / "appdata",
+            "LOCALAPPDATA": boundary / "local-appdata",
+            "TEMP": boundary / "temp",
+            "TMP": boundary / "temp",
+            "XDG_CONFIG_HOME": boundary / "xdg-config",
+            "XDG_CACHE_HOME": boundary / "xdg-cache",
             "HERMES_HOME": home,
             "SCOPE_RECALL_DB": boundary / "truth" / "memory.sqlite3",
             "SCOPE_RECALL_LOG_DIR": boundary / "logs",

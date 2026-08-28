@@ -156,8 +156,19 @@ def test_probe_classification_is_bound_to_process_result(
     assert receipt["hermes_source"] == BOUND_IDENTITY
     assert len(calls) == 2
     for _command, boundary, env in calls:
-        assert Path(env["HERMES_HOME"]).is_relative_to(boundary)
-        assert not Path(env["HERMES_HOME"]).is_relative_to(active)
+        for name in (
+            "HOME",
+            "USERPROFILE",
+            "APPDATA",
+            "LOCALAPPDATA",
+            "TEMP",
+            "TMP",
+            "XDG_CONFIG_HOME",
+            "XDG_CACHE_HOME",
+            "HERMES_HOME",
+        ):
+            assert Path(env[name]).is_relative_to(boundary)
+            assert not Path(env[name]).is_relative_to(active)
     assert str(tmp_path) not in json.dumps(receipt, sort_keys=True)
 
 

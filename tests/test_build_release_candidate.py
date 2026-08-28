@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -94,6 +96,12 @@ def test_candidate_build_environment_is_bounded_to_isolated_directory(
     for key in (
         "HOME",
         "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "TEMP",
+        "TMP",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
         "HERMES_HOME",
         "SCOPE_RECALL_DB",
         "SCOPE_RECALL_LOG_DIR",
@@ -102,3 +110,23 @@ def test_candidate_build_environment_is_bounded_to_isolated_directory(
     ):
         Path(env[key]).resolve().relative_to(boundary.resolve())
     assert env["PYTHONNOUSERSITE"] == "1"
+    plugin_dir = Path(env["SCOPE_RECALL_PLUGIN_DIR"])
+    assert plugin_dir.parent.is_dir()
+    assert not plugin_dir.exists()
+
+
+def test_candidate_build_script_path_entrypoint_is_importable() -> None:
+    result = subprocess.run(
+        [sys.executable, "-B", str(SCRIPT), "--help"],
+        cwd=ROOT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert "--expected-sha" in result.stdout
