@@ -737,3 +737,21 @@ def test_operator_receipt_racing_conflict_is_not_overwritten(
 
     assert receipt_path.read_bytes() == forged
     assert not list(receipt_path.parent.glob("*.tmp"))
+
+
+def test_operator_receipt_publication_supports_long_windows_path(
+    tmp_path: Path,
+) -> None:
+    operator_ledger = importlib.import_module("scope_recall.operator_ledger")
+    receipt_dir = tmp_path
+    for index in range(4):
+        receipt_dir /= f"long-receipt-segment-{index}-" + ("x" * 48)
+    receipt_path = receipt_dir / "operator.deny.op_long_path.json"
+    expected = b'{"operation_id":"op_long_path"}\n'
+
+    operator_ledger._write_receipt_mirror(receipt_path, expected)
+    operator_ledger._write_receipt_mirror(receipt_path, expected)
+
+    assert operator_ledger._read_receipt_bytes(receipt_path) == expected
+    with pytest.raises(FileExistsError, match="different evidence"):
+        operator_ledger._write_receipt_mirror(receipt_path, b'{"forged":true}\n')

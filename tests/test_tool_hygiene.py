@@ -263,6 +263,29 @@ def test_scope_recall_forget_hard_delete_requires_maintenance_tools(provider):
         payload["error"]
         == "scope_recall_forget hard_delete requires maintenance_tools_enabled=true"
     )
+    assert payload["mode"] == "hard_delete"
+    assert payload["data_retained"] is True
+    assert payload["reversible"] is False
+    assert payload["privacy_purge"] is False
+    assert payload["mutation_applied"] is False
+
+
+def test_forget_hard_delete_reports_not_retained_and_not_purge(provider):
+    created = _store(provider, "Maintenance hard delete response contract.", "project")
+    provider._config["maintenance_tools_enabled"] = True
+
+    payload = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_forget", {"id": created["id"], "hard_delete": True}
+        )
+    )
+
+    assert payload["deleted"] == 1
+    assert payload["mode"] == "hard_delete"
+    assert payload["data_retained"] is False
+    assert payload["reversible"] is False
+    assert payload["privacy_purge"] is False
+    assert payload["mutation_applied"] is True
 
 
 def test_tool_handler_fallback_errors_are_sanitized(monkeypatch):
