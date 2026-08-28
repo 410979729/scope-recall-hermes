@@ -13,10 +13,16 @@ import sys
 import tempfile
 import tomllib
 import types
-from typing import Sequence
+from typing import Mapping, Sequence
+
+from scripts.release_candidate_artifacts import (  # pyright: ignore[reportMissingImports]
+    archive_member_manifest,
+)
 
 
 SCHEMA_VERSION = "scope-recall.candidate-manifest.v1"
+PROVENANCE_SCHEMA_VERSION = "scope-recall.build-provenance.v1"
+PROVENANCE_MISMATCH_CODE = "CANDIDATE_ARTIFACT_PROVENANCE_MISMATCH"
 ALGORITHM = "git-ls-files-content-sha256-v1"
 DEFAULT_OUTPUT = Path(".execution/CANDIDATE_MANIFEST.json")
 CANONICAL_PROFILES = (
@@ -220,25 +226,6 @@ def _schema_fingerprints(root: Path) -> dict[str, object]:
     }
 
 
-def _artifact_entries(paths: Sequence[Path]) -> list[dict[str, object]]:
-    entries: list[dict[str, object]] = []
-    seen: set[str] = set()
-    for path in paths:
-        resolved = path.resolve(strict=True)
-        name = resolved.name
-        if name in seen:
-            raise CandidateManifestError(f"duplicate artifact basename: {name}")
-        seen.add(name)
-        entries.append(
-            {
-                "name": name,
-                "size_bytes": resolved.stat().st_size,
-                "sha256": _sha256_file(resolved),
-            }
-        )
-    return sorted(entries, key=lambda item: str(item["name"]))
-
-
 def _repository_identity(root: Path, *, require_clean: bool) -> dict[str, object]:
     status = _run_git(root, ["status", "--porcelain=v1", "-z"])
     clean = not bool(status)
@@ -259,17 +246,145 @@ def _hermes_identity(hermes_root: Path | None) -> dict[str, object]:
     return identity
 
 
+def _provenance_mismatch(detail: str) -> CandidateManifestError:
+    return CandidateManifestError(f"{PROVENANCE_MISMATCH_CODE}: {detail}")
+
+
+def _load_provenance(path: Path) -> tuple[Path, dict[str, object]]:
+    try:
+        resolved = Path(path).resolve(strict=True)
+        payload = json.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise _provenance_mismatch(
+            f"build provenance cannot be read: {type(exc).__name__}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise _provenance_mismatch("build provenance root must be an object")
+    return resolved, payload
+
+
+def _provenance_artifact(
+    provenance_path: Path,
+    payload: Mapping[str, object],
+    kind: str,
+) -> dict[str, object]:
+    raw = payload.get(kind)
+    if not isinstance(raw, dict):
+        raise _provenance_mismatch(f"provenance {kind} must be an object")
+    name = str(raw.get("name") or "")
+    relative_path = str(raw.get("relative_path") or name).replace("\\", "/")
+    pure = PurePosixPath(relative_path)
+    if (
+        not name
+        or not relative_path
+        or pure.is_absolute()
+        or ".." in pure.parts
+        or pure.name != name
+        or relative_path != pure.as_posix()
+    ):
+        raise _provenance_mismatch(f"provenance {kind} path is unsafe")
+    artifact = provenance_path.parent.joinpath(*pure.parts).resolve(strict=False)
+    try:
+        artifact.relative_to(provenance_path.parent.resolve(strict=True))
+        artifact = artifact.resolve(strict=True)
+    except (OSError, ValueError) as exc:
+        raise _provenance_mismatch(
+            f"provenance {kind} artifact is missing or outside its evidence root"
+        ) from exc
+    if not artifact.is_file():
+        raise _provenance_mismatch(f"provenance {kind} artifact is not a file")
+    actual_sha256 = _sha256_file(artifact)
+    if raw.get("sha256") != actual_sha256:
+        raise _provenance_mismatch(f"provenance {kind} artifact digest differs")
+    try:
+        member_manifest = archive_member_manifest(artifact)
+    except Exception as exc:
+        raise _provenance_mismatch(
+            f"provenance {kind} archive cannot be verified: {type(exc).__name__}"
+        ) from exc
+    member_sha256 = member_manifest["member_manifest_sha256"]
+    if raw.get("member_manifest_sha256") != member_sha256:
+        raise _provenance_mismatch(
+            f"provenance {kind} member manifest digest differs"
+        )
+    return {
+        "kind": kind,
+        "name": name,
+        "size_bytes": artifact.stat().st_size,
+        "sha256": actual_sha256,
+        "member_manifest_sha256": member_sha256,
+        "member_count": member_manifest["file_count"],
+    }
+
+
+def verify_build_provenance(
+    root: Path,
+    provenance_path: Path,
+    *,
+    require_clean: bool = True,
+) -> dict[str, object]:
+    """Verify provenance against current Git/source/archive bytes or fail closed."""
+
+    resolved_root = root.resolve(strict=True)
+    resolved_provenance, payload = _load_provenance(provenance_path)
+    if payload.get("schema_version") != PROVENANCE_SCHEMA_VERSION:
+        raise _provenance_mismatch("unsupported build provenance schema")
+    identity = _repository_identity(resolved_root, require_clean=require_clean)
+    exact_source = source_manifest(resolved_root)
+    expected = {
+        "source_commit": identity["commit"],
+        "source_tree": identity["tree"],
+        "source_manifest_sha256": exact_source["manifest_sha256"],
+        "source_dirty": False,
+    }
+    for key, wanted in expected.items():
+        if payload.get(key) != wanted:
+            raise _provenance_mismatch(f"provenance {key} differs from current source")
+    install_verification = payload.get("install_verification")
+    if install_verification != {"sdist": "passed", "wheel": "passed"}:
+        raise _provenance_mismatch("install verification is incomplete")
+    artifacts = [
+        _provenance_artifact(resolved_provenance, payload, kind)
+        for kind in ("wheel", "sdist")
+    ]
+    return {
+        "path": resolved_provenance,
+        "payload": payload,
+        "sha256": _sha256_file(resolved_provenance),
+        "source_identity": identity,
+        "source_manifest": exact_source,
+        "artifacts": artifacts,
+    }
+
+
 def build_candidate_manifest(
     root: Path,
     *,
+    provenance_path: Path,
     hermes_root: Path | None = None,
-    artifacts: Sequence[Path] = (),
     ci_run_ids: Sequence[str] = (),
     expected_version: str = "2.0.0",
     require_clean: bool = True,
 ) -> dict[str, object]:
     resolved = root.resolve(strict=True)
-    source_identity = _repository_identity(resolved, require_clean=require_clean)
+    verified = verify_build_provenance(
+        resolved,
+        provenance_path,
+        require_clean=require_clean,
+    )
+    source_identity_raw = verified.get("source_identity")
+    source_manifest_raw = verified.get("source_manifest")
+    artifacts_raw = verified.get("artifacts")
+    provenance_resolved = verified.get("path")
+    if not isinstance(source_identity_raw, dict):
+        raise CandidateManifestError("verified source identity is invalid")
+    if not isinstance(source_manifest_raw, dict):
+        raise CandidateManifestError("verified source manifest is invalid")
+    if not isinstance(artifacts_raw, list):
+        raise CandidateManifestError("verified artifact list is invalid")
+    if not isinstance(provenance_resolved, Path):
+        raise CandidateManifestError("verified provenance path is invalid")
+    source_identity: dict[str, object] = source_identity_raw
     package_version = _project_version(resolved)
     plugin_version = _plugin_version(resolved)
     if package_version != expected_version or plugin_version != expected_version:
@@ -281,14 +396,21 @@ def build_candidate_manifest(
         "candidate_version": expected_version,
         "source": {
             **source_identity,
-            "manifest": source_manifest(resolved),
+            "manifest": source_manifest_raw,
             "pyproject_sha256": _sha256_file(resolved / "pyproject.toml"),
             "plugin_yaml_sha256": _sha256_file(resolved / "plugin.yaml"),
         },
         "schemas": _schema_fingerprints(resolved),
         "hermes": _hermes_identity(hermes_root),
         "ci_run_ids": sorted({str(item).strip() for item in ci_run_ids if str(item).strip()}),
-        "artifacts": _artifact_entries(artifacts),
+        "provenance": {
+            "schema_version": PROVENANCE_SCHEMA_VERSION,
+            "name": provenance_resolved.name,
+            "sha256": verified["sha256"],
+            "source_commit": source_identity["commit"],
+            "source_tree": source_identity["tree"],
+        },
+        "artifacts": artifacts_raw,
         "private_artifacts_included": False,
         "authorization": {
             "merge": False,
@@ -349,7 +471,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--hermes-root", type=Path)
-    parser.add_argument("--artifact", action="append", type=Path, default=[])
+    parser.add_argument("--provenance", type=Path, required=True)
     parser.add_argument("--ci-run-id", action="append", default=[])
     parser.add_argument("--expected-version", default="2.0.0")
     return parser.parse_args(argv)
@@ -360,8 +482,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     root = args.root.resolve(strict=True)
     payload = build_candidate_manifest(
         root,
+        provenance_path=args.provenance,
         hermes_root=args.hermes_root,
-        artifacts=tuple(args.artifact),
         ci_run_ids=tuple(args.ci_run_id),
         expected_version=str(args.expected_version),
     )
@@ -385,5 +507,9 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except CandidateManifestError as exc:
-        print(json.dumps({"ok": False, "error": str(exc)}), file=sys.stderr)
+        error = str(exc)
+        payload: dict[str, object] = {"ok": False, "error": error}
+        if error.startswith(PROVENANCE_MISMATCH_CODE):
+            payload["code"] = PROVENANCE_MISMATCH_CODE
+        print(json.dumps(payload), file=sys.stderr)
         raise SystemExit(1) from exc
