@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -104,6 +107,54 @@ def test_plugin_environment_is_explicit_and_rejects_malformed_arrays(
     environment[module.TIMEOUTS_ENV] = "{}"
     with pytest.raises(RuntimeError, match="JSON array"):
         module.build_plugin_from_environment(environment)
+
+
+def test_plugin_registers_with_real_pytest(tmp_path: Path) -> None:
+    module = _load_module()
+    test_file = tmp_path / "test_plugin_probe.py"
+    test_file.write_text("def test_probe():\n    assert True\n", encoding="utf-8")
+    output = tmp_path / "honesty.json"
+    environment = os.environ.copy()
+    environment.pop("PYTEST_ADDOPTS", None)
+    environment.pop("PYTEST_PLUGINS", None)
+    environment.update(
+        {
+            "PYTHONPATH": str(ROOT),
+            module.OUTPUT_ENV: str(output),
+            module.SOURCE_COMMIT_ENV: "a" * 40,
+            module.SOURCE_TREE_ENV: "b" * 40,
+            module.TIMEOUTS_ENV: "[]",
+            module.FAILURE_FIXES_ENV: "[]",
+        }
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "-p",
+            "scripts.release_test_honesty",
+            test_file.name,
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["collected"] == 1
+    assert payload["passed"] == 1
+    assert payload["failed"] == 0
+    assert payload["errors"] == 0
 
 
 def test_plugin_counts_non_call_failure_as_error_and_rerun_honestly(

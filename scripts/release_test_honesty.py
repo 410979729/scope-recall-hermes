@@ -69,7 +69,8 @@ class ReleaseTestHonestyPlugin:
         self.errors: set[str] = set()
         self.rerun_count = 0
 
-    def pytest_sessionstart(self, _session: object) -> None:
+    def pytest_sessionstart(self, session: object) -> None:
+        del session
         self.started = time.monotonic()
 
     def pytest_runtest_logreport(self, report: object) -> None:
@@ -120,7 +121,8 @@ class ReleaseTestHonestyPlugin:
             "first_failure_fixes": self.first_failure_fixes,
         }
 
-    def pytest_sessionfinish(self, session: object, _exitstatus: int) -> None:
+    def pytest_sessionfinish(self, session: object, exitstatus: int) -> None:
+        del exitstatus
         payload = self.payload(collected=int(getattr(session, "testscollected", 0)))
         self.output.parent.mkdir(parents=True, exist_ok=True)
         self.output.write_text(
