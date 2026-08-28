@@ -10,6 +10,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 DATASET_VERSION = "scope-recall-compiler-synthetic.v1"
@@ -56,6 +57,11 @@ from scope_recall._internal.recall.compiler import (  # noqa: E402
     paired_packet_diff,
 )
 from scope_recall.models import RecallItem  # noqa: E402
+
+RecallService = importlib.import_module("scope_recall.recall").RecallService
+recall_orchestrator = importlib.import_module(
+    "scope_recall._internal.recall.orchestrator"
+)
 
 
 @dataclass(frozen=True)
@@ -252,6 +258,7 @@ def run_benchmark(*, iterations: int = 500) -> dict[str, object]:
     }
     return {
         "schema": HARNESS_VERSION,
+        "benchmark_kind": "unit_micro",
         "frozen_inputs": {
             "dataset": DATASET_VERSION,
             "answerer": "none",
@@ -278,8 +285,131 @@ def run_benchmark(*, iterations: int = 500) -> dict[str, object]:
     }
 
 
+class _FrozenProductionProvider:
+    """API-free deterministic source for one real Orchestrator invocation."""
+
+    def __init__(self, candidates: tuple[RecallItem, ...]) -> None:
+        self._candidates = candidates
+        self._retrieval_config = {"mode": "lexical", "min_score": 0.01}
+        self._vector_config: dict[str, object] = {}
+        self._scope_id = "benchmark-scope"
+        self._shared_scope_id = ""
+        self._accessible_scope_ids = [self._scope_id]
+        self._config = {
+            "recall_compiler": {
+                "current_truth_enabled": True,
+                "conflict_enabled": True,
+                "budgeter_enabled": False,
+                "renderer_enabled": True,
+                "token_budget": 320,
+                "per_item_token_budget": 64,
+            }
+        }
+        self._scope = SimpleNamespace(agent_context="primary")
+        self._last_recall_turns: dict[str, int] = {}
+        self._current_turn = 1
+        self.db_calls = 0
+        self.vector_calls = 0
+
+    def _search_db_memories(self, _query: str, *, limit: int) -> list[RecallItem]:
+        self.db_calls += 1
+        return list(self._candidates[:limit])
+
+    def _search_vector_memories(self, _query: str, *, limit: int) -> list[RecallItem]:
+        self.vector_calls += 1
+        return []
+
+    def _search_vector_memories_with_vector(
+        self, _query_vector: list[float], *, limit: int
+    ) -> list[RecallItem]:
+        self.vector_calls += 1
+        return []
+
+    @staticmethod
+    def _search_curated_memories(_query: str) -> list[RecallItem]:
+        return []
+
+    @staticmethod
+    def _dedup_key(content: str) -> str:
+        return str(content).casefold()
+
+    @staticmethod
+    def _config_value(_key: str, default: object) -> object:
+        return default
+
+    @staticmethod
+    def retrieval_status_view() -> dict[str, object]:
+        return {
+            "config": {"mode": "lexical", "min_score": 0.01},
+            "mode": "lexical",
+            "lexical_weight": 1.0,
+            "vector_weight": 0.0,
+        }
+
+
+def run_production_paired_benchmark() -> dict[str, object]:
+    """Run retrieval once, then compare two policies on its frozen CandidateSet."""
+
+    case = _dataset()[0]
+    provider = _FrozenProductionProvider(case.candidates)
+    service = RecallService(provider)
+    captured: list[CandidateSet] = []
+    original_compile = recall_orchestrator.compile_recall_packet
+
+    def capture_candidate_set(
+        candidate_set: CandidateSet, policy: CompilerPolicy
+    ) -> RecallPacket:
+        captured.append(candidate_set)
+        return original_compile(candidate_set, policy)
+
+    setattr(recall_orchestrator, "compile_recall_packet", capture_candidate_set)
+    started = time.perf_counter()
+    try:
+        service.search_memories("verified evidence", limit=5)
+    finally:
+        setattr(recall_orchestrator, "compile_recall_packet", original_compile)
+    retrieval_latency_ms = (time.perf_counter() - started) * 1000.0
+    if not captured:
+        raise RuntimeError("production Orchestrator did not compile a CandidateSet")
+    candidate_set = captured[0]
+    if any(item.fingerprint != candidate_set.fingerprint for item in captured):
+        raise RuntimeError("production Orchestrator changed CandidateSet mid-search")
+
+    legacy = compile_recall_packet(candidate_set, _legacy_policy())
+    candidate = compile_recall_packet(candidate_set, _candidate_policy())
+    paired = paired_packet_diff(legacy, candidate, isolated=True)
+    return {
+        "schema": "scope-recall-recall-compiler-integration-benchmark.v1",
+        "benchmark_kind": "paired_integration",
+        "retrieval_calls": {
+            "lexical": provider.db_calls,
+            "vector": provider.vector_calls,
+        },
+        "retrieval_latency_ms": retrieval_latency_ms,
+        "candidate_fingerprint": candidate_set.fingerprint,
+        "compiler_invocations_from_search": len(captured),
+        "paired": paired,
+        "ok": (
+            provider.db_calls == 1
+            and provider.vector_calls == 1
+            and bool(paired["same_candidate_set"])
+        ),
+    }
+
+
+def run_benchmark_suite(*, iterations: int = 500) -> dict[str, object]:
+    micro = run_benchmark(iterations=iterations)
+    integration = run_production_paired_benchmark()
+    return {
+        "schema": "scope-recall-recall-compiler-benchmark-suite.v1",
+        "micro": micro,
+        "paired_integration": integration,
+        "ok": bool(micro["ok"]) and bool(integration["ok"]),
+    }
+
+
 def main() -> int:
-    result = run_benchmark()
+    result = run_benchmark_suite()
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     return 0 if bool(result["ok"]) else 1
 

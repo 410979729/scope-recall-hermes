@@ -94,6 +94,7 @@ _DESCRIPTION_OVERRIDES = {
     "fact_evolution.maintenance_mode": "Explicit maintenance-lane mode. reviewed_apply permits maintenance-gated operator corrections and is high risk; provider reload is required.",
     "fact_backfill.shadow_enabled": "Enable read-only historical SplitPlan shadow generation. Shadow artifacts remain non-authoritative; applying one exact plan still requires an explicit plan-bound approval, source CAS, and the atomic Fact Executor boundary.",
     "recall_compiler.current_truth_enabled": "Use the Context Compiler current-truth stage on the unique retrieved CandidateSet. Disabled keeps the V1 result order while shadow metrics remain content-free.",
+    "recall_compiler.conflict_enabled": "Expose query-side conflicts from the unique CandidateSet without selecting a winner. Disabled removes only conflict annotations and does not change current-truth, budget, or rendering decisions.",
     "recall_compiler.budgeter_enabled": "Apply the Recall Packet token budget to the unique retrieved CandidateSet. Disabled preserves the V1 item-limit behavior.",
     "recall_compiler.renderer_enabled": "Enable the Recall Packet prompt renderer. Disabled preserves the byte-compatible V1 prompt renderer.",
     "recall_compiler.token_budget": "Maximum estimated prompt tokens in one compiled Recall Packet.",
@@ -180,6 +181,7 @@ _RESTART_OVERRIDES = {
     "fact_evolution.maintenance_mode": True,
     "fact_backfill.shadow_enabled": False,
     "recall_compiler.current_truth_enabled": False,
+    "recall_compiler.conflict_enabled": False,
     "recall_compiler.budgeter_enabled": False,
     "recall_compiler.renderer_enabled": False,
 }

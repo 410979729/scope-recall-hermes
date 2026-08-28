@@ -7,6 +7,11 @@ from types import SimpleNamespace
 import pytest
 
 import scope_recall.provider as provider_module
+from scope_recall._internal.recall.compiler import (
+    CandidateSet,
+    CompilerPolicy,
+    compile_recall_packet,
+)
 from scope_recall.models import RecallItem
 from scope_recall.prompting import render_current_turn_recall
 from scope_recall.provider import ScopeRecallMemoryProvider
@@ -15,9 +20,19 @@ from scope_recall.provider import ScopeRecallMemoryProvider
 class _RecallService:
     def __init__(self, items: list[RecallItem]) -> None:
         self._items = items
+        self.last_recall_packet = None
 
     def search_memories(self, _query: str, *, limit: int) -> list[RecallItem]:
-        return self._items[:limit]
+        selected = self._items[:limit]
+        self.last_recall_packet = compile_recall_packet(
+            CandidateSet.from_items(selected),
+            CompilerPolicy(
+                limit=limit,
+                token_budget=320,
+                per_item_token_budget=96,
+            ),
+        )
+        return self.last_recall_packet.as_recall_items()
 
 
 class _Provider:

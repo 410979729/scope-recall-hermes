@@ -188,18 +188,43 @@ class CandidateSet:
         for ordinal, original in enumerate(originals):
             item = _clone_item(original)
             fact_identity = _fact_identity(item)
-            candidates.append(
-                RecallCandidate(
-                    item=item,
-                    ordinal=ordinal,
-                    fact_identity=fact_identity,
-                    truth_state=_truth_state(item),
-                    evidence_kinds=_evidence_kinds(item),
-                    conflict_ids=_conflict_ids(item, candidate_ids=candidate_ids),
-                    diversity_key=_diversity_key(item, fact_identity),
+            candidate = RecallCandidate(
+                item=item,
+                ordinal=ordinal,
+                fact_identity=fact_identity,
+                truth_state=_truth_state(item),
+                evidence_kinds=_evidence_kinds(item),
+                conflict_ids=_conflict_ids(item, candidate_ids=candidate_ids),
+                diversity_key=_diversity_key(item, fact_identity),
+            )
+            candidates.append(candidate)
+            fingerprint_rows.append(
+                json.dumps(
+                    {
+                        "conflict_ids": list(candidate.conflict_ids),
+                        "content_sha256": hashlib.sha256(
+                            item.content.encode("utf-8")
+                        ).hexdigest(),
+                        "diversity_key": candidate.diversity_key,
+                        "evidence_kinds": list(candidate.evidence_kinds),
+                        "fact_identity": candidate.fact_identity,
+                        "id": item.id,
+                        "ordinal": ordinal,
+                        "ordering_evidence_score": candidate.ordering_evidence_score,
+                        "score": item.score,
+                        "source": item.source,
+                        "summary_sha256": hashlib.sha256(
+                            item.summary.encode("utf-8")
+                        ).hexdigest(),
+                        "target": item.target,
+                        "truth_state": candidate.truth_state,
+                        "updated_at": item.updated_at,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
                 )
             )
-            fingerprint_rows.append(f"{ordinal}:{item.id}")
         fingerprint = hashlib.sha256("\n".join(fingerprint_rows).encode("utf-8")).hexdigest()
         return cls(candidates=tuple(candidates), fingerprint=fingerprint)
 
@@ -210,10 +235,11 @@ class CompilerPolicy:
     token_budget: int
     per_item_token_budget: int
     current_truth_enabled: bool = True
+    conflict_enabled: bool = True
     evidence_order_enabled: bool = True
     diversity_enabled: bool = True
     budgeter_enabled: bool = True
-    annotations_enabled: bool = True
+    evidence_annotations_enabled: bool = True
 
     def normalized(self) -> CompilerPolicy:
         return replace(
@@ -248,6 +274,7 @@ class RecallPacket:
     estimated_tokens: int
     token_budget: int
     budget_exhausted: bool
+    parent_candidate_fingerprint: str | None = None
 
     def as_recall_items(self) -> list[RecallItem]:
         return [_clone_item(packet_item.item) for packet_item in self.items]
@@ -290,16 +317,25 @@ def _current_truth_stage(
 
 
 def _conflict_stage(
-    candidates: list[RecallCandidate], *, annotate: bool
+    candidates: list[RecallCandidate], *, enabled: bool
 ) -> list[RecallCandidate]:
-    if not annotate:
-        return list(candidates)
     output: list[RecallCandidate] = []
     for candidate in candidates:
-        if not candidate.conflict_ids:
-            output.append(candidate)
-            continue
         metadata = _metadata(candidate.item)
+        metadata.pop("recall_packet_conflict", None)
+        metadata.pop("recall_packet_conflict_count", None)
+        if not enabled:
+            output.append(
+                replace(
+                    candidate,
+                    item=_clone_item(candidate.item, metadata=metadata),
+                    conflict_ids=(),
+                )
+            )
+            continue
+        if not candidate.conflict_ids:
+            output.append(replace(candidate, item=_clone_item(candidate.item, metadata=metadata)))
+            continue
         metadata["recall_packet_conflict"] = True
         metadata["recall_packet_conflict_count"] = len(candidate.conflict_ids)
         output.append(replace(candidate, item=_clone_item(candidate.item, metadata=metadata)))
@@ -329,10 +365,14 @@ def _evidence_stage(
 ) -> list[RecallCandidate]:
     output: list[RecallCandidate] = []
     for candidate in candidates:
-        if not annotate:
-            output.append(candidate)
-            continue
         metadata = _metadata(candidate.item)
+        metadata.pop("recall_packet_evidence", None)
+        metadata.pop("recall_packet_evidence_count", None)
+        if not annotate:
+            output.append(
+                replace(candidate, item=_clone_item(candidate.item, metadata=metadata))
+            )
+            continue
         metadata["recall_packet_evidence"] = list(candidate.evidence_kinds)
         metadata["recall_packet_evidence_count"] = candidate.evidence_score
         output.append(replace(candidate, item=_clone_item(candidate.item, metadata=metadata)))
@@ -456,12 +496,12 @@ def compile_recall_packet(candidate_set: CandidateSet, policy: CompilerPolicy) -
     candidates, current_removed = _current_truth_stage(
         list(candidate_set.candidates), enabled=normalized.current_truth_enabled
     )
-    candidates = _conflict_stage(candidates, annotate=normalized.annotations_enabled)
+    candidates = _conflict_stage(candidates, enabled=normalized.conflict_enabled)
     candidates, deduped_count = _dedupe_stage(candidates)
     candidates = _evidence_stage(
         candidates,
         reorder=normalized.evidence_order_enabled,
-        annotate=normalized.annotations_enabled,
+        annotate=normalized.evidence_annotations_enabled,
     )
     candidates = _diversity_stage(candidates, enabled=normalized.diversity_enabled)
     packet_items, estimated_tokens, budget_exhausted = _budget_stage(
@@ -478,6 +518,75 @@ def compile_recall_packet(candidate_set: CandidateSet, policy: CompilerPolicy) -
         estimated_tokens=estimated_tokens,
         token_budget=normalized.token_budget,
         budget_exhausted=budget_exhausted,
+    )
+
+
+def derive_recall_packet(
+    parent_packet: RecallPacket,
+    selected_items: Iterable[RecallItem],
+) -> RecallPacket:
+    """Create a presentation-only stable subset of an orchestrator packet.
+
+    The caller may redact or shorten the selected item presentation, but this
+    function preserves the parent's order, truth/conflict decisions, evidence
+    annotations, and candidate fingerprint. It cannot retrieve or rerun any
+    compiler stage.
+    """
+
+    selected_by_id: dict[str, RecallItem] = {}
+    for raw_item in selected_items:
+        item_id = str(raw_item.id)
+        if item_id in selected_by_id:
+            raise ValueError(f"duplicate derived packet item id: {item_id}")
+        selected_by_id[item_id] = _clone_item(raw_item)
+    parent_ids = {packet_item.item.id for packet_item in parent_packet.items}
+    unknown_ids = sorted(set(selected_by_id) - parent_ids)
+    if unknown_ids:
+        raise ValueError("derived packet items must be a subset of the parent packet")
+
+    derived_items: list[RecallPacketItem] = []
+    estimated_tokens = PACKET_BASE_TOKEN_ESTIMATE
+    for parent_item in parent_packet.items:
+        selected = selected_by_id.get(parent_item.item.id)
+        if selected is None:
+            continue
+        rendered_item = json.dumps(
+            {
+                "conflict": parent_item.conflict,
+                "evidence": list(parent_item.evidence_kinds),
+                "source": selected.source,
+                "summary": selected.summary,
+                "target": selected.target,
+                "truth": parent_item.truth_state,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        item_tokens = estimate_prompt_tokens(rendered_item)
+        estimated_tokens += item_tokens
+        derived_items.append(
+            RecallPacketItem(
+                item=selected,
+                evidence_kinds=parent_item.evidence_kinds,
+                truth_state=parent_item.truth_state,
+                conflict=parent_item.conflict,
+                estimated_tokens=item_tokens,
+            )
+        )
+
+    return RecallPacket(
+        schema=parent_packet.schema,
+        candidate_fingerprint=parent_packet.candidate_fingerprint,
+        candidate_count=parent_packet.candidate_count,
+        items=tuple(derived_items),
+        current_truth_removed=parent_packet.current_truth_removed,
+        deduped_count=parent_packet.deduped_count,
+        conflict_count=parent_packet.conflict_count,
+        estimated_tokens=estimated_tokens,
+        token_budget=parent_packet.token_budget,
+        budget_exhausted=parent_packet.budget_exhausted,
+        parent_candidate_fingerprint=parent_packet.candidate_fingerprint,
     )
 
 
@@ -546,6 +655,7 @@ __all__ = [
     "RecallPacket",
     "RecallPacketItem",
     "compile_recall_packet",
+    "derive_recall_packet",
     "estimate_prompt_tokens",
     "paired_packet_diff",
     "render_recall_packet",
