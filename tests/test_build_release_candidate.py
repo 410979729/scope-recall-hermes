@@ -86,7 +86,10 @@ def test_candidate_build_environment_is_bounded_to_isolated_directory(
     build = _load_module()
     boundary = tmp_path / "candidate-boundary"
 
-    env = build._isolated_environment(boundary)
+    env = build._isolated_environment(
+        boundary,
+        active_hermes_home=tmp_path / "active-hermes-do-not-touch",
+    )
 
     for key in (
         "HOME",

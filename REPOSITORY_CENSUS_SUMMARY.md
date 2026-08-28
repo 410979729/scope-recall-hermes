@@ -18,15 +18,16 @@ committed.
 
 ## Program 6A disposition
 
-- Candidate inventory: 656 repository files.
-- Category totals: 244 runtime, 260 test, 66 documentation, 48 operator
-  scripts, 7 workflows, 7 benchmarks, 7 governance, 5 metadata, 4 dependency,
-  4 example, and 4 other repository files.
-- Lifecycle totals: 267 verification, 244 production, 48 operator, 44
-  reference, 26 historical, 16 build/release, and 11 maintainer files.
-- No case-fold path collision or file larger than 5 MiB was found.
-- Four historical construction-phase test filenames were canonicalized to
-  product-feature names without deleting any test or reducing coverage.
+- Public comparison base: `f63c953d8c4ca3c8185671ff0a3cb67579c30b60`
+  (tree `6917f5c15ef67815ef6166e9043d0d556af8b510`).
+- Exact candidate commit, tree, tracked-file count, category totals, lifecycle
+  totals, and inventory hash are generated after the final candidate commit in
+  `.execution/evidence/<candidate-sha>/REPOSITORY_CENSUS.json`.
+- Those self-referential candidate identity values are deliberately not
+  hard-coded in this tracked file: changing this file would create a different
+  commit and tree. The final evidence index and candidate manifest bind them.
+- No file is deleted or renamed relative to the frozen public base. Intermediate
+  construction-branch filenames are not claimed as public-base renames.
 - No repository file met the independent-evidence threshold for deletion, so
   no deletion is authorized or planned.
 - Executable full-scope relation rebuild behavior is retired in place; retained
@@ -34,8 +35,8 @@ committed.
 - Historical release-readiness documents remain historical evidence and do not
   override the current 1.10.6 release contract.
 - The committed anomaly register contains no blocking anomaly.
-- The exact inventory hash, commit, and tree are taken from the final local
-  Program 6A census after its candidate commit is frozen.
+- The final raw census must report a clean worktree, zero untracked files, and
+  exact agreement with the source identity in `CANDIDATE_MANIFEST.json`.
 
 Related governance evidence:
 

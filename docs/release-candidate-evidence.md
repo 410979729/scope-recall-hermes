@@ -7,7 +7,7 @@ or deploy anything.
 Run it only from the exact clean candidate commit:
 
 ```text
-python scripts/build.release_candidate.py --expected-sha <full-40-character-sha>
+python scripts/build.release_candidate.py --expected-sha <full-40-character-sha> --active-hermes-home <read-only-active-home>
 ```
 
 The command performs these operations in one process:

@@ -59,6 +59,7 @@ def test_repository_census_is_deterministic_complete_and_local_safe() -> None:
 
 
 def test_repository_census_schema_and_committed_governance_are_coherent() -> None:
+    census = _load_census_module()
     schema = json.loads(
         (ROOT / "docs" / "repository-census.schema.json").read_text(
             encoding="utf-8"
@@ -86,8 +87,10 @@ def test_repository_census_schema_and_committed_governance_are_coherent() -> Non
     assert schema["properties"]["files"]["items"]["$ref"] == "#/$defs/fileEntry"
     assert anomalies["blocking_anomalies"] == []
     assert deletion["program"] == "Program 6A"
-    assert deletion["base_commit"] == "b155932a7d7de535746c51dcc0ba7085d5e66f1b"
+    assert deletion["base_commit"] == census.PUBLIC_BASE_COMMIT
+    assert deletion["base_tree"] == census.PUBLIC_BASE_TREE
     assert deletion["deleted_files"] == []
+    assert deletion["renamed_files"] == []
     assert deletion["deletion_authorized"] is False
     assert {entry["id"] for entry in compatibility["entries"]} == {
         "CR-001",
@@ -112,15 +115,11 @@ def test_repository_census_refuses_unignored_in_tree_output() -> None:
 
 def test_repository_deletion_evidence_matches_worktree_delta() -> None:
     census = _load_census_module()
-    deleted = census._run_git(
-        ROOT,
-        [
-            "diff",
-            "--diff-filter=D",
-            "--name-only",
-            "b155932a7d7de535746c51dcc0ba7085d5e66f1b",
-            "--",
-        ],
-    )
+    delta = census.repository_delta(ROOT)
 
-    assert deleted == b""
+    assert delta["base_commit"] == census.PUBLIC_BASE_COMMIT
+    assert delta["base_tree"] == census.PUBLIC_BASE_TREE
+    assert delta["deleted_files"] == []
+    assert delta["renamed_files"] == []
+    assert delta["deleted_file_count"] == 0
+    assert delta["renamed_file_count"] == 0
