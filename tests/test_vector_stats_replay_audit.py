@@ -14,6 +14,7 @@ import pytest
 
 from _scope_recall_public_memory_port import attach_public_truth_ports
 from scope_recall._internal.runtime.vector_view import RuntimeVectorView
+from scope_recall.doctor_vector import _canonical_doctor_vector_status
 from scope_recall.hygiene import build_hygiene_report
 from scope_recall.memory_queries import stats_payload
 from scope_recall.sql_store import ensure_schema, store_row
@@ -225,6 +226,44 @@ def test_stats_succeeds_when_list_records_raises() -> None:
     assert "audit_counts" not in store.calls
     assert "list_ids" not in store.calls
     assert "count_rows" not in store.calls
+
+
+def test_runtime_doctor_and_stats_share_identical_vector_contract() -> None:
+    conn = _truth_conn()
+    store = _ForbiddenEnumerationStore(physical_rows=4)
+    provider = _stats_provider(conn, store)
+    provider._vector_reason_code = "healthy"
+    provider._vector_usable_for_query = True
+    provider._vector_debt_counts = {"pending": 2}
+
+    runtime = RuntimeVectorView(provider).vector_status_view()
+    provider.vector_status_view = lambda: dict(runtime)
+    stats = stats_payload(provider)["vector"]
+    doctor = _canonical_doctor_vector_status(
+        {"status": "ready", "ready": True},
+        {
+            "status": "outbox_backlog",
+            "outbox_status_counts": {"pending": 2},
+        },
+    )
+
+    contract_keys = {
+        "state",
+        "status",
+        "reason_code",
+        "auto_recoverable",
+        "repair_required",
+        "usable_for_query",
+        "debt_counts",
+        "ready",
+    }
+    expected = {key: runtime[key] for key in contract_keys}
+    assert {key: stats[key] for key in contract_keys} == expected
+    assert {key: doctor[key] for key in contract_keys} == expected
+    assert expected["state"] == "degraded"
+    assert expected["reason_code"] == "outbox_pending"
+    assert expected["usable_for_query"] is True
+    assert expected["ready"] is False
 
 
 def test_stats_tool_json_sanitizes_embedder_base_url() -> None:

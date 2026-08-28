@@ -61,13 +61,106 @@ def test_noncanonical_top_level_vector_state_is_rejected() -> None:
         vector_status_contract(state="error", reason_code="legacy")
 
 
-def test_fresh_pending_debt_does_not_change_an_explicit_ready_state() -> None:
+@pytest.mark.parametrize("debt_key", ["pending", "processing", "retry"])
+def test_observable_replayable_debt_canonicalizes_ready_to_degraded(
+    debt_key: str,
+) -> None:
+    payload = vector_status_contract(
+        state="ready",
+        reason_code="healthy",
+        debt_counts={debt_key: 1},
+    )
+
+    assert payload["state"] == "degraded"
+    assert payload["reason_code"] == {
+        "pending": "outbox_pending",
+        "processing": "outbox_processing",
+        "retry": "outbox_retryable",
+    }[debt_key]
+    assert payload["debt_counts"][debt_key] == 1
+    assert payload["auto_recoverable"] is True
+
+
+def test_short_pending_inside_one_replay_cycle_does_not_flap_ready() -> None:
     payload = vector_status_contract(
         state="ready",
         reason_code="healthy",
         debt_counts={"pending": 1},
+        pending_within_replay_cycle=True,
     )
 
     assert payload["state"] == "ready"
-    assert payload["debt_counts"]["pending"] == 1
-    assert payload["auto_recoverable"] is True
+    assert payload["reason_code"] == "healthy"
+
+
+def test_retry_is_degraded_even_when_pending_is_inside_replay_cycle() -> None:
+    payload = vector_status_contract(
+        state="ready",
+        reason_code="healthy",
+        debt_counts={"pending": 1, "retry": 1},
+        pending_within_replay_cycle=True,
+    )
+
+    assert payload["state"] == "degraded"
+    assert payload["reason_code"] == "outbox_retryable"
+
+
+def test_dead_letter_is_needs_repair() -> None:
+    payload = vector_status_contract(
+        state="ready",
+        reason_code="healthy",
+        debt_counts={"dead_letter": 1},
+        usable_for_query=True,
+    )
+
+    assert payload["state"] == "needs_repair"
+    assert payload["reason_code"] == "outbox_dead_letter"
+    assert payload["auto_recoverable"] is False
+    assert payload["repair_required"] is True
+    assert payload["usable_for_query"] is False
+
+
+def test_audit_mismatch_is_needs_repair() -> None:
+    payload = vector_status_contract(
+        state="ready",
+        reason_code="audit_mismatch",
+        usable_for_query=True,
+    )
+
+    assert payload["state"] == "needs_repair"
+    assert payload["repair_required"] is True
+    assert payload["usable_for_query"] is False
+
+
+def test_zero_debt_healthy_generation_is_ready() -> None:
+    payload = vector_status_contract(state="ready", reason_code="healthy")
+
+    assert payload["state"] == "ready"
+    assert payload["reason_code"] == "healthy"
+    assert payload["debt_counts"]["replayable"] == 0
+
+
+def test_disabled_has_no_repair_requirement_even_with_dormant_debt() -> None:
+    payload = vector_status_contract(
+        state="disabled",
+        reason_code="disabled_by_config",
+        debt_counts={"dead_letter": 1},
+    )
+
+    assert payload["state"] == "disabled"
+    assert payload["auto_recoverable"] is False
+    assert payload["repair_required"] is False
+    assert payload["usable_for_query"] is False
+
+
+def test_degraded_can_remain_query_usable_without_reporting_ready() -> None:
+    payload = vector_status_contract(
+        state="ready",
+        reason_code="healthy",
+        debt_counts={"retry": 1},
+        usable_for_query=True,
+    )
+
+    assert payload["state"] == "degraded"
+    assert payload["status"] == "degraded"
+    assert payload["usable_for_query"] is True

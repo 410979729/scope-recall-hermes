@@ -84,7 +84,7 @@ def _canonical_doctor_vector_status(
     )
     payload.update(contract)
     payload["diagnostic_status"] = diagnostic_status
-    payload["ready"] = state == "ready" or (state == "degraded" and usable)
+    payload["ready"] = contract["state"] == "ready"
     return payload
 
 def lancedb_table_names(db: Any) -> list[str]:
@@ -1157,16 +1157,16 @@ def vector_generation_report(
         status = "ready"
         if mismatches:
             status = "identity_mismatch"
-        elif not provider_available:
-            status = "provider_unavailable"
         elif building:
             status = "generation_incomplete"
         elif dead_letters:
             status = "outbox_dead_letter"
-        elif backlog:
-            status = "outbox_backlog"
         elif reconciliation_failed:
             status = "reconciliation_failed"
+        elif not provider_available:
+            status = "provider_unavailable"
+        elif backlog:
+            status = "outbox_backlog"
         payload = {
             "status": status,
             "registered": True,
