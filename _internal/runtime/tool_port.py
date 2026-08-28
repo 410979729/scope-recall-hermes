@@ -6,7 +6,7 @@ from contextlib import contextmanager, nullcontext
 from typing import Any, Iterator, Mapping
 
 from ..application.memory_queries import MemoryQueryApplication
-from .ports import FactToolPort, MemoryCommandPort, ToolRuntimePort
+from .ports import FactToolPort, MemoryCommandPort
 
 
 def _call(host: Any, name: str, *args: Any, **kwargs: Any) -> Any:
@@ -352,7 +352,7 @@ def bind_tool_runtime_port(
     *,
     command_port: MemoryCommandPort | None = None,
     query_port: MemoryQueryApplication | None = None,
-) -> ToolRuntimePort:
+) -> ProviderToolRuntimeAdapter:
     if isinstance(obj, ProviderToolRuntimeAdapter):
         if command_port is not None and obj._bound_command_port is None:
             obj._bound_command_port = command_port
