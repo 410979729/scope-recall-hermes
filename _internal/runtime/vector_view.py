@@ -50,14 +50,18 @@ class RuntimeVectorView:
             )
         raw_state = str(getattr(adapter, "_vector_status", "") or "").strip().lower()
         enabled = bool(getattr(adapter, "_vector_enabled", False))
-        ready = bool(getattr(adapter, "_vector_ready", False))
+        companion_ready = bool(getattr(adapter, "_vector_ready", False))
         if raw_state in VECTOR_STATES:
             state = raw_state
             reason_code = str(
                 getattr(adapter, "_vector_reason_code", "") or "unspecified"
             )
         else:
-            state = "ready" if ready else ("disabled" if not enabled else "needs_repair")
+            state = (
+                "ready"
+                if companion_ready
+                else ("disabled" if not enabled else "needs_repair")
+            )
             reason_code = "invalid_runtime_state"
         contract = vector_status_contract(
             state=state,
@@ -75,7 +79,7 @@ class RuntimeVectorView:
             "unique_id_count": int(getattr(adapter, "_vector_unique_id_count", 0) or 0),
             "duplicate_row_count": int(getattr(adapter, "_vector_duplicate_row_count", 0) or 0),
             "enabled": enabled,
-            "ready": ready,
+            "ready": contract["state"] == "ready",
             "backend": str(getattr(adapter, "_vector_backend", "") or ""),
             "sync_mode": str(vector_config.get("sync_mode") or "incremental"),
             "fallback_embedder": fallback_description,
