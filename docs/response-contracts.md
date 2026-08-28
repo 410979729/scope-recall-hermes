@@ -48,6 +48,28 @@ These versions are lightweight response-contract identifiers, not full JSON Sche
   - Required top-level keys: `schema_version`, `dry_run`, `batch_id`, `archived`, `deleted`, `review_debt`, `archive_ids`, `delete_ids`
   - Purpose: dry-run/apply result for forgetting maintenance actions.
 
+## Retention mutation fields
+
+Forget, forgetting maintenance, and two-phase privacy purge responses include
+`retention_response.v1`. The stable fields are
+`retention_schema_version`, `mode`, `data_retained`, `reversible`,
+`privacy_purge`, `mutation_applied`, and `companion_erasure_pending`.
+
+| Operation state | `mode` | `data_retained` | `reversible` | `privacy_purge` | `mutation_applied` |
+| --- | --- | --- | --- | --- | --- |
+| Soft archive applied | `archive` | `true` | `true` | `false` | `true` |
+| Hard delete applied | `hard_delete` | `false` | `false` | `false` | `true` |
+| Purge plan | `privacy_purge` | `true` | `false` | `true` | `false` |
+| Purge deny (Phase A) | `privacy_purge` | `true` | `false` | `true` | `true` |
+| Purge erase (Phase B) | `privacy_purge` | `false` | `false` | `true` | `true` |
+
+Blocked and no-op responses set `mutation_applied=false` and report
+`data_retained` from current authoritative truth. `data_retained=false` after a
+successful Phase B truth erasure remains false even while a rebuildable vector
+companion deletion is outstanding; that debt is reported separately as
+`companion_erasure_pending=true`. A privacy-purge deny tombstone is irreversible
+and is not an ordinary archive that can be rolled back.
+
 ## Tool argument failures
 
 Direct provider calls and platform-dispatched calls enforce the same declared tool parameter schemas before a handler can coerce, query, or persist input. Validation failures return:

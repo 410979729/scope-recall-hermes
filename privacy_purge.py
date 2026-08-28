@@ -23,8 +23,10 @@ from .operator_ledger import (
     record_committed_operator_operation,
 )
 from .privacy_purge_schema import ensure_privacy_purge_schema
+from .response_schemas import retention_response_contract
 from .sql_store import delete_rows, record_governance_audit_event
 from .vector_runtime import replay_vector_outbox
+from .windows_filesystem import list_directory_paths, path_is_dir, read_text
 
 _SAFE_OPERATION_ID = re.compile(r"^[A-Za-z0-9_.-]{1,96}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -235,8 +237,11 @@ def plan_privacy_purge(
             op_id, str(material["request_fingerprint"])
         ),
         "next_action": "deny",
-        "data_retained": True,
-        "privacy_purge": True,
+        **retention_response_contract(
+            mode="privacy_purge",
+            data_retained=True,
+            mutation_applied=False,
+        ),
     }
 
 
@@ -246,7 +251,16 @@ def privacy_purge_status(provider: Any, *, operation_id: str) -> dict[str, Any]:
         conn = _provider_conn(provider)
         row = _operation_row(conn, op_id)
         if row is None:
-            return {"ok": False, "found": False, "operation_id": op_id}
+            return {
+                "ok": False,
+                "found": False,
+                "operation_id": op_id,
+                **retention_response_contract(
+                    mode="privacy_purge",
+                    data_retained=True,
+                    mutation_applied=False,
+                ),
+            }
         target_hashes = [
             str(item[0])
             for item in conn.execute(
@@ -255,21 +269,35 @@ def privacy_purge_status(provider: Any, *, operation_id: str) -> dict[str, Any]:
                 (op_id,),
             ).fetchall()
         ]
+        pending_vector_intents = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM privacy_purge_vector_intents "
+                "WHERE operation_id=? AND completed=0",
+                (op_id,),
+            ).fetchone()[0]
+        )
+    status = str(row["status"])
     return {
         "ok": True,
         "found": True,
         "operation_id": op_id,
-        "status": str(row["status"]),
+        "status": status,
         "target_count": int(row["target_count"]),
         "source_count": int(row["source_count"]),
         "vector_intent_count": int(row["vector_intent_count"]),
         "scope_set_hash": str(row["scope_set_hash"]),
         "request_fingerprint": str(row["request_fingerprint"]),
         "target_hashes": target_hashes,
+        "pending_vector_intents": pending_vector_intents,
         "erase_confirmation": _erase_confirmation(
             op_id, str(row["request_fingerprint"])
         ),
-        "privacy_purge": True,
+        **retention_response_contract(
+            mode="privacy_purge",
+            data_retained=status == "denied",
+            mutation_applied=False,
+            companion_erasure_pending=pending_vector_intents > 0,
+        ),
     }
 
 
@@ -459,6 +487,7 @@ def deny_privacy_purge(
     receipt_mirror = _mirror_receipt(provider, f"{op_id}.deny")
     vector_replay = _replay_vector(provider)
     _sync_vector_intents(provider, op_id)
+    current_status = privacy_purge_status(provider, operation_id=op_id)
     return {
         "ok": True,
         "action": "deny",
@@ -473,8 +502,14 @@ def deny_privacy_purge(
         ),
         "receipt": receipt_mirror,
         "vector_replay": vector_replay,
-        "data_retained": True,
-        "privacy_purge": True,
+        **retention_response_contract(
+            mode="privacy_purge",
+            data_retained=True,
+            mutation_applied=True,
+            companion_erasure_pending=bool(
+                current_status.get("companion_erasure_pending")
+            ),
+        ),
         "next_action": "erase",
     }
 
@@ -717,6 +752,8 @@ def erase_privacy_purge(
     if str(initial["status"]) == "completed":
         return privacy_purge_status(provider, operation_id=op_id)
 
+    phase_b_applied = str(initial["status"]) == "denied"
+
     if str(initial["status"]) == "denied":
         with capture_mutation_barrier(provider):
             with MemoryMutationService(provider).transaction() as conn:
@@ -857,8 +894,12 @@ def erase_privacy_purge(
             "status": status,
             "receipt": receipt_mirror,
             "vector_replay": vector_replay,
-            "data_retained": False,
-            "privacy_purge": True,
+            **retention_response_contract(
+                mode="privacy_purge",
+                data_retained=False,
+                mutation_applied=phase_b_applied,
+                companion_erasure_pending=status == "erasure_pending_vector",
+            ),
         }
     )
     return payload
@@ -885,9 +926,22 @@ def run_privacy_purge(
             confirmation=confirmation,
         )
     if normalized == "erase":
-        return erase_privacy_purge(
-            provider, operation_id=operation_id, confirmation=confirmation
-        )
+        try:
+            return erase_privacy_purge(
+                provider, operation_id=operation_id, confirmation=confirmation
+            )
+        except Exception as exc:
+            current = privacy_purge_status(provider, operation_id=operation_id)
+            if not bool(current.get("found")):
+                raise
+            current.update(
+                {
+                    "ok": False,
+                    "action": "erase",
+                    "error": sanitize_report_text(str(exc))[:300],
+                }
+            )
+            return current
     raise PrivacyPurgeError("action must be one of: plan, status, deny, erase")
 
 
@@ -989,13 +1043,21 @@ def replay_privacy_purge_receipts(
     """Replay immutable content-free deny receipts into a restored backup."""
 
     ensure_privacy_purge_schema(conn)
-    receipt_paths = sorted(Path(receipt_dir).glob("operator.deny.*.json"))
+    receipt_paths = (
+        [
+            path
+            for path in list_directory_paths(receipt_dir)
+            if path.match("operator.deny.*.json")
+        ]
+        if path_is_dir(receipt_dir)
+        else []
+    )
     receipts: list[dict[str, Any]] = []
     invalid_receipts = 0
     target_owners: dict[str, str] = {}
     for path in receipt_paths:
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(read_text(path, encoding="utf-8"))
         except (OSError, ValueError):
             invalid_receipts += 1
             continue

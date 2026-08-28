@@ -56,7 +56,7 @@ def test_string_false_config_values_remain_disabled(tmp_path):
         provider.shutdown()
 
 
-def test_forget_requires_explicit_accessible_ids_before_archiving(tmp_path):
+def test_all_forget_responses_include_stable_privacy_fields(tmp_path):
     provider = _provider(tmp_path, {"vector": {"enabled": False}})
     try:
         stored = json.loads(
@@ -69,6 +69,14 @@ def test_forget_requires_explicit_accessible_ids_before_archiving(tmp_path):
 
         blocked = json.loads(provider.handle_tool_call("scope_recall_forget", {"query": "Temporary audit delete", "limit": 5}))
         assert blocked["error"] == "ids are required for scope_recall_forget; search or inspect first, then pass exact ids"
+        assert {
+            "mode",
+            "data_retained",
+            "reversible",
+            "privacy_purge",
+            "mutation_applied",
+        } <= set(blocked)
+        assert blocked["mutation_applied"] is False
         with provider._lock:
             still_there = provider._require_conn().execute("SELECT COUNT(*) FROM memories WHERE id = ?", (stored["id"],)).fetchone()[0]
         assert still_there == 1
@@ -77,6 +85,13 @@ def test_forget_requires_explicit_accessible_ids_before_archiving(tmp_path):
         assert archived["archived"] == 1
         assert archived["deleted"] == 0
         assert archived["ids"] == [stored["id"]]
+        assert {
+            "mode",
+            "data_retained",
+            "reversible",
+            "privacy_purge",
+            "mutation_applied",
+        } <= set(archived)
         with provider._lock:
             row = provider._require_conn().execute("SELECT metadata FROM memories WHERE id = ?", (stored["id"],)).fetchone()
         assert row is not None

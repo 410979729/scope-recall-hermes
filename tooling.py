@@ -54,6 +54,7 @@ from .secret_index import build_secret_index
 from .temporal_query import query_fact_views
 from .tool_profiles import normalize_tool_profile, schema_budget
 from .provider_schemas import build_tool_schemas
+from .response_schemas import retention_response_contract
 from ._internal.contracts.tool_runtime_spec import tool_spec_by_name
 from ._internal.runtime.tool_port import bind_tool_runtime_port
 
@@ -723,6 +724,13 @@ class ScopeRecallToolService:
         )
 
     def _handle_forget(self, args: dict[str, Any]) -> str:
+        hard_delete_requested = self._bool_arg(args, "hard_delete", False)
+        mode = "hard_delete" if hard_delete_requested else "archive"
+        no_mutation = retention_response_contract(
+            mode=mode,
+            data_retained=True,
+            mutation_applied=False,
+        )
         try:
             ids = self._memory_ids_arg(args)
         except _MemoryIdsArgumentError as exc:
@@ -731,16 +739,19 @@ class ScopeRecallToolService:
                 invalid_arguments=True,
                 field=exc.field,
                 constraint=exc.constraint,
+                **no_mutation,
             )
         if not ids:
             return tool_error(
-                "ids are required for scope_recall_forget; search or inspect first, then pass exact ids"
+                "ids are required for scope_recall_forget; search or inspect first, then pass exact ids",
+                **no_mutation,
             )
         reason = self._port.clean_text(str(args.get("reason") or "scope_recall_forget"))
-        if self._bool_arg(args, "hard_delete", False):
+        if hard_delete_requested:
             if not self._operator_mode_enabled():
                 return tool_error(
-                    "scope_recall_forget hard_delete requires maintenance_tools_enabled=true"
+                    "scope_recall_forget hard_delete requires maintenance_tools_enabled=true",
+                    **no_mutation,
                 )
             blocked_fact_ids = self._port.fact_owned_memory_ids(ids)
             if blocked_fact_ids:
@@ -759,6 +770,7 @@ class ScopeRecallToolService:
                             "hard_delete_blocked",
                             reason="fact mutation requires structured Fact Evolution/review",
                         ),
+                        **no_mutation,
                     }
                 )
             deleted = self._port.delete_memories(ids)
@@ -769,6 +781,11 @@ class ScopeRecallToolService:
                     "ids": ids,
                     "hard_delete": True,
                     "receipt": self._receipt("hard_delete", reason=reason),
+                    **retention_response_contract(
+                        mode="hard_delete",
+                        data_retained=int(deleted) < len(ids),
+                        mutation_applied=int(deleted) > 0,
+                    ),
                 }
             )
         return self._json(
@@ -776,15 +793,29 @@ class ScopeRecallToolService:
         )
 
     def _handle_purge(self, args: dict[str, Any]) -> str:
+        no_mutation = retention_response_contract(
+            mode="privacy_purge",
+            data_retained=True,
+            mutation_applied=False,
+        )
         if not self._operator_mode_enabled():
             return tool_error(
-                "scope_recall_purge requires maintenance_tools_enabled=true"
+                "scope_recall_purge requires maintenance_tools_enabled=true",
+                **no_mutation,
             )
         raw_config = self._port.config_view().get("purge")
         purge_config = raw_config if isinstance(raw_config, dict) else {}
         if not config_bool(purge_config, "enabled", True):
-            return tool_error("privacy purge is disabled by purge.enabled=false")
+            return tool_error(
+                "privacy purge is disabled by purge.enabled=false",
+                **no_mutation,
+            )
         action = str(args.get("action") or "").strip().lower().replace("-", "_")
+        if action not in {"plan", "status", "deny", "erase"}:
+            return tool_error(
+                "action must be one of: plan, status, deny, erase",
+                **no_mutation,
+            )
         try:
             ids = self._memory_ids_arg(args)
         except _MemoryIdsArgumentError as exc:
@@ -793,17 +824,26 @@ class ScopeRecallToolService:
                 invalid_arguments=True,
                 field=exc.field,
                 constraint=exc.constraint,
+                **no_mutation,
             )
         if action in {"plan", "deny"} and not ids:
-            return tool_error("exact ids are required for purge plan or deny")
+            return tool_error(
+                "exact ids are required for purge plan or deny", **no_mutation
+            )
         if action in {"status", "erase"} and ids:
-            return tool_error("ids are not accepted for purge status or erase")
+            return tool_error(
+                "ids are not accepted for purge status or erase", **no_mutation
+            )
         operation_id = str(args.get("operation_id") or "").strip()
         if action in {"status", "deny", "erase"} and not operation_id:
-            return tool_error(f"operation_id is required for purge {action}")
+            return tool_error(
+                f"operation_id is required for purge {action}", **no_mutation
+            )
         confirmation = str(args.get("confirmation") or "").strip()
         if action in {"deny", "erase"} and not confirmation:
-            return tool_error(f"confirmation is required for purge {action}")
+            return tool_error(
+                f"confirmation is required for purge {action}", **no_mutation
+            )
         return self._json(
             self._port.purge_memories(
                 action=action,

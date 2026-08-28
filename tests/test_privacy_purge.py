@@ -8,7 +8,8 @@ import pytest
 from plugins.memory import load_memory_provider
 from scope_recall.fact_repository import insert_claim, link_claim_evidence
 from scope_recall.journal_store import load_unprocessed_journal_entries
-from scope_recall.privacy_purge import replay_privacy_purge_receipts
+from scope_recall.privacy_purge import replay_privacy_purge_receipts, run_privacy_purge
+from scope_recall.windows_filesystem import atomic_write_text, read_text
 
 
 @pytest.fixture
@@ -55,7 +56,7 @@ def _store(provider, content: str) -> str:
     return str(payload["id"])
 
 
-def test_purge_plan_is_zero_write_and_two_confirmations_are_bound(provider):
+def test_purge_plan_reports_zero_write_semantics(provider):
     memory_id = _store(provider, "The private value must be removed completely.")
     conn = provider._require_conn()
     before = conn.total_changes
@@ -66,6 +67,11 @@ def test_purge_plan_is_zero_write_and_two_confirmations_are_bound(provider):
     assert plan["read_only"] is True
     assert plan["target_count"] == 1
     assert memory_id not in json.dumps(plan)
+    assert plan["mode"] == "privacy_purge"
+    assert plan["data_retained"] is True
+    assert plan["reversible"] is False
+    assert plan["privacy_purge"] is True
+    assert plan["mutation_applied"] is False
 
     wrong = _tool(
         provider,
@@ -91,6 +97,10 @@ def test_purge_plan_is_zero_write_and_two_confirmations_are_bound(provider):
         },
     )
     assert denied["status"] == "denied"
+    assert denied["data_retained"] is True
+    assert denied["reversible"] is False
+    assert denied["privacy_purge"] is True
+    assert denied["mutation_applied"] is True
     assert denied["erase_confirmation"].startswith("ERASE-")
     assert denied["erase_confirmation"] != plan["confirmation"]
     audit = conn.execute(
@@ -102,7 +112,31 @@ def test_purge_plan_is_zero_write_and_two_confirmations_are_bound(provider):
     assert "The private value" not in audit_json
 
 
-def test_phase_b_failure_preserves_committed_deny(provider, monkeypatch):
+def test_purge_deny_reports_retained_but_irreversible(provider):
+    memory_id = _store(provider, "Purge deny response contract fixture.")
+    plan = _tool(provider, "scope_recall_purge", {"action": "plan", "id": memory_id})
+    denied = _tool(
+        provider,
+        "scope_recall_purge",
+        {
+            "action": "deny",
+            "id": memory_id,
+            "operation_id": plan["operation_id"],
+            "confirmation": plan["confirmation"],
+        },
+    )
+
+    assert denied["status"] == "denied"
+    assert denied["mode"] == "privacy_purge"
+    assert denied["data_retained"] is True
+    assert denied["reversible"] is False
+    assert denied["privacy_purge"] is True
+    assert denied["mutation_applied"] is True
+
+
+def test_purge_phase_b_failure_keeps_deny_and_reports_current_semantics(
+    provider, monkeypatch
+):
     memory_id = _store(provider, "Phase B failure must never undo deny state.")
     plan = _tool(provider, "scope_recall_purge", {"action": "plan", "id": memory_id})
     denied = _tool(
@@ -128,6 +162,18 @@ def test_phase_b_failure_preserves_committed_deny(provider, monkeypatch):
             operation_id=plan["operation_id"],
             confirmation=denied["erase_confirmation"],
         )
+    failed = run_privacy_purge(
+        provider,
+        action="erase",
+        operation_id=plan["operation_id"],
+        confirmation=denied["erase_confirmation"],
+    )
+    assert failed["ok"] is False
+    assert failed["status"] == "denied"
+    assert failed["data_retained"] is True
+    assert failed["reversible"] is False
+    assert failed["privacy_purge"] is True
+    assert failed["mutation_applied"] is False
     conn = provider._require_conn()
     row = conn.execute(
         "SELECT metadata FROM memories WHERE id=?", (memory_id,)
@@ -166,7 +212,7 @@ def test_plan_confirmation_refuses_current_state_drift(provider):
     ).fetchone()[0] == 0
 
 
-def test_phase_a_hides_every_public_path_and_phase_b_erases_truth(provider):
+def test_purge_erase_reports_not_retained(provider):
     memory_id = _store(provider, "Purge visibility fixture unique-771.")
     plan = _tool(provider, "scope_recall_purge", {"action": "plan", "id": memory_id})
     denied = _tool(
@@ -201,6 +247,12 @@ def test_phase_a_hides_every_public_path_and_phase_b_erases_truth(provider):
         },
     )
     assert erased["status"] == "completed"
+    assert erased["mode"] == "privacy_purge"
+    assert erased["data_retained"] is False
+    assert erased["reversible"] is False
+    assert erased["privacy_purge"] is True
+    assert erased["mutation_applied"] is True
+    assert erased["companion_erasure_pending"] is False
     assert conn.execute("SELECT COUNT(*) FROM memories WHERE id=?", (memory_id,)).fetchone()[0] == 0
     assert conn.execute(
         "SELECT COUNT(*) FROM privacy_purge_tombstones WHERE operation_id=?",
@@ -217,6 +269,8 @@ def test_phase_a_hides_every_public_path_and_phase_b_erases_truth(provider):
         },
     )
     assert repeated["status"] == "completed"
+    assert repeated["data_retained"] is False
+    assert repeated["mutation_applied"] is False
 
 
 def test_purge_removes_claim_evidence_and_degrades_shared_journal_provenance(provider):
@@ -326,15 +380,17 @@ def test_restore_replay_reinstates_deny_before_writer_use(provider):
     )
     assert denied["receipt"]["receipt_state"] == "mirrored"
     receipt_dir = provider._db_path.parent / "receipts"
-    receipt_text = next(receipt_dir.glob("operator.deny.*.json")).read_text(
-        encoding="utf-8"
+    receipt_text = read_text(
+        next(receipt_dir.glob("operator.deny.*.json")), encoding="utf-8"
     )
     assert memory_id not in receipt_text
     assert "Backup replay must not resurrect" not in receipt_text
     tampered = json.loads(receipt_text)
     tampered["result"]["targets"][0]["content_hash"] = "0" * 64
-    (receipt_dir / "operator.deny.forged.deny.json").write_text(
-        json.dumps(tampered), encoding="utf-8"
+    atomic_write_text(
+        receipt_dir / "operator.deny.forged.deny.json",
+        json.dumps(tampered),
+        encoding="utf-8",
     )
 
     restored = conn.__class__(":memory:")

@@ -3528,7 +3528,7 @@ def test_auto_capture_filters_system_maintenance_prompts(provider):
     assert stats["total_memories"] == 0
 
 
-def test_forget_tool_archives_matching_sqlite_row_and_removes_vector_visibility(provider):
+def test_forget_archive_reports_retained_and_reversible(provider):
     payload = json.loads(
         provider.handle_tool_call("scope_recall_store", {"content": "Temporary deploy note should be removed.", "target": "memory"})
     )
@@ -3539,6 +3539,11 @@ def test_forget_tool_archives_matching_sqlite_row_and_removes_vector_visibility(
     assert result["archived"] == 1
     assert result["deleted"] == 0
     assert payload["id"] in result["ids"]
+    assert result["mode"] == "archive"
+    assert result["data_retained"] is True
+    assert result["reversible"] is True
+    assert result["privacy_purge"] is False
+    assert result["mutation_applied"] is True
 
     provider.on_turn_start(1, "Temporary deploy note")
     assert provider.prefetch("Temporary deploy note") == ""

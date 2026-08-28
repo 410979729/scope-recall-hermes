@@ -47,6 +47,7 @@ from .models import recall_scope_mode, resolve_store_scope_mode  # noqa: F401
 from .memory_text_merge import automatic_merge_is_safe
 from .memory_mutation import MemoryMutationService
 from .relation_extraction import sync_extracted_relations_for_memory
+from .response_schemas import retention_response_contract
 from .graph_relations import graph_relation_stats  # noqa: F401
 from .sql_store import (
     exact_duplicate_groups,
@@ -1120,6 +1121,15 @@ def _hard_delete_provider_memories_after_capture_flush(
     elif int(replay_result.get("completed") or 0) >= int(result.get("outbox_enqueued") or 0):
         result["vector_status"] = "completed" if require_vector_delete else "not_required"
         result["vector_pending"] = False
+    requested_count = len(set(str(memory_id) for memory_id in ids if str(memory_id)))
+    result.update(
+        retention_response_contract(
+            mode="hard_delete",
+            data_retained=int(result.get("deleted") or 0) < requested_count,
+            mutation_applied=int(result.get("deleted") or 0) > 0,
+            companion_erasure_pending=bool(result.get("vector_pending")),
+        )
+    )
     return result
 
 
@@ -1166,6 +1176,11 @@ def _archive_memories_truth(
             "batch_id": batch,
             "restore_path": f"python3 scripts/governance.cleanup.py --rollback-batch --batch-id {batch} --apply",
         },
+        **retention_response_contract(
+            mode="archive",
+            data_retained=True,
+            mutation_applied=False,
+        ),
     }
     if not requested_ids:
         return payload
@@ -1265,6 +1280,7 @@ def _archive_memories_truth(
         )
         return payload
     payload["archived"] = len(archived_ids)
+    payload["mutation_applied"] = bool(archived_ids)
     payload["ids"] = archived_ids
     archived_id_set = set(archived_ids)
     payload["skipped"] = [
