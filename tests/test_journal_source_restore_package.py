@@ -71,6 +71,15 @@ def _clean_env(*, extra: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
+def _nested_pytest_parent() -> Path:
+    declared = str(os.environ.get("SCOPE_RECALL_TEST_BOUNDARY_PARENT") or "").strip()
+    if not declared:
+        raise AssertionError("SCOPE_RECALL_TEST_BOUNDARY_PARENT is required")
+    parent = Path(declared).resolve(strict=False)
+    parent.mkdir(parents=True, exist_ok=True)
+    return parent
+
+
 def test_clean_env_drops_parent_python_and_pytest_state(monkeypatch) -> None:
     for key in ("PYTHONPATH", "PYTHONHOME", "PYTEST_ADDOPTS", "PYTEST_PLUGINS", "VIRTUAL_ENV"):
         monkeypatch.setenv(key, "must-not-leak")
@@ -86,6 +95,17 @@ def test_clean_env_drops_parent_python_and_pytest_state(monkeypatch) -> None:
     }.intersection(env)
     assert env["PYTHONDONTWRITEBYTECODE"] == "1"
     assert env["SCOPE_RECALL_TEST_MARKER"] == "preserved"
+
+
+def test_nested_pytest_parent_ignores_process_tempdir(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    declared = tmp_path / "declared-boundary-parent"
+    monkeypatch.setenv("SCOPE_RECALL_TEST_BOUNDARY_PARENT", str(declared))
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "nested-process-temp"))
+
+    assert _nested_pytest_parent() == declared.resolve()
 
 
 def _copy_sources(dest: Path) -> Path:
@@ -193,7 +213,10 @@ def test_real_sdist_and_installed_wheel_source_restore(tmp_path: Path) -> None:
     # Keep the nested pytest root short on Windows.  A path under this already
     # nested build fixture can exceed legacy Win32 limits used by lock/receipt
     # subprocesses even though the product paths themselves are valid.
-    with tempfile.TemporaryDirectory(prefix="sr-sdist-pytest-") as nested_raw:
+    with tempfile.TemporaryDirectory(
+        prefix="sr-sdist-pytest-",
+        dir=_nested_pytest_parent(),
+    ) as nested_raw:
         nested_basetemp = Path(nested_raw)
         collect = subprocess.run(
             [
