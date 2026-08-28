@@ -2,32 +2,24 @@
 
 from __future__ import annotations
 
-import sys
 from typing import Any, cast
 
 from ..application.vector_service import VectorGateway
-from .ports import RuntimeAdapterPort
+from .hook_contract import RuntimeHooks
 from .vector_view import RuntimeVectorView
 from ...vector_runtime import (
     mark_vector_needs_repair as default_mark_vector_needs_repair,
 )
 from ...vector_runtime import setup_vector_layer as default_setup_vector_layer
-
-
-def _provider_hook(host: Any, name: str, default: Any) -> Any:
-    module = sys.modules.get(type(host).__module__)
-    candidate = getattr(module, name, None) if module is not None else None
-    return candidate if callable(candidate) else default
-
-
 class ProviderVectorAdapter:
-    def __init__(self, host: RuntimeAdapterPort, view: RuntimeVectorView) -> None:
+    def __init__(self, host: Any, view: RuntimeVectorView, hooks: RuntimeHooks) -> None:
         self._host = host
         self._view = view
+        self._hooks = hooks
 
     def setup(self) -> None:
-        operation = _provider_hook(
-            self._host, "setup_vector_layer", default_setup_vector_layer
+        operation = self._hooks.resolve(
+            "setup_vector_layer", default_setup_vector_layer
         )
         operation(self._host)
 
@@ -41,8 +33,7 @@ class ProviderVectorAdapter:
         return tuple(tuple(float(value) for value in row) for row in rows)
 
     def mark_needs_repair(self, reason: str) -> None:
-        operation = _provider_hook(
-            self._host,
+        operation = self._hooks.resolve(
             "mark_vector_needs_repair",
             default_mark_vector_needs_repair,
         )
@@ -50,6 +41,6 @@ class ProviderVectorAdapter:
 
 
 def bind_vector_gateway(
-    host: RuntimeAdapterPort, view: RuntimeVectorView
+    host: Any, view: RuntimeVectorView, hooks: RuntimeHooks
 ) -> VectorGateway:
-    return ProviderVectorAdapter(host, view)
+    return ProviderVectorAdapter(host, view, hooks)

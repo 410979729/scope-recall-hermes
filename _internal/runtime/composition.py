@@ -2,25 +2,60 @@
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Mapping, Protocol
 
 from ..application.capture_journal import CaptureApplication, JournalApplication
-from ..application.memory_commands import MemoryCommandApplication
 from ..application.memory_queries import MemoryQueryApplication
 from ..application.runtime_state import RuntimeStateSnapshot
 from ..application.vector_service import VectorApplication
-from .background import BackgroundWork
 from .bootstrap import RuntimeBootstrap
-from .capture_service import bind_capture_gateway
-from .command_adapter import bind_provider_command_adapter
-from .journal_service import bind_journal_gateway
-from .ports import MemoryCommandPort, RuntimeAdapterPort, ToolRuntimePort
-from .process_lifecycle import DEFAULT_SHUTDOWN_TIMEOUT_SECONDS, ProcessLifecycle
-from .query_adapter import bind_provider_query_adapter
-from .tool_port import bind_tool_runtime_port
+from .background import BackgroundWork
+from .ports import MemoryCommandPort, ToolRuntimePort
+from .process_lifecycle import DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
 from .truth_session import TruthSession
 from .vector_view import RuntimeVectorView
-from .vector_service import bind_vector_gateway
+
+
+class BoundLifecycle(Protocol):
+    """Process lifecycle already bound to the outer Hermes adapter."""
+
+    def initialize(self, session_id: str, values: Mapping[str, object]) -> None: ...
+
+    def has_live_initialize_runtime(self) -> bool: ...
+
+    def initialize_under_lifecycle_lock(
+        self, session_id: str, values: Mapping[str, object]
+    ) -> None: ...
+
+    def initialize_writer_runtime(self) -> None: ...
+
+    def initialize_read_only_runtime(self) -> None: ...
+
+    def cleanup_failed_writer_initialization(
+        self, *, reraise_companion_errors: bool = False
+    ) -> bool: ...
+
+    def promote_to_writer(self) -> None: ...
+
+    def shutdown(self, *, timeout: float) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeDependencies:
+    """Explicit infrastructure and Application services built by Provider."""
+
+    truth: TruthSession
+    background: BackgroundWork
+    lifecycle: BoundLifecycle
+    bootstrap: RuntimeBootstrap
+    vector_view: RuntimeVectorView
+    vector: VectorApplication
+    capture: CaptureApplication
+    journal: JournalApplication
+    command_port: MemoryCommandPort
+    query_port: MemoryQueryApplication
+    tool_port: ToolRuntimePort
 
 
 class RuntimeComposition:
@@ -28,30 +63,19 @@ class RuntimeComposition:
 
     def __init__(
         self,
-        adapter: RuntimeAdapterPort,
-        *,
-        truth_cls: type[TruthSession] = TruthSession,
-        background_cls: type[BackgroundWork] = BackgroundWork,
-        lifecycle: ProcessLifecycle | None = None,
+        dependencies: RuntimeDependencies,
     ) -> None:
-        self.adapter: RuntimeAdapterPort = adapter
-        self.truth = truth_cls(adapter)
-        self.background = background_cls(adapter)
-        self.lifecycle = lifecycle if lifecycle is not None else ProcessLifecycle()
-        self.bootstrap = RuntimeBootstrap(adapter)
-        self.vector_view = RuntimeVectorView(adapter)
-        self.vector = VectorApplication(bind_vector_gateway(adapter, self.vector_view))
-        self.capture = CaptureApplication(bind_capture_gateway(adapter))
-        self.journal = JournalApplication(bind_journal_gateway(adapter))
-        command_gateway = bind_provider_command_adapter(adapter)
-        query_gateway = bind_provider_query_adapter(adapter)
-        self._command_port: MemoryCommandPort = MemoryCommandApplication(command_gateway)
-        self._query_port = MemoryQueryApplication(query_gateway)
-        self.tool_port: ToolRuntimePort = bind_tool_runtime_port(
-            adapter,
-            command_port=self._command_port,
-            query_port=self._query_port,
-        )
+        self.truth = dependencies.truth
+        self.background = dependencies.background
+        self.lifecycle = dependencies.lifecycle
+        self.bootstrap = dependencies.bootstrap
+        self.vector_view = dependencies.vector_view
+        self.vector = dependencies.vector
+        self.capture = dependencies.capture
+        self.journal = dependencies.journal
+        self._command_port = dependencies.command_port
+        self._query_port = dependencies.query_port
+        self.tool_port = dependencies.tool_port
 
     @property
     def query_port(self) -> MemoryQueryApplication:
@@ -71,32 +95,25 @@ class RuntimeComposition:
         self.vector.setup()
         self.capture.start_writer()
 
-    def initialize(self, session_id: str, **kwargs: Any) -> None:
+    def initialize(self, session_id: str, **kwargs: object) -> None:
         """Own process initialize. Provider keeps a one-line delegate."""
 
-        self.lifecycle.initialize(self.adapter, session_id, **kwargs)
+        self.lifecycle.initialize(session_id, kwargs)
 
     def promote_to_writer(self) -> None:
         """Own reader-to-writer promotion. Provider keeps a one-line delegate."""
 
-        self.lifecycle.promote_to_writer(self.adapter)
+        self.lifecycle.promote_to_writer()
 
     def shutdown(
         self, *, timeout: float = DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
     ) -> None:
-        self.lifecycle.shutdown(self.adapter, timeout=timeout)
+        self.lifecycle.shutdown(timeout=timeout)
 
 
 def assemble_runtime(
-    adapter: RuntimeAdapterPort,
-    *,
-    truth_cls: type[TruthSession] | None = None,
-    background_cls: type[BackgroundWork] | None = None,
+    dependencies: RuntimeDependencies,
 ) -> RuntimeComposition:
-    """Build the single composition and bind compatible adapter aliases."""
+    """Build the single composition from explicit, already-bound services."""
 
-    return RuntimeComposition(
-        adapter,
-        truth_cls=truth_cls or TruthSession,
-        background_cls=background_cls or BackgroundWork,
-    )
+    return RuntimeComposition(dependencies)
