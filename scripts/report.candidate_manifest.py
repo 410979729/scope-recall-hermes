@@ -15,9 +15,16 @@ import tomllib
 import types
 from typing import Mapping, Sequence
 
-from scripts.release_candidate_artifacts import (  # pyright: ignore[reportMissingImports]
-    archive_member_manifest,
-)
+try:
+    from scripts.release_candidate_artifacts import (  # pyright: ignore[reportMissingImports]
+        archive_member_manifest,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name not in {"scripts", "scripts.release_candidate_artifacts"}:
+        raise
+    from release_candidate_artifacts import (  # pyright: ignore[reportMissingImports]
+        archive_member_manifest,
+    )
 
 
 SCHEMA_VERSION = "scope-recall.candidate-manifest.v1"

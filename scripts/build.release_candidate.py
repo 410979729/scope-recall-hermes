@@ -66,6 +66,9 @@ class ReleaseCandidateBuildError(RuntimeError):
 
 
 def _load_script(path: Path, module_name: str) -> ModuleType:
+    project_root = path.resolve(strict=True).parents[1]
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise ReleaseCandidateBuildError(f"cannot load release helper: {path.name}")

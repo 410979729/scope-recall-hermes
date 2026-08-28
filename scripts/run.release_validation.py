@@ -78,6 +78,9 @@ class ValidationContext(NamedTuple):
 
 
 def _load_script(path: Path, name: str) -> ModuleType:
+    project_root = path.resolve(strict=True).parents[1]
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         raise ReleaseValidationError(f"cannot load validation helper: {path.name}")
@@ -380,9 +383,9 @@ def _run_full_suite(
                     }
                 ]
             ),
-            "SCOPE_RECALL_FIRST_FAILURE_FIXES_JSON": "[]",
         }
     )
+    environment.setdefault("SCOPE_RECALL_FIRST_FAILURE_FIXES_JSON", "[]")
     actual = [
         sys.executable,
         "-B",
