@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 
@@ -105,7 +107,8 @@ def test_validation_boundary_cleanup_retries_transient_windows_error(
     boundary.mkdir()
     attempts: list[Path] = []
 
-    def flaky_rmtree(path: Path) -> None:
+    def flaky_rmtree(path: Path, *, onerror=None) -> None:
+        assert callable(onerror)
         target = Path(path)
         attempts.append(target)
         if len(attempts) < 3:
@@ -118,7 +121,80 @@ def test_validation_boundary_cleanup_retries_transient_windows_error(
 
     module._cleanup_validation_boundary(boundary)
 
-    assert attempts == [boundary.resolve()] * 3
+    assert attempts == [module._validation_cleanup_path(boundary.resolve())] * 3
+    assert not boundary.exists()
+
+
+def test_validation_boundary_cleanup_repairs_readonly_descendant(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_module()
+    boundary = tmp_path / "srv.readonly"
+    locked = boundary / "locked"
+    locked.mkdir(parents=True)
+    marker = locked / "marker.txt"
+    marker.write_text("isolated\n", encoding="utf-8")
+    marker.chmod(stat.S_IREAD)
+    locked.chmod(stat.S_IREAD)
+    monkeypatch.setattr(module.tempfile, "gettempdir", lambda: str(tmp_path))
+
+    module._cleanup_validation_boundary(boundary)
+
+    assert not boundary.exists()
+    assert not os.path.lexists(boundary)
+
+
+def test_validation_boundary_cleanup_retries_child_file_not_found(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_module()
+    boundary = tmp_path / "srv.child-race"
+    boundary.mkdir()
+    attempts: list[Path] = []
+
+    def child_race_rmtree(path: Path, *, onerror=None) -> None:
+        assert callable(onerror)
+        target = Path(path)
+        attempts.append(target)
+        if len(attempts) == 1:
+            raise FileNotFoundError("a child disappeared during traversal")
+        target.rmdir()
+
+    monkeypatch.setattr(module.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(module.shutil, "rmtree", child_race_rmtree)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+
+    module._cleanup_validation_boundary(boundary)
+
+    assert attempts == [module._validation_cleanup_path(boundary.resolve())] * 2
+    assert not boundary.exists()
+
+
+def test_validation_boundary_cleanup_refuses_false_success(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_module()
+    boundary = tmp_path / "srv.false-success"
+    boundary.mkdir()
+    attempts: list[Path] = []
+
+    def false_success_rmtree(path: Path, *, onerror=None) -> None:
+        assert callable(onerror)
+        target = Path(path)
+        attempts.append(target)
+        if len(attempts) > 1:
+            target.rmdir()
+
+    monkeypatch.setattr(module.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(module.shutil, "rmtree", false_success_rmtree)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+
+    module._cleanup_validation_boundary(boundary)
+
+    assert attempts == [module._validation_cleanup_path(boundary.resolve())] * 2
     assert not boundary.exists()
 
 
