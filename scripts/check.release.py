@@ -1119,6 +1119,7 @@ def release_invariant_manifest(
         raise ValueError("release invariant manifest suites are missing")
     suite_ids: set[str] = set()
     seen_nodes: set[str] = set()
+    test_functions_by_path: dict[pathlib.Path, set[str]] = {}
     suites: list[dict[str, object]] = []
     for raw_suite in raw_suites:
         if not isinstance(raw_suite, dict):
@@ -1140,6 +1141,27 @@ def release_invariant_manifest(
             test_path = ROOT / node.split("::", 1)[0]
             if not test_path.is_file():
                 raise ValueError(f"release invariant test file is missing: {test_path.name}")
+            test_functions = test_functions_by_path.get(test_path)
+            if test_functions is None:
+                try:
+                    tree = ast.parse(
+                        test_path.read_text(encoding="utf-8"),
+                        filename=str(test_path),
+                    )
+                except (OSError, SyntaxError) as exc:
+                    raise ValueError(
+                        f"release invariant test file cannot be parsed: {test_path.name}"
+                    ) from exc
+                test_functions = {
+                    item.name
+                    for item in ast.walk(tree)
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and item.name.startswith("test_")
+                }
+                test_functions_by_path[test_path] = test_functions
+            test_name = node.rsplit("::", 1)[-1].split("[", 1)[0]
+            if test_name not in test_functions:
+                raise ValueError(f"release invariant test function is missing: {node}")
             seen_nodes.add(node)
             nodes.append(node)
         suites.append({"id": suite_id, "nodes": nodes})

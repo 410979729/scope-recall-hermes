@@ -75,7 +75,9 @@ def _install_plugin() -> Path:
 
     repo_root = Path(__file__).resolve().parents[1]
     plugin_dir = _TEST_HERMES_HOME / "plugins" / "scope-recall"
-    install_plugin_tree(plugin_dir, repo_root)
+    # The declared plugin directory is a writable test surface, so it must not
+    # resolve through a POSIX symlink back into the source checkout.
+    install_plugin_tree(plugin_dir, repo_root, force_copy=True)
     return repo_root
 
 

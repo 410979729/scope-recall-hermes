@@ -249,7 +249,7 @@ def _retry_readonly_cleanup(
     path: str,
     error: BaseException,
 ) -> None:
-    """Clear a Windows read-only bit only inside the declared temp boundary."""
+    """Repair owner permissions only inside the declared temp boundary."""
 
     if not isinstance(error, PermissionError) and getattr(error, "winerror", None) != 5:
         raise error
@@ -261,11 +261,29 @@ def _retry_readonly_cleanup(
             "refusing to repair permissions outside the validation boundary"
         ) from exc
     is_junction = getattr(os.path, "isjunction", None)
-    if candidate.is_symlink() or (
-        callable(is_junction) and bool(is_junction(candidate))
+    lineage: list[Path] = []
+    current = candidate
+    while True:
+        lineage.append(current)
+        if current == boundary:
+            break
+        current = current.parent
+    if any(
+        item.is_symlink()
+        or (callable(is_junction) and bool(is_junction(item)))
+        for item in lineage
     ):
         raise error
-    os.chmod(candidate, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+    if os.name == "nt":
+        os.chmod(candidate, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+    else:
+        repair_targets = lineage if candidate.is_dir() else [candidate, *lineage[1:]]
+        for item in repair_targets:
+            mode = stat.S_IMODE(os.lstat(item).st_mode)
+            owner_bits = stat.S_IRUSR | stat.S_IWUSR
+            if item.is_dir():
+                owner_bits |= stat.S_IXUSR
+            os.chmod(item, mode | owner_bits, follow_symlinks=False)
     function(str(candidate))
 
 

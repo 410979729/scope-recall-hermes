@@ -106,7 +106,12 @@ def assert_same_source(left: Path, right: Path, *, label: str = "source") -> Non
     )
 
 
-def install_plugin_tree(plugin_dir: Path, repo_root: Path) -> str:
+def install_plugin_tree(
+    plugin_dir: Path,
+    repo_root: Path,
+    *,
+    force_copy: bool = False,
+) -> str:
     """Install the plugin tree via symlink, or copy when that is impossible.
 
     Returns ``symlink``, ``copy``, or ``existing``. Callers must validate
@@ -118,7 +123,11 @@ def install_plugin_tree(plugin_dir: Path, repo_root: Path) -> str:
     plugin_dir.parent.mkdir(parents=True, exist_ok=True)
     if plugin_dir.exists():
         return "existing"
-    if not env_flag(FORCE_COPY_PLUGIN_ENV) and not assume_no_symlink_privilege():
+    if (
+        not force_copy
+        and not env_flag(FORCE_COPY_PLUGIN_ENV)
+        and not assume_no_symlink_privilege()
+    ):
         try:
             plugin_dir.symlink_to(repo_root, target_is_directory=True)
             return "symlink"

@@ -607,6 +607,14 @@ def test_release_invariant_manifest_is_versioned_unique_and_executable():
         in nodes
     )
     assert (
+        "tests/test_tool_fact_evolution.py::test_fact_owned_hard_delete_block_reports_no_mutation_and_retained_data"
+        in nodes
+    )
+    assert (
+        "tests/test_vector_status_contract.py::test_short_pending_inside_one_replay_cycle_does_not_flap_ready"
+        in nodes
+    )
+    assert (
         "tests/test_lexical_cjk_retrieval.py::test_cjk_bigram_fallback_uses_indexed_postings_without_truth_scan"
         in nodes
     )
@@ -642,6 +650,32 @@ def test_release_invariant_manifest_is_versioned_unique_and_executable():
     assert command[6:] == nodes
     assert "scripts/release.invariants.json" in release_check.REQUIRED_SOURCE_FILES
     assert "scope_recall/scripts/release.invariants.json" in release_check.REQUIRED_WHEEL
+
+
+def test_release_invariant_manifest_rejects_stale_node_ids(tmp_path):
+    release_check = _load_release_check_module(
+        "scope_recall_check_invariant_manifest_stale_node"
+    )
+    manifest_path = tmp_path / "release.invariants.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema": "scope-recall.release-invariants.v1",
+                "suites": [
+                    {
+                        "id": "stale-node",
+                        "nodes": [
+                            "tests/test_release.py::test_removed_release_invariant_node"
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="test function is missing"):
+        release_check.release_invariant_manifest(manifest_path)
 
 
 def test_windows_lane_remains_a_release_gate():
