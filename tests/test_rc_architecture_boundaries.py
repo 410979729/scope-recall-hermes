@@ -29,6 +29,16 @@ CORE_RUNTIME_FILES = (
     ROOT / "_internal" / "runtime" / "vector_service.py",
 )
 
+GENERATED_SOURCE_ROOTS = {
+    ".execution",
+    ".git",
+    ".hermes-agent-src",
+    ".venv",
+    "build",
+    "dist",
+    "venv",
+}
+
 
 def _tree(path: Path) -> ast.Module:
     return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -40,6 +50,23 @@ def _python_files(directory: Path) -> tuple[Path, ...]:
         for path in sorted(directory.rglob("*.py"))
         if "__pycache__" not in path.parts
     )
+
+
+def _is_generated_source(path: Path, *, root: Path = ROOT) -> bool:
+    relative = path.relative_to(root)
+    return bool(relative.parts and relative.parts[0] in GENERATED_SOURCE_ROOTS)
+
+
+def test_generated_source_filter_covers_build_and_evidence(tmp_path: Path) -> None:
+    assert _is_generated_source(
+        tmp_path / "build" / "lib" / "provider.py",
+        root=tmp_path,
+    )
+    assert _is_generated_source(
+        tmp_path / ".execution" / "evidence" / "provider.py",
+        root=tmp_path,
+    )
+    assert not _is_generated_source(tmp_path / "provider.py", root=tmp_path)
 
 
 def _imported_modules(tree: ast.AST) -> set[str]:
@@ -82,7 +109,7 @@ def test_provider_is_the_only_hermes_composition_root() -> None:
 
     offenders: list[str] = []
     for path in sorted(ROOT.rglob("*.py")):
-        if path == PROVIDER or "tests" in path.parts or ".execution" in path.parts:
+        if path == PROVIDER or "tests" in path.parts or _is_generated_source(path):
             continue
         imports = _imported_modules(_tree(path))
         if any(

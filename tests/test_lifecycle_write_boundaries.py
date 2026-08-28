@@ -35,6 +35,7 @@ ALLOWED_DELETE_ROWS_CALLS = {
 
 
 GENERATED_SOURCE_ROOTS = {
+    ".execution",
     ".hermes-agent-src",
     ".venv",
     "build",
@@ -69,9 +70,12 @@ def _parents(tree: ast.AST) -> dict[ast.AST, ast.AST]:
 def test_python_sources_ignore_generated_copies(tmp_path: Path) -> None:
     source = tmp_path / "runtime.py"
     generated = tmp_path / "build" / "lib" / "scope_recall" / "runtime.py"
+    evidence_copy = tmp_path / ".execution" / "evidence" / "runtime.py"
     source.write_text("VALUE = 1\n", encoding="utf-8")
     generated.parent.mkdir(parents=True)
     generated.write_text("VALUE = 1\n", encoding="utf-8")
+    evidence_copy.parent.mkdir(parents=True)
+    evidence_copy.write_text("VALUE = 1\n", encoding="utf-8")
 
     assert _python_sources(tmp_path) == [source]
 

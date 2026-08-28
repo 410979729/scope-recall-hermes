@@ -69,6 +69,8 @@ class RuntimeStatusPort(Protocol):
 class RecallViewPort(Protocol):
     def recall_service_view(self) -> RecallServiceView: ...
 
+    def recall_limit(self) -> int: ...
+
 
 @runtime_checkable
 class MemoryQueryPort(
