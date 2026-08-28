@@ -130,3 +130,16 @@ def test_candidate_build_script_path_entrypoint_is_importable() -> None:
 
     assert result.returncode == 0, result.stdout
     assert "--expected-sha" in result.stdout
+
+
+def test_candidate_build_retains_failed_staging_evidence(tmp_path: Path) -> None:
+    build = _load_module()
+
+    with pytest.raises(build.ReleaseCandidateBuildError, match="retained"):
+        with build._retained_staging(tmp_path, prefix=".candidate.") as staging:
+            (staging / "ARTIFACT_SCAN.json").write_text("{}\n", encoding="utf-8")
+            raise build.ReleaseCandidateBuildError("artifact scan failed")
+
+    retained = list(tmp_path.glob(".candidate.*"))
+    assert len(retained) == 1
+    assert (retained[0] / "ARTIFACT_SCAN.json").is_file()
