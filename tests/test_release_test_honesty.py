@@ -185,9 +185,27 @@ def test_skip_reasons_redact_windows_and_posix_user_homes(tmp_path: Path) -> Non
             reason="missing /home/private-operator/tmp/probe.db",
         )
     )
+    plugin.pytest_runtest_logreport(
+        _report(
+            "tests/test_a.py::test_windows_repr",
+            "skipped",
+            reason=(
+                r"symlink 'C:\\Users\\private-operator\\Temp\\source.db' -> "
+                r"'F:\\Agents\\runtime\\private-state\\target.db'"
+            ),
+        )
+    )
+    plugin.pytest_runtest_logreport(
+        _report(
+            "tests/test_a.py::test_posix_tmp",
+            "skipped",
+            reason="missing /tmp/private-operator/probe.db",
+        )
+    )
 
-    rendered = json.dumps(plugin.payload(collected=2))
+    rendered = json.dumps(plugin.payload(collected=4))
     assert "private-operator" not in rendered
+    assert "F:\\\\Agents" not in rendered
     assert "<private-path>" in rendered
 
 
