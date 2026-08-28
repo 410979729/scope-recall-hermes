@@ -17,7 +17,10 @@ from scope_recall._internal.application.capture_journal import (
     CaptureApplication,
     JournalApplication,
 )
-from scope_recall._internal.application.memory_commands import MemoryCommandApplication
+from scope_recall._internal.application.memory_commands import (
+    DeleteMemoriesResult,
+    MemoryCommandApplication,
+)
 from scope_recall._internal.application.memory_queries import MemoryQueryApplication
 from scope_recall._internal.application.runtime_state import RuntimeStateSnapshot
 from scope_recall._internal.application.vector_service import VectorApplication
@@ -85,7 +88,23 @@ def _spy_kernel_ports(monkeypatch) -> list[tuple[str, object]]:
     )
     monkeypatch.setattr(COMMAND_KERNEL, "merge", _wrap("merge", {"merged": True}))
     monkeypatch.setattr(COMMAND_KERNEL, "archive", _wrap("archive", {"archived": 1}))
-    monkeypatch.setattr(COMMAND_KERNEL, "delete", _wrap("delete", 1))
+    monkeypatch.setattr(
+        COMMAND_KERNEL,
+        "delete",
+        _wrap(
+            "delete",
+            DeleteMemoriesResult(
+                requested_ids=("mem-arch",),
+                deleted_ids=("mem-arch",),
+                skipped_ids=(),
+                deleted_count=1,
+                vector_pending=False,
+                companion_erasure_pending=False,
+                data_retained=False,
+                mutation_applied=True,
+            ),
+        ),
+    )
     monkeypatch.setattr(COMMAND_KERNEL, "feedback", _wrap("feedback", {"ok": True}))
     monkeypatch.setattr(COMMAND_KERNEL, "govern", _wrap("govern", {"ok": True}))
     monkeypatch.setattr(COMMAND_KERNEL, "dedupe", _wrap("dedupe", {"ok": True}))

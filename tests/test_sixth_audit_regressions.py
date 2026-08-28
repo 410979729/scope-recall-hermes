@@ -505,7 +505,7 @@ def test_merge_rolls_back_target_when_source_delete_fails(
     merge_memories_fn = provider._merge_memories.__func__.__globals__["merge_memories"]
     monkeypatch.setitem(
         merge_memories_fn.__globals__,
-        "delete_memories",
+        "delete_memories_result",
         fail_source_delete,
     )
     with pytest.raises(RuntimeError, match="injected source delete failure"):
