@@ -376,6 +376,7 @@ _SCRIPT_PYTHON_SOURCES = {
 _REQUIRED_PYTHON_SOURCES = _PACKAGE_PYTHON_SOURCES | _SCRIPT_PYTHON_SOURCES | _INTERNAL_PYTHON_SOURCES
 REQUIRED_SOURCE_FILES.update(_REQUIRED_PYTHON_SOURCES)
 REQUIRED_SOURCE_RESTORE_SDIST_TESTS = {
+    "tests/plugin_source.py",
     "tests/conftest.py",
     "tests/journal_source_restore_oracles.py",
     "tests/journal_source_restore_support.py",

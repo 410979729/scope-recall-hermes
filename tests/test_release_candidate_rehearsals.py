@@ -158,6 +158,7 @@ def test_candidate_evidence_assets_are_release_packaged() -> None:
     assert "scripts/release_test_honesty.py" in release_check.REQUIRED_SOURCE_FILES
     assert "scripts/run.release_validation.py" in release_check.REQUIRED_SOURCE_FILES
     assert "scripts/release.candidate_rehearsals.json" in release_check.REQUIRED_SOURCE_FILES
+    assert "tests/plugin_source.py" in release_check.REQUIRED_SOURCE_RESTORE_SDIST_TESTS
     assert "scope_recall/scripts/report.candidate_manifest.py" in release_check.REQUIRED_WHEEL
     assert "scope_recall/scripts/build.release_candidate.py" in release_check.REQUIRED_WHEEL
     assert (
@@ -174,3 +175,4 @@ def test_candidate_evidence_assets_are_release_packaged() -> None:
         "scope_recall/scripts/release.candidate_rehearsals.json"
         in release_check.REQUIRED_WHEEL
     )
+    assert "hermes_scope_recall-2.0.0/tests/plugin_source.py" in release_check.REQUIRED_SDIST

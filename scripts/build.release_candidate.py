@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import importlib.util
 import json
@@ -63,6 +64,17 @@ SDIST_TEST_TIMEOUT_SECONDS = 300
 
 class ReleaseCandidateBuildError(RuntimeError):
     """Raised when a candidate cannot be proven from one clean source epoch."""
+
+
+@contextmanager
+def _retained_staging(root: Path, *, prefix: str):
+    staging = Path(tempfile.mkdtemp(prefix=prefix, dir=root))
+    try:
+        yield staging
+    except Exception as exc:
+        raise ReleaseCandidateBuildError(
+            f"{exc}; raw build evidence retained in {staging.name}"
+        ) from exc
 
 
 def _load_script(path: Path, module_name: str) -> ModuleType:
@@ -502,13 +514,12 @@ def build_release_candidate(
             f"refusing to overwrite existing candidate evidence: {expected_sha}"
         )
     final_root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
+    with _retained_staging(
+        final_root,
         prefix=f".{expected_sha}.",
-        dir=final_root,
-    ) as staging_text, tempfile.TemporaryDirectory(
+    ) as staging, tempfile.TemporaryDirectory(
         prefix="scope.recall.candidate.build."
     ) as workspace_text:
-        staging = Path(staging_text)
         workspace = Path(workspace_text)
         build_dir = workspace / "dist"
         build_dir.mkdir()
