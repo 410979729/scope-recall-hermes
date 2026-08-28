@@ -110,6 +110,9 @@ class _DummyProvider:
     def _retrieve_limit(self) -> int:
         return 5
 
+    def recall_limit(self) -> int:
+        return self._retrieve_limit()
+
     def _mark_recalled(self, memory_ids: list[str]) -> None:
         return None
 
