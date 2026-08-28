@@ -738,6 +738,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
     def recall_service_view(self) -> Any:
         return self._recall_service
 
+    def recall_limit(self) -> int:
+        return self._retrieve_limit()
+
     def shutdown(
         self, *, timeout: float = DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
     ) -> None:

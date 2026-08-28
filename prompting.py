@@ -30,8 +30,9 @@ def render_current_turn_recall(provider: Any, query: str) -> str:
     if should_skip_retrieval(normalized_query, int(provider._config_value("auto_recall_min_length", 15))):
         return ""
 
-    results = provider._recall_service.search_memories(normalized_query, limit=provider._retrieve_limit())
-    parent_packet = provider._recall_service.last_recall_packet
+    recall_service = provider.recall_service_view()
+    results = recall_service.search_memories(normalized_query, limit=provider.recall_limit())
+    parent_packet = recall_service.last_recall_packet
     results = _drop_recently_recalled(provider, results)
     selected = _select_recall_items(provider, results)
     if not selected:
