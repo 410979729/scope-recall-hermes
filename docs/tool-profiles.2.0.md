@@ -19,6 +19,14 @@ was measured with `maintenance_tools_enabled=true`; extension was measured with
 Experience enabled. The core bytes are exactly the same surface as the previous
 `compact` baseline, so the default profile introduces no schema-budget growth.
 
+The release gate freezes the current core snapshot under Decision D-013: 6
+tools, 9,531 schema characters, at most 9,600 characters, at most 2,400
+conservatively estimated tokens, and canonical schema SHA-256
+`7380485b5ee769b60383e7f6eabb836dd1637553bbbf17883bb6e564def8f5d6`.
+The count is a reviewed snapshot, not a permanent product-wide tool-count rule.
+Any schema or digest change requires an explicit policy/Decision Log update;
+moving a tool to another profile remains preferable to silent core growth.
+
 `compact` remains an accepted alias for `core`. `standard`, `legacy`, and
 `compat` remain accepted aliases for `compatibility`. No public tool name or
 dispatcher alias is removed during 2.0.x.

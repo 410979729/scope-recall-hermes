@@ -24,6 +24,7 @@ import sys
 import tarfile
 import tempfile
 import tomllib
+import types
 import zipfile
 from typing import Any, Sequence
 
@@ -3354,6 +3355,7 @@ def metadata_check() -> dict[str, object]:
     public_docs_hygiene = public_doc_hygiene_check()
     release_readiness_hygiene = release_readiness_tree_hygiene_check()
     pyright_coverage = pyright_include_check()
+    tool_schema_budget = tool_schema_budget_check()
     required_snippets = {
         "pyproject version": f'version = "{PACKAGE_VERSION}"',
         "plugin version": f"version: {PACKAGE_VERSION}",
@@ -3420,6 +3422,11 @@ def metadata_check() -> dict[str, object]:
         missing_pyright = pyright_coverage.get("missing_pyright_include", [])
         missing_pyright_list = missing_pyright if isinstance(missing_pyright, list) else []
         failures.append(f"pyright include missing required source files: {', '.join(str(item) for item in missing_pyright_list)}")
+    if not tool_schema_budget["ok"]:
+        failures.append(
+            "core tool schema budget: "
+            + json.dumps(tool_schema_budget, ensure_ascii=False, sort_keys=True)
+        )
     python_support = python_support_check()
     python_support_failures = python_support.get("failures", [])
     if not python_support["ok"] and isinstance(python_support_failures, list):
@@ -3433,8 +3440,47 @@ def metadata_check() -> dict[str, object]:
         "public_docs_hygiene": public_docs_hygiene,
         "release_readiness_hygiene": release_readiness_hygiene,
         "pyright_coverage": pyright_coverage,
+        "tool_schema_budget": tool_schema_budget,
         "python_support": python_support,
     }
+
+
+def tool_schema_budget_check() -> dict[str, object]:
+    """Load the exact source package and enforce the D-013 core schema budget."""
+
+    package_name = "_scope_recall_release_tool_budget"
+    prefix = f"{package_name}."
+    for module_name in tuple(sys.modules):
+        if module_name == package_name or module_name.startswith(prefix):
+            sys.modules.pop(module_name, None)
+    package = types.ModuleType(package_name)
+    package.__path__ = [str(ROOT)]  # type: ignore[attr-defined]
+    sys.modules[package_name] = package
+    try:
+        provider_schemas = __import__(
+            f"{package_name}.provider_schemas",
+            fromlist=["build_tool_schemas"],
+        )
+        tool_profiles = __import__(
+            f"{package_name}.tool_profiles",
+            fromlist=["core_schema_budget_gate"],
+        )
+        schemas = provider_schemas.build_tool_schemas(
+            {"tool_schema_profile": "core"}
+        )
+        result = tool_profiles.core_schema_budget_gate(schemas)
+        if not isinstance(result, dict):
+            return {"ok": False, "failures": ["budget gate returned invalid data"]}
+        return result
+    except Exception as exc:
+        return {
+            "ok": False,
+            "failures": [f"tool schema budget check failed: {type(exc).__name__}"],
+        }
+    finally:
+        for module_name in tuple(sys.modules):
+            if module_name == package_name or module_name.startswith(prefix):
+                sys.modules.pop(module_name, None)
 
 
 def public_doc_hygiene_check() -> dict[str, object]:
