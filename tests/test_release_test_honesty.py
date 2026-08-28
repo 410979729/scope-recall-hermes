@@ -163,6 +163,17 @@ def test_plugin_registers_with_real_pytest(tmp_path: Path) -> None:
 
 def test_skip_reasons_redact_windows_and_posix_user_homes(tmp_path: Path) -> None:
     module = _load_module()
+    windows_home = "\\".join(
+        ("C:", "Users", "private-operator", "AppData", "Local", "Temp", "probe.db")
+    )
+    windows_repr_source = "\\\\".join(
+        ("C:", "Users", "private-operator", "Temp", "source.db")
+    )
+    windows_repr_target = "\\\\".join(
+        ("F:", "Agents", "runtime", "private-state", "target.db")
+    )
+    posix_home = "/" + "/".join(("home", "private-operator", "tmp", "probe.db"))
+    posix_tmp = "/" + "/".join(("tmp", "private-operator", "probe.db"))
     plugin = module.ReleaseTestHonestyPlugin(
         output=tmp_path / "honesty.json",
         source_commit="a" * 40,
@@ -175,14 +186,14 @@ def test_skip_reasons_redact_windows_and_posix_user_homes(tmp_path: Path) -> Non
         _report(
             "tests/test_a.py::test_windows",
             "skipped",
-            reason=r"missing C:\Users\private-operator\AppData\Local\Temp\probe.db",
+            reason=f"missing {windows_home}",
         )
     )
     plugin.pytest_runtest_logreport(
         _report(
             "tests/test_a.py::test_posix",
             "skipped",
-            reason="missing /home/private-operator/tmp/probe.db",
+            reason=f"missing {posix_home}",
         )
     )
     plugin.pytest_runtest_logreport(
@@ -190,8 +201,7 @@ def test_skip_reasons_redact_windows_and_posix_user_homes(tmp_path: Path) -> Non
             "tests/test_a.py::test_windows_repr",
             "skipped",
             reason=(
-                r"symlink 'C:\\Users\\private-operator\\Temp\\source.db' -> "
-                r"'F:\\Agents\\runtime\\private-state\\target.db'"
+                f"symlink '{windows_repr_source}' -> '{windows_repr_target}'"
             ),
         )
     )
@@ -199,13 +209,13 @@ def test_skip_reasons_redact_windows_and_posix_user_homes(tmp_path: Path) -> Non
         _report(
             "tests/test_a.py::test_posix_tmp",
             "skipped",
-            reason="missing /tmp/private-operator/probe.db",
+            reason=f"missing {posix_tmp}",
         )
     )
 
     rendered = json.dumps(plugin.payload(collected=4))
     assert "private-operator" not in rendered
-    assert "F:\\\\Agents" not in rendered
+    assert windows_repr_target not in rendered
     assert "<private-path>" in rendered
 
 

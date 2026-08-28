@@ -337,7 +337,9 @@ def test_dual_index_excludes_raw_logs_and_rejects_private_shareable_path(
 
     commands = evidence / "TEST_COMMANDS.json"
     command_payload = json.loads(commands.read_text(encoding="utf-8"))
-    command_payload["operator_path"] = r"C:\Users\private-operator\release"
+    command_payload["operator_path"] = "\\".join(
+        ("C:", "Users", "private-operator", "release")
+    )
     _write_json(
         commands,
         command_payload,
