@@ -717,6 +717,111 @@ def pytest_configure(config):
     return harness
 
 
+def _prepare_full_suite_environment(
+    *,
+    root: Path,
+    candidate_wheel: Path,
+    hermes_source: Path,
+    workspace: Path,
+    staging: Path,
+    active_hermes_home: Path,
+    ledger: list[dict[str, object]],
+) -> Path:
+    """Create the CI-equivalent interpreter used by source-level full pytest."""
+
+    environment = _isolated_environment(
+        workspace / "install-boundary",
+        active_hermes_home=active_hermes_home,
+        real_home=Path.home().resolve(strict=False),
+    )
+    environment["PIP_CONSTRAINT"] = str(
+        (root / "constraints" / "release.txt").resolve(strict=True)
+    )
+    venv_root = workspace / "venv"
+    _run(
+        [sys.executable, "-B", "-m", "venv", str(venv_root)],
+        display_command=[
+            "python",
+            "-B",
+            "-m",
+            "venv",
+            "<isolated-full-suite-venv>",
+        ],
+        cwd=workspace,
+        environment=environment,
+        timeout_seconds=INSTALL_TIMEOUT_SECONDS,
+        log_path=staging / "INSTALL_FULL_SUITE_VENV.log",
+        ledger=ledger,
+    )
+    python = _venv_python(venv_root)
+    _run(
+        [
+            str(python),
+            "-B",
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            str(candidate_wheel) + "[lancedb,dev]",
+        ],
+        display_command=[
+            "python",
+            "-B",
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "<exact-candidate-wheel>[lancedb,dev]",
+        ],
+        cwd=workspace,
+        environment=environment,
+        timeout_seconds=INSTALL_TIMEOUT_SECONDS,
+        log_path=staging / "INSTALL_FULL_SUITE_PLUGIN.log",
+        ledger=ledger,
+    )
+    hermes_copy = workspace / "hermes-source-copy"
+    shutil.copytree(
+        hermes_source.resolve(strict=True),
+        hermes_copy,
+        ignore=shutil.ignore_patterns(
+            ".git",
+            ".pytest_cache",
+            ".ruff_cache",
+            "__pycache__",
+            "*.egg-info",
+            "*.pyc",
+        ),
+    )
+    _run(
+        [
+            str(python),
+            "-B",
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "-e",
+            str(hermes_copy),
+        ],
+        display_command=[
+            "python",
+            "-B",
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "-e",
+            "<pinned-hermes-0.19.1-source>",
+        ],
+        cwd=workspace,
+        environment=environment,
+        timeout_seconds=INSTALL_TIMEOUT_SECONDS,
+        log_path=staging / "INSTALL_FULL_SUITE_HERMES.log",
+        ledger=ledger,
+    )
+    return python
+
+
 def _receipt(
     context: ValidationContext,
     *,
@@ -907,6 +1012,7 @@ def _run_pytest_receipt(
 def _run_full_suite(
     *,
     root: Path,
+    python: Path,
     staging: Path,
     environment: dict[str, str],
     hermes_source: Path,
@@ -934,7 +1040,7 @@ def _run_full_suite(
         }
     )
     actual = [
-        sys.executable,
+        str(python),
         "-B",
         "-m",
         "pytest",
@@ -1256,8 +1362,20 @@ def run_release_validation(
                 real_home=real_home,
             )
             ledger: list[dict[str, object]] = []
+            full_suite_workspace = boundary / "full-suite-environment"
+            full_suite_workspace.mkdir(parents=True)
+            full_suite_python = _prepare_full_suite_environment(
+                root=resolved,
+                candidate_wheel=candidate_wheel,
+                hermes_source=hermes_0191_source,
+                workspace=full_suite_workspace,
+                staging=staging,
+                active_hermes_home=active,
+                ledger=ledger,
+            )
             _run_full_suite(
                 root=resolved,
+                python=full_suite_python,
                 staging=staging,
                 environment=environment,
                 hermes_source=hermes_0191_source,

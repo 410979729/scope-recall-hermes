@@ -611,7 +611,7 @@ def test_release_invariant_manifest_is_versioned_unique_and_executable():
         in nodes
     )
     assert (
-        "tests/test_vector_status_contract.py::test_short_pending_inside_one_replay_cycle_does_not_flap_ready"
+        "tests/test_vector_status_contract.py::test_public_pending_never_remains_ready"
         in nodes
     )
     assert (

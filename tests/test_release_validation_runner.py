@@ -280,3 +280,56 @@ def test_runner_requires_explicit_quarantine_and_n_minus_one_artifact() -> None:
     )
     assert parsed.quarantine_path == Path("known-quarantine")
     assert parsed.n_minus_one_wheel == Path("scope-recall-1.10.3.whl")
+
+
+def test_full_suite_environment_installs_candidate_and_writable_pinned_hermes_copy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    root = tmp_path / "candidate"
+    constraints = root / "constraints"
+    constraints.mkdir(parents=True)
+    (constraints / "release.txt").write_text("pytest==9.1.1\n", encoding="utf-8")
+    candidate_wheel = tmp_path / "candidate.whl"
+    candidate_wheel.write_bytes(b"wheel")
+    hermes = tmp_path / "pinned-hermes"
+    hermes.mkdir()
+    (hermes / "pyproject.toml").write_text(
+        '[project]\nname = "hermes-agent"\nversion = "0.19.1"\n',
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(
+        module,
+        "_isolated_environment",
+        lambda *_args, **_kwargs: {},
+    )
+
+    def fake_run(command, **_kwargs):
+        commands.append([str(item) for item in command])
+        return {"log_sha256": "a" * 64}
+
+    monkeypatch.setattr(module, "_run", fake_run)
+
+    python = module._prepare_full_suite_environment(
+        root=root,
+        candidate_wheel=candidate_wheel,
+        hermes_source=hermes,
+        workspace=workspace,
+        staging=staging,
+        active_hermes_home=tmp_path / "active-hermes",
+        ledger=[],
+    )
+
+    assert python == module._venv_python(workspace / "venv")
+    assert str(candidate_wheel) + "[lancedb,dev]" in commands[1]
+    hermes_install_target = Path(commands[2][-1])
+    assert hermes_install_target == workspace / "hermes-source-copy"
+    assert hermes_install_target != hermes
+    assert (hermes_install_target / "pyproject.toml").is_file()

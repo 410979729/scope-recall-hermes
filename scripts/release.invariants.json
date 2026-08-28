@@ -181,7 +181,7 @@
         "tests/test_relation_rebuild_retirement.py::test_every_legacy_execution_surface_is_a_zero_write_refusal",
         "tests/test_release.py::test_release_gate_proves_retired_relation_rebuild_has_no_worker_body",
         "tests/test_vector_status_contract.py::test_vector_state_boolean_matrix",
-        "tests/test_vector_status_contract.py::test_short_pending_inside_one_replay_cycle_does_not_flap_ready",
+        "tests/test_vector_status_contract.py::test_public_pending_never_remains_ready",
         "tests/test_repository_census.py::test_repository_census_is_deterministic_complete_and_local_safe",
         "tests/test_release.py::test_release_cleanup_preserves_repo_local_environments"
       ]
