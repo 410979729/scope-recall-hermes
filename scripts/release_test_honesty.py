@@ -20,8 +20,8 @@ FIRST_FAILURE_STATUS_NOT_PROVIDED = "not_provided"
 FIRST_FAILURE_STATUS_DECLARED = "declared"
 
 _PRIVATE_PATH_PATTERNS = (
-    re.compile(r"(?i)(?:\\\\\?\\)?[a-z]:\\Users\\[^\\\s:]+(?:\\[^\s:]*)?"),
-    re.compile(r"(?<![A-Za-z0-9])/(?:home|Users)/[^/\s:]+(?:/[^\s:]*)?"),
+    re.compile(r"(?i)[a-z]:[\\/]+(?:Users|Agents)[\\/]+[^\s\"']+"),
+    re.compile(r"(?<![A-Za-z0-9])/(?:home|Users|tmp)/[^\s\"']+"),
 )
 
 
