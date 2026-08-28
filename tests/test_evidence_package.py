@@ -160,3 +160,22 @@ def test_evidence_receipt_refuses_active_instance_contact(tmp_path: Path) -> Non
 
     with pytest.raises(module.EvidencePackageError, match="active instance"):
         module.build_evidence_index(evidence, expected_sha=commit)
+
+
+def test_evidence_index_accepts_bounded_stage_array(tmp_path: Path) -> None:
+    module = _load_module()
+    evidence, commit, _tree = _complete_fixture(module, tmp_path)
+    stage_path = evidence / "SDIST_TEST_STAGES.json"
+    _write_json(stage_path, [{"module": "tests/test_fixture.py", "exit_code": 0}])
+
+    payload = module.build_evidence_index(evidence, expected_sha=commit)
+
+    stage_entry = next(
+        item for item in payload["files"] if item["path"] == stage_path.name
+    )
+    assert stage_entry["json_root"] == "array"
+    assert stage_entry["item_count"] == 1
+
+    _write_json(stage_path, ["not-an-evidence-object"])
+    with pytest.raises(module.EvidencePackageError, match="array of objects"):
+        module.build_evidence_index(evidence, expected_sha=commit)
