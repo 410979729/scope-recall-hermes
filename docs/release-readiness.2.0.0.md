@@ -60,6 +60,16 @@ reverts candidate code while leaving additive schema in place. Whole-database
 restore is reserved for an invariant failure, and Purge deny receipts must be
 replayed before writer use after any restore.
 
+## Hermes compatibility probe boundary
+
+Hermes `0.19.1` remains the pinned Canonical verification baseline. Hermes
+`0.20.6` is an isolated compatibility-probe target only: the probe binds both
+clean source identities, installs into a unique disposable `HERMES_HOME`, and
+reports exactly `compatible`, `incompatible`, or `unknown`. A probe result does
+not change the formal support matrix or authorize deployment. Any later G3
+decision still requires a canary against the exact active Hermes version under
+the separately authorized maintenance boundary.
+
 ## Authorization boundary
 
 This document describes a source candidate only. It does not authorize merge,
