@@ -290,6 +290,7 @@ def _isolated_environment(
         "TMP": boundary / "temp",
         "XDG_CONFIG_HOME": boundary / "xdg-config",
         "XDG_CACHE_HOME": boundary / "xdg-cache",
+        "PIP_CACHE_DIR": boundary / "pip-cache",
         "SCOPE_RECALL_TEST_BOUNDARY_PARENT": boundary / "pytest-boundaries",
         "HERMES_HOME": hermes_home,
         "SCOPE_RECALL_DB": boundary / "truth.sqlite3",

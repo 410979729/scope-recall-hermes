@@ -46,6 +46,7 @@ _TEST_TARGETS = {
     "TMP": _TEST_TEMP,
     "XDG_CONFIG_HOME": _TEST_ROOT / "xdg-config",
     "XDG_CACHE_HOME": _TEST_ROOT / "xdg-cache",
+    "PIP_CACHE_DIR": _TEST_ROOT / "pip-cache",
     "HERMES_HOME": _TEST_HERMES_HOME,
     "SCOPE_RECALL_DB": _TEST_ROOT / "truth" / "memory.sqlite3",
     "SCOPE_RECALL_LOG_DIR": _TEST_ROOT / "logs",

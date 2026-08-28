@@ -103,6 +103,7 @@ def test_candidate_build_environment_is_bounded_to_isolated_directory(
         "TMP",
         "XDG_CONFIG_HOME",
         "XDG_CACHE_HOME",
+        "PIP_CACHE_DIR",
         "SCOPE_RECALL_TEST_BOUNDARY_PARENT",
         "HERMES_HOME",
         "SCOPE_RECALL_DB",

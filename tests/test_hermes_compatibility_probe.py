@@ -165,6 +165,7 @@ def test_probe_classification_is_bound_to_process_result(
             "TMP",
             "XDG_CONFIG_HOME",
             "XDG_CACHE_HOME",
+            "PIP_CACHE_DIR",
             "HERMES_HOME",
         ):
             assert Path(env[name]).is_relative_to(boundary)

@@ -281,6 +281,7 @@ def build_probe_receipt(
             "TMP": boundary / "temp",
             "XDG_CONFIG_HOME": boundary / "xdg-config",
             "XDG_CACHE_HOME": boundary / "xdg-cache",
+            "PIP_CACHE_DIR": boundary / "pip-cache",
             "HERMES_HOME": home,
             "SCOPE_RECALL_DB": boundary / "truth" / "memory.sqlite3",
             "SCOPE_RECALL_LOG_DIR": boundary / "logs",
