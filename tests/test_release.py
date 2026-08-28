@@ -2526,8 +2526,13 @@ def test_vector_upsert_failure_stays_retryable_without_losing_sqlite_row(tmp_pat
         count = plugin._conn.execute("SELECT COUNT(*) FROM memories WHERE id = ?", (payload["id"],)).fetchone()[0]
         assert count == 1
         stats = json.loads(plugin.handle_tool_call("scope_recall_stats", {}))
-        assert stats["vector"]["ready"] is True
+        assert stats["vector"]["ready"] is False
         assert stats["vector"]["status"] == "degraded"
+        assert stats["vector"]["reason_code"] == "outbox_retryable"
+        assert stats["vector"]["auto_recoverable"] is True
+        assert stats["vector"]["repair_required"] is False
+        assert stats["vector"]["usable_for_query"] is True
+        assert stats["vector"]["debt_counts"]["retry"] == 1
         assert "simulated LanceDB delete failure" in stats["vector"]["message"]
         event = plugin._conn.execute(
             "SELECT status, operation, generation_id FROM vector_outbox WHERE memory_id = ?",
