@@ -8,7 +8,7 @@ the Provider itself.
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Mapping
 
 from ..application.capture_journal import CaptureApplication, JournalApplication
 from ..application.memory_commands import MemoryCommandApplication
@@ -22,6 +22,7 @@ from ..runtime.command_adapter import bind_provider_command_adapter
 from ..runtime.composition import RuntimeDependencies
 from ..runtime.journal_service import bind_journal_gateway
 from ..runtime.process_lifecycle import ProcessLifecycle
+from ..runtime.provider_compat_hosts import LegacyProviderRuntimeHost
 from ..runtime.query_adapter import bind_provider_query_adapter
 from ..runtime.tool_port import bind_tool_runtime_port
 from ..runtime.truth_session import TruthSession
@@ -32,7 +33,11 @@ from ..runtime.vector_view import RuntimeVectorView
 class BoundProviderLifecycle:
     """Hide the Provider argument at the compatibility boundary."""
 
-    def __init__(self, provider: Any, lifecycle: ProcessLifecycle | None = None) -> None:
+    def __init__(
+        self,
+        provider: LegacyProviderRuntimeHost,
+        lifecycle: ProcessLifecycle | None = None,
+    ) -> None:
         self._provider = provider
         self._lifecycle = lifecycle if lifecycle is not None else ProcessLifecycle()
 
@@ -71,7 +76,7 @@ class BoundProviderLifecycle:
 
 
 def build_provider_runtime_dependencies(
-    provider: Any,
+    provider: LegacyProviderRuntimeHost,
     *,
     truth_cls: type[TruthSession] = TruthSession,
     background_cls: type[BackgroundWork] = BackgroundWork,

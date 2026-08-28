@@ -22,7 +22,7 @@ from ..application.runtime_state import (
     ScopeSnapshot,
     VectorSnapshot,
 )
-from .ports import RuntimeAdapterPort
+from .provider_compat_hosts import LegacyProviderQueryHost
 from ...memory_queries import (
     benchmark_queries,
     context_payload,
@@ -45,7 +45,7 @@ def _mapping(value: object) -> Mapping[str, Any]:
 class ProviderQueryAdapter:
     """Keep legacy query/runtime details outside the application layer."""
 
-    def __init__(self, adapter: RuntimeAdapterPort) -> None:
+    def __init__(self, adapter: LegacyProviderQueryHost) -> None:
         self._adapter = adapter
 
     def runtime_state(self) -> RuntimeStateSnapshot:
@@ -187,5 +187,5 @@ class ProviderQueryAdapter:
         return cast(dict[str, object], stats_payload(self._adapter))
 
 
-def bind_provider_query_adapter(adapter: RuntimeAdapterPort) -> MemoryQueryGateway:
+def bind_provider_query_adapter(adapter: LegacyProviderQueryHost) -> MemoryQueryGateway:
     return ProviderQueryAdapter(adapter)

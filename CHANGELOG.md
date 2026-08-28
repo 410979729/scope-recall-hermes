@@ -15,9 +15,12 @@ This release candidate is cumulative since the last public release, `1.10.3`. It
 - Added deny-first two-phase Purge, governed tool profiles, optional extension boundaries, and a developer-only read-only Recall Inspector over the exact production packet.
 
 ### Changed
-- Made current truth, Recall Packet rendering, and token budgeting the coherent 2.0 recall defaults while retaining independent rollback switches.
+- Made current-truth selection, conflict exposure, and Recall Packet rendering the coherent 2.0 recall defaults while retaining independent rollback switches; token budgeting remains independently opt-in and default-off.
 - Kept the default core tool profile within the historical compact schema budget; compatibility, maintenance, developer, and extension surfaces remain separately governed.
 - Canonicalized historical construction-phase test names and regenerated repository governance evidence without deleting coverage or lowering release gates.
+
+### Fixed
+- Declared Windows time-zone data as a direct runtime dependency so a clean wheel installation can resolve `ZoneInfo("UTC")` without relying on optional vector dependencies to supply it transitively.
 
 ### Compatibility
 - Preserved legacy projection reads and writes for N-1 interoperability; no claim-only durable user data is allowed in 2.0.x.

@@ -12,13 +12,13 @@ from typing import Any, List
 
 from ...http_utils import safe_endpoint_display
 from ...vector_status import VECTOR_STATES, vector_status_contract
-from .ports import RuntimeAdapterPort
+from .provider_compat_hosts import LegacyProviderRuntimeHost
 
 
 class RuntimeVectorView:
     """Composition-held owner of the two remaining Provider vector/embed views."""
 
-    def __init__(self, adapter: RuntimeAdapterPort) -> None:
+    def __init__(self, adapter: LegacyProviderRuntimeHost) -> None:
         self.adapter = adapter
 
     def vector_status_view(self) -> dict[str, Any]:

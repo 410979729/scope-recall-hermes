@@ -9,7 +9,9 @@ import logging
 import time  # noqa: F401
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
+
+from ._internal.application.memory_commands import DeleteMemoriesResult
 
 from .capture import capture_mutation_barrier, store_now
 from .writer_lease import sanitized_truth_writer_owner  # noqa: F401
@@ -863,15 +865,16 @@ def merge_memories(
                 for row in source_rows
                 if str(row["id"]) != target_id
             ]
-            deleted = delete_memories(
+            delete_result = delete_memories_result(
                 provider,
                 delete_ids,
                 transaction_conn=conn,
             )
-            if deleted != len(delete_ids):
+            if delete_result.deleted_count != len(delete_ids):
                 raise RuntimeError(
                     "merge source delete row-count mismatch: "
-                    f"expected={len(delete_ids)}, deleted={deleted}"
+                    f"expected={len(delete_ids)}, "
+                    f"deleted={delete_result.deleted_count}"
                 )
     except Exception:
         # The transaction context has already rolled back every companion write.
@@ -1028,15 +1031,64 @@ def govern_memories(
     }
 
 
-def delete_memories(
+def _delete_memories_result(
+    requested_ids: list[str],
+    result: Mapping[str, Any],
+) -> DeleteMemoriesResult:
+    deleted_ids = tuple(
+        dict.fromkeys(
+            str(memory_id).strip()
+            for memory_id in (result.get("ids") or [])
+            if str(memory_id).strip()
+        )
+    )
+    deleted_id_set = set(deleted_ids)
+    normalized_requested = tuple(dict.fromkeys(requested_ids))
+    unexpected_ids = deleted_id_set - set(normalized_requested)
+    if unexpected_ids:
+        raise RuntimeError("hard delete result included an unrequested identity")
+    skipped_ids = tuple(
+        memory_id
+        for memory_id in normalized_requested
+        if memory_id not in deleted_id_set
+    )
+    deleted_count = int(result.get("deleted") or 0)
+    if deleted_count != len(deleted_ids):
+        raise RuntimeError(
+            "hard delete result count/identity mismatch: "
+            f"deleted={deleted_count}, ids={len(deleted_ids)}"
+        )
+    vector_pending = bool(result.get("vector_pending"))
+    companion_erasure_pending = bool(
+        vector_pending or result.get("companion_erasure_pending")
+    )
+    return DeleteMemoriesResult(
+        requested_ids=normalized_requested,
+        deleted_ids=deleted_ids,
+        skipped_ids=skipped_ids,
+        deleted_count=deleted_count,
+        vector_pending=vector_pending,
+        companion_erasure_pending=companion_erasure_pending,
+        data_retained=bool(skipped_ids or companion_erasure_pending),
+        mutation_applied=deleted_count > 0,
+    )
+
+
+def delete_memories_result(
     provider: Any,
     ids: list[str],
     *,
     transaction_conn: Any | None = None,
-) -> int:
-    requested_ids = [str(memory_id) for memory_id in ids if str(memory_id).strip()]
+) -> DeleteMemoriesResult:
+    requested_ids = list(
+        dict.fromkeys(
+            str(memory_id).strip()
+            for memory_id in ids
+            if str(memory_id).strip()
+        )
+    )
     if not requested_ids:
-        return 0
+        return _delete_memories_result([], {"deleted": 0, "ids": []})
     if transaction_conn is not None:
         require_vector_delete = vector_delete_intent_required(provider)
         result = hard_delete_memories(
@@ -1051,7 +1103,7 @@ def delete_memories(
             batch_id=f"merge_delete_{uuid.uuid4().hex}",
             commit=False,
         )
-        return int(result["deleted"])
+        return _delete_memories_result(requested_ids, result)
     result = _hard_delete_provider_memories(
         provider,
         requested_ids,
@@ -1059,7 +1111,22 @@ def delete_memories(
         reason="explicit memory hard delete",
         operation_id=HARD_DELETE_EXPLICIT,
     )
-    return int(result["deleted"])
+    return _delete_memories_result(requested_ids, result)
+
+
+def delete_memories(
+    provider: Any,
+    ids: list[str],
+    *,
+    transaction_conn: Any | None = None,
+) -> int:
+    """Legacy count-only wrapper retained through the 2.0.x window."""
+
+    return delete_memories_result(
+        provider,
+        ids,
+        transaction_conn=transaction_conn,
+    ).deleted_count
 
 
 def _hard_delete_provider_memories(
@@ -1121,6 +1188,9 @@ def _hard_delete_provider_memories_after_capture_flush(
     elif int(replay_result.get("completed") or 0) >= int(result.get("outbox_enqueued") or 0):
         result["vector_status"] = "completed" if require_vector_delete else "not_required"
         result["vector_pending"] = False
+    else:
+        result["vector_status"] = "pending"
+        result["vector_pending"] = True
     requested_count = len(set(str(memory_id) for memory_id in ids if str(memory_id)))
     result.update(
         retention_response_contract(
@@ -1335,7 +1405,13 @@ def _archive_memories_after_capture_flush(
     if not payload.get("ids"):
         return payload
     try:
-        payload["vector_replay"] = replay_vector_outbox(provider)
+        replay_result = replay_vector_outbox(provider)
+        payload["vector_replay"] = replay_result
+        vector_pending = bool(
+            int(replay_result.get("failed") or 0) > 0
+            or int(replay_result.get("completed") or 0)
+            < int(payload.get("outbox_enqueued") or 0)
+        )
     except Exception as exc:
         safe_error = sanitize_report_text(str(exc))
         mark_vector_replay_degraded(provider, safe_error)
@@ -1345,6 +1421,16 @@ def _archive_memories_after_capture_flush(
             "pending": True,
             "error": safe_error,
         }
+        vector_pending = True
+    payload["vector_pending"] = vector_pending
+    payload.update(
+        retention_response_contract(
+            mode="archive",
+            data_retained=True,
+            mutation_applied=bool(payload.get("ids")),
+            companion_erasure_pending=vector_pending,
+        )
+    )
     return payload
 
 

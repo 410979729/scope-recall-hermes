@@ -25,7 +25,7 @@ def test_compatibility_registry_is_complete() -> None:
     assert {item.shim_id for item in COMPATIBILITY_REGISTRY} == set(
         ALL_COMPATIBILITY_IDS
     )
-    assert len(PROGRAM_1A_COMPATIBILITY_IDS) == 11
+    assert len(PROGRAM_1A_COMPATIBILITY_IDS) == 12
     assert PROGRAM_1B_COMPATIBILITY_IDS == {"legacy-lifecycle-receipt-adapter"}
     assert {item.remove_after for item in COMPATIBILITY_REGISTRY} == {"2.1.0"}
     assert all(item.removal_condition for item in COMPATIBILITY_REGISTRY)
