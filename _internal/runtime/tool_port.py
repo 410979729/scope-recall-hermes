@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterator, Mapping, Sequence
 
+from ...fact_actions import EvolutionProposal, EvolutionResult
 from ..application.memory_queries import MemoryQueryApplication
-from .ports import FactToolPort, MemoryCommandPort
+from .ports import FactMemoryRow, FactTargetRow, FactToolPort, MemoryCommandPort
 
 
 def _call(host: Any, name: str, *args: Any, **kwargs: Any) -> Any:
@@ -170,6 +171,131 @@ class ProviderToolRuntimeAdapter:
     def config_view(self) -> dict[str, Any]:
         raw = getattr(self._host, "_config", {})
         return dict(raw) if isinstance(raw, Mapping) else {}
+
+    def fact_memory_row(
+        self, memory_id: str, writable_scope_ids: Sequence[str]
+    ) -> FactMemoryRow | None:
+        writable = [str(item).strip() for item in writable_scope_ids if str(item).strip()]
+        if not writable:
+            return None
+        placeholders = ",".join("?" for _ in writable)
+        with self.query_lock():
+            row = self.query_connection().execute(
+                "SELECT id, source, target, scope_id, metadata FROM memories "
+                f"WHERE id = ? AND scope_id IN ({placeholders})",
+                (memory_id, *writable),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": str(row["id"] or ""),
+            "source": str(row["source"] or ""),
+            "target": str(row["target"] or ""),
+            "scope_id": str(row["scope_id"] or ""),
+            "metadata": row["metadata"],
+        }
+
+    def fact_target_rows(
+        self, target_ids: Sequence[str], writable_scope_ids: Sequence[str]
+    ) -> list[FactTargetRow]:
+        targets = [str(item).strip() for item in target_ids if str(item).strip()]
+        writable = [str(item).strip() for item in writable_scope_ids if str(item).strip()]
+        if not targets or not writable:
+            return []
+        id_placeholders = ",".join("?" for _ in targets)
+        scope_placeholders = ",".join("?" for _ in writable)
+        with self.query_lock():
+            rows = self.query_connection().execute(
+                "SELECT id, scope_id, target, source FROM memories "
+                f"WHERE id IN ({id_placeholders}) "
+                f"AND scope_id IN ({scope_placeholders})",
+                (*targets, *writable),
+            ).fetchall()
+        return [
+            {
+                "id": str(row["id"] or ""),
+                "scope_id": str(row["scope_id"] or ""),
+                "target": str(row["target"] or ""),
+                "source": str(row["source"] or ""),
+            }
+            for row in rows
+        ]
+
+    def fact_memory_updated_at(self, memory_id: str) -> str:
+        with self.query_lock():
+            row = self.query_connection().execute(
+                "SELECT updated_at FROM memories WHERE id = ?",
+                (memory_id,),
+            ).fetchone()
+        return str(row["updated_at"] or "") if row is not None else ""
+
+    def fact_pipeline_receipt_exists(
+        self,
+        *,
+        lane: str,
+        run_id: str,
+        source_key: str,
+        scope_id: str,
+    ) -> bool:
+        from ...fact_evolution import pipeline_receipt_exists
+
+        with self.query_lock():
+            return pipeline_receipt_exists(
+                self.query_connection(),
+                lane=lane,
+                run_id=run_id,
+                source_key=source_key,
+                scope_id=scope_id,
+            )
+
+    def execute_fact_proposal(
+        self,
+        *,
+        proposal: EvolutionProposal,
+        lane: str,
+        run_id: str,
+        source_key: str,
+        trusted_scope_id: str,
+        writable_scope_ids: Sequence[str],
+        actor: str,
+        source: str,
+        target: str,
+        content: str,
+        metadata: Mapping[str, object],
+        dry_run: bool,
+        provenance_refs: Sequence[Mapping[str, object]],
+    ) -> EvolutionResult:
+        from ...fact_evolution import execute_pipeline_proposal
+
+        scope = self.scope_object()
+        with self.query_lock():
+            return execute_pipeline_proposal(
+                self.query_connection(),
+                proposal=proposal,
+                lane=lane,
+                run_id=run_id,
+                source_key=source_key,
+                trusted_scope_id=trusted_scope_id,
+                writable_scope_ids=writable_scope_ids,
+                actor=actor,
+                source=source,
+                target=target,
+                content=content,
+                metadata=metadata,
+                runtime_config=self.config_view(),
+                dry_run=dry_run,
+                provenance_refs=provenance_refs,
+                session_id=self.session_id(),
+                platform=str(getattr(scope, "platform", "") or ""),
+                user_id=str(getattr(scope, "user_id", "") or ""),
+                chat_id=str(getattr(scope, "chat_id", "") or ""),
+                thread_id=str(getattr(scope, "thread_id", "") or ""),
+                gateway_session_key=str(
+                    getattr(scope, "gateway_session_key", "") or ""
+                ),
+                agent_identity=str(getattr(scope, "agent_identity", "") or ""),
+                agent_workspace=str(getattr(scope, "agent_workspace", "") or ""),
+            )
 
     def shared_pool_enabled(self) -> bool:
         return bool(getattr(self._host, "_shared_pool_enabled", False))
