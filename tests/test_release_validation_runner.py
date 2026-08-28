@@ -296,9 +296,28 @@ def test_full_suite_environment_installs_candidate_and_writable_pinned_hermes_co
     hermes = tmp_path / "pinned-hermes"
     hermes.mkdir()
     (hermes / "pyproject.toml").write_text(
-        '[project]\nname = "hermes-agent"\nversion = "0.19.1"\n',
+        """[project]
+name = "hermes-agent"
+version = "0.19.1"
+readme = "README.md"
+license-files = ["LICENSE"]
+
+[tool.setuptools]
+py-modules = ["run_agent"]
+
+[tool.setuptools.packages.find]
+include = ["hermes_cli", "hermes_cli.*"]
+""",
         encoding="utf-8",
     )
+    for name in ("README.md", "LICENSE", "setup.py", "run_agent.py"):
+        (hermes / name).write_text(f"{name}\n", encoding="utf-8")
+    package = hermes / "hermes_cli"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    excluded = hermes / "website" / "deep" / "translated"
+    excluded.mkdir(parents=True)
+    (excluded / "irrelevant.md").write_text("not packaged\n", encoding="utf-8")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     staging = tmp_path / "staging"
@@ -333,3 +352,6 @@ def test_full_suite_environment_installs_candidate_and_writable_pinned_hermes_co
     assert hermes_install_target == workspace / "hermes-source-copy"
     assert hermes_install_target != hermes
     assert (hermes_install_target / "pyproject.toml").is_file()
+    assert (hermes_install_target / "run_agent.py").is_file()
+    assert (hermes_install_target / "hermes_cli" / "__init__.py").is_file()
+    assert not (hermes_install_target / "website").exists()
