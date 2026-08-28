@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from typing import Any, cast
 
 from ..application.capture_journal import (
@@ -20,22 +19,18 @@ from ...capture_filters import sanitize_capture_text, should_capture_text
 from ...capture_llm import extract_capture_candidates as default_extract_capture_candidates
 from ...gating import clean_text
 from ...governance import extract_candidates as default_extract_candidates
-
-
-def _provider_hook(host: Any, name: str, default: Any) -> Any:
-    module = sys.modules.get(type(host).__module__)
-    candidate = getattr(module, name, None) if module is not None else None
-    return candidate if callable(candidate) else default
+from .hook_contract import RuntimeHooks
 
 
 class ProviderCaptureAdapter:
     """Confine current Provider-shaped capture state to infrastructure."""
 
-    def __init__(self, host: Any) -> None:
+    def __init__(self, host: Any, hooks: RuntimeHooks) -> None:
         self._host = host
+        self._hooks = hooks
 
     def start_writer(self) -> None:
-        operation = _provider_hook(self._host, "start_writer", default_start_writer)
+        operation = self._hooks.resolve("start_writer", default_start_writer)
         operation(self._host)
 
     def prepare_turn(self, request: CaptureTurnRequest) -> CaptureTurnPlan:
@@ -73,13 +68,12 @@ class ProviderCaptureAdapter:
         )
 
     def capture_turn(self, plan: CaptureTurnPlan) -> None:
-        extract_capture = _provider_hook(
-            self._host,
+        extract_capture = self._hooks.resolve(
             "extract_capture_candidates",
             default_extract_capture_candidates,
         )
-        extract_fallbacks = _provider_hook(
-            self._host, "extract_candidates", default_extract_candidates
+        extract_fallbacks = self._hooks.resolve(
+            "extract_candidates", default_extract_candidates
         )
         llm_extracted, capture_policy_blocked = capture_turn_llm_candidates(
             self._host,
@@ -105,5 +99,5 @@ class ProviderCaptureAdapter:
         return bool(flush_writer(self._host, timeout=timeout))
 
 
-def bind_capture_gateway(host: Any) -> CaptureGateway:
-    return ProviderCaptureAdapter(host)
+def bind_capture_gateway(host: Any, hooks: RuntimeHooks) -> CaptureGateway:
+    return ProviderCaptureAdapter(host, hooks)

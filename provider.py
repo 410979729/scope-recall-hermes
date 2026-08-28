@@ -28,6 +28,9 @@ from .write_kernel import (
 from .capture_llm import extract_capture_candidates  # noqa: F401 - compatibility hook
 from .config import load_runtime_config, save_runtime_config
 from .journal import ensure_journal_schema, run_journal_digest
+from ._internal.compatibility.provider_runtime import (
+    build_provider_runtime_dependencies,
+)
 from ._internal.runtime.composition import RuntimeComposition, assemble_runtime
 from ._internal.runtime.process_lifecycle import DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
 from ._internal.runtime import peer_recovery as _peer_recovery
@@ -180,7 +183,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._retrieval_config: dict[str, Any] = {}
         self._vector_config: dict[str, Any] = {}
         self._composition = assemble_runtime(
-            self, truth_cls=TruthSession, background_cls=BackgroundWork
+            build_provider_runtime_dependencies(
+                self, truth_cls=TruthSession, background_cls=BackgroundWork
+            )
         )
         self._truth = self._composition.truth
         self._lock = threading.RLock()
@@ -327,25 +332,25 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         return self._bind_composition().initialize(session_id, **kwargs)
 
     def _has_live_initialize_runtime(self) -> bool:
-        return self._bind_composition().lifecycle.has_live_initialize_runtime(self)
+        return self._bind_composition().lifecycle.has_live_initialize_runtime()
 
     def _initialize_under_lifecycle_lock(self, session_id: str, **kwargs) -> None:
         return self._bind_composition().lifecycle.initialize_under_lifecycle_lock(
-            self, session_id, **kwargs
+            session_id, kwargs
         )
 
     def _initialize_writer_runtime(self) -> None:
-        return self._bind_composition().lifecycle.initialize_writer_runtime(self)
+        return self._bind_composition().lifecycle.initialize_writer_runtime()
 
     def _cleanup_failed_writer_initialization(
         self, *, reraise_companion_errors: bool = False
     ) -> bool:
         return self._bind_composition().lifecycle.cleanup_failed_writer_initialization(
-            self, reraise_companion_errors=reraise_companion_errors
+            reraise_companion_errors=reraise_companion_errors
         )
 
     def _initialize_read_only_runtime(self) -> None:
-        return self._bind_composition().lifecycle.initialize_read_only_runtime(self)
+        return self._bind_composition().lifecycle.initialize_read_only_runtime()
 
     def _truth_writes_blocked(self) -> bool:
         """Return whether durable write surfaces must stay disabled."""
@@ -912,7 +917,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             if composition is not None:
                 return composition
             composition = assemble_runtime(
-                self, truth_cls=TruthSession, background_cls=BackgroundWork
+                build_provider_runtime_dependencies(
+                    self, truth_cls=TruthSession, background_cls=BackgroundWork
+                )
             )
             object.__setattr__(self, "_composition", composition)
             object.__setattr__(self, "_truth", composition.truth)

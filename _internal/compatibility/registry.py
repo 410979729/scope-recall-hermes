@@ -139,18 +139,36 @@ COMPATIBILITY_REGISTRY: tuple[CompatibilityShim, ...] = (
     ),
     CompatibilityShim(
         shim_id="provider-module-hook-anchors",
-        owner="program-1a-runtime-boundary",
-        source="provider.py:_COMPOSITION_RUNTIME_HOOKS",
+        owner="rc-audit-remediation",
+        source="_internal/compatibility/provider_hooks.py:ProviderModuleHooks",
         replacement="constructor-injected infrastructure factories",
         usage_evidence=(
-            "_internal/runtime/capture_service.py:_provider_hook",
-            "_internal/runtime/vector_service.py:_provider_hook",
+            "_internal/compatibility/provider_runtime.py:build_provider_runtime_dependencies",
+            "_internal/runtime/capture_service.py:ProviderCaptureAdapter",
+            "_internal/runtime/vector_service.py:ProviderVectorAdapter",
         ),
         remove_after="2.1.0",
         removal_condition="legacy monkeypatch and plugin-loader compatibility window closes",
         tests=(
             "tests/test_digest_transaction_boundary.py:test_sync_turn_capture_llm_releases_duplicate_journal_transaction",
             "tests/test_arch_convergence_command_port.py:test_touched_internals_import_canonical_modules_not_shims",
+            "tests/test_rc_architecture_boundaries.py:test_core_runtime_does_not_resolve_provider_through_sys_modules",
+        ),
+    ),
+    CompatibilityShim(
+        shim_id="provider-bound-runtime-dependencies",
+        owner="rc-audit-remediation",
+        source="_internal/compatibility/provider_runtime.py:build_provider_runtime_dependencies",
+        replacement="independent infrastructure repositories and lifecycle capabilities",
+        usage_evidence=(
+            "provider.py:build_provider_runtime_dependencies",
+            "_internal/runtime/composition.py:RuntimeDependencies",
+        ),
+        remove_after="2.1.0",
+        removal_condition="legacy runtime owners no longer retain Provider-shaped state",
+        tests=(
+            "tests/test_rc_architecture_boundaries.py:test_assemble_runtime_accepts_typed_dependencies_not_provider",
+            "tests/test_arch_convergence_command_port.py:test_provider_and_tooling_entries_use_same_command_port_object",
         ),
     ),
     CompatibilityShim(
@@ -184,6 +202,7 @@ PROGRAM_1A_COMPATIBILITY_IDS = frozenset(
         "provider-vector-adapter",
         "provider-vector-runtime-state-adapter",
         "provider-module-hook-anchors",
+        "provider-bound-runtime-dependencies",
     }
 )
 
