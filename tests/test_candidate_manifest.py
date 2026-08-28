@@ -6,6 +6,8 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import subprocess
+import sys
 import tarfile
 import zipfile
 
@@ -172,3 +174,20 @@ def test_candidate_manifest_refuses_unignored_output() -> None:
             ROOT,
             ROOT / "CANDIDATE_MANIFEST_NOT_IGNORED.json",
         )
+
+
+def test_candidate_manifest_script_path_entrypoint_is_importable() -> None:
+    result = subprocess.run(
+        [sys.executable, "-B", str(SCRIPT), "--help"],
+        cwd=ROOT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert "--provenance" in result.stdout
