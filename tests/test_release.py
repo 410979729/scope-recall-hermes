@@ -1306,6 +1306,8 @@ def test_default_config_includes_documented_retrieval_top_k():
     assert config_module.DEFAULT_CONFIG["tool_schema_extra_tools"] == []
     assert source_config["recall_compiler"]["current_truth_enabled"] is True
     assert config_module.DEFAULT_CONFIG["recall_compiler"]["current_truth_enabled"] is True
+    assert source_config["recall_compiler"]["conflict_enabled"] is True
+    assert config_module.DEFAULT_CONFIG["recall_compiler"]["conflict_enabled"] is True
     assert source_config["recall_compiler"]["renderer_enabled"] is True
     assert config_module.DEFAULT_CONFIG["recall_compiler"]["renderer_enabled"] is True
     assert source_config["recall_compiler"]["budgeter_enabled"] is False

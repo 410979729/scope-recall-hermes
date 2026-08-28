@@ -560,6 +560,7 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
     current_truth_enabled = config_bool(
         compiler_cfg, "current_truth_enabled", True
     )
+    conflict_enabled = config_bool(compiler_cfg, "conflict_enabled", True)
     budgeter_enabled = config_bool(compiler_cfg, "budgeter_enabled", False)
     renderer_enabled = config_bool(compiler_cfg, "renderer_enabled", True)
     try:
@@ -583,10 +584,11 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
             token_budget=token_budget,
             per_item_token_budget=per_item_token_budget,
             current_truth_enabled=False,
+            conflict_enabled=False,
             evidence_order_enabled=False,
             diversity_enabled=False,
             budgeter_enabled=False,
-            annotations_enabled=False,
+            evidence_annotations_enabled=False,
         ),
     )
     shadow_packet = compile_recall_packet(
@@ -604,10 +606,11 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
             token_budget=token_budget,
             per_item_token_budget=per_item_token_budget,
             current_truth_enabled=current_truth_enabled,
+            conflict_enabled=conflict_enabled,
             evidence_order_enabled=renderer_enabled,
             diversity_enabled=renderer_enabled,
             budgeter_enabled=budgeter_enabled,
-            annotations_enabled=renderer_enabled,
+            evidence_annotations_enabled=renderer_enabled,
         ),
     )
     active_items = active_packet.as_recall_items()
@@ -632,6 +635,7 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
             1 for memory_id in legacy_top_five if memory_id in shadow_top_five
         ),
         "current_truth_enabled": current_truth_enabled,
+        "conflict_enabled": conflict_enabled,
         "budgeter_enabled": budgeter_enabled,
         "renderer_enabled": renderer_enabled,
     }

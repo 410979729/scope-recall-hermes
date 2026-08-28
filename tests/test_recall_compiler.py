@@ -14,6 +14,7 @@ from scope_recall._internal.recall.compiler import (
     CandidateSet,
     CompilerPolicy,
     compile_recall_packet,
+    derive_recall_packet,
     paired_packet_diff,
     render_recall_packet,
 )
@@ -65,6 +66,27 @@ def test_candidate_set_is_a_typed_snapshot_of_one_retrieval() -> None:
     assert candidate.item.summary == "original"
     assert candidate.evidence_kinds == ("lexical",)
     assert len(candidate_set.fingerprint) == 64
+
+
+def test_candidate_fingerprint_binds_compiler_semantics_not_only_ids() -> None:
+    first = CandidateSet.from_items(
+        [_item("same-id", summary="first", metadata={"lexical_score": 0.8})]
+    )
+    changed_summary = CandidateSet.from_items(
+        [_item("same-id", summary="second", metadata={"lexical_score": 0.8})]
+    )
+    changed_evidence = CandidateSet.from_items(
+        [
+            _item(
+                "same-id",
+                summary="first",
+                metadata={"lexical_score": 0.8, "vector_score": 0.7},
+            )
+        ]
+    )
+
+    assert first.fingerprint != changed_summary.fingerprint
+    assert first.fingerprint != changed_evidence.fingerprint
 
 
 def test_current_truth_removes_only_stale_canonical_claim_in_same_scope_and_slot() -> None:
@@ -207,6 +229,195 @@ def test_current_truth_budgeter_and_renderer_stage_switches_are_independent() ->
     assert {item.item.id for item in renderer_only.items} == {"stale", "other", "current"}
     assert renderer_only.items[0].item.id == "current"
     assert renderer_only.current_truth_removed == 0
+
+
+def test_current_truth_flag_is_independent() -> None:
+    shared = {"scope_id": "scope-a", "fact_claim_key": "fact:city"}
+    stale = _item(
+        "stale",
+        metadata={**shared, "fact_freshness_status": "stale"},
+    )
+    current = _item(
+        "current",
+        metadata={**shared, "fact_freshness_status": "current"},
+    )
+    candidate_set = CandidateSet.from_items([stale, current])
+    disabled = compile_recall_packet(
+        candidate_set,
+        _policy(
+            current_truth_enabled=False,
+            conflict_enabled=False,
+            evidence_order_enabled=False,
+            diversity_enabled=False,
+            budgeter_enabled=False,
+            evidence_annotations_enabled=False,
+        ),
+    )
+    enabled = compile_recall_packet(
+        candidate_set,
+        _policy(
+            current_truth_enabled=True,
+            conflict_enabled=False,
+            evidence_order_enabled=False,
+            diversity_enabled=False,
+            budgeter_enabled=False,
+            evidence_annotations_enabled=False,
+        ),
+    )
+
+    assert [item.item.id for item in disabled.items] == ["stale", "current"]
+    assert [item.item.id for item in enabled.items] == ["current"]
+    assert disabled.conflict_count == enabled.conflict_count == 0
+    assert disabled.budget_exhausted is enabled.budget_exhausted is False
+
+
+def test_conflict_flag_is_independent() -> None:
+    shared = {
+        "relation_evidence_types": ["contradicts"],
+        "fact_freshness_status": "current",
+    }
+    left = _item(
+        "left", metadata={**shared, "relation_contradiction_ids": ["right"]}
+    )
+    right = _item(
+        "right", metadata={**shared, "relation_contradiction_ids": ["left"]}
+    )
+    candidate_set = CandidateSet.from_items([left, right])
+    disabled = compile_recall_packet(
+        candidate_set,
+        _policy(
+            conflict_enabled=False,
+            evidence_order_enabled=False,
+            diversity_enabled=False,
+            budgeter_enabled=False,
+            evidence_annotations_enabled=False,
+        ),
+    )
+    enabled = compile_recall_packet(
+        candidate_set,
+        _policy(
+            conflict_enabled=True,
+            evidence_order_enabled=False,
+            diversity_enabled=False,
+            budgeter_enabled=False,
+            evidence_annotations_enabled=False,
+        ),
+    )
+
+    assert [item.item.id for item in disabled.items] == ["left", "right"]
+    assert [item.item.id for item in enabled.items] == ["left", "right"]
+    assert disabled.conflict_count == 0
+    assert enabled.conflict_count == 2
+    assert all(not item.conflict for item in disabled.items)
+    assert all(item.conflict for item in enabled.items)
+    assert disabled.current_truth_removed == enabled.current_truth_removed == 0
+
+
+def test_budgeter_flag_is_independent() -> None:
+    candidate_set = CandidateSet.from_items(
+        [_item("long", summary="budget fixture " * 100)]
+    )
+    disabled = compile_recall_packet(
+        candidate_set,
+        _policy(
+            token_budget=110,
+            current_truth_enabled=False,
+            conflict_enabled=False,
+            evidence_order_enabled=False,
+            diversity_enabled=False,
+            budgeter_enabled=False,
+            evidence_annotations_enabled=False,
+        ),
+    )
+    enabled = compile_recall_packet(
+        candidate_set,
+        _policy(
+            token_budget=110,
+            per_item_token_budget=12,
+            current_truth_enabled=False,
+            conflict_enabled=False,
+            evidence_order_enabled=False,
+            diversity_enabled=False,
+            budgeter_enabled=True,
+            evidence_annotations_enabled=False,
+        ),
+    )
+
+    assert disabled.items[0].item.summary == "budget fixture " * 100
+    assert enabled.items[0].item.summary.endswith("…")
+    assert enabled.estimated_tokens <= 110
+    assert disabled.current_truth_removed == enabled.current_truth_removed == 0
+    assert disabled.conflict_count == enabled.conflict_count == 0
+
+
+def test_renderer_flag_is_independent() -> None:
+    shared = {"relation_evidence_types": ["contradicts"]}
+    weak = _item(
+        "weak",
+        score=0.8,
+        metadata={
+            **shared,
+            "lexical_score": 0.8,
+            "relation_contradiction_ids": ["strong"],
+        },
+    )
+    strong = _item(
+        "strong",
+        score=0.7,
+        metadata={
+            **shared,
+            "lexical_score": 0.7,
+            "vector_score": 0.7,
+            "rrf_score": 0.7,
+            "relation_contradiction_ids": ["weak"],
+        },
+    )
+    candidate_set = CandidateSet.from_items([weak, strong])
+    renderer_disabled = compile_recall_packet(
+        candidate_set,
+        _policy(
+            conflict_enabled=True,
+            evidence_order_enabled=False,
+            diversity_enabled=False,
+            budgeter_enabled=False,
+            evidence_annotations_enabled=False,
+        ),
+    )
+    renderer_enabled = compile_recall_packet(
+        candidate_set,
+        _policy(
+            conflict_enabled=True,
+            evidence_order_enabled=True,
+            diversity_enabled=True,
+            budgeter_enabled=False,
+            evidence_annotations_enabled=True,
+        ),
+    )
+
+    assert [item.item.id for item in renderer_disabled.items] == ["weak", "strong"]
+    assert [item.item.id for item in renderer_enabled.items] == ["strong", "weak"]
+    assert renderer_disabled.conflict_count == renderer_enabled.conflict_count == 2
+    assert all(item.conflict for item in renderer_disabled.items)
+    assert renderer_disabled.current_truth_removed == renderer_enabled.current_truth_removed
+
+
+def test_derived_packet_is_a_presentation_only_parent_subset() -> None:
+    parent = compile_recall_packet(
+        CandidateSet.from_items([_item("one"), _item("two")]),
+        _policy(),
+    )
+    selected = _item("two", summary="shortened presentation")
+
+    derived = derive_recall_packet(parent, [selected])
+
+    assert [item.item.id for item in derived.items] == ["two"]
+    assert derived.items[0].item.summary == "shortened presentation"
+    assert derived.candidate_fingerprint == parent.candidate_fingerprint
+    assert derived.parent_candidate_fingerprint == parent.candidate_fingerprint
+    assert derived.current_truth_removed == parent.current_truth_removed
+    assert derived.conflict_count == parent.conflict_count
+    with pytest.raises(ValueError, match="subset"):
+        derive_recall_packet(parent, [_item("not-in-parent")])
 
 
 def test_dedupe_evidence_order_and_diversity_are_deterministic() -> None:
@@ -387,3 +598,25 @@ def test_frozen_program_benchmark_quality_gates() -> None:
 
     assert result["ok"] is True
     assert all(result["gates"].values())
+
+
+def test_paired_benchmark_uses_one_candidate_fingerprint() -> None:
+    module_name = "scope_recall_recall_compiler_integration_benchmark_test"
+    spec = importlib.util.spec_from_file_location(
+        module_name, ROOT / "scripts" / "benchmark.recall_compiler.py"
+    )
+    assert spec is not None and spec.loader is not None
+    benchmark = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = benchmark
+    try:
+        spec.loader.exec_module(benchmark)
+        result = benchmark.run_production_paired_benchmark()
+    finally:
+        sys.modules.pop(module_name, None)
+
+    assert result["ok"] is True
+    assert result["benchmark_kind"] == "paired_integration"
+    assert result["retrieval_calls"] == {"lexical": 1, "vector": 1}
+    assert result["paired"]["same_candidate_set"] is True
+    assert len(result["candidate_fingerprint"]) == 64
+    assert result["compiler_invocations_from_search"] == 3

@@ -123,6 +123,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "recall_compiler": {
         "current_truth_enabled": True,
+        "conflict_enabled": True,
         "budgeter_enabled": False,
         "renderer_enabled": True,
         "token_budget": 320,

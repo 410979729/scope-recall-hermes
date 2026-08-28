@@ -31,10 +31,21 @@ changes; the token budgeter stays default-off until its own product decision:
 - `recall_compiler.current_truth_enabled` defaults on and activates only
   canonical stale/current filtering; setting it to `false` restores the V1
   ordering without changing stored truth;
+- `recall_compiler.conflict_enabled` defaults on and controls only conflict
+  annotation/exposure; the query side still never chooses a conflict winner;
 - `recall_compiler.budgeter_enabled` activates packet token limits;
 - `recall_compiler.renderer_enabled` defaults on and activates
-  evidence/diversity packet order and the new prompt renderer; setting it to
-  `false` restores the V1 prompt renderer independently.
+  evidence annotation/order, deterministic diversity order, and the new prompt
+  renderer; setting it to `false` restores the V1 presentation without
+  disabling current-truth filtering, conflict exposure, or token budgeting.
+
+The Orchestrator publishes the only compiled active packet. Prompt selection
+may remove recently recalled items and shorten already-sanitized summaries, but
+it uses the pure `derive_recall_packet(parent_packet, selected_items)` API. A
+derived packet preserves the parent candidate fingerprint, item order,
+current-truth decision, conflict decision, and evidence kinds; it performs no
+retrieval and reruns no compiler stage. The V1 renderer consumes the same
+Orchestrator result slice when the renderer switch is off.
 
 With all switches explicitly off, ordinary results and the V1 prompt renderer
 remain the compatibility authority. The compiler still calculates a bounded aggregate
@@ -42,7 +53,10 @@ shadow record from the same `CandidateSet`. That record contains counts,
 estimated tokens, booleans, and elapsed time only—never query text, candidate
 IDs, summaries, Evidence text, or the CandidateSet fingerprint. Complete
 paired item diffs require the explicit `isolated=True` API and are reserved for
-offline tests and `scripts/benchmark.recall_compiler.py`.
+offline tests and compiler benchmark harnesses. The synthetic harness is a
+unit/micro benchmark. The paired integration harness invokes the production
+Orchestrator once, captures its frozen CandidateSet, and compiles both sides
+from that one fingerprint; neither side performs retrieval.
 
 The historical `current_truth_removed` trace field remains the decontented
 shadow count. `active_current_truth_removed` is the active-product count, so an
