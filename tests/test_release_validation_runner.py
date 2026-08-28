@@ -84,6 +84,18 @@ def test_runner_environment_keeps_every_write_target_isolated(
     assert Path(environment["SCOPE_RECALL_TEST_BOUNDARY_PARENT"]).name == "pytest"
 
 
+def test_runner_pytest_basetemp_uses_declared_short_boundary(tmp_path: Path) -> None:
+    module = _load_module()
+    parent = tmp_path / "pytest"
+
+    target = module._pytest_basetemp(
+        {"SCOPE_RECALL_TEST_BOUNDARY_PARENT": str(parent)},
+        "full",
+    )
+
+    assert target == parent.resolve() / "full"
+
+
 def test_validation_receipt_binds_source_artifact_and_isolation() -> None:
     module = _load_module()
     context = module.ValidationContext(

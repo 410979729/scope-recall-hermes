@@ -217,6 +217,15 @@ def _isolated_environment(
     return environment
 
 
+def _pytest_basetemp(environment: Mapping[str, str], name: str) -> Path:
+    parent_text = str(environment.get("SCOPE_RECALL_TEST_BOUNDARY_PARENT") or "").strip()
+    if not parent_text:
+        raise ReleaseValidationError("pytest boundary parent is not declared")
+    if not name or Path(name).name != name or name in {".", ".."}:
+        raise ReleaseValidationError("pytest basetemp name is not a single path segment")
+    return Path(parent_text).resolve(strict=False) / name
+
+
 def _run(
     command: Sequence[str],
     *,
@@ -324,7 +333,7 @@ def _run_pytest_receipt(
         "no:cacheprovider",
         "-q",
         "--basetemp",
-        str(staging / f"pytest-{stem.lower()}"),
+        str(_pytest_basetemp(environment, f"receipt-{stem.lower()}")),
         *node_ids,
     ]
     display = [
@@ -400,7 +409,7 @@ def _run_full_suite(
         "-ra",
         f"--junitxml={junit}",
         "--basetemp",
-        str(staging / "pytest-full"),
+        str(_pytest_basetemp(environment, "full")),
     ]
     display = [
         "python",
@@ -508,7 +517,7 @@ def _active_isolation_evidence(
             "no:cacheprovider",
             "-q",
             "--basetemp",
-            str(staging / "pytest-active-isolation"),
+            str(_pytest_basetemp(environment, "active-isolation")),
             *ISOLATION_NODES,
         ],
         display_command=display,
