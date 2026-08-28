@@ -81,6 +81,7 @@ def test_runner_environment_keeps_every_write_target_isolated(
     assert not plugin_dir.exists()
     assert environment["SCOPE_RECALL_REAL_HOME"] == str(real_home)
     assert environment["SCOPE_RECALL_ACTIVE_HERMES_HOME"] == str(active)
+    assert Path(environment["SCOPE_RECALL_TEST_BOUNDARY_PARENT"]).name == "pytest"
 
 
 def test_validation_receipt_binds_source_artifact_and_isolation() -> None:

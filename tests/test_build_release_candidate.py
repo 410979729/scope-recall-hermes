@@ -113,6 +113,7 @@ def test_candidate_build_environment_is_bounded_to_isolated_directory(
     ):
         Path(env[key]).resolve().relative_to(boundary.resolve())
     assert env["PYTHONNOUSERSITE"] == "1"
+    assert Path(env["SCOPE_RECALL_TEST_BOUNDARY_PARENT"]).name == "pytest"
     plugin_dir = Path(env["SCOPE_RECALL_PLUGIN_DIR"])
     assert plugin_dir.parent.is_dir()
     assert not plugin_dir.exists()

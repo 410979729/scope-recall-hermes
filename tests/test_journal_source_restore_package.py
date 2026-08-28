@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 import json
 import os
 import shutil
@@ -11,6 +12,8 @@ import tempfile
 import venv
 import zipfile
 from pathlib import Path
+
+import pytest
 
 from journal_source_restore_support import apply_kwargs, build_source_restore_pair, cli_argv
 from scope_recall.maintenance_lease import activation_lease_path
@@ -80,6 +83,15 @@ def _nested_pytest_parent() -> Path:
     return parent
 
 
+@pytest.fixture
+def short_package_work() -> Iterator[Path]:
+    with tempfile.TemporaryDirectory(
+        prefix="sr-package-work-",
+        dir=_nested_pytest_parent(),
+    ) as work_raw:
+        yield Path(work_raw)
+
+
 def test_clean_env_drops_parent_python_and_pytest_state(monkeypatch) -> None:
     for key in ("PYTHONPATH", "PYTHONHOME", "PYTEST_ADDOPTS", "PYTEST_PLUGINS", "VIRTUAL_ENV"):
         monkeypatch.setenv(key, "must-not-leak")
@@ -106,6 +118,10 @@ def test_nested_pytest_parent_ignores_process_tempdir(
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "nested-process-temp"))
 
     assert _nested_pytest_parent() == declared.resolve()
+
+
+def test_short_package_work_is_bounded(short_package_work: Path) -> None:
+    assert short_package_work.parent == _nested_pytest_parent()
 
 
 def _copy_sources(dest: Path) -> Path:
@@ -183,7 +199,10 @@ def _build_artifacts(work: Path) -> tuple[Path, Path]:
     return sdists[0], wheels[0]
 
 
-def test_real_sdist_and_installed_wheel_source_restore(tmp_path: Path) -> None:
+def test_real_sdist_and_installed_wheel_source_restore(
+    short_package_work: Path,
+) -> None:
+    tmp_path = short_package_work
     sdist, wheel = _build_artifacts(tmp_path)
     with tarfile.open(sdist, "r:gz") as archive:
         names = set(archive.getnames())
