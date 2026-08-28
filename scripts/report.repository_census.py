@@ -23,6 +23,8 @@ from typing import Any, Sequence
 
 SCHEMA_VERSION = "scope-recall.repository-census.v1"
 ALGORITHM = "git-ls-files-sha256-v1"
+PUBLIC_BASE_COMMIT = "f63c953d8c4ca3c8185671ff0a3cb67579c30b60"
+PUBLIC_BASE_TREE = "6917f5c15ef67815ef6166e9043d0d556af8b510"
 DEFAULT_OUTPUT = Path(".execution/FULL_REPOSITORY_FILE_CENSUS.json")
 LARGE_FILE_BYTES = 5 * 1024 * 1024
 GOVERNANCE_PATHS = frozenset(
@@ -87,6 +89,90 @@ def _decode_nul_paths(payload: bytes) -> list[str]:
             raise CensusError(f"unsafe repository path: {normalized!r}")
         paths.append(normalized)
     return sorted(set(paths))
+
+
+def _decode_path(raw: bytes) -> str:
+    try:
+        normalized = raw.decode("utf-8").replace("\\", "/")
+    except UnicodeDecodeError as exc:
+        raise CensusError("repository contains a non-UTF-8 path") from exc
+    pure = PurePosixPath(normalized)
+    if not normalized or pure.is_absolute() or ".." in pure.parts or normalized != pure.as_posix():
+        raise CensusError(f"unsafe repository path: {normalized!r}")
+    return normalized
+
+
+def repository_delta(
+    root: Path,
+    *,
+    base_commit: str = PUBLIC_BASE_COMMIT,
+) -> dict[str, Any]:
+    """Return exact deleted/renamed paths from the frozen public base."""
+
+    resolved = root.resolve(strict=True)
+    base_type = _run_git(resolved, ["cat-file", "-t", base_commit]).decode(
+        "ascii"
+    ).strip()
+    if base_type != "commit":
+        raise CensusError("repository governance base is not a commit")
+    _run_git(resolved, ["merge-base", "--is-ancestor", base_commit, "HEAD"])
+    base_tree = _run_git(resolved, ["rev-parse", f"{base_commit}^{{tree}}"])
+    tokens = _run_git(
+        resolved,
+        ["diff", "--name-status", "-z", "-M", f"{base_commit}...HEAD"],
+    ).split(b"\0")
+    if tokens and tokens[-1] == b"":
+        tokens.pop()
+    entries: list[dict[str, object]] = []
+    index = 0
+    while index < len(tokens):
+        status = tokens[index].decode("ascii", errors="strict")
+        index += 1
+        if status.startswith(("R", "C")):
+            if index + 1 >= len(tokens):
+                raise CensusError("truncated rename/copy delta")
+            old_path = _decode_path(tokens[index])
+            new_path = _decode_path(tokens[index + 1])
+            index += 2
+            entries.append(
+                {"status": status, "old_path": old_path, "new_path": new_path}
+            )
+        else:
+            if index >= len(tokens):
+                raise CensusError("truncated repository delta")
+            entries.append({"status": status, "path": _decode_path(tokens[index])})
+            index += 1
+    deleted = sorted(
+        str(entry["path"])
+        for entry in entries
+        if entry["status"] == "D"
+    )
+    renamed = [
+        {
+            "similarity": str(entry["status"]),
+            "from": str(entry["old_path"]),
+            "to": str(entry["new_path"]),
+        }
+        for entry in entries
+        if str(entry["status"]).startswith("R")
+    ]
+    renamed.sort(key=lambda item: (item["from"], item["to"]))
+    return {
+        "schema_version": "scope-recall.repository-delta.v1",
+        "base_commit": base_commit,
+        "base_tree": base_tree.decode("ascii").strip(),
+        "candidate_commit": _run_git(resolved, ["rev-parse", "HEAD"])
+        .decode("ascii")
+        .strip(),
+        "candidate_tree": _run_git(resolved, ["rev-parse", "HEAD^{tree}"])
+        .decode("ascii")
+        .strip(),
+        "changed_file_count": len(entries),
+        "deleted_file_count": len(deleted),
+        "renamed_file_count": len(renamed),
+        "deleted_files": deleted,
+        "renamed_files": renamed,
+    }
 
 
 def repository_paths(root: Path, *, tracked_only: bool = False) -> tuple[list[str], set[str]]:

@@ -17,6 +17,10 @@ import tomllib
 from types import ModuleType
 from typing import Mapping, Sequence
 
+from scripts.execution_boundary import (  # pyright: ignore[reportMissingImports]
+    ambient_active_hermes_home,
+    validate_execution_boundary,
+)
 from scripts.release_candidate_artifacts import (  # pyright: ignore[reportMissingImports]
     ArtifactVerificationError,
     archive_member_manifest,
@@ -225,7 +229,11 @@ def _venv_python(venv_root: Path) -> Path:
     )
 
 
-def _isolated_environment(boundary: Path) -> dict[str, str]:
+def _isolated_environment(
+    boundary: Path,
+    *,
+    active_hermes_home: Path | None = None,
+) -> dict[str, str]:
     boundary.mkdir(parents=True, exist_ok=True)
     home = boundary / "home"
     hermes_home = boundary / "hermes-home"
@@ -238,6 +246,11 @@ def _isolated_environment(boundary: Path) -> dict[str, str]:
         "SCOPE_RECALL_LEASE_DIR": boundary / "leases",
         "SCOPE_RECALL_PLUGIN_DIR": hermes_home / "plugins" / "scope-recall",
     }
+    validate_execution_boundary(
+        isolated_root=boundary,
+        targets=values,
+        active_hermes_home=active_hermes_home or ambient_active_hermes_home(),
+    )
     for path in values.values():
         if path.suffix:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -279,6 +292,7 @@ def _verify_install(
     kind: str,
     workspace: Path,
     evidence_dir: Path,
+    active_hermes_home: Path,
 ) -> tuple[Path, dict[str, object]]:
     venv_root = workspace / f"venv-{kind}"
     create_log = evidence_dir / f"INSTALL_{kind.upper()}_VENV.log"
@@ -286,7 +300,10 @@ def _verify_install(
     smoke_log = evidence_dir / f"INSTALL_{kind.upper()}_SMOKE.log"
     cli_log = evidence_dir / f"INSTALL_{kind.upper()}_CLI.log"
     boundary = workspace / f"boundary-{kind}"
-    env = _isolated_environment(boundary)
+    env = _isolated_environment(
+        boundary,
+        active_hermes_home=active_hermes_home,
+    )
     stages: dict[str, object] = {}
     stages["venv"] = _run(
         [sys.executable, "-m", "venv", str(venv_root)],
@@ -367,6 +384,7 @@ def _run_sdist_tests(
     release_check: ModuleType,
     workspace: Path,
     evidence_dir: Path,
+    active_hermes_home: Path,
 ) -> list[dict[str, object]]:
     extracted = _materialize_sdist(
         read_archive_members(sdist),
@@ -377,7 +395,10 @@ def _run_sdist_tests(
         for path in release_check.REQUIRED_SOURCE_RESTORE_SDIST_TESTS
         if Path(path).name.startswith("test_")
     )
-    env = _isolated_environment(workspace / "boundary-sdist-tests")
+    env = _isolated_environment(
+        workspace / "boundary-sdist-tests",
+        active_hermes_home=active_hermes_home,
+    )
     receipts: list[dict[str, object]] = []
     for index, relative in enumerate(test_paths, 1):
         log = evidence_dir / "sdist-tests" / f"{index:02d}-{Path(relative).stem}.log"
@@ -414,6 +435,7 @@ def build_release_candidate(
     root: Path,
     expected_sha: str,
     output_root: Path,
+    active_hermes_home: Path,
     hermes_root: Path | None = None,
     ci_run_ids: Sequence[str] = (),
 ) -> Path:
@@ -489,12 +511,14 @@ def build_release_candidate(
             kind="wheel",
             workspace=workspace,
             evidence_dir=staging,
+            active_hermes_home=active_hermes_home,
         )
         sdist_python, sdist_install = _verify_install(
             artifact=sdist,
             kind="sdist",
             workspace=workspace,
             evidence_dir=staging,
+            active_hermes_home=active_hermes_home,
         )
         sdist_tests = _run_sdist_tests(
             python=sdist_python,
@@ -502,6 +526,7 @@ def build_release_candidate(
             release_check=release_check,
             workspace=workspace,
             evidence_dir=staging,
+            active_hermes_home=active_hermes_home,
         )
         stages["install_verification"] = {
             "wheel": wheel_install,
@@ -573,6 +598,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--expected-sha", required=True)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument("--active-hermes-home", type=Path, required=True)
     parser.add_argument("--hermes-root", type=Path)
     parser.add_argument("--ci-run-id", action="append", default=[])
     return parser.parse_args(argv)
@@ -584,6 +610,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         root=args.root,
         expected_sha=str(args.expected_sha),
         output_root=args.output_root,
+        active_hermes_home=args.active_hermes_home,
         hermes_root=args.hermes_root,
         ci_run_ids=tuple(args.ci_run_id),
     )
