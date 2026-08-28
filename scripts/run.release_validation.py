@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -181,7 +184,7 @@ def _isolated_environment(
         "XDG_CONFIG_HOME": boundary / "xdg-config",
         "XDG_CACHE_HOME": boundary / "xdg-cache",
         "PIP_CACHE_DIR": boundary / "pip-cache",
-        "SCOPE_RECALL_TEST_BOUNDARY_PARENT": boundary / "pytest",
+        "SCOPE_RECALL_TEST_BOUNDARY_PARENT": boundary / "p",
         "HERMES_HOME": boundary / "hermes-home",
         "SCOPE_RECALL_DB": boundary / "truth" / "memory.sqlite3",
         "SCOPE_RECALL_LOG_DIR": boundary / "logs",
@@ -224,6 +227,38 @@ def _pytest_basetemp(environment: Mapping[str, str], name: str) -> Path:
     if not name or Path(name).name != name or name in {".", ".."}:
         raise ReleaseValidationError("pytest basetemp name is not a single path segment")
     return Path(parent_text).resolve(strict=False) / name
+
+
+def _cleanup_validation_boundary(boundary: Path, *, attempts: int = 8) -> None:
+    resolved = boundary.resolve(strict=False)
+    temp_root = Path(tempfile.gettempdir()).resolve(strict=False)
+    if resolved.parent != temp_root or not resolved.name.startswith("srv."):
+        raise ReleaseValidationError("refusing to clean an undeclared validation boundary")
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(resolved)
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            if attempt + 1 >= attempts:
+                raise
+            time.sleep(min(0.1 * (attempt + 1), 0.5))
+
+
+@contextmanager
+def _temporary_validation_boundary() -> Iterator[Path]:
+    boundary = Path(tempfile.mkdtemp(prefix="srv."))
+    try:
+        yield boundary
+    finally:
+        pending = sys.exception()
+        try:
+            _cleanup_validation_boundary(boundary)
+        except OSError as cleanup_error:
+            if pending is None:
+                raise
+            pending.add_note(f"validation boundary cleanup also failed: {cleanup_error}")
 
 
 def _run(
@@ -333,7 +368,12 @@ def _run_pytest_receipt(
         "no:cacheprovider",
         "-q",
         "--basetemp",
-        str(_pytest_basetemp(environment, f"receipt-{stem.lower()}")),
+        str(
+            _pytest_basetemp(
+                environment,
+                f"r-{hashlib.sha256(stem.encode('utf-8')).hexdigest()[:8]}",
+            )
+        ),
         *node_ids,
     ]
     display = [
@@ -409,7 +449,7 @@ def _run_full_suite(
         "-ra",
         f"--junitxml={junit}",
         "--basetemp",
-        str(_pytest_basetemp(environment, "full")),
+        str(_pytest_basetemp(environment, "f")),
     ]
     display = [
         "python",
@@ -517,7 +557,7 @@ def _active_isolation_evidence(
             "no:cacheprovider",
             "-q",
             "--basetemp",
-            str(_pytest_basetemp(environment, "active-isolation")),
+            str(_pytest_basetemp(environment, "a")),
             *ISOLATION_NODES,
         ],
         display_command=display,
@@ -686,10 +726,7 @@ def run_release_validation(
         )
     )
     try:
-        with tempfile.TemporaryDirectory(
-            prefix="scope.recall.release-validation."
-        ) as boundary_text:
-            boundary = Path(boundary_text)
+        with _temporary_validation_boundary() as boundary:
             environment = _isolated_environment(
                 boundary,
                 active_hermes_home=active,
