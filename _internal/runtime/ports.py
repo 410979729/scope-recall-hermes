@@ -6,7 +6,7 @@ details must never cross the typed Application boundary declared here.
 
 from __future__ import annotations
 
-from typing import Mapping, Protocol, runtime_checkable
+from typing import Any, Mapping, Protocol, runtime_checkable
 
 from ..application.memory_commands import (
     ArchiveMemoriesRequest,
@@ -119,7 +119,34 @@ class RuntimeAdapterPort(MemoryQueryPort, Protocol):
 
 @runtime_checkable
 class FactToolPort(Protocol):
-    """Compatibility marker; concrete fact infrastructure remains private."""
+    """Narrow host-neutral capabilities required by structured fact tooling.
+
+    The adapter owns compatibility with the concrete Provider.  Fact tooling
+    receives only this explicit surface, so it cannot grow new private-host
+    dependencies without extending and reviewing the port first.
+    """
+
+    def scope_id_for_mode(self, scope_mode: str) -> str: ...
+
+    def writable_scope_ids(self) -> list[str]: ...
+
+    def session_id(self) -> str: ...
+
+    def scope_object(self) -> Any: ...
+
+    def query_lock(self) -> Any: ...
+
+    def query_connection(self) -> Any: ...
+
+    def config_view(self) -> dict[str, Any]: ...
+
+    def shared_pool_scope_id(self) -> str: ...
+
+    def shared_scope_id(self) -> str: ...
+
+    def scope_mode_for(self, target: str, source: str = "") -> str: ...
+
+    def clean_text(self, text: Any) -> str: ...
 
 
 @runtime_checkable
