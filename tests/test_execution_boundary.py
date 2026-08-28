@@ -33,6 +33,7 @@ def test_isolated_test_environment_declares_every_write_surface() -> None:
             "TMP",
             "XDG_CONFIG_HOME",
             "XDG_CACHE_HOME",
+            "PIP_CACHE_DIR",
             "HERMES_HOME",
             "SCOPE_RECALL_DB",
             "SCOPE_RECALL_LOG_DIR",
