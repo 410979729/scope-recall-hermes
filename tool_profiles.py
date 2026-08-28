@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any, Iterable, Mapping
 
@@ -21,6 +22,17 @@ TOOL_PROFILE_ALIASES = {
 }
 
 SUPPORTED_TOOL_PROFILES = (*CANONICAL_TOOL_PROFILES, *TOOL_PROFILE_ALIASES)
+
+CORE_TOOL_SCHEMA_POLICY = {
+    "schema_version": "scope-recall.core-tool-schema-policy.v1",
+    "decision": "D-013",
+    "profile": "core",
+    "expected_tool_count": 6,
+    "expected_schema_chars": 9531,
+    "maximum_schema_chars": 9600,
+    "maximum_estimated_schema_tokens": 2400,
+    "canonical_schema_sha256": "7380485b5ee769b60383e7f6eabb836dd1637553bbbf17883bb6e564def8f5d6",
+}
 
 
 def normalize_tool_profile(value: object) -> str:
@@ -49,10 +61,56 @@ def schema_budget(schemas: Iterable[Mapping[str, Any]]) -> dict[str, int]:
     }
 
 
+def canonical_schema_sha256(schemas: Iterable[Mapping[str, Any]]) -> str:
+    material = [dict(schema) for schema in schemas]
+    encoded = json.dumps(
+        material,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def core_schema_budget_gate(
+    schemas: Iterable[Mapping[str, Any]],
+) -> dict[str, object]:
+    """Enforce the reviewed D-013 core snapshot, cost ceilings, and digest."""
+
+    material = [dict(schema) for schema in schemas]
+    measured = schema_budget(material)
+    digest = canonical_schema_sha256(material)
+    failures: list[str] = []
+    if measured["tool_count"] != CORE_TOOL_SCHEMA_POLICY["expected_tool_count"]:
+        failures.append("core tool-count snapshot changed without policy update")
+    if measured["schema_chars"] != CORE_TOOL_SCHEMA_POLICY["expected_schema_chars"]:
+        failures.append("core schema character snapshot changed without policy update")
+    if measured["schema_chars"] > CORE_TOOL_SCHEMA_POLICY["maximum_schema_chars"]:
+        failures.append("core schema character ceiling exceeded")
+    if (
+        measured["estimated_schema_tokens"]
+        > CORE_TOOL_SCHEMA_POLICY["maximum_estimated_schema_tokens"]
+    ):
+        failures.append("core estimated schema-token ceiling exceeded")
+    if digest != CORE_TOOL_SCHEMA_POLICY["canonical_schema_sha256"]:
+        failures.append("core canonical schema digest changed without policy update")
+    return {
+        "ok": not failures,
+        "profile": "core",
+        "decision": CORE_TOOL_SCHEMA_POLICY["decision"],
+        "measured": {**measured, "canonical_schema_sha256": digest},
+        "policy": dict(CORE_TOOL_SCHEMA_POLICY),
+        "failures": failures,
+    }
+
+
 __all__ = [
     "CANONICAL_TOOL_PROFILES",
+    "CORE_TOOL_SCHEMA_POLICY",
     "SUPPORTED_TOOL_PROFILES",
     "TOOL_PROFILE_ALIASES",
+    "canonical_schema_sha256",
+    "core_schema_budget_gate",
     "normalize_tool_profile",
     "schema_budget",
 ]

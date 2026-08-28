@@ -8,6 +8,10 @@ import importlib.util
 from pathlib import Path
 
 from scope_recall.provider_schemas import build_config_schema, build_tool_schemas
+from scope_recall.tool_profiles import (
+    CORE_TOOL_SCHEMA_POLICY,
+    core_schema_budget_gate,
+)
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 CHECK_RELEASE_PATH = PLUGIN_ROOT / "scripts" / "check.release.py"
@@ -63,6 +67,48 @@ def test_core_tool_schema_profile_is_default_and_secondary_context_is_disabled()
     ]
     assert build_tool_schemas({}, agent_context="subagent") == []
     assert build_tool_schemas({"enable_tools": False}) == []
+
+
+def test_core_tool_schema_budget_and_digest_are_release_gated():
+    schemas = build_tool_schemas({"tool_schema_profile": "core"})
+
+    result = core_schema_budget_gate(schemas)
+
+    assert result["ok"] is True, result
+    assert result["measured"] == {
+        "tool_count": 6,
+        "schema_chars": 9531,
+        "estimated_schema_tokens": 2383,
+        "canonical_schema_sha256": (
+            "7380485b5ee769b60383e7f6eabb836dd1637553bbbf17883bb6e564def8f5d6"
+        ),
+    }
+    assert CORE_TOOL_SCHEMA_POLICY["maximum_schema_chars"] == 9600
+    assert CORE_TOOL_SCHEMA_POLICY["maximum_estimated_schema_tokens"] == 2400
+
+
+def test_core_tool_schema_budget_refuses_unreviewed_digest_change():
+    schemas = build_tool_schemas({"tool_schema_profile": "core"})
+    mutated = [dict(schema) for schema in schemas]
+    mutated[0] = {**mutated[0], "description": mutated[0]["description"] + " "}
+
+    result = core_schema_budget_gate(mutated)
+
+    assert result["ok"] is False
+    assert "core canonical schema digest changed without policy update" in result[
+        "failures"
+    ]
+
+
+def test_release_checker_executes_the_source_core_schema_budget_gate():
+    release_check = _load_release_check_module()
+
+    result = release_check.tool_schema_budget_check()
+
+    assert result["ok"] is True, result
+    assert result["measured"]["canonical_schema_sha256"] == (
+        CORE_TOOL_SCHEMA_POLICY["canonical_schema_sha256"]
+    )
 
 
 def test_canonical_profiles_preserve_aliases_and_do_not_elevate_feature_gates():
