@@ -56,6 +56,12 @@ class _Provider:
     def _retrieve_limit() -> int:
         return 3
 
+    def recall_service_view(self):
+        return self._recall_service
+
+    def recall_limit(self) -> int:
+        return self._retrieve_limit()
+
     def _mark_recalled(self, memory_ids: list[str]) -> None:
         self.marked.extend(memory_ids)
 
