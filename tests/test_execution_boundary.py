@@ -18,6 +18,9 @@ from scripts.execution_boundary import (
 
 def test_isolated_test_environment_declares_every_write_surface() -> None:
     hermes_home = Path(os.environ["HERMES_HOME"]).resolve()
+    boundary_parent = Path(
+        os.environ["SCOPE_RECALL_TEST_BOUNDARY_PARENT"]
+    ).resolve()
     active = Path(os.environ["SCOPE_RECALL_ACTIVE_HERMES_HOME"]).resolve()
     targets = {
         key: Path(os.environ[key]).resolve()
@@ -38,6 +41,7 @@ def test_isolated_test_environment_declares_every_write_surface() -> None:
         )
     }
     root = hermes_home.parent
+    assert root.parent == boundary_parent
 
     receipt = validate_execution_boundary(
         isolated_root=root,

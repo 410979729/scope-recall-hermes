@@ -22,7 +22,18 @@ from scripts.execution_boundary import (
 _DECLARED_REAL_HOME = str(os.environ.get("SCOPE_RECALL_REAL_HOME") or "").strip()
 _REAL_HOME = Path(_DECLARED_REAL_HOME or Path.home()).resolve(strict=False)
 _ACTIVE_HERMES_HOME = ambient_active_hermes_home(real_home=_REAL_HOME)
-_TEST_BOUNDARY = tempfile.TemporaryDirectory(prefix="scope.recall.test-boundary.")
+_DECLARED_BOUNDARY_PARENT = str(
+    os.environ.get("SCOPE_RECALL_TEST_BOUNDARY_PARENT") or ""
+).strip()
+_TEST_BOUNDARY_PARENT = Path(
+    _DECLARED_BOUNDARY_PARENT or tempfile.gettempdir()
+).resolve(strict=False)
+_TEST_BOUNDARY_PARENT.mkdir(parents=True, exist_ok=True)
+os.environ["SCOPE_RECALL_TEST_BOUNDARY_PARENT"] = str(_TEST_BOUNDARY_PARENT)
+_TEST_BOUNDARY = tempfile.TemporaryDirectory(
+    prefix="scope.recall.test-boundary.",
+    dir=_TEST_BOUNDARY_PARENT,
+)
 _TEST_ROOT = Path(_TEST_BOUNDARY.name)
 _TEST_HERMES_HOME = _TEST_ROOT / "hermes-home"
 _TEST_TEMP = _TEST_ROOT / "temp"
