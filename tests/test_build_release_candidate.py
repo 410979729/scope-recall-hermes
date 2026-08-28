@@ -6,6 +6,7 @@ import importlib.util
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -143,3 +144,55 @@ def test_candidate_build_retains_failed_staging_evidence(tmp_path: Path) -> None
     retained = list(tmp_path.glob(".candidate.*"))
     assert len(retained) == 1
     assert (retained[0] / "ARTIFACT_SCAN.json").is_file()
+
+
+def test_sdist_module_runner_precreates_basetemp_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    build = _load_module()
+    workspace = tmp_path / "workspace"
+    evidence = tmp_path / "evidence"
+    workspace.mkdir()
+    evidence.mkdir()
+    monkeypatch.setattr(
+        build,
+        "read_archive_members",
+        lambda _path: {
+            "hermes_scope_recall-2.0.0/tests/test_fixture.py": b"def test_ok(): pass\n"
+        },
+    )
+    monkeypatch.setattr(build, "_isolated_environment", lambda *_args, **_kwargs: {})
+
+    def fake_run(command, **_kwargs):
+        basetemp = Path(command[command.index("--basetemp") + 1])
+        assert basetemp.parent.is_dir()
+        return {
+            "exit_code": 0,
+            "duration_seconds": 0.01,
+            "started_at": "2026-08-28T00:00:00+00:00",
+            "finished_at": "2026-08-28T00:00:00+00:00",
+        }
+
+    monkeypatch.setattr(build, "_run", fake_run)
+    receipts = build._run_sdist_tests(
+        python=Path(sys.executable),
+        sdist=tmp_path / "candidate.tar.gz",
+        release_check=SimpleNamespace(
+            REQUIRED_SOURCE_RESTORE_SDIST_TESTS={"tests/test_fixture.py"}
+        ),
+        workspace=workspace,
+        evidence_dir=evidence,
+        active_hermes_home=tmp_path / "active",
+    )
+
+    assert receipts == [
+        {
+            "module": "tests/test_fixture.py",
+            "timeout_seconds": build.SDIST_TEST_TIMEOUT_SECONDS,
+            "exit_code": 0,
+            "duration_seconds": 0.01,
+            "started_at": "2026-08-28T00:00:00+00:00",
+            "finished_at": "2026-08-28T00:00:00+00:00",
+        }
+    ]

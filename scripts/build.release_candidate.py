@@ -450,6 +450,8 @@ def _run_sdist_tests(
         workspace / "boundary-sdist-tests",
         active_hermes_home=active_hermes_home,
     )
+    pytest_temp_root = workspace / "sdist-pytest-temp"
+    pytest_temp_root.mkdir(parents=True, exist_ok=True)
     receipts: list[dict[str, object]] = []
     for index, relative in enumerate(test_paths, 1):
         log = evidence_dir / "sdist-tests" / f"{index:02d}-{Path(relative).stem}.log"
@@ -462,7 +464,7 @@ def _run_sdist_tests(
                 "-p",
                 "no:cacheprovider",
                 "--basetemp",
-                str(workspace / "sdist-pytest-temp" / f"module-{index:02d}"),
+                str(pytest_temp_root / f"module-{index:02d}"),
                 relative,
             ],
             cwd=extracted,
