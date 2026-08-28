@@ -66,13 +66,17 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _load_object(path: Path) -> dict[str, object]:
+def _load_json(path: Path) -> object:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise EvidencePackageError(
             f"invalid JSON evidence file {path.name}: {type(exc).__name__}"
         ) from exc
+
+
+def _load_object(path: Path) -> dict[str, object]:
+    payload = _load_json(path)
     if not isinstance(payload, dict):
         raise EvidencePackageError(f"JSON evidence root must be an object: {path.name}")
     return payload
@@ -285,8 +289,23 @@ def build_evidence_index(evidence_dir: Path, *, expected_sha: str) -> dict[str, 
             "size_bytes": path.stat().st_size,
         }
         if path.suffix == ".json":
-            payload = _load_object(path)
-            entry["schema_version"] = str(payload.get("schema_version") or "unversioned")
+            payload = _load_json(path)
+            if isinstance(payload, dict):
+                entry["json_root"] = "object"
+                entry["schema_version"] = str(
+                    payload.get("schema_version") or "unversioned"
+                )
+            elif isinstance(payload, list) and all(
+                isinstance(item, dict) for item in payload
+            ):
+                entry["json_root"] = "array"
+                entry["item_count"] = len(payload)
+                entry["schema_version"] = "unversioned"
+            else:
+                raise EvidencePackageError(
+                    "JSON evidence root must be an object or an array of objects: "
+                    f"{path.name}"
+                )
         files.append(entry)
     return {
         "schema_version": SCHEMA_VERSION,
