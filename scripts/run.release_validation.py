@@ -268,22 +268,27 @@ def _retry_readonly_cleanup(
         if current == boundary:
             break
         current = current.parent
-    if any(
-        item.is_symlink()
-        or (callable(is_junction) and bool(is_junction(item)))
-        for item in lineage
-    ):
-        raise error
+    # Walk from the accessible boundary toward the failed leaf.  On POSIX
+    # 3.11, even lstat/is_symlink on the leaf fails while an ancestor lacks
+    # execute permission, so every ancestor must be inspected and repaired in
+    # this order.  lstat keeps the symlink check non-following.
+    for item in reversed(lineage):
+        item_stat = os.lstat(item)
+        if stat.S_ISLNK(item_stat.st_mode) or (
+            callable(is_junction) and bool(is_junction(item))
+        ):
+            raise error
+        if os.name != "nt":
+            owner_bits = stat.S_IRUSR | stat.S_IWUSR
+            if stat.S_ISDIR(item_stat.st_mode):
+                owner_bits |= stat.S_IXUSR
+            os.chmod(
+                item,
+                stat.S_IMODE(item_stat.st_mode) | owner_bits,
+                follow_symlinks=False,
+            )
     if os.name == "nt":
         os.chmod(candidate, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
-    else:
-        repair_targets = lineage if candidate.is_dir() else [candidate, *lineage[1:]]
-        for item in repair_targets:
-            mode = stat.S_IMODE(os.lstat(item).st_mode)
-            owner_bits = stat.S_IRUSR | stat.S_IWUSR
-            if item.is_dir():
-                owner_bits |= stat.S_IXUSR
-            os.chmod(item, mode | owner_bits, follow_symlinks=False)
     function(str(candidate))
 
 
