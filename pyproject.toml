@@ -21,7 +21,11 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
 ]
-dependencies = ["PyYAML>=6.0,<7", "jsonschema>=4.22,<5"]
+dependencies = [
+  "PyYAML>=6.0,<7",
+  "jsonschema>=4.22,<5",
+  "tzdata>=2025.3,<2027; sys_platform == 'win32'",
+]
 
 [project.scripts]
 hermes-scope-recall = "scope_recall.cli:main"

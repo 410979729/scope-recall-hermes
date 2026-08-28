@@ -58,7 +58,6 @@ def vector_status_contract(
     message: str = "",
     debt_counts: Mapping[str, Any] | None = None,
     usable_for_query: bool | None = None,
-    pending_within_replay_cycle: bool = False,
 ) -> dict[str, Any]:
     """Build the stable four-state public vector status payload.
 
@@ -89,7 +88,7 @@ def vector_status_contract(
         elif normalized_debt["processing"]:
             normalized_state = "degraded"
             normalized_reason = "outbox_processing"
-        elif normalized_debt["pending"] and not pending_within_replay_cycle:
+        elif normalized_debt["pending"]:
             normalized_state = "degraded"
             normalized_reason = "outbox_pending"
         elif normalized_reason in _DEGRADED_REASONS or normalized_state == "degraded":

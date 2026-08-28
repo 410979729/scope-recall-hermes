@@ -6,9 +6,14 @@ artifact cannot be accepted through a weaker second implementation.
 
 from __future__ import annotations
 
+import base64
+import csv
+from email.parser import Parser
 import hashlib
+import io
 import json
 from pathlib import Path, PurePosixPath
+import re
 import stat
 import tarfile
 from typing import Mapping, Sequence
@@ -68,6 +73,31 @@ _SDIST_GENERATED_EGG_INFO_NAMES = {
     "requires.txt",
     "top_level.txt",
 }
+_WHEEL_REQUIRED_ROOT_DATA = {
+    ".env.example",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "DESIGN.md",
+    "LICENSE",
+    "MANIFEST.in",
+    "README.md",
+    "SECURITY.md",
+    "config.json",
+    "plugin.yaml",
+    "py.typed",
+    "pyproject.toml",
+}
+_WHEEL_DIST_INFO_MEMBERS = {
+    "METADATA",
+    "RECORD",
+    "WHEEL",
+    "entry_points.txt",
+    "licenses/LICENSE",
+    "top_level.txt",
+}
+_WHEEL_DIST_INFO_ROOT = re.compile(
+    r"^hermes_scope_recall-(?P<version>[0-9]+(?:\.[0-9]+)+(?:[^/]*)?)\.dist-info$"
+)
 
 
 class ArtifactVerificationError(RuntimeError):
@@ -203,44 +233,193 @@ def _source_entries(source_manifest: Mapping[str, object]) -> dict[str, Mapping[
     return entries
 
 
+def _expected_wheel_source_paths(
+    source: Mapping[str, Mapping[str, object]],
+) -> set[str]:
+    expected: set[str] = set()
+    for path in source:
+        pure = PurePosixPath(path)
+        parts = pure.parts
+        if len(parts) == 1 and (path.endswith(".py") or path in _WHEEL_REQUIRED_ROOT_DATA):
+            expected.add(path)
+        elif parts and parts[0] == "_internal" and path.endswith(".py"):
+            expected.add(path)
+        elif len(parts) == 2 and parts[0] == "scripts" and (
+            path.endswith(".py") or path.endswith(".json")
+        ):
+            expected.add(path)
+        elif len(parts) == 2 and parts[0] == "docs" and path.endswith(".md"):
+            expected.add(path)
+        elif (
+            len(parts) == 3
+            and parts[:2] == ("docs", "benchmarks")
+            and path.endswith(".md")
+        ):
+            expected.add(path)
+        elif len(parts) == 2 and parts[0] == "benchmarks" and path.endswith(".json"):
+            expected.add(path)
+        elif (
+            len(parts) == 3
+            and parts[:2] == ("examples", "external_bridge")
+            and pure.suffix in {".jsonl", ".sql"}
+        ):
+            expected.add(path)
+    return expected
+
+
+def _wheel_dist_info_root(members: Mapping[str, bytes]) -> tuple[str, str]:
+    roots = {
+        PurePosixPath(name).parts[0]
+        for name in members
+        if PurePosixPath(name).parts
+        and PurePosixPath(name).parts[0].endswith(".dist-info")
+    }
+    if len(roots) != 1:
+        raise ArtifactVerificationError("wheel must contain exactly one dist-info root")
+    root = next(iter(roots))
+    match = _WHEEL_DIST_INFO_ROOT.fullmatch(root)
+    if match is None:
+        raise ArtifactVerificationError(f"unexpected wheel dist-info root: {root}")
+    return root, str(match.group("version"))
+
+
+def _record_digest(content: bytes) -> str:
+    encoded = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).decode("ascii")
+    return "sha256=" + encoded.rstrip("=")
+
+
+def _validate_wheel_generated_members(
+    members: Mapping[str, bytes],
+    *,
+    dist_info_root: str,
+    version: str,
+    source: Mapping[str, Mapping[str, object]],
+) -> None:
+    relative_generated = {
+        PurePosixPath(name).relative_to(dist_info_root).as_posix()
+        for name in members
+        if PurePosixPath(name).parts[0] == dist_info_root
+    }
+    if relative_generated != _WHEEL_DIST_INFO_MEMBERS:
+        raise ArtifactVerificationError(
+            "wheel generated-member contract failed: "
+            f"missing={sorted(_WHEEL_DIST_INFO_MEMBERS - relative_generated)!r}, "
+            f"unexpected={sorted(relative_generated - _WHEEL_DIST_INFO_MEMBERS)!r}"
+        )
+
+    metadata = Parser().parsestr(
+        members[f"{dist_info_root}/METADATA"].decode("utf-8")
+    )
+    if metadata.get("Name") != "hermes-scope-recall" or metadata.get(
+        "Version"
+    ) != version:
+        raise ArtifactVerificationError("wheel METADATA identity contract failed")
+    wheel_lines = {
+        line.strip()
+        for line in members[f"{dist_info_root}/WHEEL"].decode("utf-8").splitlines()
+    }
+    if "Root-Is-Purelib: true" not in wheel_lines or "Tag: py3-none-any" not in wheel_lines:
+        raise ArtifactVerificationError("wheel WHEEL portability contract failed")
+    entry_point_lines = {
+        line.strip()
+        for line in members[f"{dist_info_root}/entry_points.txt"]
+        .decode("utf-8")
+        .splitlines()
+    }
+    if "hermes-scope-recall = scope_recall.cli:main" not in entry_point_lines:
+        raise ArtifactVerificationError("wheel console entry-point contract failed")
+    if members[f"{dist_info_root}/top_level.txt"].decode("utf-8").strip() != "scope_recall":
+        raise ArtifactVerificationError("wheel top-level package contract failed")
+    license_entry = source.get("LICENSE")
+    if (
+        license_entry is None
+        or license_entry.get("sha256")
+        != sha256_bytes(members[f"{dist_info_root}/licenses/LICENSE"])
+    ):
+        raise ArtifactVerificationError("wheel generated license differs from source")
+
+    record_name = f"{dist_info_root}/RECORD"
+    rows = list(
+        csv.reader(
+            io.StringIO(members[record_name].decode("utf-8", errors="strict"))
+        )
+    )
+    if any(len(row) != 3 for row in rows):
+        raise ArtifactVerificationError("wheel RECORD rows must have three columns")
+    record = {row[0]: (row[1], row[2]) for row in rows}
+    if len(record) != len(rows) or set(record) != set(members):
+        raise ArtifactVerificationError("wheel RECORD member set mismatch")
+    for name, content in members.items():
+        digest, size = record[name]
+        if name == record_name:
+            if digest or size:
+                raise ArtifactVerificationError("wheel RECORD self row must be unhashed")
+        elif digest != _record_digest(content) or size != str(len(content)):
+            raise ArtifactVerificationError(f"wheel RECORD hash/size mismatch: {name}")
+
+
 def verify_wheel_source_correspondence(
     members: Mapping[str, bytes],
     source_manifest: Mapping[str, object],
 ) -> dict[str, object]:
-    """Bind every packaged runtime Python file to the exact tracked source bytes."""
+    """Enforce the explicit, bidirectional wheel/source member policy."""
 
     source = _source_entries(source_manifest)
+    expected = _expected_wheel_source_paths(source)
     packaged: dict[str, str] = {}
     mismatches: list[str] = []
+    unexpected: list[str] = []
     for member_name, content in sorted(members.items()):
         parts = PurePosixPath(member_name).parts
-        if len(parts) < 2 or parts[0] != "scope_recall" or not member_name.endswith(".py"):
+        if len(parts) < 2 or parts[0] != "scope_recall":
             continue
         source_path = PurePosixPath(*parts[1:]).as_posix()
+        if source_path not in expected:
+            unexpected.append(member_name)
+            continue
         packaged[source_path] = member_name
         wanted = source.get(source_path)
         if wanted is None or wanted.get("sha256") != sha256_bytes(content):
             mismatches.append(member_name)
 
-    expected = {
-        path
-        for path in source
-        if path.endswith(".py")
-        and (
-            "/" not in path
-            or path.startswith("_internal/")
-            or path.startswith("scripts/")
-        )
-    }
     missing = sorted(expected - set(packaged))
-    if mismatches or missing:
+    dist_info_root, version = _wheel_dist_info_root(members)
+    unknown_roots = sorted(
+        name
+        for name in members
+        if PurePosixPath(name).parts[0] not in {"scope_recall", dist_info_root}
+    )
+    _validate_wheel_generated_members(
+        members,
+        dist_info_root=dist_info_root,
+        version=version,
+        source=source,
+    )
+    if mismatches or missing or unexpected or unknown_roots:
         raise ArtifactVerificationError(
             "wheel/source correspondence failed: "
-            f"mismatched={sorted(mismatches)!r}, missing={missing!r}"
+            f"mismatched={sorted(mismatches)!r}, missing={missing!r}, "
+            f"unexpected={sorted(unexpected)!r}, unknown={unknown_roots!r}"
         )
+    policy = {
+        "source_paths": sorted(expected),
+        "generated_members": sorted(_WHEEL_DIST_INFO_MEMBERS),
+    }
+    member_manifest = member_manifest_from_members(members)
     return {
-        "verified_runtime_python_files": len(packaged),
+        "policy_sha256": sha256_bytes(canonical_bytes(policy)),
+        "wheel_version": version,
+        "expected_source_member_count": len(expected),
+        "verified_runtime_python_files": sum(path.endswith(".py") for path in packaged),
+        "verified_package_data_count": sum(not path.endswith(".py") for path in packaged),
+        "generated_allowlist_count": len(_WHEEL_DIST_INFO_MEMBERS),
+        "missing_expected_count": 0,
+        "mismatched_source_count": 0,
+        "unexpected_member_count": 0,
+        "unknown_generated_count": 0,
+        "wheel_member_manifest_sha256": member_manifest["member_manifest_sha256"],
         "source_manifest_sha256": source_manifest.get("manifest_sha256"),
+        "status": "passed",
     }
 
 

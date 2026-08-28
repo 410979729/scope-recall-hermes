@@ -804,7 +804,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         return fact_owned_memory_ids(self, ids)
 
     def _delete_memories(self, ids: list[str]) -> int:
-        return KERNEL.delete(self._composition.command_port, ids)
+        return KERNEL.delete(self._composition.command_port, ids).deleted_count
 
     def _dedupe_memories(self, *, dry_run: bool = True, scope_only: bool = True) -> dict[str, Any]:
         return KERNEL.dedupe(self._composition.command_port, dry_run=dry_run, scope_only=scope_only)

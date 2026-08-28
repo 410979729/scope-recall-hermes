@@ -8,6 +8,7 @@ from ..application.memory_commands import (
     ArchiveMemoriesRequest,
     DedupeMemoriesRequest,
     DeleteMemoriesRequest,
+    DeleteMemoriesResult,
     FactOwnedMemoryIdsRequest,
     FeedbackMemoryRequest,
     GovernMemoriesRequest,
@@ -255,11 +256,35 @@ class _LegacyPersistCommandPort:
             fn(dry_run=request.dry_run, scope_only=request.scope_only),
         )
 
-    def delete(self, request: DeleteMemoriesRequest) -> int:
+    def delete(self, request: DeleteMemoriesRequest) -> DeleteMemoriesResult:
         fn = getattr(self._host, "_delete_memories", None)
         if not callable(fn):
             raise AttributeError("delete_memories")
-        return cast(int, fn(list(request.ids)))
+        raw_count = fn(list(request.ids))
+        if isinstance(raw_count, bool) or not isinstance(raw_count, int):
+            raise RuntimeError("legacy delete result must be an integer count")
+        legacy_count = raw_count
+        requested_ids = tuple(dict.fromkeys(request.ids))
+        if legacy_count == len(requested_ids):
+            deleted_ids = requested_ids
+            skipped_ids: tuple[str, ...] = ()
+        elif legacy_count == 0:
+            deleted_ids = ()
+            skipped_ids = requested_ids
+        else:
+            raise RuntimeError(
+                "legacy partial delete result cannot identify actual deleted ids"
+            )
+        return DeleteMemoriesResult(
+            requested_ids=requested_ids,
+            deleted_ids=deleted_ids,
+            skipped_ids=skipped_ids,
+            deleted_count=legacy_count,
+            vector_pending=False,
+            companion_erasure_pending=False,
+            data_retained=bool(skipped_ids),
+            mutation_applied=legacy_count > 0,
+        )
 
     def dedupe(self, request: DedupeMemoriesRequest) -> dict[str, object]:
         fn = getattr(self._host, "_dedupe_memories", None)
@@ -396,7 +421,7 @@ class CommandKernel:
     ) -> dict[str, object]:
         return port.govern(GovernMemoriesRequest(dry_run, scope_only))
 
-    def delete(self, port: MemoryCommandPort, ids: list[str]) -> int:
+    def delete(self, port: MemoryCommandPort, ids: list[str]) -> DeleteMemoriesResult:
         return port.delete(DeleteMemoriesRequest(tuple(ids)))
 
     def dedupe(

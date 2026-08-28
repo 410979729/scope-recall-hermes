@@ -773,18 +773,22 @@ class ScopeRecallToolService:
                         **no_mutation,
                     }
                 )
-            deleted = self._port.delete_memories(ids)
+            result = self._port.delete_memories(ids)
             return self._json(
                 {
                     "archived": 0,
-                    "deleted": deleted,
-                    "ids": ids,
+                    "deleted": result.deleted_count,
+                    "ids": list(result.deleted_ids),
+                    "requested_ids": list(result.requested_ids),
+                    "skipped_ids": list(result.skipped_ids),
+                    "vector_pending": result.vector_pending,
                     "hard_delete": True,
                     "receipt": self._receipt("hard_delete", reason=reason),
                     **retention_response_contract(
                         mode="hard_delete",
-                        data_retained=int(deleted) < len(ids),
-                        mutation_applied=int(deleted) > 0,
+                        data_retained=result.data_retained,
+                        mutation_applied=result.mutation_applied,
+                        companion_erasure_pending=result.companion_erasure_pending,
                     ),
                 }
             )

@@ -1346,6 +1346,8 @@ def test_default_config_includes_documented_retrieval_top_k():
     assert config_module.DEFAULT_CONFIG["recall_compiler"]["renderer_enabled"] is True
     assert source_config["recall_compiler"]["budgeter_enabled"] is False
     assert config_module.DEFAULT_CONFIG["recall_compiler"]["budgeter_enabled"] is False
+    changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert "token budgeting remains independently opt-in and default-off" in changelog
 
 
 def test_scope_recall_stats_reports_journal_digest_health(tmp_path, monkeypatch):
@@ -2274,6 +2276,18 @@ def test_ci_installs_release_gate_lint_dependency():
         for dep in dev_deps
     )
     assert '".[lancedb,dev]"' in workflow
+
+
+def test_windows_timezone_runtime_dependency_is_explicit_and_constrained():
+    import tomllib
+
+    pyproject = tomllib.loads((PLUGIN_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    runtime_deps = pyproject["project"]["dependencies"]
+
+    assert "tzdata>=2025.3,<2027; sys_platform == 'win32'" in runtime_deps
+    for constraint_name in ("runtime-min.txt", "runtime-max.txt"):
+        constraints = (PLUGIN_ROOT / "constraints" / constraint_name).read_text(encoding="utf-8")
+        assert "tzdata==2025.3 ; sys_platform == 'win32'" in constraints.splitlines()
 
 
 

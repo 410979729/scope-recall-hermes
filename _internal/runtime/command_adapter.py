@@ -8,6 +8,7 @@ from ..application.memory_commands import (
     ArchiveMemoriesRequest,
     DedupeMemoriesRequest,
     DeleteMemoriesRequest,
+    DeleteMemoriesResult,
     FactOwnedMemoryIdsRequest,
     FeedbackMemoryRequest,
     GovernMemoriesRequest,
@@ -90,8 +91,8 @@ class ProviderCommandAdapter:
             ),
         )
 
-    def delete(self, request: DeleteMemoriesRequest) -> int:
-        return int(memory_ops.delete_memories(self._host, list(request.ids)))
+    def delete(self, request: DeleteMemoriesRequest) -> DeleteMemoriesResult:
+        return memory_ops.delete_memories_result(self._host, list(request.ids))
 
     def feedback(self, request: FeedbackMemoryRequest) -> dict[str, object]:
         return cast(

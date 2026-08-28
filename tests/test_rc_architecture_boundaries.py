@@ -15,6 +15,9 @@ ROOT = Path(__file__).resolve().parents[1]
 PROVIDER = ROOT / "provider.py"
 COMPOSITION = ROOT / "_internal" / "runtime" / "composition.py"
 PORTS = ROOT / "_internal" / "runtime" / "ports.py"
+PROVIDER_COMPAT_HOSTS = (
+    ROOT / "_internal" / "runtime" / "provider_compat_hosts.py"
+)
 
 LEAF_DIRS = (
     ROOT / "_internal" / "application",
@@ -190,6 +193,22 @@ def test_core_ports_do_not_use_generic_host_or_unbounded_any() -> None:
         if "Any" in _annotation_names(node.returns):
             offenders.append(node.name)
     assert sorted(set(offenders)) == []
+
+
+def test_legacy_provider_hosts_are_explicit_2_1_compatibility_debt() -> None:
+    source = PROVIDER_COMPAT_HOSTS.read_text(encoding="utf-8")
+    for protocol in (
+        "LegacyProviderQueryHost",
+        "LegacyProviderToolHost",
+        "LegacyProviderRuntimeHost",
+    ):
+        assert f"class {protocol}" in source
+    assert "def query_connection" in source
+    assert "def query_lock" in source
+
+    for core_path in (COMPOSITION, PORTS):
+        imports = _imported_modules(_tree(core_path))
+        assert not any("provider_compat_hosts" in module for module in imports)
 
 
 def test_assemble_runtime_accepts_typed_dependencies_not_provider() -> None:

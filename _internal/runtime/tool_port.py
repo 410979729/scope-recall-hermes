@@ -8,6 +8,7 @@ from typing import Any, Iterator, Mapping, Sequence
 from ...fact_actions import EvolutionProposal, EvolutionResult
 from ..application.memory_queries import MemoryQueryApplication
 from .ports import FactMemoryRow, FactTargetRow, FactToolPort, MemoryCommandPort
+from .provider_compat_hosts import LegacyProviderToolHost
 
 
 def _call(host: Any, name: str, *args: Any, **kwargs: Any) -> Any:
@@ -47,7 +48,7 @@ class ProviderToolRuntimeAdapter:
 
     def __init__(
         self,
-        host: Any,
+        host: LegacyProviderToolHost,
         *,
         command_port: MemoryCommandPort | None = None,
         query_port: MemoryQueryApplication | None = None,
@@ -474,7 +475,7 @@ class ProviderToolRuntimeAdapter:
         return getattr(self._host, "_reflection_transport", None)
 
 def bind_tool_runtime_port(
-    obj: Any,
+    obj: LegacyProviderToolHost | ProviderToolRuntimeAdapter,
     *,
     command_port: MemoryCommandPort | None = None,
     query_port: MemoryQueryApplication | None = None,

@@ -35,6 +35,45 @@ def _write_wheel(path: Path, files: dict[str, bytes]) -> None:
             archive.writestr(name, content)
 
 
+def _complete_wheel(
+    source_files: dict[str, bytes],
+    package_files: dict[str, bytes],
+    *,
+    version: str = "2.0.0",
+) -> dict[str, bytes]:
+    dist_info = f"hermes_scope_recall-{version}.dist-info"
+    members = dict(package_files)
+    members.update(
+        {
+            f"{dist_info}/METADATA": (
+                "Metadata-Version: 2.4\n"
+                "Name: hermes-scope-recall\n"
+                f"Version: {version}\n"
+            ).encode(),
+            f"{dist_info}/WHEEL": (
+                "Wheel-Version: 1.0\n"
+                "Generator: test\n"
+                "Root-Is-Purelib: true\n"
+                "Tag: py3-none-any\n"
+            ).encode(),
+            f"{dist_info}/entry_points.txt": (
+                "[console_scripts]\n"
+                "hermes-scope-recall = scope_recall.cli:main\n"
+            ).encode(),
+            f"{dist_info}/top_level.txt": b"scope_recall\n",
+            f"{dist_info}/licenses/LICENSE": source_files["LICENSE"],
+        }
+    )
+    record_name = f"{dist_info}/RECORD"
+    rows = [
+        f"{name},{artifacts._record_digest(content)},{len(content)}"
+        for name, content in sorted(members.items())
+    ]
+    rows.append(f"{record_name},,")
+    members[record_name] = ("\n".join(rows) + "\n").encode()
+    return members
+
+
 def _write_sdist(path: Path, files: dict[str, bytes]) -> None:
     with tarfile.open(path, "w:gz") as archive:
         for name, content in files.items():
@@ -73,16 +112,22 @@ def test_wheel_and_sdist_members_bind_to_exact_tracked_source(tmp_path: Path) ->
         "_internal/runtime.py": b"ready = True\n",
         "scripts/doctor.py": b"def main(): return 0\n",
         "README.md": b"public readme\n",
+        "LICENSE": b"public license\n",
     }
     source = _source_manifest(source_files)
     wheel = tmp_path / "candidate.whl"
     _write_wheel(
         wheel,
-        {
-            "scope_recall/__init__.py": source_files["__init__.py"],
-            "scope_recall/_internal/runtime.py": source_files["_internal/runtime.py"],
-            "scope_recall/scripts/doctor.py": source_files["scripts/doctor.py"],
-        },
+        _complete_wheel(
+            source_files,
+            {
+                "scope_recall/__init__.py": source_files["__init__.py"],
+                "scope_recall/_internal/runtime.py": source_files["_internal/runtime.py"],
+                "scope_recall/scripts/doctor.py": source_files["scripts/doctor.py"],
+                "scope_recall/README.md": source_files["README.md"],
+                "scope_recall/LICENSE": source_files["LICENSE"],
+            },
+        ),
     )
     sdist = tmp_path / "candidate.tar.gz"
     root = "hermes_scope_recall-2.0.0"
@@ -106,18 +151,29 @@ def test_wheel_and_sdist_members_bind_to_exact_tracked_source(tmp_path: Path) ->
     )
 
     assert wheel_result["verified_runtime_python_files"] == 3
+    assert wheel_result["verified_package_data_count"] == 2
+    assert wheel_result["missing_expected_count"] == 0
+    assert wheel_result["unknown_generated_count"] == 0
     assert sdist_result["verified_tracked_files"] == 1
 
 
 def test_archive_source_mismatch_and_arbitrary_tests_fail_closed(tmp_path: Path) -> None:
-    source = _source_manifest({"__init__.py": b"expected\n"})
+    source_files = {
+        "__init__.py": b"expected\n",
+        "LICENSE": b"license\n",
+    }
+    source = _source_manifest(source_files)
     wheel = tmp_path / "candidate.whl"
     _write_wheel(
         wheel,
-        {
-            "scope_recall/__init__.py": b"different\n",
-            "scope_recall/tests/test_private.py": b"def test_private(): pass\n",
-        },
+        _complete_wheel(
+            source_files,
+            {
+                "scope_recall/__init__.py": b"different\n",
+                "scope_recall/LICENSE": source_files["LICENSE"],
+                "scope_recall/tests/test_private.py": b"def test_private(): pass\n",
+            },
+        ),
     )
     members = artifacts.read_archive_members(wheel)
 
@@ -129,6 +185,58 @@ def test_archive_source_mismatch_and_arbitrary_tests_fail_closed(tmp_path: Path)
             "reason": "arbitrary_test_not_allowlisted",
         }
     ]
+
+
+def test_wheel_missing_or_tampered_package_data_fails_closed(tmp_path: Path) -> None:
+    source_files = {
+        "__init__.py": b"__all__ = []\n",
+        "plugin.yaml": b"name: scope-recall\n",
+        "config.json": b"{}\n",
+        "LICENSE": b"license\n",
+    }
+    source = _source_manifest(source_files)
+
+    missing = _complete_wheel(
+        source_files,
+        {
+            "scope_recall/__init__.py": source_files["__init__.py"],
+            "scope_recall/config.json": source_files["config.json"],
+            "scope_recall/LICENSE": source_files["LICENSE"],
+        },
+    )
+    with pytest.raises(artifacts.ArtifactVerificationError, match="missing"):
+        artifacts.verify_wheel_source_correspondence(missing, source)
+
+    tampered = _complete_wheel(
+        source_files,
+        {
+            "scope_recall/__init__.py": source_files["__init__.py"],
+            "scope_recall/plugin.yaml": source_files["plugin.yaml"],
+            "scope_recall/config.json": b'{"tampered": true}\n',
+            "scope_recall/LICENSE": source_files["LICENSE"],
+        },
+    )
+    with pytest.raises(artifacts.ArtifactVerificationError, match="mismatched"):
+        artifacts.verify_wheel_source_correspondence(tampered, source)
+
+
+def test_wheel_unknown_generated_member_fails_closed(tmp_path: Path) -> None:
+    source_files = {
+        "__init__.py": b"__all__ = []\n",
+        "LICENSE": b"license\n",
+    }
+    source = _source_manifest(source_files)
+    members = _complete_wheel(
+        source_files,
+        {
+            "scope_recall/__init__.py": source_files["__init__.py"],
+            "scope_recall/LICENSE": source_files["LICENSE"],
+        },
+    )
+    members["hermes_scope_recall-2.0.0.dist-info/private.txt"] = b"unexpected\n"
+
+    with pytest.raises(artifacts.ArtifactVerificationError, match="generated-member"):
+        artifacts.verify_wheel_source_correspondence(members, source)
 
 
 def test_sdist_test_allowlist_is_exact(tmp_path: Path) -> None:

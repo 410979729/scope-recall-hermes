@@ -10,6 +10,8 @@ import stat
 import subprocess
 import sys
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "run.release_validation.py"
@@ -245,3 +247,36 @@ def test_validation_script_path_entrypoint_is_importable() -> None:
 
     assert result.returncode == 0, result.stdout
     assert "--hermes-0-20-6-source" in result.stdout
+    assert "--quarantine-path" in result.stdout
+    assert "--n-minus-one-wheel" in result.stdout
+
+
+def test_runner_requires_explicit_quarantine_and_n_minus_one_artifact() -> None:
+    module = _load_module()
+    common = [
+        "--expected-sha",
+        "a" * 40,
+        "--active-hermes-home",
+        "active",
+        "--hermes-0-19-1-source",
+        "hermes-0191",
+        "--hermes-0-20-6-source",
+        "hermes-0206",
+    ]
+
+    with pytest.raises(SystemExit):
+        module.parse_args(common)
+    with pytest.raises(SystemExit):
+        module.parse_args([*common, "--quarantine-path", "known-quarantine"])
+
+    parsed = module.parse_args(
+        [
+            *common,
+            "--quarantine-path",
+            "known-quarantine",
+            "--n-minus-one-wheel",
+            "scope-recall-1.10.3.whl",
+        ]
+    )
+    assert parsed.quarantine_path == Path("known-quarantine")
+    assert parsed.n_minus_one_wheel == Path("scope-recall-1.10.3.whl")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import time
 from typing import Any, Mapping
 
@@ -15,6 +16,20 @@ SOURCE_COMMIT_ENV = "SCOPE_RECALL_SOURCE_COMMIT"
 SOURCE_TREE_ENV = "SCOPE_RECALL_SOURCE_TREE"
 TIMEOUTS_ENV = "SCOPE_RECALL_TEST_TIMEOUTS_JSON"
 FAILURE_FIXES_ENV = "SCOPE_RECALL_FIRST_FAILURE_FIXES_JSON"
+FIRST_FAILURE_STATUS_NOT_PROVIDED = "not_provided"
+FIRST_FAILURE_STATUS_DECLARED = "declared"
+
+_PRIVATE_PATH_PATTERNS = (
+    re.compile(r"(?i)(?:\\\\\?\\)?[a-z]:\\Users\\[^\\\s:]+(?:\\[^\s:]*)?"),
+    re.compile(r"(?<![A-Za-z0-9])/(?:home|Users)/[^/\s:]+(?:/[^\s:]*)?"),
+)
+
+
+def _sanitize_evidence_text(value: str) -> str:
+    sanitized = str(value)
+    for pattern in _PRIVATE_PATH_PATTERNS:
+        sanitized = pattern.sub("<private-path>", sanitized)
+    return sanitized
 
 
 def _json_array_from_env(
@@ -54,12 +69,14 @@ class ReleaseTestHonestyPlugin:
         source_tree: str,
         timeout_overrides: list[object],
         first_failure_fixes: list[object],
+        first_failure_fixes_status: str = FIRST_FAILURE_STATUS_NOT_PROVIDED,
     ) -> None:
         self.output = output
         self.source_commit = source_commit
         self.source_tree = source_tree
         self.timeout_overrides = timeout_overrides
         self.first_failure_fixes = first_failure_fixes
+        self.first_failure_fixes_status = first_failure_fixes_status
         self.started = time.monotonic()
         self.passed: set[str] = set()
         self.skipped: dict[str, str] = {}
@@ -92,7 +109,10 @@ class ReleaseTestHonestyPlugin:
                 self.failed.add(node_id)
             return
         if outcome == "skipped":
-            self.skipped.setdefault(node_id, _skip_reason(report))
+            self.skipped.setdefault(
+                node_id,
+                _sanitize_evidence_text(_skip_reason(report)),
+            )
         elif outcome == "passed" and when == "call":
             self.passed.add(node_id)
         elif outcome == "failed" and when == "call":
@@ -119,6 +139,7 @@ class ReleaseTestHonestyPlugin:
             "timeout_overrides": self.timeout_overrides,
             "duration_seconds": round(time.monotonic() - self.started, 3),
             "first_failure_fixes": self.first_failure_fixes,
+            "first_failure_fixes_status": self.first_failure_fixes_status,
         }
 
     def pytest_sessionfinish(self, session: object, exitstatus: int) -> None:
@@ -139,12 +160,19 @@ def build_plugin_from_environment(
     output = str(env.get(OUTPUT_ENV) or "").strip()
     if not output:
         return None
+    raw_failure_fixes = str(env.get(FAILURE_FIXES_ENV) or "").strip()
+    failure_status = (
+        FIRST_FAILURE_STATUS_DECLARED
+        if raw_failure_fixes
+        else FIRST_FAILURE_STATUS_NOT_PROVIDED
+    )
     return ReleaseTestHonestyPlugin(
         output=Path(output),
         source_commit=str(env.get(SOURCE_COMMIT_ENV) or ""),
         source_tree=str(env.get(SOURCE_TREE_ENV) or ""),
         timeout_overrides=_json_array_from_env(TIMEOUTS_ENV, env),
         first_failure_fixes=_json_array_from_env(FAILURE_FIXES_ENV, env),
+        first_failure_fixes_status=failure_status,
     )
 
 

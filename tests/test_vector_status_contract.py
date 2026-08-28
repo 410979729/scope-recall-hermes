@@ -81,24 +81,23 @@ def test_observable_replayable_debt_canonicalizes_ready_to_degraded(
     assert payload["auto_recoverable"] is True
 
 
-def test_short_pending_inside_one_replay_cycle_does_not_flap_ready() -> None:
+def test_public_pending_never_remains_ready() -> None:
     payload = vector_status_contract(
         state="ready",
         reason_code="healthy",
         debt_counts={"pending": 1},
-        pending_within_replay_cycle=True,
     )
 
-    assert payload["state"] == "ready"
-    assert payload["reason_code"] == "healthy"
+    assert payload["state"] == "degraded"
+    assert payload["reason_code"] == "outbox_pending"
+    assert payload["debt_counts"]["replayable"] == 1
 
 
-def test_retry_is_degraded_even_when_pending_is_inside_replay_cycle() -> None:
+def test_retry_takes_precedence_over_pending_debt() -> None:
     payload = vector_status_contract(
         state="ready",
         reason_code="healthy",
         debt_counts={"pending": 1, "retry": 1},
-        pending_within_replay_cycle=True,
     )
 
     assert payload["state"] == "degraded"

@@ -35,8 +35,11 @@ except ModuleNotFoundError as exc:
 
 SCHEMA_VERSION = "scope-recall.release-validation.v1"
 RECEIPT_SCHEMA_VERSION = "scope-recall.validation-receipt.v1"
+INSTALL_RECEIPT_SCHEMA_VERSION = "scope-recall.artifact-install-receipt.v1"
 FULL_TEST_TIMEOUT_SECONDS = 900
 STAGE_TIMEOUT_SECONDS = 300
+INSTALL_TIMEOUT_SECONDS = 600
+N_MINUS_ONE_VERSION = "1.10.3"
 REHEARSAL_RECEIPTS: dict[str, tuple[str, ...]] = {
     "MIGRATION_N_MINUS_ONE.json": (
         "tests/test_release_candidate_rehearsals.py::test_activity_snapshot_upgrade_preserves_source_and_payload",
@@ -68,6 +71,16 @@ ISOLATION_NODES = (
     "tests/test_execution_boundary.py",
     "tests/test_home_cleanup_receipt.py",
 )
+ARTIFACT_HARNESS_FILES = tuple(
+    sorted(
+        {
+            Path(node_id.split("::", 1)[0]).as_posix()
+            for node_ids in REHEARSAL_RECEIPTS.values()
+            for node_id in node_ids
+        }
+        | {"tests/plugin_source.py"}
+    )
+)
 
 
 class ReleaseValidationError(RuntimeError):
@@ -79,6 +92,8 @@ class ValidationContext(NamedTuple):
     source_tree: str
     wheel_sha256: str
     sdist_sha256: str
+    wheel_name: str = "candidate.whl"
+    wheel_relative_path: str = "artifacts/candidate.whl"
 
 
 def _load_script(path: Path, name: str) -> ModuleType:
@@ -121,6 +136,21 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _canonical_sha256(value: object) -> str:
+    return _sha256_bytes(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -133,6 +163,27 @@ def _artifact_sha(provenance: Mapping[str, object], kind: str) -> str:
     if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
         raise ReleaseValidationError(f"build provenance {kind} digest is invalid")
     return value
+
+
+def _artifact_descriptor(
+    provenance: Mapping[str, object],
+    kind: str,
+) -> tuple[str, str, str]:
+    raw = provenance.get(kind)
+    if not isinstance(raw, dict):
+        raise ReleaseValidationError(f"build provenance {kind} is missing")
+    name = str(raw.get("name") or "")
+    relative_path = str(raw.get("relative_path") or "").replace("\\", "/")
+    pure = Path(relative_path)
+    if (
+        not name
+        or not relative_path
+        or pure.is_absolute()
+        or ".." in pure.parts
+        or pure.name != name
+    ):
+        raise ReleaseValidationError(f"build provenance {kind} path is invalid")
+    return name, relative_path, _artifact_sha(provenance, kind)
 
 
 def _validation_context(
@@ -161,11 +212,17 @@ def _validation_context(
         raise ReleaseValidationError("build provenance differs from current source")
     if source.get("source_dirty") is not False or provenance.get("source_dirty") is not False:
         raise ReleaseValidationError("source evidence is not clean")
+    wheel_name, wheel_relative_path, wheel_sha256 = _artifact_descriptor(
+        provenance,
+        "wheel",
+    )
     return ValidationContext(
         source_commit=commit,
         source_tree=tree,
-        wheel_sha256=_artifact_sha(provenance, "wheel"),
+        wheel_sha256=wheel_sha256,
         sdist_sha256=_artifact_sha(provenance, "sdist"),
+        wheel_name=wheel_name,
+        wheel_relative_path=wheel_relative_path,
     )
 
 
@@ -207,6 +264,13 @@ def _isolated_environment(
         else:
             path.mkdir(parents=True, exist_ok=True)
     environment = dict(os.environ)
+    for inherited in (
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "PYTEST_ADDOPTS",
+        "PYTEST_PLUGINS",
+    ):
+        environment.pop(inherited, None)
     environment.update({name: str(path) for name, path in targets.items()})
     environment.update(
         {
@@ -394,6 +458,265 @@ def _run(
     return stage
 
 
+_INSTALL_PROBE = r"""
+import hashlib
+import importlib.metadata
+import json
+import os
+from pathlib import Path
+import sys
+import scope_recall
+
+def sha(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+def canonical(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+source_root = Path(os.environ["SCOPE_RECALL_ARTIFACT_SOURCE_ROOT"]).resolve()
+module_file = Path(scope_recall.__file__).resolve()
+dist = importlib.metadata.distribution("hermes-scope-recall")
+package_root = module_file.parent
+source_on_path = any(Path(item or os.curdir).resolve() == source_root for item in sys.path)
+source_imported = module_file.is_relative_to(source_root)
+entries = []
+for path in sorted(package_root.rglob("*")):
+    if not path.is_file() or "__pycache__" in path.parts or path.suffix == ".pyc":
+        continue
+    relative = path.relative_to(package_root).as_posix()
+    entries.append({"path": relative, "sha256": sha(path), "size_bytes": path.stat().st_size})
+record_candidates = [item for item in (dist.files or ()) if item.as_posix().endswith(".dist-info/RECORD")]
+if len(record_candidates) != 1:
+    raise RuntimeError("installed distribution RECORD is ambiguous")
+record_path = Path(dist.locate_file(record_candidates[0])).resolve()
+direct_text = dist.read_text("direct_url.json") or ""
+distributions = sorted(
+    {
+        str(item.metadata.get("Name") or "").casefold(): item.version
+        for item in importlib.metadata.distributions()
+        if str(item.metadata.get("Name") or "").strip()
+    }.items()
+)
+payload = {
+    "distribution": "hermes-scope-recall",
+    "version": dist.version,
+    "python_version": sys.version.split()[0],
+    "python_executable_sha256": sha(Path(sys.executable)),
+    "installed_file_count": len(entries),
+    "installed_package_manifest_sha256": canonical(entries),
+    "environment_distribution_count": len(distributions),
+    "environment_distribution_manifest_sha256": canonical(distributions),
+    "record_sha256": sha(record_path),
+    "direct_url_sha256": hashlib.sha256(direct_text.encode("utf-8")).hexdigest(),
+    "source_worktree_on_sys_path": source_on_path,
+    "source_worktree_imported": source_imported,
+    "imported_module_path_class": "isolated-site-packages",
+}
+if source_on_path or source_imported:
+    raise RuntimeError("candidate source shadowed installed distribution")
+print(json.dumps(payload, sort_keys=True))
+"""
+
+
+def _venv_python(venv_root: Path) -> Path:
+    return (
+        venv_root / "Scripts" / "python.exe"
+        if os.name == "nt"
+        else venv_root / "bin" / "python"
+    )
+
+
+def _artifact_install_environment(
+    *,
+    root: Path,
+    artifact: Path,
+    artifact_sha256: str,
+    expected_version: str,
+    label: str,
+    workspace: Path,
+    staging: Path,
+    active_hermes_home: Path,
+    include_dev: bool,
+    ledger: list[dict[str, object]],
+) -> tuple[Path, dict[str, object], str]:
+    if not artifact.is_file() or _sha256(artifact) != artifact_sha256:
+        raise ReleaseValidationError(f"{label} artifact digest mismatch")
+    venv_root = workspace / f"venv-{label}"
+    install_boundary = workspace / f"install-{label}"
+    environment = _isolated_environment(
+        install_boundary,
+        active_hermes_home=active_hermes_home,
+        real_home=Path.home().resolve(strict=False),
+    )
+    create_stage = _run(
+        [sys.executable, "-B", "-m", "venv", str(venv_root)],
+        display_command=["python", "-B", "-m", "venv", f"<isolated-{label}-venv>"],
+        cwd=workspace,
+        environment=environment,
+        timeout_seconds=INSTALL_TIMEOUT_SECONDS,
+        log_path=staging / f"INSTALL_{label.upper()}_VENV.log",
+        ledger=ledger,
+    )
+    python = _venv_python(venv_root)
+    install_target = str(artifact) + ("[dev]" if include_dev else "")
+    install_stage = _run(
+        [
+            str(python),
+            "-B",
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            install_target,
+        ],
+        display_command=[
+            "python",
+            "-B",
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            f"<exact-{label}-wheel>" + ("[dev]" if include_dev else ""),
+        ],
+        cwd=workspace,
+        environment=environment,
+        timeout_seconds=INSTALL_TIMEOUT_SECONDS,
+        log_path=staging / f"INSTALL_{label.upper()}.log",
+        ledger=ledger,
+    )
+    probe_environment = dict(environment)
+    probe_environment["SCOPE_RECALL_ARTIFACT_SOURCE_ROOT"] = str(root)
+    probe_log = staging / f"INSTALL_{label.upper()}_PROBE.log"
+    probe_stage = _run(
+        [str(python), "-B", "-c", _INSTALL_PROBE],
+        display_command=["python", "-B", "-c", "<installed-distribution-probe>"],
+        cwd=workspace,
+        environment=probe_environment,
+        timeout_seconds=STAGE_TIMEOUT_SECONDS,
+        log_path=probe_log,
+        ledger=ledger,
+    )
+    try:
+        probe = json.loads(probe_log.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ReleaseValidationError(f"{label} install probe is invalid") from exc
+    if not isinstance(probe, dict):
+        raise ReleaseValidationError(f"{label} install probe is not an object")
+    if probe.get("version") != expected_version:
+        raise ReleaseValidationError(f"{label} installed version mismatch")
+    if (
+        probe.get("source_worktree_imported") is not False
+        or probe.get("source_worktree_on_sys_path") is not False
+        or probe.get("imported_module_path_class") != "isolated-site-packages"
+    ):
+        raise ReleaseValidationError(f"{label} install imported the source worktree")
+    environment_id = _canonical_sha256(
+        {
+            "artifact_sha256": artifact_sha256,
+            "python_executable_sha256": probe.get("python_executable_sha256"),
+            "installed_package_manifest_sha256": probe.get(
+                "installed_package_manifest_sha256"
+            ),
+            "environment_distribution_manifest_sha256": probe.get(
+                "environment_distribution_manifest_sha256"
+            ),
+            "label": label,
+        }
+    )
+    receipt: dict[str, object] = {
+        "schema_version": INSTALL_RECEIPT_SCHEMA_VERSION,
+        "artifact_kind": "wheel",
+        "artifact_name": artifact.name,
+        "artifact_sha256": artifact_sha256,
+        "installed_distribution": f"hermes-scope-recall=={expected_version}",
+        "environment_id": environment_id,
+        "python_version": probe.get("python_version"),
+        "python_executable_sha256": probe.get("python_executable_sha256"),
+        "installed_file_count": probe.get("installed_file_count"),
+        "installed_package_manifest_sha256": probe.get(
+            "installed_package_manifest_sha256"
+        ),
+        "environment_distribution_count": probe.get(
+            "environment_distribution_count"
+        ),
+        "environment_distribution_manifest_sha256": probe.get(
+            "environment_distribution_manifest_sha256"
+        ),
+        "record_sha256": probe.get("record_sha256"),
+        "direct_url_sha256": probe.get("direct_url_sha256"),
+        "imported_module_path_class": "isolated-site-packages",
+        "source_worktree_imported": False,
+        "source_worktree_on_sys_path": False,
+        "venv_stage_sha256": create_stage["log_sha256"],
+        "install_stage_sha256": install_stage["log_sha256"],
+        "probe_stage_sha256": probe_stage["log_sha256"],
+        "started_at": create_stage["started_at"],
+        "finished_at": probe_stage["finished_at"],
+        "result": "passed",
+    }
+    receipt_path = staging / f"INSTALL_{label.upper()}_RECEIPT.json"
+    _write_json(receipt_path, receipt)
+    return python, receipt, _sha256(receipt_path)
+
+
+def _prepare_artifact_harness(
+    *,
+    root: Path,
+    python: Path,
+    workspace: Path,
+) -> Path:
+    harness = workspace / "artifact-harness"
+    tests_dir = harness / "tests"
+    tests_dir.mkdir(parents=True)
+    for relative in ARTIFACT_HARNESS_FILES:
+        source = root.joinpath(*Path(relative).parts)
+        if relative == "tests/plugin_source.py":
+            target = harness / "plugin_source.py"
+        else:
+            target = harness.joinpath(*Path(relative).parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    package_root = (
+        python.parents[1] / "Lib" / "site-packages" / "scope_recall"
+        if os.name == "nt"
+        else python.parents[1]
+        / "lib"
+        / f"python{sys.version_info.major}.{sys.version_info.minor}"
+        / "site-packages"
+        / "scope_recall"
+    )
+    shutil.copy2(package_root / "writer_lease.py", harness / "writer_lease.py")
+    (harness / "pytest.ini").write_text(
+        "[pytest]\naddopts =\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (tests_dir / "conftest.py").write_text(
+        """from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from scope_recall import installer
+
+
+def pytest_configure(config):
+    del config
+    home = Path(os.environ["HERMES_HOME"])
+    result = installer.install(home)
+    if result.get("ok") is not True:
+        raise RuntimeError("installed-wheel Hermes discovery setup failed")
+""",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return harness
+
+
 def _receipt(
     context: ValidationContext,
     *,
@@ -401,6 +724,8 @@ def _receipt(
     command: Sequence[str],
     database_kind: str,
     details: Mapping[str, object] | None = None,
+    artifact_contract: Mapping[str, object] | None = None,
+    environment_identity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "schema_version": RECEIPT_SCHEMA_VERSION,
@@ -419,6 +744,12 @@ def _receipt(
         "result": "passed",
         "raw_log_sha256": stage.get("log_sha256", "not-applicable"),
     }
+    if artifact_contract:
+        payload.update(dict(artifact_contract))
+    if environment_identity:
+        boundary = payload["environment_boundary"]
+        assert isinstance(boundary, dict)
+        boundary.update(dict(environment_identity))
     if details:
         payload["details"] = dict(details)
     return payload
@@ -427,22 +758,45 @@ def _receipt(
 def _run_pytest_receipt(
     *,
     root: Path,
+    harness: Path,
+    python: Path,
     staging: Path,
     environment: Mapping[str, str],
     context: ValidationContext,
+    install_receipt: Mapping[str, object],
+    install_receipt_sha256: str,
+    hermes_source: Path,
+    hermes_source_identity: Mapping[str, object],
     receipt_name: str,
     node_ids: Sequence[str],
     ledger: list[dict[str, object]],
 ) -> None:
     stem = Path(receipt_name).stem
     log_path = staging / f"{stem}.log"
+    guard_output = Path(environment["TEMP"]) / f"{stem}.import-guard.json"
+    rehearsal_environment = dict(environment)
+    rehearsal_environment.update(
+        {
+            "PYTHONPATH": os.pathsep.join((str(harness), str(hermes_source))),
+            "SCOPE_RECALL_ARTIFACT_GUARD_OUTPUT": str(guard_output),
+            "SCOPE_RECALL_ARTIFACT_SOURCE_ROOT": str(root),
+            "SCOPE_RECALL_ARTIFACT_SHA256": context.wheel_sha256,
+            "SCOPE_RECALL_INSTALL_RECEIPT_SHA256": install_receipt_sha256,
+        }
+    )
     actual = [
-        sys.executable,
+        str(python),
         "-B",
         "-m",
         "pytest",
+        "-c",
+        str(harness / "pytest.ini"),
+        "--confcutdir",
+        str(harness),
         "-p",
         "no:cacheprovider",
+        "-p",
+        "scope_recall.scripts.release_artifact_test_guard",
         "-q",
         "--basetemp",
         str(
@@ -458,8 +812,14 @@ def _run_pytest_receipt(
         "-B",
         "-m",
         "pytest",
+        "-c",
+        "<artifact-harness>/pytest.ini",
+        "--confcutdir",
+        "<artifact-harness>",
         "-p",
         "no:cacheprovider",
+        "-p",
+        "scope_recall.scripts.release_artifact_test_guard",
         "-q",
         "--basetemp",
         f"<isolated>/{stem.lower()}",
@@ -468,11 +828,38 @@ def _run_pytest_receipt(
     stage = _run(
         actual,
         display_command=display,
-        cwd=root,
-        environment=environment,
+        cwd=harness,
+        environment=rehearsal_environment,
         timeout_seconds=STAGE_TIMEOUT_SECONDS,
         log_path=log_path,
         ledger=ledger,
+    )
+    if not guard_output.is_file():
+        raise ReleaseValidationError(f"{receipt_name} import guard did not run")
+    guard = _load_json(guard_output)
+    if (
+        guard.get("result") != "passed"
+        or guard.get("artifact_sha256") != context.wheel_sha256
+        or guard.get("install_receipt_sha256") != install_receipt_sha256
+        or guard.get("source_worktree_imported") is not False
+        or guard.get("source_worktree_on_sys_path") is not False
+    ):
+        raise ReleaseValidationError(f"{receipt_name} import guard failed")
+    environment_id = _canonical_sha256(
+        {
+            "install_environment_id": install_receipt.get("environment_id"),
+            "receipt_name": receipt_name,
+            "hermes_home": _canonical_sha256(environment["HERMES_HOME"]),
+            "database": _canonical_sha256(environment["SCOPE_RECALL_DB"]),
+            "basetemp": _canonical_sha256(
+                str(
+                    _pytest_basetemp(
+                        environment,
+                        f"r-{hashlib.sha256(stem.encode('utf-8')).hexdigest()[:8]}",
+                    )
+                )
+            ),
+        }
     )
     _write_json(
         staging / receipt_name,
@@ -481,7 +868,38 @@ def _run_pytest_receipt(
             stage=stage,
             command=display,
             database_kind="fixture-copy",
-            details={"node_ids": list(node_ids)},
+            artifact_contract={
+                "artifact_consumed": True,
+                "artifact_kind": "wheel",
+                "installed_distribution": install_receipt[
+                    "installed_distribution"
+                ],
+                "imported_module_path_class": "isolated-site-packages",
+                "source_worktree_imported": False,
+                "source_worktree_on_sys_path": False,
+                "install_receipt_sha256": install_receipt_sha256,
+                "direct_url_sha256": install_receipt["direct_url_sha256"],
+                "record_sha256": install_receipt["record_sha256"],
+                "environment_id": environment_id,
+                "hermes_source_identity": dict(hermes_source_identity),
+            },
+            environment_identity={
+                "identity_scheme": "sha256-local-path-v1",
+                "hermes_home_id": _canonical_sha256(environment["HERMES_HOME"]),
+                "database_id": _canonical_sha256(environment["SCOPE_RECALL_DB"]),
+                "pytest_basetemp_id": _canonical_sha256(
+                    str(
+                        _pytest_basetemp(
+                            environment,
+                            f"r-{hashlib.sha256(stem.encode('utf-8')).hexdigest()[:8]}",
+                        )
+                    )
+                ),
+            },
+            details={
+                "node_ids": list(node_ids),
+                "import_guard": guard,
+            },
         ),
     )
 
@@ -491,6 +909,7 @@ def _run_full_suite(
     root: Path,
     staging: Path,
     environment: dict[str, str],
+    hermes_source: Path,
     context: ValidationContext,
     ledger: list[dict[str, object]],
 ) -> None:
@@ -499,6 +918,7 @@ def _run_full_suite(
     log = staging / "PYTEST_STDOUT.log"
     environment.update(
         {
+            "PYTHONPATH": str(hermes_source.resolve(strict=True)),
             "SCOPE_RECALL_TEST_HONESTY_OUTPUT": str(honesty),
             "SCOPE_RECALL_SOURCE_COMMIT": context.source_commit,
             "SCOPE_RECALL_SOURCE_TREE": context.source_tree,
@@ -513,7 +933,6 @@ def _run_full_suite(
             ),
         }
     )
-    environment.setdefault("SCOPE_RECALL_FIRST_FAILURE_FIXES_JSON", "[]")
     actual = [
         sys.executable,
         "-B",
@@ -767,12 +1186,37 @@ def run_release_validation(
     hermes_0206_source: Path,
     accidental_home_path: Path,
     quarantine_path: Path,
+    n_minus_one_wheel: Path,
 ) -> Path:
     resolved = root.resolve(strict=True)
     evidence = evidence_dir.resolve(strict=True)
     active = active_hermes_home.resolve(strict=False)
     real_home = Path.home().resolve(strict=False)
     context = _validation_context(resolved, evidence, expected_sha)
+    candidate_wheel = (
+        evidence.joinpath(*Path(context.wheel_relative_path).parts).resolve(strict=True)
+    )
+    try:
+        candidate_wheel.relative_to(evidence)
+    except ValueError as exc:
+        raise ReleaseValidationError("candidate wheel escapes evidence directory") from exc
+    if candidate_wheel.name != context.wheel_name:
+        raise ReleaseValidationError("candidate wheel name differs from provenance")
+    if _sha256(candidate_wheel) != context.wheel_sha256:
+        raise ReleaseValidationError("candidate wheel differs from provenance")
+    previous_wheel = n_minus_one_wheel.resolve(strict=True)
+    known_quarantine = quarantine_path.resolve(strict=True)
+    hermes_probe = _load_script(
+        resolved / "scripts" / "probe.hermes_compatibility.py",
+        "scope_recall_validation_rehearsal_hermes_identity",
+    )
+    hermes_rehearsal_identity = hermes_probe._git_identity(
+        hermes_0191_source.resolve(strict=True)
+    )
+    if not hermes_probe._is_clean_bound_git_identity(hermes_rehearsal_identity):
+        raise ReleaseValidationError(
+            "artifact rehearsals require a clean, Git-bound Hermes 0.19.1 source"
+        )
     validation_targets = {
         "TEST_COMMANDS.json",
         "PYTEST_JUNIT.xml",
@@ -787,6 +1231,8 @@ def run_release_validation(
         "READONLY_CANARY.json",
         "WRITER_CANARY.json",
         "ROLLBACK_REHEARSAL.json",
+        "INSTALL_CANDIDATE_RECEIPT.json",
+        "INSTALL_N_MINUS_ONE_RECEIPT.json",
         "ACTIVE_ISOLATION.json",
         "REPOSITORY_CENSUS.json",
         "REPOSITORY_DELETE_RENAME_EVIDENCE.json",
@@ -814,6 +1260,7 @@ def run_release_validation(
                 root=resolved,
                 staging=staging,
                 environment=environment,
+                hermes_source=hermes_0191_source,
                 context=context,
                 ledger=ledger,
             )
@@ -823,15 +1270,131 @@ def run_release_validation(
                 environment=environment,
                 ledger=ledger,
             )
+            artifact_workspace = boundary / "artifact-environments"
+            artifact_workspace.mkdir(parents=True)
+            candidate_python, candidate_install, candidate_install_sha = (
+                _artifact_install_environment(
+                    root=resolved,
+                    artifact=candidate_wheel,
+                    artifact_sha256=context.wheel_sha256,
+                    expected_version="2.0.0",
+                    label="candidate",
+                    workspace=artifact_workspace,
+                    staging=staging,
+                    active_hermes_home=active,
+                    include_dev=True,
+                    ledger=ledger,
+                )
+            )
+            candidate_install["source_commit"] = context.source_commit
+            candidate_install["source_tree"] = context.source_tree
+            _write_json(
+                staging / "INSTALL_CANDIDATE_RECEIPT.json",
+                candidate_install,
+            )
+            candidate_install_sha = _sha256(
+                staging / "INSTALL_CANDIDATE_RECEIPT.json"
+            )
+            n_minus_one_python, n_minus_one_install, n_minus_one_install_sha = (
+                _artifact_install_environment(
+                    root=resolved,
+                    artifact=previous_wheel,
+                    artifact_sha256=_sha256(previous_wheel),
+                    expected_version=N_MINUS_ONE_VERSION,
+                    label="n_minus_one",
+                    workspace=artifact_workspace,
+                    staging=staging,
+                    active_hermes_home=active,
+                    include_dev=False,
+                    ledger=ledger,
+                )
+            )
+            del n_minus_one_python
+            n_minus_one_install["source_commit"] = "published-v1.10.3-artifact"
+            n_minus_one_install["candidate_source_mixed"] = False
+            _write_json(
+                staging / "INSTALL_N_MINUS_ONE_RECEIPT.json",
+                n_minus_one_install,
+            )
+            n_minus_one_install_sha = _sha256(
+                staging / "INSTALL_N_MINUS_ONE_RECEIPT.json"
+            )
+            harness = _prepare_artifact_harness(
+                root=resolved,
+                python=candidate_python,
+                workspace=artifact_workspace,
+            )
             for receipt_name, node_ids in REHEARSAL_RECEIPTS.items():
+                rehearsal_boundary = (
+                    boundary
+                    / "rehearsals"
+                    / hashlib.sha256(receipt_name.encode("utf-8")).hexdigest()[:12]
+                )
+                rehearsal_environment = _isolated_environment(
+                    rehearsal_boundary,
+                    active_hermes_home=active,
+                    real_home=real_home,
+                )
                 _run_pytest_receipt(
                     root=resolved,
+                    harness=harness,
+                    python=candidate_python,
                     staging=staging,
-                    environment=environment,
+                    environment=rehearsal_environment,
                     context=context,
+                    install_receipt=candidate_install,
+                    install_receipt_sha256=candidate_install_sha,
+                    hermes_source=hermes_0191_source.resolve(strict=True),
+                    hermes_source_identity=hermes_rehearsal_identity,
                     receipt_name=receipt_name,
                     node_ids=node_ids,
                     ledger=ledger,
+                )
+                if receipt_name in {
+                    "MIGRATION_N_MINUS_ONE.json",
+                    "DOWNGRADE_N_MINUS_ONE.json",
+                }:
+                    receipt_path = staging / receipt_name
+                    receipt_payload = _load_json(receipt_path)
+                    receipt_payload["n_minus_one_install_receipt_sha256"] = (
+                        n_minus_one_install_sha
+                    )
+                    receipt_payload["n_minus_one_distribution"] = (
+                        n_minus_one_install["installed_distribution"]
+                    )
+                    receipt_payload["candidate_n_minus_one_environment_mixed"] = False
+                    _write_json(receipt_path, receipt_payload)
+            immutable_environment = _isolated_environment(
+                artifact_workspace / "immutability-probe",
+                active_hermes_home=active,
+                real_home=real_home,
+            )
+            immutable_environment["SCOPE_RECALL_ARTIFACT_SOURCE_ROOT"] = str(resolved)
+            immutable_log = staging / "INSTALL_CANDIDATE_IMMUTABILITY_PROBE.log"
+            _run(
+                [str(candidate_python), "-B", "-c", _INSTALL_PROBE],
+                display_command=[
+                    "python",
+                    "-B",
+                    "-c",
+                    "<installed-distribution-immutability-probe>",
+                ],
+                cwd=artifact_workspace,
+                environment=immutable_environment,
+                timeout_seconds=STAGE_TIMEOUT_SECONDS,
+                log_path=immutable_log,
+                ledger=ledger,
+            )
+            immutable_probe = _load_json(immutable_log)
+            if immutable_probe.get("installed_package_manifest_sha256") != (
+                candidate_install.get("installed_package_manifest_sha256")
+            ) or immutable_probe.get("record_sha256") != candidate_install.get(
+                "record_sha256"
+            ) or immutable_probe.get(
+                "environment_distribution_manifest_sha256"
+            ) != candidate_install.get("environment_distribution_manifest_sha256"):
+                raise ReleaseValidationError(
+                    "candidate installed environment changed during rehearsals"
                 )
             _active_isolation_evidence(
                 root=resolved,
@@ -842,7 +1405,7 @@ def run_release_validation(
                 hermes_0191_source=hermes_0191_source,
                 hermes_0206_source=hermes_0206_source,
                 accidental_home_path=accidental_home_path,
-                quarantine_path=quarantine_path,
+                quarantine_path=known_quarantine,
                 ledger=ledger,
             )
             _repository_evidence(root=resolved, staging=staging, context=context)
@@ -889,7 +1452,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--hermes-0-19-1-source", type=Path, required=True)
     parser.add_argument("--hermes-0-20-6-source", type=Path, required=True)
     parser.add_argument("--accidental-home-path", type=Path)
-    parser.add_argument("--quarantine-path", type=Path)
+    parser.add_argument("--quarantine-path", type=Path, required=True)
+    parser.add_argument("--n-minus-one-wheel", type=Path, required=True)
     return parser.parse_args(argv)
 
 
@@ -912,8 +1476,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         hermes_0206_source=args.hermes_0_20_6_source,
         accidental_home_path=args.accidental_home_path
         or Path.home() / "plugins" / "scope-recall",
-        quarantine_path=args.quarantine_path
-        or active / "quarantine" / "scope-recall",
+        quarantine_path=args.quarantine_path,
+        n_minus_one_wheel=args.n_minus_one_wheel,
     )
     print(
         json.dumps(

@@ -172,6 +172,22 @@ COMPATIBILITY_REGISTRY: tuple[CompatibilityShim, ...] = (
         ),
     ),
     CompatibilityShim(
+        shim_id="legacy-provider-host-protocols",
+        owner="rc-audit-remediation",
+        source="_internal/runtime/provider_compat_hosts.py:LegacyProviderRuntimeHost",
+        replacement="provider-neutral repositories and capability-specific ports",
+        usage_evidence=(
+            "_internal/runtime/query_adapter.py:LegacyProviderQueryHost",
+            "_internal/runtime/tool_port.py:LegacyProviderToolHost",
+            "_internal/compatibility/provider_runtime.py:LegacyProviderRuntimeHost",
+        ),
+        remove_after="2.1.0",
+        removal_condition="provider-bound runtime adapters leave the 2.0 compatibility window",
+        tests=(
+            "tests/test_rc_architecture_boundaries.py:test_legacy_provider_hosts_are_explicit_2_1_compatibility_debt",
+        ),
+    ),
+    CompatibilityShim(
         shim_id="legacy-lifecycle-receipt-adapter",
         owner="program-1b-lifecycle-registry",
         source="lifecycle_compat.py:resolve_lifecycle_request",
@@ -203,6 +219,7 @@ PROGRAM_1A_COMPATIBILITY_IDS = frozenset(
         "provider-vector-runtime-state-adapter",
         "provider-module-hook-anchors",
         "provider-bound-runtime-dependencies",
+        "legacy-provider-host-protocols",
     }
 )
 

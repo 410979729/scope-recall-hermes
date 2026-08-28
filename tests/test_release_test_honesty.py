@@ -85,6 +85,7 @@ def test_plugin_writes_exact_pass_skip_xfail_and_xpass_accounting(
     assert payload["rerun_count"] == 0
     assert payload["source_commit"] == "a" * 40
     assert payload["source_tree"] == "b" * 40
+    assert payload["first_failure_fixes_status"] == "not_provided"
 
 
 def test_plugin_environment_is_explicit_and_rejects_malformed_arrays(
@@ -103,6 +104,7 @@ def test_plugin_environment_is_explicit_and_rejects_malformed_arrays(
     assert plugin is not None
     assert plugin.source_commit == "a" * 40
     assert plugin.source_tree == "b" * 40
+    assert plugin.first_failure_fixes_status == "declared"
 
     environment[module.TIMEOUTS_ENV] = "{}"
     with pytest.raises(RuntimeError, match="JSON array"):
@@ -119,7 +121,9 @@ def test_plugin_registers_with_real_pytest(tmp_path: Path) -> None:
     environment.pop("PYTEST_PLUGINS", None)
     environment.update(
         {
-            "PYTHONPATH": str(ROOT),
+            "PYTHONPATH": os.pathsep.join(
+                (str(ROOT), str(Path(pytest.__file__).resolve().parents[1]))
+            ),
             module.OUTPUT_ENV: str(output),
             module.SOURCE_COMMIT_ENV: "a" * 40,
             module.SOURCE_TREE_ENV: "b" * 40,
@@ -155,6 +159,36 @@ def test_plugin_registers_with_real_pytest(tmp_path: Path) -> None:
     assert payload["passed"] == 1
     assert payload["failed"] == 0
     assert payload["errors"] == 0
+
+
+def test_skip_reasons_redact_windows_and_posix_user_homes(tmp_path: Path) -> None:
+    module = _load_module()
+    plugin = module.ReleaseTestHonestyPlugin(
+        output=tmp_path / "honesty.json",
+        source_commit="a" * 40,
+        source_tree="b" * 40,
+        timeout_overrides=[],
+        first_failure_fixes=[],
+    )
+
+    plugin.pytest_runtest_logreport(
+        _report(
+            "tests/test_a.py::test_windows",
+            "skipped",
+            reason=r"missing C:\Users\private-operator\AppData\Local\Temp\probe.db",
+        )
+    )
+    plugin.pytest_runtest_logreport(
+        _report(
+            "tests/test_a.py::test_posix",
+            "skipped",
+            reason="missing /home/private-operator/tmp/probe.db",
+        )
+    )
+
+    rendered = json.dumps(plugin.payload(collected=2))
+    assert "private-operator" not in rendered
+    assert "<private-path>" in rendered
 
 
 def test_plugin_counts_non_call_failure_as_error_and_rerun_honestly(

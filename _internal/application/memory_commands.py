@@ -47,6 +47,38 @@ class DeleteMemoriesRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class DeleteMemoriesResult:
+    """Truthful hard-delete outcome used by new application/tool callers.
+
+    Provider-facing compatibility wrappers may still collapse this object to
+    ``deleted_count``.  Public callers must retain the actual deleted/skipped
+    partition and companion-erasure state.
+    """
+
+    requested_ids: tuple[str, ...]
+    deleted_ids: tuple[str, ...]
+    skipped_ids: tuple[str, ...]
+    deleted_count: int
+    vector_pending: bool
+    companion_erasure_pending: bool
+    data_retained: bool
+    mutation_applied: bool
+
+    def __post_init__(self) -> None:
+        if self.deleted_count != len(self.deleted_ids):
+            raise ValueError("deleted_count must equal len(deleted_ids)")
+        if set(self.deleted_ids) & set(self.skipped_ids):
+            raise ValueError("deleted_ids and skipped_ids must be disjoint")
+        if len(self.requested_ids) != len(set(self.requested_ids)):
+            raise ValueError("requested_ids must be stable unique IDs")
+        combined = set(self.deleted_ids) | set(self.skipped_ids)
+        if set(self.requested_ids) != combined:
+            raise ValueError(
+                "requested_ids must equal the deleted/skipped partition"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class FeedbackMemoryRequest:
     memory_id: str
     rating: str
@@ -88,7 +120,7 @@ class MemoryCommandGateway(Protocol):
 
     def archive(self, request: ArchiveMemoriesRequest) -> dict[str, object]: ...
 
-    def delete(self, request: DeleteMemoriesRequest) -> int: ...
+    def delete(self, request: DeleteMemoriesRequest) -> DeleteMemoriesResult: ...
 
     def feedback(self, request: FeedbackMemoryRequest) -> dict[str, object]: ...
 
@@ -121,7 +153,7 @@ class MemoryCommandApplication:
     def archive(self, request: ArchiveMemoriesRequest) -> dict[str, object]:
         return self._gateway.archive(request)
 
-    def delete(self, request: DeleteMemoriesRequest) -> int:
+    def delete(self, request: DeleteMemoriesRequest) -> DeleteMemoriesResult:
         return self._gateway.delete(request)
 
     def feedback(self, request: FeedbackMemoryRequest) -> dict[str, object]:

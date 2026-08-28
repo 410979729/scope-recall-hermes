@@ -22,7 +22,14 @@ import scope_recall.memory_ops as memory_ops_module
 import scope_recall.nightly_digest as nightly_digest
 from _scope_recall_public_memory_port import attach_public_truth_ports
 from scope_recall.journal import JournalDigestCandidate, JournalEntry, apply_journal_candidates, ensure_journal_schema, heuristic_journal_candidates
-from scope_recall.memory_ops import archive_memories, dedupe_memories, delete_memories, govern_memories, update_memory
+from scope_recall.memory_ops import (
+    archive_memories,
+    dedupe_memories,
+    delete_memories,
+    delete_memories_result,
+    govern_memories,
+    update_memory,
+)
 from scope_recall.models import RuntimeScope
 from scope_recall.nightly_digest import DigestCandidate, ScopeProfile, apply_candidates, ensure_digest_schema, infer_scope
 from scope_recall.scope import accessible_scope_ids, build_scope_id, build_shared_scope_id, normalize_scope_identity
@@ -417,6 +424,85 @@ def test_scope_recall_forget_deletes_sql_after_vector_delete_succeeds():
     assert conn.execute("SELECT COUNT(*) FROM memories WHERE id = 'delete-row'").fetchone()[0] == 0
 
 
+def test_typed_delete_result_reports_actual_deleted_and_skipped_ids():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    _insert_test_memory(
+        conn,
+        memory_id="delete-row",
+        content="Typed delete must not echo an unremoved requested id.",
+    )
+    provider = _FakeProvider(
+        conn,
+        accessible=["shared-scope"],
+        writable=["shared-scope"],
+    )
+    _enable_vector(provider, _RecordingVectorStore())
+
+    result = delete_memories_result(
+        provider,
+        ["missing-row", "delete-row", "delete-row"],
+    )
+
+    assert result.deleted_count == 1
+    assert result.deleted_ids == ("delete-row",)
+    assert result.skipped_ids == ("missing-row",)
+    assert result.requested_ids == ("missing-row", "delete-row")
+    assert result.vector_pending is False
+    assert result.companion_erasure_pending is False
+    assert result.data_retained is True
+    assert result.mutation_applied is True
+    assert conn.execute(
+        "SELECT COUNT(*) FROM memories WHERE id = 'delete-row'"
+    ).fetchone()[0] == 0
+
+
+def test_legacy_delete_wrapper_still_returns_int():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    _insert_test_memory(conn, memory_id="legacy-delete-row")
+    provider = _FakeProvider(
+        conn,
+        accessible=["shared-scope"],
+        writable=["shared-scope"],
+    )
+    _enable_vector(provider, _RecordingVectorStore())
+
+    deleted = delete_memories(provider, ["legacy-delete-row"])
+
+    assert type(deleted) is int
+    assert deleted == 1
+
+
+def test_typed_delete_reports_pending_when_replay_claims_no_enqueued_intent(
+    monkeypatch,
+):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    _insert_test_memory(conn, memory_id="pending-delete-row")
+    provider = _FakeProvider(
+        conn,
+        accessible=["shared-scope"],
+        writable=["shared-scope"],
+    )
+    _enable_vector(provider, _RecordingVectorStore())
+    monkeypatch.setattr(
+        memory_ops_module,
+        "replay_vector_outbox",
+        lambda _provider: {"claimed": 0, "completed": 0, "failed": 0},
+    )
+
+    result = delete_memories_result(provider, ["pending-delete-row"])
+
+    assert result.deleted_ids == ("pending-delete-row",)
+    assert result.vector_pending is True
+    assert result.companion_erasure_pending is True
+    assert result.data_retained is True
+
+
 def test_scope_recall_hard_delete_audit_failure_keeps_truth_and_vector_ready(monkeypatch):
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -604,6 +690,9 @@ def test_scope_recall_forget_soft_archive_keeps_truth_and_retries_when_vector_de
     assert payload["archived"] == 1
     assert payload["ids"] == ["archive-row"]
     assert payload["skipped"] == []
+    assert payload["vector_pending"] is True
+    assert payload["companion_erasure_pending"] is True
+    assert payload["data_retained"] is True
     assert provider._vector_status == "degraded"
     assert provider.vector_status_view()["reason_code"] == "outbox_retryable"
     row = conn.execute("SELECT metadata FROM memories WHERE id = 'archive-row'").fetchone()

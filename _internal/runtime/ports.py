@@ -14,6 +14,7 @@ from ..application.memory_commands import (
     ArchiveMemoriesRequest,
     DedupeMemoriesRequest,
     DeleteMemoriesRequest,
+    DeleteMemoriesResult,
     FactOwnedMemoryIdsRequest,
     FeedbackMemoryRequest,
     GovernMemoriesRequest,
@@ -99,7 +100,7 @@ class MemoryCommandPort(Protocol):
 
     def archive(self, request: ArchiveMemoriesRequest) -> dict[str, object]: ...
 
-    def delete(self, request: DeleteMemoriesRequest) -> int: ...
+    def delete(self, request: DeleteMemoriesRequest) -> DeleteMemoriesResult: ...
 
     def feedback(self, request: FeedbackMemoryRequest) -> dict[str, object]: ...
 
