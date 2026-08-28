@@ -13,12 +13,13 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 from types import ModuleType
-from typing import Mapping, NamedTuple, Sequence
+from typing import Callable, Mapping, NamedTuple, Sequence
 
 try:
     from scripts.execution_boundary import (  # pyright: ignore[reportMissingImports]
@@ -229,17 +230,70 @@ def _pytest_basetemp(environment: Mapping[str, str], name: str) -> Path:
     return Path(parent_text).resolve(strict=False) / name
 
 
+def _validation_cleanup_path(boundary: Path) -> Path:
+    """Return the repository filesystem helper's long-path-safe I/O path."""
+
+    if os.name != "nt":
+        return boundary
+    project_root = Path(__file__).resolve().parents[1]
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    from windows_filesystem import io_path  # pyright: ignore[reportMissingImports]
+
+    return Path(io_path(boundary))
+
+
+def _retry_readonly_cleanup(
+    boundary: Path,
+    function: Callable[[str], object],
+    path: str,
+    error: BaseException,
+) -> None:
+    """Clear a Windows read-only bit only inside the declared temp boundary."""
+
+    if not isinstance(error, PermissionError) and getattr(error, "winerror", None) != 5:
+        raise error
+    candidate = Path(os.path.abspath(path))
+    try:
+        candidate.relative_to(boundary)
+    except ValueError as exc:
+        raise ReleaseValidationError(
+            "refusing to repair permissions outside the validation boundary"
+        ) from exc
+    is_junction = getattr(os.path, "isjunction", None)
+    if candidate.is_symlink() or (
+        callable(is_junction) and bool(is_junction(candidate))
+    ):
+        raise error
+    os.chmod(candidate, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+    function(str(candidate))
+
+
 def _cleanup_validation_boundary(boundary: Path, *, attempts: int = 8) -> None:
     resolved = boundary.resolve(strict=False)
     temp_root = Path(tempfile.gettempdir()).resolve(strict=False)
     if resolved.parent != temp_root or not resolved.name.startswith("srv."):
         raise ReleaseValidationError("refusing to clean an undeclared validation boundary")
+    cleanup_target = _validation_cleanup_path(resolved)
+
+    def handle_cleanup_error(function, path, exc_info):  # noqa: ANN001
+        _retry_readonly_cleanup(cleanup_target, function, path, exc_info[1])
+
     for attempt in range(attempts):
         try:
-            shutil.rmtree(resolved)
+            shutil.rmtree(
+                cleanup_target,
+                onerror=handle_cleanup_error,
+            )
+            if os.path.lexists(cleanup_target):
+                raise OSError("validation boundary still exists after cleanup")
             return
         except FileNotFoundError:
-            return
+            if not os.path.lexists(cleanup_target):
+                return
+            if attempt + 1 >= attempts:
+                raise
+            time.sleep(min(0.1 * (attempt + 1), 0.5))
         except OSError:
             if attempt + 1 >= attempts:
                 raise
