@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from types import ModuleType
 from typing import Callable, Mapping, NamedTuple, Sequence
 
@@ -717,6 +718,86 @@ def pytest_configure(config):
     return harness
 
 
+def _copy_hermes_install_source(source: Path, target: Path) -> None:
+    """Copy only files declared by Hermes' Python packaging configuration.
+
+    The pinned Hermes checkout also contains large website, application, and test
+    trees.  They are irrelevant to an editable Python install and some historical
+    translated website paths exceed the default Windows path limit when copied
+    below the release-validation boundary.
+    """
+
+    source = source.resolve(strict=True)
+    pyproject = source / "pyproject.toml"
+    try:
+        configuration = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise ReleaseValidationError("pinned Hermes pyproject.toml is invalid") from exc
+
+    project = configuration.get("project")
+    tool = configuration.get("tool")
+    setuptools = tool.get("setuptools") if isinstance(tool, dict) else None
+    if not isinstance(project, dict) or not isinstance(setuptools, dict):
+        raise ReleaseValidationError("pinned Hermes setuptools metadata is missing")
+
+    raw_modules = setuptools.get("py-modules")
+    packages = setuptools.get("packages")
+    find = packages.get("find") if isinstance(packages, dict) else None
+    raw_includes = find.get("include") if isinstance(find, dict) else None
+    if not isinstance(raw_modules, list) or not raw_modules:
+        raise ReleaseValidationError("pinned Hermes py-modules declaration is missing")
+    if not isinstance(raw_includes, list) or not raw_includes:
+        raise ReleaseValidationError("pinned Hermes package include declaration is missing")
+
+    module_names = sorted({str(item) for item in raw_modules})
+    package_roots = sorted({str(item).split(".", 1)[0] for item in raw_includes})
+    if any(not name.isidentifier() for name in module_names + package_roots):
+        raise ReleaseValidationError("pinned Hermes packaging declaration is unsafe")
+
+    referenced_files = {"pyproject.toml", "setup.py"}
+    readme = project.get("readme")
+    if isinstance(readme, str):
+        referenced_files.add(readme)
+    elif isinstance(readme, dict) and isinstance(readme.get("file"), str):
+        referenced_files.add(str(readme["file"]))
+    license_files = project.get("license-files", [])
+    if not isinstance(license_files, list):
+        raise ReleaseValidationError("pinned Hermes license-files declaration is invalid")
+    referenced_files.update(str(item) for item in license_files)
+
+    target.mkdir(parents=True, exist_ok=False)
+    for relative in sorted(referenced_files):
+        path = Path(relative)
+        if path.is_absolute() or ".." in path.parts or len(path.parts) != 1:
+            raise ReleaseValidationError("pinned Hermes build file declaration is unsafe")
+        source_file = source / path
+        if not source_file.is_file():
+            raise ReleaseValidationError(f"pinned Hermes build file is missing: {relative}")
+        shutil.copy2(source_file, target / path)
+
+    for name in module_names:
+        source_file = source / f"{name}.py"
+        if not source_file.is_file():
+            raise ReleaseValidationError(f"pinned Hermes Python module is missing: {name}")
+        shutil.copy2(source_file, target / source_file.name)
+
+    for name in package_roots:
+        source_package = source / name
+        if not source_package.is_dir():
+            raise ReleaseValidationError(f"pinned Hermes package is missing: {name}")
+        shutil.copytree(
+            source_package,
+            target / name,
+            ignore=shutil.ignore_patterns(
+                ".pytest_cache",
+                ".ruff_cache",
+                "__pycache__",
+                "*.egg-info",
+                "*.pyc",
+            ),
+        )
+
+
 def _prepare_full_suite_environment(
     *,
     root: Path,
@@ -780,18 +861,7 @@ def _prepare_full_suite_environment(
         ledger=ledger,
     )
     hermes_copy = workspace / "hermes-source-copy"
-    shutil.copytree(
-        hermes_source.resolve(strict=True),
-        hermes_copy,
-        ignore=shutil.ignore_patterns(
-            ".git",
-            ".pytest_cache",
-            ".ruff_cache",
-            "__pycache__",
-            "*.egg-info",
-            "*.pyc",
-        ),
-    )
+    _copy_hermes_install_source(hermes_source, hermes_copy)
     _run(
         [
             str(python),
