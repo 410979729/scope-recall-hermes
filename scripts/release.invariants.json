@@ -17,7 +17,7 @@
         "tests/test_tool_fact_evolution.py::test_legacy_update_fails_closed_for_fact_owned_memory",
         "tests/test_tool_fact_evolution.py::test_legacy_soft_archive_fails_closed_for_fact_owned_memory",
         "tests/test_tool_fact_evolution.py::test_legacy_merge_fails_closed_when_any_memory_owns_a_fact",
-        "tests/test_tool_fact_evolution.py::test_legacy_hard_delete_fails_closed_for_fact_owned_memory",
+        "tests/test_tool_fact_evolution.py::test_fact_owned_hard_delete_block_reports_no_mutation_and_retained_data",
         "tests/test_evolution_policy.py::test_ambiguous_predicate_frames_and_cjk_substrings_fail_closed",
         "tests/test_evolution_action_pipeline.py::test_ambiguous_relation_evidence_is_review_and_zero_write_end_to_end",
         "tests/test_sixth_audit_regressions.py::test_past_future_and_temporary_events_cannot_authorize_current_fact",
@@ -181,7 +181,7 @@
         "tests/test_relation_rebuild_retirement.py::test_every_legacy_execution_surface_is_a_zero_write_refusal",
         "tests/test_release.py::test_release_gate_proves_retired_relation_rebuild_has_no_worker_body",
         "tests/test_vector_status_contract.py::test_vector_state_boolean_matrix",
-        "tests/test_vector_status_contract.py::test_fresh_pending_debt_does_not_change_an_explicit_ready_state",
+        "tests/test_vector_status_contract.py::test_short_pending_inside_one_replay_cycle_does_not_flap_ready",
         "tests/test_repository_census.py::test_repository_census_is_deterministic_complete_and_local_safe",
         "tests/test_release.py::test_release_cleanup_preserves_repo_local_environments"
       ]
