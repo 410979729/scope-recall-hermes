@@ -81,19 +81,45 @@ def test_runner_environment_keeps_every_write_target_isolated(
     assert not plugin_dir.exists()
     assert environment["SCOPE_RECALL_REAL_HOME"] == str(real_home)
     assert environment["SCOPE_RECALL_ACTIVE_HERMES_HOME"] == str(active)
-    assert Path(environment["SCOPE_RECALL_TEST_BOUNDARY_PARENT"]).name == "pytest"
+    assert Path(environment["SCOPE_RECALL_TEST_BOUNDARY_PARENT"]).name == "p"
 
 
 def test_runner_pytest_basetemp_uses_declared_short_boundary(tmp_path: Path) -> None:
     module = _load_module()
-    parent = tmp_path / "pytest"
+    parent = tmp_path / "p"
 
     target = module._pytest_basetemp(
         {"SCOPE_RECALL_TEST_BOUNDARY_PARENT": str(parent)},
-        "full",
+        "f",
     )
 
-    assert target == parent.resolve() / "full"
+    assert target == parent.resolve() / "f"
+
+
+def test_validation_boundary_cleanup_retries_transient_windows_error(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_module()
+    boundary = tmp_path / "srv.retry"
+    boundary.mkdir()
+    attempts: list[Path] = []
+
+    def flaky_rmtree(path: Path) -> None:
+        target = Path(path)
+        attempts.append(target)
+        if len(attempts) < 3:
+            raise OSError(145, "directory is not empty")
+        target.rmdir()
+
+    monkeypatch.setattr(module.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(module.shutil, "rmtree", flaky_rmtree)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+
+    module._cleanup_validation_boundary(boundary)
+
+    assert attempts == [boundary.resolve()] * 3
+    assert not boundary.exists()
 
 
 def test_validation_receipt_binds_source_artifact_and_isolation() -> None:
