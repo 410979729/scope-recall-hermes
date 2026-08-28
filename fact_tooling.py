@@ -21,14 +21,11 @@ from .fact_actions import (
     MAX_TARGET_IDS,
     EvolutionAction,
     EvolutionProposal,
+    EvolutionResult,
     parse_evolution_proposal,
 )
 from .fact_authority import is_fact_projection_marker
-from .fact_evolution import (
-    execute_pipeline_proposal,
-    memory_type_uses_fact_evolution,
-    pipeline_receipt_exists,
-)
+from .fact_evolution import memory_type_uses_fact_evolution
 from .graph import load_metadata
 from .lifecycle_policy import PROFILE_HIDDEN_LIFECYCLES
 from ._internal.runtime.tool_port import bind_fact_tool_port
@@ -211,38 +208,24 @@ def _execute(
     lane: str = "tool",
 ):
     port = _fact_port(provider)
-    scope = port.scope_object()
-    with port.query_lock():
-        return execute_pipeline_proposal(
-            port.query_connection(),
-            proposal=proposal,
-            lane=lane,
-            run_id=_tool_run_id(port),
-            source_key=source_key,
-            trusted_scope_id=scope_id,
-            writable_scope_ids=_writable_scope_ids(port),
-            actor=f"scope-recall-tool-{operation}",
-            source=f"tool-{operation}",
-            target=target,
-            content=content,
-            metadata=metadata,
-            runtime_config=port.config_view(),
-            dry_run=dry_run,
-            provenance_refs=_runtime_provenance(port, operation=operation),
-            session_id=str(port.session_id() or ""),
-            platform=str(getattr(scope, "platform", "") or ""),
-            user_id=str(getattr(scope, "user_id", "") or ""),
-            chat_id=str(getattr(scope, "chat_id", "") or ""),
-            thread_id=str(getattr(scope, "thread_id", "") or ""),
-            gateway_session_key=str(
-                getattr(scope, "gateway_session_key", "") or ""
-            ),
-            agent_identity=str(getattr(scope, "agent_identity", "") or ""),
-            agent_workspace=str(getattr(scope, "agent_workspace", "") or ""),
-        )
+    return port.execute_fact_proposal(
+        proposal=proposal,
+        lane=lane,
+        run_id=_tool_run_id(port),
+        source_key=source_key,
+        trusted_scope_id=scope_id,
+        writable_scope_ids=_writable_scope_ids(port),
+        actor=f"scope-recall-tool-{operation}",
+        source=f"tool-{operation}",
+        target=target,
+        content=content,
+        metadata=metadata,
+        dry_run=dry_run,
+        provenance_refs=_runtime_provenance(port, operation=operation),
+    )
 
 
-def _receipt_memory_ids(result: Any) -> list[str]:
+def _receipt_memory_ids(result: EvolutionResult) -> list[str]:
     receipt = result.receipt if isinstance(result.receipt, Mapping) else {}
     value = receipt.get("memory_ids")
     if not isinstance(value, list):
@@ -365,13 +348,8 @@ def execute_structured_update(
     """Apply a temporal target action instead of overwriting a factual row."""
 
     writable = _writable_scope_ids(provider)
-    placeholders = ",".join("?" for _ in writable)
-    with _fact_port(provider).query_lock():
-        row = _fact_port(provider).query_connection().execute(
-            f"SELECT id, source, target, scope_id, metadata FROM memories "
-            f"WHERE id = ? AND scope_id IN ({placeholders})",
-            (memory_id, *writable),
-        ).fetchone()
+    port = _fact_port(provider)
+    row = port.fact_memory_row(memory_id, writable)
     if row is None:
         raise FactToolError("id not found")
     existing_metadata = load_metadata(row["metadata"])
@@ -406,14 +384,12 @@ def execute_structured_update(
         proposal=proposal,
     ):
         raise FactToolError("structured evolution requires a factual memory_type")
-    with _fact_port(provider).query_lock():
-        is_replay = pipeline_receipt_exists(
-            _fact_port(provider).query_connection(),
-            lane="tool",
-            run_id=_tool_run_id(provider),
-            source_key=source_key,
-            scope_id=current_scope_id,
-        )
+    is_replay = port.fact_pipeline_receipt_exists(
+        lane="tool",
+        run_id=_tool_run_id(provider),
+        source_key=source_key,
+        scope_id=current_scope_id,
+    )
     if lifecycle in (PROFILE_HIDDEN_LIFECYCLES - {"scratch"}) and not is_replay:
         raise FactToolError(
             f"memory lifecycle '{lifecycle}' requires explicit restore or review"
@@ -437,13 +413,7 @@ def execute_structured_update(
     successor_id = successor_ids[-1] if successor_ids else ""
     updated_at = ""
     if successor_id:
-        with _fact_port(provider).query_lock():
-            successor = _fact_port(provider).query_connection().execute(
-                "SELECT updated_at FROM memories WHERE id = ?",
-                (successor_id,),
-            ).fetchone()
-        if successor is not None:
-            updated_at = str(successor["updated_at"] or "")
+        updated_at = port.fact_memory_updated_at(successor_id)
     evolution_payload = result.as_dict()
     return {
         "updated": bool(result.applied),
@@ -494,15 +464,7 @@ def _maintenance_target_binding(
 
     if target_ids:
         writable = _writable_scope_ids(provider)
-        id_placeholders = ",".join("?" for _ in target_ids)
-        scope_placeholders = ",".join("?" for _ in writable)
-        with _fact_port(provider).query_lock():
-            rows = _fact_port(provider).query_connection().execute(
-                f"SELECT id, scope_id, target, source FROM memories "
-                f"WHERE id IN ({id_placeholders}) "
-                f"AND scope_id IN ({scope_placeholders})",
-                (*target_ids, *writable),
-            ).fetchall()
+        rows = _fact_port(provider).fact_target_rows(target_ids, writable)
         if len(rows) != len(target_ids):
             raise FactToolError("proposal target is not found in writable scopes")
         scopes = {str(row["scope_id"] or "") for row in rows}

@@ -6,7 +6,9 @@ details must never cross the typed Application boundary declared here.
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Protocol, runtime_checkable
+from typing import Mapping, Protocol, Sequence, TypedDict, runtime_checkable
+
+from ...fact_actions import EvolutionProposal, EvolutionResult
 
 from ..application.memory_commands import (
     ArchiveMemoriesRequest,
@@ -117,6 +119,25 @@ class RuntimeAdapterPort(MemoryQueryPort, Protocol):
     """Legacy name retained as a narrow read-side compatibility view."""
 
 
+class FactMemoryRow(TypedDict):
+    """Provider-neutral projection needed by structured update tooling."""
+
+    id: str
+    source: str
+    target: str
+    scope_id: str
+    metadata: object
+
+
+class FactTargetRow(TypedDict):
+    """Provider-neutral target identity used by maintenance proposals."""
+
+    id: str
+    source: str
+    target: str
+    scope_id: str
+
+
 @runtime_checkable
 class FactToolPort(Protocol):
     """Narrow host-neutral capabilities required by structured fact tooling.
@@ -132,21 +153,50 @@ class FactToolPort(Protocol):
 
     def session_id(self) -> str: ...
 
-    def scope_object(self) -> Any: ...
-
-    def query_lock(self) -> Any: ...
-
-    def query_connection(self) -> Any: ...
-
-    def config_view(self) -> dict[str, Any]: ...
-
     def shared_pool_scope_id(self) -> str: ...
 
     def shared_scope_id(self) -> str: ...
 
     def scope_mode_for(self, target: str, source: str = "") -> str: ...
 
-    def clean_text(self, text: Any) -> str: ...
+    def clean_text(self, text: str) -> str: ...
+
+    def fact_memory_row(
+        self, memory_id: str, writable_scope_ids: Sequence[str]
+    ) -> FactMemoryRow | None: ...
+
+    def fact_target_rows(
+        self, target_ids: Sequence[str], writable_scope_ids: Sequence[str]
+    ) -> list[FactTargetRow]: ...
+
+    def fact_memory_updated_at(self, memory_id: str) -> str: ...
+
+    def fact_pipeline_receipt_exists(
+        self,
+        *,
+        lane: str,
+        run_id: str,
+        source_key: str,
+        scope_id: str,
+    ) -> bool: ...
+
+    def execute_fact_proposal(
+        self,
+        *,
+        proposal: EvolutionProposal,
+        lane: str,
+        run_id: str,
+        source_key: str,
+        trusted_scope_id: str,
+        writable_scope_ids: Sequence[str],
+        actor: str,
+        source: str,
+        target: str,
+        content: str,
+        metadata: Mapping[str, object],
+        dry_run: bool,
+        provenance_refs: Sequence[Mapping[str, object]],
+    ) -> EvolutionResult: ...
 
 
 @runtime_checkable
