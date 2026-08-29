@@ -26,6 +26,10 @@ SUBPROCESS_TIMEOUT_SECONDS = 300
 # over five minutes for that workload on a hosted runner, while the surrounding
 # install/build/CLI probes should retain their tighter five-minute ceiling.
 NESTED_PYTEST_TIMEOUT_SECONDS = 600
+NESTED_BUILD_REQUIREMENTS = (
+    "setuptools>=77,<82",
+    "wheel>=0.45,<1",
+)
 REQUIRED_RUNTIME = (
     "journal_source_restore.py",
     "journal_source_restore_snapshot.py",
@@ -109,6 +113,14 @@ def test_clean_env_drops_parent_python_and_pytest_state(monkeypatch) -> None:
     assert env["SCOPE_RECALL_TEST_MARKER"] == "preserved"
 
 
+def test_nested_builder_requirements_remain_upper_bounded() -> None:
+    assert NESTED_BUILD_REQUIREMENTS == (
+        "setuptools>=77,<82",
+        "wheel>=0.45,<1",
+    )
+    assert all("<" in requirement for requirement in NESTED_BUILD_REQUIREMENTS)
+
+
 def test_nested_pytest_parent_ignores_process_tempdir(
     monkeypatch,
     tmp_path: Path,
@@ -160,7 +172,7 @@ def _build_artifacts(work: Path) -> tuple[Path, Path]:
     venv.create(builder, with_pip=True, clear=True)
     python = _venv_python(builder)
     installed = subprocess.run(
-        [str(python), "-m", "pip", "install", "setuptools>=77", "wheel"],
+        [str(python), "-m", "pip", "install", *NESTED_BUILD_REQUIREMENTS],
         capture_output=True,
         text=True,
         env=_clean_env(),
