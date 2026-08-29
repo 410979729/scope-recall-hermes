@@ -57,12 +57,14 @@ def _complete_fixture(module, tmp_path: Path) -> tuple[Path, str, str]:
     tree = "b" * 40
     wheel_sha = "c" * 64
     sdist_sha = "d" * 64
+    source_manifest_sha = "5" * 64
     evidence = tmp_path / commit
     evidence.mkdir()
     provenance = {
         "schema_version": "scope-recall.build-provenance.v1",
         "source_commit": commit,
         "source_tree": tree,
+        "source_manifest_sha256": source_manifest_sha,
         "wheel": {"sha256": wheel_sha},
         "sdist": {"sha256": sdist_sha},
     }
@@ -74,13 +76,27 @@ def _complete_fixture(module, tmp_path: Path) -> tuple[Path, str, str]:
             "source_commit": commit,
             "source_tree": tree,
             "source_dirty": False,
+            "source_manifest_sha256": source_manifest_sha,
         },
     )
+    runner_sha = "4" * 64
     _write_json(
         evidence / "CANDIDATE_MANIFEST.json",
         {
             "schema_version": "scope-recall.candidate-manifest.v1",
-            "source": {"commit": commit, "tree": tree},
+            "source": {
+                "commit": commit,
+                "tree": tree,
+                "manifest": {
+                    "manifest_sha256": source_manifest_sha,
+                    "files": [
+                        {
+                            "path": "scripts/rehearse_n_minus_one_window.py",
+                            "sha256": runner_sha,
+                        }
+                    ]
+                },
+            },
             "provenance": {"sha256": _sha256(evidence / "BUILD_PROVENANCE.json")},
             "ci_run_ids": [],
         },
@@ -166,6 +182,120 @@ def _complete_fixture(module, tmp_path: Path) -> tuple[Path, str, str]:
     n_minus_one_install_sha = _sha256(
         evidence / "INSTALL_N_MINUS_ONE_RECEIPT.json"
     )
+    honesty = _valid_honesty(module)
+    _write_json(evidence / "PYTEST_SKIP_REPORT.raw.json", honesty)
+    _write_json(evidence / "PYTEST_SKIP_REPORT.json", honesty)
+    created_database_sha = "0" * 64
+    upgraded_database_sha = "9" * 64
+    database_lineage_id = hashlib.sha256(
+        json.dumps(
+            {
+                "n_minus_one_created": created_database_sha,
+                "candidate_upgraded": upgraded_database_sha,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    stage_log_hashes: dict[str, dict[str, str]] = {}
+    for stage_name in (
+        "n_minus_one_create",
+        "candidate_upgrade_write",
+        "n_minus_one_read_after_n",
+        "candidate_final_verify",
+    ):
+        hashes: dict[str, str] = {}
+        for stream in ("stdout", "stderr"):
+            log = evidence / f"N_MINUS_ONE_WINDOW_{stage_name.upper()}.{stream}.log"
+            log.write_text(f"{stage_name} {stream}\n", encoding="utf-8")
+            hashes[f"{stream}_sha256"] = _sha256(log)
+        stage_log_hashes[stage_name] = hashes
+    common_stage = {
+        "command_sha256": "1" * 64,
+        "source_worktree_on_sys_path": False,
+        "source_worktree_imported": False,
+        "returncode": 0,
+    }
+    _write_json(
+        evidence / "N_MINUS_ONE_WINDOW.json",
+        {
+            "schema_version": "scope-recall.n-minus-one-window.v1",
+            "candidate_source_commit": commit,
+            "candidate_source_tree": tree,
+            "candidate_install_receipt_sha256": candidate_install_sha,
+            "n_minus_one_install_receipt_sha256": n_minus_one_install_sha,
+            "neutral_runner_sha256": runner_sha,
+            "database_lineage_id": database_lineage_id,
+            "candidate_n_minus_one_environment_mixed": False,
+            "active_instance_touched": False,
+            "result": "passed",
+            "stages": [
+                {
+                    **common_stage,
+                    **stage_log_hashes["n_minus_one_create"],
+                    "stage": "n_minus_one_create",
+                    "python_environment_id": "7" * 64,
+                    "installed_distribution": "hermes-scope-recall==1.10.3",
+                    "artifact_sha256": "6" * 64,
+                    "python_executable_sha256": "f" * 64,
+                    "database_before_sha256": "8" * 64,
+                    "database_after_sha256": created_database_sha,
+                    "details": {
+                        "memory_count": 2,
+                        "config_isolation_key_present": True,
+                    },
+                },
+                {
+                    **common_stage,
+                    **stage_log_hashes["candidate_upgrade_write"],
+                    "stage": "candidate_upgrade_write",
+                    "python_environment_id": "e" * 64,
+                    "installed_distribution": "hermes-scope-recall==2.0.0",
+                    "artifact_sha256": wheel_sha,
+                    "python_executable_sha256": "f" * 64,
+                    "database_before_sha256": created_database_sha,
+                    "database_after_sha256": upgraded_database_sha,
+                    "details": {
+                        "n_minus_one_rows_preserved": 2,
+                        "claim_count": 1,
+                        "evidence_count": 1,
+                    },
+                },
+                {
+                    **common_stage,
+                    **stage_log_hashes["n_minus_one_read_after_n"],
+                    "stage": "n_minus_one_read_after_n",
+                    "python_environment_id": "7" * 64,
+                    "installed_distribution": "hermes-scope-recall==1.10.3",
+                    "artifact_sha256": "6" * 64,
+                    "python_executable_sha256": "f" * 64,
+                    "database_before_sha256": upgraded_database_sha,
+                    "database_after_sha256": upgraded_database_sha,
+                    "details": {
+                        "query_only": 1,
+                        "candidate_projection_readable": True,
+                    },
+                },
+                {
+                    **common_stage,
+                    **stage_log_hashes["candidate_final_verify"],
+                    "stage": "candidate_final_verify",
+                    "python_environment_id": "e" * 64,
+                    "installed_distribution": "hermes-scope-recall==2.0.0",
+                    "artifact_sha256": wheel_sha,
+                    "python_executable_sha256": "f" * 64,
+                    "database_before_sha256": upgraded_database_sha,
+                    "database_after_sha256": upgraded_database_sha,
+                    "details": {
+                        "claim_only_count": 0,
+                        "evidence_count": 1,
+                        "legacy_projection_count": 2,
+                    },
+                },
+            ],
+        },
+    )
+    n_minus_one_window_sha = _sha256(evidence / "N_MINUS_ONE_WINDOW.json")
     for name in module.REQUIRED_INPUT_FILES:
         path = evidence / name
         if path.exists():
@@ -204,6 +334,8 @@ def _complete_fixture(module, tmp_path: Path) -> tuple[Path, str, str]:
                     {
                         "n_minus_one_install_receipt_sha256": n_minus_one_install_sha,
                         "candidate_n_minus_one_environment_mixed": False,
+                        "n_minus_one_window_receipt_sha256": n_minus_one_window_sha,
+                        "n_minus_one_window_evidence": "real-cross-interpreter",
                     }
                 )
             _write_json(
@@ -326,6 +458,18 @@ def test_evidence_index_rejects_unbound_install_stage_and_hermes_identity(
         module.build_evidence_index(evidence, expected_sha=commit)
 
 
+def test_evidence_index_rejects_unbound_n_minus_one_stage_log(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    evidence, commit, _tree = _complete_fixture(module, tmp_path)
+    log = evidence / "N_MINUS_ONE_WINDOW_N_MINUS_ONE_CREATE.stdout.log"
+    log.write_text("tampered stage output\n", encoding="utf-8")
+
+    with pytest.raises(module.EvidencePackageError, match="stdout log hash mismatch"):
+        module.build_evidence_index(evidence, expected_sha=commit)
+
+
 def test_dual_index_excludes_raw_logs_and_rejects_private_shareable_path(
     tmp_path: Path,
 ) -> None:
@@ -366,6 +510,40 @@ def test_dual_index_writes_zero_finding_shareable_closure(tmp_path: Path) -> Non
     assert "RUFF.log" not in {entry["path"] for entry in shareable["files"]}
     assert (evidence / "EVIDENCE_PRIVATE_PATH_SCAN.json").is_file()
     assert (evidence / "EVIDENCE_SECRET_SCAN.json").is_file()
+
+
+def test_raw_skip_report_is_local_restricted(tmp_path: Path) -> None:
+    module = _load_module()
+    evidence, commit, _tree = _complete_fixture(module, tmp_path)
+
+    payload = module.build_evidence_index(evidence, expected_sha=commit)
+
+    raw = next(
+        item
+        for item in payload["files"]
+        if item["path"] == "PYTEST_SKIP_REPORT.raw.json"
+    )
+    assert raw["classification"] == "local-restricted"
+    assert "PYTEST_SKIP_REPORT.raw.json" not in module.SHAREABLE_EXPLICIT_FILES
+
+
+def test_shareable_index_transitive_closure_has_zero_private_paths(tmp_path: Path) -> None:
+    module = _load_module()
+    evidence, commit, _tree = _complete_fixture(module, tmp_path)
+    payload = module.build_evidence_index(evidence, expected_sha=commit)
+
+    module.write_evidence_index(evidence, payload)
+
+    shareable = json.loads(
+        (evidence / "SHAREABLE_EVIDENCE_INDEX.json").read_text(encoding="utf-8")
+    )
+    paths = {entry["path"] for entry in shareable["files"]}
+    assert shareable["private_path_match_count"] == 0
+    assert shareable["secret_match_count"] == 0
+    assert shareable["missing_indexed_file_count"] == 0
+    assert shareable["unexpected_shareable_file_count"] == 0
+    assert "PYTEST_SKIP_REPORT.json" in paths
+    assert "PYTEST_SKIP_REPORT.raw.json" not in paths
 
 
 def test_evidence_index_accepts_bounded_stage_array(tmp_path: Path) -> None:

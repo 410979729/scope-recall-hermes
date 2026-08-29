@@ -5,9 +5,21 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import re
 import time
 from typing import Any, Mapping
+
+try:
+    from scripts.evidence_path_hygiene import (  # pyright: ignore[reportMissingImports]
+        redact_absolute_local_paths,
+        redact_json_strings,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name not in {"scripts", "scripts.evidence_path_hygiene"}:
+        raise
+    from evidence_path_hygiene import (  # pyright: ignore[reportMissingImports]
+        redact_absolute_local_paths,
+        redact_json_strings,
+    )
 
 
 SCHEMA_VERSION = "scope-recall.test-honesty.v1"
@@ -19,17 +31,35 @@ FAILURE_FIXES_ENV = "SCOPE_RECALL_FIRST_FAILURE_FIXES_JSON"
 FIRST_FAILURE_STATUS_NOT_PROVIDED = "not_provided"
 FIRST_FAILURE_STATUS_DECLARED = "declared"
 
-_PRIVATE_PATH_PATTERNS = (
-    re.compile(r"(?i)[a-z]:[\\/]+(?:Users|Agents)[\\/]+[^\s\"']+"),
-    re.compile(r"(?<![A-Za-z0-9])/(?:home|Users|tmp)/[^\s\"']+"),
-)
-
-
 def _sanitize_evidence_text(value: str) -> str:
-    sanitized = str(value)
-    for pattern in _PRIVATE_PATH_PATTERNS:
-        sanitized = pattern.sub("<private-path>", sanitized)
-    return sanitized
+    return redact_absolute_local_paths(value)
+
+
+def shareable_payload(raw_payload: Mapping[str, object]) -> dict[str, object]:
+    """Return a shape-preserving report with local absolute paths redacted."""
+
+    redacted = redact_json_strings(dict(raw_payload))
+    if not isinstance(redacted, dict):  # pragma: no cover - mapping invariant
+        raise RuntimeError("test honesty shareable payload must remain an object")
+    return redacted
+
+
+def write_shareable_report(raw_path: Path, shareable_path: Path) -> dict[str, object]:
+    """Keep the raw report local and write a separately redacted public report."""
+
+    try:
+        raw = json.loads(raw_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("raw test honesty report is invalid") from exc
+    if not isinstance(raw, dict):
+        raise RuntimeError("raw test honesty report must be an object")
+    shareable = shareable_payload(raw)
+    shareable_path.write_text(
+        json.dumps(shareable, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return shareable
 
 
 def _json_array_from_env(
@@ -111,7 +141,7 @@ class ReleaseTestHonestyPlugin:
         if outcome == "skipped":
             self.skipped.setdefault(
                 node_id,
-                _sanitize_evidence_text(_skip_reason(report)),
+                _skip_reason(report),
             )
         elif outcome == "passed" and when == "call":
             self.passed.add(node_id)

@@ -157,6 +157,9 @@ def test_candidate_evidence_assets_are_release_packaged() -> None:
     assert "scripts/probe.hermes_compatibility.py" in release_check.REQUIRED_SOURCE_FILES
     assert "scripts/release_test_honesty.py" in release_check.REQUIRED_SOURCE_FILES
     assert "scripts/run.release_validation.py" in release_check.REQUIRED_SOURCE_FILES
+    assert "scripts/rehearse_n_minus_one_window.py" in release_check.REQUIRED_SOURCE_FILES
+    assert "scripts/evidence_path_hygiene.py" in release_check.REQUIRED_SOURCE_FILES
+    assert "scripts/check.pr_candidate_metadata.py" in release_check.REQUIRED_SOURCE_FILES
     assert "scripts/release.candidate_rehearsals.json" in release_check.REQUIRED_SOURCE_FILES
     assert "tests/plugin_source.py" in release_check.REQUIRED_SOURCE_RESTORE_SDIST_TESTS
     assert "scope_recall/scripts/report.candidate_manifest.py" in release_check.REQUIRED_WHEEL
@@ -171,6 +174,9 @@ def test_candidate_evidence_assets_are_release_packaged() -> None:
     )
     assert "scope_recall/scripts/release_test_honesty.py" in release_check.REQUIRED_WHEEL
     assert "scope_recall/scripts/run.release_validation.py" in release_check.REQUIRED_WHEEL
+    assert "scope_recall/scripts/rehearse_n_minus_one_window.py" in release_check.REQUIRED_WHEEL
+    assert "scope_recall/scripts/evidence_path_hygiene.py" in release_check.REQUIRED_WHEEL
+    assert "scope_recall/scripts/check.pr_candidate_metadata.py" in release_check.REQUIRED_WHEEL
     assert (
         "scope_recall/scripts/release.candidate_rehearsals.json"
         in release_check.REQUIRED_WHEEL

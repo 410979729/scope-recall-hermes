@@ -60,9 +60,11 @@ from .sql_store import (
 from .sqlite_params import chunked_sql_parameters
 from .vector_generation import enqueue_current_vector_event
 from .vector_runtime import (
+    mark_vector_needs_repair,
     mark_vector_replay_degraded,
     refresh_vector_audit,  # noqa: F401
     replay_vector_outbox,
+    replay_vector_outbox_events,
     setup_vector_layer,
     vector_delete_intent_required,
 )
@@ -1240,6 +1242,8 @@ def _archive_memories_truth(
         "deleted": 0,
         "ids": [],
         "skipped": requested_ids,
+        "outbox_enqueued": 0,
+        "vector_outbox_keys": [],
         "batch_id": batch,
         "receipt": {
             "action": "soft_archive",
@@ -1308,12 +1312,13 @@ def _archive_memories_truth(
                 MemoryMutationService.abort(conn)
                 return payload
             archived_ids: list[str] = []
+            vector_outbox_keys: list[str] = []
             for row in rows:
                 memory_id = str(row["id"])
                 metadata = load_metadata(row["metadata"])
                 if str(metadata.get("lifecycle") or "").strip().lower() == "archived":
                     continue
-                transition_memory_lifecycle(
+                transition = transition_memory_lifecycle(
                     conn,
                     memory_id=memory_id,
                     lifecycle="archived",
@@ -1335,6 +1340,11 @@ def _archive_memories_truth(
                     timestamp=now,
                 )
                 archived_ids.append(memory_id)
+                vector_outbox_key = str(
+                    transition.get("vector_outbox_key") or ""
+                ).strip()
+                if transition.get("outbox_enqueued") and vector_outbox_key:
+                    vector_outbox_keys.append(vector_outbox_key)
     except Exception as exc:
         safe_error = sanitize_report_text(str(exc))
         payload["archived"] = 0
@@ -1352,6 +1362,8 @@ def _archive_memories_truth(
     payload["archived"] = len(archived_ids)
     payload["mutation_applied"] = bool(archived_ids)
     payload["ids"] = archived_ids
+    payload["vector_outbox_keys"] = vector_outbox_keys
+    payload["outbox_enqueued"] = len(vector_outbox_keys)
     archived_id_set = set(archived_ids)
     payload["skipped"] = [
         memory_id for memory_id in requested_ids if memory_id not in archived_id_set
@@ -1404,14 +1416,47 @@ def _archive_memories_after_capture_flush(
     )
     if not payload.get("ids"):
         return payload
-    try:
-        replay_result = replay_vector_outbox(provider)
-        payload["vector_replay"] = replay_result
-        vector_pending = bool(
-            int(replay_result.get("failed") or 0) > 0
-            or int(replay_result.get("completed") or 0)
-            < int(payload.get("outbox_enqueued") or 0)
+    event_keys = [
+        str(event_key)
+        for event_key in payload.get("vector_outbox_keys", [])
+        if str(event_key).strip()
+    ]
+    if not event_keys:
+        payload["vector_replay"] = {"claimed": 0, "completed": 0, "failed": 0}
+        payload["vector_status"] = "not_required"
+        payload["vector_pending"] = False
+        payload.update(
+            retention_response_contract(
+                mode="archive",
+                data_retained=True,
+                mutation_applied=bool(payload.get("ids")),
+                companion_erasure_pending=False,
+            )
         )
+        return payload
+    try:
+        before_rows = _archive_vector_outbox_rows(provider, event_keys)
+        event_ids = [int(row["id"]) for row in before_rows if int(row["id"]) > 0]
+        replay_result = replay_vector_outbox_events(provider, event_ids=event_ids)
+        payload["vector_replay"] = replay_result
+        final_rows = _archive_vector_outbox_rows(provider, event_keys)
+        status_counts: dict[str, int] = {}
+        for row in final_rows:
+            status = str(row["status"] or "missing")
+            status_counts[status] = status_counts.get(status, 0) + 1
+        payload["vector_outbox_status_counts"] = status_counts
+        payload["vector_outbox_event_ids"] = [
+            int(row["id"]) for row in final_rows if int(row["id"]) > 0
+        ]
+        vector_pending = any(
+            str(row["status"] or "missing") != "completed" for row in final_rows
+        )
+        if status_counts.get("dead_letter", 0):
+            mark_vector_needs_repair(
+                provider,
+                "archive vector delete intent reached dead-letter status",
+                reason_code="archive_outbox_dead_letter",
+            )
     except Exception as exc:
         safe_error = sanitize_report_text(str(exc))
         mark_vector_replay_degraded(provider, safe_error)
@@ -1422,7 +1467,9 @@ def _archive_memories_after_capture_flush(
             "error": safe_error,
         }
         vector_pending = True
+        payload["vector_error"] = safe_error
     payload["vector_pending"] = vector_pending
+    payload["vector_status"] = "pending" if vector_pending else "completed"
     payload.update(
         retention_response_contract(
             mode="archive",
@@ -1432,6 +1479,59 @@ def _archive_memories_after_capture_flush(
         )
     )
     return payload
+
+
+def _archive_vector_outbox_rows(
+    provider: Any,
+    event_keys: list[str],
+) -> list[dict[str, Any]]:
+    """Read the exact durable vector intents created by one archive command."""
+
+    resolved_keys = list(
+        dict.fromkeys(str(event_key).strip() for event_key in event_keys if str(event_key).strip())
+    )
+    if not resolved_keys:
+        return []
+    rows: list[Any] = []
+    with _command_lock(provider):
+        conn = _command_conn(provider)
+        for key_chunk in chunked_sql_parameters(conn, resolved_keys):
+            placeholders = ",".join("?" for _ in key_chunk)
+            rows.extend(
+                conn.execute(
+                    f"""
+                    SELECT id, event_key, generation_id, memory_id, operation, status
+                    FROM vector_outbox
+                    WHERE event_key IN ({placeholders})
+                    """,
+                    key_chunk,
+                ).fetchall()
+            )
+    by_key = {
+        str(row["event_key"]): {
+            "id": int(row["id"]),
+            "event_key": str(row["event_key"]),
+            "generation_id": str(row["generation_id"]),
+            "memory_id": str(row["memory_id"]),
+            "operation": str(row["operation"]),
+            "status": str(row["status"]),
+        }
+        for row in rows
+    }
+    return [
+        by_key.get(
+            event_key,
+            {
+                "id": 0,
+                "event_key": event_key,
+                "generation_id": "",
+                "memory_id": "",
+                "operation": "",
+                "status": "missing",
+            },
+        )
+        for event_key in resolved_keys
+    ]
 
 
 def dedupe_memories(provider: Any, *, dry_run: bool = True, scope_only: bool = True) -> dict[str, Any]:

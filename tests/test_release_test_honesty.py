@@ -161,7 +161,7 @@ def test_plugin_registers_with_real_pytest(tmp_path: Path) -> None:
     assert payload["errors"] == 0
 
 
-def test_skip_reasons_redact_windows_and_posix_user_homes(tmp_path: Path) -> None:
+def test_raw_skip_reasons_are_preserved_and_shareable_copy_is_redacted(tmp_path: Path) -> None:
     module = _load_module()
     windows_home = "\\".join(
         ("C:", "Users", "private-operator", "AppData", "Local", "Temp", "probe.db")
@@ -213,10 +213,15 @@ def test_skip_reasons_redact_windows_and_posix_user_homes(tmp_path: Path) -> Non
         )
     )
 
-    rendered = json.dumps(plugin.payload(collected=4))
-    assert "private-operator" not in rendered
-    assert windows_repr_target not in rendered
-    assert "<private-path>" in rendered
+    raw_payload = plugin.payload(collected=4)
+    raw_rendered = json.dumps(raw_payload)
+    shareable_rendered = json.dumps(module.shareable_payload(raw_payload))
+    raw_reasons = "\n".join(entry["reason"] for entry in raw_payload["skipped"])
+    assert "private-operator" in raw_rendered
+    assert windows_repr_target in raw_reasons
+    assert "private-operator" not in shareable_rendered
+    assert windows_repr_target not in shareable_rendered
+    assert "<isolated-path>" in shareable_rendered
 
 
 def test_plugin_counts_non_call_failure_as_error_and_rerun_honestly(
