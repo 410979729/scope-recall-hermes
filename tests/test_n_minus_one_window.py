@@ -96,7 +96,11 @@ def _fixture():
             version="1.10.3",
             before="0" * 64,
             after=created,
-            details={"memory_count": 2, "config_isolation_key_present": True},
+            details={
+                "memory_count": 2,
+                "config_isolation_key_present": True,
+                "vector_enabled": False,
+            },
         ),
         _stage(
             "candidate_upgrade_write",
@@ -191,6 +195,29 @@ def test_n_minus_one_creates_real_legacy_truth():
     receipt["stages"][0]["details"]["memory_count"] = 1
     with pytest.raises(Exception, match="semantic proof"):
         _validate(candidate, previous, receipt)
+
+
+def test_n_minus_one_fixture_is_valid_with_vector_explicitly_disabled(tmp_path):
+    from scope_recall import installer
+
+    hermes_home = tmp_path / "hermes-home"
+    result = stage_runner._write_n_minus_one_truth(
+        hermes_home / "scope-recall" / "memory.sqlite3",
+        hermes_home,
+    )
+    config = json.loads(
+        (hermes_home / "scope-recall" / "config.json").read_text(encoding="utf-8")
+    )
+    preflight = installer._upgrade_compatibility_preflight(
+        hermes_home,
+        installer.source_root(),
+    )
+
+    assert result["memory_count"] == 2
+    assert result["vector_enabled"] is False
+    assert config["vector"] == {"enabled": False}
+    assert preflight["ok"] is True
+    assert preflight["read_only"] is True
 
 
 def test_candidate_migrates_real_n_minus_one_truth():

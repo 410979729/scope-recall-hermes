@@ -148,7 +148,10 @@ def _write_n_minus_one_truth(database: Path, hermes_home: Path) -> dict[str, obj
 
     storage = hermes_home / "scope-recall"
     storage.mkdir(parents=True, exist_ok=True)
-    config = {"memory_isolated_chat_ids": ["release-window-isolated-chat"]}
+    config = {
+        "memory_isolated_chat_ids": ["release-window-isolated-chat"],
+        "vector": {"enabled": False},
+    }
     config_path = storage / "config.json"
     config_path.write_text(
         json.dumps(config, sort_keys=True) + "\n",
@@ -210,6 +213,7 @@ def _write_n_minus_one_truth(database: Path, hermes_home: Path) -> dict[str, obj
             "row_identity_fingerprint": _row_identity_fingerprint(conn),
             "config_sha256": _sha256_file(config_path),
             "config_isolation_key_present": True,
+            "vector_enabled": False,
         }
     finally:
         conn.close()
@@ -232,7 +236,12 @@ def _candidate_upgrade_write(database: Path, hermes_home: Path) -> dict[str, obj
 
     preflight = _upgrade_compatibility_preflight(hermes_home, source_root())
     if preflight.get("ok") is not True or preflight.get("read_only") is not True:
-        raise RehearsalStageError("candidate upgrade compatibility preflight failed")
+        failures = preflight.get("failures")
+        detail = "; ".join(str(item) for item in failures) if isinstance(failures, list) else ""
+        raise RehearsalStageError(
+            "candidate upgrade compatibility preflight failed"
+            + (f": {detail[:500]}" if detail else "")
+        )
     conn = connect_truth_database(database, mode="rwc")
     try:
         ensure_schema(conn)
