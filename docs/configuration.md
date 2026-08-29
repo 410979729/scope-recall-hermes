@@ -380,4 +380,4 @@ Treat chat aliases as explicit operator access-control grants.
 - `vector.write_outbox_replay_limit` (integer; risk: `medium`; restart_required: `yes`) — Maximum durable vector outbox events replayed after one committed memory write so transient backlog converges during normal traffic. Default: `20`
 ## `writer_lease`
 
-- `writer_lease.idle_release_seconds` (integer; risk: `low`; restart_required: `no`) — Seconds without user-turn activity before the truth-writer process voluntarily releases the cross-process writer lease and demotes itself to a read-only peer, so an active peer (e.g. Hermes Desktop) can take over via the existing promotion probe instead of starving behind a resident idle process. 0 disables the release. Default: `1800`
+- `writer_lease.idle_release_seconds` (integer; risk: `low`; restart_required: `no`) — Seconds without user-turn activity before the truth-writer process voluntarily releases the cross-process writer lease and demotes itself to a read-only peer, so an active peer (e.g. Hermes Desktop) can take over via the existing promotion probe instead of starving behind a resident idle process. Set e.g. `1800` to opt in. Default: `0`

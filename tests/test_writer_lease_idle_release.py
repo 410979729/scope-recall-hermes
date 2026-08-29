@@ -16,6 +16,7 @@ import json
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from pathlib import Path
 
@@ -216,5 +217,74 @@ def test_demoted_runtime_re_promotes_on_next_turn(tmp_path: Path) -> None:
         thread = getattr(provider, "_writer_thread", None)
         assert thread is not None and thread.is_alive()
         assert _child_acquire_status(tmp_path / "scope-recall") == "STATUS:busy"
+    finally:
+        _shutdown(provider)
+
+
+def test_demote_refuses_while_digest_running(tmp_path: Path) -> None:
+    _write_config(tmp_path, {"vector": {"enabled": False}})
+    provider = _provider()
+    _initialize(provider, tmp_path, "digest-guard")
+    fake_digest = None
+    try:
+        assert provider._truth_writer_role == "owner"
+        lifecycle = _lifecycle_module(provider)
+        provider._last_writer_activity = time.monotonic() - 100000.0
+        stop = threading.Event()
+
+        def _fake_digest() -> None:
+            stop.wait(timeout=30.0)
+
+        fake_digest = threading.Thread(target=_fake_digest, daemon=True)
+        fake_digest.start()
+        provider._background_work().thread = fake_digest
+        assert (
+            lifecycle.demote_writer_to_reader(provider, idle_seconds=1.0) is False
+        )
+        assert provider._truth_writer_role == "owner"
+        assert _child_acquire_status(tmp_path / "scope-recall") == "STATUS:busy"
+    finally:
+        if fake_digest is not None:
+            stop.set()
+            fake_digest.join(timeout=5.0)
+        if provider._background_work() is not None:
+            provider._background_work().thread = None
+        _shutdown(provider)
+
+
+def test_default_config_leaves_release_disabled(tmp_path: Path) -> None:
+    # No writer_lease section at all: the feature must stay opt-in.
+    _write_config(tmp_path, {"vector": {"enabled": False}})
+    provider = _provider()
+    _initialize(provider, tmp_path, "default-disabled")
+    try:
+        assert provider._truth_writer_role == "owner"
+        lifecycle = _lifecycle_module(provider)
+        provider._last_writer_activity = time.monotonic() - 100000.0
+        lifecycle.maybe_idle_release_writer_lease(provider)
+        assert not getattr(provider, "_idle_release_in_progress", False)
+        time.sleep(0.2)
+        assert provider._truth_writer_role == "owner"
+    finally:
+        _shutdown(provider)
+
+
+def test_idle_release_config_is_clamped(tmp_path: Path) -> None:
+    _write_config(tmp_path, {"vector": {"enabled": False}})
+    provider = _provider()
+    _initialize(provider, tmp_path, "clamp-check")
+    try:
+        lifecycle = _lifecycle_module(provider)
+        provider._config["writer_lease"] = {"idle_release_seconds": "junk"}
+        assert lifecycle.idle_writer_lease_release_seconds(provider) == 0.0
+        provider._config["writer_lease"] = {"idle_release_seconds": -5}
+        assert lifecycle.idle_writer_lease_release_seconds(provider) == 0.0
+        provider._config["writer_lease"] = {"idle_release_seconds": 999999}
+        assert (
+            lifecycle.idle_writer_lease_release_seconds(provider)
+            == lifecycle.MAX_IDLE_WRITER_LEASE_SECONDS
+        )
+        provider._config["writer_lease"] = {"idle_release_seconds": 1800}
+        assert lifecycle.idle_writer_lease_release_seconds(provider) == 1800.0
     finally:
         _shutdown(provider)

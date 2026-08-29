@@ -11,7 +11,7 @@ from typing import Any
 _DESCRIPTION_OVERRIDES = {
     "auto_recall": "Enable automatic recall injection at turn start.",
     "auto_capture": "Capture eligible conversation turns into Scope Recall.",
-    "writer_lease.idle_release_seconds": "Seconds without user-turn activity before the truth-writer process voluntarily releases the cross-process writer lease and demotes itself to a read-only peer, so an active peer (e.g. Hermes Desktop) can take over via the existing promotion probe instead of starving behind a resident idle process. 0 disables the release.",
+    "writer_lease.idle_release_seconds": "Seconds without user-turn activity before the truth-writer process voluntarily releases the cross-process writer lease and demotes itself to a read-only peer, so an active peer (e.g. Hermes Desktop) can take over via the existing promotion probe instead of starving behind a resident idle process. Default 0 disables the release; set e.g. 1800 to opt in.",
     "capture_queue_capacity": "Maximum sanitized capture jobs held in the bounded process-local writer queue. Excess enqueue attempts receive an explicit rejected or deferred status instead of silent loss; queued payloads are not persisted.",
     "automatic_digest_default_lifecycle": "Lifecycle for non-time-sensitive journal/nightly automatic digest outputs. Candidate is the review-first default; promoted explicitly opts into immediate recall visibility. Time-sensitive snapshots remain candidates that need a live check.",
     "memory_isolated_chat_ids": "Runtime-only chat identifiers excluded from prompt recall, tools, capture, journal, and digest surfaces.",

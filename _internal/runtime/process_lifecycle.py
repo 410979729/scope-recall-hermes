@@ -767,7 +767,7 @@ def _promote_under_lifecycle_lock(provider: Any) -> None:
         _call_provider(provider, "_initialize_read_only_runtime", default=lambda: initialize_read_only_runtime(provider))
 
 
-DEFAULT_IDLE_WRITER_LEASE_SECONDS = 1800.0
+DEFAULT_IDLE_WRITER_LEASE_SECONDS = 0.0
 MAX_IDLE_WRITER_LEASE_SECONDS = 86400.0
 
 
@@ -856,6 +856,13 @@ def demote_writer_to_reader(provider: Any, *, idle_seconds: float) -> bool:
     if time.monotonic() - last_activity < idle_seconds:
         return False
     if int(getattr(provider, "_foreground_busy_count", 0) or 0) > 0:
+        return False
+    # A running background digest holds its own write work; releasing the
+    # lease under it would strand its connection mid-transaction.
+    background_fn = getattr(provider, "_background_work", None)
+    work = background_fn() if callable(background_fn) else None
+    digest_thread = getattr(work, "thread", None) if work is not None else None
+    if digest_thread is not None and digest_thread.is_alive():
         return False
     quiesce = _module_attr(provider, "quiesce_writer_for_lease_release", None)
     if not callable(quiesce):

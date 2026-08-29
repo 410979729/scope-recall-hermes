@@ -17,7 +17,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "auto_recall": True,
     "auto_capture": True,
     "writer_lease": {
-        "idle_release_seconds": 1800,
+        "idle_release_seconds": 0,
     },
     "memory_isolated_chat_ids": [],
     "auto_recall_min_length": 15,

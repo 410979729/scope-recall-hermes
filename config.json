@@ -2,7 +2,7 @@
   "auto_recall": true,
   "auto_capture": true,
   "writer_lease": {
-    "idle_release_seconds": 1800
+    "idle_release_seconds": 0
   },
   "memory_isolated_chat_ids": [],
   "auto_recall_min_length": 15,
