@@ -261,6 +261,7 @@ def _validate_n_minus_one_window(
     if (
         details[0].get("memory_count") != 2
         or details[0].get("config_isolation_key_present") is not True
+        or details[0].get("vector_enabled") is not False
         or details[1].get("n_minus_one_rows_preserved") != 2
         or details[1].get("claim_count") != 1
         or details[1].get("evidence_count") != 1

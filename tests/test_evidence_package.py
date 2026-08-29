@@ -243,6 +243,7 @@ def _complete_fixture(module, tmp_path: Path) -> tuple[Path, str, str]:
                     "details": {
                         "memory_count": 2,
                         "config_isolation_key_present": True,
+                        "vector_enabled": False,
                     },
                 },
                 {
