@@ -41,6 +41,7 @@ FULL_TEST_TIMEOUT_SECONDS = 900
 STAGE_TIMEOUT_SECONDS = 300
 INSTALL_TIMEOUT_SECONDS = 600
 N_MINUS_ONE_VERSION = "1.10.3"
+N_MINUS_ONE_WINDOW_SCHEMA_VERSION = "scope-recall.n-minus-one-window.v1"
 REHEARSAL_RECEIPTS: dict[str, tuple[str, ...]] = {
     "MIGRATION_N_MINUS_ONE.json": (
         "tests/test_release_candidate_rehearsals.py::test_activity_snapshot_upgrade_preserves_source_and_payload",
@@ -718,6 +719,289 @@ def pytest_configure(config):
     return harness
 
 
+def _optional_file_sha256(path: Path) -> str:
+    return _sha256(path) if path.is_file() else hashlib.sha256(b"").hexdigest()
+
+
+def _run_n_minus_one_window_stage(
+    *,
+    python: Path,
+    stage: str,
+    expected_version: str,
+    install_receipt: Mapping[str, object],
+    artifact_sha256: str,
+    runner: Path,
+    database: Path,
+    hermes_home: Path,
+    source_root: Path,
+    workspace: Path,
+    staging: Path,
+    environment: Mapping[str, str],
+    ledger: list[dict[str, object]],
+) -> dict[str, object]:
+    """Execute one installed-distribution stage with separate output hashes."""
+
+    output_path = workspace / f"{stage}.json"
+    stdout_path = staging / f"N_MINUS_ONE_WINDOW_{stage.upper()}.stdout.log"
+    stderr_path = staging / f"N_MINUS_ONE_WINDOW_{stage.upper()}.stderr.log"
+    before_sha256 = _optional_file_sha256(database)
+    command = [
+        str(python),
+        "-B",
+        str(runner),
+        "--stage",
+        stage,
+        "--database",
+        str(database),
+        "--hermes-home",
+        str(hermes_home),
+        "--source-root",
+        str(source_root),
+        "--expected-version",
+        expected_version,
+        "--output",
+        str(output_path),
+    ]
+    display_command = [
+        "python",
+        "-B",
+        "<neutral-n-minus-one-window-runner>",
+        "--stage",
+        stage,
+        "--database",
+        "<isolated-window-database>",
+        "--hermes-home",
+        "<isolated-hermes-home>",
+        "--source-root",
+        "<candidate-source-root>",
+        "--expected-version",
+        expected_version,
+        "--output",
+        "<isolated-stage-result>",
+    ]
+    started_at = _utc_now()
+    started = time.monotonic()
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    try:
+        process = subprocess.run(
+            command,
+            cwd=workspace,
+            env=dict(environment),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=STAGE_TIMEOUT_SECONDS,
+            creationflags=creationflags,
+        )
+        stdout = process.stdout or ""
+        stderr = process.stderr or ""
+        returncode = int(process.returncode)
+    except subprocess.TimeoutExpired as exc:
+        stdout = str(exc.stdout or "")
+        stderr = str(exc.stderr or "")
+        returncode = 124
+    except OSError as exc:
+        stdout = ""
+        stderr = f"{type(exc).__name__}\n"
+        returncode = 125
+    stdout_path.write_text(stdout, encoding="utf-8", newline="\n")
+    stderr_path.write_text(stderr, encoding="utf-8", newline="\n")
+    finished_at = _utc_now()
+    duration_seconds = round(time.monotonic() - started, 3)
+    ledger.append(
+        {
+            "command": display_command,
+            "timeout_seconds": STAGE_TIMEOUT_SECONDS,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "duration_seconds": duration_seconds,
+            "exit_code": returncode,
+            "stdout_log": stdout_path.name,
+            "stdout_sha256": _sha256(stdout_path),
+            "stderr_log": stderr_path.name,
+            "stderr_sha256": _sha256(stderr_path),
+        }
+    )
+    if returncode != 0 or not output_path.is_file():
+        raise ReleaseValidationError(f"N-1 window stage failed: {stage}")
+    result = _load_json(output_path)
+    expected_distribution = f"hermes-scope-recall=={expected_version}"
+    if (
+        result.get("schema_version") != "scope-recall.n-minus-one-stage.v1"
+        or result.get("stage") != stage
+        or result.get("result") != "passed"
+        or result.get("installed_distribution") != expected_distribution
+        or result.get("source_worktree_on_sys_path") is not False
+        or result.get("source_worktree_imported") is not False
+        or result.get("module_origin_class") != "isolated-site-packages"
+    ):
+        raise ReleaseValidationError(f"N-1 window stage identity mismatch: {stage}")
+    if install_receipt.get("installed_distribution") != expected_distribution:
+        raise ReleaseValidationError(f"N-1 window install receipt mismatch: {stage}")
+    if result.get("python_executable_sha256") != install_receipt.get(
+        "python_executable_sha256"
+    ):
+        raise ReleaseValidationError(f"N-1 window interpreter mismatch: {stage}")
+    if not database.is_file():
+        raise ReleaseValidationError(f"N-1 window database missing after stage: {stage}")
+    return {
+        "stage": stage,
+        "python_environment_id": str(install_receipt.get("environment_id") or ""),
+        "installed_distribution": expected_distribution,
+        "artifact_sha256": artifact_sha256,
+        "python_executable_sha256": result["python_executable_sha256"],
+        "command_sha256": _canonical_sha256(display_command),
+        "stdout_sha256": _sha256(stdout_path),
+        "stderr_sha256": _sha256(stderr_path),
+        "database_before_sha256": before_sha256,
+        "database_after_sha256": _sha256(database),
+        "source_worktree_on_sys_path": False,
+        "source_worktree_imported": False,
+        "returncode": returncode,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "duration_seconds": duration_seconds,
+        "details": result.get("details"),
+    }
+
+
+def _run_n_minus_one_window(
+    *,
+    root: Path,
+    context: ValidationContext,
+    candidate_python: Path,
+    candidate_install: Mapping[str, object],
+    candidate_install_sha256: str,
+    n_minus_one_python: Path,
+    n_minus_one_install: Mapping[str, object],
+    n_minus_one_install_sha256: str,
+    n_minus_one_artifact_sha256: str,
+    workspace: Path,
+    staging: Path,
+    active_hermes_home: Path,
+    real_home: Path,
+    ledger: list[dict[str, object]],
+) -> tuple[dict[str, object], str]:
+    """Exercise a single database through real N-1/N/N-1 interpreters."""
+
+    candidate_environment_id = str(candidate_install.get("environment_id") or "")
+    n_minus_one_environment_id = str(n_minus_one_install.get("environment_id") or "")
+    if not candidate_environment_id or not n_minus_one_environment_id:
+        raise ReleaseValidationError("N-1 window install environment identity is missing")
+    if candidate_environment_id == n_minus_one_environment_id:
+        raise ReleaseValidationError("candidate and N-1 window environments are not distinct")
+    window_root = workspace / "n-minus-one-window"
+    harness = window_root / "neutral-harness"
+    harness.mkdir(parents=True)
+    runner = harness / "rehearsal.py"
+    shutil.copy2(root / "scripts" / "rehearse_n_minus_one_window.py", runner)
+    hermes_home = window_root / "hermes-home"
+    hermes_home.mkdir(parents=True)
+    n_minus_one_database = hermes_home / "scope-recall" / "memory.sqlite3"
+    window_database = window_root / "window.sqlite3"
+    base_environment = _isolated_environment(
+        window_root / "environment",
+        active_hermes_home=active_hermes_home,
+        real_home=real_home,
+    )
+    base_environment["HERMES_HOME"] = str(hermes_home)
+    base_environment["SCOPE_RECALL_DB"] = str(window_database)
+    base_environment["PYTHONPATH"] = ""
+
+    stages: list[dict[str, object]] = []
+    stages.append(
+        _run_n_minus_one_window_stage(
+            python=n_minus_one_python,
+            stage="n_minus_one_create",
+            expected_version=N_MINUS_ONE_VERSION,
+            install_receipt=n_minus_one_install,
+            artifact_sha256=n_minus_one_artifact_sha256,
+            runner=runner,
+            database=n_minus_one_database,
+            hermes_home=hermes_home,
+            source_root=root,
+            workspace=harness,
+            staging=staging,
+            environment=base_environment,
+            ledger=ledger,
+        )
+    )
+    shutil.copy2(n_minus_one_database, window_database)
+    if _sha256(n_minus_one_database) != _sha256(window_database):
+        raise ReleaseValidationError("N-1 window verified database copy mismatch")
+    stage_specs = (
+        (
+            candidate_python,
+            "candidate_upgrade_write",
+            "2.0.0",
+            candidate_install,
+            context.wheel_sha256,
+        ),
+        (
+            n_minus_one_python,
+            "n_minus_one_read_after_n",
+            N_MINUS_ONE_VERSION,
+            n_minus_one_install,
+            n_minus_one_artifact_sha256,
+        ),
+        (
+            candidate_python,
+            "candidate_final_verify",
+            "2.0.0",
+            candidate_install,
+            context.wheel_sha256,
+        ),
+    )
+    for python, stage, version, install_receipt, artifact_sha256 in stage_specs:
+        stages.append(
+            _run_n_minus_one_window_stage(
+                python=python,
+                stage=stage,
+                expected_version=version,
+                install_receipt=install_receipt,
+                artifact_sha256=artifact_sha256,
+                runner=runner,
+                database=window_database,
+                hermes_home=hermes_home,
+                source_root=root,
+                workspace=harness,
+                staging=staging,
+                environment=base_environment,
+                ledger=ledger,
+            )
+        )
+    if stages[1]["database_before_sha256"] != stages[0]["database_after_sha256"]:
+        raise ReleaseValidationError("N-1 window migration lineage mismatch")
+    if stages[2]["database_before_sha256"] != stages[2]["database_after_sha256"]:
+        raise ReleaseValidationError("N-1 read-after-N mutated candidate truth")
+    if stages[3]["database_before_sha256"] != stages[3]["database_after_sha256"]:
+        raise ReleaseValidationError("candidate final verification mutated truth")
+    receipt: dict[str, object] = {
+        "schema_version": N_MINUS_ONE_WINDOW_SCHEMA_VERSION,
+        "candidate_source_commit": context.source_commit,
+        "candidate_source_tree": context.source_tree,
+        "candidate_install_receipt_sha256": candidate_install_sha256,
+        "n_minus_one_install_receipt_sha256": n_minus_one_install_sha256,
+        "neutral_runner_sha256": _sha256(runner),
+        "database_lineage_id": _canonical_sha256(
+            {
+                "n_minus_one_created": stages[0]["database_after_sha256"],
+                "candidate_upgraded": stages[1]["database_after_sha256"],
+            }
+        ),
+        "stages": stages,
+        "candidate_n_minus_one_environment_mixed": False,
+        "active_instance_touched": False,
+        "result": "passed",
+    }
+    receipt_path = staging / "N_MINUS_ONE_WINDOW.json"
+    _write_json(receipt_path, receipt)
+    return receipt, _sha256(receipt_path)
+
+
 def _copy_hermes_install_source(source: Path, target: Path) -> None:
     """Copy only files declared by Hermes' Python packaging configuration.
 
@@ -1090,12 +1374,13 @@ def _run_full_suite(
     ledger: list[dict[str, object]],
 ) -> None:
     junit = staging / "PYTEST_JUNIT.xml"
+    honesty_raw = staging / "PYTEST_SKIP_REPORT.raw.json"
     honesty = staging / "PYTEST_SKIP_REPORT.json"
     log = staging / "PYTEST_STDOUT.log"
     environment.update(
         {
             "PYTHONPATH": str(hermes_source.resolve(strict=True)),
-            "SCOPE_RECALL_TEST_HONESTY_OUTPUT": str(honesty),
+            "SCOPE_RECALL_TEST_HONESTY_OUTPUT": str(honesty_raw),
             "SCOPE_RECALL_SOURCE_COMMIT": context.source_commit,
             "SCOPE_RECALL_SOURCE_TREE": context.source_tree,
             "SCOPE_RECALL_TEST_TIMEOUTS_JSON": json.dumps(
@@ -1145,14 +1430,23 @@ def _run_full_suite(
         log_path=log,
         ledger=ledger,
     )
-    if not junit.is_file() or not honesty.is_file():
-        raise ReleaseValidationError("full pytest did not produce JUnit and honesty evidence")
+    if not junit.is_file() or not honesty_raw.is_file():
+        raise ReleaseValidationError("full pytest did not produce JUnit and raw honesty evidence")
+    honesty_module = _load_script(
+        root / "scripts" / "release_test_honesty.py",
+        "scope_recall_validation_test_honesty_redactor",
+    )
+    honesty_module.write_shareable_report(honesty_raw, honesty)
     evidence = _load_script(
         root / "scripts" / "report.evidence_package.py",
         "scope_recall_validation_evidence_contract",
     )
     honesty_payload = _load_json(honesty)
     evidence.validate_test_honesty(honesty_payload)
+    evidence.validate_test_honesty_pair(
+        _load_json(honesty_raw),
+        honesty_payload,
+    )
     if honesty_payload.get("source_commit") != context.source_commit:
         raise ReleaseValidationError("pytest honesty source commit mismatch")
     if honesty_payload.get("source_tree") != context.source_tree:
@@ -1397,9 +1691,11 @@ def run_release_validation(
         "TEST_COMMANDS.json",
         "PYTEST_JUNIT.xml",
         "PYTEST_STDOUT.log",
+        "PYTEST_SKIP_REPORT.raw.json",
         "PYTEST_SKIP_REPORT.json",
         "RUFF.log",
         "PYRIGHT.log",
+        "N_MINUS_ONE_WINDOW.json",
         "MIGRATION_N_MINUS_ONE.json",
         "MIGRATION_N.json",
         "DOWNGRADE_N_MINUS_ONE.json",
@@ -1483,11 +1779,12 @@ def run_release_validation(
             candidate_install_sha = _sha256(
                 staging / "INSTALL_CANDIDATE_RECEIPT.json"
             )
+            n_minus_one_artifact_sha256 = _sha256(previous_wheel)
             n_minus_one_python, n_minus_one_install, n_minus_one_install_sha = (
                 _artifact_install_environment(
                     root=resolved,
                     artifact=previous_wheel,
-                    artifact_sha256=_sha256(previous_wheel),
+                    artifact_sha256=n_minus_one_artifact_sha256,
                     expected_version=N_MINUS_ONE_VERSION,
                     label="n_minus_one",
                     workspace=artifact_workspace,
@@ -1497,7 +1794,6 @@ def run_release_validation(
                     ledger=ledger,
                 )
             )
-            del n_minus_one_python
             n_minus_one_install["source_commit"] = "published-v1.10.3-artifact"
             n_minus_one_install["candidate_source_mixed"] = False
             _write_json(
@@ -1506,6 +1802,24 @@ def run_release_validation(
             )
             n_minus_one_install_sha = _sha256(
                 staging / "INSTALL_N_MINUS_ONE_RECEIPT.json"
+            )
+            _n_minus_one_window_receipt, n_minus_one_window_sha = (
+                _run_n_minus_one_window(
+                    root=resolved,
+                    context=context,
+                    candidate_python=candidate_python,
+                    candidate_install=candidate_install,
+                    candidate_install_sha256=candidate_install_sha,
+                    n_minus_one_python=n_minus_one_python,
+                    n_minus_one_install=n_minus_one_install,
+                    n_minus_one_install_sha256=n_minus_one_install_sha,
+                    n_minus_one_artifact_sha256=n_minus_one_artifact_sha256,
+                    workspace=artifact_workspace,
+                    staging=staging,
+                    active_hermes_home=active,
+                    real_home=real_home,
+                    ledger=ledger,
+                )
             )
             harness = _prepare_artifact_harness(
                 root=resolved,
@@ -1551,6 +1865,12 @@ def run_release_validation(
                         n_minus_one_install["installed_distribution"]
                     )
                     receipt_payload["candidate_n_minus_one_environment_mixed"] = False
+                    receipt_payload["n_minus_one_window_receipt_sha256"] = (
+                        n_minus_one_window_sha
+                    )
+                    receipt_payload["n_minus_one_window_evidence"] = (
+                        "real-cross-interpreter"
+                    )
                     _write_json(receipt_path, receipt_payload)
             immutable_environment = _isolated_environment(
                 artifact_workspace / "immutability-probe",

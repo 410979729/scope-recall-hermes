@@ -12,6 +12,21 @@ import re
 import sys
 from typing import Mapping, Sequence
 
+try:
+    from scripts.evidence_path_hygiene import (  # pyright: ignore[reportMissingImports]
+        ABSOLUTE_LOCAL_PATH_PATTERNS,
+        private_path_match_count,
+        redact_json_strings,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name not in {"scripts", "scripts.evidence_path_hygiene"}:
+        raise
+    from evidence_path_hygiene import (  # pyright: ignore[reportMissingImports]
+        ABSOLUTE_LOCAL_PATH_PATTERNS,
+        private_path_match_count,
+        redact_json_strings,
+    )
+
 
 SCHEMA_VERSION = "scope-recall.evidence-index.v1"
 SHAREABLE_SCHEMA_VERSION = "scope-recall.shareable-evidence-index.v1"
@@ -27,10 +42,20 @@ REQUIRED_INPUT_FILES = (
     "TEST_COMMANDS.json",
     "PYTEST_JUNIT.xml",
     "PYTEST_STDOUT.log",
+    "PYTEST_SKIP_REPORT.raw.json",
     "PYTEST_SKIP_REPORT.json",
     "RUFF.log",
     "PYRIGHT.log",
     "DOCTOR.json",
+    "N_MINUS_ONE_WINDOW.json",
+    "N_MINUS_ONE_WINDOW_N_MINUS_ONE_CREATE.stdout.log",
+    "N_MINUS_ONE_WINDOW_N_MINUS_ONE_CREATE.stderr.log",
+    "N_MINUS_ONE_WINDOW_CANDIDATE_UPGRADE_WRITE.stdout.log",
+    "N_MINUS_ONE_WINDOW_CANDIDATE_UPGRADE_WRITE.stderr.log",
+    "N_MINUS_ONE_WINDOW_N_MINUS_ONE_READ_AFTER_N.stdout.log",
+    "N_MINUS_ONE_WINDOW_N_MINUS_ONE_READ_AFTER_N.stderr.log",
+    "N_MINUS_ONE_WINDOW_CANDIDATE_FINAL_VERIFY.stdout.log",
+    "N_MINUS_ONE_WINDOW_CANDIDATE_FINAL_VERIFY.stderr.log",
     "MIGRATION_N_MINUS_ONE.json",
     "MIGRATION_N.json",
     "DOWNGRADE_N_MINUS_ONE.json",
@@ -53,7 +78,7 @@ INSTALL_RECEIPT_FILES = (
 SHAREABLE_EXPLICIT_FILES = frozenset(
     name
     for name in REQUIRED_INPUT_FILES
-    if Path(name).suffix == ".json"
+    if Path(name).suffix == ".json" and name != "PYTEST_SKIP_REPORT.raw.json"
 ) | frozenset(
     {
         "ACCIDENTAL_HOME_CLEANUP_RECEIPT.json",
@@ -64,12 +89,7 @@ SHAREABLE_EXPLICIT_FILES = frozenset(
         "REMOTE_CI_BINDING.json",
     }
 )
-PRIVATE_PATH_PATTERNS = (
-    re.compile(
-        r"(?i)(?:\\\\\?\\)?[a-z]:[\\/]+(?:Users|Agents)[\\/]+[^\s\"']+"
-    ),
-    re.compile(r"(?<![A-Za-z0-9])/(?:home|Users|tmp)/[^\s\"']+"),
-)
+PRIVATE_PATH_PATTERNS = ABSOLUTE_LOCAL_PATH_PATTERNS
 SECRET_PATTERNS = (
     re.compile(
         r"(?i)(?:api[_-]?key|access[_-]?token|auth(?:orization)?|password|secret)"
@@ -94,6 +114,163 @@ RECEIPT_FILES = (
 
 class EvidencePackageError(RuntimeError):
     """Raised when raw evidence is incomplete, inconsistent, or unbound."""
+
+
+def _canonical_sha256(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _validate_n_minus_one_window(
+    payload: Mapping[str, object],
+    *,
+    source_commit: str,
+    source_tree: str,
+    candidate_install: Mapping[str, object],
+    candidate_install_sha256: str,
+    n_minus_one_install: Mapping[str, object],
+    n_minus_one_install_sha256: str,
+    candidate_artifact_sha256: str,
+    neutral_runner_sha256: str,
+    evidence_root: Path | None = None,
+) -> None:
+    if payload.get("schema_version") != "scope-recall.n-minus-one-window.v1":
+        raise EvidencePackageError("unsupported N-1 window receipt schema")
+    if (
+        payload.get("candidate_source_commit") != source_commit
+        or payload.get("candidate_source_tree") != source_tree
+    ):
+        raise EvidencePackageError("N-1 window source identity mismatch")
+    if (
+        payload.get("candidate_install_receipt_sha256")
+        != candidate_install_sha256
+        or payload.get("n_minus_one_install_receipt_sha256")
+        != n_minus_one_install_sha256
+    ):
+        raise EvidencePackageError("N-1 window install receipt link mismatch")
+    if (
+        payload.get("candidate_n_minus_one_environment_mixed") is not False
+        or payload.get("active_instance_touched") is not False
+        or payload.get("result") != "passed"
+    ):
+        raise EvidencePackageError("N-1 window did not preserve the isolation contract")
+    if payload.get("neutral_runner_sha256") != neutral_runner_sha256:
+        raise EvidencePackageError("N-1 window neutral runner source mismatch")
+    stages = payload.get("stages")
+    if not isinstance(stages, list) or len(stages) != 4 or not all(
+        isinstance(stage, dict) for stage in stages
+    ):
+        raise EvidencePackageError("N-1 window stage ledger is incomplete")
+    expected = (
+        (
+            "n_minus_one_create",
+            "hermes-scope-recall==1.10.3",
+            n_minus_one_install,
+            str(n_minus_one_install.get("artifact_sha256") or ""),
+        ),
+        (
+            "candidate_upgrade_write",
+            "hermes-scope-recall==2.0.0",
+            candidate_install,
+            candidate_artifact_sha256,
+        ),
+        (
+            "n_minus_one_read_after_n",
+            "hermes-scope-recall==1.10.3",
+            n_minus_one_install,
+            str(n_minus_one_install.get("artifact_sha256") or ""),
+        ),
+        (
+            "candidate_final_verify",
+            "hermes-scope-recall==2.0.0",
+            candidate_install,
+            candidate_artifact_sha256,
+        ),
+    )
+    for index, (name, distribution, install, artifact_sha256) in enumerate(expected):
+        stage = stages[index]
+        assert isinstance(stage, dict)
+        if (
+            stage.get("stage") != name
+            or stage.get("installed_distribution") != distribution
+            or stage.get("python_environment_id") != install.get("environment_id")
+            or stage.get("python_executable_sha256")
+            != install.get("python_executable_sha256")
+            or stage.get("artifact_sha256") != artifact_sha256
+            or stage.get("source_worktree_on_sys_path") is not False
+            or stage.get("source_worktree_imported") is not False
+            or stage.get("returncode") != 0
+        ):
+            raise EvidencePackageError(f"N-1 window stage identity mismatch: {name}")
+        for field in (
+            "artifact_sha256",
+            "python_executable_sha256",
+            "command_sha256",
+            "stdout_sha256",
+            "stderr_sha256",
+            "database_before_sha256",
+            "database_after_sha256",
+        ):
+            _require_sha(stage.get(field), field=f"N-1 window {name}.{field}")
+        if evidence_root is not None:
+            stage_token = name.upper()
+            for stream in ("stdout", "stderr"):
+                log = evidence_root / f"N_MINUS_ONE_WINDOW_{stage_token}.{stream}.log"
+                if not log.is_file() or _sha256_file(log) != stage.get(
+                    f"{stream}_sha256"
+                ):
+                    raise EvidencePackageError(
+                        f"N-1 window {name} {stream} log hash mismatch"
+                    )
+        if not isinstance(stage.get("details"), dict):
+            raise EvidencePackageError(f"N-1 window stage details missing: {name}")
+    candidate_environment_id = candidate_install.get("environment_id")
+    n_minus_one_environment_id = n_minus_one_install.get("environment_id")
+    if candidate_environment_id == n_minus_one_environment_id:
+        raise EvidencePackageError("N-1 window candidate and N-1 environments are equal")
+    if stages[1].get("database_before_sha256") != stages[0].get(
+        "database_after_sha256"
+    ):
+        raise EvidencePackageError("N-1 window database migration lineage mismatch")
+    if stages[2].get("database_before_sha256") != stages[1].get(
+        "database_after_sha256"
+    ):
+        raise EvidencePackageError("N-1 window database stage lineage mismatch")
+    if stages[2].get("database_before_sha256") != stages[2].get(
+        "database_after_sha256"
+    ):
+        raise EvidencePackageError("N-1 read-after-N mutated the database")
+    if stages[3].get("database_before_sha256") != stages[2].get(
+        "database_after_sha256"
+    ):
+        raise EvidencePackageError("N-1 window database stage lineage mismatch")
+    if stages[3].get("database_before_sha256") != stages[3].get(
+        "database_after_sha256"
+    ):
+        raise EvidencePackageError("candidate final verification mutated the database")
+    expected_lineage_id = _canonical_sha256(
+        {
+            "n_minus_one_created": stages[0].get("database_after_sha256"),
+            "candidate_upgraded": stages[1].get("database_after_sha256"),
+        }
+    )
+    if payload.get("database_lineage_id") != expected_lineage_id:
+        raise EvidencePackageError("N-1 window database lineage ID mismatch")
+    details = [stage["details"] for stage in stages]
+    if (
+        details[0].get("memory_count") != 2
+        or details[0].get("config_isolation_key_present") is not True
+        or details[1].get("n_minus_one_rows_preserved") != 2
+        or details[1].get("claim_count") != 1
+        or details[1].get("evidence_count") != 1
+        or details[2].get("query_only") != 1
+        or details[2].get("candidate_projection_readable") is not True
+        or details[3].get("claim_only_count") != 0
+        or details[3].get("evidence_count") != 1
+        or details[3].get("legacy_projection_count") != 2
+    ):
+        raise EvidencePackageError("N-1 window semantic proof is incomplete")
 
 
 def _sha256_file(path: Path) -> str:
@@ -229,6 +406,22 @@ def validate_test_honesty(payload: Mapping[str, object]) -> dict[str, object]:
         "first_failure_fix_count": len(first_failure_fixes),
         "first_failure_fixes_status": first_failure_status,
     }
+
+
+def validate_test_honesty_pair(
+    raw_payload: Mapping[str, object],
+    shareable_payload: Mapping[str, object],
+) -> None:
+    """Prove that redaction changed paths only, never test accounting."""
+
+    validate_test_honesty(raw_payload)
+    validate_test_honesty(shareable_payload)
+    expected_shareable = redact_json_strings(dict(raw_payload))
+    if shareable_payload != expected_shareable:
+        raise EvidencePackageError("shareable test honesty is not an exact path-only redaction")
+    rendered = json.dumps(shareable_payload, ensure_ascii=False, sort_keys=True)
+    if private_path_match_count(rendered, decode_json=True):
+        raise EvidencePackageError("shareable test honesty retains an absolute local path")
 
 
 def _validate_install_receipt(
@@ -425,7 +618,7 @@ def _validate_receipt(
         _validated_hermes_identity(payload, field="hermes_source_identity")
 
 
-def _source_identity(evidence_dir: Path, expected_sha: str) -> tuple[str, str]:
+def _source_identity(evidence_dir: Path, expected_sha: str) -> tuple[str, str, str]:
     identity = _load_object(evidence_dir / "SOURCE_IDENTITY.json")
     source_commit = _require_git_sha(identity.get("source_commit"), field="source_commit")
     source_tree = _require_git_sha(identity.get("source_tree"), field="source_tree")
@@ -433,7 +626,11 @@ def _source_identity(evidence_dir: Path, expected_sha: str) -> tuple[str, str]:
         raise EvidencePackageError("evidence source commit differs from expected SHA")
     if identity.get("source_dirty") is not False:
         raise EvidencePackageError("evidence source identity is dirty")
-    return source_commit, source_tree
+    source_manifest_sha256 = _require_sha(
+        identity.get("source_manifest_sha256"),
+        field="source_identity.source_manifest_sha256",
+    )
+    return source_commit, source_tree, source_manifest_sha256
 
 
 def _validate_remote_ci_binding(
@@ -477,13 +674,17 @@ def build_evidence_index(evidence_dir: Path, *, expected_sha: str) -> dict[str, 
     missing = [name for name in REQUIRED_INPUT_FILES if not (root / name).is_file()]
     if missing:
         raise EvidencePackageError(f"evidence package is incomplete: {', '.join(missing)}")
-    source_commit, source_tree = _source_identity(root, expected_sha)
+    source_commit, source_tree, source_manifest_sha256 = _source_identity(
+        root, expected_sha
+    )
     provenance = _load_object(root / "BUILD_PROVENANCE.json")
     candidate = _load_object(root / "CANDIDATE_MANIFEST.json")
     if provenance.get("source_commit") != source_commit:
         raise EvidencePackageError("build provenance source_commit mismatch")
     if provenance.get("source_tree") != source_tree:
         raise EvidencePackageError("build provenance source_tree mismatch")
+    if provenance.get("source_manifest_sha256") != source_manifest_sha256:
+        raise EvidencePackageError("build provenance source manifest mismatch")
     candidate_source = candidate.get("source")
     if not isinstance(candidate_source, dict):
         raise EvidencePackageError("candidate manifest source is missing")
@@ -491,6 +692,26 @@ def build_evidence_index(evidence_dir: Path, *, expected_sha: str) -> dict[str, 
         raise EvidencePackageError("candidate manifest source_commit mismatch")
     if candidate_source.get("tree") != source_tree:
         raise EvidencePackageError("candidate manifest source_tree mismatch")
+    source_manifest = candidate_source.get("manifest")
+    if not isinstance(source_manifest, dict):
+        raise EvidencePackageError("candidate source manifest is missing")
+    source_files = source_manifest.get("files")
+    if not isinstance(source_files, list):
+        raise EvidencePackageError("candidate source manifest files are missing")
+    if source_manifest.get("manifest_sha256") != source_manifest_sha256:
+        raise EvidencePackageError("candidate source manifest identity mismatch")
+    runner_entries = [
+        entry
+        for entry in source_files
+        if isinstance(entry, dict)
+        and entry.get("path") == "scripts/rehearse_n_minus_one_window.py"
+    ]
+    if len(runner_entries) != 1:
+        raise EvidencePackageError("candidate neutral runner source entry is ambiguous")
+    neutral_runner_sha256 = _require_sha(
+        runner_entries[0].get("sha256"),
+        field="candidate neutral runner source sha256",
+    )
     candidate_provenance = candidate.get("provenance")
     if not isinstance(candidate_provenance, dict):
         raise EvidencePackageError("candidate manifest provenance link is missing")
@@ -525,7 +746,10 @@ def build_evidence_index(evidence_dir: Path, *, expected_sha: str) -> dict[str, 
                 wheel_sha256 = artifact_sha
     if len(artifact_hashes) != 2:
         raise EvidencePackageError("build provenance must bind distinct wheel and sdist hashes")
-    honesty = validate_test_honesty(_load_object(root / "PYTEST_SKIP_REPORT.json"))
+    raw_honesty_payload = _load_object(root / "PYTEST_SKIP_REPORT.raw.json")
+    shareable_honesty_payload = _load_object(root / "PYTEST_SKIP_REPORT.json")
+    validate_test_honesty_pair(raw_honesty_payload, shareable_honesty_payload)
+    honesty = validate_test_honesty(shareable_honesty_payload)
     install_receipts = {
         name: _load_object(root / name) for name in INSTALL_RECEIPT_FILES
     }
@@ -550,6 +774,20 @@ def build_evidence_index(evidence_dir: Path, *, expected_sha: str) -> dict[str, 
     n_minus_one_install_sha256 = _sha256_file(
         root / "INSTALL_N_MINUS_ONE_RECEIPT.json"
     )
+    n_minus_one_window_path = root / "N_MINUS_ONE_WINDOW.json"
+    _validate_n_minus_one_window(
+        _load_object(n_minus_one_window_path),
+        source_commit=source_commit,
+        source_tree=source_tree,
+        candidate_install=install_receipts["INSTALL_CANDIDATE_RECEIPT.json"],
+        candidate_install_sha256=candidate_install_sha256,
+        n_minus_one_install=install_receipts["INSTALL_N_MINUS_ONE_RECEIPT.json"],
+        n_minus_one_install_sha256=n_minus_one_install_sha256,
+        candidate_artifact_sha256=wheel_sha256,
+        neutral_runner_sha256=neutral_runner_sha256,
+        evidence_root=root,
+    )
+    n_minus_one_window_sha256 = _sha256_file(n_minus_one_window_path)
     for name in RECEIPT_FILES:
         receipt = _load_object(root / name)
         _validate_receipt(
@@ -575,6 +813,12 @@ def build_evidence_index(evidence_dir: Path, *, expected_sha: str) -> dict[str, 
                 raise EvidencePackageError(f"{name} N-1 install link mismatch")
             if receipt.get("candidate_n_minus_one_environment_mixed") is not False:
                 raise EvidencePackageError(f"{name} mixed candidate and N-1 environments")
+            if receipt.get("n_minus_one_window_receipt_sha256") != (
+                n_minus_one_window_sha256
+            ):
+                raise EvidencePackageError(f"{name} N-1 window link mismatch")
+            if receipt.get("n_minus_one_window_evidence") != "real-cross-interpreter":
+                raise EvidencePackageError(f"{name} lacks real N-1 window evidence")
 
     files: list[dict[str, object]] = []
     evidence_paths = sorted(
@@ -663,6 +907,20 @@ def _scan_shareable_files(
                 f"shareable evidence is not UTF-8 text: {name}"
             ) from exc
         scanned.append({"path": name, "sha256": _sha256_file(path)})
+        if scan_kind == "private-path":
+            count = private_path_match_count(
+                text,
+                decode_json=path.suffix.casefold() == ".json",
+            )
+            if count:
+                findings.append(
+                    {
+                        "path": name,
+                        "rule_id": "private-path-decoded-and-raw",
+                        "match_count": count,
+                    }
+                )
+            continue
         for rule_index, pattern in enumerate(patterns, 1):
             count = len(pattern.findall(text))
             if count:
@@ -761,7 +1019,11 @@ def _shareable_evidence_index(
         "private_path_scan_sha256": _sha256_file(private_path),
         "secret_scan_sha256": _sha256_file(secret_path),
         "private_path_finding_count": 0,
+        "private_path_match_count": 0,
         "secret_finding_count": 0,
+        "secret_match_count": 0,
+        "missing_indexed_file_count": 0,
+        "unexpected_shareable_file_count": 0,
         "file_count": len(shareable),
         "files": shareable,
         "excluded_classification": "local-restricted",
@@ -778,7 +1040,7 @@ def write_evidence_index(evidence_dir: Path, payload: Mapping[str, object]) -> P
         indent=2,
         sort_keys=True,
     ) + "\n"
-    if any(pattern.search(rendered) for pattern in PRIVATE_PATH_PATTERNS):
+    if private_path_match_count(rendered, decode_json=True):
         raise EvidencePackageError("shareable evidence index contains a private path")
     if any(pattern.search(rendered) for pattern in SECRET_PATTERNS):
         raise EvidencePackageError("shareable evidence index contains secret-like content")
