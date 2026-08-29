@@ -9,7 +9,9 @@ processes do not become a second uncoordinated writer.
 Exactly one process per storage directory may hold the OS lease. Later
 provider instances degrade to read-only recall. Same-process peer providers
 share one refcounted OS lock so issue #43 dirty-peer recovery still works.
-The lock is process-lifetime: the kernel releases it on crash or exit.
+The kernel releases the lock on crash or exit; the runtime may also perform a
+coordinated, fail-closed idle handoff after every same-process holder and
+connection pin has quiesced.
 Shared registry state is bound to ``os.getpid()``. A fork child closes
 inherited lock-handle copies without unlinking the parent sidecar and must
 attempt a fresh OS lock instead of joining inherited same-process state.
@@ -84,6 +86,8 @@ def _shared_lock_and_registry() -> tuple[threading.Lock, dict[str, _ProcessLease
     setattr(candidate, "registry", {})
     setattr(candidate, "pid", os.getpid())
     setattr(candidate, "poisoned", False)
+    setattr(candidate, "handoff_states_lock", threading.RLock())
+    setattr(candidate, "handoff_states", {})
     holder = sys.modules.setdefault(_SHARED_STATE_NAME, candidate)
     lock = getattr(holder, "lock", None)
     registry = getattr(holder, "registry", None)
@@ -97,6 +101,10 @@ def _shared_lock_and_registry() -> tuple[threading.Lock, dict[str, _ProcessLease
         setattr(holder, "pid", os.getpid())
     if not hasattr(holder, "poisoned"):
         setattr(holder, "poisoned", False)
+    if not isinstance(getattr(holder, "handoff_states_lock", None), type(threading.RLock())):
+        setattr(holder, "handoff_states_lock", threading.RLock())
+    if not isinstance(getattr(holder, "handoff_states", None), dict):
+        setattr(holder, "handoff_states", {})
     return lock, registry
 
 
@@ -140,6 +148,8 @@ def _reset_inherited_writer_lease_state() -> None:
     setattr(holder, "registry", {})
     setattr(holder, "pid", current_pid)
     setattr(holder, "poisoned", poisoned)
+    setattr(holder, "handoff_states_lock", threading.RLock())
+    setattr(holder, "handoff_states", {})
     _bind_module_shared_state(holder)
 
 
@@ -194,6 +204,77 @@ class _ProcessLeaseState:
         self.handle = handle
         self.holders = 0
         self.connection_pins = 0
+
+
+class _ProcessWriterHandoffState:
+    """Alias-neutral process coordinator state for one canonical truth store."""
+
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.orchestration_lock = threading.Lock()
+        self.state = "READER"
+        self.handoff_fenced = False
+        self.handoff_in_progress = False
+        self.handoff_thread_id = 0
+        self.handoff_generation = 0
+        self.successful_handoff_count = 0
+        self.last_handoff_at = ""
+        self.last_handoff_monotonic = 0.0
+        self.last_handoff_reason_code = ""
+        self.last_handoff_failure_code = ""
+        self.release_uncertain = False
+        self.operator_action_required = False
+
+
+def process_writer_handoff_state(storage_dir: Path) -> Any:
+    """Return the process-wide coordinator for one canonical storage identity."""
+
+    _refresh_shared_state()
+    lease_path, _ = _lease_paths(Path(storage_dir))
+    key = _canonical_registry_key(lease_path)
+    holder = sys.modules[_SHARED_STATE_NAME]
+    lock = getattr(holder, "handoff_states_lock")
+    states = getattr(holder, "handoff_states")
+    with lock:
+        state = states.get(key)
+        if state is None:
+            state = _ProcessWriterHandoffState()
+            states[key] = state
+        # State can originate from another import alias or an older live
+        # module instance. Additive defaults keep the coordinator compatible
+        # without replacing locks that another caller may already hold.
+        if not hasattr(state, "orchestration_lock"):
+            state.orchestration_lock = threading.Lock()
+        if not hasattr(state, "handoff_fenced"):
+            state.handoff_fenced = False
+        if not hasattr(state, "handoff_in_progress"):
+            state.handoff_in_progress = False
+        if not hasattr(state, "handoff_thread_id"):
+            state.handoff_thread_id = 0
+        if not hasattr(state, "last_handoff_monotonic"):
+            state.last_handoff_monotonic = 0.0
+        return state
+
+
+def truth_writer_process_snapshot(storage_dir: Path) -> dict[str, int]:
+    """Return sanitized process-local holder/pin counts for observability."""
+
+    _refresh_shared_state()
+    lease_path, _ = _lease_paths(Path(storage_dir))
+    key = _canonical_registry_key(lease_path)
+    holder = sys.modules[_SHARED_STATE_NAME]
+    registry_lock = getattr(holder, "lock", _PROCESS_REGISTRY_LOCK)
+    registry = getattr(holder, "registry", _PROCESS_REGISTRY)
+    with registry_lock:
+        state = registry.get(key)
+        if state is None:
+            return {"same_process_holder_count": 0, "connection_pin_count": 0}
+        return {
+            "same_process_holder_count": max(0, int(getattr(state, "holders", 0) or 0)),
+            "connection_pin_count": max(
+                0, int(getattr(state, "connection_pins", 0) or 0)
+            ),
+        }
 
 
 _PROCESS_REGISTRY_LOCK, _PROCESS_REGISTRY = _shared_lock_and_registry()
@@ -350,6 +431,62 @@ class TruthWriterLease:
         return bool(self._acquired and self._acquired_pid == os.getpid())
 
     def acquire(self) -> dict[str, Any]:
+        """Serialize acquisition against process-wide idle handoff."""
+
+        handoff = process_writer_handoff_state(self._storage_dir)
+        with handoff.lock:
+            if bool(getattr(handoff, "handoff_fenced", False)):
+                if (
+                    int(getattr(handoff, "handoff_thread_id", 0) or 0)
+                    != threading.get_ident()
+                    or self._role != "truth_connection"
+                ):
+                    return {
+                        "status": "busy",
+                        "scope": "process_handoff",
+                        "owner": {},
+                    }
+                return self._join_existing_handoff_authority()
+            result = self._acquire_under_handoff()
+            if result.get("status") == "acquired":
+                handoff.state = "OWNER"
+            return result
+
+    def _join_existing_handoff_authority(self) -> dict[str, Any]:
+        """Join one recovery pin without creating or reacquiring OS authority."""
+
+        _refresh_shared_state()
+        if self._acquired and self._acquired_pid == os.getpid():
+            return {"status": "acquired", "owner": _sanitized_owner(self._role)}
+        if self._acquired:
+            self._acquired = False
+            self._acquired_pid = None
+        if _shared_state_poisoned():
+            return {"status": "busy", "scope": "fork_state_error", "owner": {}}
+        holder = sys.modules.get(_SHARED_STATE_NAME)
+        registry_lock = getattr(holder, "lock", _PROCESS_REGISTRY_LOCK)
+        registry = getattr(holder, "registry", _PROCESS_REGISTRY)
+        with registry_lock:
+            key = _canonical_registry_key(self._lease_path)
+            self._registry_key = key
+            state = registry.get(key)
+            if state is None or int(getattr(state, "holders", 0) or 0) <= 0:
+                return {
+                    "status": "busy",
+                    "scope": "process_handoff_recovery_missing_authority",
+                    "owner": {},
+                }
+            state.connection_pins += 1
+            self._pin_only = True
+            self._acquired = True
+            self._acquired_pid = os.getpid()
+            return {
+                "status": "acquired",
+                "scope": "same_process_handoff_recovery",
+                "owner": _sanitized_owner(self._role),
+            }
+
+    def _acquire_under_handoff(self) -> dict[str, Any]:
         """Acquire or join this process's writer lease, or report busy.
 
         Returns ``{"status": "acquired", ...}`` or
@@ -439,6 +576,19 @@ class TruthWriterLease:
             }
 
     def release(self) -> None:
+        """Serialize release against process-wide idle handoff."""
+
+        handoff = process_writer_handoff_state(self._storage_dir)
+        with handoff.lock:
+            self._release_under_handoff()
+            snapshot = truth_writer_process_snapshot(self._storage_dir)
+            if (
+                snapshot["same_process_holder_count"] == 0
+                and snapshot["connection_pin_count"] == 0
+            ):
+                handoff.state = "READER"
+
+    def _release_under_handoff(self) -> None:
         """Drop one holder. Last release closes the locked OS handle under the lock.
 
         Non-last holders only decrement the refcount. The last holder keeps
@@ -559,6 +709,8 @@ __all__ = [
     "TruthWriterBusyError",
     "TruthWriterLease",
     "holding_truth_writer_lease",
+    "process_writer_handoff_state",
     "read_truth_writer_owner",
     "sanitized_truth_writer_owner",
+    "truth_writer_process_snapshot",
 ]

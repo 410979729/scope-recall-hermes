@@ -21,6 +21,21 @@ except ImportError:  # pragma: no cover - direct source checkout execution fallb
 
 DOCTOR = ROOT / "scripts" / "doctor.py"
 
+WRITER_HANDOFF_LIVE_STATS_FIELDS = (
+    "writer_role",
+    "last_user_activity_age_seconds",
+    "last_truth_activity_age_seconds",
+    "same_process_holder_count",
+    "connection_pin_count",
+    "demotion_in_progress",
+    "successful_handoff_count",
+    "last_handoff_at",
+    "last_handoff_reason_code",
+    "last_handoff_failure_code",
+    "release_uncertain",
+    "operator_action_required",
+)
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Render scope-recall operator dashboard")
@@ -74,6 +89,30 @@ def _trend(summary: dict[str, Any], previous_summary: dict[str, Any]) -> dict[st
     return trend
 
 
+def _writer_handoff_config_summary(runtime_config: dict[str, Any]) -> dict[str, Any]:
+    """Describe configured handoff policy without claiming live-process state."""
+
+    raw_writer_lease = runtime_config.get("writer_lease")
+    writer_lease_config = (
+        raw_writer_lease if isinstance(raw_writer_lease, dict) else {}
+    )
+    idle_release_seconds = float(
+        writer_lease_config.get("idle_release_seconds", 1800.0)
+    )
+    return {
+        "snapshot_kind": "offline_config_only",
+        "runtime_state_observed": False,
+        "writer_lease_scope": "process-wide-os-lock",
+        "idle_release_enabled": idle_release_seconds > 0,
+        "idle_release_seconds": idle_release_seconds,
+        "live_counters": {
+            "source": "scope_recall_stats",
+            "observed": False,
+            "fields": list(WRITER_HANDOFF_LIVE_STATS_FIELDS),
+        },
+    }
+
+
 def build_dashboard(source_root: Path, hermes_home: Path, *, previous_path: Path | None = None) -> dict[str, Any]:
     """Assemble the compact operator dashboard from read-only source and runtime checks.
 
@@ -82,6 +121,7 @@ def build_dashboard(source_root: Path, hermes_home: Path, *, previous_path: Path
     runtime_config = doctor.load_runtime_config(source_root, hermes_home)
     config_errors = runtime_config.get("_config_load_errors") if isinstance(runtime_config.get("_config_load_errors"), list) else []
     config_check = {"ok": not config_errors, "errors": config_errors}
+    writer_handoff = _writer_handoff_config_summary(runtime_config)
     source, source_check, source_recommendations = doctor.source_report(source_root)
     sqlite_payload, sqlite_check, sqlite_recommendations = doctor.sqlite_report(hermes_home)
     if hasattr(doctor, "memory_candidate_debt_report"):
@@ -257,6 +297,10 @@ def build_dashboard(source_root: Path, hermes_home: Path, *, previous_path: Path
         "memory_feedback_unresolved_misleading": experience_feedback.get("unresolved_misleading", 0),
         "nightly_status": nightly_payload.get("status"),
         "config_load_errors": len(config_errors),
+        "writer_lease_scope": writer_handoff["writer_lease_scope"],
+        "writer_idle_release_enabled": writer_handoff["idle_release_enabled"],
+        "writer_idle_release_seconds": writer_handoff["idle_release_seconds"],
+        "writer_live_counters_source": writer_handoff["live_counters"]["source"],
     }
     return {
         "schema_version": DASHBOARD_RESPONSE_SCHEMA_VERSION,
@@ -270,6 +314,7 @@ def build_dashboard(source_root: Path, hermes_home: Path, *, previous_path: Path
         "sections": {
             "journal": journal_payload,
             "config_load": {"errors": config_errors},
+            "writer_handoff": writer_handoff,
             "candidate_debt": candidate_debt,
             "memory_quality_lint": memory_quality_lint,
             "event_digest": event_digest_payload,
@@ -343,6 +388,10 @@ def render_markdown(payload: dict[str, Any]) -> str:
         ("Memory feedback unresolved misleading", "memory_feedback_unresolved_misleading"),
         ("Nightly status", "nightly_status"),
         ("Config load errors", "config_load_errors"),
+        ("Writer lease scope", "writer_lease_scope"),
+        ("Writer idle release enabled", "writer_idle_release_enabled"),
+        ("Writer idle release seconds", "writer_idle_release_seconds"),
+        ("Writer live counters source", "writer_live_counters_source"),
     ]
     for label, key in labels:
         lines.append(f"- {label}: `{summary.get(key)}`")

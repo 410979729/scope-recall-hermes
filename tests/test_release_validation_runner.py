@@ -232,6 +232,102 @@ def test_validation_receipt_binds_source_artifact_and_isolation() -> None:
     }
 
 
+def test_issue_51_receipt_embeds_content_free_rehearsal_details(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    staging = tmp_path / "staging"
+    temp = tmp_path / "temp"
+    basetemp_parent = tmp_path / "p"
+    for path in (staging, temp, basetemp_parent):
+        path.mkdir()
+    context = module.ValidationContext(
+        source_commit="a" * 40,
+        source_tree="b" * 40,
+        wheel_sha256="c" * 64,
+        sdist_sha256="d" * 64,
+    )
+    install_receipt_sha256 = "e" * 64
+    environment = {
+        "TEMP": str(temp),
+        "HERMES_HOME": str(tmp_path / "home"),
+        "SCOPE_RECALL_DB": str(tmp_path / "truth.sqlite3"),
+        "SCOPE_RECALL_TEST_BOUNDARY_PARENT": str(basetemp_parent),
+    }
+
+    def fake_run(
+        _command,
+        *,
+        display_command,
+        cwd,
+        environment,
+        timeout_seconds,
+        log_path,
+        ledger,
+    ):
+        del display_command, cwd, timeout_seconds, ledger
+        guard = {
+            "result": "passed",
+            "artifact_sha256": context.wheel_sha256,
+            "install_receipt_sha256": install_receipt_sha256,
+            "source_worktree_imported": False,
+            "source_worktree_on_sys_path": False,
+        }
+        guard_path = temp / "ISSUE_51_REGRESSION.import-guard.json"
+        guard_path.write_text(json.dumps(guard), encoding="utf-8")
+        details_path = Path(environment[module.ISSUE_51_DETAILS_OUTPUT_ENV])
+        details_path.write_text(
+            json.dumps(
+                {"schema_version": module.ISSUE_51_DETAILS_SCHEMA_VERSION}
+            ),
+            encoding="utf-8",
+        )
+        Path(log_path).write_text("passed\n", encoding="utf-8")
+        return {
+            "started_at": "2026-08-28T00:00:00+00:00",
+            "finished_at": "2026-08-28T00:00:01+00:00",
+            "exit_code": 0,
+            "log_sha256": "f" * 64,
+        }
+
+    monkeypatch.setattr(module, "_run", fake_run)
+    node_ids = module.REHEARSAL_RECEIPTS["ISSUE_51_REGRESSION.json"]
+    module._run_pytest_receipt(
+        root=tmp_path / "source",
+        harness=tmp_path / "harness",
+        python=tmp_path / "python.exe",
+        staging=staging,
+        environment=environment,
+        context=context,
+        install_receipt={
+            "environment_id": "1" * 64,
+            "installed_distribution": "hermes-scope-recall==2.0.0",
+            "direct_url_sha256": "2" * 64,
+            "record_sha256": "3" * 64,
+        },
+        install_receipt_sha256=install_receipt_sha256,
+        hermes_source=tmp_path / "hermes",
+        hermes_source_identity={
+            "commit": "4" * 40,
+            "tree": "5" * 40,
+            "clean": True,
+        },
+        receipt_name="ISSUE_51_REGRESSION.json",
+        node_ids=node_ids,
+        ledger=[],
+    )
+
+    receipt = json.loads(
+        (staging / "ISSUE_51_REGRESSION.json").read_text(encoding="utf-8")
+    )
+    assert receipt["details"]["node_ids"] == list(node_ids)
+    assert receipt["details"]["issue_51_regression"] == {
+        "schema_version": module.ISSUE_51_DETAILS_SCHEMA_VERSION
+    }
+    assert str(tmp_path) not in json.dumps(receipt, sort_keys=True)
+
+
 def test_validation_script_path_entrypoint_is_importable() -> None:
     result = subprocess.run(
         [sys.executable, "-B", str(SCRIPT), "--help"],

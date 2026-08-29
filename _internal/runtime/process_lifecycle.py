@@ -304,6 +304,9 @@ def initialize_under_lifecycle_lock(provider: Any, session_id: str, **kwargs: An
     provider._session_id = session_id
     provider._current_turn = 0
     provider._last_recall_turns = {}
+    from .writer_handoff import initialize_writer_handoff_activity
+
+    initialize_writer_handoff_activity(provider, reset=True)
     provider._config = {}
     provider._retrieval_config = {}
     provider._vector_config = {}
@@ -698,9 +701,14 @@ def initialize_read_only_runtime(provider: Any) -> None:
         else:
             provider._conn = None
     except Exception:
-        logger.exception(
-            "Scope Recall read-only runtime could not open the truth database"
-        )
+        if bool(getattr(provider, "_writer_handoff_fenced", False)):
+            logger.warning(
+                "Scope Recall fenced handoff could not initialize its read-only pager"
+            )
+        else:
+            logger.exception(
+                "Scope Recall read-only runtime could not open the truth database"
+            )
         provider._conn = None
     provider._vector_enabled = False
     provider._vector_ready = False
@@ -760,6 +768,12 @@ def _promote_under_lifecycle_lock(provider: Any) -> None:
         provider._truth_writer_lease = lease
         provider._truth_writer_role = "owner"
         provider._truth_writer_owner = {}
+        from .writer_handoff import (
+            initialize_writer_handoff_activity,
+            note_writer_promotion_succeeded,
+        )
+
+        initialize_writer_handoff_activity(provider, reset=True)
         with provider._lock:
             if provider._conn is not None:
                 _call_provider(
@@ -769,6 +783,7 @@ def _promote_under_lifecycle_lock(provider: Any) -> None:
                     context="reader promotion close",
                 )
         _call_provider(provider, "_initialize_writer_runtime", default=lambda: initialize_writer_runtime(provider))
+        note_writer_promotion_succeeded(provider)
     except BaseException:
         cleaned = _call_provider(
             provider,

@@ -21,6 +21,9 @@ This release candidate is cumulative since the last public release, `1.10.3`. It
 
 ### Fixed
 - Declared Windows time-zone data as a direct runtime dependency so a clean wheel installation can resolve `ZoneInfo("UTC")` without relying on optional vector dependencies to supply it transitively.
+- Closed issue #51 with an accident-scale regression for the retired relation rebuild queue, including zero-write idle behavior, exact bounded focus planning, backup-first cleanup, CAS, receipts, and idempotent replay.
+- Closed issue #58 by adding a default-on, process-wide idle writer handoff: every same-store Provider, capture queue, transaction, digest, named holder, and connection pin must quiesce before the OS lease is released, and uncertain teardown remains fail-closed instead of reporting a healthy reader.
+- Corrected legacy hard-delete companion reporting so archive, merge, dedupe, nightly cleanup, and direct deletion classify only the exact Vector outbox intents created by that committed truth mutation; unrelated replay progress can no longer clear a pending deletion.
 
 ### Compatibility
 - Preserved legacy projection reads and writes for N-1 interoperability; no claim-only durable user data is allowed in 2.0.x.

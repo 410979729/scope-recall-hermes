@@ -52,6 +52,65 @@ def _valid_honesty(module) -> dict[str, object]:
     }
 
 
+def _valid_issue_51_details(module) -> dict[str, object]:
+    return {
+        "schema_version": module.ISSUE_51_DETAILS_SCHEMA_VERSION,
+        "visible_memory_count": 2_046,
+        "legacy_pending_count": 1_136,
+        "legacy_attempts_total": 658_038,
+        "old_revision_distinct_count": 1,
+        "initialization_legacy_mutations": 0,
+        "idle_legacy_mutations": 0,
+        "legacy_attempts_unchanged": True,
+        "legacy_status_unchanged": True,
+        "legacy_available_at_unchanged": True,
+        "legacy_lease_fields_unchanged": True,
+        "simulated_monotonic_seconds": 60.0,
+        "simulated_idle_tick_count": 61,
+        "legacy_claim_calls": 0,
+        "legacy_drain_calls": 0,
+        "legacy_sql_transaction_count": 0,
+        "legacy_sql_mutation_count": 0,
+        "exact_focus_work_count": 1,
+        "exact_focus_scope_count": 1,
+        "scope_wide_fanout_count": 0,
+        "candidate_cap": 1,
+        "candidate_affected_count": 2,
+        "candidate_cap_refused": True,
+        "partial_relation_mutation_count": 0,
+        "operator_action_required": True,
+        "cleanup_plan_sha256": "a" * 64,
+        "cleanup_repeated_plan_sha256": "a" * 64,
+        "cleanup_cas_refused": True,
+        "backup_verified": True,
+        "backup_visible_memory_count": 2_046,
+        "backup_legacy_pending_count": 1_136,
+        "cleanup_deleted_legacy_count": 1_136,
+        "cleanup_disposition_count": 1_136,
+        "cleanup_receipt_state": "mirrored",
+        "cleanup_receipt_present": True,
+        "cleanup_idempotent_replay": True,
+        "cleanup_replay_backup_stable": True,
+        "cleanup_remaining_legacy_count": 0,
+    }
+
+
+def _valid_writer_handoff_details(module, wheel_sha: str) -> dict[str, object]:
+    return {
+        "schema_version": module.WRITER_HANDOFF_DETAILS_SCHEMA_VERSION,
+        "writer_artifact_sha256": wheel_sha,
+        "idle_release_seconds": 1800.0,
+        "process_count": 2,
+        "same_process_provider_count": 2,
+        "stages": list(module.WRITER_HANDOFF_STAGES),
+        "simultaneous_writer_observed": False,
+        "accepted_work_lost": False,
+        "holder_count_after_release": 0,
+        "connection_pin_count_after_release": 0,
+        "result": "passed",
+    }
+
+
 def _complete_fixture(module, tmp_path: Path) -> tuple[Path, str, str]:
     commit = "a" * 40
     tree = "b" * 40
@@ -80,10 +139,17 @@ def _complete_fixture(module, tmp_path: Path) -> tuple[Path, str, str]:
         },
     )
     runner_sha = "4" * 64
+    hermes_identity = {
+        "commit": module.SUPPORTED_HERMES_COMMIT,
+        "tree": module.SUPPORTED_HERMES_TREE,
+        "clean": True,
+    }
     _write_json(
         evidence / "CANDIDATE_MANIFEST.json",
         {
             "schema_version": "scope-recall.candidate-manifest.v1",
+            "candidate_mode": module.FINAL_CANDIDATE_MODE,
+            "candidate_version": "2.0.0",
             "source": {
                 "commit": commit,
                 "tree": tree,
@@ -96,6 +162,10 @@ def _complete_fixture(module, tmp_path: Path) -> tuple[Path, str, str]:
                         }
                     ]
                 },
+            },
+            "hermes": {
+                **hermes_identity,
+                "version": module.SUPPORTED_HERMES_VERSION,
             },
             "provenance": {"sha256": _sha256(evidence / "BUILD_PROVENANCE.json")},
             "ci_run_ids": [],
@@ -127,15 +197,19 @@ def _complete_fixture(module, tmp_path: Path) -> tuple[Path, str, str]:
             "commands": install_stage_ledger,
         },
     )
-    hermes_identity = {"commit": "9" * 40, "tree": "8" * 40, "clean": True}
     for version, result in (("0.19.1", "compatible"), ("0.20.6", "incompatible")):
+        probe_identity = (
+            hermes_identity
+            if version == "0.19.1"
+            else {"commit": "d" * 40, "tree": "e" * 40, "clean": True}
+        )
         _write_json(
             evidence / f"HERMES_COMPATIBILITY_PROBE.{version}.json",
             {
                 "schema_version": "scope-recall.hermes-compatibility-probe.v1",
                 "expected_hermes_version": version,
                 "observed_hermes_version": version,
-                "hermes_source": hermes_identity,
+                "hermes_source": probe_identity,
                 "result": result,
                 "support_matrix_changed": False,
                 "active_instance_touched": False,
@@ -339,10 +413,30 @@ def _complete_fixture(module, tmp_path: Path) -> tuple[Path, str, str]:
                         "n_minus_one_window_evidence": "real-cross-interpreter",
                     }
                 )
+            if name == "ISSUE_51_REGRESSION.json":
+                extra["details"] = {
+                    "node_ids": sorted(module.ISSUE_51_REQUIRED_NODE_IDS),
+                    "issue_51_regression": _valid_issue_51_details(module),
+                }
+            receipt_schema = "scope-recall.test-receipt.v1"
+            if name == "WRITER_LEASE_HANDOFF_REHEARSAL.json":
+                handoff = _valid_writer_handoff_details(module, wheel_sha)
+                receipt_schema = module.WRITER_HANDOFF_SCHEMA_VERSION
+                extra.update(
+                    {
+                        key: value
+                        for key, value in handoff.items()
+                        if key != "schema_version"
+                    }
+                )
+                extra["details"] = {
+                    "node_ids": sorted(module.WRITER_HANDOFF_REQUIRED_NODE_IDS),
+                    "writer_lease_handoff": handoff,
+                }
             _write_json(
                 path,
                 {
-                    "schema_version": "scope-recall.test-receipt.v1",
+                    "schema_version": receipt_schema,
                     "source_commit": commit,
                     "source_tree": tree,
                     "artifact_sha256": wheel_sha,
@@ -390,10 +484,33 @@ def test_evidence_index_requires_every_file_and_exact_source_binding(
     assert payload["test_honesty"]["skipped_node_ids"] == [
         "tests/test_x.py::test_skip"
     ]
+    issue_51_entry = next(
+        item
+        for item in payload["files"]
+        if item["path"] == "ISSUE_51_REGRESSION.json"
+    )
+    assert issue_51_entry["classification"] == "shareable"
     serialized = json.dumps(payload, sort_keys=True)
     assert str(tmp_path) not in serialized
     (evidence / "RUFF.log").unlink()
     with pytest.raises(module.EvidencePackageError, match="incomplete"):
+        module.build_evidence_index(evidence, expected_sha=commit)
+
+
+def test_evidence_index_rejects_issue_51_mutation_or_scale_drift(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    evidence, commit, _tree = _complete_fixture(module, tmp_path)
+    path = evidence / "ISSUE_51_REGRESSION.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["details"]["issue_51_regression"]["legacy_sql_mutation_count"] = 1
+    _write_json(path, payload)
+
+    with pytest.raises(
+        module.EvidencePackageError,
+        match="legacy_sql_mutation_count mismatch",
+    ):
         module.build_evidence_index(evidence, expected_sha=commit)
 
 
@@ -456,6 +573,80 @@ def test_evidence_index_rejects_unbound_install_stage_and_hermes_identity(
     _write_json(receipt_path, receipt)
 
     with pytest.raises(module.EvidencePackageError, match="Hermes source identity mismatch"):
+        module.build_evidence_index(evidence, expected_sha=commit)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (
+            lambda payload: payload.update({"candidate_mode": "development-snapshot"}),
+            "not a final release candidate",
+        ),
+        (
+            lambda payload: payload.update(
+                {"hermes": {"commit": "unbound", "tree": "unbound", "version": "unbound"}}
+            ),
+            "does not match the supported baseline",
+        ),
+        (
+            lambda payload: payload["hermes"].update({"tree": "7" * 40}),
+            "does not match the supported baseline",
+        ),
+    ],
+)
+def test_evidence_index_rejects_nonfinal_or_drifted_candidate_hermes(
+    tmp_path: Path,
+    mutation,
+    message: str,
+) -> None:
+    module = _load_module()
+    evidence, commit, _tree = _complete_fixture(module, tmp_path)
+    manifest_path = evidence / "CANDIDATE_MANIFEST.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    mutation(manifest)
+    _write_json(manifest_path, manifest)
+
+    with pytest.raises(module.EvidencePackageError, match=message):
+        module.build_evidence_index(evidence, expected_sha=commit)
+
+
+def test_evidence_index_rejects_supported_hermes_probe_identity_drift(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    evidence, commit, _tree = _complete_fixture(module, tmp_path)
+    probe_path = evidence / "HERMES_COMPATIBILITY_PROBE.0.19.1.json"
+    probe = json.loads(probe_path.read_text(encoding="utf-8"))
+    probe["hermes_source"]["commit"] = "7" * 40
+    _write_json(probe_path, probe)
+
+    with pytest.raises(module.EvidencePackageError, match="supported source"):
+        module.build_evidence_index(evidence, expected_sha=commit)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda payload: payload.pop("hermes_source"),
+        lambda payload: payload.update(
+            {"hermes_source": {"commit": "unbound", "tree": "unbound", "clean": True}}
+        ),
+        lambda payload: payload["hermes_source"].update({"clean": False}),
+    ],
+)
+def test_evidence_index_rejects_unbound_additive_hermes_probe(
+    tmp_path: Path,
+    mutation,
+) -> None:
+    module = _load_module()
+    evidence, commit, _tree = _complete_fixture(module, tmp_path)
+    probe_path = evidence / "HERMES_COMPATIBILITY_PROBE.0.20.6.json"
+    probe = json.loads(probe_path.read_text(encoding="utf-8"))
+    mutation(probe)
+    _write_json(probe_path, probe)
+
+    with pytest.raises(module.EvidencePackageError, match="hermes_source"):
         module.build_evidence_index(evidence, expected_sha=commit)
 
 

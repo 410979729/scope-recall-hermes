@@ -134,6 +134,25 @@ def test_candidate_build_script_path_entrypoint_is_importable() -> None:
 
     assert result.returncode == 0, result.stdout
     assert "--expected-sha" in result.stdout
+    assert "--hermes-root" in result.stdout
+
+
+def test_final_candidate_build_requires_hermes_root(tmp_path: Path) -> None:
+    build = _load_module()
+    common = [
+        "--expected-sha",
+        "a" * 40,
+        "--active-hermes-home",
+        str(tmp_path / "active-hermes"),
+    ]
+
+    with pytest.raises(SystemExit):
+        build.parse_args(common)
+
+    parsed = build.parse_args(
+        [*common, "--hermes-root", str(tmp_path / "pinned-hermes")]
+    )
+    assert parsed.hermes_root == tmp_path / "pinned-hermes"
 
 
 def test_candidate_build_retains_failed_staging_evidence(tmp_path: Path) -> None:

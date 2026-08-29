@@ -32,6 +32,72 @@ SCHEMA_VERSION = "scope-recall.evidence-index.v1"
 SHAREABLE_SCHEMA_VERSION = "scope-recall.shareable-evidence-index.v1"
 EVIDENCE_SCAN_SCHEMA_VERSION = "scope-recall.evidence-content-scan.v1"
 TEST_HONESTY_SCHEMA_VERSION = "scope-recall.test-honesty.v1"
+FINAL_CANDIDATE_MODE = "final-release-candidate"
+SUPPORTED_HERMES_VERSION = "0.19.1"
+SUPPORTED_HERMES_COMMIT = "cc4cab2f592e60a197e796506de9168f74baf3ea"
+SUPPORTED_HERMES_TREE = "fcdc6093750ed0a3a556e20927799d7245ba65e4"
+ISSUE_51_DETAILS_SCHEMA_VERSION = "scope-recall.issue-51-regression-details.v1"
+ISSUE_51_REQUIRED_NODE_IDS = frozenset(
+    {
+        "tests/test_issue_51_regression.py::test_issue_51_regression",
+        "tests/test_relation_rebuild_retirement.py::test_every_legacy_execution_surface_is_a_zero_write_refusal",
+        "tests/test_relation_policy_generation.py::test_cap_plus_one_blocks_whole_generation_without_partial_items",
+        "tests/test_relation_cleanup.py::test_cleanup_apply_is_backup_first_committed_and_idempotently_replayed",
+    }
+)
+WRITER_HANDOFF_SCHEMA_VERSION = "scope-recall.writer-lease-handoff.v1"
+WRITER_HANDOFF_DETAILS_SCHEMA_VERSION = (
+    "scope-recall.writer-lease-handoff-details.v1"
+)
+WRITER_HANDOFF_REQUIRED_NODE_IDS = frozenset(
+    {
+        "tests/test_writer_idle_handoff.py::test_process_wide_idle_handoff_allows_real_second_process_commit",
+        "tests/test_writer_idle_handoff.py::test_extra_connection_pin_vetoes_process_handoff",
+        "tests/test_writer_idle_handoff.py::test_active_same_process_peer_vetoes_process_handoff",
+        "tests/test_writer_idle_handoff.py::test_writer_loop_automatically_schedules_idle_handoff",
+        "tests/test_writer_idle_handoff.py::test_wall_clock_rollback_cannot_extend_process_cooldown",
+        "tests/test_writer_idle_handoff.py::test_activity_generation_change_aborts_and_resumes_all_writers",
+        "tests/test_writer_idle_handoff.py::test_capture_enqueue_racing_idle_fence_aborts_without_losing_work",
+        "tests/test_writer_idle_handoff.py::test_direct_tool_write_started_before_fence_commits_and_vetoes_handoff",
+        "tests/test_writer_idle_handoff.py::test_activity_after_final_check_linearizes_after_release_and_promotes",
+        "tests/test_writer_idle_handoff.py::test_resource_close_failure_retains_authority_and_never_reports_reader",
+        "tests/test_writer_idle_handoff.py::test_writer_connection_close_failure_restores_healthy_owner",
+        "tests/test_writer_idle_handoff.py::test_connection_pin_close_failure_is_retried_before_owner_restore",
+        "tests/test_writer_idle_handoff.py::test_os_lease_release_failure_fences_process_and_requires_restart",
+        "tests/test_writer_idle_handoff.py::test_writer_restore_failure_stays_owner_degraded_and_fenced",
+        "tests/test_writer_idle_handoff.py::test_process_fence_refuses_new_same_process_join",
+        "tests/test_writer_idle_handoff.py::test_truth_work_started_after_process_fence_cannot_inherit_old_authority",
+        "tests/test_writer_idle_handoff.py::test_handoff_thread_cannot_join_a_new_named_holder",
+        "tests/test_writer_idle_handoff.py::test_handoff_recovery_pin_cannot_create_missing_authority",
+        "tests/test_writer_idle_handoff.py::test_only_handoff_thread_may_join_existing_recovery_pin",
+        "tests/test_writer_idle_handoff.py::test_every_busy_surface_vetoes_idle_handoff",
+        "tests/test_writer_idle_handoff.py::test_quiesce_failure_restores_owner_without_releasing_authority",
+        "tests/test_writer_idle_handoff.py::test_abort_resume_failure_is_owner_degraded_and_logs_only_fixed_codes",
+        "tests/test_writer_idle_handoff.py::test_resume_waits_for_prior_sentinel_consumer_before_starting_replacement",
+        "tests/test_writer_idle_handoff.py::test_read_only_reopen_failure_never_resurrects_released_writer",
+        "tests/test_writer_idle_handoff.py::test_failure_telemetry_never_exposes_exception_text_or_local_path",
+        "tests/test_writer_idle_handoff.py::test_successful_promotion_clears_recoverable_reader_degradation",
+        "tests/test_writer_idle_handoff.py::test_twenty_reader_writer_round_trips_do_not_leak_process_authority",
+        "tests/test_writer_idle_handoff.py::test_stats_exposes_content_free_writer_handoff_observability",
+        "tests/test_writer_idle_handoff.py::test_idle_release_config_accepts_disabled_or_bounded_values",
+        "tests/test_writer_idle_handoff.py::test_idle_release_config_rejects_ambiguous_or_unbounded_values",
+        "tests/test_writer_idle_handoff.py::test_user_activity_generation_veto_is_content_free",
+        "tests/test_writer_handoff_activity.py::test_journal_append_cannot_cross_handoff_fence_after_lifecycle_precheck",
+        "tests/test_writer_handoff_activity.py::test_relation_maintenance_real_sqlite_mutation_refreshes_truth_activity",
+        "tests/test_writer_handoff_activity.py::test_independent_digest_sqlite_mutation_refreshes_truth_activity",
+        "tests/test_writer_handoff_activity.py::test_noop_digest_does_not_refresh_truth_activity",
+    }
+)
+WRITER_HANDOFF_STAGES = (
+    "initial_owner",
+    "peer_reader",
+    "idle_fence",
+    "all_work_quiescent",
+    "os_lease_released",
+    "peer_promoted",
+    "peer_write_committed",
+    "former_owner_remains_reader",
+)
 REQUIRED_INPUT_FILES = (
     "SOURCE_IDENTITY.json",
     "BUILD_PROVENANCE.json",
@@ -63,6 +129,8 @@ REQUIRED_INPUT_FILES = (
     "READONLY_CANARY.json",
     "WRITER_CANARY.json",
     "ROLLBACK_REHEARSAL.json",
+    "ISSUE_51_REGRESSION.json",
+    "WRITER_LEASE_HANDOFF_REHEARSAL.json",
     "INSTALL_CANDIDATE_RECEIPT.json",
     "INSTALL_N_MINUS_ONE_RECEIPT.json",
     "HERMES_COMPATIBILITY_PROBE.0.19.1.json",
@@ -106,6 +174,8 @@ RECEIPT_FILES = (
     "READONLY_CANARY.json",
     "WRITER_CANARY.json",
     "ROLLBACK_REHEARSAL.json",
+    "ISSUE_51_REGRESSION.json",
+    "WRITER_LEASE_HANDOFF_REHEARSAL.json",
     "ACTIVE_ISOLATION.json",
     "REPOSITORY_CENSUS.json",
     "REPOSITORY_DELETE_RENAME_EVIDENCE.json",
@@ -537,10 +607,56 @@ def _validate_hermes_probes(root: Path) -> dict[str, object]:
         or probe_0206.get("active_instance_touched") is not False
     ):
         raise EvidencePackageError("Hermes 0.20.6 compatibility probe is invalid")
-    return _validated_hermes_identity(
+    supported_identity = _validated_hermes_identity(
         probe_0191,
         field="hermes_source",
     )
+    # The additive probe does not change the frozen support identity, but it
+    # must still name the exact clean Git tree that was actually exercised.
+    _validated_hermes_identity(
+        probe_0206,
+        field="hermes_source",
+    )
+    if (
+        supported_identity.get("commit") != SUPPORTED_HERMES_COMMIT
+        or supported_identity.get("tree") != SUPPORTED_HERMES_TREE
+        or supported_identity.get("clean") is not True
+    ):
+        raise EvidencePackageError(
+            "Hermes 0.19.1 compatibility probe is not bound to the supported source"
+        )
+    return supported_identity
+
+
+def _validate_candidate_hermes(
+    candidate: Mapping[str, object],
+    *,
+    supported_probe_identity: Mapping[str, object],
+) -> None:
+    if candidate.get("candidate_mode") != FINAL_CANDIDATE_MODE:
+        raise EvidencePackageError(
+            "Candidate Manifest is not a final release candidate"
+        )
+    identity = candidate.get("hermes")
+    if not isinstance(identity, dict):
+        raise EvidencePackageError("Candidate Manifest Hermes identity is missing")
+    expected = {
+        "commit": SUPPORTED_HERMES_COMMIT,
+        "tree": SUPPORTED_HERMES_TREE,
+        "clean": True,
+        "version": SUPPORTED_HERMES_VERSION,
+    }
+    if identity != expected:
+        raise EvidencePackageError(
+            "Candidate Manifest Hermes identity does not match the supported baseline"
+        )
+    if any(
+        identity.get(field) != supported_probe_identity.get(field)
+        for field in ("commit", "tree", "clean")
+    ):
+        raise EvidencePackageError(
+            "Candidate Manifest Hermes identity differs from the 0.19.1 probe"
+        )
 
 
 def _validate_receipt(
@@ -617,6 +733,126 @@ def _validate_receipt(
         for field in ("hermes_home_id", "database_id", "pytest_basetemp_id"):
             _require_sha(boundary.get(field), field=f"{name}.{field}")
         _validated_hermes_identity(payload, field="hermes_source_identity")
+
+
+def _validate_issue_51_regression(payload: Mapping[str, object]) -> None:
+    details = payload.get("details")
+    if not isinstance(details, dict):
+        raise EvidencePackageError("ISSUE_51_REGRESSION.json details are missing")
+    node_ids = details.get("node_ids")
+    if not isinstance(node_ids, list) or not all(
+        isinstance(item, str) and item for item in node_ids
+    ):
+        raise EvidencePackageError(
+            "ISSUE_51_REGRESSION.json node_ids must be a string array"
+        )
+    if len(node_ids) != len(set(node_ids)) or set(node_ids) != (
+        ISSUE_51_REQUIRED_NODE_IDS
+    ):
+        raise EvidencePackageError(
+            "ISSUE_51_REGRESSION.json node set does not match the closure rehearsal"
+        )
+    regression = details.get("issue_51_regression")
+    if not isinstance(regression, dict):
+        raise EvidencePackageError(
+            "ISSUE_51_REGRESSION.json accident-scale proof is missing"
+        )
+    if regression.get("schema_version") != ISSUE_51_DETAILS_SCHEMA_VERSION:
+        raise EvidencePackageError("ISSUE_51_REGRESSION.json details schema mismatch")
+    exact_values: dict[str, object] = {
+        "visible_memory_count": 2_046,
+        "legacy_pending_count": 1_136,
+        "legacy_attempts_total": 658_038,
+        "old_revision_distinct_count": 1,
+        "initialization_legacy_mutations": 0,
+        "idle_legacy_mutations": 0,
+        "legacy_attempts_unchanged": True,
+        "legacy_status_unchanged": True,
+        "legacy_available_at_unchanged": True,
+        "legacy_lease_fields_unchanged": True,
+        "simulated_monotonic_seconds": 60.0,
+        "simulated_idle_tick_count": 61,
+        "legacy_claim_calls": 0,
+        "legacy_drain_calls": 0,
+        "legacy_sql_transaction_count": 0,
+        "legacy_sql_mutation_count": 0,
+        "exact_focus_work_count": 1,
+        "exact_focus_scope_count": 1,
+        "scope_wide_fanout_count": 0,
+        "candidate_cap": 1,
+        "candidate_affected_count": 2,
+        "candidate_cap_refused": True,
+        "partial_relation_mutation_count": 0,
+        "operator_action_required": True,
+        "cleanup_cas_refused": True,
+        "backup_verified": True,
+        "backup_visible_memory_count": 2_046,
+        "backup_legacy_pending_count": 1_136,
+        "cleanup_deleted_legacy_count": 1_136,
+        "cleanup_disposition_count": 1_136,
+        "cleanup_receipt_state": "mirrored",
+        "cleanup_receipt_present": True,
+        "cleanup_idempotent_replay": True,
+        "cleanup_replay_backup_stable": True,
+        "cleanup_remaining_legacy_count": 0,
+    }
+    for field, expected in exact_values.items():
+        if regression.get(field) != expected:
+            raise EvidencePackageError(
+                f"ISSUE_51_REGRESSION.json {field} mismatch"
+            )
+    plan_sha256 = _require_sha(
+        regression.get("cleanup_plan_sha256"),
+        field="ISSUE_51_REGRESSION.json cleanup_plan_sha256",
+    )
+    repeated_sha256 = _require_sha(
+        regression.get("cleanup_repeated_plan_sha256"),
+        field="ISSUE_51_REGRESSION.json cleanup_repeated_plan_sha256",
+    )
+    if repeated_sha256 != plan_sha256:
+        raise EvidencePackageError(
+            "ISSUE_51_REGRESSION.json cleanup plan is not deterministic"
+        )
+
+
+def _validate_writer_handoff_rehearsal(payload: Mapping[str, object]) -> None:
+    name = "WRITER_LEASE_HANDOFF_REHEARSAL.json"
+    if payload.get("schema_version") != WRITER_HANDOFF_SCHEMA_VERSION:
+        raise EvidencePackageError(f"{name} schema mismatch")
+    details = payload.get("details")
+    if not isinstance(details, dict):
+        raise EvidencePackageError(f"{name} details are missing")
+    node_ids = details.get("node_ids")
+    if not isinstance(node_ids, list) or not all(
+        isinstance(item, str) and item for item in node_ids
+    ):
+        raise EvidencePackageError(f"{name} node_ids must be a string array")
+    if len(node_ids) != len(set(node_ids)) or set(node_ids) != (
+        WRITER_HANDOFF_REQUIRED_NODE_IDS
+    ):
+        raise EvidencePackageError(f"{name} node set does not match the rehearsal")
+    proof = details.get("writer_lease_handoff")
+    if not isinstance(proof, dict):
+        raise EvidencePackageError(f"{name} process handoff proof is missing")
+    if proof.get("schema_version") != WRITER_HANDOFF_DETAILS_SCHEMA_VERSION:
+        raise EvidencePackageError(f"{name} details schema mismatch")
+    expected = {
+        "writer_artifact_sha256": payload.get("artifact_sha256"),
+        "idle_release_seconds": 1800.0,
+        "process_count": 2,
+        "same_process_provider_count": 2,
+        "stages": list(WRITER_HANDOFF_STAGES),
+        "simultaneous_writer_observed": False,
+        "accepted_work_lost": False,
+        "holder_count_after_release": 0,
+        "connection_pin_count_after_release": 0,
+        "result": "passed",
+    }
+    for field, expected_value in expected.items():
+        if proof.get(field) != expected_value:
+            raise EvidencePackageError(f"{name} {field} mismatch")
+        if payload.get(field) != expected_value:
+            raise EvidencePackageError(f"{name} top-level {field} mismatch")
 
 
 def _source_identity(evidence_dir: Path, expected_sha: str) -> tuple[str, str, str]:
@@ -768,6 +1004,10 @@ def build_evidence_index(evidence_dir: Path, *, expected_sha: str) -> dict[str, 
         raise EvidencePackageError("candidate and N-1 install environments are not distinct")
     _validate_install_command_stages(root, install_receipts)
     rehearsal_hermes_identity = _validate_hermes_probes(root)
+    _validate_candidate_hermes(
+        candidate,
+        supported_probe_identity=rehearsal_hermes_identity,
+    )
     candidate_install = install_receipts["INSTALL_CANDIDATE_RECEIPT.json"]
     candidate_install_sha256 = _sha256_file(
         root / "INSTALL_CANDIDATE_RECEIPT.json"
@@ -807,6 +1047,10 @@ def build_evidence_index(evidence_dir: Path, *, expected_sha: str) -> dict[str, 
             "REPOSITORY_DELETE_RENAME_EVIDENCE.json",
         } and receipt.get("hermes_source_identity") != rehearsal_hermes_identity:
             raise EvidencePackageError(f"{name} Hermes source identity mismatch")
+        if name == "ISSUE_51_REGRESSION.json":
+            _validate_issue_51_regression(receipt)
+        if name == "WRITER_LEASE_HANDOFF_REHEARSAL.json":
+            _validate_writer_handoff_rehearsal(receipt)
         if name in {"MIGRATION_N_MINUS_ONE.json", "DOWNGRADE_N_MINUS_ONE.json"}:
             if receipt.get("n_minus_one_install_receipt_sha256") != (
                 n_minus_one_install_sha256

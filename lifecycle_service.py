@@ -108,6 +108,7 @@ def hard_delete_memories(
             "ids": [],
             "event_ids": [],
             "outbox_enqueued": 0,
+            "vector_outbox_keys": [],
         }
     owns_transaction = bool(commit)
     if owns_transaction:
@@ -140,6 +141,7 @@ def hard_delete_memories(
                     "ids": [],
                     "event_ids": [],
                     "outbox_enqueued": 0,
+                    "vector_outbox_keys": [],
                 }
         rows: list[Any] = []
         reserved = len(clean_scope_ids) if scope_ids is not None else 0
@@ -182,7 +184,8 @@ def hard_delete_memories(
                 "ids": [],
                 "event_ids": [],
                 "outbox_enqueued": 0,
-                }
+                "vector_outbox_keys": [],
+            }
         for row in rows:
             validate_lifecycle_transition(
                 operation,
@@ -202,7 +205,7 @@ def hard_delete_memories(
         at = timestamp or now_iso()
         generation_id = _current_generation_id_read_only(conn)
         event_ids: list[str] = []
-        outbox_enqueued = 0
+        vector_outbox_keys: list[str] = []
         safe_reason = sanitize_report_text(reason or "hard delete")
         for row in rows:
             memory_id = str(row["id"])
@@ -229,15 +232,17 @@ def hard_delete_memories(
                 created_at=at,
             )
             event_ids.append(event_id)
-            if _enqueue_vector_transition(
+            vector_outbox_key = _enqueue_vector_transition(
                 conn,
                 generation_id=generation_id,
                 memory_id=memory_id,
                 operation="delete",
                 updated_at=at,
                 reason=safe_reason,
-            ):
-                outbox_enqueued += 1
+            )
+            if vector_outbox_key:
+                vector_outbox_keys.append(vector_outbox_key)
+        outbox_enqueued = len(vector_outbox_keys)
         if require_vector_delete and outbox_enqueued != len(scoped_ids):
             raise RuntimeError(
                 "hard delete requires one durable vector delete outbox event per truth row: "
@@ -271,6 +276,7 @@ def hard_delete_memories(
             "event_ids": event_ids,
             "generation_id": generation_id,
             "outbox_enqueued": outbox_enqueued,
+            "vector_outbox_keys": vector_outbox_keys,
             "vector_status": vector_status,
             "vector_pending": vector_status == "pending",
             "vector_error": "",

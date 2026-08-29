@@ -146,17 +146,22 @@ def _capture_store_authority(
     shutdown is published.
     """
 
+    from ._internal.runtime.writer_handoff import active_truth_work
+
     with _writer_lifecycle_lock(provider):
         if complete_accepted_capture:
             if getattr(provider, "_truth_writer_role", None) != "owner":
                 raise RuntimeError(WRITE_AUTHORITY_BUSY)
         else:
             write_kernel_mod.require_positive_write_authority(provider)
-        yield
+        with active_truth_work(provider):
+            yield
 
 
 def _drain_relation_rebuild_debt(provider: Any) -> None:
     """Run one bounded idle tick without waiting behind foreground authority."""
+
+    from ._internal.runtime.writer_handoff import active_truth_work
 
     lifecycle_lock = _writer_lifecycle_lock(provider)
     acquire = getattr(lifecycle_lock, "acquire", None)
@@ -173,12 +178,14 @@ def _drain_relation_rebuild_debt(provider: Any) -> None:
             ) + 1
             return
         try:
-            _drain_relation_rebuild_debt_locked(provider)
+            with active_truth_work(provider):
+                _drain_relation_rebuild_debt_locked(provider)
         finally:
             release()
         return
     with lifecycle_lock:
-        _drain_relation_rebuild_debt_locked(provider)
+        with active_truth_work(provider):
+            _drain_relation_rebuild_debt_locked(provider)
 
 
 def _drain_relation_rebuild_debt_locked(provider: Any) -> None:
@@ -395,6 +402,12 @@ def writer_loop(provider: Any) -> None:
             ):
                 continue
             now = time.monotonic()
+            from ._internal.runtime.writer_handoff import (
+                maybe_schedule_idle_writer_handoff,
+            )
+
+            if maybe_schedule_idle_writer_handoff(provider):
+                continue
             last_drain = float(
                 getattr(provider, "_last_relation_rebuild_drain", 0.0) or 0.0
             )
@@ -598,6 +611,87 @@ def shutdown_writer(provider: Any, timeout: float = 3.0) -> None:
     provider._writer_thread = None
 
 
+def quiesce_writer_for_handoff(provider: Any, timeout: float = 3.0) -> None:
+    """Drain and stop a writer while the caller holds its submission fence.
+
+    Unlike process shutdown this does not publish ``shutdown_requested`` and
+    therefore remains reversible until resource teardown begins.  The caller
+    must keep the capture-submission lock and writer-handoff fence for the
+    entire operation.
+    """
+
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    if not bool(getattr(provider, "_writer_handoff_fenced", False)):
+        raise RuntimeError("writer_handoff_fence_missing")
+    if not flush_writer(provider, timeout=_remaining(deadline)):
+        raise RuntimeError("writer_handoff_flush_failed")
+    maintenance_stop = getattr(provider, "_maintenance_stop", None)
+    if maintenance_stop is not None:
+        maintenance_stop.set()
+    stop = getattr(provider, "_stop", None)
+    if stop is None:
+        raise RuntimeError("writer_handoff_stop_event_missing")
+    stop.set()
+    thread = getattr(provider, "_writer_thread", None)
+    if thread is not None and thread is threading.current_thread():
+        raise RuntimeError("writer_handoff_cannot_join_current_thread")
+    if thread is not None and thread.is_alive():
+        remaining = _remaining(deadline)
+        if remaining <= 0 or not put_work(
+            getattr(provider, "_write_queue", None),
+            None,
+            timeout=min(CONTROL_PUT_TIMEOUT_SECONDS, remaining),
+        ):
+            raise RuntimeError("writer_handoff_stop_publish_failed")
+        thread.join(timeout=_remaining(deadline))
+    if thread is not None and thread.is_alive():
+        raise RuntimeError("writer_handoff_stop_timeout")
+    work_queue = getattr(provider, "_write_queue", None)
+    if work_queue is None or not work_queue.empty():
+        raise RuntimeError("writer_handoff_queue_not_empty")
+    setattr(provider, "_writer_thread", None)
+
+
+def resume_writer_after_handoff(provider: Any) -> None:
+    """Resume a quiesced writer after a pre-teardown handoff veto."""
+
+    shutdown = getattr(provider, "_shutdown_requested", None)
+    if shutdown is not None and shutdown.is_set():
+        raise RuntimeError("writer_handoff_resume_during_shutdown")
+    stop = getattr(provider, "_stop", None)
+    if stop is None:
+        raise RuntimeError("writer_handoff_stop_event_missing")
+    prior = getattr(provider, "_writer_thread", None)
+    if prior is threading.current_thread():
+        raise RuntimeError("writer_handoff_resume_from_writer_thread")
+    if prior is not None and prior.is_alive() and not stop.is_set():
+        maintenance_stop = getattr(provider, "_maintenance_stop", None)
+        if maintenance_stop is not None:
+            maintenance_stop.clear()
+        return
+    if prior is not None and prior.is_alive():
+        # A quiesce timeout can occur after the stop sentinel was published.
+        # Do not clear ``_stop`` or claim OWNER while that consumer is still
+        # alive: it may consume the sentinel just after start_writer decides
+        # that an existing thread is healthy.  Boundedly finish the old
+        # consumer first; failure remains fenced/uncertain at the coordinator.
+        prior.join(timeout=3.0)
+    if prior is not None and prior.is_alive():
+        raise RuntimeError("writer_handoff_resume_wait_timeout")
+    work_queue = getattr(provider, "_write_queue", None)
+    if work_queue is None or not work_queue.empty():
+        raise RuntimeError("writer_handoff_resume_queue_not_empty")
+    provider._writer_thread = None
+    stop.clear()
+    maintenance_stop = getattr(provider, "_maintenance_stop", None)
+    if maintenance_stop is not None:
+        maintenance_stop.clear()
+    start_writer(provider)
+    resumed = getattr(provider, "_writer_thread", None)
+    if resumed is None or not resumed.is_alive():
+        raise RuntimeError("writer_handoff_resume_start_failed")
+
+
 @contextmanager
 def capture_mutation_barrier(provider: Any, timeout: float = 2.0) -> Iterator[None]:
     """Drain accepted captures, then exclude new enqueue through a mutation.
@@ -658,6 +752,12 @@ def enqueue_store(
 ) -> dict[str, Any]:
     """Sanitize and publish one capture to the finite process-local queue."""
 
+    # Enter the process-wide handoff activity gate before waiting for the
+    # submission lock.  A capture that begins while the idle fence is being
+    # assembled must veto that handoff instead of waking after demotion and
+    # being rejected by an authority state that changed underneath it.
+    from ._internal.runtime.writer_handoff import active_truth_work
+
     safe_content = sanitize_capture_text(content)
     safe_metadata_raw, _ = sanitize_structured_value(metadata or {})
     safe_metadata = safe_metadata_raw if isinstance(safe_metadata_raw, dict) else {}
@@ -674,63 +774,67 @@ def enqueue_store(
             capacity=capacity,
         )
 
-    with _capture_submission_lock(provider):
-        with _writer_lifecycle_lock(provider):
-            shutdown_requested = getattr(provider, "_shutdown_requested", None)
-            if (
-                (shutdown_requested is not None and shutdown_requested.is_set())
-                or provider._stop.is_set()
-            ):
-                raise RuntimeError("Scope Recall writer is shutting down")
-            if not has_positive_write_authority(provider):
-                return _enqueue_result(
+    with active_truth_work(provider):
+        with _capture_submission_lock(provider):
+            with _writer_lifecycle_lock(provider):
+                shutdown_requested = getattr(provider, "_shutdown_requested", None)
+                if (
+                    (shutdown_requested is not None and shutdown_requested.is_set())
+                    or provider._stop.is_set()
+                ):
+                    raise RuntimeError("Scope Recall writer is shutting down")
+                if not has_positive_write_authority(provider):
+                    return _enqueue_result(
+                        provider,
+                        status="rejected",
+                        reason="write_authority",
+                        depth=int(getattr(work_queue, "qsize", lambda: 0)()),
+                        capacity=capacity,
+                    )
+                if work_queue is None:
+                    return _enqueue_result(
+                        provider,
+                        status="deferred",
+                        reason="writer_unavailable",
+                        depth=0,
+                        capacity=capacity,
+                    )
+                thread = getattr(provider, "_writer_thread", None)
+                if thread is None or not thread.is_alive():
+                    return _enqueue_result(
+                        provider,
+                        status="deferred",
+                        reason="writer_unavailable",
+                        depth=int(getattr(work_queue, "qsize", lambda: 0)()),
+                        capacity=capacity,
+                    )
+                authorization = _resolve_capture_authorization(
                     provider,
-                    status="rejected",
-                    reason="write_authority",
-                    depth=int(getattr(work_queue, "qsize", lambda: 0)()),
-                    capacity=capacity,
+                    target=target,
+                    source=source,
                 )
-            if work_queue is None:
-                return _enqueue_result(
-                    provider,
-                    status="deferred",
-                    reason="writer_unavailable",
-                    depth=0,
-                    capacity=capacity,
-                )
-            thread = getattr(provider, "_writer_thread", None)
-            if thread is None or not thread.is_alive():
-                return _enqueue_result(
-                    provider,
-                    status="deferred",
-                    reason="writer_unavailable",
-                    depth=int(getattr(work_queue, "qsize", lambda: 0)()),
-                    capacity=capacity,
-                )
-            authorization = _resolve_capture_authorization(
-                provider,
-                target=target,
-                source=source,
-            )
-            job = {
-                "kind": "store",
-                "content": safe_content,
-                "source": str(source),
-                "target": str(target),
-                "session_id": str(session_id),
-                "metadata": safe_metadata,
-                "authorization": authorization,
-            }
-            try:
-                work_queue.put_nowait(job)
-            except queue.Full:
-                return _enqueue_result(
-                    provider,
-                    status="rejected",
-                    reason="queue_full",
-                    depth=int(work_queue.qsize()),
-                    capacity=capacity,
-                )
+                job = {
+                    "kind": "store",
+                    "content": safe_content,
+                    "source": str(source),
+                    "target": str(target),
+                    "session_id": str(session_id),
+                    "metadata": safe_metadata,
+                    "authorization": authorization,
+                }
+                try:
+                    work_queue.put_nowait(job)
+                except queue.Full:
+                    return _enqueue_result(
+                        provider,
+                        status="rejected",
+                        reason="queue_full",
+                        depth=int(work_queue.qsize()),
+                        capacity=capacity,
+                    )
+            from ._internal.runtime.writer_handoff import note_truth_activity
+
+            note_truth_activity(provider)
             return {
                 "status": "accepted",
                 "reason": "queued",

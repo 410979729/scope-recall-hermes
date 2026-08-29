@@ -23,7 +23,16 @@ def _load_dashboard():
 class FakeDoctor:
     @staticmethod
     def load_runtime_config(source_root, hermes_home):
-        return {"journal": {"enabled": True}, "vector": {"enabled": True, "backend": "lancedb", "fallback_backend": "sqlite-bruteforce", "index_general": True}}
+        return {
+            "journal": {"enabled": True},
+            "vector": {
+                "enabled": True,
+                "backend": "lancedb",
+                "fallback_backend": "sqlite-bruteforce",
+                "index_general": True,
+            },
+            "writer_lease": {"idle_release_seconds": 1800.0},
+        }
 
     @staticmethod
     def journal_enabled_from_config(config):
@@ -264,9 +273,45 @@ def test_dashboard_payload_has_schema_severity_sections_and_trend(monkeypatch, t
     assert payload["sections"]["relation_frequency_index"]["dirty_memories"] == 4
     assert payload["sections"]["relation_rebuild_queue"]["unresolved"] == 1
     assert payload["sections"]["freshness"]["by_status"]["expired"] == 1
+    assert payload["summary"]["writer_lease_scope"] == "process-wide-os-lock"
+    assert payload["summary"]["writer_idle_release_enabled"] is True
+    assert payload["summary"]["writer_idle_release_seconds"] == 1800.0
+    assert payload["summary"]["writer_live_counters_source"] == "scope_recall_stats"
+    handoff = payload["sections"]["writer_handoff"]
+    assert handoff["snapshot_kind"] == "offline_config_only"
+    assert handoff["runtime_state_observed"] is False
+    assert handoff["live_counters"]["observed"] is False
+    assert handoff["live_counters"]["source"] == "scope_recall_stats"
+    assert "last_handoff_failure_code" in handoff["live_counters"]["fields"]
     assert payload["trend"]["journal_unprocessed"]["delta"] == -9
     assert payload["trend"]["candidate_debt_count"]["delta"] == 2
     assert "Relation operator-action scopes: `1`" in dashboard.render_markdown(payload)
+    assert "Writer lease scope: `process-wide-os-lock`" in dashboard.render_markdown(payload)
+
+
+def test_dashboard_reports_disabled_idle_release_as_offline_config_only(
+    monkeypatch, tmp_path
+):
+    dashboard = _load_dashboard()
+
+    class DisabledIdleReleaseDoctor(FakeFallbackReadyDoctor):
+        @staticmethod
+        def load_runtime_config(source_root, hermes_home):
+            config = FakeFallbackReadyDoctor.load_runtime_config(
+                source_root, hermes_home
+            )
+            config["writer_lease"] = {"idle_release_seconds": 0}
+            return config
+
+    monkeypatch.setattr(dashboard, "_load_doctor", lambda: DisabledIdleReleaseDoctor)
+
+    payload = dashboard.build_dashboard(tmp_path / "src", tmp_path / "home")
+
+    handoff = payload["sections"]["writer_handoff"]
+    assert handoff["idle_release_enabled"] is False
+    assert handoff["idle_release_seconds"] == 0.0
+    assert handoff["runtime_state_observed"] is False
+    assert "writer_role" not in handoff
 
 
 def test_dashboard_surfaces_runtime_config_load_errors(monkeypatch, tmp_path):

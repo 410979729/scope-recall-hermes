@@ -60,11 +60,10 @@ from .sql_store import (
 from .sqlite_params import chunked_sql_parameters
 from .vector_generation import enqueue_current_vector_event
 from .vector_runtime import (
-    mark_vector_needs_repair,
     mark_vector_replay_degraded,
     refresh_vector_audit,  # noqa: F401
+    replay_and_classify_exact_vector_intents,
     replay_vector_outbox,
-    replay_vector_outbox_events,
     setup_vector_layer,
     vector_delete_intent_required,
 )
@@ -716,6 +715,7 @@ def merge_memories(
     requested_target = ""
     requested_mode = ""
     delete_ids: list[str] = []
+    merge_vector_outbox_keys: list[str] = []
     try:
         with mutation.transaction() as conn:
             placeholders = _domain_writable_placeholders(provider)
@@ -855,13 +855,15 @@ def merge_memories(
                     local_peer_limit=_relation_local_neighbor_limit(provider),
                     commit=False,
                 )
-            enqueue_current_vector_event(
+            target_vector_outbox_key = enqueue_current_vector_event(
                 conn,
                 memory_id=target_id,
                 operation="upsert",
                 updated_at=str(updated_row["updated_at"]),
                 reason="atomic memory merge target update",
             )
+            if target_vector_outbox_key:
+                merge_vector_outbox_keys.append(target_vector_outbox_key)
             delete_ids = [
                 str(row["id"])
                 for row in source_rows
@@ -878,19 +880,16 @@ def merge_memories(
                     f"expected={len(delete_ids)}, "
                     f"deleted={delete_result.deleted_count}"
                 )
+            merge_vector_outbox_keys.extend(delete_result.vector_outbox_keys)
     except Exception:
         # The transaction context has already rolled back every companion write.
         # Preserve the established merge API: callers receive the original fault.
         raise
 
-    try:
-        replay_vector_outbox(provider)
-    except Exception as exc:
-        mark_vector_replay_degraded(provider, exc)
-        logger.warning(
-            "Scope Recall vector outbox replay failed after atomic merge: %s",
-            exc,
-        )
+    vector_completion = _exact_vector_completion_payload(
+        provider,
+        merge_vector_outbox_keys,
+    )
     return {
         "merged": True,
         "target_id": target_id,
@@ -901,6 +900,18 @@ def merge_memories(
         "deleted": len(delete_ids),
         "summary": summary,
         "updated_at": updated_at,
+        "vector_status": str(vector_completion.get("vector_status") or ""),
+        "vector_pending": bool(vector_completion.get("vector_pending")),
+        "companion_erasure_pending": bool(
+            vector_completion.get("vector_pending")
+        ),
+        "vector_error": str(vector_completion.get("vector_error") or ""),
+        "vector_outbox_status_counts": dict(
+            vector_completion.get("vector_outbox_status_counts") or {}
+        ),
+        "vector_outbox_event_ids": list(
+            vector_completion.get("vector_outbox_event_ids") or []
+        ),
     }
 
 
@@ -1064,6 +1075,13 @@ def _delete_memories_result(
     companion_erasure_pending = bool(
         vector_pending or result.get("companion_erasure_pending")
     )
+    vector_outbox_keys = tuple(
+        dict.fromkeys(
+            str(event_key).strip()
+            for event_key in (result.get("vector_outbox_keys") or [])
+            if str(event_key).strip()
+        )
+    )
     return DeleteMemoriesResult(
         requested_ids=normalized_requested,
         deleted_ids=deleted_ids,
@@ -1073,6 +1091,7 @@ def _delete_memories_result(
         companion_erasure_pending=companion_erasure_pending,
         data_retained=bool(skipped_ids or companion_erasure_pending),
         mutation_applied=deleted_count > 0,
+        vector_outbox_keys=vector_outbox_keys,
     )
 
 
@@ -1151,6 +1170,69 @@ def _hard_delete_provider_memories(
         )
 
 
+def _exact_vector_completion_payload(
+    provider: Any,
+    event_keys: list[str] | tuple[str, ...],
+) -> dict[str, Any]:
+    """Return fail-closed completion state for one exact causal event set."""
+
+    resolved_keys = list(
+        dict.fromkeys(
+            str(event_key).strip()
+            for event_key in event_keys
+            if str(event_key).strip()
+        )
+    )
+    if not resolved_keys:
+        return {
+            "vector_replay": {"claimed": 0, "completed": 0, "failed": 0},
+            "vector_outbox_status_counts": {},
+            "vector_outbox_event_ids": [],
+            "vector_status": "not_required",
+            "vector_pending": False,
+            "vector_error": "",
+        }
+    try:
+        completion = replay_and_classify_exact_vector_intents(provider, resolved_keys)
+    except Exception as exc:
+        safe_error = sanitize_report_text(str(exc))
+        mark_vector_replay_degraded(provider, safe_error)
+        return {
+            "vector_replay": {
+                "claimed": 0,
+                "completed": 0,
+                "failed": 1,
+                "pending": True,
+                "error": safe_error,
+            },
+            "vector_outbox_status_counts": {"unresolved": len(resolved_keys)},
+            "vector_outbox_event_ids": [],
+            "vector_status": "pending",
+            "vector_pending": True,
+            "vector_error": safe_error,
+        }
+    vector_pending = not bool(completion.get("all_completed"))
+    vector_error = ""
+    if vector_pending:
+        vector_error = sanitize_report_text(
+            str(_command_vector_status(provider).get("message") or "")
+        )
+        if not vector_error and int(completion.get("missing") or 0):
+            vector_error = "exact vector outbox intent is missing"
+        elif not vector_error and int(completion.get("dead_letter") or 0):
+            vector_error = "exact vector outbox intent reached dead-letter status"
+    return {
+        "vector_replay": dict(completion.get("replay") or {}),
+        "vector_outbox_status_counts": dict(
+            completion.get("status_counts") or {}
+        ),
+        "vector_outbox_event_ids": list(completion.get("event_ids") or []),
+        "vector_status": "pending" if vector_pending else "completed",
+        "vector_pending": vector_pending,
+        "vector_error": vector_error,
+    }
+
+
 def _hard_delete_provider_memories_after_capture_flush(
     provider: Any,
     ids: list[str],
@@ -1175,24 +1257,12 @@ def _hard_delete_provider_memories_after_capture_flush(
             operation_id=operation_id,
             batch_id=f"hard_delete_{uuid.uuid4().hex}",
         )
-    replay_result = (
-        replay_vector_outbox(provider)
-        if require_vector_delete
-        else {"claimed": 0, "completed": 0, "failed": 0}
+    event_keys = tuple(
+        str(event_key).strip()
+        for event_key in result.get("vector_outbox_keys", [])
+        if str(event_key).strip()
     )
-    result["vector_replay"] = replay_result
-    if int(replay_result.get("failed") or 0) > 0:
-        result["vector_status"] = "pending"
-        result["vector_pending"] = True
-        result["vector_error"] = sanitize_report_text(
-            str(_command_vector_status(provider).get("message") or "vector delete replay failed")
-        )
-    elif int(replay_result.get("completed") or 0) >= int(result.get("outbox_enqueued") or 0):
-        result["vector_status"] = "completed" if require_vector_delete else "not_required"
-        result["vector_pending"] = False
-    else:
-        result["vector_status"] = "pending"
-        result["vector_pending"] = True
+    result.update(_exact_vector_completion_payload(provider, event_keys))
     requested_count = len(set(str(memory_id) for memory_id in ids if str(memory_id)))
     result.update(
         retention_response_contract(
@@ -1434,40 +1504,9 @@ def _archive_memories_after_capture_flush(
             )
         )
         return payload
-    try:
-        before_rows = _archive_vector_outbox_rows(provider, event_keys)
-        event_ids = [int(row["id"]) for row in before_rows if int(row["id"]) > 0]
-        replay_result = replay_vector_outbox_events(provider, event_ids=event_ids)
-        payload["vector_replay"] = replay_result
-        final_rows = _archive_vector_outbox_rows(provider, event_keys)
-        status_counts: dict[str, int] = {}
-        for row in final_rows:
-            status = str(row["status"] or "missing")
-            status_counts[status] = status_counts.get(status, 0) + 1
-        payload["vector_outbox_status_counts"] = status_counts
-        payload["vector_outbox_event_ids"] = [
-            int(row["id"]) for row in final_rows if int(row["id"]) > 0
-        ]
-        vector_pending = any(
-            str(row["status"] or "missing") != "completed" for row in final_rows
-        )
-        if status_counts.get("dead_letter", 0):
-            mark_vector_needs_repair(
-                provider,
-                "archive vector delete intent reached dead-letter status",
-                reason_code="archive_outbox_dead_letter",
-            )
-    except Exception as exc:
-        safe_error = sanitize_report_text(str(exc))
-        mark_vector_replay_degraded(provider, safe_error)
-        payload["vector_replay"] = {
-            "completed": 0,
-            "failed": 1,
-            "pending": True,
-            "error": safe_error,
-        }
-        vector_pending = True
-        payload["vector_error"] = safe_error
+    vector_completion = _exact_vector_completion_payload(provider, event_keys)
+    payload.update(vector_completion)
+    vector_pending = bool(vector_completion.get("vector_pending"))
     payload["vector_pending"] = vector_pending
     payload["vector_status"] = "pending" if vector_pending else "completed"
     payload.update(
@@ -1479,59 +1518,6 @@ def _archive_memories_after_capture_flush(
         )
     )
     return payload
-
-
-def _archive_vector_outbox_rows(
-    provider: Any,
-    event_keys: list[str],
-) -> list[dict[str, Any]]:
-    """Read the exact durable vector intents created by one archive command."""
-
-    resolved_keys = list(
-        dict.fromkeys(str(event_key).strip() for event_key in event_keys if str(event_key).strip())
-    )
-    if not resolved_keys:
-        return []
-    rows: list[Any] = []
-    with _command_lock(provider):
-        conn = _command_conn(provider)
-        for key_chunk in chunked_sql_parameters(conn, resolved_keys):
-            placeholders = ",".join("?" for _ in key_chunk)
-            rows.extend(
-                conn.execute(
-                    f"""
-                    SELECT id, event_key, generation_id, memory_id, operation, status
-                    FROM vector_outbox
-                    WHERE event_key IN ({placeholders})
-                    """,
-                    key_chunk,
-                ).fetchall()
-            )
-    by_key = {
-        str(row["event_key"]): {
-            "id": int(row["id"]),
-            "event_key": str(row["event_key"]),
-            "generation_id": str(row["generation_id"]),
-            "memory_id": str(row["memory_id"]),
-            "operation": str(row["operation"]),
-            "status": str(row["status"]),
-        }
-        for row in rows
-    }
-    return [
-        by_key.get(
-            event_key,
-            {
-                "id": 0,
-                "event_key": event_key,
-                "generation_id": "",
-                "memory_id": "",
-                "operation": "",
-                "status": "missing",
-            },
-        )
-        for event_key in resolved_keys
-    ]
 
 
 def dedupe_memories(provider: Any, *, dry_run: bool = True, scope_only: bool = True) -> dict[str, Any]:

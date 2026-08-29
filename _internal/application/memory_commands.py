@@ -63,6 +63,7 @@ class DeleteMemoriesResult:
     companion_erasure_pending: bool
     data_retained: bool
     mutation_applied: bool
+    vector_outbox_keys: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.deleted_count != len(self.deleted_ids):
@@ -71,6 +72,8 @@ class DeleteMemoriesResult:
             raise ValueError("deleted_ids and skipped_ids must be disjoint")
         if len(self.requested_ids) != len(set(self.requested_ids)):
             raise ValueError("requested_ids must be stable unique IDs")
+        if len(self.vector_outbox_keys) != len(set(self.vector_outbox_keys)):
+            raise ValueError("vector_outbox_keys must be stable unique keys")
         combined = set(self.deleted_ids) | set(self.skipped_ids)
         if set(self.requested_ids) != combined:
             raise ValueError(

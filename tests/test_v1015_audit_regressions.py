@@ -20,6 +20,7 @@ import scope_recall.journal as journal
 import scope_recall.lifecycle_service as lifecycle_service_module
 import scope_recall.memory_ops as memory_ops_module
 import scope_recall.nightly_digest as nightly_digest
+import scope_recall.vector_runtime as vector_runtime_module
 from _scope_recall_public_memory_port import attach_public_truth_ports
 from scope_recall.journal import JournalDigestCandidate, JournalEntry, apply_journal_candidates, ensure_journal_schema, heuristic_journal_candidates
 from scope_recall.memory_ops import (
@@ -490,9 +491,13 @@ def test_typed_delete_reports_pending_when_replay_claims_no_enqueued_intent(
     )
     _enable_vector(provider, _RecordingVectorStore())
     monkeypatch.setattr(
-        memory_ops_module,
-        "replay_vector_outbox",
-        lambda _provider: {"claimed": 0, "completed": 0, "failed": 0},
+        vector_runtime_module,
+        "replay_vector_outbox_events",
+        lambda _provider, *, event_ids: {
+            "claimed": 0,
+            "completed": 0,
+            "failed": 0,
+        },
     )
 
     result = delete_memories_result(provider, ["pending-delete-row"])

@@ -29,6 +29,9 @@
   "query_char_limit": 1000,
   "min_capture_length": 40,
   "capture_queue_capacity": 256,
+  "writer_lease": {
+    "idle_release_seconds": 1800.0
+  },
   "journal": {
     "allow_heuristic_fallback": false,
     "allow_session_end_llm": false,

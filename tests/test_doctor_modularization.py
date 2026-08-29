@@ -6,6 +6,9 @@ from __future__ import annotations
 
 import ast
 import importlib
+import json
+import subprocess
+import sys
 from pathlib import Path
 
 from scope_recall.response_schemas import DOCTOR_REQUIRED_CHECK_NAMES
@@ -71,3 +74,35 @@ def test_doctor_required_check_registry_is_single_source_of_truth():
     assert "set(DOCTOR_REQUIRED_CHECK_NAMES)" in doctor_source
     assert "for name in DOCTOR_REQUIRED_CHECK_NAMES" in installer_source
     assert "REQUIRED_POSTDEPLOY_DOCTOR_CHECKS = (" not in installer_source
+
+
+def test_doctor_reports_writer_handoff_config_without_claiming_live_state(tmp_path):
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(DOCTOR_SCRIPT),
+            "--json",
+            "--source-root",
+            str(PLUGIN_ROOT),
+            "--hermes-home",
+            str(tmp_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    payload = json.loads(completed.stdout)
+    handoff = payload["runtime"]["writer_handoff"]
+    assert handoff["writer_lease_scope"] == "process-wide-os-lock"
+    assert handoff["idle_release_enabled"] is True
+    assert handoff["idle_release_seconds"] == 1800.0
+    assert handoff["snapshot_kind"] == "offline_config_only"
+    assert handoff["runtime_state_observed"] is False
+    assert handoff["live_counters"]["source"] == "scope_recall_stats"
+    assert handoff["live_counters"]["observed"] is False
+    assert "writer_role" in handoff["live_counters"]["fields"]
+    assert "last_handoff_reason_code" in handoff["live_counters"]["fields"]
+    assert "writer_role" not in handoff
