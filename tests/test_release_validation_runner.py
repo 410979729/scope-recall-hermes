@@ -200,6 +200,100 @@ def test_validation_boundary_cleanup_refuses_false_success(
     assert not boundary.exists()
 
 
+def test_validation_run_timeout_terminates_tree_and_records_124(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    calls: list[int] = []
+    terminated: list[int] = []
+
+    class FakeProcess:
+        pid = 4321
+        returncode: int | None = None
+        stdout = None
+
+        def communicate(self, *, timeout: int):
+            calls.append(timeout)
+            if len(calls) == 1:
+                raise subprocess.TimeoutExpired(
+                    cmd=["python"],
+                    timeout=timeout,
+                    output=b"partial output\n",
+                )
+            return ("partial output\n", None)
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    process = FakeProcess()
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+
+    def terminate_tree(target) -> None:
+        terminated.append(target.pid)
+        target.returncode = -9
+
+    monkeypatch.setattr(module, "_terminate_process_tree", terminate_tree)
+    ledger: list[dict[str, object]] = []
+    log = tmp_path / "timeout.log"
+
+    with pytest.raises(module.ReleaseValidationError, match="exit code 124"):
+        module._run(
+            ["python", "slow.py"],
+            display_command=["python", "<slow-stage>"],
+            cwd=tmp_path,
+            environment={},
+            timeout_seconds=7,
+            log_path=log,
+            ledger=ledger,
+        )
+
+    assert terminated == [4321]
+    assert calls == [7, module.PROCESS_TREE_TERMINATION_TIMEOUT_SECONDS]
+    assert log.read_text(encoding="utf-8") == "partial output\n"
+    assert ledger[0]["exit_code"] == 124
+    assert ledger[0]["timeout_seconds"] == 7
+
+
+def test_windows_timeout_targets_exact_process_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    captured: list[tuple[list[str], dict[str, object]]] = []
+
+    class FakeProcess:
+        pid = 2468
+        returncode: int | None = None
+        killed = False
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self) -> None:
+            self.killed = True
+            self.returncode = -9
+
+    process = FakeProcess()
+
+    def fake_run(command, **kwargs):
+        captured.append(([str(item) for item in command], dict(kwargs)))
+        process.returncode = 1
+        return None
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    module._terminate_process_tree(process, platform="nt")
+
+    assert captured[0][0] == ["taskkill", "/PID", "2468", "/T", "/F"]
+    assert captured[0][1]["timeout"] == (
+        module.PROCESS_TREE_TERMINATION_TIMEOUT_SECONDS
+    )
+    assert process.killed is False
+
+
 def test_validation_receipt_binds_source_artifact_and_isolation() -> None:
     module = _load_module()
     context = module.ValidationContext(
@@ -450,7 +544,7 @@ include = ["hermes_cli", "hermes_cli.*"]
         module.INSTALL_TIMEOUT_SECONDS,
         module.INSTALL_TIMEOUT_SECONDS,
     ]
-    assert module.VENV_TIMEOUT_SECONDS >= 900
+    assert module.VENV_TIMEOUT_SECONDS >= 1800
     assert module.INSTALL_TIMEOUT_SECONDS >= 1800
     assert str(candidate_wheel) + "[lancedb,dev]" in commands[1]
     hermes_install_target = Path(commands[2][-1])

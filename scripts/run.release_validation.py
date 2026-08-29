@@ -12,6 +12,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import signal
 import shutil
 import stat
 import subprocess
@@ -41,9 +42,10 @@ FULL_TEST_TIMEOUT_SECONDS = 900
 STAGE_TIMEOUT_SECONDS = 300
 INSTALL_TIMEOUT_SECONDS = 1800
 # Native Windows ``venv`` creation can spend several minutes in ensurepip and
-# endpoint-security scanning even when the subsequent installs are fast.  Keep
-# that bounded, but do not reuse the shorter network/install budget for it.
-VENV_TIMEOUT_SECONDS = 900
+# endpoint-security scanning even when subsequent installs are fast.  Keep a
+# separately tunable, genuinely enforced process-tree bound for that stage.
+VENV_TIMEOUT_SECONDS = 1800
+PROCESS_TREE_TERMINATION_TIMEOUT_SECONDS = 30
 N_MINUS_ONE_VERSION = "1.10.3"
 N_MINUS_ONE_WINDOW_SCHEMA_VERSION = "scope-recall.n-minus-one-window.v1"
 ISSUE_51_DETAILS_SCHEMA_VERSION = "scope-recall.issue-51-regression-details.v1"
@@ -468,6 +470,50 @@ def _temporary_validation_boundary() -> Iterator[Path]:
             pending.add_note(f"validation boundary cleanup also failed: {cleanup_error}")
 
 
+def _text_output(value: object) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value or "")
+
+
+def _terminate_process_tree(
+    process: subprocess.Popen[str],
+    *,
+    platform: str | None = None,
+) -> None:
+    """Boundedly terminate an exact validation subprocess and its descendants."""
+
+    if process.poll() is not None:
+        return
+    current_platform = os.name if platform is None else platform
+    if current_platform == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=PROCESS_TREE_TERMINATION_TIMEOUT_SECONDS,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    else:
+        kill_group = getattr(os, "killpg", None)
+        kill_signal = getattr(signal, "SIGKILL", None)
+        if callable(kill_group) and isinstance(kill_signal, int):
+            try:
+                kill_group(process.pid, kill_signal)
+            except OSError:
+                pass
+    if process.poll() is None:
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+
 def _run(
     command: Sequence[str],
     *,
@@ -482,7 +528,7 @@ def _run(
     started = time.monotonic()
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             list(command),
             cwd=cwd,
             env=dict(environment),
@@ -491,15 +537,26 @@ def _run(
             errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            check=False,
-            timeout=timeout_seconds,
             creationflags=creationflags,
+            start_new_session=os.name != "nt",
         )
-        output = result.stdout or ""
-        exit_code = int(result.returncode)
-    except subprocess.TimeoutExpired as exc:
-        output = str(exc.stdout or "")
-        exit_code = 124
+        try:
+            output, _ = process.communicate(timeout=timeout_seconds)
+            exit_code = int(process.returncode or 0)
+        except subprocess.TimeoutExpired as exc:
+            partial_output = _text_output(exc.stdout)
+            _terminate_process_tree(process)
+            try:
+                final_output, _ = process.communicate(
+                    timeout=PROCESS_TREE_TERMINATION_TIMEOUT_SECONDS
+                )
+            except subprocess.TimeoutExpired:
+                _terminate_process_tree(process)
+                final_output = ""
+                if process.stdout is not None:
+                    process.stdout.close()
+            output = _text_output(final_output) or partial_output
+            exit_code = 124
     except OSError as exc:
         output = f"{type(exc).__name__}\n"
         exit_code = 125
