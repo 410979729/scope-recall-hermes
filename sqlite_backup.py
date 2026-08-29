@@ -23,6 +23,7 @@ from .truth_connection import connect_truth_database
 
 _FileIdentity = tuple[int, int]
 _UNLINK_OPEN_DESCRIPTOR_SAFE = os.name != "nt"
+_STAGING_FILE_PREFIX = ".scope-recall-stage-"
 
 
 class SqliteBackupError(RuntimeError):
@@ -216,8 +217,10 @@ def _reserve_staging_path(destination: Path) -> tuple[Path, int, _FileIdentity]:
     )
     for _attempt in range(4):
         staging = destination.with_name(
-            f"{destination.name}.scope-recall-stage-{uuid.uuid4().hex}.tmp"
+            f"{_STAGING_FILE_PREFIX}{uuid.uuid4().hex}.tmp"
         )
+        if os.path.normcase(str(staging)) == os.path.normcase(str(destination)):
+            continue
         try:
             descriptor = os.open(staging, flags, 0o600)
         except FileExistsError:
