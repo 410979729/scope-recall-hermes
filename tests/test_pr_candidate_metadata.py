@@ -141,7 +141,10 @@ def _fixture(tmp_path: Path):
     )
     _write(
         evidence / "ACTIVE_ISOLATION.json",
-        {"active_instance_touched": False, "result": "passed"},
+        {
+            "environment_boundary": {"active_instance_touched": False},
+            "result": "passed",
+        },
     )
     snapshot = {
         "number": 57,
@@ -237,6 +240,13 @@ def test_pr_metadata_check_refuses_non_draft_pr(tmp_path: Path):
             "REMOTE_CI_BINDING.json",
             lambda payload: payload.update({"workflow_path": ".github/workflows/other.yml"}),
             "does not match candidate",
+        ),
+        (
+            "ACTIVE_ISOLATION.json",
+            lambda payload: payload["environment_boundary"].update(
+                {"active_instance_touched": True}
+            ),
+            "active isolation boundary changed",
         ),
     ],
 )

@@ -174,6 +174,9 @@ def expected_marker(
     active_isolation = _load_object(active_isolation_path)
     hermes_supported = _load_object(hermes_supported_path)
     hermes_probe = _load_object(hermes_probe_path)
+    active_isolation_boundary = _required_object(
+        active_isolation, "environment_boundary"
+    )
     source = _required_object(candidate, "source")
     pr = _pr_identity(pr_snapshot)
     candidate_commit = _required_text(source, "commit")
@@ -230,7 +233,8 @@ def expected_marker(
         or hermes_probe.get("support_matrix_changed") is not False
         or hermes_supported.get("active_instance_touched") is not False
         or hermes_probe.get("active_instance_touched") is not False
-        or active_isolation.get("active_instance_touched") is not False
+        or active_isolation.get("result") != "passed"
+        or active_isolation_boundary.get("active_instance_touched") is not False
     ):
         raise PRCandidateMetadataError("Hermes support or active isolation boundary changed")
     if (
