@@ -4,6 +4,9 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Voluntary cross-process truth writer-lease idle release: after `writer_lease.idle_release_seconds` (default 1800, 0 disables) without user-turn activity, the writer process quiesces its capture writer, closes the write pager, releases the OS lease, and demotes itself to the read-only runtime. An active peer (e.g. Hermes Desktop) then promotes itself via the existing on-turn probe instead of starving behind a resident idle process (e.g. a messaging gateway). The lease still guarantees exactly one writer at any moment; only the hold-until-exit starvation is removed. (#58)
+
 ## [1.10.5] - 2026-08-25
 
 This patch candidate is cumulative since the last public release, `1.10.3`, and supersedes the unpublished `1.10.4` source checkpoint. It closes the remaining bounded-concurrency, release-provenance, and distribution-scanner defects found by exact-epoch review while retaining the issue #50 contract, without changing SQLite authority or stable provider/tool identities.

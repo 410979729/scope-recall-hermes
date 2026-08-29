@@ -9,6 +9,7 @@ import os
 import queue
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -407,6 +408,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         del message, kwargs
         self._current_turn = int(turn_number or 0)
+        self._last_writer_activity = time.monotonic()
         if self._truth_writes_blocked():
             self._maybe_promote_to_writer()
             return

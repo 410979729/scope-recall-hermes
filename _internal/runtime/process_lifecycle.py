@@ -767,6 +767,163 @@ def _promote_under_lifecycle_lock(provider: Any) -> None:
         _call_provider(provider, "_initialize_read_only_runtime", default=lambda: initialize_read_only_runtime(provider))
 
 
+DEFAULT_IDLE_WRITER_LEASE_SECONDS = 1800.0
+MAX_IDLE_WRITER_LEASE_SECONDS = 86400.0
+
+
+def idle_writer_lease_release_seconds(provider: Any) -> float:
+    """Configured idle window in seconds; 0 disables voluntary release."""
+
+    raw = getattr(provider, "_config", None)
+    section = raw.get("writer_lease") if isinstance(raw, dict) else None
+    if not isinstance(section, dict):
+        section = {}
+    try:
+        value = float(
+            section.get("idle_release_seconds", DEFAULT_IDLE_WRITER_LEASE_SECONDS)
+        )
+    except (TypeError, ValueError):
+        value = DEFAULT_IDLE_WRITER_LEASE_SECONDS
+    return max(0.0, min(value, MAX_IDLE_WRITER_LEASE_SECONDS))
+
+
+def note_writer_activity(provider: Any) -> None:
+    """Record user-turn activity; the idle-release clock restarts per turn."""
+
+    provider._last_writer_activity = time.monotonic()
+
+
+def maybe_idle_release_writer_lease(provider: Any) -> None:
+    """Demote an idle writer to a read-only peer so an active process can write.
+
+    Called from the capture writer loop's idle path. The cross-process truth
+    writer lease is otherwise held for the process lifetime, so a resident
+    but idle process (e.g. a messaging gateway with no active chats) starves
+    the user's interactive surface indefinitely. After
+    ``writer_lease.idle_release_seconds`` without a user turn this process
+    voluntarily demotes itself; the existing on-turn promotion probe lets
+    whichever process actually has activity take the lease next.
+    """
+
+    if getattr(provider, "_truth_writer_role", None) != "owner":
+        return
+    idle_seconds = idle_writer_lease_release_seconds(provider)
+    if idle_seconds <= 0:
+        return
+    if getattr(provider, "_idle_release_in_progress", False):
+        return
+    last_activity = float(getattr(provider, "_last_writer_activity", 0.0) or 0.0)
+    if last_activity <= 0:
+        return
+    if time.monotonic() - last_activity < idle_seconds:
+        return
+    provider._idle_release_in_progress = True
+    threading.Thread(
+        target=_demote_idle_writer_guarded,
+        args=(provider, idle_seconds),
+        daemon=True,
+        name="scope-recall-idle-release",
+    ).start()
+
+
+def _demote_idle_writer_guarded(provider: Any, idle_seconds: float) -> None:
+    try:
+        demote_writer_to_reader(provider, idle_seconds=idle_seconds)
+    except Exception:
+        logger.exception("Scope Recall idle writer-lease release failed")
+    finally:
+        provider._idle_release_in_progress = False
+
+
+def demote_writer_to_reader(provider: Any, *, idle_seconds: float) -> bool:
+    """Release the writer lease after a sustained idle window.
+
+    Mirror of :func:`promote_reader_to_writer`: quiesce the capture writer,
+    close the write pager, release the OS lease, then reopen as the read-only
+    runtime. Returns True when this runtime ends as a reader (or already was
+    one). Any consistency failure keeps the writer role intact so a later
+    idle tick can retry.
+    """
+
+    if getattr(provider, "_truth_writer_role", None) != "owner":
+        return True
+    lease = getattr(provider, "_truth_writer_lease", None)
+    if lease is None:
+        return False
+    # Re-check idleness before touching anything: a turn that started while
+    # the demote thread was spawning must win over this release.
+    last_activity = float(getattr(provider, "_last_writer_activity", 0.0) or 0.0)
+    if time.monotonic() - last_activity < idle_seconds:
+        return False
+    if int(getattr(provider, "_foreground_busy_count", 0) or 0) > 0:
+        return False
+    quiesce = _module_attr(provider, "quiesce_writer_for_lease_release", None)
+    if not callable(quiesce):
+        from ...capture import quiesce_writer_for_lease_release as quiesce
+    if not quiesce(provider):
+        return False
+    lifecycle_lock = getattr(provider, "_writer_lifecycle_lock", None)
+    if lifecycle_lock is None:
+        return False
+    with lifecycle_lock:
+        # Final role/lease re-check under the lifecycle lock.
+        if getattr(provider, "_truth_writer_role", None) != "owner":
+            return True
+        lease = getattr(provider, "_truth_writer_lease", None)
+        if lease is None:
+            return False
+        conn = getattr(provider, "_conn", None)
+        if conn is not None:
+            try:
+                _call_provider(
+                    provider,
+                    "_close_published_connection",
+                    conn,
+                    context="idle writer-lease release",
+                )
+            except Exception:
+                logger.exception(
+                    "Scope Recall idle release could not close the writer "
+                    "connection; restoring the writer runtime"
+                )
+                try:
+                    _call_provider(
+                        provider,
+                        "_initialize_writer_runtime",
+                        default=lambda: initialize_writer_runtime(provider),
+                    )
+                except Exception:
+                    logger.exception(
+                        "Scope Recall writer runtime restore after failed "
+                        "idle release failed"
+                    )
+                return False
+            provider._conn = None
+        try:
+            lease.release()
+        except Exception:
+            # The OS lease then leaks until process exit, where the kernel
+            # reclaims it. This runtime still becomes a reader so it stops
+            # writing; peers can take over once this process exits.
+            logger.exception(
+                "Scope Recall idle release could not release the OS lease"
+            )
+        provider._truth_writer_lease = None
+        provider._truth_writer_role = "reader"
+        provider._truth_writer_owner = {}
+        _call_provider(
+            provider,
+            "_initialize_read_only_runtime",
+            default=lambda: initialize_read_only_runtime(provider),
+        )
+        logger.info(
+            "Scope Recall released the truth writer lease after %.0f idle "
+            "seconds; continuing as a read-only recall peer",
+            idle_seconds,
+        )
+        return True
+
+
 def shutdown_provider_process(provider: Any, *, timeout: float = 3.0) -> None:
     """Quiesce writer and digest work, then close shared resources.
 

@@ -16,6 +16,9 @@ _CONFIG_LOAD_ERRORS_KEY = "_config_load_errors"
 DEFAULT_CONFIG: dict[str, Any] = {
     "auto_recall": True,
     "auto_capture": True,
+    "writer_lease": {
+        "idle_release_seconds": 1800,
+    },
     "memory_isolated_chat_ids": [],
     "auto_recall_min_length": 15,
     "auto_recall_min_repeated": 8,

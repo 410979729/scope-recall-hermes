@@ -231,6 +231,21 @@ def _drain_relation_rebuild_debt_locked(provider: Any) -> None:
         logger.warning("Scope Recall relation rebuild chunk failed: %s", result)
 
 
+IDLE_LEASE_CHECK_INTERVAL_SECONDS = 5.0
+
+
+def _idle_release_probe() -> Any:
+    """Late-bind the idle-release probe; process_lifecycle imports capture."""
+
+    try:
+        from ._internal.runtime.process_lifecycle import (
+            maybe_idle_release_writer_lease,
+        )
+    except Exception:
+        return None
+    return maybe_idle_release_writer_lease
+
+
 def start_writer(provider: Any) -> None:
     """Start the sole consumer after binding the configured finite queue."""
 
@@ -243,6 +258,7 @@ def start_writer(provider: Any) -> None:
             if shutdown_requested is not None:
                 shutdown_requested.clear()
             provider._stop.clear()
+            provider._last_writer_activity = time.monotonic()
             maintenance_stop = getattr(provider, "_maintenance_stop", None)
             if maintenance_stop is not None:
                 maintenance_stop.clear()
@@ -296,6 +312,17 @@ def writer_loop(provider: Any) -> None:
                     if callable(rollback):
                         rollback("capture writer maintenance")
                     logger.exception("Scope Recall writer maintenance failed")
+            last_lease_check = float(
+                getattr(provider, "_last_idle_lease_check", 0.0) or 0.0
+            )
+            if now - last_lease_check >= IDLE_LEASE_CHECK_INTERVAL_SECONDS:
+                provider._last_idle_lease_check = now
+                try:
+                    maybe_idle_release = _idle_release_probe()
+                    if maybe_idle_release is not None:
+                        maybe_idle_release(provider)
+                except Exception:
+                    logger.exception("Scope Recall idle writer-lease check failed")
             continue
 
         processing_store = False
@@ -463,6 +490,44 @@ def shutdown_writer(provider: Any, timeout: float = 3.0) -> None:
     if not provider._write_queue.empty():
         raise RuntimeError("Scope Recall writer stopped with unconsumed queue control")
     provider._writer_thread = None
+
+
+def quiesce_writer_for_lease_release(provider: Any, *, timeout: float = 5.0) -> bool:
+    """Stop the writer loop for a voluntary idle lease release.
+
+    Unlike :func:`shutdown_writer` this never sets ``_shutdown_requested`` —
+    the runtime must stay promotable so the next user turn (here or in a
+    peer process) can take the lease back. Returns False and leaves the
+    writer untouched when queued or in-flight writes exist, or when the loop
+    does not stop before the deadline.
+    """
+
+    thread = getattr(provider, "_writer_thread", None)
+    if thread is None or not thread.is_alive():
+        provider._writer_thread = None
+        return True
+    work_queue = getattr(provider, "_write_queue", None)
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    with _provider_lock_until(provider, "_capture_submission_lock", deadline):
+        if work_queue is not None and not work_queue.empty():
+            return False
+        if int(getattr(provider, "_capture_queue_processing", 0) or 0) > 0:
+            return False
+        try:
+            accepted = put_work(
+                work_queue,
+                None,
+                timeout=min(CONTROL_PUT_TIMEOUT_SECONDS, _remaining(deadline)),
+            )
+        except RuntimeError:
+            return False
+        if not accepted:
+            return False
+    thread.join(timeout=_remaining(deadline))
+    if thread.is_alive():
+        return False
+    provider._writer_thread = None
+    return True
 
 
 @contextmanager
