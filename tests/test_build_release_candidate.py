@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -346,6 +346,38 @@ def test_candidate_install_stages_use_bounded_stage_specific_timeouts(
     assert build.PROCESS_TREE_TERMINATION_TIMEOUT_SECONDS == 30
 
 
+def test_candidate_windows_nested_package_path_budget() -> None:
+    build = _load_module()
+    deep_suffix = (
+        "pytest",
+        "sr-package-work-12345678",
+        "builder-venv",
+        "Lib",
+        "site-packages",
+        "pkg_resources",
+        "tests",
+        "data",
+        "my-test-package_unpacked-egg",
+        "my_test_package-1.0-py3.7.egg",
+        "EGG-INFO",
+    )
+    current = PureWindowsPath(
+        f"{build.BUILD_WORKSPACE_PREFIX}12345678",
+        build.SDIST_TEST_BOUNDARY_DIRNAME,
+        *deep_suffix,
+    )
+    legacy = PureWindowsPath(
+        "scope.recall.candidate.build.12345678",
+        "boundary-sdist-tests",
+        *deep_suffix,
+    )
+
+    assert build.BUILD_WORKSPACE_PREFIX == "srb."
+    assert build.SDIST_TEST_BOUNDARY_DIRNAME == "s"
+    assert len(str(current)) <= 175
+    assert len(str(legacy)) - len(str(current)) >= 40
+
+
 def test_sdist_module_runner_precreates_basetemp_parent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -355,6 +387,7 @@ def test_sdist_module_runner_precreates_basetemp_parent(
     evidence = tmp_path / "evidence"
     workspace.mkdir()
     evidence.mkdir()
+    boundaries: list[Path] = []
     monkeypatch.setattr(
         build,
         "read_archive_members",
@@ -362,7 +395,11 @@ def test_sdist_module_runner_precreates_basetemp_parent(
             "hermes_scope_recall-2.0.0/tests/test_fixture.py": b"def test_ok(): pass\n"
         },
     )
-    monkeypatch.setattr(build, "_isolated_environment", lambda *_args, **_kwargs: {})
+    def fake_environment(boundary: Path, **_kwargs):
+        boundaries.append(boundary)
+        return {}
+
+    monkeypatch.setattr(build, "_isolated_environment", fake_environment)
 
     def fake_run(command, **_kwargs):
         basetemp = Path(command[command.index("--basetemp") + 1])
@@ -396,3 +433,4 @@ def test_sdist_module_runner_precreates_basetemp_parent(
             "finished_at": "2026-08-28T00:00:00+00:00",
         }
     ]
+    assert boundaries == [workspace / build.SDIST_TEST_BOUNDARY_DIRNAME]

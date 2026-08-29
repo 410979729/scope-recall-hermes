@@ -64,6 +64,8 @@ INSTALL_TIMEOUT_SECONDS = 1800
 STAGE_TIMEOUT_SECONDS = 300
 SDIST_TEST_TIMEOUT_SECONDS = 900
 PROCESS_TREE_TERMINATION_TIMEOUT_SECONDS = 30
+BUILD_WORKSPACE_PREFIX = "srb."
+SDIST_TEST_BOUNDARY_DIRNAME = "s"
 
 
 class ReleaseCandidateBuildError(RuntimeError):
@@ -514,7 +516,9 @@ def _run_sdist_tests(
         if Path(path).name.startswith("test_")
     )
     env = _isolated_environment(
-        workspace / "boundary-sdist-tests",
+        # Keep the native-Windows package rehearsal below the legacy Win32
+        # directory-length boundary even when dependencies contain deep test data.
+        workspace / SDIST_TEST_BOUNDARY_DIRNAME,
         active_hermes_home=active_hermes_home,
     )
     pytest_temp_root = workspace / "sdist-pytest-temp"
@@ -587,7 +591,7 @@ def build_release_candidate(
         final_root,
         prefix=f".{expected_sha}.",
     ) as staging, tempfile.TemporaryDirectory(
-        prefix="scope.recall.candidate.build."
+        prefix=BUILD_WORKSPACE_PREFIX
     ) as workspace_text:
         workspace = Path(workspace_text)
         build_dir = workspace / "dist"
