@@ -681,7 +681,10 @@ def resume_writer_after_handoff(provider: Any) -> None:
     work_queue = getattr(provider, "_write_queue", None)
     if work_queue is None or not work_queue.empty():
         raise RuntimeError("writer_handoff_resume_queue_not_empty")
-    provider._writer_thread = None
+    # ``provider`` is intentionally structural here (tests and alternate hosts
+    # supply compatible writer runtimes), so keep the reversible handoff state
+    # update dynamic in the same way as the reads above.
+    setattr(provider, "_writer_thread", None)
     stop.clear()
     maintenance_stop = getattr(provider, "_maintenance_stop", None)
     if maintenance_stop is not None:
