@@ -16,7 +16,7 @@ import pytest
 
 from plugins.memory import load_memory_provider
 
-from config import DEFAULT_CONFIG, validate_config_override
+from scope_recall.config import DEFAULT_CONFIG, validate_config_override
 from scope_recall.capture import enqueue_store
 from writer_lease import (
     TRUTH_WRITER_LEASE_FILENAME,
