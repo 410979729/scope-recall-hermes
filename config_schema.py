@@ -12,6 +12,7 @@ _DESCRIPTION_OVERRIDES = {
     "auto_recall": "Enable automatic recall injection at turn start.",
     "auto_capture": "Capture eligible conversation turns into Scope Recall.",
     "capture_queue_capacity": "Maximum sanitized capture jobs held in the bounded process-local writer queue. Excess enqueue attempts receive an explicit rejected or deferred status instead of silent loss; queued payloads are not persisted.",
+    "writer_lease.idle_release_seconds": "Seconds of process-wide user and truth inactivity required before every same-store writer is safely fenced, drained, and demoted to read-only. Default 1800; 0 explicitly disables handoff; positive values must be 30 to 86400.",
     "automatic_digest_default_lifecycle": "Lifecycle for non-time-sensitive journal/nightly automatic digest outputs. Candidate is the review-first default; promoted explicitly opts into immediate recall visibility. Time-sensitive snapshots remain candidates that need a live check.",
     "memory_isolated_chat_ids": "Runtime-only chat identifiers excluded from prompt recall, tools, capture, journal, and digest surfaces.",
     "journal.max_entries_per_digest": "Maximum journal entries a digest run may review before dynamic backlog expansion.",
@@ -149,6 +150,7 @@ _MEDIUM_RISK_PREFIXES = (
     "shared_pool.",
     "identity.",
     "relation_",
+    "writer_lease.",
     "fact_backfill.",
     "recall_compiler.",
 )
@@ -163,6 +165,7 @@ _RESTART_PREFIXES = (
     "experience.",
     "reflection.",
     "relation_",
+    "writer_lease.",
 )
 _FACT_EVOLUTION_RISKS = {
     "fact_evolution.enabled": "high",

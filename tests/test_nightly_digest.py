@@ -1596,20 +1596,36 @@ def test_nightly_duplicate_cleanup_uses_shared_replay_without_direct_vector_dele
     _store_duplicate_cleanup_row(conn, memory_id="dupe-new")
     _store_duplicate_cleanup_row(conn, memory_id="dupe-old")
     vector_runtime = _FakeDigestVectorRuntime()
-    replay_calls: list[tuple[object, int]] = []
+    replay_calls: list[tuple[object, list[str]]] = []
 
-    def replay(runtime, *, limit):
-        replay_calls.append((runtime, limit))
-        return {"claimed": 1, "completed": 0, "failed": 1}
+    def replay(runtime, event_keys):
+        replay_calls.append((runtime, list(event_keys)))
+        return {
+            "event_keys": list(event_keys),
+            "event_ids": [1],
+            "status_counts": {"retry": 1},
+            "replay": {"claimed": 1, "completed": 0, "failed": 1},
+            "all_completed": False,
+            "retryable_pending": 1,
+            "dead_letter": 0,
+            "missing": 0,
+            "other_pending": 0,
+        }
 
-    monkeypatch.setattr(nightly_digest, "replay_vector_outbox", replay)
+    monkeypatch.setattr(
+        nightly_digest,
+        "replay_and_classify_exact_vector_intents",
+        replay,
+    )
 
     deleted = cleanup_exact_duplicates(conn, _duplicate_cleanup_scope(), vector_runtime)
 
     assert deleted == 1
     assert conn.execute("SELECT COUNT(*) FROM memories WHERE id IN ('dupe-new', 'dupe-old')").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM vector_outbox WHERE status = 'pending'").fetchone()[0] == 1
-    assert replay_calls == [(vector_runtime, 1)]
+    assert len(replay_calls) == 1
+    assert replay_calls[0][0] is vector_runtime
+    assert len(replay_calls[0][1]) == 1
     assert vector_runtime._vector_store.deleted_ids == []
     assert vector_runtime._vector_status == "degraded"
     assert vector_runtime._vector_message == "nightly duplicate vector outbox replay failed"

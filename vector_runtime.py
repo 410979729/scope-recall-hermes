@@ -49,6 +49,7 @@ from .vector_reconciliation import (
 from .vector_mutation_guard import vector_mutation_guard
 from .truth_connection import probe_truth_database_connection
 from .sqlite_recovery import is_sqlite_lock_contention, rollback_if_active
+from .sqlite_params import chunked_sql_parameters
 from .vector_store import (
     LanceVectorStore,
     VectorStoreCompatibilityError,
@@ -1739,6 +1740,146 @@ def replay_vector_outbox_events(
             event_ids=resolved_ids,
             refresh_audit_after=refresh_audit_after,
         )
+
+
+def resolve_vector_outbox_rows_by_keys(
+    provider: Any,
+    event_keys: Sequence[str],
+) -> list[dict[str, Any]]:
+    """Read exact durable vector intents in stable caller key order.
+
+    Missing rows are represented explicitly so retention-facing callers fail
+    closed instead of mistaking an aggregate replay count for causal success.
+    """
+
+    resolved_keys = tuple(
+        dict.fromkeys(
+            str(event_key).strip()
+            for event_key in event_keys
+            if str(event_key).strip()
+        )
+    )
+    if not resolved_keys:
+        return []
+    runtime = bind_provider_vector_runtime(provider)
+    conn = runtime.require_conn()
+    rows: list[Any] = []
+
+    def read_rows() -> None:
+        for key_chunk in chunked_sql_parameters(conn, resolved_keys):
+            placeholders = ",".join("?" for _ in key_chunk)
+            rows.extend(
+                conn.execute(
+                    f"""
+                    SELECT id, event_key, generation_id, memory_id, operation,
+                           status, attempts, available_at
+                    FROM vector_outbox
+                    WHERE event_key IN ({placeholders})
+                    """,
+                    key_chunk,
+                ).fetchall()
+            )
+
+    lock = getattr(runtime, "lock", None)
+    if lock is None:
+        read_rows()
+    else:
+        with lock:
+            read_rows()
+    by_key = {
+        str(row["event_key"]): {
+            "id": int(row["id"]),
+            "event_key": str(row["event_key"]),
+            "generation_id": str(row["generation_id"]),
+            "memory_id": str(row["memory_id"]),
+            "operation": str(row["operation"]),
+            "status": str(row["status"]),
+            "attempts": int(row["attempts"] or 0),
+            "available_at": str(row["available_at"] or ""),
+        }
+        for row in rows
+    }
+    return [
+        by_key.get(
+            event_key,
+            {
+                "id": 0,
+                "event_key": event_key,
+                "generation_id": "",
+                "memory_id": "",
+                "operation": "",
+                "status": "missing",
+                "attempts": 0,
+                "available_at": "",
+            },
+        )
+        for event_key in resolved_keys
+    ]
+
+
+def replay_and_classify_exact_vector_intents(
+    provider: Any,
+    event_keys: Sequence[str],
+) -> dict[str, Any]:
+    """Replay and classify only the causal intents named by ``event_keys``."""
+
+    resolved_keys = list(
+        dict.fromkeys(
+            str(event_key).strip()
+            for event_key in event_keys
+            if str(event_key).strip()
+        )
+    )
+    if not resolved_keys:
+        return {
+            "event_keys": [],
+            "event_ids": [],
+            "status_counts": {},
+            "replay": {"claimed": 0, "completed": 0, "failed": 0},
+            "all_completed": True,
+            "retryable_pending": 0,
+            "dead_letter": 0,
+            "missing": 0,
+            "other_pending": 0,
+        }
+    before_rows = resolve_vector_outbox_rows_by_keys(provider, resolved_keys)
+    replay_ids = [int(row["id"]) for row in before_rows if int(row["id"]) > 0]
+    replay = replay_vector_outbox_events(provider, event_ids=replay_ids)
+    final_rows = resolve_vector_outbox_rows_by_keys(provider, resolved_keys)
+    status_counts: dict[str, int] = {}
+    for row in final_rows:
+        status = str(row.get("status") or "missing")
+        status_counts[status] = status_counts.get(status, 0) + 1
+    retryable_statuses = {"pending", "processing", "retry"}
+    known_statuses = {*retryable_statuses, "completed", "dead_letter", "missing"}
+    dead_letter = int(status_counts.get("dead_letter", 0))
+    missing = int(status_counts.get("missing", 0))
+    retryable_pending = sum(
+        int(status_counts.get(status, 0)) for status in retryable_statuses
+    )
+    other_pending = sum(
+        count for status, count in status_counts.items() if status not in known_statuses
+    )
+    all_completed = bool(final_rows) and all(
+        str(row.get("status") or "missing") == "completed" for row in final_rows
+    )
+    if dead_letter:
+        mark_vector_needs_repair(
+            provider,
+            "exact vector intent reached dead-letter status",
+            reason_code="exact_outbox_dead_letter",
+        )
+    return {
+        "event_keys": resolved_keys,
+        "event_ids": [int(row["id"]) for row in final_rows if int(row["id"]) > 0],
+        "status_counts": status_counts,
+        "replay": replay,
+        "all_completed": all_completed,
+        "retryable_pending": retryable_pending,
+        "dead_letter": dead_letter,
+        "missing": missing,
+        "other_pending": other_pending,
+    }
 
 
 def replay_vector_outbox(

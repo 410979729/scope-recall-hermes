@@ -51,9 +51,12 @@ def require_positive_write_authority(provider: Any) -> None:
 def hold_positive_write_authority(provider: Any) -> Iterator[None]:
     """Hold lifecycle from the authority check through the caller's durable unit."""
 
+    from ._internal.runtime.writer_handoff import active_truth_work
+
     with _writer_lifecycle_lock(provider):
         require_positive_write_authority(provider)
-        yield
+        with active_truth_work(provider):
+            yield
 
 
 __all__ = [

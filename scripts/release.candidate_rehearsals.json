@@ -50,6 +50,57 @@
       "node_ids": [
         "tests/test_installer.py::test_installer_rollback_restores_backup_and_backs_up_current_plugin"
       ]
+    },
+    {
+      "id": "issue_51_accident_scale_regression",
+      "purpose": "Rehearse the reported 2046-memory and 1136-row legacy relation incident while proving zero idle mutation, exact focus work, cap refusal, and backup-first idempotent cleanup.",
+      "node_ids": [
+        "tests/test_issue_51_regression.py::test_issue_51_regression",
+        "tests/test_relation_rebuild_retirement.py::test_every_legacy_execution_surface_is_a_zero_write_refusal",
+        "tests/test_relation_policy_generation.py::test_cap_plus_one_blocks_whole_generation_without_partial_items",
+        "tests/test_relation_cleanup.py::test_cleanup_apply_is_backup_first_committed_and_idempotently_replayed"
+      ]
+    },
+    {
+      "id": "issue_58_process_wide_writer_handoff",
+      "purpose": "Prove the default-enabled process-wide idle writer handoff with real OS locking, same-process refcounts, work vetoes, failure injection, repeated promotion, and content-free observability.",
+      "node_ids": [
+        "tests/test_writer_idle_handoff.py::test_process_wide_idle_handoff_allows_real_second_process_commit",
+        "tests/test_writer_idle_handoff.py::test_extra_connection_pin_vetoes_process_handoff",
+        "tests/test_writer_idle_handoff.py::test_active_same_process_peer_vetoes_process_handoff",
+        "tests/test_writer_idle_handoff.py::test_writer_loop_automatically_schedules_idle_handoff",
+        "tests/test_writer_idle_handoff.py::test_wall_clock_rollback_cannot_extend_process_cooldown",
+        "tests/test_writer_idle_handoff.py::test_activity_generation_change_aborts_and_resumes_all_writers",
+        "tests/test_writer_idle_handoff.py::test_capture_enqueue_racing_idle_fence_aborts_without_losing_work",
+        "tests/test_writer_idle_handoff.py::test_direct_tool_write_started_before_fence_commits_and_vetoes_handoff",
+        "tests/test_writer_idle_handoff.py::test_activity_after_final_check_linearizes_after_release_and_promotes",
+        "tests/test_writer_idle_handoff.py::test_resource_close_failure_retains_authority_and_never_reports_reader",
+        "tests/test_writer_idle_handoff.py::test_writer_connection_close_failure_restores_healthy_owner",
+        "tests/test_writer_idle_handoff.py::test_connection_pin_close_failure_is_retried_before_owner_restore",
+        "tests/test_writer_idle_handoff.py::test_os_lease_release_failure_fences_process_and_requires_restart",
+        "tests/test_writer_idle_handoff.py::test_writer_restore_failure_stays_owner_degraded_and_fenced",
+        "tests/test_writer_idle_handoff.py::test_process_fence_refuses_new_same_process_join",
+        "tests/test_writer_idle_handoff.py::test_truth_work_started_after_process_fence_cannot_inherit_old_authority",
+        "tests/test_writer_idle_handoff.py::test_handoff_thread_cannot_join_a_new_named_holder",
+        "tests/test_writer_idle_handoff.py::test_handoff_recovery_pin_cannot_create_missing_authority",
+        "tests/test_writer_idle_handoff.py::test_only_handoff_thread_may_join_existing_recovery_pin",
+        "tests/test_writer_idle_handoff.py::test_every_busy_surface_vetoes_idle_handoff",
+        "tests/test_writer_idle_handoff.py::test_quiesce_failure_restores_owner_without_releasing_authority",
+        "tests/test_writer_idle_handoff.py::test_abort_resume_failure_is_owner_degraded_and_logs_only_fixed_codes",
+        "tests/test_writer_idle_handoff.py::test_resume_waits_for_prior_sentinel_consumer_before_starting_replacement",
+        "tests/test_writer_idle_handoff.py::test_read_only_reopen_failure_never_resurrects_released_writer",
+        "tests/test_writer_idle_handoff.py::test_failure_telemetry_never_exposes_exception_text_or_local_path",
+        "tests/test_writer_idle_handoff.py::test_successful_promotion_clears_recoverable_reader_degradation",
+        "tests/test_writer_idle_handoff.py::test_twenty_reader_writer_round_trips_do_not_leak_process_authority",
+        "tests/test_writer_idle_handoff.py::test_stats_exposes_content_free_writer_handoff_observability",
+        "tests/test_writer_idle_handoff.py::test_idle_release_config_accepts_disabled_or_bounded_values",
+        "tests/test_writer_idle_handoff.py::test_idle_release_config_rejects_ambiguous_or_unbounded_values",
+        "tests/test_writer_idle_handoff.py::test_user_activity_generation_veto_is_content_free",
+        "tests/test_writer_handoff_activity.py::test_journal_append_cannot_cross_handoff_fence_after_lifecycle_precheck",
+        "tests/test_writer_handoff_activity.py::test_relation_maintenance_real_sqlite_mutation_refreshes_truth_activity",
+        "tests/test_writer_handoff_activity.py::test_independent_digest_sqlite_mutation_refreshes_truth_activity",
+        "tests/test_writer_handoff_activity.py::test_noop_digest_does_not_refresh_truth_activity"
+      ]
     }
   ]
 }

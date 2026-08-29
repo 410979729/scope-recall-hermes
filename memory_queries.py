@@ -1076,6 +1076,7 @@ def stats_payload(provider: Any) -> dict[str, Any]:
             "owner": sanitized_truth_writer_owner(
                 runtime_view.get("truth_writer_owner")
             ),
+            "handoff": dict(runtime_view.get("writer_handoff") or {}),
         },
         "write_transactions": _write_transaction_stats(),
         "auto_adjudication": adjudication_report,

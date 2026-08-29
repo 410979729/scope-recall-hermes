@@ -32,6 +32,11 @@ PROVENANCE_SCHEMA_VERSION = "scope-recall.build-provenance.v1"
 PROVENANCE_MISMATCH_CODE = "CANDIDATE_ARTIFACT_PROVENANCE_MISMATCH"
 ALGORITHM = "git-ls-files-content-sha256-v1"
 DEFAULT_OUTPUT = Path(".execution/CANDIDATE_MANIFEST.json")
+FINAL_CANDIDATE_MODE = "final-release-candidate"
+DEVELOPMENT_SNAPSHOT_MODE = "development-snapshot"
+SUPPORTED_HERMES_VERSION = "0.19.1"
+SUPPORTED_HERMES_COMMIT = "cc4cab2f592e60a197e796506de9168f74baf3ea"
+SUPPORTED_HERMES_TREE = "fcdc6093750ed0a3a556e20927799d7245ba65e4"
 CANONICAL_PROFILES = (
     "core",
     "compatibility",
@@ -245,11 +250,32 @@ def _repository_identity(root: Path, *, require_clean: bool) -> dict[str, object
     }
 
 
-def _hermes_identity(hermes_root: Path | None) -> dict[str, object]:
+def _hermes_identity(
+    hermes_root: Path | None,
+    *,
+    development_snapshot: bool,
+) -> dict[str, object]:
     if hermes_root is None:
+        if not development_snapshot:
+            raise CandidateManifestError(
+                "final release candidate requires an exact Hermes root"
+            )
         return {"commit": "unbound", "tree": "unbound", "version": "unbound"}
     identity = _repository_identity(hermes_root, require_clean=True)
     identity["version"] = _project_version(hermes_root)
+    if not development_snapshot:
+        if identity.get("version") != SUPPORTED_HERMES_VERSION:
+            raise CandidateManifestError(
+                "final release candidate Hermes version differs from the supported baseline"
+            )
+        if (
+            identity.get("commit") != SUPPORTED_HERMES_COMMIT
+            or identity.get("tree") != SUPPORTED_HERMES_TREE
+            or identity.get("clean") is not True
+        ):
+            raise CandidateManifestError(
+                "final release candidate Hermes identity differs from the supported baseline"
+            )
     return identity
 
 
@@ -372,6 +398,7 @@ def build_candidate_manifest(
     ci_run_ids: Sequence[str] = (),
     expected_version: str = "2.0.0",
     require_clean: bool = True,
+    development_snapshot: bool = False,
 ) -> dict[str, object]:
     resolved = root.resolve(strict=True)
     verified = verify_build_provenance(
@@ -400,6 +427,11 @@ def build_candidate_manifest(
         )
     payload: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
+        "candidate_mode": (
+            DEVELOPMENT_SNAPSHOT_MODE
+            if development_snapshot
+            else FINAL_CANDIDATE_MODE
+        ),
         "candidate_version": expected_version,
         "source": {
             **source_identity,
@@ -408,7 +440,10 @@ def build_candidate_manifest(
             "plugin_yaml_sha256": _sha256_file(resolved / "plugin.yaml"),
         },
         "schemas": _schema_fingerprints(resolved),
-        "hermes": _hermes_identity(hermes_root),
+        "hermes": _hermes_identity(
+            hermes_root,
+            development_snapshot=development_snapshot,
+        ),
         "ci_run_ids": sorted({str(item).strip() for item in ci_run_ids if str(item).strip()}),
         "provenance": {
             "schema_version": PROVENANCE_SCHEMA_VERSION,
@@ -478,6 +513,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--hermes-root", type=Path)
+    parser.add_argument(
+        "--development-snapshot",
+        action="store_true",
+        help=(
+            "emit an explicitly non-release development snapshot; only this mode "
+            "may omit --hermes-root"
+        ),
+    )
     parser.add_argument("--provenance", type=Path, required=True)
     parser.add_argument("--ci-run-id", action="append", default=[])
     parser.add_argument("--expected-version", default="2.0.0")
@@ -493,6 +536,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         hermes_root=args.hermes_root,
         ci_run_ids=tuple(args.ci_run_id),
         expected_version=str(args.expected_version),
+        development_snapshot=bool(args.development_snapshot),
     )
     write_manifest(root, args.output, payload)
     print(

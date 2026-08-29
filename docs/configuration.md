@@ -423,3 +423,7 @@ Treat chat aliases as explicit operator access-control grants.
 - `vector.table_name` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.table_name` in the `vector` group. Default: `"memories"`
 - `vector.top_k` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.top_k` in the `vector` group. Default: `8`
 - `vector.write_outbox_replay_limit` (integer; risk: `medium`; restart_required: `yes`) — Maximum durable vector outbox events replayed after one committed memory write so transient backlog converges during normal traffic. Default: `20`
+
+## `writer_lease`
+
+- `writer_lease.idle_release_seconds` (number; risk: `medium`; restart_required: `yes`) — Seconds of process-wide user and truth inactivity required before every same-store writer is safely fenced, drained, and demoted to read-only. Default 1800; 0 explicitly disables handoff; positive values must be 30 to 86400. Default: `1800.0`

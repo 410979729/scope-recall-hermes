@@ -210,6 +210,224 @@ def _complete_exact_events(conn: sqlite3.Connection, event_ids: list[int]) -> di
     return {"claimed": len(event_ids), "completed": len(event_ids), "failed": 0}
 
 
+def _set_exact_event_status(
+    conn: sqlite3.Connection,
+    event_ids: list[int],
+    status: str,
+) -> dict[str, int]:
+    for event_id in event_ids:
+        conn.execute(
+            "UPDATE vector_outbox SET status=? WHERE id=?",
+            (status, event_id),
+        )
+    conn.commit()
+    return {
+        "claimed": len(event_ids),
+        "completed": 0,
+        "failed": len(event_ids),
+    }
+
+
+def test_hard_delete_collects_exact_vector_outbox_keys(tmp_path):
+    conn, _provider = _archive_fixture(tmp_path, "hard-delete-key")
+
+    result = hard_delete_memories(
+        conn,
+        memory_ids=["hard-delete-key"],
+        scope_ids=["scope-a"],
+        require_vector_delete=True,
+        actor="test",
+        reason="exact key regression",
+    )
+
+    row = conn.execute(
+        "SELECT event_key FROM vector_outbox WHERE memory_id='hard-delete-key'"
+    ).fetchone()
+    assert row is not None
+    assert result["vector_outbox_keys"] == [str(row["event_key"])]
+    assert result["outbox_enqueued"] == 1
+
+
+def test_hard_delete_zero_generation_has_no_vector_debt(tmp_path):
+    conn, provider = _archive_fixture(
+        tmp_path,
+        "hard-delete-no-generation",
+        generation=False,
+    )
+    provider._vector_status = "degraded"
+    try:
+        result = memory_ops.delete_memories_result(
+            provider, ["hard-delete-no-generation"]
+        )
+
+        assert result.deleted_count == 1
+        assert result.vector_outbox_keys == ()
+        assert result.vector_pending is False
+        assert result.companion_erasure_pending is False
+        assert conn.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_hard_delete_store_unavailable_reports_exact_pending(tmp_path):
+    conn, provider = _archive_fixture(tmp_path, "hard-delete-unavailable")
+
+    result = memory_ops.delete_memories_result(provider, ["hard-delete-unavailable"])
+
+    assert result.vector_pending is True
+    assert result.companion_erasure_pending is True
+    assert len(result.vector_outbox_keys) == 1
+    assert conn.execute(
+        "SELECT status FROM vector_outbox WHERE event_key=?",
+        (result.vector_outbox_keys[0],),
+    ).fetchone()[0] == "pending"
+
+
+def test_hard_delete_unrelated_completed_backlog_does_not_clear_target_event(
+    tmp_path,
+    monkeypatch,
+):
+    conn, provider = _archive_fixture(tmp_path, "hard-delete-target")
+    generation_id = str(current_generation(conn)["generation_id"])
+    unrelated = enqueue_vector_event(
+        conn,
+        event_key="hard-delete-unrelated-completed",
+        generation_id=generation_id,
+        memory_id="unrelated",
+        operation="delete",
+    )
+    conn.execute(
+        "UPDATE vector_outbox SET status='completed', completed_at=updated_at WHERE id=?",
+        (int(unrelated["id"]),),
+    )
+    conn.commit()
+    monkeypatch.setattr(
+        vector_runtime,
+        "replay_vector_outbox_events",
+        lambda _provider, *, event_ids: {
+            "claimed": 200,
+            "completed": 200,
+            "failed": 0,
+        },
+    )
+
+    result = memory_ops.delete_memories_result(provider, ["hard-delete-target"])
+
+    assert result.vector_pending is True
+    assert result.companion_erasure_pending is True
+
+
+def test_hard_delete_exact_target_completed_clears_pending(tmp_path, monkeypatch):
+    conn, provider = _archive_fixture(tmp_path, "hard-delete-complete")
+    monkeypatch.setattr(
+        vector_runtime,
+        "replay_vector_outbox_events",
+        lambda _provider, *, event_ids: _complete_exact_events(conn, list(event_ids)),
+    )
+
+    result = memory_ops.delete_memories_result(provider, ["hard-delete-complete"])
+
+    assert result.vector_pending is False
+    assert result.companion_erasure_pending is False
+
+
+def test_hard_delete_exact_target_retry_reports_pending(tmp_path, monkeypatch):
+    conn, provider = _archive_fixture(tmp_path, "hard-delete-retry")
+    monkeypatch.setattr(
+        vector_runtime,
+        "replay_vector_outbox_events",
+        lambda _provider, *, event_ids: _set_exact_event_status(
+            conn, list(event_ids), "retry"
+        ),
+    )
+
+    result = memory_ops.delete_memories_result(provider, ["hard-delete-retry"])
+
+    assert result.vector_pending is True
+    assert conn.execute(
+        "SELECT status FROM vector_outbox WHERE event_key=?",
+        (result.vector_outbox_keys[0],),
+    ).fetchone()[0] == "retry"
+
+
+def test_hard_delete_exact_target_dead_letter_requires_repair(tmp_path, monkeypatch):
+    _conn_handle, provider = _archive_fixture(tmp_path, "hard-delete-dead-letter")
+    conn = provider._require_conn()
+    monkeypatch.setattr(
+        vector_runtime,
+        "replay_vector_outbox_events",
+        lambda _provider, *, event_ids: _set_exact_event_status(
+            conn, list(event_ids), "dead_letter"
+        ),
+    )
+
+    result = memory_ops.delete_memories_result(provider, ["hard-delete-dead-letter"])
+
+    assert result.vector_pending is True
+    assert provider._vector_status == "needs_repair"
+    assert provider._vector_reason_code == "exact_outbox_dead_letter"
+
+
+def test_hard_delete_missing_exact_event_fails_closed_pending(tmp_path, monkeypatch):
+    conn, provider = _archive_fixture(tmp_path, "hard-delete-missing")
+
+    def remove_events(_provider, *, event_ids):
+        for event_id in event_ids:
+            conn.execute("DELETE FROM vector_outbox WHERE id=?", (int(event_id),))
+        conn.commit()
+        return {"claimed": 0, "completed": 0, "failed": 0}
+
+    monkeypatch.setattr(vector_runtime, "replay_vector_outbox_events", remove_events)
+
+    result = memory_ops.delete_memories_result(provider, ["hard-delete-missing"])
+
+    assert result.vector_pending is True
+    assert result.companion_erasure_pending is True
+
+
+def test_hard_delete_multi_id_one_pending_reports_pending(tmp_path, monkeypatch):
+    conn, provider = _archive_fixture(
+        tmp_path,
+        "hard-delete-first",
+        "hard-delete-second",
+    )
+
+    def complete_first(_provider, *, event_ids):
+        return _complete_exact_events(conn, [int(event_ids[0])])
+
+    monkeypatch.setattr(vector_runtime, "replay_vector_outbox_events", complete_first)
+
+    result = memory_ops.delete_memories_result(
+        provider,
+        ["hard-delete-first", "hard-delete-second"],
+    )
+
+    assert result.deleted_count == 2
+    assert result.vector_pending is True
+
+
+def test_dedupe_uses_exact_delete_event_status(tmp_path, monkeypatch):
+    conn = _conn(tmp_path / "dedupe-exact.sqlite3")
+    _add_memory(conn, "dupe-a")
+    _add_memory(conn, "dupe-b")
+    _register_generation(conn)
+    provider = _MemoryProvider(conn)
+    monkeypatch.setattr(
+        vector_runtime,
+        "replay_vector_outbox_events",
+        lambda _provider, *, event_ids: {
+            "claimed": 200,
+            "completed": 200,
+            "failed": 0,
+        },
+    )
+
+    result = dedupe_memories(provider, dry_run=False, scope_only=False)
+
+    assert result["deleted"] == 1
+    assert result["vector_pending"] is True
+
+
 def test_archive_collects_exact_vector_outbox_keys(tmp_path):
     conn, provider = _archive_fixture(tmp_path, "archive-a", "archive-b")
 
@@ -248,7 +466,7 @@ def test_archive_generation_present_but_store_unavailable_reports_pending(tmp_pa
 def test_archive_zero_claim_replay_does_not_clear_exact_pending_event(tmp_path, monkeypatch):
     _conn_handle, provider = _archive_fixture(tmp_path, "archive-zero-claim")
     monkeypatch.setattr(
-        memory_ops,
+        vector_runtime,
         "replay_vector_outbox_events",
         lambda _provider, *, event_ids: {"claimed": 0, "completed": 0, "failed": 0},
     )
@@ -275,7 +493,7 @@ def test_archive_unrelated_completed_backlog_does_not_clear_target_event(tmp_pat
     )
     conn.commit()
     monkeypatch.setattr(
-        memory_ops,
+        vector_runtime,
         "replay_vector_outbox_events",
         lambda _provider, *, event_ids: {"claimed": 1, "completed": 1, "failed": 0},
     )
@@ -289,7 +507,7 @@ def test_archive_unrelated_completed_backlog_does_not_clear_target_event(tmp_pat
 def test_archive_exact_event_completion_clears_pending(tmp_path, monkeypatch):
     conn, provider = _archive_fixture(tmp_path, "archive-complete")
     monkeypatch.setattr(
-        memory_ops,
+        vector_runtime,
         "replay_vector_outbox_events",
         lambda _provider, *, event_ids: _complete_exact_events(conn, list(event_ids)),
     )
@@ -307,7 +525,7 @@ def test_archive_multi_id_one_pending_reports_pending(tmp_path, monkeypatch):
     def complete_first(_provider, *, event_ids):
         return _complete_exact_events(conn, [int(event_ids[0])])
 
-    monkeypatch.setattr(memory_ops, "replay_vector_outbox_events", complete_first)
+    monkeypatch.setattr(vector_runtime, "replay_vector_outbox_events", complete_first)
 
     result = archive_memories(provider, ["archive-first", "archive-second"])
 
@@ -346,7 +564,7 @@ def test_archive_dead_letter_reports_needs_repair(tmp_path, monkeypatch):
         conn.commit()
         return {"claimed": 1, "completed": 0, "failed": 1}
 
-    monkeypatch.setattr(memory_ops, "replay_vector_outbox_events", dead_letter)
+    monkeypatch.setattr(vector_runtime, "replay_vector_outbox_events", dead_letter)
 
     result = archive_memories(provider, ["archive-dead-letter"])
 
@@ -362,7 +580,7 @@ def test_archive_replay_exception_reports_companion_pending(tmp_path, monkeypatc
         del event_ids
         raise RuntimeError("isolated replay failure")
 
-    monkeypatch.setattr(memory_ops, "replay_vector_outbox_events", fail_replay)
+    monkeypatch.setattr(vector_runtime, "replay_vector_outbox_events", fail_replay)
 
     result = archive_memories(provider, ["archive-replay-error"])
 

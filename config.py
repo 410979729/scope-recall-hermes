@@ -40,6 +40,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "query_char_limit": 1000,
     "min_capture_length": 40,
     "capture_queue_capacity": 256,
+    "writer_lease": {
+        "idle_release_seconds": 1800.0,
+    },
     "capture_raw_user": False,
     "journal": {
         "allow_heuristic_fallback": False,
@@ -501,6 +504,16 @@ def _config_value_error(dotted: str, value: Any) -> str:
             return (
                 f"invalid value for {dotted}: expected an integer "
                 f"between {minimum} and {maximum}"
+            )
+        return ""
+    if dotted == "writer_lease.idle_release_seconds":
+        number = float(value)
+        if not math.isfinite(number) or (
+            number != 0.0 and not 30.0 <= number <= 86_400.0
+        ):
+            return (
+                "invalid value for writer_lease.idle_release_seconds: expected "
+                "0 (disabled) or a finite number between 30 and 86400"
             )
         return ""
     number_bounds = CONFIG_BOUNDED_NUMBER_PATHS.get(dotted)

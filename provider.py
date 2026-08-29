@@ -9,6 +9,7 @@ import os
 import queue
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
 
@@ -262,6 +263,13 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._writer_lifecycle_lock = threading.RLock()
         self._background = self._composition.background
         self._foreground_busy_count = 0
+        self._writer_handoff_activity_lock = threading.RLock()
+        self._writer_handoff_last_user_activity = time.monotonic()
+        self._writer_handoff_last_truth_activity = time.monotonic()
+        self._writer_handoff_activity_generation = 0
+        self._writer_handoff_active_truth_work = 0
+        self._writer_handoff_last_probe = 0.0
+        self._writer_handoff_fenced = False
         self._last_event_digest_report: dict[str, Any] = {
             "enabled": False,
             "dry_run": True,
@@ -355,9 +363,27 @@ class ScopeRecallMemoryProvider(MemoryProvider):
     def _truth_writes_blocked(self) -> bool:
         """Return whether durable write surfaces must stay disabled."""
 
-        return (
-            self._shutdown_requested.is_set() or self._truth_writer_role != "owner"
+        if (
+            self._shutdown_requested.is_set()
+            or self._truth_writer_role != "owner"
+            or bool(getattr(self, "_writer_handoff_fenced", False))
+        ):
+            return True
+        storage_dir = getattr(self, "_storage_dir", None)
+        if storage_dir is None:
+            return False
+        from .writer_lease import process_writer_handoff_state
+        from ._internal.runtime.writer_handoff import (
+            current_truth_work_started_before_fence,
         )
+
+        state = process_writer_handoff_state(storage_dir)
+        with state.lock:
+            if bool(getattr(state, "release_uncertain", False)):
+                return True
+            if bool(getattr(state, "handoff_fenced", False)):
+                return not current_truth_work_started_before_fence(self)
+            return False
 
     def _register_provider_instance(self) -> None:
         _peer_recovery.register_provider_instance(self)
@@ -421,6 +447,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         del message, kwargs
+        from ._internal.runtime.writer_handoff import note_user_activity
+
+        note_user_activity(self)
         self._current_turn = int(turn_number or 0)
         if self._truth_writes_blocked():
             self._maybe_promote_to_writer()
@@ -685,6 +714,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         }
 
     def runtime_status_view(self) -> dict[str, Any]:
+        from ._internal.runtime.writer_handoff import writer_handoff_status
+
         thread = getattr(self, "_writer_thread", None)
         digest_thread = getattr(self, "_journal_digest_thread", None)
         db_path = getattr(self, "_db_path", None)
@@ -697,6 +728,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             "truth_writer_owner": sanitized_truth_writer_owner(
                 getattr(self, "_truth_writer_owner", {})
             ),
+            "writer_handoff": writer_handoff_status(self),
             "last_adjudication_report": dict(
                 getattr(self, "_last_adjudication_report", {}) or {}
             ),

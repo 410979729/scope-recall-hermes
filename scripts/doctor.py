@@ -18,6 +18,21 @@ DEFAULT_SOURCE_ROOT = Path(__file__).resolve().parents[1]
 if str(DEFAULT_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(DEFAULT_SOURCE_ROOT))
 
+WRITER_HANDOFF_LIVE_STATS_FIELDS = (
+    "writer_role",
+    "last_user_activity_age_seconds",
+    "last_truth_activity_age_seconds",
+    "same_process_holder_count",
+    "connection_pin_count",
+    "demotion_in_progress",
+    "successful_handoff_count",
+    "last_handoff_at",
+    "last_handoff_reason_code",
+    "last_handoff_failure_code",
+    "release_uncertain",
+    "operator_action_required",
+)
+
 try:  # installed package / pytest package-alias path
     from scope_recall.doctor_common import (
         expected_embedder_from_config,
@@ -124,6 +139,25 @@ def main() -> int:
         runtime_config = load_runtime_config(source_root, hermes_home)
         config_errors = runtime_config.get("_config_load_errors") if isinstance(runtime_config.get("_config_load_errors"), list) else []
         config_check = {"ok": not config_errors, "errors": config_errors}
+        raw_writer_lease = runtime_config.get("writer_lease")
+        writer_lease_config = (
+            raw_writer_lease if isinstance(raw_writer_lease, dict) else {}
+        )
+        configured_idle_release_seconds = float(
+            writer_lease_config.get("idle_release_seconds", 1800.0)
+        )
+        writer_handoff_payload = {
+            "snapshot_kind": "offline_config_only",
+            "runtime_state_observed": False,
+            "writer_lease_scope": "process-wide-os-lock",
+            "idle_release_enabled": configured_idle_release_seconds > 0,
+            "idle_release_seconds": configured_idle_release_seconds,
+            "live_counters": {
+                "source": "scope_recall_stats",
+                "observed": False,
+                "fields": list(WRITER_HANDOFF_LIVE_STATS_FIELDS),
+            },
+        }
         if config_errors:
             recommendations.append("Fix malformed or unreadable Scope Recall config files; runtime is using defaults or partial config.")
         endpoint_payload, endpoint_check, endpoint_recommendations = endpoint_policy_report(
@@ -173,6 +207,7 @@ def main() -> int:
         payload["runtime"] = {
             "hermes_home": str(hermes_home),
             "config_load": {"errors": config_errors},
+            "writer_handoff": writer_handoff_payload,
             "endpoint_policy": endpoint_payload,
             "expected_embedder": expected_embedder,
             "vector_backend": backend,

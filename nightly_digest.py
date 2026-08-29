@@ -71,6 +71,7 @@ from .transaction_guard import prepare_network_boundary, release_snapshot_transa
 from .writer_lease import TruthWriterBusyError, TruthWriterLease
 from .vector_runtime import (
     mark_vector_replay_degraded,
+    replay_and_classify_exact_vector_intents,
     replay_vector_outbox,
     setup_vector_layer,
     vector_delete_intent_required,
@@ -1707,18 +1708,27 @@ def cleanup_exact_duplicates(conn: sqlite3.Connection, scope: ScopeProfile, vect
             batch_id=f"nightly_dedupe_{uuid.uuid4().hex}",
         )
         if vector_runtime is not None and require_vector_delete:
-            replay_result = replay_vector_outbox(
+            completion = replay_and_classify_exact_vector_intents(
                 vector_runtime,
-                limit=max(1, int(result.get("outbox_enqueued") or 1)),
+                [
+                    str(event_key)
+                    for event_key in result.get("vector_outbox_keys", [])
+                    if str(event_key).strip()
+                ],
             )
+            replay_result = dict(completion.get("replay") or {})
             if (
-                int(replay_result.get("failed") or 0) > 0
+                not bool(completion.get("all_completed"))
                 and str(getattr(vector_runtime, "_vector_status", "") or "")
                 not in {"degraded", "needs_repair"}
             ):
                 mark_vector_replay_degraded(
                     vector_runtime,
-                    "nightly duplicate vector outbox replay failed",
+                    (
+                        "nightly duplicate vector outbox replay failed"
+                        if int(replay_result.get("failed") or 0) > 0
+                        else "nightly duplicate exact vector intent remains pending"
+                    ),
                 )
         return int(result["deleted"])
     except Exception as exc:

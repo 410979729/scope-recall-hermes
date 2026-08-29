@@ -808,6 +808,64 @@ def test_merge_uses_db_current_generation_when_runtime_generation_is_stale(
     }
 
 
+def test_merge_replays_exact_target_and_source_events_after_commit(
+    provider: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target_id = _store(provider, "Exact replay merge target.")
+    source_id = _store(provider, "Exact replay merge source.")
+    monkeypatch.setitem(provider._config, "relation_extraction_enabled", False)
+    _set_current_vector_generation(provider, "generation-exact-merge")
+    _clear_vector_outbox(provider)
+    observed: dict[str, Any] = {}
+    merge_fn = provider._merge_memories.__func__.__globals__["merge_memories"]
+
+    def classify_exact(runtime: Any, event_keys: list[str]) -> dict[str, Any]:
+        conn = runtime._require_conn()
+        assert conn.in_transaction is False
+        placeholders = ",".join("?" for _ in event_keys)
+        rows = conn.execute(
+            f"SELECT id, event_key, memory_id, operation FROM vector_outbox "
+            f"WHERE event_key IN ({placeholders}) ORDER BY id",
+            event_keys,
+        ).fetchall()
+        observed["keys"] = list(event_keys)
+        observed["events"] = [
+            (str(row["memory_id"]), str(row["operation"])) for row in rows
+        ]
+        return {
+            "event_keys": list(event_keys),
+            "event_ids": [int(row["id"]) for row in rows],
+            "status_counts": {"completed": len(rows)},
+            "replay": {
+                "claimed": len(rows),
+                "completed": len(rows),
+                "failed": 0,
+            },
+            "all_completed": True,
+            "retryable_pending": 0,
+            "dead_letter": 0,
+            "missing": 0,
+            "other_pending": 0,
+        }
+
+    monkeypatch.setitem(
+        merge_fn.__globals__,
+        "replay_and_classify_exact_vector_intents",
+        classify_exact,
+    )
+
+    result = provider._merge_memories(target_id, [source_id])
+
+    assert result["merged"] is True
+    assert result["vector_pending"] is False
+    assert len(observed["keys"]) == 2
+    assert set(observed["events"]) == {
+        (target_id, "upsert"),
+        (source_id, "delete"),
+    }
+
+
 class _FailingVectorStore:
     def upsert_records(self, _records: list[dict[str, Any]]) -> None:
         raise RuntimeError("injected store vector upsert failure")

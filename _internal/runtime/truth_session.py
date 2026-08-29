@@ -139,9 +139,16 @@ class TruthSession:
         try:
             conn.close()
         except Exception:
-            logger.exception("Scope Recall SQLite close failed after %s", context)
+            owner = self._owner
+            if owner is not None and bool(
+                getattr(owner, "_writer_handoff_fenced", False)
+            ):
+                logger.warning(
+                    "Scope Recall SQLite close failed during fenced writer handoff"
+                )
+            else:
+                logger.exception("Scope Recall SQLite close failed after %s", context)
             if self._conn is conn:
-                owner = self._owner
                 if owner is not None:
                     owner._truth_writer_role = "unknown"
             if reraise:

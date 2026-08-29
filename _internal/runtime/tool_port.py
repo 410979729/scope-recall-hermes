@@ -332,11 +332,17 @@ class ProviderToolRuntimeAdapter:
             _writer_lifecycle_lock,
             has_positive_write_authority,
         )
+        from .writer_handoff import active_truth_work
 
         barrier = mutation_barrier(self._host) if capture_barrier else nullcontext()
         with barrier:
             with _writer_lifecycle_lock(self._host):
-                yield has_positive_write_authority(self._host)
+                authorized = has_positive_write_authority(self._host)
+                if not authorized:
+                    yield False
+                    return
+                with active_truth_work(self._host, user_initiated=True):
+                    yield True
 
     def rollback_conn_after_error(self, context: str) -> Any:
         return _optional_call(self._host, "_rollback_conn_after_error", context)

@@ -42,6 +42,23 @@ STAGE_TIMEOUT_SECONDS = 300
 INSTALL_TIMEOUT_SECONDS = 600
 N_MINUS_ONE_VERSION = "1.10.3"
 N_MINUS_ONE_WINDOW_SCHEMA_VERSION = "scope-recall.n-minus-one-window.v1"
+ISSUE_51_DETAILS_SCHEMA_VERSION = "scope-recall.issue-51-regression-details.v1"
+ISSUE_51_DETAILS_OUTPUT_ENV = "SCOPE_RECALL_ISSUE_51_DETAILS_OUTPUT"
+WRITER_HANDOFF_SCHEMA_VERSION = "scope-recall.writer-lease-handoff.v1"
+WRITER_HANDOFF_DETAILS_SCHEMA_VERSION = (
+    "scope-recall.writer-lease-handoff-details.v1"
+)
+WRITER_HANDOFF_DETAILS_OUTPUT_ENV = "SCOPE_RECALL_WRITER_HANDOFF_DETAILS_OUTPUT"
+WRITER_HANDOFF_STAGES = (
+    "initial_owner",
+    "peer_reader",
+    "idle_fence",
+    "all_work_quiescent",
+    "os_lease_released",
+    "peer_promoted",
+    "peer_write_committed",
+    "former_owner_remains_reader",
+)
 REHEARSAL_RECEIPTS: dict[str, tuple[str, ...]] = {
     "MIGRATION_N_MINUS_ONE.json": (
         "tests/test_release_candidate_rehearsals.py::test_activity_snapshot_upgrade_preserves_source_and_payload",
@@ -67,6 +84,49 @@ REHEARSAL_RECEIPTS: dict[str, tuple[str, ...]] = {
     ),
     "ROLLBACK_REHEARSAL.json": (
         "tests/test_installer.py::test_installer_rollback_restores_backup_and_backs_up_current_plugin",
+    ),
+    "ISSUE_51_REGRESSION.json": (
+        "tests/test_issue_51_regression.py::test_issue_51_regression",
+        "tests/test_relation_rebuild_retirement.py::test_every_legacy_execution_surface_is_a_zero_write_refusal",
+        "tests/test_relation_policy_generation.py::test_cap_plus_one_blocks_whole_generation_without_partial_items",
+        "tests/test_relation_cleanup.py::test_cleanup_apply_is_backup_first_committed_and_idempotently_replayed",
+    ),
+    "WRITER_LEASE_HANDOFF_REHEARSAL.json": (
+        "tests/test_writer_idle_handoff.py::test_process_wide_idle_handoff_allows_real_second_process_commit",
+        "tests/test_writer_idle_handoff.py::test_extra_connection_pin_vetoes_process_handoff",
+        "tests/test_writer_idle_handoff.py::test_active_same_process_peer_vetoes_process_handoff",
+        "tests/test_writer_idle_handoff.py::test_writer_loop_automatically_schedules_idle_handoff",
+        "tests/test_writer_idle_handoff.py::test_wall_clock_rollback_cannot_extend_process_cooldown",
+        "tests/test_writer_idle_handoff.py::test_activity_generation_change_aborts_and_resumes_all_writers",
+        "tests/test_writer_idle_handoff.py::test_capture_enqueue_racing_idle_fence_aborts_without_losing_work",
+        "tests/test_writer_idle_handoff.py::test_direct_tool_write_started_before_fence_commits_and_vetoes_handoff",
+        "tests/test_writer_idle_handoff.py::test_activity_after_final_check_linearizes_after_release_and_promotes",
+        "tests/test_writer_idle_handoff.py::test_resource_close_failure_retains_authority_and_never_reports_reader",
+        "tests/test_writer_idle_handoff.py::test_writer_connection_close_failure_restores_healthy_owner",
+        "tests/test_writer_idle_handoff.py::test_connection_pin_close_failure_is_retried_before_owner_restore",
+        "tests/test_writer_idle_handoff.py::test_os_lease_release_failure_fences_process_and_requires_restart",
+        "tests/test_writer_idle_handoff.py::test_writer_restore_failure_stays_owner_degraded_and_fenced",
+        "tests/test_writer_idle_handoff.py::test_process_fence_refuses_new_same_process_join",
+        "tests/test_writer_idle_handoff.py::test_truth_work_started_after_process_fence_cannot_inherit_old_authority",
+        "tests/test_writer_idle_handoff.py::test_handoff_thread_cannot_join_a_new_named_holder",
+        "tests/test_writer_idle_handoff.py::test_handoff_recovery_pin_cannot_create_missing_authority",
+        "tests/test_writer_idle_handoff.py::test_only_handoff_thread_may_join_existing_recovery_pin",
+        "tests/test_writer_idle_handoff.py::test_every_busy_surface_vetoes_idle_handoff",
+        "tests/test_writer_idle_handoff.py::test_quiesce_failure_restores_owner_without_releasing_authority",
+        "tests/test_writer_idle_handoff.py::test_abort_resume_failure_is_owner_degraded_and_logs_only_fixed_codes",
+        "tests/test_writer_idle_handoff.py::test_resume_waits_for_prior_sentinel_consumer_before_starting_replacement",
+        "tests/test_writer_idle_handoff.py::test_read_only_reopen_failure_never_resurrects_released_writer",
+        "tests/test_writer_idle_handoff.py::test_failure_telemetry_never_exposes_exception_text_or_local_path",
+        "tests/test_writer_idle_handoff.py::test_successful_promotion_clears_recoverable_reader_degradation",
+        "tests/test_writer_idle_handoff.py::test_twenty_reader_writer_round_trips_do_not_leak_process_authority",
+        "tests/test_writer_idle_handoff.py::test_stats_exposes_content_free_writer_handoff_observability",
+        "tests/test_writer_idle_handoff.py::test_idle_release_config_accepts_disabled_or_bounded_values",
+        "tests/test_writer_idle_handoff.py::test_idle_release_config_rejects_ambiguous_or_unbounded_values",
+        "tests/test_writer_idle_handoff.py::test_user_activity_generation_veto_is_content_free",
+        "tests/test_writer_handoff_activity.py::test_journal_append_cannot_cross_handoff_fence_after_lifecycle_precheck",
+        "tests/test_writer_handoff_activity.py::test_relation_maintenance_real_sqlite_mutation_refreshes_truth_activity",
+        "tests/test_writer_handoff_activity.py::test_independent_digest_sqlite_mutation_refreshes_truth_activity",
+        "tests/test_writer_handoff_activity.py::test_noop_digest_does_not_refresh_truth_activity",
     ),
 }
 ISOLATION_NODES = (
@@ -1243,6 +1303,22 @@ def _run_pytest_receipt(
             "SCOPE_RECALL_INSTALL_RECEIPT_SHA256": install_receipt_sha256,
         }
     )
+    issue_51_details_path: Path | None = None
+    if receipt_name == "ISSUE_51_REGRESSION.json":
+        issue_51_details_path = (
+            Path(environment["TEMP"]) / "issue-51-regression-details.json"
+        )
+        rehearsal_environment[ISSUE_51_DETAILS_OUTPUT_ENV] = str(
+            issue_51_details_path
+        )
+    writer_handoff_details_path: Path | None = None
+    if receipt_name == "WRITER_LEASE_HANDOFF_REHEARSAL.json":
+        writer_handoff_details_path = (
+            Path(environment["TEMP"]) / "writer-lease-handoff-details.json"
+        )
+        rehearsal_environment[WRITER_HANDOFF_DETAILS_OUTPUT_ENV] = str(
+            writer_handoff_details_path
+        )
     actual = [
         str(python),
         "-B",
@@ -1320,46 +1396,100 @@ def _run_pytest_receipt(
             ),
         }
     )
+    receipt_details: dict[str, object] = {
+        "node_ids": list(node_ids),
+        "import_guard": guard,
+    }
+    if issue_51_details_path is not None:
+        if not issue_51_details_path.is_file():
+            raise ReleaseValidationError(
+                "ISSUE_51_REGRESSION.json details output is missing"
+            )
+        issue_51_details = _load_json(issue_51_details_path)
+        if issue_51_details.get("schema_version") != (
+            ISSUE_51_DETAILS_SCHEMA_VERSION
+        ):
+            raise ReleaseValidationError(
+                "ISSUE_51_REGRESSION.json details schema mismatch"
+            )
+        receipt_details["issue_51_regression"] = issue_51_details
+    writer_handoff_details: dict[str, object] | None = None
+    if writer_handoff_details_path is not None:
+        if not writer_handoff_details_path.is_file():
+            raise ReleaseValidationError(
+                "WRITER_LEASE_HANDOFF_REHEARSAL.json details output is missing"
+            )
+        writer_handoff_details = _load_json(writer_handoff_details_path)
+        if writer_handoff_details.get("schema_version") != (
+            WRITER_HANDOFF_DETAILS_SCHEMA_VERSION
+        ):
+            raise ReleaseValidationError(
+                "WRITER_LEASE_HANDOFF_REHEARSAL.json details schema mismatch"
+            )
+        expected_handoff = {
+            "writer_artifact_sha256": context.wheel_sha256,
+            "idle_release_seconds": 1800.0,
+            "process_count": 2,
+            "same_process_provider_count": 2,
+            "stages": list(WRITER_HANDOFF_STAGES),
+            "simultaneous_writer_observed": False,
+            "accepted_work_lost": False,
+            "holder_count_after_release": 0,
+            "connection_pin_count_after_release": 0,
+            "result": "passed",
+        }
+        for field, expected in expected_handoff.items():
+            if writer_handoff_details.get(field) != expected:
+                raise ReleaseValidationError(
+                    "WRITER_LEASE_HANDOFF_REHEARSAL.json "
+                    f"{field} mismatch"
+                )
+        receipt_details["writer_lease_handoff"] = writer_handoff_details
+    receipt_payload = _receipt(
+        context,
+        stage=stage,
+        command=display,
+        database_kind="fixture-copy",
+        artifact_contract={
+            "artifact_consumed": True,
+            "artifact_kind": "wheel",
+            "installed_distribution": install_receipt["installed_distribution"],
+            "imported_module_path_class": "isolated-site-packages",
+            "source_worktree_imported": False,
+            "source_worktree_on_sys_path": False,
+            "install_receipt_sha256": install_receipt_sha256,
+            "direct_url_sha256": install_receipt["direct_url_sha256"],
+            "record_sha256": install_receipt["record_sha256"],
+            "environment_id": environment_id,
+            "hermes_source_identity": dict(hermes_source_identity),
+        },
+        environment_identity={
+            "identity_scheme": "sha256-local-path-v1",
+            "hermes_home_id": _canonical_sha256(environment["HERMES_HOME"]),
+            "database_id": _canonical_sha256(environment["SCOPE_RECALL_DB"]),
+            "pytest_basetemp_id": _canonical_sha256(
+                str(
+                    _pytest_basetemp(
+                        environment,
+                        f"r-{hashlib.sha256(stem.encode('utf-8')).hexdigest()[:8]}",
+                    )
+                )
+            ),
+        },
+        details=receipt_details,
+    )
+    if writer_handoff_details is not None:
+        receipt_payload["schema_version"] = WRITER_HANDOFF_SCHEMA_VERSION
+        receipt_payload.update(
+            {
+                field: value
+                for field, value in writer_handoff_details.items()
+                if field != "schema_version"
+            }
+        )
     _write_json(
         staging / receipt_name,
-        _receipt(
-            context,
-            stage=stage,
-            command=display,
-            database_kind="fixture-copy",
-            artifact_contract={
-                "artifact_consumed": True,
-                "artifact_kind": "wheel",
-                "installed_distribution": install_receipt[
-                    "installed_distribution"
-                ],
-                "imported_module_path_class": "isolated-site-packages",
-                "source_worktree_imported": False,
-                "source_worktree_on_sys_path": False,
-                "install_receipt_sha256": install_receipt_sha256,
-                "direct_url_sha256": install_receipt["direct_url_sha256"],
-                "record_sha256": install_receipt["record_sha256"],
-                "environment_id": environment_id,
-                "hermes_source_identity": dict(hermes_source_identity),
-            },
-            environment_identity={
-                "identity_scheme": "sha256-local-path-v1",
-                "hermes_home_id": _canonical_sha256(environment["HERMES_HOME"]),
-                "database_id": _canonical_sha256(environment["SCOPE_RECALL_DB"]),
-                "pytest_basetemp_id": _canonical_sha256(
-                    str(
-                        _pytest_basetemp(
-                            environment,
-                            f"r-{hashlib.sha256(stem.encode('utf-8')).hexdigest()[:8]}",
-                        )
-                    )
-                ),
-            },
-            details={
-                "node_ids": list(node_ids),
-                "import_guard": guard,
-            },
-        ),
+        receipt_payload,
     )
 
 
@@ -1703,6 +1833,8 @@ def run_release_validation(
         "READONLY_CANARY.json",
         "WRITER_CANARY.json",
         "ROLLBACK_REHEARSAL.json",
+        "ISSUE_51_REGRESSION.json",
+        "WRITER_LEASE_HANDOFF_REHEARSAL.json",
         "INSTALL_CANDIDATE_RECEIPT.json",
         "INSTALL_N_MINUS_ONE_RECEIPT.json",
         "ACTIVE_ISOLATION.json",

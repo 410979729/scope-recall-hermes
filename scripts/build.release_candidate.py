@@ -491,7 +491,7 @@ def build_release_candidate(
     expected_sha: str,
     output_root: Path,
     active_hermes_home: Path,
-    hermes_root: Path | None = None,
+    hermes_root: Path,
     ci_run_ids: Sequence[str] = (),
 ) -> Path:
     resolved = root.resolve(strict=True)
@@ -692,7 +692,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--expected-sha", required=True)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--active-hermes-home", type=Path, required=True)
-    parser.add_argument("--hermes-root", type=Path)
+    parser.add_argument("--hermes-root", type=Path, required=True)
     parser.add_argument("--ci-run-id", action="append", default=[])
     return parser.parse_args(argv)
 
