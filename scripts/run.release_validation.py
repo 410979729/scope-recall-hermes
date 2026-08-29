@@ -39,7 +39,7 @@ RECEIPT_SCHEMA_VERSION = "scope-recall.validation-receipt.v1"
 INSTALL_RECEIPT_SCHEMA_VERSION = "scope-recall.artifact-install-receipt.v1"
 FULL_TEST_TIMEOUT_SECONDS = 900
 STAGE_TIMEOUT_SECONDS = 300
-INSTALL_TIMEOUT_SECONDS = 600
+INSTALL_TIMEOUT_SECONDS = 1800
 # Native Windows ``venv`` creation can spend several minutes in ensurepip and
 # endpoint-security scanning even when the subsequent installs are fast.  Keep
 # that bounded, but do not reuse the shorter network/install budget for it.

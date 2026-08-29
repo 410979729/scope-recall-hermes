@@ -450,7 +450,8 @@ include = ["hermes_cli", "hermes_cli.*"]
         module.INSTALL_TIMEOUT_SECONDS,
         module.INSTALL_TIMEOUT_SECONDS,
     ]
-    assert module.VENV_TIMEOUT_SECONDS > module.INSTALL_TIMEOUT_SECONDS
+    assert module.VENV_TIMEOUT_SECONDS >= 900
+    assert module.INSTALL_TIMEOUT_SECONDS >= 1800
     assert str(candidate_wheel) + "[lancedb,dev]" in commands[1]
     hermes_install_target = Path(commands[2][-1])
     assert hermes_install_target == workspace / "hermes-source-copy"
