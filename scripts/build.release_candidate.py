@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
+import signal
 import shutil
 import subprocess
 import sys
@@ -57,9 +58,12 @@ except ModuleNotFoundError as exc:
 
 PROVENANCE_SCHEMA_VERSION = "scope-recall.build-provenance.v1"
 DEFAULT_OUTPUT_ROOT = Path(".execution/evidence")
-BUILD_TIMEOUT_SECONDS = 300
-INSTALL_TIMEOUT_SECONDS = 300
-SDIST_TEST_TIMEOUT_SECONDS = 300
+BUILD_TIMEOUT_SECONDS = 600
+VENV_TIMEOUT_SECONDS = 1800
+INSTALL_TIMEOUT_SECONDS = 1800
+STAGE_TIMEOUT_SECONDS = 300
+SDIST_TEST_TIMEOUT_SECONDS = 900
+PROCESS_TREE_TERMINATION_TIMEOUT_SECONDS = 30
 
 
 class ReleaseCandidateBuildError(RuntimeError):
@@ -98,6 +102,48 @@ def _write_json(path: Path, payload: object) -> None:
     )
 
 
+def _text_output(value: object) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value or "")
+
+
+def _terminate_process_tree(
+    process: subprocess.Popen[str],
+    *,
+    platform: str | None = None,
+) -> None:
+    if process.poll() is not None:
+        return
+    current_platform = os.name if platform is None else platform
+    if current_platform == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=PROCESS_TREE_TERMINATION_TIMEOUT_SECONDS,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    else:
+        kill_group = getattr(os, "killpg", None)
+        kill_signal = getattr(signal, "SIGKILL", None)
+        if callable(kill_group) and isinstance(kill_signal, int):
+            try:
+                kill_group(process.pid, kill_signal)
+            except OSError:
+                pass
+    if process.poll() is None:
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+
 def _run(
     command: Sequence[str],
     *,
@@ -109,8 +155,9 @@ def _run(
     started = time.monotonic()
     started_at = datetime.now(timezone.utc).isoformat()
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    timed_out = False
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             list(command),
             cwd=cwd,
             env=dict(env) if env is not None else None,
@@ -119,15 +166,29 @@ def _run(
             errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            check=False,
-            timeout=timeout,
             creationflags=creationflags,
+            start_new_session=os.name != "nt",
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        try:
+            output, _ = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            partial_output = _text_output(exc.stdout)
+            _terminate_process_tree(process)
+            try:
+                final_output, _ = process.communicate(
+                    timeout=PROCESS_TREE_TERMINATION_TIMEOUT_SECONDS
+                )
+            except subprocess.TimeoutExpired:
+                _terminate_process_tree(process)
+                final_output = ""
+                if process.stdout is not None:
+                    process.stdout.close()
+            output = _text_output(final_output) or partial_output
+            timed_out = True
+    except OSError as exc:
         if log_path is not None:
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            detail = getattr(exc, "stdout", "") or ""
-            log_path.write_text(str(detail), encoding="utf-8", errors="replace")
+            log_path.write_text("", encoding="utf-8")
         raise ReleaseCandidateBuildError(
             f"command failed before completion: {type(exc).__name__}"
         ) from exc
@@ -135,13 +196,17 @@ def _run(
     finished_at = datetime.now(timezone.utc).isoformat()
     if log_path is not None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.write_text(completed.stdout or "", encoding="utf-8", newline="\n")
-    if completed.returncode != 0:
+        log_path.write_text(_text_output(output), encoding="utf-8", newline="\n")
+    if timed_out:
         raise ReleaseCandidateBuildError(
-            f"command exited {completed.returncode}: {Path(command[0]).name}"
+            "command failed before completion: TimeoutExpired"
+        )
+    if process.returncode != 0:
+        raise ReleaseCandidateBuildError(
+            f"command exited {process.returncode}: {Path(command[0]).name}"
         )
     return {
-        "exit_code": completed.returncode,
+        "exit_code": int(process.returncode or 0),
         "duration_seconds": round(duration, 3),
         "started_at": started_at,
         "finished_at": finished_at,
@@ -360,7 +425,7 @@ def _verify_install(
     stages["venv"] = _run(
         [sys.executable, "-m", "venv", str(venv_root)],
         cwd=workspace,
-        timeout=INSTALL_TIMEOUT_SECONDS,
+        timeout=VENV_TIMEOUT_SECONDS,
         env=env,
         log_path=create_log,
     )
@@ -382,14 +447,14 @@ def _verify_install(
     stages["import_version_installer"] = _run(
         [str(python), "-c", _INSTALL_SMOKE],
         cwd=workspace,
-        timeout=INSTALL_TIMEOUT_SECONDS,
+        timeout=STAGE_TIMEOUT_SECONDS,
         env=env,
         log_path=smoke_log,
     )
     stages["cli"] = _run(
         [str(python), "-m", "scope_recall.cli", "--help"],
         cwd=workspace,
-        timeout=INSTALL_TIMEOUT_SECONDS,
+        timeout=STAGE_TIMEOUT_SECONDS,
         env=env,
         log_path=cli_log,
     )
@@ -405,7 +470,7 @@ def _verify_install(
             str(plugin_dir),
         ],
         cwd=workspace,
-        timeout=INSTALL_TIMEOUT_SECONDS,
+        timeout=STAGE_TIMEOUT_SECONDS,
         env=env,
         log_path=doctor_log,
     )

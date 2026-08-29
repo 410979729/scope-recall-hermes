@@ -294,6 +294,141 @@ def test_windows_timeout_targets_exact_process_tree(
     assert process.killed is False
 
 
+def test_n_minus_one_timeout_terminates_tree_and_preserves_separate_logs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    calls: list[int] = []
+    terminated: list[int] = []
+
+    class FakeProcess:
+        pid = 9753
+        returncode: int | None = None
+        stdout = None
+        stderr = None
+
+        def communicate(self, *, timeout: int):
+            calls.append(timeout)
+            if len(calls) == 1:
+                raise subprocess.TimeoutExpired(
+                    cmd=["python"],
+                    timeout=timeout,
+                    output=b"partial stdout\n",
+                    stderr=b"partial stderr\n",
+                )
+            return ("partial stdout\n", "partial stderr\n")
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    process = FakeProcess()
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+
+    def terminate_tree(target) -> None:
+        terminated.append(target.pid)
+        target.returncode = -9
+
+    monkeypatch.setattr(module, "_terminate_process_tree", terminate_tree)
+    ledger: list[dict[str, object]] = []
+
+    with pytest.raises(module.ReleaseValidationError, match="N-1 window stage failed"):
+        module._run_n_minus_one_window_stage(
+            python=Path(sys.executable),
+            stage="n_minus_one_create",
+            expected_version="1.10.3",
+            install_receipt={},
+            artifact_sha256="a" * 64,
+            runner=tmp_path / "runner.py",
+            database=tmp_path / "database.sqlite3",
+            hermes_home=tmp_path / "hermes-home",
+            source_root=tmp_path / "source",
+            workspace=tmp_path,
+            staging=tmp_path,
+            environment={},
+            ledger=ledger,
+        )
+
+    assert terminated == [9753]
+    assert calls == [
+        module.STAGE_TIMEOUT_SECONDS,
+        module.PROCESS_TREE_TERMINATION_TIMEOUT_SECONDS,
+    ]
+    assert (tmp_path / "N_MINUS_ONE_WINDOW_N_MINUS_ONE_CREATE.stdout.log").read_text(
+        encoding="utf-8"
+    ) == "partial stdout\n"
+    assert (tmp_path / "N_MINUS_ONE_WINDOW_N_MINUS_ONE_CREATE.stderr.log").read_text(
+        encoding="utf-8"
+    ) == "partial stderr\n"
+    assert ledger[0]["exit_code"] == 124
+
+
+def test_n_minus_one_second_timeout_closes_both_pipes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    terminated: list[int] = []
+
+    class FakeStream:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeProcess:
+        pid = 8642
+        returncode: int | None = None
+        stdout = FakeStream()
+        stderr = FakeStream()
+
+        def communicate(self, *, timeout: int):
+            raise subprocess.TimeoutExpired(
+                cmd=["python"],
+                timeout=timeout,
+                output=b"bounded stdout\n",
+                stderr=b"bounded stderr\n",
+            )
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    process = FakeProcess()
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(
+        module,
+        "_terminate_process_tree",
+        lambda target: terminated.append(target.pid),
+    )
+
+    with pytest.raises(module.ReleaseValidationError, match="N-1 window stage failed"):
+        module._run_n_minus_one_window_stage(
+            python=Path(sys.executable),
+            stage="candidate_upgrade",
+            expected_version="2.0.0",
+            install_receipt={},
+            artifact_sha256="b" * 64,
+            runner=tmp_path / "runner.py",
+            database=tmp_path / "database.sqlite3",
+            hermes_home=tmp_path / "hermes-home",
+            source_root=tmp_path / "source",
+            workspace=tmp_path,
+            staging=tmp_path,
+            environment={},
+            ledger=[],
+        )
+
+    assert terminated == [8642, 8642]
+    assert process.stdout.closed is True
+    assert process.stderr.closed is True
+
+
 def test_validation_receipt_binds_source_artifact_and_isolation() -> None:
     module = _load_module()
     context = module.ValidationContext(
