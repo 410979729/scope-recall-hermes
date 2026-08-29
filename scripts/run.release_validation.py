@@ -40,6 +40,10 @@ INSTALL_RECEIPT_SCHEMA_VERSION = "scope-recall.artifact-install-receipt.v1"
 FULL_TEST_TIMEOUT_SECONDS = 900
 STAGE_TIMEOUT_SECONDS = 300
 INSTALL_TIMEOUT_SECONDS = 600
+# Native Windows ``venv`` creation can spend several minutes in ensurepip and
+# endpoint-security scanning even when the subsequent installs are fast.  Keep
+# that bounded, but do not reuse the shorter network/install budget for it.
+VENV_TIMEOUT_SECONDS = 900
 N_MINUS_ONE_VERSION = "1.10.3"
 N_MINUS_ONE_WINDOW_SCHEMA_VERSION = "scope-recall.n-minus-one-window.v1"
 ISSUE_51_DETAILS_SCHEMA_VERSION = "scope-recall.issue-51-regression-details.v1"
@@ -619,7 +623,7 @@ def _artifact_install_environment(
         display_command=["python", "-B", "-m", "venv", f"<isolated-{label}-venv>"],
         cwd=workspace,
         environment=environment,
-        timeout_seconds=INSTALL_TIMEOUT_SECONDS,
+        timeout_seconds=VENV_TIMEOUT_SECONDS,
         log_path=staging / f"INSTALL_{label.upper()}_VENV.log",
         ledger=ledger,
     )
@@ -1174,7 +1178,7 @@ def _prepare_full_suite_environment(
         ],
         cwd=workspace,
         environment=environment,
-        timeout_seconds=INSTALL_TIMEOUT_SECONDS,
+        timeout_seconds=VENV_TIMEOUT_SECONDS,
         log_path=staging / "INSTALL_FULL_SUITE_VENV.log",
         ledger=ledger,
     )
