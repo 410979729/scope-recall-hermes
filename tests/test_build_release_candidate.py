@@ -168,6 +168,184 @@ def test_candidate_build_retains_failed_staging_evidence(tmp_path: Path) -> None
     assert (retained[0] / "ARTIFACT_SCAN.json").is_file()
 
 
+def test_candidate_run_timeout_terminates_tree_and_retains_partial_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    build = _load_module()
+    calls: list[int] = []
+    terminated: list[int] = []
+
+    class FakeProcess:
+        pid = 4321
+        returncode: int | None = None
+        stdout = None
+
+        def communicate(self, *, timeout: int):
+            calls.append(timeout)
+            if len(calls) == 1:
+                raise subprocess.TimeoutExpired(
+                    cmd=["python"],
+                    timeout=timeout,
+                    output=b"partial output\n",
+                )
+            return ("partial output\n", None)
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    process = FakeProcess()
+    monkeypatch.setattr(build.subprocess, "Popen", lambda *_args, **_kwargs: process)
+
+    def terminate_tree(target) -> None:
+        terminated.append(target.pid)
+        target.returncode = -9
+
+    monkeypatch.setattr(build, "_terminate_process_tree", terminate_tree)
+    log = tmp_path / "timeout.log"
+
+    with pytest.raises(build.ReleaseCandidateBuildError, match="TimeoutExpired"):
+        build._run(
+            ["python", "slow.py"],
+            cwd=tmp_path,
+            timeout=7,
+            log_path=log,
+        )
+
+    assert terminated == [4321]
+    assert calls == [7, build.PROCESS_TREE_TERMINATION_TIMEOUT_SECONDS]
+    assert log.read_text(encoding="utf-8") == "partial output\n"
+
+
+def test_candidate_windows_timeout_targets_exact_process_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    build = _load_module()
+    captured: list[tuple[list[str], dict[str, object]]] = []
+
+    class FakeProcess:
+        pid = 2468
+        returncode: int | None = None
+        killed = False
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self) -> None:
+            self.killed = True
+            self.returncode = -9
+
+    process = FakeProcess()
+
+    def fake_run(command, **kwargs):
+        captured.append(([str(item) for item in command], dict(kwargs)))
+        process.returncode = 1
+        return None
+
+    monkeypatch.setattr(build.subprocess, "run", fake_run)
+
+    build._terminate_process_tree(process, platform="nt")
+
+    assert captured[0][0] == ["taskkill", "/PID", "2468", "/T", "/F"]
+    assert captured[0][1]["timeout"] == (
+        build.PROCESS_TREE_TERMINATION_TIMEOUT_SECONDS
+    )
+    assert process.killed is False
+
+
+def test_candidate_posix_timeout_targets_exact_process_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    build = _load_module()
+    captured: list[tuple[int, int]] = []
+
+    class FakeProcess:
+        pid = 1357
+        returncode: int | None = None
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    process = FakeProcess()
+
+    def fake_killpg(pid: int, signum: int) -> None:
+        captured.append((pid, signum))
+        process.returncode = -9
+
+    monkeypatch.setattr(build.os, "killpg", fake_killpg, raising=False)
+    monkeypatch.setattr(build.signal, "SIGKILL", 9, raising=False)
+
+    build._terminate_process_tree(process, platform="posix")
+
+    assert captured == [(1357, 9)]
+
+
+def test_candidate_install_stages_use_bounded_stage_specific_timeouts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    build = _load_module()
+    timeouts: list[int] = []
+
+    monkeypatch.setattr(build, "_isolated_environment", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        build,
+        "_venv_python",
+        lambda _root: tmp_path / "venv" / "Scripts" / "python.exe",
+    )
+
+    def fake_run(_command, **kwargs):
+        timeouts.append(int(kwargs["timeout"]))
+        log_path = kwargs.get("log_path")
+        if log_path is not None:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            if log_path.name.endswith("_SMOKE.log"):
+                log_path.write_text(
+                    '{"ok": true, "plugin_dir": "'
+                    + str(tmp_path / "plugin").replace("\\", "\\\\")
+                    + '"}\n',
+                    encoding="utf-8",
+                )
+            elif log_path.name.endswith("_DOCTOR.log"):
+                log_path.write_text(
+                    '{"ok": true, "schema_version": "doctor_report.v1", '
+                    '"source": {"pyproject_version": "2.0.0"}}\n',
+                    encoding="utf-8",
+                )
+            else:
+                log_path.write_text("", encoding="utf-8")
+        return {"exit_code": 0}
+
+    monkeypatch.setattr(build, "_run", fake_run)
+    build._verify_install(
+        artifact=tmp_path / "candidate.whl",
+        kind="wheel",
+        workspace=tmp_path / "workspace",
+        evidence_dir=tmp_path / "evidence",
+        active_hermes_home=tmp_path / "active-hermes",
+    )
+
+    assert timeouts == [
+        build.VENV_TIMEOUT_SECONDS,
+        build.INSTALL_TIMEOUT_SECONDS,
+        build.STAGE_TIMEOUT_SECONDS,
+        build.STAGE_TIMEOUT_SECONDS,
+        build.STAGE_TIMEOUT_SECONDS,
+    ]
+    assert build.BUILD_TIMEOUT_SECONDS == 600
+    assert build.VENV_TIMEOUT_SECONDS == 1800
+    assert build.INSTALL_TIMEOUT_SECONDS == 1800
+    assert build.SDIST_TEST_TIMEOUT_SECONDS == 900
+    assert build.STAGE_TIMEOUT_SECONDS == 300
+    assert build.PROCESS_TREE_TERMINATION_TIMEOUT_SECONDS == 30
+
+
 def test_sdist_module_runner_precreates_basetemp_parent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

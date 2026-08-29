@@ -904,7 +904,7 @@ def _run_n_minus_one_window_stage(
     started = time.monotonic()
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
-        process = subprocess.run(
+        process = subprocess.Popen(
             command,
             cwd=workspace,
             env=dict(environment),
@@ -913,17 +913,35 @@ def _run_n_minus_one_window_stage(
             errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            check=False,
-            timeout=STAGE_TIMEOUT_SECONDS,
             creationflags=creationflags,
+            start_new_session=os.name != "nt",
         )
-        stdout = process.stdout or ""
-        stderr = process.stderr or ""
-        returncode = int(process.returncode)
-    except subprocess.TimeoutExpired as exc:
-        stdout = str(exc.stdout or "")
-        stderr = str(exc.stderr or "")
-        returncode = 124
+        try:
+            captured_stdout, captured_stderr = process.communicate(
+                timeout=STAGE_TIMEOUT_SECONDS
+            )
+            stdout = _text_output(captured_stdout)
+            stderr = _text_output(captured_stderr)
+            returncode = int(process.returncode or 0)
+        except subprocess.TimeoutExpired as exc:
+            partial_stdout = _text_output(exc.stdout)
+            partial_stderr = _text_output(exc.stderr)
+            _terminate_process_tree(process)
+            try:
+                final_stdout, final_stderr = process.communicate(
+                    timeout=PROCESS_TREE_TERMINATION_TIMEOUT_SECONDS
+                )
+            except subprocess.TimeoutExpired as final_exc:
+                _terminate_process_tree(process)
+                final_stdout = _text_output(final_exc.stdout)
+                final_stderr = _text_output(final_exc.stderr)
+                if process.stdout is not None:
+                    process.stdout.close()
+                if process.stderr is not None:
+                    process.stderr.close()
+            stdout = _text_output(final_stdout) or partial_stdout
+            stderr = _text_output(final_stderr) or partial_stderr
+            returncode = 124
     except OSError as exc:
         stdout = ""
         stderr = f"{type(exc).__name__}\n"
