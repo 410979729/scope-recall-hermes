@@ -419,6 +419,7 @@ include = ["hermes_cli", "hermes_cli.*"]
     staging = tmp_path / "staging"
     staging.mkdir()
     commands: list[list[str]] = []
+    timeouts: list[int] = []
 
     monkeypatch.setattr(
         module,
@@ -426,8 +427,9 @@ include = ["hermes_cli", "hermes_cli.*"]
         lambda *_args, **_kwargs: {},
     )
 
-    def fake_run(command, **_kwargs):
+    def fake_run(command, **kwargs):
         commands.append([str(item) for item in command])
+        timeouts.append(int(kwargs["timeout_seconds"]))
         return {"log_sha256": "a" * 64}
 
     monkeypatch.setattr(module, "_run", fake_run)
@@ -443,6 +445,12 @@ include = ["hermes_cli", "hermes_cli.*"]
     )
 
     assert python == module._venv_python(workspace / "venv")
+    assert timeouts == [
+        module.VENV_TIMEOUT_SECONDS,
+        module.INSTALL_TIMEOUT_SECONDS,
+        module.INSTALL_TIMEOUT_SECONDS,
+    ]
+    assert module.VENV_TIMEOUT_SECONDS > module.INSTALL_TIMEOUT_SECONDS
     assert str(candidate_wheel) + "[lancedb,dev]" in commands[1]
     hermes_install_target = Path(commands[2][-1])
     assert hermes_install_target == workspace / "hermes-source-copy"
