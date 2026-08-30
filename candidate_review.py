@@ -11,6 +11,11 @@ import sqlite3
 from typing import Any
 
 from .graph import lifecycle_is_hidden
+from .lifecycle_registry import (
+    CANDIDATE_REVIEW_ARCHIVE,
+    CANDIDATE_REVIEW_PROMOTE,
+    CANDIDATE_REVIEW_SUPERSEDE,
+)
 from .lifecycle_service import LifecycleConflictError, transition_memory_lifecycle
 from .sql_store import ensure_schema, now_iso
 
@@ -187,8 +192,11 @@ def review_candidate(
             expected_lifecycle=str(expected_lifecycle or current_lifecycle),
             actor=actor,
             reason="candidate_review_archive" if action == "archive" else "operator candidate review",
-            event_type="memory_candidate_review",
-            action=action,
+            operation_id={
+                "archive": CANDIDATE_REVIEW_ARCHIVE,
+                "promote": CANDIDATE_REVIEW_PROMOTE,
+                "supersede": CANDIDATE_REVIEW_SUPERSEDE,
+            }[action],
             batch_id=str(after_metadata.get("candidate_promotion_batch_id") or ""),
         )
         conn.commit()

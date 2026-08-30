@@ -40,6 +40,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "query_char_limit": 1000,
     "min_capture_length": 40,
     "capture_queue_capacity": 256,
+    "writer_lease": {
+        "idle_release_seconds": 1800.0,
+    },
     "capture_raw_user": False,
     "journal": {
         "allow_heuristic_fallback": False,
@@ -97,6 +100,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "relation_extraction_max_pairs": 1000,
     "relation_sync_neighbor_limit": 32,
     "relation_rebuild_chunk_pairs": 250,
+    "relation_reclassification_candidate_cap": 250,
+    "relation_policy_generation_enabled": False,
+    "relation_maintenance_interval_seconds": 30.0,
+    "relation_maintenance_wall_clock_seconds": 0.5,
+    "relation_maintenance_max_attempts": 5,
+    "relation_maintenance_backoff_base_seconds": 5.0,
+    "relation_maintenance_backoff_max_seconds": 300.0,
     "event_digest": {
         "enabled": True,
         "write_candidates": False,
@@ -110,6 +120,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "journal_mode": "preview",
         "tool_mode": "preview",
         "maintenance_mode": "preview",
+    },
+    "fact_backfill": {
+        "shadow_enabled": False,
+    },
+    "recall_compiler": {
+        "current_truth_enabled": True,
+        "conflict_enabled": True,
+        "budgeter_enabled": False,
+        "renderer_enabled": True,
+        "token_budget": 320,
+        "per_item_token_budget": 96,
     },
     "temporal_queries": {
         "enabled": False,
@@ -157,7 +178,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         r"<available_skills>[\s\S]*?</available_skills>",
     ],
     "enable_tools": True,
-    "tool_schema_profile": "compact",
+    "tool_schema_profile": "core",
     "tool_schema_extra_tools": [],
     "maintenance_tools_enabled": False,
     "secret_index_tools_enabled": False,
@@ -195,6 +216,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "archive_assistant_scratch": True,
         "archive_duplicates": True,
         "hard_delete_sensitive": False,
+    },
+    "purge": {
+        "enabled": True,
     },
     "curated_memory": {
         "mode": "single-user",
@@ -361,12 +385,18 @@ CONFIG_BOUNDED_INTEGER_PATHS: dict[str, tuple[int, int]] = {
     "relation_extraction_max_pairs": (1, 5000),
     "relation_sync_neighbor_limit": (1, 256),
     "relation_rebuild_chunk_pairs": (1, 1000),
+    "relation_reclassification_candidate_cap": (1, 5000),
+    "relation_maintenance_max_attempts": (1, 20),
     "capture_queue_capacity": (8, 4096),
     "vector.outbox_completed_retention_days": (0, 3650),
     "vector.outbox_completed_keep_per_generation": (0, 1_000_000),
     "vector.outbox_retention_interval_seconds": (60, 86_400),
 }
 CONFIG_BOUNDED_NUMBER_PATHS: dict[str, tuple[float, float]] = {
+    "relation_maintenance_interval_seconds": (1.0, 3600.0),
+    "relation_maintenance_wall_clock_seconds": (0.05, 10.0),
+    "relation_maintenance_backoff_base_seconds": (0.1, 3600.0),
+    "relation_maintenance_backoff_max_seconds": (1.0, 86_400.0),
     "vector.embedder.connect_timeout_seconds": (0.05, 300.0),
     "vector.embedder.read_timeout_seconds": (0.05, 300.0),
     "vector.embedder.write_timeout_seconds": (0.05, 300.0),
@@ -474,6 +504,16 @@ def _config_value_error(dotted: str, value: Any) -> str:
             return (
                 f"invalid value for {dotted}: expected an integer "
                 f"between {minimum} and {maximum}"
+            )
+        return ""
+    if dotted == "writer_lease.idle_release_seconds":
+        number = float(value)
+        if not math.isfinite(number) or (
+            number != 0.0 and not 30.0 <= number <= 86_400.0
+        ):
+            return (
+                "invalid value for writer_lease.idle_release_seconds: expected "
+                "0 (disabled) or a finite number between 30 and 86400"
             )
         return ""
     number_bounds = CONFIG_BOUNDED_NUMBER_PATHS.get(dotted)

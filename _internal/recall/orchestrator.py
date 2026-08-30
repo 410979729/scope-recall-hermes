@@ -12,8 +12,9 @@ import time
 from typing import Any
 
 from . import pipeline as recall_pipeline
+from .compiler import CandidateSet, CompilerPolicy, compile_recall_packet
 from ...freshness import CURRENT_STATUSES, STALE_STATUSES, attach_freshness_metadata
-from ...gating import matched_query_intent_terms
+from ...gating import config_bool, matched_query_intent_terms
 from ...graph import apply_quality_weight, entity_overlap_bonus
 from ...models import RecallItem
 from .ports import RecallSearchHost
@@ -36,6 +37,7 @@ REQUIRED_TRACE_STAGES = (
     "merge",
     "graph",
     "fact_freshness",
+    "compiler",
     "ranked",
 )
 REQUIRED_FILTER_KEYS = (
@@ -139,6 +141,7 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
     # Diagnostics describe one search only; never leak a prior temporal
     # query into a later request where the feature gate is disabled.
     host.last_temporal_query_diagnostics = {}
+    host.last_recall_packet = None
     retrieval_cfg = host.provider._retrieval_config or {}
     plan = recall_pipeline.build_search_plan(
         limit=limit,
@@ -288,6 +291,11 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
     trace["stages"]["graph"] = {
         "entity_scored_count": len(entity_graph_scores),
         "relation_evidence_count": sum(int((payload or {}).get("count") or 0) for payload in relation_evidence.values()),
+        "generated_signal_disabled_count": sum(
+            1
+            for payload in relation_evidence.values()
+            if bool((payload or {}).get("generated_signal_disabled"))
+        ),
     }
     trace["stages"]["fact_freshness"] = {
         "tracked_count": len(freshness_evidence),
@@ -345,6 +353,22 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
         incoming_relations = (
             incoming_relations if isinstance(incoming_relations, dict) else {}
         )
+        contradiction_related_ids: set[str] = set()
+        for grouped_relations in (
+            relation_payload.get("outgoing"),
+            relation_payload.get("incoming"),
+        ):
+            if not isinstance(grouped_relations, dict):
+                continue
+            contradiction_rows = grouped_relations.get("contradicts")
+            if not isinstance(contradiction_rows, list):
+                continue
+            for contradiction_row in contradiction_rows:
+                if not isinstance(contradiction_row, dict):
+                    continue
+                related_id = str(contradiction_row.get("id") or "").strip()
+                if related_id and related_id != item.id:
+                    contradiction_related_ids.add(related_id)
         authoritative_contradiction_loser = host._config_bool(
             relation_payload.get("authoritative_loser"),
             False,
@@ -389,6 +413,16 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
                 "relation_evidence_count": int(relation_payload.get("count") or 0),
                 "relation_evidence_types": relation_types,
                 "relation_evidence_ids": relation_payload.get("ids") or [],
+                "relation_contradiction_ids": sorted(contradiction_related_ids),
+                "relation_signal_disabled": bool(
+                    relation_payload.get("generated_signal_disabled")
+                ),
+                "relation_signal_reason": str(
+                    relation_payload.get("generated_signal_reason") or ""
+                ),
+                "relation_scope_state": str(
+                    relation_payload.get("relation_scope_state") or ""
+                ),
                 "relation_contradiction_mode": contradiction_mode,
                 "relation_contradiction_authoritative_loser": authoritative_contradiction_loser,
                 "relation_contradiction_loser": contradiction_loser,
@@ -515,13 +549,102 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
         )
     if ranking_warnings:
         trace["ranking_warnings"] = ranking_warnings
+    compiler_started_at = time.perf_counter()
+    provider_config = getattr(host.provider, "_config", {})
+    raw_compiler_cfg = (
+        provider_config.get("recall_compiler", {})
+        if isinstance(provider_config, dict)
+        else {}
+    )
+    compiler_cfg = raw_compiler_cfg if isinstance(raw_compiler_cfg, dict) else {}
+    current_truth_enabled = config_bool(
+        compiler_cfg, "current_truth_enabled", True
+    )
+    conflict_enabled = config_bool(compiler_cfg, "conflict_enabled", True)
+    budgeter_enabled = config_bool(compiler_cfg, "budgeter_enabled", False)
+    renderer_enabled = config_bool(compiler_cfg, "renderer_enabled", True)
+    try:
+        token_budget = int(compiler_cfg.get("token_budget") or 320)
+    except (TypeError, ValueError):
+        token_budget = 320
+    try:
+        per_item_token_budget = int(
+            compiler_cfg.get("per_item_token_budget") or 96
+        )
+    except (TypeError, ValueError):
+        per_item_token_budget = 96
+
+    # Both the compatibility output and the candidate compiler consume this
+    # one typed set.  Neither branch can collect lexical/vector candidates.
+    candidate_set = CandidateSet.from_items(ranked)
+    legacy_packet = compile_recall_packet(
+        candidate_set,
+        CompilerPolicy(
+            limit=bounded_limit,
+            token_budget=token_budget,
+            per_item_token_budget=per_item_token_budget,
+            current_truth_enabled=False,
+            conflict_enabled=False,
+            evidence_order_enabled=False,
+            diversity_enabled=False,
+            budgeter_enabled=False,
+            evidence_annotations_enabled=False,
+        ),
+    )
+    shadow_packet = compile_recall_packet(
+        candidate_set,
+        CompilerPolicy(
+            limit=bounded_limit,
+            token_budget=token_budget,
+            per_item_token_budget=per_item_token_budget,
+        ),
+    )
+    active_packet = compile_recall_packet(
+        candidate_set,
+        CompilerPolicy(
+            limit=bounded_limit,
+            token_budget=token_budget,
+            per_item_token_budget=per_item_token_budget,
+            current_truth_enabled=current_truth_enabled,
+            conflict_enabled=conflict_enabled,
+            evidence_order_enabled=renderer_enabled,
+            diversity_enabled=renderer_enabled,
+            budgeter_enabled=budgeter_enabled,
+            evidence_annotations_enabled=renderer_enabled,
+        ),
+    )
+    active_items = active_packet.as_recall_items()
     returned = (
-        sanitize_recall_window(ranked, limit=bounded_limit)
+        sanitize_recall_window(active_items, limit=bounded_limit)
         if sanitize_output
-        else ranked[:bounded_limit]
+        else active_items[:bounded_limit]
+    )
+    legacy_top_five = [item.item.id for item in legacy_packet.items[:5]]
+    shadow_top_five = {item.item.id for item in shadow_packet.items[:5]}
+    trace["stages"]["compiler"] = {
+        **shadow_packet.aggregate_metrics(),
+        "active_current_truth_removed": min(
+            active_packet.current_truth_removed, 1000
+        ),
+        "same_candidate_set": (
+            legacy_packet.candidate_fingerprint
+            == shadow_packet.candidate_fingerprint
+            == active_packet.candidate_fingerprint
+        ),
+        "top5_overlap_count": sum(
+            1 for memory_id in legacy_top_five if memory_id in shadow_top_five
+        ),
+        "current_truth_enabled": current_truth_enabled,
+        "conflict_enabled": conflict_enabled,
+        "budgeter_enabled": budgeter_enabled,
+        "renderer_enabled": renderer_enabled,
+    }
+    trace["timings_ms"]["compiler"] = round(
+        (time.perf_counter() - compiler_started_at) * 1000.0, 3
     )
     trace["stages"]["ranked"] = host._trace_stage(ranked)
     trace["final"] = recall_pipeline.final_trace_payload(returned=returned, ranked_rejected=ranked_rejected)
     trace["timings_ms"]["total"] = host._elapsed_ms(started_at)
+    host.last_recall_packet = active_packet
     host.last_funnel_trace = trace
     return returned

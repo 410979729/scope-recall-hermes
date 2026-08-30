@@ -34,7 +34,7 @@ from ...desktop_principal import (
     is_desktop_platform,
     resolve_desktop_principal,
 )
-from ...experience_store import backfill_skill_anchors
+from ..experience.runtime import backfill_skill_anchors
 from ...freshness import backfill_untracked_memory_freshness
 from ...gating import config_bool
 from ...journal import ensure_journal_schema
@@ -64,6 +64,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BUSY_TIMEOUT_SECONDS = 10.0
 DEFAULT_FRESHNESS_BACKFILL_LIMIT = 500
+DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 10.0
 _MISSING = object()
 
 
@@ -303,6 +304,9 @@ def initialize_under_lifecycle_lock(provider: Any, session_id: str, **kwargs: An
     provider._session_id = session_id
     provider._current_turn = 0
     provider._last_recall_turns = {}
+    from .writer_handoff import initialize_writer_handoff_activity
+
+    initialize_writer_handoff_activity(provider, reset=True)
     provider._config = {}
     provider._retrieval_config = {}
     provider._vector_config = {}
@@ -460,6 +464,9 @@ def initialize_under_lifecycle_lock(provider: Any, session_id: str, **kwargs: An
 
     try:
         _call_provider(provider, "_initialize_writer_runtime", default=lambda: initialize_writer_runtime(provider))
+        from .writer_handoff import note_writer_promotion_succeeded
+
+        note_writer_promotion_succeeded(provider)
     except BaseException:
         _call_provider(
             provider,
@@ -531,11 +538,16 @@ def initialize_writer_runtime(provider: Any) -> None:
             context="startup writer initialization",
         )
         raise
-    try:
-        _module_attr(provider, "backfill_skill_anchors", backfill_skill_anchors)(conn)
-    except Exception:
-        _call_provider(provider, "_rollback_conn_after_error", "skill-anchor backfill")
-        logger.exception("Scope Recall skill-anchor backfill failed")
+    raw_experience = getattr(provider, "_config", {}).get("experience")
+    experience_config = raw_experience if isinstance(raw_experience, dict) else {}
+    if config_bool(experience_config, "enabled", True):
+        try:
+            _module_attr(provider, "backfill_skill_anchors", backfill_skill_anchors)(
+                conn
+            )
+        except Exception:
+            _call_provider(provider, "_rollback_conn_after_error", "skill-anchor backfill")
+            logger.exception("Scope Recall skill-anchor backfill failed")
     _module_attr(provider, "finish_writer_schema_setup", finish_writer_schema_setup)(
         provider,
         conn,
@@ -692,13 +704,29 @@ def initialize_read_only_runtime(provider: Any) -> None:
         else:
             provider._conn = None
     except Exception:
-        logger.exception(
-            "Scope Recall read-only runtime could not open the truth database"
-        )
+        if bool(getattr(provider, "_writer_handoff_fenced", False)):
+            logger.warning(
+                "Scope Recall fenced handoff could not initialize its read-only pager"
+            )
+        else:
+            logger.exception(
+                "Scope Recall read-only runtime could not open the truth database"
+            )
         provider._conn = None
     provider._vector_enabled = False
     provider._vector_ready = False
-    provider._vector_status = "reader_mode"
+    provider._vector_status = "disabled"
+    provider._vector_reason_code = "reader_mode"
+    provider._vector_auto_recoverable = False
+    provider._vector_repair_required = False
+    provider._vector_usable_for_query = False
+    provider._vector_debt_counts = {
+        "pending": 0,
+        "processing": 0,
+        "retry": 0,
+        "dead_letter": 0,
+        "replayable": 0,
+    }
     provider._vector_message = (
         "vector companion is owned by the writer-lease process"
     )
@@ -743,6 +771,12 @@ def _promote_under_lifecycle_lock(provider: Any) -> None:
         provider._truth_writer_lease = lease
         provider._truth_writer_role = "owner"
         provider._truth_writer_owner = {}
+        from .writer_handoff import (
+            initialize_writer_handoff_activity,
+            note_writer_promotion_succeeded,
+        )
+
+        initialize_writer_handoff_activity(provider, reset=True)
         with provider._lock:
             if provider._conn is not None:
                 _call_provider(
@@ -752,6 +786,7 @@ def _promote_under_lifecycle_lock(provider: Any) -> None:
                     context="reader promotion close",
                 )
         _call_provider(provider, "_initialize_writer_runtime", default=lambda: initialize_writer_runtime(provider))
+        note_writer_promotion_succeeded(provider)
     except BaseException:
         cleaned = _call_provider(
             provider,
@@ -767,7 +802,9 @@ def _promote_under_lifecycle_lock(provider: Any) -> None:
         _call_provider(provider, "_initialize_read_only_runtime", default=lambda: initialize_read_only_runtime(provider))
 
 
-def shutdown_provider_process(provider: Any, *, timeout: float = 3.0) -> None:
+def shutdown_provider_process(
+    provider: Any, *, timeout: float = DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
+) -> None:
     """Quiesce writer and digest work, then close shared resources.
 
     Writer and digest shutdown is a fail-closed barrier: if a worker does
@@ -836,6 +873,9 @@ def shutdown_provider_process(provider: Any, *, timeout: float = 3.0) -> None:
         raise digest_error
 
     _join_shutdown_cleanup(provider, deadline=deadline)
+    from .writer_handoff import note_writer_shutdown_succeeded
+
+    note_writer_shutdown_succeeded(provider)
     provider._shutdown_finalized = True
 
 
@@ -867,5 +907,10 @@ class ProcessLifecycle:
     def promote_to_writer(self, provider: Any) -> None:
         promote_reader_to_writer(provider)
 
-    def shutdown(self, provider: Any, *, timeout: float = 3.0) -> None:
+    def shutdown(
+        self,
+        provider: Any,
+        *,
+        timeout: float = DEFAULT_SHUTDOWN_TIMEOUT_SECONDS,
+    ) -> None:
         shutdown_provider_process(provider, timeout=timeout)

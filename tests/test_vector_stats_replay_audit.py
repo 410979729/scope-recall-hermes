@@ -14,6 +14,7 @@ import pytest
 
 from _scope_recall_public_memory_port import attach_public_truth_ports
 from scope_recall._internal.runtime.vector_view import RuntimeVectorView
+from scope_recall.doctor_vector import _canonical_doctor_vector_status
 from scope_recall.hygiene import build_hygiene_report
 from scope_recall.memory_queries import stats_payload
 from scope_recall.sql_store import ensure_schema, store_row
@@ -199,16 +200,70 @@ def test_stats_succeeds_when_list_records_raises() -> None:
     conn = _truth_conn()
     store = _ForbiddenEnumerationStore(physical_rows=4)
     provider = _stats_provider(conn, store)
+    before_changes = conn.total_changes
 
     payload = stats_payload(provider)
 
+    assert conn.total_changes == before_changes
+    assert payload["relation_containment"]["scope_count"] == 2
+    assert payload["relation_containment"]["state"] == "blocked"
+    assert payload["relation_frequency_index"]["status"] == "ready"
+    assert payload["relation_rebuild_queue"]["status"] == "ready"
     assert payload["vector"]["row_count"] == 4
     assert payload["vector"]["unique_id_count"] == 4
+    assert {
+        "state",
+        "reason_code",
+        "auto_recoverable",
+        "repair_required",
+        "usable_for_query",
+        "message",
+        "debt_counts",
+    } <= set(payload["vector"])
+    assert payload["vector"]["state"] == "ready"
     assert payload["vector"]["status"] == "ready"
     assert "list_records" not in store.calls
     assert "audit_counts" not in store.calls
     assert "list_ids" not in store.calls
     assert "count_rows" not in store.calls
+
+
+def test_runtime_doctor_and_stats_share_identical_vector_contract() -> None:
+    conn = _truth_conn()
+    store = _ForbiddenEnumerationStore(physical_rows=4)
+    provider = _stats_provider(conn, store)
+    provider._vector_reason_code = "healthy"
+    provider._vector_usable_for_query = True
+    provider._vector_debt_counts = {"pending": 2}
+
+    runtime = RuntimeVectorView(provider).vector_status_view()
+    provider.vector_status_view = lambda: dict(runtime)
+    stats = stats_payload(provider)["vector"]
+    doctor = _canonical_doctor_vector_status(
+        {"status": "ready", "ready": True},
+        {
+            "status": "outbox_backlog",
+            "outbox_status_counts": {"pending": 2},
+        },
+    )
+
+    contract_keys = {
+        "state",
+        "status",
+        "reason_code",
+        "auto_recoverable",
+        "repair_required",
+        "usable_for_query",
+        "debt_counts",
+        "ready",
+    }
+    expected = {key: runtime[key] for key in contract_keys}
+    assert {key: stats[key] for key in contract_keys} == expected
+    assert {key: doctor[key] for key in contract_keys} == expected
+    assert expected["state"] == "degraded"
+    assert expected["reason_code"] == "outbox_pending"
+    assert expected["usable_for_query"] is True
+    assert expected["ready"] is False
 
 
 def test_stats_tool_json_sanitizes_embedder_base_url() -> None:
@@ -298,6 +353,35 @@ def test_empty_replay_skips_after_replay_hook() -> None:
     assert result == {"claimed": 0, "completed": 0, "failed": 0}
     assert hooks == []
     assert store.calls == []
+
+
+def test_replay_claim_does_not_adopt_existing_transaction() -> None:
+    conn = _truth_conn()
+    ensure_vector_generation_schema(conn)
+    conn.commit()
+    store = _ForbiddenEnumerationStore()
+
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute("CREATE TABLE caller_owned_probe(value TEXT)")
+    conn.execute("INSERT INTO caller_owned_probe(value) VALUES ('uncommitted')")
+
+    with pytest.raises(RuntimeError, match="claim requires an idle SQLite connection"):
+        replay_committed_vector_events(
+            conn,
+            generation_id="gen-existing-transaction",
+            vector_store=store,
+            embedder=_Embedder(),
+            vector_text=lambda summary, content: f"{summary}\n{content}".strip(),
+            should_index_row=lambda _target, _metadata: True,
+            mutation_context=nullcontext,
+        )
+
+    assert conn.in_transaction is True
+    assert store.calls == []
+    conn.rollback()
+    assert conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='caller_owned_probe'"
+    ).fetchone() is None
 
 
 def test_empty_runtime_replay_skips_explicit_audit_hook() -> None:
@@ -631,6 +715,55 @@ def test_transient_replay_failure_stays_retryable_and_recovers_runtime_state() -
     assert provider._vector_status == "ready"
     assert provider._vector_message == ""
     assert "memory-transient" in store.records
+
+
+def test_replay_dead_letter_escalates_to_repair_and_cannot_auto_recover() -> None:
+    conn = _truth_conn()
+    ensure_vector_generation_schema(conn)
+    store = _ForbiddenEnumerationStore()
+    provider = _ordinary_replay_fixture(
+        conn,
+        store,
+        memory_id="memory-terminal",
+        event_key="terminal-write",
+        operation="upsert",
+        content="terminal embedding failure",
+        timestamp="2026-08-24T00:00:00+00:00",
+    )
+
+    class FailingEmbedder:
+        dimensions = 2
+        provider = "terminal"
+
+        def embed(self, _text: str) -> list[float]:
+            raise RuntimeError("terminal synthetic failure")
+
+    provider._embedder = FailingEmbedder()
+    provider._vector_ready = True
+    provider._vector_status = "ready"
+    conn.execute(
+        "UPDATE vector_outbox SET attempts = 7 WHERE event_key = ?",
+        ("terminal-write",),
+    )
+    conn.commit()
+
+    result = replay_vector_outbox(provider)
+    status = RuntimeVectorView(provider).vector_status_view()
+
+    assert result == {"claimed": 1, "completed": 0, "failed": 1}
+    assert status["state"] == "needs_repair"
+    assert status["reason_code"] == "outbox_dead_letter"
+    assert status["auto_recoverable"] is False
+    assert status["repair_required"] is True
+    assert status["usable_for_query"] is False
+    assert status["debt_counts"]["dead_letter"] == 1
+
+    assert replay_vector_outbox(provider) == {
+        "claimed": 0,
+        "completed": 0,
+        "failed": 0,
+    }
+    assert provider._vector_status == "needs_repair"
 
 
 def test_successful_exact_replay_does_not_hide_unrelated_outbox_debt() -> None:

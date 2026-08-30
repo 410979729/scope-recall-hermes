@@ -114,7 +114,7 @@ def _corpus() -> tuple[sqlite3.Connection, _Provider]:
         timestamp="2026-07-01T00:00:00+00:00",
         lifecycle="candidate",
     )
-    for index in range(40):
+    for index in range(60):
         _store(
             conn,
             f"noise-{index:02d}",
@@ -170,6 +170,37 @@ def test_ready_shadow_override_recovers_cjk_target_under_newer_noise():
     assert "target" not in legacy[1]
     assert all("target" in result for result in shadow)
     assert all("hidden-cjk" not in result for result in shadow)
+    conn.close()
+
+
+def test_common_cjk_trigram_is_filtered_before_fts_rank_fanout():
+    conn, provider = _corpus()
+    changes_before = conn.total_changes
+    conn.execute("PRAGMA query_only=ON")
+    statements: list[str] = []
+    conn.set_trace_callback(statements.append)
+
+    ids = _ids(
+        provider,
+        "数据库迁移方案",
+        generation_override=LEXICAL_GENERATION_ID,
+    )
+    conn.set_trace_callback(None)
+
+    shadow_matches = [
+        statement
+        for statement in statements
+        if "FROM memories_fts_cjk_v1" in statement and " MATCH " in statement
+    ]
+    assert "target" in ids
+    assert len(shadow_matches) == 1
+    assert '"数据库"' not in shadow_matches[0]
+    assert '"据库迁"' in shadow_matches[0]
+    assert any(
+        "lexical_cjk_postings_v1" in statement and "LIMIT 51" in statement
+        for statement in statements
+    )
+    assert conn.total_changes == changes_before
     conn.close()
 
 

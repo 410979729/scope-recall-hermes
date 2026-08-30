@@ -1,5 +1,6 @@
 # Highest currently tested runtime dependency set within public bounds.
 PyYAML==6.0.3
 jsonschema==4.26.0
+tzdata==2025.3 ; sys_platform == 'win32'
 lancedb==0.30.2
 pyarrow==24.0.0

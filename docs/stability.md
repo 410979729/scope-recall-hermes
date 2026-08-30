@@ -1,6 +1,6 @@
 # Scope Recall V1 stability contract
 
-`scope-recall` 1.10.5 keeps the V1 compatibility contract on the last packaged `1.10.3` line and supersedes the unpublished `1.10.4` source checkpoint. It retains the issue #50 rollback metadata, governance receipt, Experience `run_id`, and `memory_auto_adjudication` throttle fixes, then closes exact-epoch review defects in shutdown deadlines, Windows Git process-tree termination, successful-release provenance, merge/capture serialization, L4 retry retention, contradiction-chain selection, and distribution scanning. SQLite authority, stable provider/tool identities, and the database schema are unchanged.
+`scope-recall` 2.0.0 keeps the V1 compatibility contract on the last packaged `1.10.3` line. SQLite remains authoritative, stable provider/tool identities stay compatible, and all schema changes are additive. The 2.0 product contract adds strict Fact authority with a dual-written legacy projection, finite relation generation on shared DurableWork semantics, one production Recall Packet compiler with current-truth and conflict visibility, deny-first Purge, governed tool profiles, optional non-authoritative extension boundaries, and a read-only Recall Inspector. The N-1/N/N-1 rollback window remains required throughout 2.0.x; migration identities such as `0013_relation_containment_v1_10_6` remain immutable historical ledger entries.
 
 This document defines the stable V1 compatibility surface and the areas that may evolve in patch or minor releases.
 
@@ -52,6 +52,8 @@ Stable V1 guarantees:
 
 Schema evolution policy:
 
+Vector companion status is an additive stable contract. Public runtime state is exactly `ready`, `degraded`, `needs_repair`, or `disabled`; detailed causes stay in `reason_code`. Retryable durable replay debt is `degraded`, while dead-letter, audit mismatch, duplicate rows, unreadable storage, incompatible generation, and unrecoverable divergence are `needs_repair`. Stats and Doctor also preserve `auto_recoverable`, `repair_required`, `usable_for_query`, `message`, and aggregate `debt_counts`. Ordinary recall must retain SQLite/lexical fallback when vector query use is unsafe.
+
 - patch/minor releases may add nullable columns, indexes, metadata fields, or migration ledger fields
 - patch/minor releases must preserve existing V1 `memories` rows
 - destructive schema changes require a major version bump or an explicit migration/export path
@@ -78,6 +80,7 @@ V1 keeps these behavior boundaries stable:
 - Experience Kernel create/review and maintenance promotion tools are hidden and fail closed unless `maintenance_tools_enabled=true`; ordinary read-only search/inspect/preflight/stats and scoped feedback tools remain available when `experience.enabled=true`.
 - automatic experience promotion is opt-in after successful journal digest through `experience.auto_promotion_enabled=false` by default; when enabled, it still requires evidence-backed task traces with final successful closure, writes task episodes, creates playbook candidates by default because `experience.auto_promote_low_risk=false`, and keeps high-risk or final-failure playbooks gated by status/review. Set `experience.auto_promote_low_risk=true` only to auto-promote low-risk verified playbooks.
 - forgetting tools are hidden and fail closed unless `maintenance_tools_enabled=true`; `scope_recall_forgetting_report` is read-only, and `scope_recall_forgetting_run` defaults to dry-run/soft archive rather than physical deletion
+- `scope_recall_purge` is maintenance-only and uses two exact confirmations: Phase A commits an irreversible deny tombstone before Phase B performs idempotent physical erasure; immutable content-free receipts support restore-time deny replay
 - `scope_recall_playbook_create` only writes `candidate`; promotion requires `scope_recall_playbook_review`, and direct reuse is blocked by confidence, reuse-policy, stale-fact, and risky-capability gates
 - `scope_recall_store_secret_index` may store searchable credential indexes, vault references, and non-reversible fingerprint prefixes, but plaintext secret values must not be stored in SQLite content, metadata, FTS, vector text, exports, logs, or chat replies
 - durable `user`/`memory`/`project`/`ops` rows are shared across windows/chats for the same platform + agent workspace + agent identity + user id by default
@@ -93,7 +96,12 @@ V1 keeps these behavior boundaries stable:
 
 ## Stable V1 tool surface
 
-The following tool names are stable for V1. `tool_schema_profile="compact"` exposes only the compact default subset in ordinary prompts, while legacy individual tools remain direct-call compatible and can be re-exposed with `tool_schema_profile="standard"` or `tool_schema_extra_tools`.
+The following tool names remain stable throughout 2.0.x.
+`tool_schema_profile="core"` exposes only the compact default subset in
+ordinary prompts, while legacy individual tools remain direct-call compatible
+and can be re-exposed with `tool_schema_profile="compatibility"` or
+`tool_schema_extra_tools`. The old `compact` and `standard` profile values
+remain accepted aliases for `core` and `compatibility`.
 
 - `scope_recall_store`
 - `scope_recall_store_secret_index`
@@ -115,6 +123,7 @@ The following tool names are stable for V1. `tool_schema_profile="compact"` expo
 - `scope_recall_repair`
 - `scope_recall_stats`
 - `scope_recall_inspect`
+- `scope_recall_inspector`
 - `scope_recall_explain`
 - `scope_recall_benchmark`
 - `scope_recall_playbook_create`
@@ -127,6 +136,7 @@ The following tool names are stable for V1. `tool_schema_profile="compact"` expo
 - `scope_recall_experience_promote`
 - `scope_recall_forgetting_report`
 - `scope_recall_forgetting_run`
+- `scope_recall_purge`
 - `scope_recall_fact`
 - `scope_recall_evolve`
 - `scope_recall_reflect`

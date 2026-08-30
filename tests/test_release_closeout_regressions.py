@@ -11,6 +11,7 @@ import tomllib
 import zipfile
 
 import pytest
+from packaging.requirements import Requirement
 
 from scope_recall import memory_queries
 
@@ -349,6 +350,30 @@ def test_release_dependencies_are_bounded_and_hash_locked() -> None:
         assert 'pip install --no-deps ".[lancedb,dev]"' in workflow
 
 
+def test_release_constraints_have_no_extras_and_preserve_runtime_extra_closure() -> None:
+    requirements = [
+        Requirement(line)
+        for raw in (ROOT / "constraints" / "release.txt").read_text(
+            encoding="utf-8"
+        ).splitlines()
+        if (line := raw.strip()) and not line.startswith("#")
+    ]
+    assert all(not requirement.extras for requirement in requirements)
+
+    names = {requirement.name.lower() for requirement in requirements}
+    assert {
+        "colorama",
+        "cryptography",
+        "httptools",
+        "python-dotenv",
+        "pyyaml",
+        "socksio",
+        "uvloop",
+        "watchfiles",
+        "websockets",
+    } <= names
+
+
 def test_release_workflows_do_not_resolve_after_hash_locked_install() -> None:
     workflows = {
         name: (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
@@ -413,10 +438,31 @@ def test_ci_exercises_minimum_and_maximum_runtime_dependencies() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
         encoding="utf-8"
     )
+    runtime_min = (ROOT / "constraints" / "runtime-min.txt").read_text(
+        encoding="utf-8"
+    )
+    runtime_min_requirements = [
+        Requirement(line)
+        for raw in runtime_min.splitlines()
+        if (line := raw.strip()) and not line.startswith("#")
+    ]
+    pyyaml_constraints = [
+        requirement
+        for requirement in runtime_min_requirements
+        if requirement.name.lower() == "pyyaml"
+    ]
     assert "linux-dependency-min-py311" in workflow
     assert "constraints/runtime-min.txt" in workflow
     assert "linux-dependency-max-py312" in workflow
     assert "constraints/runtime-max.txt" in workflow
+    assert "plugin + pinned Hermes integration dependency set" in runtime_min
+    assert len(pyyaml_constraints) == 1
+    assert str(pyyaml_constraints[0].specifier) == "==6.0.3"
+    assert "Hermes Agent v0.19.1 / v2026.7.30" in workflow
+    assert (
+        "HERMES_AGENT_COMMIT: cc4cab2f592e60a197e796506de9168f74baf3ea"
+        in workflow
+    )
 
 
 def test_sdist_prunes_unreviewed_test_fixtures_before_explicit_restore_tests() -> None:

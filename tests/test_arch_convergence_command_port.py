@@ -1,9 +1,8 @@
 """Architecture-convergence: one production command-port route.
 
-These tests fail on the live dual assembly (ProviderCommandAdapter vs
-``_LegacyPersistCommandPort``), inward shim imports, and sys.modules
-lookups. They must stay runtime/identity checks, not source-shape stand-ins
-for the command-port unification.
+These tests protect the single production application-command route, the
+isolated-host compatibility fallback, inward shim imports, and sys.modules
+lookups.
 """
 
 from __future__ import annotations
@@ -11,14 +10,29 @@ from __future__ import annotations
 import ast
 import json
 from pathlib import Path
+import re
 from typing import Any
 
+from scope_recall._internal.application.capture_journal import (
+    CaptureApplication,
+    JournalApplication,
+)
+from scope_recall._internal.application.memory_commands import (
+    DeleteMemoriesResult,
+    MemoryCommandApplication,
+)
+from scope_recall._internal.application.memory_queries import MemoryQueryApplication
+from scope_recall._internal.application.runtime_state import RuntimeStateSnapshot
+from scope_recall._internal.application.vector_service import VectorApplication
 from scope_recall._internal.recall import orchestrator as orchestrator_module
 from scope_recall._internal.recall import pipeline as recall_pipeline
 from scope_recall._internal.runtime.command_adapter import ProviderCommandAdapter
 from scope_recall._internal.runtime.kernel import (
     COMMAND_KERNEL,
     _LegacyPersistCommandPort,
+)
+from scope_recall._internal.runtime.vector_runtime_state import (
+    bind_provider_vector_runtime,
 )
 from scope_recall.models import RecallItem
 from scope_recall.provider import ScopeRecallMemoryProvider
@@ -66,11 +80,31 @@ def _spy_kernel_ports(monkeypatch) -> list[tuple[str, object]]:
 
         return spy
 
-    monkeypatch.setattr(COMMAND_KERNEL, "store", _wrap("store", ("mem-arch", True, "stored")))
-    monkeypatch.setattr(COMMAND_KERNEL, "update", _wrap("update", (True, "updated", "")))
+    monkeypatch.setattr(
+        COMMAND_KERNEL, "store", _wrap("store", ("mem-arch", True, "stored"))
+    )
+    monkeypatch.setattr(
+        COMMAND_KERNEL, "update", _wrap("update", (True, "updated", ""))
+    )
     monkeypatch.setattr(COMMAND_KERNEL, "merge", _wrap("merge", {"merged": True}))
     monkeypatch.setattr(COMMAND_KERNEL, "archive", _wrap("archive", {"archived": 1}))
-    monkeypatch.setattr(COMMAND_KERNEL, "delete", _wrap("delete", 1))
+    monkeypatch.setattr(
+        COMMAND_KERNEL,
+        "delete",
+        _wrap(
+            "delete",
+            DeleteMemoriesResult(
+                requested_ids=("mem-arch",),
+                deleted_ids=("mem-arch",),
+                skipped_ids=(),
+                deleted_count=1,
+                vector_pending=False,
+                companion_erasure_pending=False,
+                data_retained=False,
+                mutation_applied=True,
+            ),
+        ),
+    )
     monkeypatch.setattr(COMMAND_KERNEL, "feedback", _wrap("feedback", {"ok": True}))
     monkeypatch.setattr(COMMAND_KERNEL, "govern", _wrap("govern", {"ok": True}))
     monkeypatch.setattr(COMMAND_KERNEL, "dedupe", _wrap("dedupe", {"ok": True}))
@@ -132,9 +166,12 @@ def test_provider_and_tooling_entries_use_same_command_port_object(monkeypatch) 
     assert tooling_ports == [assembled] * len(_COMMAND_SPY_METHODS)
     assert all(port is assembled for port in provider_ports)
     assert all(port is assembled for port in tooling_ports)
-    assert type(assembled) is ProviderCommandAdapter
+    assert type(assembled) is MemoryCommandApplication
+    assert type(assembled._gateway) is ProviderCommandAdapter
     assert not isinstance(assembled, _LegacyPersistCommandPort)
-    assert all(not isinstance(port, _LegacyPersistCommandPort) for port in tooling_ports)
+    assert all(
+        not isinstance(port, _LegacyPersistCommandPort) for port in tooling_ports
+    )
 
 
 def test_tool_service_on_provider_reuses_assembled_command_port(monkeypatch) -> None:
@@ -150,6 +187,42 @@ def test_tool_service_on_provider_reuses_assembled_command_port(monkeypatch) -> 
     assert seen == [("store", assembled)]
     assert seen[0][1] is assembled
     assert not isinstance(seen[0][1], _LegacyPersistCommandPort)
+
+
+def test_tool_runtime_reuses_assembled_query_application(monkeypatch) -> None:
+    provider = ScopeRecallMemoryProvider()
+    assembled = provider._composition.query_port
+    seen: list[object] = []
+
+    def spy(port: object, **kwargs: object) -> dict[str, object]:
+        seen.append(port)
+        return {"query": kwargs.get("query")}
+
+    monkeypatch.setattr(COMMAND_KERNEL, "context", spy)
+    payload = provider._composition.tool_port.context_payload(
+        query="typed query route", limit=3, max_chars=300
+    )
+    assert payload == {"query": "typed query route"}
+    assert seen == [assembled]
+
+
+def test_composition_exposes_typed_query_application_and_runtime_snapshot() -> None:
+    provider = ScopeRecallMemoryProvider()
+    query_port = provider._composition.query_port
+    assert type(query_port) is MemoryQueryApplication
+    snapshot = provider._composition.runtime_state
+    assert type(snapshot) is RuntimeStateSnapshot
+    assert snapshot.status == "uninitialized"
+    assert snapshot.authority.writer_role == "unknown"
+    assert snapshot.authority.writer_authorized is False
+    assert snapshot.scope.accessible_scope_ids == ()
+
+
+def test_composition_exposes_typed_capture_and_journal_services() -> None:
+    provider = ScopeRecallMemoryProvider()
+    assert type(provider._composition.capture) is CaptureApplication
+    assert type(provider._composition.journal) is JournalApplication
+    assert type(provider._composition.vector) is VectorApplication
 
 
 def test_isolated_host_keeps_legacy_command_port_fallback(monkeypatch) -> None:
@@ -191,9 +264,192 @@ def test_isolated_host_keeps_legacy_command_port_fallback(monkeypatch) -> None:
     assert all(not isinstance(port, ProviderCommandAdapter) for port in ports)
 
 
+def test_application_command_contract_stays_provider_neutral() -> None:
+    source = (PLUGIN_ROOT / "_internal/application/memory_commands.py").read_text(
+        encoding="utf-8"
+    )
+    tree = ast.parse(source)
+    imported_names = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    }
+    identifier_names = {
+        node.id for node in ast.walk(tree) if isinstance(node, ast.Name)
+    }
+    forbidden_imports = {"sqlite3", "threading", "provider", "runtime_adapter"}
+    assert imported_names.isdisjoint(forbidden_imports)
+    assert "Any" not in source
+    assert "Provider" not in identifier_names
+    assert "Connection" not in source
+    assert "Lock" not in source
+
+
+def test_application_query_and_state_contracts_stay_provider_neutral() -> None:
+    for rel in (
+        "_internal/application/capture_journal.py",
+        "_internal/application/memory_queries.py",
+        "_internal/application/runtime_state.py",
+        "_internal/application/vector_service.py",
+    ):
+        source = (PLUGIN_ROOT / rel).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        identifiers = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+        assert "Any" not in identifiers
+        assert "Provider" not in identifiers
+        assert "Connection" not in source
+        assert "Lock" not in source
+        assert "getattr(" not in source
+        assert "sys.modules" not in source
+
+
+def test_command_kernel_has_no_legacy_write_target_or_memory_ops_dependency() -> None:
+    source = (PLUGIN_ROOT / "_internal/runtime/kernel.py").read_text(encoding="utf-8")
+    assert "write_target" not in source
+    assert "memory_ops" not in source
+    assert "write_kernel" not in source
+
+
+def test_tooling_does_not_unwrap_runtime_or_writer_lock() -> None:
+    tooling_source = (PLUGIN_ROOT / "tooling.py").read_text(encoding="utf-8")
+    assert "evidence_runtime" not in tooling_source
+    assert "writer_lifecycle_lock" not in tooling_source
+    assert "capture_mutation_barrier" not in tooling_source
+
+
+def test_production_runtime_has_no_generic_unwrap_escape_hatches() -> None:
+    for rel in (
+        "memory_ops.py",
+        "provider.py",
+        "reflection_tooling.py",
+        "_internal/application/memory_commands.py",
+        "_internal/application/memory_queries.py",
+        "_internal/runtime/command_adapter.py",
+        "_internal/runtime/kernel.py",
+        "_internal/runtime/ports.py",
+        "_internal/runtime/tool_port.py",
+    ):
+        source = (PLUGIN_ROOT / rel).read_text(encoding="utf-8")
+        assert "write_target" not in source, rel
+        assert "evidence_runtime" not in source, rel
+
+
+def test_composition_root_uses_only_explicit_injection() -> None:
+    source = (PLUGIN_ROOT / "_internal/runtime/composition.py").read_text(
+        encoding="utf-8"
+    )
+    assert "sys.modules" not in source
+    assert "getattr(" not in source
+    assert "_adapter_provider_module" not in source
+
+
+def test_vector_runtime_uses_explicit_compatibility_state() -> None:
+    runtime_source = (PLUGIN_ROOT / "vector_runtime.py").read_text(encoding="utf-8")
+    adapter_source = (
+        PLUGIN_ROOT / "_internal/runtime/vector_runtime_state.py"
+    ).read_text(encoding="utf-8")
+    assert "provider._" not in runtime_source
+    assert 'getattr(provider, "_' not in runtime_source
+    assert "def __getattr__(" not in adapter_source
+    mapped_fields = set(
+        re.findall(r'["\'](_[a-z][a-z0-9_]*)["\']', adapter_source)
+    ) | set(re.findall(r"self\._host\.(_[a-z][a-z0-9_]*)", adapter_source))
+    assert mapped_fields == {
+        "_config",
+        "_db_path",
+        "_embedder",
+        "_lock",
+        "_next_outbox_retention_at",
+        "_outbox_retention_contention_skips",
+        "_require_conn",
+        "_retrieval_config",
+        "_scope_id",
+        "_scope_recall_vector_runtime_state",
+        "_storage_dir",
+        "_vector_auto_recoverable",
+        "_vector_backend",
+        "_vector_config",
+        "_vector_debt_counts",
+        "_vector_duplicate_row_count",
+        "_vector_enabled",
+        "_vector_generation_id",
+        "_vector_lock",
+        "_vector_message",
+        "_vector_ready",
+        "_vector_reason_code",
+        "_vector_reconciliation",
+        "_vector_repair_required",
+        "_vector_replay_degraded",
+        "_vector_row_count",
+        "_vector_status",
+        "_vector_storage_dir",
+        "_vector_store",
+        "_vector_text",
+        "_vector_unique_id_count",
+        "_vector_usable_for_query",
+    }
+
+    class Host:
+        _vector_ready = False
+
+        def _require_conn(self) -> str:
+            return "connection"
+
+    host = Host()
+    first = bind_provider_vector_runtime(host)
+    second = bind_provider_vector_runtime(host)
+    assert first is second
+    assert first.require_conn() == "connection"
+    first.vector_ready = True
+    assert host._vector_ready is True
+
+
+def test_provider_private_access_metric_decreases_significantly() -> None:
+    """Keep the frozen G0 provider-shaped access metric from rebounding."""
+
+    provider_shaped_access = re.compile(
+        r"\b(?:provider|host|runtime|target|owner|tool_port)\._[A-Za-z]"
+    )
+    scattered_lines = 0
+    for path in PLUGIN_ROOT.rglob("*.py"):
+        rel = path.relative_to(PLUGIN_ROOT)
+        if any(part.startswith(".") for part in rel.parts):
+            continue
+        if rel.parts[0] in {"tests", "build", "dist"}:
+            continue
+        if rel.as_posix() in {
+            "provider.py",
+            "_internal/runtime/vector_runtime_state.py",
+        }:
+            continue
+        scattered_lines += sum(
+            bool(provider_shaped_access.search(line))
+            for line in path.read_text(encoding="utf-8").splitlines()
+        )
+
+    adapter_source = (
+        PLUGIN_ROOT / "_internal/runtime/vector_runtime_state.py"
+    ).read_text(encoding="utf-8")
+    explicit_mappings = set(
+        re.findall(r'["\'](_[a-z][a-z0-9_]*)["\']', adapter_source)
+    ) | set(re.findall(r"self\._host\.(_[a-z][a-z0-9_]*)", adapter_source))
+    explicit_mappings.discard("_scope_recall_vector_runtime_state")
+
+    g0_baseline = 505
+    effective_current = scattered_lines + len(explicit_mappings)
+    assert scattered_lines <= 374
+    assert len(explicit_mappings) == 31
+    assert effective_current <= 405
+    assert (g0_baseline - effective_current) / g0_baseline >= 0.15
+
+
 def test_touched_internals_import_canonical_modules_not_shims() -> None:
     assert orchestrator_module.recall_pipeline is recall_pipeline
-    assert orchestrator_module.recall_pipeline.__name__ == "scope_recall._internal.recall.pipeline"
+    assert (
+        orchestrator_module.recall_pipeline.__name__
+        == "scope_recall._internal.recall.pipeline"
+    )
     for rel in _TOUCHED_FOR_SHIMS:
         imported = _import_from_modules(rel)
         leaked = imported & _SHIM_MODULES

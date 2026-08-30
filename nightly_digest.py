@@ -42,6 +42,7 @@ from .http_utils import (
     redact_sensitive as _shared_redact_sensitive,
 )
 from .lifecycle_service import hard_delete_memories
+from .lifecycle_registry import HARD_DELETE_NIGHTLY_DEDUPE
 from .lifecycle_policy import durable_lifecycle_visible_sql, ordinary_recall_lifecycle_visible_sql
 from .maintenance_lease import install_activation_lease_authorizer
 from .memory_admission import automatic_admission_metadata
@@ -69,7 +70,8 @@ from .truth_connection import connect_truth_database
 from .transaction_guard import prepare_network_boundary, release_snapshot_transaction
 from .writer_lease import TruthWriterBusyError, TruthWriterLease
 from .vector_runtime import (
-    mark_vector_needs_repair,
+    mark_vector_replay_degraded,
+    replay_and_classify_exact_vector_intents,
     replay_vector_outbox,
     setup_vector_layer,
     vector_delete_intent_required,
@@ -260,6 +262,17 @@ class DigestVectorRuntime:
         self._vector_enabled = False
         self._vector_ready = False
         self._vector_status = "disabled"
+        self._vector_reason_code = "disabled_by_config"
+        self._vector_auto_recoverable = False
+        self._vector_repair_required = False
+        self._vector_usable_for_query = False
+        self._vector_debt_counts: dict[str, int] = {
+            "pending": 0,
+            "processing": 0,
+            "retry": 0,
+            "dead_letter": 0,
+            "replayable": 0,
+        }
         self._vector_message = ""
         self._vector_row_count = 0
         self._vector_unique_id_count = 0
@@ -1691,23 +1704,36 @@ def cleanup_exact_duplicates(conn: sqlite3.Connection, scope: ScopeProfile, vect
             require_vector_delete=require_vector_delete,
             actor="scope-recall-nightly-digest",
             reason="exact duplicate cleanup",
-            event_type="nightly_duplicate_hard_delete",
+            operation_id=HARD_DELETE_NIGHTLY_DEDUPE,
             batch_id=f"nightly_dedupe_{uuid.uuid4().hex}",
         )
         if vector_runtime is not None and require_vector_delete:
-            replay_result = replay_vector_outbox(
+            completion = replay_and_classify_exact_vector_intents(
                 vector_runtime,
-                limit=max(1, int(result.get("outbox_enqueued") or 1)),
+                [
+                    str(event_key)
+                    for event_key in result.get("vector_outbox_keys", [])
+                    if str(event_key).strip()
+                ],
             )
-            if int(replay_result.get("failed") or 0) > 0:
-                mark_vector_needs_repair(
+            replay_result = dict(completion.get("replay") or {})
+            if (
+                not bool(completion.get("all_completed"))
+                and str(getattr(vector_runtime, "_vector_status", "") or "")
+                not in {"degraded", "needs_repair"}
+            ):
+                mark_vector_replay_degraded(
                     vector_runtime,
-                    "nightly duplicate vector outbox replay failed",
+                    (
+                        "nightly duplicate vector outbox replay failed"
+                        if int(replay_result.get("failed") or 0) > 0
+                        else "nightly duplicate exact vector intent remains pending"
+                    ),
                 )
         return int(result["deleted"])
     except Exception as exc:
         if vector_runtime is not None and require_vector_delete:
-            mark_vector_needs_repair(vector_runtime, exc)
+            mark_vector_replay_degraded(vector_runtime, exc)
         raise RuntimeError("nightly duplicate hard delete did not commit safely") from exc
 
 

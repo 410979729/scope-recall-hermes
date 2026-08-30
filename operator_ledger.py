@@ -50,7 +50,14 @@ _REQUIRED_COLUMNS = {
     "updated_at",
 }
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
-_GENERIC_RECEIPT_KINDS = frozenset({"journal.source_restore"})
+_GENERIC_RECEIPT_KINDS = frozenset(
+    {
+        "journal.source_restore",
+        "relation.legacy_cleanup",
+        "privacy_purge.deny",
+        "privacy_purge.erase",
+    }
+)
 _PLAYBOOK_RECEIPT_SCHEMA = "playbook_operator_receipt.v2"
 _OPERATOR_RECEIPT_SCHEMA = "operator_receipt.v1"
 
@@ -346,28 +353,97 @@ def _serialize_receipt(payload: Mapping[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
+def _receipt_publish_path(path: Path) -> str | Path:
+    """Use Win32 extended paths for hard-link publication when required."""
+
+    if os.name != "nt":
+        return path
+    resolved = str(path.resolve())
+    if resolved.startswith("\\\\?\\"):
+        return resolved
+    if resolved.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + resolved[2:]
+    return "\\\\?\\" + resolved
+
+
+def _receipt_requires_extended_io(path: Path) -> bool:
+    return os.name == "nt" and len(str(_receipt_publish_path(path))) >= 260
+
+
+def _receipt_path_exists(path: Path) -> bool:
+    if _receipt_requires_extended_io(path):
+        return os.path.exists(_receipt_publish_path(path))
+    return path.exists()
+
+
+def _receipt_path_is_symlink(path: Path) -> bool:
+    if _receipt_requires_extended_io(path):
+        return os.path.islink(_receipt_publish_path(path))
+    return path.is_symlink()
+
+
+def _read_receipt_bytes(path: Path) -> bytes:
+    if not _receipt_requires_extended_io(path):
+        return path.read_bytes()
+    with open(_receipt_publish_path(path), "rb") as handle:
+        return handle.read()
+
+
+def _publish_receipt_link(source: Path, destination: Path) -> None:
+    """Atomically publish one receipt without overwriting raced evidence."""
+
+    source_path = _receipt_publish_path(source)
+    destination_path = _receipt_publish_path(destination)
+    if os.name != "nt" or max(len(str(source_path)), len(str(destination_path))) < 260:
+        os.link(source, destination)
+        return
+
+    # CPython's os.link can still route through the legacy Win32 path handling
+    # on some supported Windows/Python combinations.  CreateHardLinkW accepts
+    # the extended paths above while preserving the required no-overwrite
+    # publication semantics.
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_hard_link = kernel32.CreateHardLinkW
+    create_hard_link.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_void_p]
+    create_hard_link.restype = ctypes.c_int
+    if create_hard_link(str(destination_path), str(source_path), None):
+        return
+    error = ctypes.get_last_error()
+    message = ctypes.FormatError(error)
+    if error in {80, 183}:  # ERROR_FILE_EXISTS / ERROR_ALREADY_EXISTS
+        raise FileExistsError(error, message, destination)
+    if error in {2, 3}:  # ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND
+        raise FileNotFoundError(error, message, destination)
+    if error == 5:  # ERROR_ACCESS_DENIED
+        raise PermissionError(error, message, destination)
+    raise OSError(error, message, destination)
+
+
 def _write_receipt_mirror(path: Path, content: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists() or path.is_symlink():
-        if path.is_symlink():
+    os.makedirs(_receipt_publish_path(path.parent), exist_ok=True)
+    if _receipt_path_exists(path) or _receipt_path_is_symlink(path):
+        if _receipt_path_is_symlink(path):
             raise FileExistsError(f"receipt path is not regular evidence: {path}")
-        if path.read_bytes() != content:
+        if _read_receipt_bytes(path) != content:
             raise FileExistsError(f"receipt path contains different evidence: {path}")
         return
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
-        with temporary.open("xb") as handle:
+        # The unique staging name can cross MAX_PATH even when the stable
+        # receipt itself does not, so open and remove it through the same
+        # extended-path adapter used for publication.
+        with open(_receipt_publish_path(temporary), "xb") as handle:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
         try:
-            # Hard-link publication is atomic and, unlike os.replace(), never
-            # overwrites evidence that raced with the earlier existence check.
-            # The temporary file lives in the same directory, so this cannot
-            # cross filesystem boundaries.
-            os.link(temporary, path)
+            # Hard-link publication is atomic and never overwrites evidence
+            # that raced with the earlier existence check.
+            _publish_receipt_link(temporary, path)
         except FileExistsError:
-            if path.is_symlink() or path.read_bytes() != content:
+            if _receipt_path_is_symlink(path) or _read_receipt_bytes(path) != content:
                 raise FileExistsError(
                     f"receipt path contains different evidence: {path}"
                 ) from None
@@ -382,7 +458,7 @@ def _write_receipt_mirror(path: Path, content: bytes) -> None:
                 os.close(directory_fd)
     finally:
         try:
-            temporary.unlink()
+            os.unlink(_receipt_publish_path(temporary))
         except FileNotFoundError:
             pass
 

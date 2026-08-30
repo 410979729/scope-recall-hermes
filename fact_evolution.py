@@ -24,22 +24,87 @@ from .fact_actions import (
     EvolutionProposal,
     EvolutionResult,
 )
+from .fact_authority import (
+    is_fact_projection_marker,
+    memory_type_is_claim_backed,
+    route_fact_authority,
+)
 from .fact_executor import FactExecutionContext, FactProvenanceReference, execute_fact_plan
-from .governance import normalize_memory_type
 from .sql_store import now_iso
 
 
 _ALLOWED_MODES = frozenset({"preview", "auto_apply", "reviewed_apply"})
 _UNATTENDED_LANES = frozenset({"nightly", "journal"})
-_FACT_EVOLUTION_MEMORY_TYPES = frozenset(
-    {"factual", "preference", "project", "resource", "constraint"}
-)
 
 
 def memory_type_uses_fact_evolution(value: Any) -> bool:
-    """Return whether a classified memory represents an evolvable fact slot."""
+    """Return whether an explicit canonical type may enter Fact authority."""
 
-    return normalize_memory_type(value) in _FACT_EVOLUTION_MEMORY_TYPES
+    return memory_type_is_claim_backed(value)
+
+
+def _targets_are_current_fact_projections(
+    conn: sqlite3.Connection,
+    *,
+    target_ids: Sequence[str],
+    trusted_scope_id: str,
+) -> bool:
+    """Prove that every internal projection target owns one current Claim."""
+
+    unique_ids = tuple(
+        dict.fromkeys(str(item).strip() for item in target_ids if str(item).strip())
+    )
+    if not unique_ids:
+        return False
+    placeholders = ",".join("?" for _ in unique_ids)
+    rows = conn.execute(
+        f"""
+        SELECT memory_id, COUNT(*) AS claim_count
+        FROM fact_claims
+        WHERE memory_id IN ({placeholders})
+          AND scope_id = ?
+          AND status = 'current'
+          AND retired_at IS NULL
+        GROUP BY memory_id
+        """,
+        (*unique_ids, trusted_scope_id),
+    ).fetchall()
+    counts = {str(row["memory_id"]): int(row["claim_count"]) for row in rows}
+    return all(counts.get(memory_id) == 1 for memory_id in unique_ids)
+
+
+def _authority_allows_proposal(
+    conn: sqlite3.Connection,
+    *,
+    proposal: EvolutionProposal,
+    memory_type: Any,
+    trusted_scope_id: str,
+) -> tuple[bool, str, dict[str, str]]:
+    """Apply the strict type gate, with a ledger-bound legacy anchor escape."""
+
+    route = route_fact_authority(memory_type)
+    if route.claim_backed:
+        return True, "", route.as_dict()
+    if (
+        is_fact_projection_marker(memory_type)
+        and proposal.action
+        in {
+            EvolutionAction.ENRICH,
+            EvolutionAction.SUPERSEDE,
+            EvolutionAction.RETRACT,
+        }
+        and _targets_are_current_fact_projections(
+            conn,
+            target_ids=proposal.target_ids,
+            trusted_scope_id=trusted_scope_id,
+        )
+    ):
+        return True, "", {
+            "canonical_type": "",
+            "lane": "claim_backed_existing_projection",
+            "reason_code": "existing_claim_authority",
+        }
+    return False, route.reason_code, route.as_dict()
 
 
 def fact_evolution_enabled(runtime_config: Mapping[str, Any] | None) -> bool:
@@ -299,13 +364,6 @@ def execute_pipeline_proposal(
         proposal=proposal,
         trusted_scope_id=execution_scope,
     )
-    allowed_targets, expected_versions = _target_snapshot(
-        conn,
-        proposal=proposal,
-        writable_scope_ids=writable,
-        trusted_scope_id=execution_scope,
-    )
-    mode = evolution_policy_mode(runtime_config, lane=lane, dry_run=dry_run)
     identity_material = {
         "lane": lane,
         "source_key": source_key,
@@ -319,6 +377,34 @@ def execute_pipeline_proposal(
         source_key=source_key,
         scope_id=execution_scope,
     )
+    raw_metadata = metadata if isinstance(metadata, Mapping) else {}
+    authority_allowed, authority_reason, authority_route = _authority_allows_proposal(
+        conn,
+        proposal=proposal,
+        memory_type=raw_metadata.get("memory_type"),
+        trusted_scope_id=execution_scope,
+    )
+    if not authority_allowed:
+        return EvolutionResult(
+            action_id=action_id,
+            action=EvolutionAction.REVIEW,
+            status="review",
+            applied=False,
+            receipt={
+                "reason_codes": [
+                    "memory_type_not_claim_authoritative",
+                    authority_reason,
+                ],
+                "authority_route": authority_route,
+            },
+        )
+    allowed_targets, expected_versions = _target_snapshot(
+        conn,
+        proposal=proposal,
+        writable_scope_ids=writable,
+        trusted_scope_id=execution_scope,
+    )
+    mode = evolution_policy_mode(runtime_config, lane=lane, dry_run=dry_run)
     replay_versions = _receipt_expected_versions(
         conn,
         idempotency_key=idempotency_key,
@@ -340,7 +426,7 @@ def execute_pipeline_proposal(
             and (lane != "maintenance" or mode == "reviewed_apply")
         ),
     )
-    safe_metadata, _ = sanitize_structured_value(dict(metadata or {}))
+    safe_metadata, _ = sanitize_structured_value(dict(raw_metadata))
     trusted_provenance = tuple(
         FactProvenanceReference(
             source_type=str(item.get("source_type") or ""),

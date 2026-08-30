@@ -22,6 +22,12 @@ These versions are lightweight response-contract identifiers, not full JSON Sche
   - Required top-level keys: `schema_version`, `ok`, `severity`, `generated_at`, `sections`
   - Purpose: compact operator dashboard for candidate debt, quality lint, schema, freshness, and Experience health.
 
+## Vector status object
+
+`scope_recall_stats.vector`, the combined Doctor vector section, and the dashboard vector summary use `vector_status.v1`. Required fields are `schema_version`, `state`, `reason_code`, `auto_recoverable`, `repair_required`, `usable_for_query`, `message`, and `debt_counts`. `state` is exactly one of `ready`, `degraded`, `needs_repair`, or `disabled`; runtime `status` is retained as a compatibility alias with the same value. Backend/generation-specific Doctor detail is reported separately as `diagnostic_status` and nested diagnostic objects.
+
+`debt_counts` contains non-negative `pending`, `processing`, `retry`, `dead_letter`, and derived `replayable` counts. Consumers must branch on the structured fields rather than message prose.
+
 - `golden_benchmark_report.v1`
   - Producer: `scripts/benchmark.golden.py`
   - Required top-level keys: `schema_version`, `passed`, `query_count`, `failures`, `results`, `golden_name`, `case_file`, `hermes_home`
@@ -41,6 +47,28 @@ These versions are lightweight response-contract identifiers, not full JSON Sche
   - Producer: `run_forgetting()` / `scope_recall_forgetting_run`
   - Required top-level keys: `schema_version`, `dry_run`, `batch_id`, `archived`, `deleted`, `review_debt`, `archive_ids`, `delete_ids`
   - Purpose: dry-run/apply result for forgetting maintenance actions.
+
+## Retention mutation fields
+
+Forget, forgetting maintenance, and two-phase privacy purge responses include
+`retention_response.v1`. The stable fields are
+`retention_schema_version`, `mode`, `data_retained`, `reversible`,
+`privacy_purge`, `mutation_applied`, and `companion_erasure_pending`.
+
+| Operation state | `mode` | `data_retained` | `reversible` | `privacy_purge` | `mutation_applied` |
+| --- | --- | --- | --- | --- | --- |
+| Soft archive applied | `archive` | `true` | `true` | `false` | `true` |
+| Hard delete applied | `hard_delete` | `false` | `false` | `false` | `true` |
+| Purge plan | `privacy_purge` | `true` | `false` | `true` | `false` |
+| Purge deny (Phase A) | `privacy_purge` | `true` | `false` | `true` | `true` |
+| Purge erase (Phase B) | `privacy_purge` | `false` | `false` | `true` | `true` |
+
+Blocked and no-op responses set `mutation_applied=false` and report
+`data_retained` from current authoritative truth. `data_retained=false` after a
+successful Phase B truth erasure remains false even while a rebuildable vector
+companion deletion is outstanding; that debt is reported separately as
+`companion_erasure_pending=true`. A privacy-purge deny tombstone is irreversible
+and is not an ordinary archive that can be rolled back.
 
 ## Tool argument failures
 

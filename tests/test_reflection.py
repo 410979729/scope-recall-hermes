@@ -9,7 +9,12 @@ from threading import RLock
 
 import pytest
 
-from scope_recall.fact_repository import close_claim_interval, insert_claim
+from scope_recall.fact_identity import canonical_fact_key
+from scope_recall.fact_repository import (
+    FACT_EXECUTOR_PENDING_SUCCESSOR_AUTHORITY,
+    close_claim_interval,
+    insert_claim,
+)
 from scope_recall.models import RecallItem
 from scope_recall.reflection import (
     ReflectionBudget,
@@ -160,6 +165,9 @@ def _seed_location_history(provider: ReflectionProvider) -> None:
         retired_at="2026-07-14T00:00:01+00:00",
         status="superseded",
         superseded_by_claim_id="claim-new",
+        pending_successor_scope_id="scope-a",
+        pending_successor_fact_key=canonical_fact_key("Joy", "lives in"),
+        pending_successor_authority=FACT_EXECUTOR_PENDING_SUCCESSOR_AUTHORITY,
     )
     _insert_location_claim(
         provider,

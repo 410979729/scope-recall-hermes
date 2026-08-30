@@ -69,6 +69,122 @@ def test_truth_session_recover_rolls_back_and_probes_without_reopen() -> None:
     assert owner.opened == 0
 
 
+def test_truth_session_preserves_connection_when_peer_remains_busy() -> None:
+    owner = _Owner()
+    session = TruthSession(owner)
+    conn = sqlite3.connect(":memory:")
+    session._conn = conn
+    calls = {"peer": 0, "probe": 0}
+
+    def busy_peer(_context: str) -> dict[str, int]:
+        calls["peer"] += 1
+        return {
+            "peer_providers_checked": 1,
+            "peer_rollbacks": 0,
+            "peer_rollback_errors": 0,
+            "peer_busy_skipped": 1,
+        }
+
+    def failed_probe(item: sqlite3.Connection) -> bool:
+        assert item is conn
+        calls["probe"] += 1
+        return False
+
+    def unexpected_reopen() -> sqlite3.Connection:
+        pytest.fail("an unresolved busy peer must not trigger reopen")
+
+    payload = session.recover_after_error(
+        "busy-peer-unit-test",
+        peer_rollback=busy_peer,
+        open_writer=unexpected_reopen,
+        write_probe=failed_probe,
+    )
+
+    assert calls == {"peer": 2, "probe": 2}
+    assert payload["recovered"] is False
+    assert payload["reopened"] is False
+    assert payload["reconnect_pending"] is False
+    assert payload["peer_recovery_passes"] == 2
+    assert payload["peer_busy_skipped"] == 1
+    assert payload["peer_busy_skipped_total"] == 2
+    assert payload["peer_recovery_deferred"] is True
+    assert session._conn is conn
+    conn.close()
+
+
+def test_truth_session_clears_deferred_when_second_probe_recovers() -> None:
+    owner = _Owner()
+    session = TruthSession(owner)
+    conn = sqlite3.connect(":memory:")
+    session._conn = conn
+    calls = {"peer": 0, "probe": 0}
+
+    def busy_peer(_context: str) -> dict[str, int]:
+        calls["peer"] += 1
+        return {
+            "peer_providers_checked": 1,
+            "peer_rollbacks": 0,
+            "peer_rollback_errors": 0,
+            "peer_busy_skipped": 1,
+        }
+
+    def eventually_available(item: sqlite3.Connection) -> bool:
+        assert item is conn
+        calls["probe"] += 1
+        return calls["probe"] == 2
+
+    payload = session.recover_after_error(
+        "busy-peer-recovers-unit-test",
+        peer_rollback=busy_peer,
+        open_writer=lambda: pytest.fail("successful second probe must not reopen"),
+        write_probe=eventually_available,
+    )
+
+    assert calls == {"peer": 2, "probe": 2}
+    assert payload["recovered"] is True
+    assert payload["peer_busy_skipped"] == 1
+    assert payload["peer_recovery_deferred"] is False
+    assert session._conn is conn
+    conn.close()
+
+
+def test_truth_session_preserves_connection_after_peer_rollback_error() -> None:
+    owner = _Owner()
+    session = TruthSession(owner)
+    conn = sqlite3.connect(":memory:")
+    session._conn = conn
+    calls = {"peer": 0, "probe": 0}
+
+    def failed_peer_rollback(_context: str) -> dict[str, int]:
+        calls["peer"] += 1
+        return {
+            "peer_providers_checked": 1,
+            "peer_rollbacks": 0,
+            "peer_rollback_errors": 1,
+            "peer_busy_skipped": 0,
+        }
+
+    def failed_probe(item: sqlite3.Connection) -> bool:
+        assert item is conn
+        calls["probe"] += 1
+        return False
+
+    payload = session.recover_after_error(
+        "peer-rollback-error-unit-test",
+        peer_rollback=failed_peer_rollback,
+        open_writer=lambda: pytest.fail("uncertain peer state must not reopen"),
+        write_probe=failed_probe,
+    )
+
+    assert calls == {"peer": 1, "probe": 1}
+    assert payload["recovered"] is False
+    assert payload["peer_rollback_errors"] == 1
+    assert payload["peer_recovery_passes"] == 1
+    assert payload["peer_recovery_deferred"] is True
+    assert session._conn is conn
+    conn.close()
+
+
 def test_require_never_changes_join_state_even_if_conn_in_transaction() -> None:
     session = TruthSession(_Owner())
     conn = sqlite3.connect(":memory:")

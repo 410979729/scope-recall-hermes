@@ -17,7 +17,7 @@
         "tests/test_tool_fact_evolution.py::test_legacy_update_fails_closed_for_fact_owned_memory",
         "tests/test_tool_fact_evolution.py::test_legacy_soft_archive_fails_closed_for_fact_owned_memory",
         "tests/test_tool_fact_evolution.py::test_legacy_merge_fails_closed_when_any_memory_owns_a_fact",
-        "tests/test_tool_fact_evolution.py::test_legacy_hard_delete_fails_closed_for_fact_owned_memory",
+        "tests/test_tool_fact_evolution.py::test_fact_owned_hard_delete_block_reports_no_mutation_and_retained_data",
         "tests/test_evolution_policy.py::test_ambiguous_predicate_frames_and_cjk_substrings_fail_closed",
         "tests/test_evolution_action_pipeline.py::test_ambiguous_relation_evidence_is_review_and_zero_write_end_to_end",
         "tests/test_sixth_audit_regressions.py::test_past_future_and_temporary_events_cannot_authorize_current_fact",
@@ -148,8 +148,8 @@
       "id": "sixteenth-independent-audit-performance-liveness-blockers",
       "nodes": [
         "tests/test_relation_frequency_incremental.py::test_immediate_relation_sync_never_scans_all_truth_in_a_large_scope",
-        "tests/test_relation_queue_liveness.py::test_relation_queue_progress_is_monotonic_during_twelve_interleaved_writes",
-        "tests/test_relation_queue_liveness.py::test_relation_queue_defers_when_frequency_receipt_cas_loses_cross_connection_race",
+        "tests/test_relation_containment.py::test_background_drain_consumes_every_focus_before_scope_is_ready",
+        "tests/test_relation_containment.py::test_frequency_work_generation_never_reuses_after_change_row_is_consumed",
         "tests/test_vector_startup_reconciliation.py::test_setup_entrypoint_contains_no_full_reconciliation_or_audit_call",
         "tests/test_vector_startup_reconciliation.py::test_startup_reconciliation_touches_only_one_twenty_five_row_page",
         "tests/test_vector_startup_reconciliation.py::test_existing_outbox_backlog_blocks_truth_page_and_watermark_advance",
@@ -162,11 +162,28 @@
       "nodes": [
         "tests/test_capture_filters.py::test_sensitive_token_prefix_cannot_be_whitelisted_by_metric_suffix",
         "tests/test_doctor_secret_scan.py::test_doctor_detects_sensitive_token_prefix_with_metric_suffix",
-        "tests/test_relation_queue_liveness.py::test_relation_queue_rolls_back_when_corpus_changes_after_receipt_commit",
-        "tests/test_relation_queue_liveness.py::test_expired_relation_leases_dead_letter_and_yield_to_later_work",
-        "tests/test_relation_queue_liveness.py::test_successful_relation_chunk_resets_current_pass_expiry_budget",
-        "tests/test_relation_queue_liveness.py::test_expired_relation_lease_budget_promotes_newer_revision",
+        "tests/test_relation_containment.py::test_new_corpus_revision_supersedes_blocked_focus_target",
+        "tests/test_relation_containment.py::test_new_generation_supersedes_terminal_frequency_failure",
+        "tests/test_relation_containment.py::test_frequency_poison_terminally_blocks_dependent_focus_work",
+        "tests/test_relation_frequency_incremental.py::test_relation_frequency_poison_row_does_not_block_healthy_rows",
         "tests/test_schema_migrations.py::test_relation_lease_expiry_budget_migration_upgrades_pre_0010_in_place"
+      ]
+    },
+    {
+      "id": "program0-g0-stabilization-contracts",
+      "nodes": [
+        "tests/test_relation_containment.py::test_frequency_snapshot_is_zero_write_even_on_writable_connection",
+        "tests/test_relation_containment.py::test_scope_move_deletes_generated_cross_scope_edge_before_ready",
+        "tests/test_relation_cleanup.py::test_cleanup_apply_is_backup_first_committed_and_idempotently_replayed",
+        "tests/test_relation_cleanup.py::test_cleanup_does_not_restore_ready_while_focus_work_remains",
+        "tests/test_relation_cleanup.py::test_cleanup_revalidates_truth_identity_after_acquiring_lease",
+        "tests/test_relation_cleanup.py::test_cleanup_refuses_windows_junction_backup_namespace",
+        "tests/test_relation_rebuild_retirement.py::test_every_legacy_execution_surface_is_a_zero_write_refusal",
+        "tests/test_release.py::test_release_gate_proves_retired_relation_rebuild_has_no_worker_body",
+        "tests/test_vector_status_contract.py::test_vector_state_boolean_matrix",
+        "tests/test_vector_status_contract.py::test_public_pending_never_remains_ready",
+        "tests/test_repository_census.py::test_repository_census_is_deterministic_complete_and_local_safe",
+        "tests/test_release.py::test_release_cleanup_preserves_repo_local_environments"
       ]
     },
     {
@@ -205,6 +222,7 @@
         "tests/test_storage_views.py::test_search_db_memories_respects_limit_after_final_scoring",
         "tests/test_storage_views.py::test_search_vector_memories_respects_requested_limit",
         "tests/test_lexical_benchmark.py::test_lexical_cjk_benchmark_reports_quality_latency_and_growth",
+        "tests/test_lexical_benchmark.py::test_lexical_latency_contract_uses_target_derived_floor_on_fast_hosts",
         "tests/test_doctor_lexical_generation.py::test_doctor_reports_healthy_active_generation_without_writes",
         "tests/test_doctor_lexical_generation.py::test_doctor_fails_when_active_shadow_integrity_drifts",
         "tests/test_lexical_cjk_retrieval.py::test_shadow_rows_use_truth_rowid_identity",
@@ -254,6 +272,7 @@
         "tests/test_sqlite_backup.py::test_sqlite_backup_receipt_rejects_nonboolean_logical_equivalent",
         "tests/test_sqlite_backup.py::test_sqlite_backup_module_is_activation_boundary_not_startup_import",
         "tests/test_release.py::test_release_lexical_v2_absolute_shadow_p95_target_miss_is_not_hard_gate",
+        "tests/test_release.py::test_release_lexical_v2_accepts_target_bounded_fast_host_payload",
         "tests/test_release.py::test_windows_lane_remains_a_release_gate"
       ]
     }

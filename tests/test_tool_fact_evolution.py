@@ -332,7 +332,7 @@ def test_legacy_merge_fails_closed_when_any_memory_owns_a_fact(provider):
     )
 
 
-def test_legacy_hard_delete_fails_closed_for_fact_owned_memory(provider):
+def test_fact_owned_hard_delete_block_reports_no_mutation_and_retained_data(provider):
     memory_id = _seed_current_fact(provider)
     provider._config["maintenance_tools_enabled"] = True
 
@@ -350,6 +350,11 @@ def test_legacy_hard_delete_fails_closed_for_fact_owned_memory(provider):
     assert payload["deleted"] == 0
     assert payload["blocked_fact_ids"] == [memory_id]
     assert "structured fact evolution" in payload["error"].lower()
+    assert payload["mode"] == "hard_delete"
+    assert payload["data_retained"] is True
+    assert payload["reversible"] is False
+    assert payload["privacy_purge"] is False
+    assert payload["mutation_applied"] is False
     assert _fact_state(provider, memory_id) == (
         "Asha lives in Mumbai.",
         "Mumbai",

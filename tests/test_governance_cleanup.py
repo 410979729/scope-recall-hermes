@@ -306,6 +306,7 @@ def test_scope_recall_forget_archive_batch_is_default_rollback_candidate():
     _insert(conn, memory_id="forgotten", content="User asked to forget this exact memory id.")
 
     class Provider:
+        _truth_writer_role = "owner"
         _vector_store = None
         _vector_enabled = False
         _vector_status = "disabled"

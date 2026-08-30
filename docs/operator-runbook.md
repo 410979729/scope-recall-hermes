@@ -126,7 +126,7 @@ Expected healthy state:
 - `ok: true` in doctor.
 - dashboard `schema_version: dashboard_report.v1`.
 - no journal backlog above configured thresholds.
-- vector status is ready or intentionally disabled.
+- vector `state` is `ready` or intentionally `disabled`; a `degraded` state must be auto-recoverable with a reviewed reason.
 - memory secret scan reports no active plaintext-like secret rows.
 
 ## journal backlog drain
@@ -341,6 +341,15 @@ hermes-scope-recall lexical rollback \
 
 ## vector repair
 
+Vector health has exactly four public states:
+
+- `ready`: companion queries are usable and no repair is required.
+- `degraded`: automatic recovery is expected; inspect `reason_code` and `debt_counts`. Retryable outbox debt may still use a safe live companion.
+- `needs_repair`: automatic recovery is not trusted; inspect Doctor and take the explicit operator action. Dead-letter debt is never silently reactivated.
+- `disabled`: the configured runtime intentionally does not use a vector companion.
+
+Automation should use `state`, `reason_code`, `auto_recoverable`, `repair_required`, `usable_for_query`, and `debt_counts`, not parse `message`. A fresh `pending` event inside one normal replay cycle does not by itself flap the top-level state; observable retry/backlog age moves it to `degraded`.
+
 Vector repair must fail closed when the configured primary embedder is unavailable. Inspect first:
 
 ```bash
@@ -370,6 +379,40 @@ python scripts/requeue.vector_dead_letter.py \
 ```
 
 The command keeps terminal rows fail-closed until an operator proves the dependency is repaired. Apply requires exact event ids or one generation, `--maintenance-confirmed`, a unique operation id, and a specific reason; it creates a verified SQLite backup and mirrored receipt before normal replay resumes.
+
+## retired relation work cleanup
+
+Program 0 retires every executable full-scope relation rebuild path. Legacy queue rows remain readable evidence and are never claimed or drained automatically. Doctor reports unresolved legacy rows as operator action rather than allowing them to create background fan-out.
+
+First stop the profile writer under the normal maintenance procedure, then plan only the exact scopes and statuses intended for cleanup:
+
+```bash
+python scripts/repair.relation_queue.py \
+  --hermes-home "$HERMES_HOME" \
+  --scope-id "scope-to-clean" \
+  --queue-status pending \
+  --queue-status retry \
+  --dry-run --json
+```
+
+Review `plan_sha256`, selected counts, target revision, and the content-free selector summary. Apply the same plan with a stable operation id and specific reason:
+
+```bash
+python scripts/repair.relation_queue.py \
+  --hermes-home "$HERMES_HOME" \
+  --scope-id "scope-to-clean" \
+  --queue-status pending \
+  --queue-status retry \
+  --expected-target-revision "$TARGET_REVISION" \
+  --expected-plan-sha256 "<reviewed-plan-sha256>" \
+  --terminal-state cancelled \
+  --apply --maintenance-confirmed \
+  --operation-id "relation-cleanup-YYYYMMDD-01" \
+  --reason "Retire reviewed legacy relation queue debt" \
+  --json
+```
+
+Apply revalidates the exact database identity and selector state after acquiring the maintenance lease, creates and verifies a SQLite backup before mutation, records old revisions as `cancelled` or `superseded` rather than fake completion, commits one authoritative operator ledger row, and mirrors a receipt. Reusing the same operation id with the same fingerprint is an idempotent replay; any changed fingerprint, target revision, plan hash, database identity, or row set is refused. Do not broaden selectors to work around a refusal.
 
 Legacy stores may have active memories without `fact_freshness` rows. Inventory the full bounded cohort before changing it:
 

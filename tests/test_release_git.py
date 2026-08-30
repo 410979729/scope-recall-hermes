@@ -38,14 +38,11 @@ def _instance_candidate(tmp_path: Path) -> tuple[Path, Path]:
 def _write_posix_git_stub(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        "#!/usr/bin/env python3\n"
-        "import sys\n"
-        "if sys.argv[1:2] == ['--version']:\n"
-        "    sys.stdout.write('git version 2.45.0\\n')\n"
-        "    raise SystemExit(0)\n"
-        "if sys.argv[1:3] == ['status', '--porcelain=v1']:\n"
-        "    raise SystemExit(0)\n"
-        "raise SystemExit(0)\n",
+        "#!/bin/sh\n"
+        "if [ \"$1\" = \"--version\" ]; then\n"
+        "    printf '%s\\n' 'git version 2.45.0'\n"
+        "fi\n"
+        "exit 0\n",
         encoding="utf-8",
     )
     path.chmod(path.stat().st_mode | stat.S_IEXEC)

@@ -20,11 +20,18 @@ try:
     )
     from .relation_frequency_index import (
         RelationFrequencyIndexNotReady,
-        bounded_relation_peer_ids,
+        relation_frequency_scope_failure_status,
         relation_frequency_snapshot,
         relation_frequency_snapshots_by_scope,
     )
-    from .relation_rebuild_queue import enqueue_relation_rebuild, resolve_relation_rebuild
+    from .relation_containment import (
+        complete_relation_focus_work,
+        confirm_relation_scope_focus_generation,
+        load_relation_focus_work,
+        mark_relation_scope_degraded,
+        plan_focus_relation_pairs,
+        relation_focus_scope_has_debt,
+    )
     from .scoring import semantic_similarity
     from .sql_store import now_iso
 except ImportError:  # pragma: no cover - direct source-script execution fallback
@@ -37,11 +44,18 @@ except ImportError:  # pragma: no cover - direct source-script execution fallbac
     )
     from relation_frequency_index import (  # type: ignore[no-redef]
         RelationFrequencyIndexNotReady,
-        bounded_relation_peer_ids,
+        relation_frequency_scope_failure_status,
         relation_frequency_snapshot,
         relation_frequency_snapshots_by_scope,
     )
-    from relation_rebuild_queue import enqueue_relation_rebuild, resolve_relation_rebuild
+    from relation_containment import (  # type: ignore[no-redef]
+        complete_relation_focus_work,
+        confirm_relation_scope_focus_generation,
+        load_relation_focus_work,
+        mark_relation_scope_degraded,
+        plan_focus_relation_pairs,
+        relation_focus_scope_has_debt,
+    )
     from scoring import semantic_similarity
     from sql_store import now_iso
 
@@ -456,7 +470,11 @@ def _supersedes(
     *,
     blocked_entities: set[str] | None = None,
 ) -> tuple[bool, float, str]:
-    if newer["id"] == older["id"]:
+    if (
+        newer["id"] == older["id"]
+        or newer["scope_id"] != older["scope_id"]
+        or newer["target"] != older["target"]
+    ):
         return False, 0.0, ""
     if newer["updated_at"] < older["updated_at"]:
         return False, 0.0, ""
@@ -832,6 +850,8 @@ def _relation_candidate_scan(
                 yield rows[pair_index[0]], rows[pair_index[1]]
 
     for left, right in iter_pairs():
+        if left["scope_id"] != right["scope_id"]:
+            continue
         compared += 1
         if compared > pair_budget:
             budget_exceeded = True
@@ -920,6 +940,7 @@ def rebuild_extracted_relations(
     max_candidates: int = 0,
     commit: bool = True,
     blocked_entities: set[str] | None = None,
+    preplanned_cleanup_pairs: Iterable[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Rebuild extracted relation companion rows from current SQLite memories.
 
@@ -931,6 +952,11 @@ def rebuild_extracted_relations(
         focus_memory_ids=focus_memory_ids,
         max_pairs=max_pairs,
         blocked_entities=blocked_entities,
+    )
+    compared_pairs.update(
+        _pair_key(left_id, right_id)
+        for left_id, right_id in (preplanned_cleanup_pairs or [])
+        if str(left_id) and str(right_id) and str(left_id) != str(right_id)
     )
     candidate_cap = max(0, int(max_candidates or 0))
     if budget_exceeded:
@@ -981,24 +1007,37 @@ def rebuild_extracted_relations(
         }
     now = now_iso()
     note_prefix = f"relation-extraction:{batch_id}"
-    deleted = _delete_generated_relation_edges_for_pairs(conn, compared_pairs)
-    before_insert = conn.total_changes
-    for item in candidates:
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO memory_relations(source_memory_id, target_memory_id, relation_type, confidence, note, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                item["source_memory_id"],
-                item["target_memory_id"],
-                item["relation_type"],
-                item["confidence"],
-                f"{note_prefix}; {item['note']}",
-                now,
-            ),
-        )
-    inserted = conn.total_changes - before_insert
+    savepoint = "relation_extraction_apply"
+    started_transaction = not conn.in_transaction
+    if started_transaction:
+        conn.execute("BEGIN")
+    conn.execute(f"SAVEPOINT {savepoint}")
+    try:
+        deleted = _delete_generated_relation_edges_for_pairs(conn, compared_pairs)
+        before_insert = conn.total_changes
+        for item in candidates:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO memory_relations(source_memory_id, target_memory_id, relation_type, confidence, note, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item["source_memory_id"],
+                    item["target_memory_id"],
+                    item["relation_type"],
+                    item["confidence"],
+                    f"{note_prefix}; {item['note']}",
+                    now,
+                ),
+            )
+        inserted = conn.total_changes - before_insert
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+    except Exception:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        if started_transaction:
+            conn.rollback()
+        raise
     if commit:
         conn.commit()
     return {
@@ -1013,29 +1052,6 @@ def rebuild_extracted_relations(
     }
 
 
-def _bounded_focus_peer_ids(
-    conn: sqlite3.Connection,
-    *,
-    memory_id: str,
-    scope_ids: Iterable[str],
-    blocked_entities: set[str],
-    limit: int,
-) -> tuple[list[str], int]:
-    """Choose posting-list peers plus bounded recent fallback without a scope scan."""
-
-    peer_ids, has_more = bounded_relation_peer_ids(
-        conn,
-        memory_id=memory_id,
-        scope_ids=scope_ids,
-        blocked_entities=blocked_entities,
-        limit=limit,
-    )
-    # Preserve the historical integer shape without issuing COUNT(*).  Callers
-    # only need to know whether deferred debt remains, so one sentinel peer is
-    # sufficient when the bounded selector proves another row exists.
-    return peer_ids, len(peer_ids) + int(has_more)
-
-
 def sync_extracted_relations_for_memory(
     conn: sqlite3.Connection,
     *,
@@ -1046,7 +1062,7 @@ def sync_extracted_relations_for_memory(
     local_peer_limit: int | None = None,
     commit: bool = True,
 ) -> dict[str, Any]:
-    """Refresh a bounded focus neighbourhood and durably queue the remainder."""
+    """Refresh a complete cap-bounded focus neighbourhood or fail closed."""
 
     memory_id = str(memory_id or "")
     if not memory_id:
@@ -1057,54 +1073,161 @@ def sync_extracted_relations_for_memory(
             "inserted": 0,
             "error": "missing memory_id",
         }
-    scopes = _clean_scope_ids(scope_ids)
+    del scope_ids  # durable work scopes are derived from indexed truth
+    focus_work = load_relation_focus_work(conn, memory_id)
     new_row = conn.execute(
-        "SELECT scope_id, updated_at FROM memories WHERE id = ?", (memory_id,)
+        "SELECT scope_id FROM memories WHERE id = ?", (memory_id,)
     ).fetchone()
-    if new_row is None:
+    if new_row is None and focus_work is None:
         return {
             "ok": False,
             "dry_run": False,
             "candidate_count": 0,
             "inserted": 0,
-            "error": "memory_id not found",
+            "error": "memory_id not found and no durable focus work exists",
         }
-    row_scope_id = str(new_row[0] or "")
-    requested_updated_at = str(new_row[1] or "")
+    row_scope_id = str(new_row[0] or "") if new_row is not None else ""
+    work_scopes = list(focus_work["scope_ids"]) if focus_work is not None else []
+    if row_scope_id:
+        work_scopes = sorted(set(work_scopes) | {row_scope_id})
+    if not work_scopes:
+        return {
+            "ok": False,
+            "dry_run": False,
+            "candidate_count": 0,
+            "inserted": 0,
+            "error": "focus work has no durable scope",
+        }
     # Generated relation policy is scope-owned.  Accessible scopes may include
     # shared pools, but one focus mutation must only compare peers in its own
     # durable scope.
-    scopes = [row_scope_id]
-    snapshot = relation_frequency_snapshot(conn, row_scope_id)
-    if snapshot is None:
-        deferred_reason = "relation frequency index backfill or repair is pending"
-        enqueue_relation_rebuild(
-            conn,
-            scope_id=row_scope_id,
-            focus_memory_id=memory_id,
-            requested_updated_at=requested_updated_at,
-            reason=deferred_reason,
-            commit=False,
+    scopes = [row_scope_id] if row_scope_id else []
+    snapshots = {
+        scope: relation_frequency_snapshot(conn, scope) for scope in work_scopes
+    }
+    if any(snapshot is None for snapshot in snapshots.values()):
+        failure_states = {
+            scope: relation_frequency_scope_failure_status(conn, scope)
+            for scope, snapshot in snapshots.items()
+            if snapshot is None
+        }
+        poisoned_scopes = {
+            scope
+            for scope, failure_state in failure_states.items()
+            if failure_state == "dead_letter"
+        }
+        blocked = bool(poisoned_scopes)
+        deferred_reason = (
+            "frequency_maintenance_poisoned"
+            if blocked
+            else "relation frequency index backfill or repair is pending"
         )
+        for scope, snapshot in snapshots.items():
+            if snapshot is None:
+                mark_relation_scope_degraded(
+                    conn,
+                    scope_id=scope,
+                    reason_code=(
+                        "frequency_maintenance_poisoned"
+                        if scope in poisoned_scopes
+                        else "frequency_receipt_stale"
+                    ),
+                    operator_action_required=scope in poisoned_scopes,
+                )
         if commit:
             conn.commit()
         return {
             "ok": True,
             "dry_run": False,
-            "blocked": False,
-            "status": "synced_deferred",
-            "immediate_status": "index_pending",
+            "blocked": blocked,
+            "status": "degraded" if blocked else "synced_deferred",
+            "immediate_status": (
+                "frequency_maintenance_poisoned" if blocked else "index_pending"
+            ),
             "candidate_count": 0,
             "inserted": 0,
             "deleted": 0,
-            "deferred": True,
+            "deferred": not blocked,
             "deferred_reason": deferred_reason,
-            "full_rebuild_required": True,
+            "full_rebuild_required": False,
             "total_peer_count": 0,
             "selected_peer_count": 0,
             "compared_pairs": 0,
         }
-    blocked_entities = set(snapshot["blocked_entities"])
+    current_snapshot = snapshots.get(row_scope_id) if row_scope_id else None
+    blocked_entities = (
+        set(current_snapshot["blocked_entities"])
+        if current_snapshot is not None
+        else set()
+    )
+    snapshot_revision = (
+        int(current_snapshot.get("corpus_revision") or 0)
+        if current_snapshot is not None
+        else 0
+    )
+    generations: dict[str, sqlite3.Row | tuple[Any, ...] | None] = {}
+    generation_pending = False
+    generation_blocked = False
+    generation_reason = ""
+    for scope, snapshot in snapshots.items():
+        assert snapshot is not None
+        generation = conn.execute(
+            """
+            SELECT state, reason_code, active_revision, target_revision
+            FROM relation_scope_containment WHERE scope_id=?
+            """,
+            (scope,),
+        ).fetchone()
+        generations[scope] = generation
+        revision = int(snapshot.get("corpus_revision") or 0)
+        ready = bool(
+            generation
+            and (
+                (
+                    str(generation[0]) == "ready"
+                    and int(generation[2] or 0)
+                    == int(generation[3] or 0)
+                    == revision
+                )
+                or (
+                    str(generation[0]) == "degraded"
+                    and str(generation[1] or "") == "focus_relation_sync_pending"
+                    and int(generation[3] or 0) == revision
+                )
+            )
+        )
+        if not ready:
+            generation_pending = True
+            generation_blocked = generation_blocked or bool(
+                generation and str(generation[0]) in {"blocked", "disabled"}
+            )
+            if not generation_reason:
+                generation_reason = (
+                    str(generation[1] or "relation_generation_pending")
+                    if generation
+                    else "containment_state_missing"
+                )
+    if generation_pending:
+        if commit:
+            conn.commit()
+        return {
+            "ok": True,
+            "dry_run": False,
+            "blocked": generation_blocked,
+            "status": "synced_deferred",
+            "immediate_status": "relation_generation_pending",
+            "candidate_count": 0,
+            "inserted": 0,
+            "deleted": 0,
+            "deferred": True,
+            "deferred_reason": (
+                generation_reason or "relation_generation_pending"
+            ),
+            "full_rebuild_required": False,
+            "total_peer_count": 0,
+            "selected_peer_count": 0,
+            "compared_pairs": 0,
+        }
     worker_budget = max(1, min(int(max_pairs or 1000), 5000))
     bounded_pairs = max(
         1,
@@ -1113,49 +1236,117 @@ def sync_extracted_relations_for_memory(
             int(local_peer_limit) if local_peer_limit is not None else worker_budget,
         ),
     )
-    peer_ids, total_peer_count = _bounded_focus_peer_ids(
+    plan_scope = row_scope_id or work_scopes[0]
+    plan = plan_focus_relation_pairs(
         conn,
+        scope_id=plan_scope,
         memory_id=memory_id,
-        scope_ids=scopes,
         blocked_entities=blocked_entities,
-        limit=bounded_pairs,
+        candidate_cap=bounded_pairs,
+        target_revision=snapshot_revision,
     )
+    if plan.blocked:
+        for scope, snapshot in snapshots.items():
+            assert snapshot is not None
+            mark_relation_scope_degraded(
+                conn,
+                scope_id=scope,
+                reason_code=plan.reason_code,
+                target_revision=int(snapshot.get("corpus_revision") or 0),
+                candidate_cap=bounded_pairs,
+                affected_count=plan.affected_count,
+                operator_action_required=True,
+            )
+        if commit:
+            conn.commit()
+        return {
+            "ok": True,
+            "dry_run": False,
+            "blocked": True,
+            "status": "degraded",
+            "immediate_status": "candidate_cap_exceeded",
+            "candidate_count": 0,
+            "inserted": 0,
+            "deleted": 0,
+            "deferred": False,
+            "deferred_reason": plan.reason_code,
+            "full_rebuild_required": False,
+            "total_peer_count": plan.affected_count,
+            "selected_peer_count": 0,
+            "compared_pairs": 0,
+        }
+    peer_ids = sorted(
+        right if left == memory_id else left for left, right in plan.pairs
+    )
+    if not conn.in_transaction:
+        conn.execute("BEGIN")
+    generation_savepoint = "relation_focus_generation_apply"
+    conn.execute(f"SAVEPOINT {generation_savepoint}")
     immediate = rebuild_extracted_relations(
         conn,
         scope_ids=scopes,
         memory_ids=[memory_id, *peer_ids],
         dry_run=False,
         batch_id=batch_id,
-        max_pairs=bounded_pairs,
+        max_pairs=max(1, len(peer_ids)),
         focus_memory_ids=[memory_id],
         max_candidates=_SYNC_MAX_CANDIDATES,
         commit=False,
         blocked_entities=blocked_entities,
+        preplanned_cleanup_pairs=plan.pairs,
     )
     immediate_ok = bool(immediate.get("ok"))
-    deferred = total_peer_count > len(peer_ids) or not immediate_ok
-    deferred_reason = ""
-    if deferred:
-        deferred_reason = str(
-            immediate.get("error")
-            or f"unscanned peers remain: {total_peer_count - len(peer_ids)}"
-        )
-        enqueue_relation_rebuild(
-            conn,
-            scope_id=row_scope_id,
-            focus_memory_id=memory_id,
-            requested_updated_at=requested_updated_at,
-            reason=deferred_reason,
-            commit=False,
-        )
+    generation_cas_miss = False
+    if immediate_ok:
+        if focus_work is not None:
+            immediate_ok = complete_relation_focus_work(
+                conn,
+                memory_id=memory_id,
+                work_generation=int(focus_work["work_generation"]),
+            )
+        if immediate_ok:
+            for scope, snapshot in snapshots.items():
+                assert snapshot is not None
+                if relation_focus_scope_has_debt(conn, scope):
+                    continue
+                immediate_ok = confirm_relation_scope_focus_generation(
+                    conn,
+                    scope_id=scope,
+                    revision=int(snapshot.get("corpus_revision") or 0),
+                    blocked_entities=set(snapshot["blocked_entities"]),
+                    affected_count=len(plan.pairs),
+                )
+                if not immediate_ok:
+                    break
+        if not immediate_ok:
+            generation_cas_miss = True
+            immediate = {
+                "ok": False,
+                "status": "generation_cas_miss",
+                "error": "relation focus generation changed before confirmation",
+                "candidate_count": 0,
+                "inserted": 0,
+                "deleted": 0,
+                "compared_pair_count": 0,
+            }
+    if immediate_ok:
+        conn.execute(f"RELEASE SAVEPOINT {generation_savepoint}")
     else:
-        resolve_relation_rebuild(
-            conn,
-            scope_id=row_scope_id,
-            focus_memory_id=memory_id,
-            requested_updated_at=requested_updated_at,
-            commit=False,
-        )
+        conn.execute(f"ROLLBACK TO SAVEPOINT {generation_savepoint}")
+        conn.execute(f"RELEASE SAVEPOINT {generation_savepoint}")
+    deferred_reason = str(immediate.get("error") or "") if not immediate_ok else ""
+    if not immediate_ok and not generation_cas_miss:
+        for scope, snapshot in snapshots.items():
+            assert snapshot is not None
+            mark_relation_scope_degraded(
+                conn,
+                scope_id=scope,
+                reason_code="relation_candidate_cap_exceeded",
+                target_revision=int(snapshot.get("corpus_revision") or 0),
+                candidate_cap=bounded_pairs,
+                affected_count=plan.affected_count,
+                operator_action_required=True,
+            )
     if commit:
         conn.commit()
     payload = dict(immediate)
@@ -1163,12 +1354,16 @@ def sync_extracted_relations_for_memory(
     payload.update(
         {
             "ok": True,
-            "blocked": False,
-            "status": "synced_deferred" if deferred else "synced",
-            "deferred": deferred,
+            "blocked": not immediate_ok and not generation_cas_miss,
+            "status": (
+                "synced_deferred"
+                if generation_cas_miss
+                else ("degraded" if not immediate_ok else "synced")
+            ),
+            "deferred": generation_cas_miss,
             "deferred_reason": deferred_reason,
-            "full_rebuild_required": deferred,
-            "total_peer_count": total_peer_count,
+            "full_rebuild_required": False,
+            "total_peer_count": len(peer_ids),
             "selected_peer_count": len(peer_ids),
             "compared_pairs": int(immediate.get("compared_pair_count") or 0),
         }

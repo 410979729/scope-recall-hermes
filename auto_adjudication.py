@@ -62,6 +62,10 @@ from .adjudication_schedule import (
     schedule_target_id,
 )
 from .capture_filters import sanitize_report_text
+from .lifecycle_registry import (
+    AUTO_ADJUDICATION_ARCHIVE,
+    AUTO_ADJUDICATION_PROMOTE,
+)
 from .lifecycle_service import LifecycleConflictError, transition_memory_lifecycle
 from .maintenance_ops import connect_memory_db, memory_db_path
 from .sql_store import ensure_governance_schema
@@ -136,8 +140,10 @@ def _transition(
             expected_lifecycle=str(metadata_before.get("lifecycle") or "candidate"),
             actor="auto_adjudication",
             reason=reason,
-            event_type="memory_auto_adjudication",
-            action=action,
+            operation_id={
+                "archive": AUTO_ADJUDICATION_ARCHIVE,
+                "promote": AUTO_ADJUDICATION_PROMOTE,
+            }[action],
             batch_id=batch_id,
             timestamp=at,
         )

@@ -11,9 +11,14 @@ import pytest
 from scope_recall.experience_models import ExperienceValidationError, validate_procedural_playbook
 from scope_recall.lexical_generation import LEXICAL_MIGRATION_ID
 from scope_recall.operator_ledger import OPERATOR_LEDGER_MIGRATION_ID
+from scope_recall.privacy_purge_schema import PRIVACY_PURGE_MIGRATION_ID
+from scope_recall.relation_containment import RELATION_CONTAINMENT_MIGRATION_ID
 from scope_recall.relation_frequency_index import (
     RELATION_FREQUENCY_FAILURE_MIGRATION_ID,
     RELATION_FREQUENCY_INDEX_MIGRATION_ID,
+)
+from scope_recall.relation_policy_generation import (
+    RELATION_POLICY_GENERATION_MIGRATION_ID,
 )
 from scope_recall.relation_rebuild_queue import (
     RELATION_REBUILD_EXPIRY_MIGRATION_ID,
@@ -83,6 +88,9 @@ def test_ensure_schema_creates_experience_tables_idempotently():
         RELATION_REBUILD_EXPIRY_MIGRATION_ID,
         RELATION_FREQUENCY_FAILURE_MIGRATION_ID,
         LEXICAL_MIGRATION_ID,
+        RELATION_CONTAINMENT_MIGRATION_ID,
+        RELATION_POLICY_GENERATION_MIGRATION_ID,
+        PRIVACY_PURGE_MIGRATION_ID,
     ]
     migration = status["applied_migrations"][0]
     assert migration["plugin_version"] == "1.6.0"
@@ -158,6 +166,9 @@ def test_ensure_schema_fails_closed_for_newer_user_version():
         RELATION_REBUILD_EXPIRY_MIGRATION_ID,
         RELATION_FREQUENCY_FAILURE_MIGRATION_ID,
         LEXICAL_MIGRATION_ID,
+        RELATION_CONTAINMENT_MIGRATION_ID,
+        RELATION_POLICY_GENERATION_MIGRATION_ID,
+        PRIVACY_PURGE_MIGRATION_ID,
     ]
 
 

@@ -99,7 +99,7 @@ def test_capture_store_now_rejects_reader_before_store_row(monkeypatch):
     assert provider._conn_requested is False
 
 
-def test_idle_relation_maintenance_rejects_reader_before_debt_probe(monkeypatch):
+def test_idle_relation_maintenance_rejects_reader_before_bounded_drain(monkeypatch):
     provider = _ReaderCaptureProvider()
     probed = {"count": 0}
 
@@ -107,8 +107,7 @@ def test_idle_relation_maintenance_rejects_reader_before_debt_probe(monkeypatch)
         probed["count"] += 1
         return False
 
-    monkeypatch.setattr(capture_module, "relation_frequency_debt_exists", mark)
-    monkeypatch.setattr(capture_module, "relation_rebuild_debt_exists", mark)
+    monkeypatch.setattr(capture_module, "drain_relation_frequency_work", mark)
     _drain_relation_rebuild_debt(provider)
     assert probed["count"] == 0
     assert provider._conn_requested is False

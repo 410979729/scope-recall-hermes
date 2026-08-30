@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
-from typing import Any, Mapping
+from contextlib import ExitStack, contextmanager, nullcontext
+from typing import Any, Iterator, Mapping, Sequence
 
-from .ports import FactToolPort, MemoryCommandPort, ToolRuntimePort
+from ...fact_actions import EvolutionProposal, EvolutionResult
+from ..application.memory_queries import MemoryQueryApplication
+from .ports import FactMemoryRow, FactTargetRow, FactToolPort, MemoryCommandPort
+from .provider_compat_hosts import LegacyProviderToolHost
 
 
 def _call(host: Any, name: str, *args: Any, **kwargs: Any) -> Any:
@@ -29,6 +32,11 @@ def _assembled_command_port(host: Any) -> MemoryCommandPort | None:
     return getattr(composition, "command_port", None) if composition is not None else None
 
 
+def _assembled_query_port(host: Any) -> MemoryQueryApplication | None:
+    composition = getattr(host, "_composition", None)
+    return getattr(composition, "query_port", None) if composition is not None else None
+
+
 class ProviderToolRuntimeAdapter:
     """Central compat face over the current Provider. D2 may replace the thin doors.
 
@@ -38,9 +46,16 @@ class ProviderToolRuntimeAdapter:
     wrapper so ``store_now`` / ``_store_now`` hooks still intercept.
     """
 
-    def __init__(self, host: Any, *, command_port: MemoryCommandPort | None = None) -> None:
+    def __init__(
+        self,
+        host: LegacyProviderToolHost,
+        *,
+        command_port: MemoryCommandPort | None = None,
+        query_port: MemoryQueryApplication | None = None,
+    ) -> None:
         self._host = host
         self._bound_command_port = command_port
+        self._bound_query_port = query_port
 
     def _resolve_command_port(self) -> MemoryCommandPort:
         if self._bound_command_port is not None:
@@ -56,6 +71,16 @@ class ProviderToolRuntimeAdapter:
         from .kernel import COMMAND_KERNEL
 
         return COMMAND_KERNEL
+
+    def _resolve_query_port(self) -> MemoryQueryApplication | None:
+        if self._bound_query_port is not None:
+            return self._bound_query_port
+        return _assembled_query_port(self._host)
+
+    def _query_kernel(self) -> Any:
+        from .kernel import KERNEL
+
+        return KERNEL
 
     def query_connection(self) -> Any:
         fn = getattr(self._host, "query_connection", None)
@@ -148,6 +173,138 @@ class ProviderToolRuntimeAdapter:
         raw = getattr(self._host, "_config", {})
         return dict(raw) if isinstance(raw, Mapping) else {}
 
+    def fact_memory_row(
+        self, memory_id: str, writable_scope_ids: Sequence[str]
+    ) -> FactMemoryRow | None:
+        writable = [str(item).strip() for item in writable_scope_ids if str(item).strip()]
+        if not writable:
+            return None
+        placeholders = ",".join("?" for _ in writable)
+        with self.query_lock():
+            row = self.query_connection().execute(
+                "SELECT id, source, target, scope_id, metadata FROM memories "
+                f"WHERE id = ? AND scope_id IN ({placeholders})",
+                (memory_id, *writable),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": str(row["id"] or ""),
+            "source": str(row["source"] or ""),
+            "target": str(row["target"] or ""),
+            "scope_id": str(row["scope_id"] or ""),
+            "metadata": row["metadata"],
+        }
+
+    def fact_target_rows(
+        self, target_ids: Sequence[str], writable_scope_ids: Sequence[str]
+    ) -> list[FactTargetRow]:
+        targets = [str(item).strip() for item in target_ids if str(item).strip()]
+        writable = [str(item).strip() for item in writable_scope_ids if str(item).strip()]
+        if not targets or not writable:
+            return []
+        id_placeholders = ",".join("?" for _ in targets)
+        scope_placeholders = ",".join("?" for _ in writable)
+        with self.query_lock():
+            rows = self.query_connection().execute(
+                "SELECT id, scope_id, target, source FROM memories "
+                f"WHERE id IN ({id_placeholders}) "
+                f"AND scope_id IN ({scope_placeholders})",
+                (*targets, *writable),
+            ).fetchall()
+        return [
+            {
+                "id": str(row["id"] or ""),
+                "scope_id": str(row["scope_id"] or ""),
+                "target": str(row["target"] or ""),
+                "source": str(row["source"] or ""),
+            }
+            for row in rows
+        ]
+
+    def fact_memory_updated_at(self, memory_id: str) -> str:
+        with self.query_lock():
+            row = self.query_connection().execute(
+                "SELECT updated_at FROM memories WHERE id = ?",
+                (memory_id,),
+            ).fetchone()
+        return str(row["updated_at"] or "") if row is not None else ""
+
+    def fact_pipeline_receipt_exists(
+        self,
+        *,
+        lane: str,
+        run_id: str,
+        source_key: str,
+        scope_id: str,
+    ) -> bool:
+        from ...fact_evolution import pipeline_receipt_exists
+
+        with self.query_lock():
+            return pipeline_receipt_exists(
+                self.query_connection(),
+                lane=lane,
+                run_id=run_id,
+                source_key=source_key,
+                scope_id=scope_id,
+            )
+
+    def execute_fact_proposal(
+        self,
+        *,
+        proposal: EvolutionProposal,
+        lane: str,
+        run_id: str,
+        source_key: str,
+        trusted_scope_id: str,
+        writable_scope_ids: Sequence[str],
+        actor: str,
+        source: str,
+        target: str,
+        content: str,
+        metadata: Mapping[str, object],
+        dry_run: bool,
+        provenance_refs: Sequence[Mapping[str, object]],
+    ) -> EvolutionResult:
+        from ...fact_evolution import execute_pipeline_proposal
+        from ...write_kernel import command_write_access
+
+        scope = self.scope_object()
+        admission = (
+            nullcontext()
+            if dry_run
+            else command_write_access(self._host, user_initiated=True)
+        )
+        with admission:
+            with self.query_lock():
+                return execute_pipeline_proposal(
+                    self.query_connection(),
+                    proposal=proposal,
+                    lane=lane,
+                    run_id=run_id,
+                    source_key=source_key,
+                    trusted_scope_id=trusted_scope_id,
+                    writable_scope_ids=writable_scope_ids,
+                    actor=actor,
+                    source=source,
+                    target=target,
+                    content=content,
+                    metadata=metadata,
+                    runtime_config=self.config_view(),
+                    dry_run=dry_run,
+                    provenance_refs=provenance_refs,
+                    session_id=self.session_id(),
+                    platform=str(getattr(scope, "platform", "") or ""),
+                    user_id=str(getattr(scope, "user_id", "") or ""),
+                    chat_id=str(getattr(scope, "chat_id", "") or ""),
+                    thread_id=str(getattr(scope, "thread_id", "") or ""),
+                    gateway_session_key=str(
+                        getattr(scope, "gateway_session_key", "") or ""
+                    ),
+                    agent_identity=str(getattr(scope, "agent_identity", "") or ""),
+                    agent_workspace=str(getattr(scope, "agent_workspace", "") or ""),
+                )
+
     def shared_pool_enabled(self) -> bool:
         return bool(getattr(self._host, "_shared_pool_enabled", False))
 
@@ -173,15 +330,30 @@ class ProviderToolRuntimeAdapter:
     def vector_store_view(self) -> Any:
         return getattr(self._host, "_vector_store", None)
 
-    def writer_lifecycle_lock(self) -> Any:
-        from ...write_kernel import _writer_lifecycle_lock
+    @contextmanager
+    def write_access(self, *, capture_barrier: bool) -> Iterator[bool]:
+        """Use the same reentrant command boundary as direct provider calls."""
 
-        return _writer_lifecycle_lock(self._host)
+        from ...write_kernel import (
+            WRITE_AUTHORITY_BUSY,
+            command_write_access,
+        )
 
-    def has_positive_write_authority(self) -> bool:
-        from ...write_kernel import has_positive_write_authority
-
-        return has_positive_write_authority(self._host)
+        with ExitStack() as stack:
+            try:
+                stack.enter_context(
+                    command_write_access(
+                        self._host,
+                        capture_barrier=capture_barrier,
+                        user_initiated=True,
+                    )
+                )
+            except RuntimeError as exc:
+                if str(exc) != WRITE_AUTHORITY_BUSY:
+                    raise
+                yield False
+                return
+            yield True
 
     def rollback_conn_after_error(self, context: str) -> Any:
         return _optional_call(self._host, "_rollback_conn_after_error", context)
@@ -211,7 +383,14 @@ class ProviderToolRuntimeAdapter:
         return self._command_kernel().feedback(self._resolve_command_port(), *args, **kwargs)
 
     def fact_owned_memory_ids(self, *args: Any, **kwargs: Any) -> Any:
-        return _call(self._host, "_fact_owned_memory_ids", *args, **kwargs)
+        return self._command_kernel().fact_owned(
+            self._resolve_command_port(), *args, **kwargs
+        )
+
+    def purge_memories(self, *args: Any, **kwargs: Any) -> Any:
+        return self._command_kernel().purge(
+            self._resolve_command_port(), *args, **kwargs
+        )
 
     def dedupe_memories(self, *args: Any, **kwargs: Any) -> Any:
         return self._command_kernel().dedupe(self._resolve_command_port(), *args, **kwargs)
@@ -223,41 +402,83 @@ class ProviderToolRuntimeAdapter:
         return self._command_kernel().repair(self._resolve_command_port(), *args, **kwargs)
 
     def hygiene_report(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().hygiene(query_port, *args, **kwargs)
         return _call(self._host, "_hygiene_report", *args, **kwargs)
 
     def stats_payload(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().stats(query_port, *args, **kwargs)
         return _call(self._host, "_stats_payload", *args, **kwargs)
 
     def inspect_memory(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().inspect(query_port, *args, **kwargs)
         return _call(self._host, "_inspect_memory", *args, **kwargs)
 
     def explain_query(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().explain(query_port, *args, **kwargs)
         return _call(self._host, "_explain_query", *args, **kwargs)
 
+    def recall_inspector(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is None:
+            raise RuntimeError("Recall Inspector requires the application query port")
+        return self._query_kernel().inspector(query_port, *args, **kwargs)
+
     def export_memories(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().export(query_port, *args, **kwargs)
         return _call(self._host, "_export_memories", *args, **kwargs)
 
     def context_payload(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().context(query_port, *args, **kwargs)
         return _call(self._host, "_context_payload", *args, **kwargs)
 
     def profile_payload(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().profile(query_port, *args, **kwargs)
         return _call(self._host, "_profile_payload", *args, **kwargs)
 
     def probe_entity(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().probe(query_port, *args, **kwargs)
         return _call(self._host, "_probe_entity", *args, **kwargs)
 
     def related_entities(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().related(query_port, *args, **kwargs)
         return _call(self._host, "_related_entities", *args, **kwargs)
 
     def benchmark_queries(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().benchmark(query_port, *args, **kwargs)
         return _call(self._host, "_benchmark_queries", *args, **kwargs)
 
     def run_reflection(self, args: Mapping[str, Any]) -> Any:
         from ...reflection_tooling import run_reflection_tool
 
-        return run_reflection_tool(self, args=dict(args))
+        return run_reflection_tool(self._host, args=dict(args))
 
     def mark_vector_needs_repair(self, reason: str) -> None:
+        composition = getattr(self._host, "_composition", None)
+        vector = getattr(composition, "vector", None)
+        mark = getattr(vector, "mark_needs_repair", None)
+        if callable(mark):
+            mark(reason)
+            return
         from ...vector_runtime import mark_vector_needs_repair
 
         mark_vector_needs_repair(self._host, reason)
@@ -270,23 +491,28 @@ class ProviderToolRuntimeAdapter:
     def reflection_transport(self) -> Any:
         return getattr(self._host, "_reflection_transport", None)
 
-    def evidence_runtime(self) -> Any:
-        return self._host
-
-
 def bind_tool_runtime_port(
-    obj: Any, *, command_port: MemoryCommandPort | None = None
-) -> ToolRuntimePort:
+    obj: LegacyProviderToolHost | ProviderToolRuntimeAdapter,
+    *,
+    command_port: MemoryCommandPort | None = None,
+    query_port: MemoryQueryApplication | None = None,
+) -> ProviderToolRuntimeAdapter:
     if isinstance(obj, ProviderToolRuntimeAdapter):
         if command_port is not None and obj._bound_command_port is None:
             obj._bound_command_port = command_port
+        if query_port is not None and obj._bound_query_port is None:
+            obj._bound_query_port = query_port
         return obj
     existing = getattr(getattr(obj, "_composition", None), "tool_port", None)
     if isinstance(existing, ProviderToolRuntimeAdapter) and existing._host is obj:
         if command_port is not None and existing._bound_command_port is None:
             existing._bound_command_port = command_port
+        if query_port is not None and existing._bound_query_port is None:
+            existing._bound_query_port = query_port
         return existing
-    return ProviderToolRuntimeAdapter(obj, command_port=command_port)
+    return ProviderToolRuntimeAdapter(
+        obj, command_port=command_port, query_port=query_port
+    )
 
 
 def bind_fact_tool_port(obj: Any) -> FactToolPort:

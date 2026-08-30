@@ -11,13 +11,14 @@ from __future__ import annotations
 from typing import Any, List
 
 from ...http_utils import safe_endpoint_display
-from .ports import RuntimeAdapterPort
+from ...vector_status import VECTOR_STATES, vector_status_contract
+from .provider_compat_hosts import LegacyProviderRuntimeHost
 
 
 class RuntimeVectorView:
     """Composition-held owner of the two remaining Provider vector/embed views."""
 
-    def __init__(self, adapter: RuntimeAdapterPort) -> None:
+    def __init__(self, adapter: LegacyProviderRuntimeHost) -> None:
         self.adapter = adapter
 
     def vector_status_view(self) -> dict[str, Any]:
@@ -47,17 +48,38 @@ class RuntimeVectorView:
             fallback_description["base_url"] = safe_endpoint_display(
                 str(fallback_description["base_url"])
             )
+        raw_state = str(getattr(adapter, "_vector_status", "") or "").strip().lower()
+        enabled = bool(getattr(adapter, "_vector_enabled", False))
+        companion_ready = bool(getattr(adapter, "_vector_ready", False))
+        if raw_state in VECTOR_STATES:
+            state = raw_state
+            reason_code = str(
+                getattr(adapter, "_vector_reason_code", "") or "unspecified"
+            )
+        else:
+            state = (
+                "ready"
+                if companion_ready
+                else ("disabled" if not enabled else "needs_repair")
+            )
+            reason_code = "invalid_runtime_state"
+        contract = vector_status_contract(
+            state=state,
+            reason_code=reason_code,
+            message=str(getattr(adapter, "_vector_message", "") or ""),
+            debt_counts=getattr(adapter, "_vector_debt_counts", None),
+            usable_for_query=getattr(adapter, "_vector_usable_for_query", None),
+        )
         return {
-            "status": str(getattr(adapter, "_vector_status", "") or ""),
+            **contract,
             "path": str(getattr(store, "db_path", "") or "") if store is not None else "",
             "table": str(getattr(store, "table_name", "") or "") if store is not None else "",
             "embedder": embedder_description,
             "row_count": int(getattr(adapter, "_vector_row_count", 0) or 0),
             "unique_id_count": int(getattr(adapter, "_vector_unique_id_count", 0) or 0),
             "duplicate_row_count": int(getattr(adapter, "_vector_duplicate_row_count", 0) or 0),
-            "enabled": bool(getattr(adapter, "_vector_enabled", False)),
-            "ready": bool(getattr(adapter, "_vector_ready", False)),
-            "message": str(getattr(adapter, "_vector_message", "") or ""),
+            "enabled": enabled,
+            "ready": contract["state"] == "ready",
             "backend": str(getattr(adapter, "_vector_backend", "") or ""),
             "sync_mode": str(vector_config.get("sync_mode") or "incremental"),
             "fallback_embedder": fallback_description,

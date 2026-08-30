@@ -2,24 +2,60 @@
 
 from __future__ import annotations
 
-import sys
-from typing import Any
+from dataclasses import dataclass
+from typing import Mapping, Protocol
 
-from .background import BackgroundWork
+from ..application.capture_journal import CaptureApplication, JournalApplication
+from ..application.memory_queries import MemoryQueryApplication
+from ..application.runtime_state import RuntimeStateSnapshot
+from ..application.vector_service import VectorApplication
 from .bootstrap import RuntimeBootstrap
-from .command_adapter import bind_provider_command_adapter
-from .ports import MemoryCommandPort, RuntimeAdapterPort, ToolRuntimePort
-from .process_lifecycle import ProcessLifecycle
-from .tool_port import bind_tool_runtime_port
+from .background import BackgroundWork
+from .ports import MemoryCommandPort, ToolRuntimePort
+from .process_lifecycle import DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
 from .truth_session import TruthSession
 from .vector_view import RuntimeVectorView
 
 
-def _adapter_provider_module(adapter: RuntimeAdapterPort) -> Any:
-    provider_mod = sys.modules.get(getattr(type(adapter), "__module__", "") or "")
-    if provider_mod is None:
-        provider_mod = sys.modules.get("scope_recall.provider")
-    return provider_mod
+class BoundLifecycle(Protocol):
+    """Process lifecycle already bound to the outer Hermes adapter."""
+
+    def initialize(self, session_id: str, values: Mapping[str, object]) -> None: ...
+
+    def has_live_initialize_runtime(self) -> bool: ...
+
+    def initialize_under_lifecycle_lock(
+        self, session_id: str, values: Mapping[str, object]
+    ) -> None: ...
+
+    def initialize_writer_runtime(self) -> None: ...
+
+    def initialize_read_only_runtime(self) -> None: ...
+
+    def cleanup_failed_writer_initialization(
+        self, *, reraise_companion_errors: bool = False
+    ) -> bool: ...
+
+    def promote_to_writer(self) -> None: ...
+
+    def shutdown(self, *, timeout: float) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeDependencies:
+    """Explicit infrastructure and Application services built by Provider."""
+
+    truth: TruthSession
+    background: BackgroundWork
+    lifecycle: BoundLifecycle
+    bootstrap: RuntimeBootstrap
+    vector_view: RuntimeVectorView
+    vector: VectorApplication
+    capture: CaptureApplication
+    journal: JournalApplication
+    command_port: MemoryCommandPort
+    query_port: MemoryQueryApplication
+    tool_port: ToolRuntimePort
 
 
 class RuntimeComposition:
@@ -27,26 +63,27 @@ class RuntimeComposition:
 
     def __init__(
         self,
-        adapter: RuntimeAdapterPort,
-        *,
-        truth_cls: type[TruthSession] = TruthSession,
-        background_cls: type[BackgroundWork] = BackgroundWork,
-        lifecycle: ProcessLifecycle | None = None,
+        dependencies: RuntimeDependencies,
     ) -> None:
-        self.adapter: RuntimeAdapterPort = adapter
-        self.truth = truth_cls(adapter)
-        self.background = background_cls(adapter)
-        self.lifecycle = lifecycle if lifecycle is not None else ProcessLifecycle()
-        self.bootstrap = RuntimeBootstrap(adapter)
-        self.vector_view = RuntimeVectorView(adapter)
-        self._command_port: MemoryCommandPort = bind_provider_command_adapter(adapter)
-        self.tool_port: ToolRuntimePort = bind_tool_runtime_port(
-            adapter, command_port=self._command_port
-        )
+        self.truth = dependencies.truth
+        self.background = dependencies.background
+        self.lifecycle = dependencies.lifecycle
+        self.bootstrap = dependencies.bootstrap
+        self.vector_view = dependencies.vector_view
+        self.vector = dependencies.vector
+        self.capture = dependencies.capture
+        self.journal = dependencies.journal
+        self._command_port = dependencies.command_port
+        self._query_port = dependencies.query_port
+        self.tool_port = dependencies.tool_port
 
     @property
-    def query_port(self) -> RuntimeAdapterPort:
-        return self.adapter
+    def query_port(self) -> MemoryQueryApplication:
+        return self._query_port
+
+    @property
+    def runtime_state(self) -> RuntimeStateSnapshot:
+        return self._query_port.runtime_state()
 
     @property
     def command_port(self) -> MemoryCommandPort:
@@ -55,57 +92,28 @@ class RuntimeComposition:
     def attach_writer_runtime(self) -> None:
         """Own vector / capture-writer startup. Not Provider."""
 
-        from ...capture import start_writer as default_start_writer
-        from ...vector_runtime import setup_vector_layer as default_setup_vector_layer
+        self.vector.setup()
+        self.capture.start_writer()
 
-        adapter = self.adapter
-        provider_mod = _adapter_provider_module(adapter)
-
-        def _hook(name: str, default: Any) -> Any:
-            fn = getattr(provider_mod, name, None) if provider_mod is not None else None
-            return fn if callable(fn) else default
-
-        _hook("setup_vector_layer", default_setup_vector_layer)(adapter)
-        _hook("start_writer", default_start_writer)(adapter)
-
-    def initialize(self, session_id: str, **kwargs: Any) -> None:
+    def initialize(self, session_id: str, **kwargs: object) -> None:
         """Own process initialize. Provider keeps a one-line delegate."""
 
-        self.lifecycle.initialize(self.adapter, session_id, **kwargs)
+        self.lifecycle.initialize(session_id, kwargs)
 
     def promote_to_writer(self) -> None:
         """Own reader-to-writer promotion. Provider keeps a one-line delegate."""
 
-        self.lifecycle.promote_to_writer(self.adapter)
+        self.lifecycle.promote_to_writer()
 
-    def shutdown(self, *, timeout: float = 3.0) -> None:
-        self.lifecycle.shutdown(self.adapter, timeout=timeout)
+    def shutdown(
+        self, *, timeout: float = DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
+    ) -> None:
+        self.lifecycle.shutdown(timeout=timeout)
 
 
 def assemble_runtime(
-    adapter: RuntimeAdapterPort,
-    *,
-    truth_cls: type[TruthSession] | None = None,
-    background_cls: type[BackgroundWork] | None = None,
+    dependencies: RuntimeDependencies,
 ) -> RuntimeComposition:
-    """Build the single composition and bind compatible adapter aliases."""
+    """Build the single composition from explicit, already-bound services."""
 
-    provider_mod = sys.modules.get(type(adapter).__module__)
-    if provider_mod is None:
-        provider_mod = sys.modules.get("scope_recall.provider")
-    resolved_truth = truth_cls
-    resolved_background = background_cls
-    if resolved_truth is None and provider_mod is not None:
-        maybe = getattr(provider_mod, "TruthSession", None)
-        if isinstance(maybe, type):
-            resolved_truth = maybe
-    if resolved_background is None and provider_mod is not None:
-        maybe = getattr(provider_mod, "BackgroundWork", None)
-        if isinstance(maybe, type):
-            resolved_background = maybe
-    composition = RuntimeComposition(
-        adapter,
-        truth_cls=resolved_truth or TruthSession,
-        background_cls=resolved_background or BackgroundWork,
-    )
-    return composition
+    return RuntimeComposition(dependencies)

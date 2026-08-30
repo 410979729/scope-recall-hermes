@@ -18,10 +18,13 @@ try:
     from .governance_cleanup import governance_audit_coverage_report
     from .graph_hygiene import graph_hygiene_counts, remaining_graph_hygiene_rows
     from .lexical_generation import lexical_generation_report
+    from .lifecycle_registry import lifecycle_registry_report
     from .maintenance_lease import activation_lease_status
     from .memory_quality import memory_quality_report
     from .operator_ledger import operator_ledger_report
+    from .relation_containment import relation_containment_report
     from .relation_frequency_maintenance import relation_frequency_index_report
+    from .relation_policy_generation import relation_policy_generation_report
     from .relation_rebuild_queue import relation_rebuild_queue_report
     from .secret_patterns import scan_secret_like_text
     from .sql_store import fts_integrity_report, schema_migration_status
@@ -33,10 +36,13 @@ except ImportError:  # pragma: no cover - direct source-script execution fallbac
     from governance_cleanup import governance_audit_coverage_report
     from graph_hygiene import graph_hygiene_counts, remaining_graph_hygiene_rows
     from lexical_generation import lexical_generation_report
+    from lifecycle_registry import lifecycle_registry_report
     from maintenance_lease import activation_lease_status
     from memory_quality import memory_quality_report
     from operator_ledger import operator_ledger_report
+    from relation_containment import relation_containment_report
     from relation_frequency_maintenance import relation_frequency_index_report
+    from relation_policy_generation import relation_policy_generation_report
     from relation_rebuild_queue import relation_rebuild_queue_report
     from secret_patterns import scan_secret_like_text
     from sql_store import fts_integrity_report, schema_migration_status
@@ -47,13 +53,20 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
 
     The check must distinguish source-code schema readiness from the live database migration state."""
     recommendations: list[str] = []
+    registry_report = lifecycle_registry_report()
     storage_dir = hermes_home / "scope-recall"
     db_path = storage_dir / "memory.sqlite3"
     if not db_path.exists():
         recommendations.append(
             "SQLite truth DB is missing; initialize scope-recall or restore memory.sqlite3 before running scripts/repair.vector_index.py."
         )
-        sqlite_payload = {"path": str(db_path), "status": "missing", "memory_count": 0, "tables": []}
+        sqlite_payload = {
+            "path": str(db_path),
+            "status": "missing",
+            "memory_count": 0,
+            "tables": [],
+            "lifecycle_registry": registry_report,
+        }
         return sqlite_payload, {"ok": False, "failures": [f"SQLite truth DB not found: {db_path}"]}, recommendations
 
     activation_lease = activation_lease_status(db_path)
@@ -81,7 +94,9 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
                     )
             graph_hygiene = graph_hygiene_counts(conn)
             operator_ledger = operator_ledger_report(conn)
+            relation_containment = relation_containment_report(conn)
             relation_frequency = relation_frequency_index_report(conn)
+            relation_generation = relation_policy_generation_report(conn)
             relation_rebuild = relation_rebuild_queue_report(conn)
             lexical_generation = lexical_generation_report(conn)
             schema_migrations = schema_migration_status(conn)
@@ -91,11 +106,23 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
             conn.close()
     except Exception as exc:
         recommendations.append("Repair or restore the SQLite truth DB before rebuilding the vector companion.")
-        sqlite_payload = {"path": str(db_path), "status": "error", "error": str(exc), "memory_count": 0, "tables": []}
+        sqlite_payload = {
+            "path": str(db_path),
+            "status": "error",
+            "error": str(exc),
+            "memory_count": 0,
+            "tables": [],
+            "lifecycle_registry": registry_report,
+        }
         return sqlite_payload, {"ok": False, "failures": [f"SQLite truth DB error: {exc}"]}, recommendations
 
     orphan_graph_rows = remaining_graph_hygiene_rows(graph_hygiene)
     failures: list[str] = []
+    if str(registry_report.get("status") or "") != "ready":
+        failures.append("lifecycle registry is invalid")
+        recommendations.append(
+            "Repair the lifecycle registry contract before allowing lifecycle writers."
+        )
     lease_status = str(activation_lease.get("status") or "absent")
     if lease_status == "stale":
         failures.append("stale activation maintenance lease blocks SQLite writers")
@@ -198,6 +225,19 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
     relation_frequency_reclassification = int(
         relation_frequency.get("reclassification_pending_scopes") or 0
     )
+    relation_frequency_focus_pending = int(
+        relation_frequency.get("focus_pending") or 0
+    )
+    relation_frequency_retry = int(relation_frequency.get("retry_failures") or 0)
+    relation_frequency_focus_retry = int(
+        relation_frequency.get("focus_retry_failures") or 0
+    )
+    relation_frequency_dead_letter = int(
+        relation_frequency.get("dead_letter_failures") or 0
+    )
+    relation_frequency_focus_dead_letter = int(
+        relation_frequency.get("focus_dead_letter_failures") or 0
+    )
     if str(relation_frequency.get("status") or "") == "schema_missing":
         recommendations.append(
             "Relation frequency index schema is missing; initialize with the current provider before relying on bounded relation sync."
@@ -205,10 +245,25 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
     elif (
         relation_frequency_dirty
         or relation_frequency_backfill
-        or relation_frequency_reclassification
+        or relation_frequency_focus_pending
+        or relation_frequency_retry
+        or relation_frequency_focus_retry
     ):
         recommendations.append(
-            "Relation frequency maintenance debt exists; keep the background writer running until dirty memories, legacy backfill scopes, and threshold reclassification scopes reach zero."
+            "Bounded relation maintenance debt exists; keep the background writer running until dirty memories, backfill scopes, focus work, and retry work reach zero."
+        )
+    if relation_frequency_reclassification:
+        recommendations.append(
+            "Retired relation reclassification debt cannot auto-drain; review an exact scope dry-run with scripts/repair.relation_queue.py before backup-first cleanup."
+        )
+    if relation_frequency_dead_letter or relation_frequency_focus_dead_letter:
+        failures.append(
+            "relation maintenance has poisoned work requiring operator action: "
+            f"frequency={relation_frequency_dead_letter}, "
+            f"focus={relation_frequency_focus_dead_letter}"
+        )
+        recommendations.append(
+            "Inspect poisoned relation frequency/focus work and its content-free receipt; repair or explicitly dispose only the exact failed item after preserving a backup."
         )
     if relation_frequency_dirty >= 5000:
         failures.append(
@@ -218,25 +273,54 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
 
     relation_unresolved = int(relation_rebuild.get("unresolved") or 0)
     relation_dead_letter = int(relation_rebuild.get("dead_letter") or 0)
-    relation_oldest_age = float(
-        relation_rebuild.get("oldest_unresolved_age_seconds") or 0.0
-    )
     if str(relation_rebuild.get("status") or "") == "schema_missing":
         recommendations.append(
             "Relation rebuild queue schema is missing; initialize with the current provider before relying on bounded relation sync."
         )
     elif relation_unresolved:
         recommendations.append(
-            "Relation rebuild debt exists; keep the scope-recall background writer running or use the graph-hygiene repair CLI to seed/drain reviewed debt."
+            "Retired relation rebuild debt cannot auto-drain; review exact scope/status selectors with scripts/repair.relation_queue.py --dry-run, then use backup-first --apply only during confirmed maintenance."
         )
-    if relation_dead_letter:
+    if relation_unresolved:
         failures.append(
-            f"relation rebuild queue has dead-letter events: {relation_dead_letter}"
+            "retired relation rebuild work requires exact operator cleanup: "
+            f"unresolved={relation_unresolved}, dead_letter={relation_dead_letter}"
         )
-    elif relation_unresolved >= 500 or relation_oldest_age >= 86400:
+
+    containment_status = str(relation_containment.get("status") or "")
+    containment_scopes = list(relation_containment.get("scopes") or [])
+    containment_operator_scopes = sum(
+        bool(item.get("operator_action_required"))
+        for item in containment_scopes
+        if isinstance(item, dict)
+    )
+    containment_degraded_scopes = sum(
+        str(item.get("state") or "") == "degraded"
+        for item in containment_scopes
+        if isinstance(item, dict)
+    )
+    if containment_status == "schema_missing":
+        recommendations.append(
+            "Relation containment schema is missing; initialize with the current provider before trusting generated relation signals."
+        )
+    elif containment_operator_scopes:
         failures.append(
-            "relation rebuild debt exceeds fail threshold: "
-            f"unresolved={relation_unresolved}, oldest_age_seconds={relation_oldest_age:.0f}"
+            "relation containment requires operator action: "
+            f"scopes={containment_operator_scopes}"
+        )
+    elif containment_degraded_scopes:
+        recommendations.append(
+            "Relation containment is degraded but auto-recoverable; keep bounded background maintenance running and verify progress before release."
+        )
+
+    if bool(relation_generation.get("operator_action_required")):
+        failures.append(
+            "relation policy generation requires operator action: "
+            f"reason={relation_generation.get('reason_code') or 'unknown'}"
+        )
+    elif str(relation_generation.get("state") or "") == "degraded":
+        recommendations.append(
+            "Relation policy generation has auto-recoverable durable debt; keep bounded maintenance running and verify oldest age and progress."
         )
 
     if operator_ledger["status"] == "schema_missing":
@@ -289,10 +373,13 @@ def sqlite_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, Any], li
         "fts_integrity": fts_integrity,
         "graph_hygiene": graph_hygiene,
         "operator_ledger": operator_ledger,
+        "relation_containment": relation_containment,
         "relation_frequency_index": relation_frequency,
+        "relation_policy_generation": relation_generation,
         "relation_rebuild_queue": relation_rebuild,
         "lexical_generation": lexical_generation,
         "schema_migrations": schema_migrations,
+        "lifecycle_registry": registry_report,
         "governance_audit_coverage": governance_audit_coverage,
         "fact_freshness": freshness_report,
     }

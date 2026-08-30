@@ -282,6 +282,11 @@ def test_forgetting_run_dry_run_is_query_only(tmp_path):
     assert result["schema_version"] == "forgetting_run.v1"
     assert result["dry_run"] is True
     assert result["archived"] == 1
+    assert result["mode"] == "archive"
+    assert result["data_retained"] is True
+    assert result["reversible"] is True
+    assert result["privacy_purge"] is False
+    assert result["mutation_applied"] is False
 
     verifier = sqlite3.connect(db_path)
     verifier.row_factory = sqlite3.Row
@@ -314,6 +319,11 @@ def test_forgetting_run_soft_archives_without_physical_delete_by_default():
     assert applied["batch_id"] == "forget-batch"
     assert applied["archived"] >= 2
     assert applied["deleted"] == 0
+    assert applied["mode"] == "archive"
+    assert applied["data_retained"] is True
+    assert applied["reversible"] is True
+    assert applied["privacy_purge"] is False
+    assert applied["mutation_applied"] is True
     assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 4
 
     assistant_meta = _metadata(conn, "assistant-1")
@@ -497,6 +507,12 @@ def test_forgetting_hard_delete_removes_vector_records():
     assert vector_store.deleted_ids == []
     assert applied["vector_deleted"] == 0
     assert applied["vector_pending"] is True
+    assert applied["mode"] == "hard_delete"
+    assert applied["data_retained"] is False
+    assert applied["reversible"] is False
+    assert applied["privacy_purge"] is False
+    assert applied["mutation_applied"] is True
+    assert applied["companion_erasure_pending"] is True
     assert conn.execute("SELECT COUNT(*) FROM memories WHERE id = ?", ("secret-row",)).fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM memories WHERE id = ?", ("keep-row",)).fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM memory_relations WHERE source_memory_id = ? OR target_memory_id = ?", ("secret-row", "secret-row")).fetchone()[0] == 0
@@ -617,4 +633,6 @@ def test_forgetting_hard_delete_requires_vector_store_by_default():
     assert applied["delete_ids"] == []
     assert "vector_store is required" in applied["vector_error"]
     assert conn.execute("SELECT COUNT(*) FROM memories WHERE id = ?", ("secret-row",)).fetchone()[0] == 1
+    assert applied["data_retained"] is True
+    assert applied["mutation_applied"] is False
     assert conn.execute("SELECT COUNT(*) FROM governance_audit_events WHERE batch_id = 'hard-no-vector'").fetchone()[0] == 0

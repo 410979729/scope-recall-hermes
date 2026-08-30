@@ -10,14 +10,47 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
+import types
 import weakref
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-PROVIDER_REGISTRY_LOCK = threading.RLock()
-PROVIDER_REGISTRY: weakref.WeakSet[Any] = weakref.WeakSet()
+_SHARED_PROVIDER_STATE_NAME = "_scope_recall_process_provider_registry_v1"
+
+
+def _shared_provider_registry() -> tuple[Any, weakref.WeakSet[Any]]:
+    candidate = types.ModuleType(_SHARED_PROVIDER_STATE_NAME)
+    setattr(candidate, "lock", threading.RLock())
+    setattr(candidate, "registry", weakref.WeakSet())
+    setattr(candidate, "pid", os.getpid())
+    holder = sys.modules.setdefault(_SHARED_PROVIDER_STATE_NAME, candidate)
+    lock = getattr(holder, "lock", None)
+    registry = getattr(holder, "registry", None)
+    if not hasattr(lock, "acquire") or not hasattr(lock, "release"):
+        lock = threading.RLock()
+        setattr(holder, "lock", lock)
+    if not isinstance(registry, weakref.WeakSet):
+        registry = weakref.WeakSet()
+        setattr(holder, "registry", registry)
+    if int(getattr(holder, "pid", os.getpid()) or 0) != os.getpid():
+        registry = weakref.WeakSet()
+        setattr(holder, "registry", registry)
+        setattr(holder, "pid", os.getpid())
+    return lock, registry
+
+
+PROVIDER_REGISTRY_LOCK, PROVIDER_REGISTRY = _shared_provider_registry()
+
+
+def _current_provider_registry() -> tuple[Any, weakref.WeakSet[Any]]:
+    """Refresh forked state and keep compatibility globals current."""
+
+    global PROVIDER_REGISTRY_LOCK, PROVIDER_REGISTRY
+    PROVIDER_REGISTRY_LOCK, PROVIDER_REGISTRY = _shared_provider_registry()
+    return PROVIDER_REGISTRY_LOCK, PROVIDER_REGISTRY
 
 
 def same_truth_database_path(left: Any, right: Any) -> bool:
@@ -61,15 +94,39 @@ def peer_writer_lifecycle_lock(peer: Any) -> Any | None:
 def register_provider_instance(provider: Any) -> None:
     """Register a live provider for same-process SQLite lock recovery."""
 
-    with PROVIDER_REGISTRY_LOCK:
-        PROVIDER_REGISTRY.add(provider)
+    registry_lock, registry = _current_provider_registry()
+    with registry_lock:
+        registry.add(provider)
 
 
 def unregister_provider_instance(provider: Any) -> None:
     """Drop a provider from the same-process recovery registry."""
 
-    with PROVIDER_REGISTRY_LOCK:
-        PROVIDER_REGISTRY.discard(provider)
+    registry_lock, registry = _current_provider_registry()
+    with registry_lock:
+        registry.discard(provider)
+
+
+def live_providers_for_database(provider: Any) -> tuple[Any, ...]:
+    """Return a stable snapshot of live same-database process peers.
+
+    The weak registry remains the membership authority.  The returned tuple
+    contains no paths or identities and is intended only for process-local
+    lifecycle coordination.
+    """
+
+    db_path = getattr(provider, "_db_path", None)
+    if db_path is None:
+        return ()
+    registry_lock, registry = _current_provider_registry()
+    with registry_lock:
+        peers = [
+            item
+            for item in list(registry)
+            if not provider_shutdown_requested(item)
+            and same_truth_database_path(getattr(item, "_db_path", None), db_path)
+        ]
+    return tuple(sorted(peers, key=id))
 
 
 def rollback_peer_provider_transactions(provider: Any, context: str) -> dict[str, int]:
@@ -89,8 +146,9 @@ def rollback_peer_provider_transactions(provider: Any, context: str) -> dict[str
     }
     if db_path is None:
         return result
-    with PROVIDER_REGISTRY_LOCK:
-        peers = [item for item in list(PROVIDER_REGISTRY) if item is not provider]
+    registry_lock, registry = _current_provider_registry()
+    with registry_lock:
+        peers = [item for item in list(registry) if item is not provider]
     for peer in peers:
         if provider_shutdown_requested(peer):
             continue
@@ -110,6 +168,14 @@ def rollback_peer_provider_transactions(provider: Any, context: str) -> dict[str
             result["peer_busy_skipped"] += 1
             continue
         try:
+            # ``threading.RLock`` is reentrant, so a same-thread nested
+            # recovery can acquire a peer lifecycle that is still executing an
+            # admitted truth unit.  The process handoff activity counter is the
+            # public veto for that case; never inspect or roll back its SQLite
+            # transaction while the counter is positive.
+            if int(getattr(peer, "_writer_handoff_active_truth_work", 0) or 0) > 0:
+                result["peer_busy_skipped"] += 1
+                continue
             acquired = try_acquire_nonblocking(peer_lock)
             if not acquired:
                 result["peer_busy_skipped"] += 1

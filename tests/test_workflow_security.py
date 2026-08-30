@@ -91,6 +91,15 @@ def test_ci_and_release_builds_pin_and_verify_stable_hermes_source():
         assert ".github/scripts/checkout_pinned_hermes.py" in all_run_text
         assert not re.search(r"(?:--branch|checkout|fetch)[^\n]*\bmain\b", all_run_text)
 
+    ci_workflow = _workflow("ci.yml")
+    full_matrix_checkout = [
+        step
+        for step in ci_workflow["jobs"]["test"]["steps"]
+        if str(step.get("uses") or "").startswith("actions/checkout@")
+    ]
+    assert len(full_matrix_checkout) == 1
+    assert full_matrix_checkout[0].get("with", {}).get("fetch-depth") == 0
+
 
 def test_checkout_helper_timeout_cleans_process_tree_and_reports_structure(
     monkeypatch: pytest.MonkeyPatch,
@@ -250,6 +259,35 @@ def test_ci_jobs_that_execute_plugin_tests_use_pinned_hermes_checkout():
         if "pytest" not in serialized and "matrix.command" not in serialized:
             continue
         assert ".github/scripts/checkout_pinned_hermes.py" in _run_text(job), job_name
+
+
+def test_ci_required_is_stable_and_fails_closed_over_every_required_job():
+    workflow = _workflow("ci.yml")
+    job = workflow["jobs"]["ci-required"]
+    required = {
+        "test",
+        "macos-lancedb-smoke",
+        "windows-no-symlink",
+        "windows-installer",
+        "release-gate",
+    }
+
+    assert job["name"] == "ci-required"
+    assert job["if"] in {"always()", "${{ always() }}"}
+    assert job["permissions"] == {}
+    assert set(job["needs"]) == required
+    assert job["runs-on"] == "ubuntu-latest"
+    assert job.get("continue-on-error") is None
+    run_text = _run_text(job)
+    for dependency in required:
+        assert f"needs.{dependency}.result" in run_text
+    assert run_text.count('= "success"') == len(required)
+
+    release_text = (WORKFLOW_DIR / "release.yml").read_text(encoding="utf-8")
+    assert "ci-required" in release_text
+    assert "windows-full-py311 \\" not in release_text
+    assert "windows-full-py312 \\" not in release_text
+    assert "windows-no-symlink-py311\n" not in release_text
 
 
 def test_github_release_publish_is_immutable_without_source_execution():

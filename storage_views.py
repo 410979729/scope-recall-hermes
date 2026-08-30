@@ -47,6 +47,49 @@ def _accessible_scope_params(provider: Any) -> list[str]:
     return [str(scope_id) for scope_id in provider._accessible_scope_ids]
 
 
+def _partition_cjk_bigram_terms(
+    conn: sqlite3.Connection,
+    supplemental_table: str,
+    terms: list[str],
+) -> tuple[list[str], frozenset[str]]:
+    """Partition query bigrams with bounded document-frequency probes.
+
+    The postings primary key starts with ``term``, and every probe stops at
+    ``df_cap + 1``.  A corpus-wide term therefore cannot fan out query planning
+    merely so the caller can learn that it is common.
+    """
+
+    if not terms:
+        return [], frozenset()
+    document_total = int(
+        conn.execute(f"SELECT COUNT(*) FROM {supplemental_table}").fetchone()[0]
+    )
+    df_cap = max(50, int(document_total * 0.05))
+    probe_limit = df_cap + 1
+    rare_terms: list[str] = []
+    common_terms: set[str] = set()
+    for term in terms:
+        document_frequency = int(
+            conn.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM (
+                    SELECT 1
+                    FROM {LEXICAL_POSTINGS_TABLE}
+                    WHERE term = ?
+                    LIMIT ?
+                )
+                """,
+                (term, probe_limit),
+            ).fetchone()[0]
+        )
+        if document_frequency <= df_cap:
+            rare_terms.append(term)
+        else:
+            common_terms.add(term)
+    return rare_terms, frozenset(common_terms)
+
+
 def _like_fallback_scan_limit(provider: Any, candidate_pool: int) -> int:
     """Return the hard per-scope row window inspected by LIKE fallback."""
 
@@ -204,7 +247,19 @@ def search_db_memories(
             )
         if supplemental_table:
             shadow_rows: list[sqlite3.Row] = []
-            shadow_query = trigram_fts_query(query, tokens)
+            bigram_terms = [
+                term for term in cjk_query_ngrams(query, limit=24) if len(term) == 2
+            ]
+            rare_terms, common_bigram_terms = _partition_cjk_bigram_terms(
+                conn,
+                supplemental_table,
+                bigram_terms,
+            )
+            shadow_query = trigram_fts_query(
+                query,
+                tokens,
+                common_cjk_bigrams=common_bigram_terms,
+            )
             if shadow_query:
                 # The inner rank window must stay wider than the candidate
                 # pool: ties on near-identical rows (for example daily-report
@@ -236,33 +291,10 @@ def search_db_memories(
                 ).fetchall()
                 rows.extend(shadow_rows)
                 supplemental_row_ids.update(str(row["id"]) for row in shadow_rows)
-            bigram_terms = [
-                term for term in cjk_query_ngrams(query, limit=24) if len(term) == 2
-            ]
             if bigram_terms and len(shadow_rows) < candidate_pool:
                 # Indexed postings replace the old correlated instr() scan. A
-                # covering-index df prefilter drops runaway terms (for example a
-                # corpus-wide prefix like 数据库) whose posting lists would
-                # otherwise dominate the merge without adding discrimination.
-                term_placeholders = ",".join("?" for _ in bigram_terms)
-                document_total = int(
-                    conn.execute(
-                        f"SELECT COUNT(*) FROM {supplemental_table}"
-                    ).fetchone()[0]
-                )
-                df_cap = max(50, int(document_total * 0.05))
-                df_rows = conn.execute(
-                    f"""
-                    SELECT term, COUNT(*) AS df
-                    FROM {LEXICAL_POSTINGS_TABLE}
-                    WHERE term IN ({term_placeholders})
-                    GROUP BY term
-                    """,
-                    bigram_terms,
-                ).fetchall()
-                rare_terms = [
-                    str(row[0]) for row in df_rows if int(row[1]) <= df_cap
-                ]
+                # bounded df prefilter also keeps runaway terms out of the FTS
+                # rank expression above, before they can create corpus fan-out.
                 term_rows: list[sqlite3.Row] = []
                 if rare_terms:
                     rare_placeholders = ",".join("?" for _ in rare_terms)

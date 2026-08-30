@@ -9,6 +9,14 @@ from __future__ import annotations
 from typing import Any
 
 
+def backfill_skill_anchors(*args: Any, **kwargs: Any) -> Any:
+    """Load the Playbook migration only after Experience is enabled."""
+
+    from ...experience_store import backfill_skill_anchors as implementation
+
+    return implementation(*args, **kwargs)
+
+
 def run_experience_preflight(provider: Any, *, query: str) -> dict[str, Any]:
     from ...experience_preflight import experience_preflight
 
@@ -21,6 +29,13 @@ def run_experience_preflight(provider: Any, *, query: str) -> dict[str, Any]:
             record_run=False,
             scope_id=provider._scope_id,
         )
+
+
+__all__ = [
+    "backfill_skill_anchors",
+    "run_experience_preflight",
+    "run_experience_promotion",
+]
 
 
 def run_experience_promotion(

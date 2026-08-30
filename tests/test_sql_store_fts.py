@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 import sqlite3
 
+import pytest
+
 from scope_recall.sql_store import (
     ensure_schema,
     fts_integrity_report,
@@ -48,6 +50,85 @@ def _store(
         content=content,
         metadata=metadata,
     )
+
+
+def test_initial_fact_projection_lifecycle_rejects_untrusted_authority() -> None:
+    conn = _conn()
+    metadata = json.dumps(
+        {
+            "memory_type": "factual",
+            "lifecycle": "promoted",
+            "fact_claim_id": "claim-untrusted",
+            "fact_claim_key": "fact:untrusted",
+        }
+    )
+
+    with pytest.raises(PermissionError, match="Fact Executor authority"):
+        store_row(
+            conn,
+            memory_id="memory-untrusted",
+            scope_id="shared-scope",
+            platform="cli",
+            user_id="joy",
+            chat_id="",
+            thread_id="",
+            gateway_session_key="",
+            agent_identity="yuheng",
+            agent_workspace="hermes",
+            session_id="session",
+            source="tool-store",
+            target="general",
+            content="Asha lives in Bangalore.",
+            metadata=metadata,
+            fact_projection_authority="untrusted-caller",
+        )
+
+    assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+
+
+def test_untrusted_fact_projection_authority_cannot_mutate_a_duplicate() -> None:
+    conn = _conn()
+    _store(
+        conn,
+        "existing-general",
+        "Asha lives in Bangalore.",
+        target="general",
+    )
+    before = conn.execute(
+        "SELECT updated_at FROM memories WHERE id = 'existing-general'"
+    ).fetchone()[0]
+
+    with pytest.raises(PermissionError, match="Fact Executor authority"):
+        store_row(
+            conn,
+            memory_id="untrusted-duplicate",
+            scope_id="shared-scope",
+            platform="cli",
+            user_id="joy",
+            chat_id="",
+            thread_id="",
+            gateway_session_key="",
+            agent_identity="yuheng",
+            agent_workspace="hermes",
+            session_id="session",
+            source="tool-store",
+            target="general",
+            content="Asha lives in Bangalore.",
+            metadata=json.dumps(
+                {
+                    "memory_type": "factual",
+                    "lifecycle": "promoted",
+                    "fact_claim_id": "claim-untrusted",
+                    "fact_claim_key": "fact:untrusted",
+                }
+            ),
+            fact_projection_authority="untrusted-caller",
+        )
+
+    assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT updated_at FROM memories WHERE id = 'existing-general'"
+    ).fetchone()[0] == before
 
 
 def test_update_row_is_transaction_neutral_and_caller_can_rollback():

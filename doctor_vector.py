@@ -14,12 +14,78 @@ from typing import Any
 from .lifecycle_policy import DURABLE_HIDDEN_LIFECYCLES, ordinary_recall_lifecycle_visible
 from .capture_filters import sanitize_report_text
 from .vector_generation import resolve_generation_storage_root
+from .vector_durable_work import (
+    disabled_vector_outbox_durable_health,
+    vector_outbox_durable_health,
+)
 from .vector_generation_preflight import (
     sanitize_generation_identifier,
     sanitize_outward_preflight_report,
     validate_generation_for_activation,
 )
 from .vector_store import native_vector_dependency_status, normalize_vector_backend
+from .vector_status import normalize_vector_debt_counts, vector_status_contract
+
+
+_GENERATION_REPAIR_REASONS = {
+    "generation_incomplete",
+    "identity_mismatch",
+    "outbox_dead_letter",
+    "reconciliation_failed",
+}
+
+
+def _canonical_doctor_vector_status(
+    payload: dict[str, Any],
+    generation: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge backend/generation diagnostics into the public four-state view."""
+
+    backend_status = str(payload.get("status") or "").strip().lower()
+    generation_status = str(generation.get("status") or "").strip().lower()
+    diagnostic_status = generation_status if generation_status not in {
+        "",
+        "absent",
+        "legacy_unregistered",
+        "ready",
+    } else backend_status
+    usable = bool(payload.get("ready"))
+
+    if generation_status in _GENERATION_REPAIR_REASONS:
+        state = "needs_repair"
+        reason_code = generation_status
+        usable = False
+    elif generation_status == "provider_unavailable":
+        state = "degraded"
+        reason_code = generation_status
+        usable = False
+    elif generation_status == "outbox_backlog":
+        state = "degraded"
+        reason_code = generation_status
+    elif backend_status in {"ready", "fallback_ready"}:
+        state = "ready"
+        reason_code = "healthy" if backend_status == "ready" else "fallback_ready"
+    elif backend_status == "fallback_not_initialized":
+        state = "degraded"
+        reason_code = backend_status
+        usable = False
+    else:
+        state = "needs_repair"
+        reason_code = backend_status or "companion_unavailable"
+        usable = False
+
+    outbox_counts = dict(generation.get("outbox_status_counts") or {})
+    contract = vector_status_contract(
+        state=state,
+        reason_code=reason_code,
+        message=str(payload.get("error") or ""),
+        debt_counts=normalize_vector_debt_counts(outbox_counts),
+        usable_for_query=usable,
+    )
+    payload.update(contract)
+    payload["diagnostic_status"] = diagnostic_status
+    payload["ready"] = contract["state"] == "ready"
+    return payload
 
 def lancedb_table_names(db: Any) -> list[str]:
     """Return table names across LanceDB list_tables API shapes."""
@@ -767,7 +833,14 @@ def vector_generation_report(
     db_path = hermes_home / "scope-recall" / "memory.sqlite3"
     if not db_path.exists():
         return (
-            {"status": "absent", "registered": False, **_empty_inactive_generation_contract()},
+            {
+                "status": "absent",
+                "registered": False,
+                "durable_work": disabled_vector_outbox_durable_health(
+                    reason_code="truth_database_absent"
+                ),
+                **_empty_inactive_generation_contract(),
+            },
             {"ok": True, "failures": []},
             [],
         )
@@ -790,6 +863,9 @@ def vector_generation_report(
                     "status": "legacy_unregistered",
                     "registered": False,
                     "missing_tables": sorted(required - tables),
+                    "durable_work": disabled_vector_outbox_durable_health(
+                        reason_code="schema_missing"
+                    ),
                     **_empty_inactive_generation_contract(),
                 },
                 {"ok": True, "failures": []},
@@ -799,6 +875,30 @@ def vector_generation_report(
             "SELECT value, updated_at FROM vector_generation_state WHERE key = 'current_generation'"
         ).fetchone()
         if pointer is None:
+            manifest_count = int(
+                conn.execute("SELECT COUNT(*) FROM vector_generations").fetchone()[0]
+            )
+            if manifest_count:
+                failure = "vector generation manifests exist without a current pointer"
+                failures.append(failure)
+                return (
+                    {
+                        "status": "generation_incomplete",
+                        "registered": True,
+                        "current_generation_id": "",
+                        "orphan_generation_count": manifest_count,
+                        "durable_work": disabled_vector_outbox_durable_health(
+                            reason_code="generation_pointer_missing",
+                            state="needs_repair",
+                            operator_action_required=True,
+                        ),
+                        **_empty_inactive_generation_contract(),
+                    },
+                    {"ok": False, "failures": failures},
+                    [
+                        "Restore the current generation pointer or CAS-activate a validated READY generation before normal runtime startup."
+                    ],
+                )
             recommendations.append(
                 "Vector generation tables are initialized but the legacy companion is not registered; register it before any model/backend migration."
             )
@@ -807,6 +907,9 @@ def vector_generation_report(
                     "status": "legacy_unregistered",
                     "registered": False,
                     "current_generation_id": "",
+                    "durable_work": disabled_vector_outbox_durable_health(
+                        reason_code="no_active_generation"
+                    ),
                     **_empty_inactive_generation_contract(),
                 },
                 {"ok": True, "failures": []},
@@ -824,6 +927,12 @@ def vector_generation_report(
                     "status": "generation_incomplete",
                     "registered": True,
                     "current_generation_id": current_id,
+                    "durable_work": disabled_vector_outbox_durable_health(
+                        reason_code="current_generation_manifest_missing",
+                        generation_id=current_id,
+                        state="needs_repair",
+                        operator_action_required=True,
+                    ),
                     **_empty_inactive_generation_contract(),
                 },
                 {"ok": False, "failures": failures},
@@ -1048,16 +1157,16 @@ def vector_generation_report(
         status = "ready"
         if mismatches:
             status = "identity_mismatch"
-        elif not provider_available:
-            status = "provider_unavailable"
         elif building:
             status = "generation_incomplete"
         elif dead_letters:
             status = "outbox_dead_letter"
-        elif backlog:
-            status = "outbox_backlog"
         elif reconciliation_failed:
             status = "reconciliation_failed"
+        elif not provider_available:
+            status = "provider_unavailable"
+        elif backlog:
+            status = "outbox_backlog"
         payload = {
             "status": status,
             "registered": True,
@@ -1076,6 +1185,7 @@ def vector_generation_report(
             "inactive_outbox_status_counts": inactive_outbox_counts,
             "outbox_backlog": backlog,
             "outbox_dead_letters": dead_letters,
+            "durable_work": vector_outbox_durable_health(conn, current_id),
             "reconciliation": reconciliation,
             "failed_migration_receipts": failed_receipts,
         }
@@ -1110,9 +1220,17 @@ def vector_report(
         *[str(item) for item in (check.get("failures") or [])],
         *[str(item) for item in (generation_check.get("failures") or [])],
     ]
+    payload = _canonical_doctor_vector_status(payload, generation_payload)
     return payload, {"ok": not failures, "failures": failures}, [*recommendations, *generation_recommendations]
 
 
 def disabled_vector_report() -> tuple[dict[str, Any], dict[str, Any], list[str]]:
-    payload = {"enabled": False, "status": "disabled", "ready": False}
+    payload = {
+        "enabled": False,
+        "ready": False,
+        **vector_status_contract(
+            state="disabled",
+            reason_code="disabled_by_config",
+        ),
+    }
     return payload, {"ok": True, "failures": []}, []

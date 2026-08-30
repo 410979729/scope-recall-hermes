@@ -77,6 +77,8 @@ def test_golden_benchmark_import_does_not_require_hermes_plugins_package(monkeyp
 def _run_benchmark(*args: str, hermes_home_env: Path | None = None) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     if hermes_home_env is not None:
         env["HERMES_HOME"] = str(hermes_home_env)
     else:

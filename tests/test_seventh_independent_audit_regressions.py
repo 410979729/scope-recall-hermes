@@ -319,6 +319,9 @@ def test_complete_fts_second_start_is_bounded_and_write_free() -> None:
     conn.row_factory = sqlite3.Row
     ensure_schema(conn)
     _bulk_seed_complete_fts(conn, 5_000)
+    # Raw fixture inserts bypass ordinary mutation synchronization; finish the
+    # additive companion migration before measuring an already-current start.
+    ensure_schema(conn)
     assert conn.execute("SELECT COUNT(*) FROM fact_claims_fts").fetchone()[0] == 5_000
     before_changes = conn.total_changes
 

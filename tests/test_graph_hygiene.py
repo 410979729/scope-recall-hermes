@@ -108,7 +108,7 @@ def test_graph_hygiene_removes_candidate_and_in_progress_graph_edges(tmp_path):
         verifier.close()
 
 
-def test_relation_rebuild_repair_seeds_drains_and_backs_up_sqlite(tmp_path):
+def test_graph_hygiene_refuses_retired_relation_seed_and_drain(tmp_path):
     hermes_home = tmp_path / "hermes"
     db_dir = hermes_home / "scope-recall"
     db_dir.mkdir(parents=True)
@@ -144,18 +144,15 @@ def test_relation_rebuild_repair_seeds_drains_and_backs_up_sqlite(tmp_path):
         pair_limit=1,
     )
 
-    assert result["ok"] is True
-    assert result["seed"] == {"eligible": 3, "queued": 3}
-    assert result["drain"]["failed"] == 0
-    assert result["drain"]["events_completed"] == 3
-    assert result["after"]["unresolved"] == 0
-    backup_path = result["backup_path"]
-    assert backup_path
-    backup = sqlite3.connect(backup_path)
-    try:
-        assert backup.execute("PRAGMA quick_check").fetchone()[0] == "ok"
-    finally:
-        backup.close()
+    assert result["ok"] is False
+    assert result["status"] == "legacy_mutation_disabled"
+    assert result["dry_run"] is True
+    assert result["refused_actions"] == ["seed-relations", "drain-relations"]
+    assert result["operator_action"] == (
+        "use scripts/repair.relation_queue.py dry-run/apply"
+    )
+    assert result["before"]["unresolved"] == 0
+    assert list(db_dir.glob("memory.backup-*.sqlite3")) == []
 
     reseeded = repair_relation_rebuild_debt(
         hermes_home,
@@ -163,5 +160,7 @@ def test_relation_rebuild_repair_seeds_drains_and_backs_up_sqlite(tmp_path):
         drain=False,
         scope_ids=["scope-a"],
     )
-    assert reseeded["after"]["pending"] == 3
-    assert reseeded["after"]["unresolved"] == 3
+    assert reseeded["ok"] is False
+    assert reseeded["status"] == "legacy_mutation_disabled"
+    assert reseeded["refused_actions"] == ["seed-relations"]
+    assert reseeded["before"]["unresolved"] == 0

@@ -102,7 +102,86 @@ def _existing_sqlite_sidecars(path: Path) -> list[Path]:
 
 
 def _staging_leftovers(destination: Path) -> list[Path]:
-    return sorted(destination.parent.glob(f"{destination.name}.scope-recall-stage-*"))
+    return sorted(destination.parent.glob(".scope-recall-stage-*.tmp"))
+
+
+def test_backup_staging_name_does_not_repeat_long_destination_component(
+    tmp_path: Path,
+) -> None:
+    import scope_recall.sqlite_backup as sqlite_backup
+
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    destination = backup_dir / f"{'d' * 210}.sqlite3"
+
+    staging, descriptor, identity = sqlite_backup._reserve_staging_path(destination)
+    try:
+        assert staging.parent == destination.parent
+        assert destination.name not in staging.name
+        assert staging.name.startswith(sqlite_backup._STAGING_FILE_PREFIX)
+        assert staging.name.endswith(".tmp")
+        token = staging.name.removeprefix(
+            sqlite_backup._STAGING_FILE_PREFIX
+        ).removesuffix(".tmp")
+        assert len(token) == 32
+        int(token, 16)
+        assert len(f"{staging.name}-journal") <= 255
+    finally:
+        descriptor_released, cleanup_failures = (
+            sqlite_backup._release_owned_sqlite_artifacts(
+                staging,
+                identity,
+                descriptor,
+            )
+        )
+
+    assert descriptor_released is True
+    assert cleanup_failures == []
+    assert not staging.exists()
+
+
+def test_backup_staging_reservation_skips_public_destination_name_collision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import scope_recall.sqlite_backup as sqlite_backup
+
+    first_token = "a" * 32
+    second_token = "b" * 32
+    tokens = iter((first_token, second_token))
+
+    class _UuidValue:
+        def __init__(self, value: str) -> None:
+            self.hex = value
+
+    monkeypatch.setattr(
+        sqlite_backup.uuid,
+        "uuid4",
+        lambda: _UuidValue(next(tokens)),
+    )
+    destination = tmp_path / (
+        f"{sqlite_backup._STAGING_FILE_PREFIX}{first_token}.tmp"
+    )
+
+    staging, descriptor, identity = sqlite_backup._reserve_staging_path(destination)
+    try:
+        assert staging.name == (
+            f"{sqlite_backup._STAGING_FILE_PREFIX}{second_token}.tmp"
+        )
+        assert not destination.exists()
+    finally:
+        descriptor_released, cleanup_failures = (
+            sqlite_backup._release_owned_sqlite_artifacts(
+                staging,
+                identity,
+                descriptor,
+            )
+        )
+
+    assert descriptor_released is True
+    assert cleanup_failures == []
+    assert not staging.exists()
+    assert not destination.exists()
 
 
 def test_verified_online_backup_healthy_path_records_health_and_logical_equivalence(
@@ -837,7 +916,7 @@ def test_verified_online_backup_cleans_claimed_placeholder_when_open_fails(
     assert failed_candidates
     assert not destination.exists()
     assert all(not candidate.exists() for candidate in failed_candidates)
-    assert list(destination.parent.glob(f"{destination.name}.scope-recall-stage-*")) == []
+    assert _staging_leftovers(destination) == []
     assert not any(path.exists() for path in (
         Path(f"{destination}-wal"),
         Path(f"{destination}-shm"),
@@ -963,13 +1042,21 @@ def test_verified_online_backup_partial_cleanup_failure_is_explicit(
         raise sqlite3.OperationalError("injected transfer failure")
 
     original_unlink = Path.unlink
+    real_reserve = sqlite_backup._reserve_staging_path
+    captured_staging: list[Path] = []
+
+    def capture_reservation(path: Path):  # noqa: ANN202
+        staging, descriptor, identity = real_reserve(path)
+        captured_staging.append(staging)
+        return staging, descriptor, identity
 
     def flaky_unlink(self, *args, **kwargs):  # noqa: ANN001
-        if self == destination or str(self).startswith(str(destination)):
+        if self == destination or self in captured_staging:
             raise OSError("injected unlink failure")
         return original_unlink(self, *args, **kwargs)
 
     monkeypatch.setattr(sqlite_backup, "_transfer_online_backup", boom)
+    monkeypatch.setattr(sqlite_backup, "_reserve_staging_path", capture_reservation)
     monkeypatch.setattr(Path, "unlink", flaky_unlink)
 
     with pytest.raises(SqliteBackupError, match="partial cleanup failure"):

@@ -18,6 +18,12 @@ from .governance_rollback import (
     snapshot_memory_row,
 )
 from .lifecycle_service import transition_memory_lifecycle
+from .lifecycle_registry import (
+    LEGACY_ARCHIVE_BACKFILL,
+    MEMORY_CLEANUP_ARCHIVE,
+    archive_coverage_receipts,
+    resolve_lifecycle_operation,
+)
 from .maintenance_ops import json_dumps_stable, make_batch_id, now_utc_iso
 from .sql_store import ensure_schema, record_governance_audit_event
 
@@ -28,18 +34,7 @@ TEMPLATE_NOISE_REASONS = {
     "transcript.role-prefix-assistant",
 }
 
-RECOGNIZED_ARCHIVE_RECEIPTS: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("memory_cleanup", "soft_archive"),
-        ("forgetting", "soft_archive"),
-        ("scope_recall_forget", "soft_archive"),
-        ("memory_cleanup", "legacy_archive_backfill"),
-        ("memory_candidate_promotion", "archive"),
-        ("memory_auto_adjudication", "archive"),
-        ("memory_quality_lint", "archive_lint_hit"),
-        ("memory_quality_cleanup", "archive_active_lint_hit"),
-    }
-)
+RECOGNIZED_ARCHIVE_RECEIPTS = archive_coverage_receipts()
 
 
 def _now_iso() -> str:
@@ -282,8 +277,7 @@ def apply_cleanup(
             expected_updated_at=str(row["updated_at"] or ""),
             actor=actor,
             reason=item["reason"],
-            event_type="memory_cleanup",
-            action="soft_archive",
+            operation_id=MEMORY_CLEANUP_ARCHIVE,
             batch_id=batch,
             timestamp=now,
         )
@@ -448,13 +442,14 @@ def backfill_legacy_archive_audit(
     if dry_run or not candidates:
         return result
     now = _now_iso()
+    operation = resolve_lifecycle_operation(LEGACY_ARCHIVE_BACKFILL)
     for row in candidates:
         snapshot = snapshot_memory_row(row)
         record_governance_audit_event(
             conn,
             event_id=f"gov_{uuid.uuid4().hex}",
-            event_type="memory_cleanup",
-            action="legacy_archive_backfill",
+            event_type=operation.legacy_event_type,
+            action=operation.legacy_action,
             scope_id=str(row["scope_id"] or ""),
             target_id=str(row["id"]),
             batch_id=batch,

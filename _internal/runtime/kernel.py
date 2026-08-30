@@ -2,56 +2,158 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
-from .ports import MemoryCommandPort, MemoryQueryPort
-from ... import memory_ops, write_kernel
-from ...memory_queries import (
-    benchmark_queries,
-    context_payload,
-    explain_query,
-    export_memories,
-    hygiene_report,
-    inspect_memory,
-    probe_entity,
-    profile_payload,
-    related_entities,
-    stats_payload,
+from ..application.memory_commands import (
+    ArchiveMemoriesRequest,
+    DedupeMemoriesRequest,
+    DeleteMemoriesRequest,
+    DeleteMemoriesResult,
+    FactOwnedMemoryIdsRequest,
+    FeedbackMemoryRequest,
+    GovernMemoriesRequest,
+    MergeMemoriesRequest,
+    PrivacyPurgeRequest,
+    StoreMemoryRequest,
+    UpdateMemoryRequest,
 )
+from ..application.memory_queries import (
+    BenchmarkQueriesRequest,
+    ContextQueryRequest,
+    EntityQueryRequest,
+    ExplainQueryRequest,
+    ExportMemoriesRequest,
+    HygieneQueryRequest,
+    InspectMemoryRequest,
+    MemoryQueryApplication,
+    ProfileQueryRequest,
+    RecallInspectorRequest,
+)
+from .ports import MemoryCommandPort
 
 
 class QueryKernel:
     """Thin query/diagnostic facade used by the Hermes adapter."""
 
-    def context(self, port: MemoryQueryPort, **kwargs: Any) -> dict[str, Any]:
-        return context_payload(port, **kwargs)
+    def context(
+        self,
+        port: MemoryQueryApplication,
+        *,
+        query: str,
+        limit: int = 5,
+        max_chars: int = 900,
+    ) -> dict[str, object]:
+        return port.context(ContextQueryRequest(query, limit, max_chars))
 
-    def profile(self, port: MemoryQueryPort, **kwargs: Any) -> dict[str, Any]:
-        return profile_payload(port, **kwargs)
+    def profile(
+        self,
+        port: MemoryQueryApplication,
+        *,
+        query: str = "",
+        entity: str = "",
+        targets: list[str] | None = None,
+        include_general: bool = False,
+        include_candidates: bool = False,
+        include_curated: bool = True,
+        limit: int = 5,
+        max_chars: int = 1200,
+    ) -> dict[str, object]:
+        return port.profile(
+            ProfileQueryRequest(
+                query=query,
+                entity=entity,
+                targets=tuple(targets) if targets is not None else None,
+                include_general=include_general,
+                include_candidates=include_candidates,
+                include_curated=include_curated,
+                limit=limit,
+                max_chars=max_chars,
+            )
+        )
 
-    def inspect(self, port: MemoryQueryPort, **kwargs: Any) -> dict[str, Any]:
-        return inspect_memory(port, **kwargs)
+    def inspect(
+        self, port: MemoryQueryApplication, *, memory_id: str
+    ) -> dict[str, object]:
+        return port.inspect(InspectMemoryRequest(memory_id))
 
-    def explain(self, port: MemoryQueryPort, **kwargs: Any) -> dict[str, Any]:
-        return explain_query(port, **kwargs)
+    def explain(
+        self, port: MemoryQueryApplication, *, query: str, limit: int = 5
+    ) -> dict[str, object]:
+        return port.explain(ExplainQueryRequest(query, limit))
 
-    def stats(self, port: MemoryQueryPort) -> dict[str, Any]:
-        return stats_payload(port)
+    def inspector(
+        self,
+        port: MemoryQueryApplication,
+        *,
+        query: str,
+        limit: int = 5,
+        recall_mode: str = "advisory",
+        include_content: bool = False,
+        output_format: str = "json",
+    ) -> dict[str, object]:
+        return port.inspector(
+            RecallInspectorRequest(
+                query=query,
+                limit=limit,
+                recall_mode=recall_mode,
+                include_content=include_content,
+                output_format=output_format,
+            )
+        )
 
-    def probe(self, port: MemoryQueryPort, **kwargs: Any) -> dict[str, Any]:
-        return probe_entity(port, **kwargs)
+    def stats(self, port: MemoryQueryApplication) -> dict[str, object]:
+        return port.stats()
 
-    def related(self, port: MemoryQueryPort, **kwargs: Any) -> dict[str, Any]:
-        return related_entities(port, **kwargs)
+    def probe(
+        self, port: MemoryQueryApplication, *, entity: str, limit: int = 10
+    ) -> dict[str, object]:
+        return port.probe(EntityQueryRequest(entity, limit))
 
-    def export(self, port: MemoryQueryPort, **kwargs: Any) -> dict[str, Any]:
-        return export_memories(port, **kwargs)
+    def related(
+        self, port: MemoryQueryApplication, *, entity: str, limit: int = 12
+    ) -> dict[str, object]:
+        return port.related(EntityQueryRequest(entity, limit))
 
-    def hygiene(self, port: MemoryQueryPort, **kwargs: Any) -> dict[str, Any]:
-        return hygiene_report(port, **kwargs)
+    def export(
+        self,
+        port: MemoryQueryApplication,
+        *,
+        fmt: str = "jsonl",
+        scope_only: bool = True,
+    ) -> dict[str, object]:
+        return port.export(ExportMemoriesRequest(fmt, scope_only))
 
-    def benchmark(self, port: MemoryQueryPort, **kwargs: Any) -> dict[str, Any]:
-        return benchmark_queries(port, **kwargs)
+    def hygiene(
+        self, port: MemoryQueryApplication, *, limit: int = 200
+    ) -> dict[str, object]:
+        return port.hygiene(HygieneQueryRequest(limit))
+
+    def benchmark(
+        self,
+        port: MemoryQueryApplication,
+        *,
+        queries: list[str] | None = None,
+        cases: list[dict[str, Any]] | None = None,
+        limit: int = 5,
+        auto_explain_on_fail: bool = False,
+        include_trace: bool = False,
+        prompt_budget_chars: int = 0,
+    ) -> dict[str, object]:
+        typed_cases = (
+            tuple(cast(dict[str, object], dict(case)) for case in cases)
+            if cases is not None
+            else None
+        )
+        return port.benchmark(
+            BenchmarkQueriesRequest(
+                queries=tuple(queries) if queries is not None else None,
+                cases=typed_cases,
+                limit=limit,
+                auto_explain_on_fail=auto_explain_on_fail,
+                include_trace=include_trace,
+                prompt_budget_chars=prompt_budget_chars,
+            )
+        )
 
 
 class _LegacyPersistCommandPort:
@@ -66,170 +168,171 @@ class _LegacyPersistCommandPort:
     def __init__(self, host: Any) -> None:
         self._host = host
 
-    def write_target(self) -> object:
-        return self._host
-
-    def query_connection(self) -> Any:
-        raise RuntimeError("legacy command port has no query connection")
-
-    def query_lock(self) -> Any:
-        raise RuntimeError("legacy command port has no query lock")
-
-    def rollback_conn_after_error(self, context: str) -> None:
-        fn = getattr(self._host, "rollback_conn_after_error", None)
-        if callable(fn):
-            fn(context)
-            return
-        fn = getattr(self._host, "_rollback_conn_after_error", None)
-        if callable(fn):
-            fn(context)
-
-    def store_now(self, *args: Any, **kwargs: Any) -> Any:
-        return self.execute_store_now(*args, **kwargs)
-
-    def execute_store_now(self, *args: Any, **kwargs: Any) -> Any:
+    def store(self, request: StoreMemoryRequest) -> tuple[str, bool, str]:
         fn = getattr(self._host, "store_now", None)
         if callable(fn):
-            return fn(*args, **kwargs)
+            return cast(
+                tuple[str, bool, str],
+                fn(
+                    content=request.content,
+                    source=request.source,
+                    target=request.target,
+                    session_id=request.session_id,
+                    metadata=request.metadata,
+                    allow_duplicate=request.allow_duplicate,
+                    semantic_merge=request.semantic_merge,
+                    scope_mode=request.scope_mode,
+                ),
+            )
         fn = getattr(self._host, "_store_now", None)
         if not callable(fn):
             raise AttributeError("store_now")
-        return fn(*args, **kwargs)
+        return cast(
+            tuple[str, bool, str],
+            fn(
+                content=request.content,
+                source=request.source,
+                target=request.target,
+                session_id=request.session_id,
+                metadata=request.metadata,
+                allow_duplicate=request.allow_duplicate,
+                semantic_merge=request.semantic_merge,
+                scope_mode=request.scope_mode,
+            ),
+        )
 
-    def execute_update_memory(self, *args: Any, **kwargs: Any) -> Any:
+    def update(self, request: UpdateMemoryRequest) -> tuple[bool, str, str]:
         fn = getattr(self._host, "_update_memory", None)
         if not callable(fn):
             raise AttributeError("update_memory")
-        return fn(*args, **kwargs)
+        return cast(
+            tuple[bool, str, str],
+            fn(request.memory_id, request.content, request.target),
+        )
 
-    def execute_merge_memories(self, *args: Any, **kwargs: Any) -> Any:
+    def merge(self, request: MergeMemoriesRequest) -> dict[str, object]:
         fn = getattr(self._host, "_merge_memories", None)
         if not callable(fn):
             raise AttributeError("merge_memories")
-        return fn(*args, **kwargs)
+        return cast(
+            dict[str, object],
+            fn(
+                request.target_id,
+                list(request.source_ids),
+                request.content,
+                request.target,
+            ),
+        )
 
-    def execute_archive_memories(self, *args: Any, **kwargs: Any) -> Any:
+    def archive(self, request: ArchiveMemoriesRequest) -> dict[str, object]:
         fn = getattr(self._host, "_archive_memories", None)
         if not callable(fn):
             raise AttributeError("archive_memories")
-        return fn(*args, **kwargs)
+        return cast(
+            dict[str, object],
+            fn(
+                list(request.ids),
+                reason=request.reason,
+                actor=request.actor,
+                batch_id=request.batch_id,
+            ),
+        )
 
-    def execute_feedback_memory(self, *args: Any, **kwargs: Any) -> Any:
+    def feedback(self, request: FeedbackMemoryRequest) -> dict[str, object]:
         fn = getattr(self._host, "_feedback_memory", None)
         if not callable(fn):
             raise AttributeError("feedback_memory")
-        return fn(*args, **kwargs)
+        return cast(
+            dict[str, object],
+            fn(memory_id=request.memory_id, rating=request.rating, note=request.note),
+        )
 
-    def execute_govern_memories(self, *args: Any, **kwargs: Any) -> Any:
+    def govern(self, request: GovernMemoriesRequest) -> dict[str, object]:
         fn = getattr(self._host, "_govern_memories", None)
         if not callable(fn):
             raise AttributeError("govern_memories")
-        return fn(*args, **kwargs)
+        return cast(
+            dict[str, object],
+            fn(dry_run=request.dry_run, scope_only=request.scope_only),
+        )
 
-    def execute_delete_memories(self, *args: Any, **kwargs: Any) -> Any:
+    def delete(self, request: DeleteMemoriesRequest) -> DeleteMemoriesResult:
         fn = getattr(self._host, "_delete_memories", None)
         if not callable(fn):
             raise AttributeError("delete_memories")
-        return fn(*args, **kwargs)
+        raw_count = fn(list(request.ids))
+        if isinstance(raw_count, bool) or not isinstance(raw_count, int):
+            raise RuntimeError("legacy delete result must be an integer count")
+        legacy_count = raw_count
+        requested_ids = tuple(dict.fromkeys(request.ids))
+        if legacy_count == len(requested_ids):
+            deleted_ids = requested_ids
+            skipped_ids: tuple[str, ...] = ()
+        elif legacy_count == 0:
+            deleted_ids = ()
+            skipped_ids = requested_ids
+        else:
+            raise RuntimeError(
+                "legacy partial delete result cannot identify actual deleted ids"
+            )
+        return DeleteMemoriesResult(
+            requested_ids=requested_ids,
+            deleted_ids=deleted_ids,
+            skipped_ids=skipped_ids,
+            deleted_count=legacy_count,
+            vector_pending=False,
+            companion_erasure_pending=False,
+            data_retained=bool(skipped_ids),
+            mutation_applied=legacy_count > 0,
+        )
 
-    def execute_dedupe_memories(self, *args: Any, **kwargs: Any) -> Any:
+    def dedupe(self, request: DedupeMemoriesRequest) -> dict[str, object]:
         fn = getattr(self._host, "_dedupe_memories", None)
         if not callable(fn):
             raise AttributeError("dedupe_memories")
-        return fn(*args, **kwargs)
+        return cast(
+            dict[str, object],
+            fn(dry_run=request.dry_run, scope_only=request.scope_only),
+        )
 
-    def execute_repair_vector(self, *args: Any, **kwargs: Any) -> Any:
+    def repair(self) -> dict[str, object]:
         fn = getattr(self._host, "_repair_vector", None)
         if not callable(fn):
             raise AttributeError("repair_vector")
-        return fn(*args, **kwargs)
+        return cast(dict[str, object], fn())
 
-    def command_update_memory(self, *args: Any, **kwargs: Any) -> Any:
-        return self.execute_update_memory(*args, **kwargs)
-
-    def command_merge_memories(self, *args: Any, **kwargs: Any) -> Any:
-        return self.execute_merge_memories(*args, **kwargs)
-
-    def command_archive_memories(self, *args: Any, **kwargs: Any) -> Any:
-        return self.execute_archive_memories(*args, **kwargs)
-
-    def command_delete_memories(self, *args: Any, **kwargs: Any) -> Any:
-        return self.execute_delete_memories(*args, **kwargs)
-
-    def command_feedback_memory(self, *args: Any, **kwargs: Any) -> Any:
-        return self.execute_feedback_memory(*args, **kwargs)
-
-    def command_govern_memories(self, *args: Any, **kwargs: Any) -> Any:
-        return self.execute_govern_memories(*args, **kwargs)
-
-    def command_dedupe_memories(self, *args: Any, **kwargs: Any) -> Any:
-        return self.execute_dedupe_memories(*args, **kwargs)
-
-    def command_repair_vector(self, *args: Any, **kwargs: Any) -> Any:
-        return self.execute_repair_vector(*args, **kwargs)
-
-    def fact_owned_memory_ids(self, *args: Any, **kwargs: Any) -> Any:
+    def fact_owned(self, request: FactOwnedMemoryIdsRequest) -> list[str]:
         fn = getattr(self._host, "fact_owned_memory_ids", None)
         if not callable(fn):
+            fn = getattr(self._host, "_fact_owned_memory_ids", None)
+        if not callable(fn):
             raise AttributeError("fact_owned_memory_ids")
-        return fn(*args, **kwargs)
+        return cast(list[str], fn(list(request.ids)))
 
-    def clean_text(self, text: object) -> str:
-        fn = getattr(self._host, "clean_text", None)
+    def purge(self, request: PrivacyPurgeRequest) -> dict[str, object]:
+        fn = getattr(self._host, "_privacy_purge", None)
         if callable(fn):
-            return str(fn(text) or "")
-        return str(text or "")
+            return cast(
+                dict[str, object],
+                fn(
+                    action=request.action,
+                    ids=list(request.ids),
+                    operation_id=request.operation_id,
+                    confirmation=request.confirmation,
+                ),
+            )
+        from ...privacy_purge import run_privacy_purge
 
-    def config_view(self) -> dict[str, object]:
-        fn = getattr(self._host, "config_view", None)
-        if callable(fn):
-            raw = fn()
-            return dict(raw) if isinstance(raw, dict) else {}
-        return {}
-
-    def config_value(self, key: str, default: object = None) -> object:
-        fn = getattr(self._host, "config_value", None)
-        if callable(fn):
-            return fn(key, default)
-        return self.config_view().get(key, default)
-
-    def query_scope_view(self) -> Any:
-        fn = getattr(self._host, "query_scope_view", None)
-        if callable(fn):
-            return fn()
-        return {}
-
-    def scope_id(self) -> str:
-        return str((self.query_scope_view() or {}).get("scope_id") or "")
-
-    def shared_scope_id(self) -> str:
-        return str((self.query_scope_view() or {}).get("shared_scope_id") or "")
-
-    def shared_pool_scope_id(self) -> str:
-        return str((self.query_scope_view() or {}).get("shared_pool_scope_id") or "")
-
-    def writable_scope_ids(self) -> list[str]:
-        return [
-            str(item)
-            for item in ((self.query_scope_view() or {}).get("writable_scope_ids") or [])
-            if str(item)
-        ]
-
-    def vector_status_view(self) -> Any:
-        fn = getattr(self._host, "vector_status_view", None)
-        if callable(fn):
-            return fn()
-        return {}
-
-    def has_positive_write_authority(self) -> bool:
-        fn = getattr(self._host, "has_positive_write_authority", None)
-        return bool(fn()) if callable(fn) else False
-
-    def writer_lifecycle_lock(self) -> object:
-        fn = getattr(self._host, "writer_lifecycle_lock", None)
-        if callable(fn):
-            return fn()
-        return object()
+        return cast(
+            dict[str, object],
+            run_privacy_purge(
+                self._host,
+                action=request.action,
+                ids=request.ids,
+                operation_id=request.operation_id,
+                confirmation=request.confirmation,
+            ),
+        )
 
 
 def bind_memory_command_port(obj: Any) -> MemoryCommandPort:
@@ -241,69 +344,113 @@ def bind_memory_command_port(obj: Any) -> MemoryCommandPort:
 
 
 class CommandKernel:
-    """Owns memory_ops write boundaries. Callers pass MemoryCommandPort only."""
+    """Build typed requests and invoke provider-neutral application commands."""
 
     def store(
         self,
         port: MemoryCommandPort,
-        *args: Any,
-        store_memory_now: Any = None,
-        **kwargs: Any,
-    ) -> Any:
-        if store_memory_now is None and isinstance(port, _LegacyPersistCommandPort):
-            return port.execute_store_now(*args, **kwargs)
-        fn = memory_ops.store_memory_now if store_memory_now is None else store_memory_now
-        target = port.write_target()
-        with write_kernel.hold_positive_write_authority(target):
-            try:
-                return fn(target, *args, **kwargs)
-            except Exception:
-                port.rollback_conn_after_error("store_now")
-                raise
+        *,
+        content: str,
+        source: str,
+        target: str,
+        session_id: str,
+        metadata: dict[str, object] | None = None,
+        allow_duplicate: bool = False,
+        semantic_merge: bool = False,
+        scope_mode: str | None = None,
+    ) -> tuple[str, bool, str]:
+        return port.store(
+            StoreMemoryRequest(
+                content=content,
+                source=source,
+                target=target,
+                session_id=session_id,
+                metadata=metadata,
+                allow_duplicate=allow_duplicate,
+                semantic_merge=semantic_merge,
+                scope_mode=scope_mode,
+            )
+        )
 
-    def update(self, port: MemoryCommandPort, *args: Any, **kwargs: Any) -> Any:
-        if isinstance(port, _LegacyPersistCommandPort):
-            return port.execute_update_memory(*args, **kwargs)
-        target = port.write_target()
-        return memory_ops.update_memory(target, *args, **kwargs)
+    def update(
+        self,
+        port: MemoryCommandPort,
+        memory_id: str,
+        content: str,
+        target: str | None = None,
+    ) -> tuple[bool, str, str]:
+        return port.update(UpdateMemoryRequest(memory_id, content, target))
 
-    def merge(self, port: MemoryCommandPort, *args: Any, **kwargs: Any) -> Any:
-        if isinstance(port, _LegacyPersistCommandPort):
-            return port.execute_merge_memories(*args, **kwargs)
-        target = port.write_target()
-        return memory_ops.merge_memories(target, *args, **kwargs)
+    def merge(
+        self,
+        port: MemoryCommandPort,
+        target_id: str,
+        source_ids: list[str],
+        content: str | None = None,
+        target: str | None = None,
+    ) -> dict[str, object]:
+        return port.merge(MergeMemoriesRequest(target_id, tuple(source_ids), content, target))
 
-    def archive(self, port: MemoryCommandPort, ids: list[str], **kwargs: Any) -> Any:
-        if isinstance(port, _LegacyPersistCommandPort):
-            return port.execute_archive_memories(ids, **kwargs)
-        target = port.write_target()
-        return memory_ops.archive_memories(target, ids, **kwargs)
+    def archive(
+        self,
+        port: MemoryCommandPort,
+        ids: list[str],
+        *,
+        reason: str = "scope_recall_forget",
+        actor: str = "scope_recall_forget",
+        batch_id: str = "",
+    ) -> dict[str, object]:
+        return port.archive(ArchiveMemoriesRequest(tuple(ids), reason, actor, batch_id))
 
-    def feedback(self, port: MemoryCommandPort, **kwargs: Any) -> Any:
-        if isinstance(port, _LegacyPersistCommandPort):
-            return port.execute_feedback_memory(**kwargs)
-        return memory_ops.feedback_memory(port.write_target(), **kwargs)
+    def feedback(
+        self,
+        port: MemoryCommandPort,
+        *,
+        memory_id: str,
+        rating: str,
+        note: str = "",
+    ) -> dict[str, object]:
+        return port.feedback(FeedbackMemoryRequest(memory_id, rating, note))
 
-    def govern(self, port: MemoryCommandPort, **kwargs: Any) -> Any:
-        if isinstance(port, _LegacyPersistCommandPort):
-            return port.execute_govern_memories(**kwargs)
-        return memory_ops.govern_memories(port.write_target(), **kwargs)
+    def govern(
+        self,
+        port: MemoryCommandPort,
+        *,
+        dry_run: bool = True,
+        scope_only: bool = True,
+    ) -> dict[str, object]:
+        return port.govern(GovernMemoriesRequest(dry_run, scope_only))
 
-    def delete(self, port: MemoryCommandPort, ids: list[str]) -> Any:
-        if isinstance(port, _LegacyPersistCommandPort):
-            return port.execute_delete_memories(ids)
-        target = port.write_target()
-        return memory_ops.delete_memories(target, ids)
+    def delete(self, port: MemoryCommandPort, ids: list[str]) -> DeleteMemoriesResult:
+        return port.delete(DeleteMemoriesRequest(tuple(ids)))
 
-    def dedupe(self, port: MemoryCommandPort, **kwargs: Any) -> Any:
-        if isinstance(port, _LegacyPersistCommandPort):
-            return port.execute_dedupe_memories(**kwargs)
-        return memory_ops.dedupe_memories(port.write_target(), **kwargs)
+    def dedupe(
+        self,
+        port: MemoryCommandPort,
+        *,
+        dry_run: bool = True,
+        scope_only: bool = True,
+    ) -> dict[str, object]:
+        return port.dedupe(DedupeMemoriesRequest(dry_run, scope_only))
 
-    def repair(self, port: MemoryCommandPort) -> Any:
-        if isinstance(port, _LegacyPersistCommandPort):
-            return port.execute_repair_vector()
-        return memory_ops.repair_vector(port.write_target())
+    def repair(self, port: MemoryCommandPort) -> dict[str, object]:
+        return port.repair()
+
+    def fact_owned(self, port: MemoryCommandPort, ids: list[str]) -> list[str]:
+        return port.fact_owned(FactOwnedMemoryIdsRequest(tuple(ids)))
+
+    def purge(
+        self,
+        port: MemoryCommandPort,
+        *,
+        action: str,
+        ids: list[str] | tuple[str, ...] = (),
+        operation_id: str = "",
+        confirmation: str = "",
+    ) -> dict[str, object]:
+        return port.purge(
+            PrivacyPurgeRequest(action, tuple(ids), operation_id, confirmation)
+        )
 
 
 class RuntimeKernel(QueryKernel, CommandKernel):

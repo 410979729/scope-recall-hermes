@@ -7,6 +7,7 @@ import sqlite3
 import pytest
 
 from scope_recall.relation_extraction import extract_relation_candidates
+from scope_recall.relation_frequency_index import sync_relation_frequency_memory
 from scope_recall.relation_scope_state import (
     ScopeCorpusChanged,
     current_scope_corpus_revision,
@@ -91,6 +92,7 @@ def test_updated_at_relation_semantics_advance_scope_revision() -> None:
             "legacy",
         ),
     )
+    sync_relation_frequency_memory(conn, "legacy")
     conn.execute(
         "UPDATE memories SET content=?, metadata=?, updated_at=? WHERE id=?",
         (
@@ -100,6 +102,7 @@ def test_updated_at_relation_semantics_advance_scope_revision() -> None:
             "replacement",
         ),
     )
+    sync_relation_frequency_memory(conn, "replacement")
     conn.commit()
     revision_before = current_scope_corpus_revision(conn, "scope-a")
     supersedes_before = [
@@ -113,6 +116,7 @@ def test_updated_at_relation_semantics_advance_scope_revision() -> None:
         "UPDATE memories SET updated_at=? WHERE id=?",
         ("2025-01-01T00:00:00+00:00", "replacement"),
     )
+    sync_relation_frequency_memory(conn, "replacement")
     conn.commit()
 
     assert current_scope_corpus_revision(conn, "scope-a") == revision_before + 1

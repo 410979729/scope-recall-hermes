@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/410979729/scope-recall-hermes/schemas/repository-census.v1.json",
+  "title": "Scope Recall Repository Census",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "algorithm",
+    "source",
+    "file_count",
+    "tracked_file_count",
+    "untracked_file_count",
+    "total_bytes",
+    "inventory_sha256",
+    "counts",
+    "anomalies",
+    "files"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "scope-recall.repository-census.v1"
+    },
+    "algorithm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "path_source",
+        "content_hash",
+        "inventory_hash",
+        "ignored_files_included",
+        "tracked_only"
+      ],
+      "properties": {
+        "name": {"const": "git-ls-files-sha256-v1"},
+        "path_source": {"type": "string"},
+        "content_hash": {"type": "string"},
+        "inventory_hash": {"type": "string"},
+        "ignored_files_included": {"const": false},
+        "tracked_only": {"type": "boolean"}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "tree", "branch", "dirty"],
+      "properties": {
+        "commit": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "tree": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "branch": {"type": "string"},
+        "dirty": {"type": "boolean"}
+      }
+    },
+    "file_count": {"type": "integer", "minimum": 0},
+    "tracked_file_count": {"type": "integer", "minimum": 0},
+    "untracked_file_count": {"type": "integer", "minimum": 0},
+    "total_bytes": {"type": "integer", "minimum": 0},
+    "inventory_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "lifecycle"],
+      "properties": {
+        "category": {"$ref": "#/$defs/countMap"},
+        "lifecycle": {"$ref": "#/$defs/countMap"}
+      }
+    },
+    "anomalies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["untracked_paths", "large_files", "casefold_collisions"],
+      "properties": {
+        "untracked_paths": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "large_files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "size_bytes"],
+            "properties": {
+              "path": {"type": "string"},
+              "size_bytes": {"type": "integer", "minimum": 0}
+            }
+          }
+        },
+        "casefold_collisions": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "items": {"type": "string"}
+          }
+        }
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/fileEntry"}
+    }
+  },
+  "$defs": {
+    "countMap": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "fileEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes",
+        "kind",
+        "tracked",
+        "category",
+        "lifecycle"
+      ],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "size_bytes": {"type": "integer", "minimum": 0},
+        "kind": {"enum": ["file", "symlink"]},
+        "tracked": {"type": "boolean"},
+        "category": {"type": "string", "minLength": 1},
+        "lifecycle": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

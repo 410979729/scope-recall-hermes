@@ -132,6 +132,9 @@ def test_nightly_digest_report_ignores_operator_classified_recent_fallbacks(tmp_
     assert payload["recent_open_fallbacks"] == 0
     assert payload["recent_historical_fallbacks"] == 1
     assert payload["latest_run"]["operator_classification"] == "accepted_fallback"
+    assert payload["durable_work"]["state"] == "ready"
+    assert payload["durable_work"]["item_counts"]["completed"] == 1
+    assert payload["durable_work"]["lease"]["mode"] == "process_lifetime_os_lock"
     assert not recommendations
 
 
