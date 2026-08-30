@@ -493,6 +493,18 @@ def _entry_point_modules(text: str) -> set[str]:
     return {match.group("module") for match in _ENTRY_POINT_TARGET.finditer(text)}
 
 
+def _visual_console_entrypoint_assignment(line: str) -> bool:
+    left, separator, right = line.partition("=")
+    if not separator or not left.strip() or not right.strip():
+        return False
+    lowered_left = left.casefold()
+    return (
+        "visual" in lowered_left
+        and "console" in lowered_left
+        and _ENTRY_POINT_TARGET.search(line) is not None
+    )
+
+
 def _legacy_metadata_reason(text: str, unsafe_modules: set[str]) -> str:
     if _LEGACY_VISUAL_CONSOLE_PORT.search(text):
         return "legacy_console_port"
@@ -500,11 +512,7 @@ def _legacy_metadata_reason(text: str, unsafe_modules: set[str]) -> str:
     modules = _entry_point_modules(text)
     unsafe_entrypoint = (
         "scope_recall.server" in lowered
-        or any(
-            "visual" in line.partition("=")[0].casefold()
-            and "console" in line.partition("=")[0].casefold()
-            for line in text.splitlines()
-        )
+        or any(_visual_console_entrypoint_assignment(line) for line in text.splitlines())
         or bool(modules & unsafe_modules)
     )
     return "legacy_console_entrypoint" if unsafe_entrypoint else ""
