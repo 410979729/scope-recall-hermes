@@ -223,6 +223,46 @@ def test_distribution_metadata_cannot_hide_legacy_console_port() -> None:
     ]
 
 
+def test_embedded_product_prose_is_not_mistaken_for_an_entrypoint() -> None:
+    product_statement = (
+        b"Scope Recall 2.0 does not ship the retired standalone "
+        b"visual-console writer.\n"
+    )
+    wheel = {
+        "hermes_scope_recall-2.0.0.dist-info/METADATA": (
+            b"Metadata-Version: 2.4\nDescription: Safe boundary.\n\n"
+            + product_statement
+        )
+    }
+    sdist = {
+        f"{SDIST_ROOT}/PKG-INFO": (
+            b"Metadata-Version: 2.4\nDescription: Safe boundary.\n\n"
+            + product_statement
+        )
+    }
+    actual_entrypoint = {
+        "hermes_scope_recall-2.0.0.dist-info/entry_points.txt": (
+            b"[console_scripts]\n"
+            b"visual-console = scope_recall.cli:main\n"
+        )
+    }
+
+    assert artifacts.legacy_visual_console_artifact_findings(
+        wheel, kind="wheel"
+    ) == []
+    assert artifacts.legacy_visual_console_artifact_findings(
+        sdist, kind="sdist", sdist_root=SDIST_ROOT
+    ) == []
+    assert artifacts.legacy_visual_console_artifact_findings(
+        actual_entrypoint, kind="wheel"
+    ) == [
+        {
+            "path": "hermes_scope_recall-2.0.0.dist-info/entry_points.txt",
+            "reason": "legacy_console_entrypoint",
+        }
+    ]
+
+
 def test_source_metadata_cannot_hide_legacy_console_port(tmp_path: Path) -> None:
     _write_source(
         tmp_path,
