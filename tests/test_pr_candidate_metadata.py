@@ -117,6 +117,8 @@ def _fixture(tmp_path: Path):
         evidence / "PYTEST_SKIP_REPORT.json",
         {
             "schema_version": "scope-recall.test-honesty.v1",
+            "source_commit": commit,
+            "source_tree": tree,
             "collected": 12,
             "passed": 10,
             "failed": 0,
@@ -641,6 +643,16 @@ def test_every_consumed_file_is_uniquely_shareable_bound(
                 {"active_instance_touched": True}
             ),
             "active isolation boundary changed",
+        ),
+        (
+            "PYTEST_SKIP_REPORT.json",
+            lambda payload: payload.update({"source_commit": "f" * 40}),
+            "test honesty source identity differs from candidate",
+        ),
+        (
+            "PYTEST_SKIP_REPORT.json",
+            lambda payload: payload.update({"source_tree": "f" * 40}),
+            "test honesty source identity differs from candidate",
         ),
     ],
 )
