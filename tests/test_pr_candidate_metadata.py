@@ -13,12 +13,24 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check.pr_candidate_metadata.py"
+VALIDATION_SCRIPT = ROOT / "scripts" / "run.release_validation.py"
 
 
 def _module():
     spec = importlib.util.spec_from_file_location(
         "scope_recall_pr_candidate_metadata_test",
         SCRIPT,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _validation_module():
+    spec = importlib.util.spec_from_file_location(
+        "scope_recall_pr_validation_schema_contract_test",
+        VALIDATION_SCRIPT,
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -196,7 +208,7 @@ def _fixture(tmp_path: Path):
         evidence / module.ISSUE_51_RECEIPT,
         {
             **receipt_base,
-            "schema_version": "scope-recall.test-receipt.v1",
+            "schema_version": module.ISSUE_51_RECEIPT_SCHEMA_VERSION,
             "details": {
                 "node_ids": ["tests/test_issue_51_regression.py::test_issue_51_regression"],
                 "issue_51_regression": {
@@ -330,6 +342,13 @@ def _fixture(tmp_path: Path):
     raw_path = tmp_path / module.RAW_SNAPSHOT_NAME
     _write(raw_path, snapshot)
     return module, evidence, snapshot, marker, raw_path
+
+
+def test_issue_51_receipt_schema_matches_canonical_validation_runner() -> None:
+    assert (
+        _module().ISSUE_51_RECEIPT_SCHEMA_VERSION
+        == _validation_module().RECEIPT_SCHEMA_VERSION
+    )
 
 
 def test_exact_pr_marker_matches_all_candidate_evidence(tmp_path: Path):

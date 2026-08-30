@@ -32,6 +32,7 @@ RAW_SNAPSHOT_NAME = "PR_CANDIDATE_METADATA_SOURCE.raw.json"
 RECEIPT_NAME = "PR_CANDIDATE_METADATA.json"
 PUBLIC_BINDING_NAME = "PUBLIC_REVIEW_BINDING_INDEX.json"
 ISSUE_51_RECEIPT = "ISSUE_51_REGRESSION.json"
+ISSUE_51_RECEIPT_SCHEMA_VERSION = "scope-recall.validation-receipt.v1"
 ISSUE_58_RECEIPT = "WRITER_LEASE_HANDOFF_REHEARSAL.json"
 ISSUE_60_RECEIPT = "ISSUE_60_REGRESSION.json"
 ISSUE_61_RECEIPT = "ISSUE_61_APPLICABILITY.json"
@@ -358,7 +359,7 @@ def _validate_issue_receipt(
     artifact_sha256: str,
 ) -> None:
     expected_schema = (
-        "scope-recall.test-receipt.v1"
+        ISSUE_51_RECEIPT_SCHEMA_VERSION
         if filename == ISSUE_51_RECEIPT
         else "scope-recall.writer-lease-handoff.v1"
     )
