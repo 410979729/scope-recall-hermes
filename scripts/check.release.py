@@ -2441,6 +2441,36 @@ def pypi_workflow_gate_check() -> dict[str, object]:
         failures.append("PyPI workflow does not publish to PyPI")
     if publish_marker in pypi_text and gate_marker in pypi_text and pypi_text.index(gate_marker) > pypi_text.index(publish_marker):
         failures.append("PyPI workflow invokes release gate after the publish step")
+    source_binding_marker = (
+        'test "$(git rev-parse HEAD)" = "${VERIFIED_SOURCE_SHA}"'
+    )
+    if source_binding_marker not in pypi_text:
+        failures.append(
+            "PyPI workflow does not bind the checked-out tag to the verified release source"
+        )
+    elif gate_marker in pypi_text and pypi_text.index(
+        source_binding_marker
+    ) > pypi_text.index(gate_marker):
+        failures.append(
+            "PyPI workflow must bind the checked-out tag to the verified release "
+            "source before executing the tagged release gate"
+        )
+    if gate_marker in pypi_text:
+        gate_position = pypi_text.index(gate_marker)
+        dirty_workspace_markers = (
+            "Download GitHub Release artifacts",
+            "Stage validated distributions",
+            "release-download",
+            "release-staging",
+        )
+        if any(
+            marker in pypi_text and pypi_text.index(marker) < gate_position
+            for marker in dirty_workspace_markers
+        ):
+            failures.append(
+                "PyPI workflow must run the tagged release gate before creating "
+                "release artifact work directories"
+            )
     if re.search(r"(?m)^  release:\s*$", pypi_text):
         failures.append(
             "PyPI workflow must not also trigger on GitHub Release published events"
