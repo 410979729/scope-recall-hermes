@@ -31,7 +31,7 @@ from scope_recall.writer_lease import (
     writer_handoff_telemetry_view,
 )
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(writer_handoff_module.__file__).resolve().parents[2]
 DOCTOR = ROOT / "scripts" / "doctor.py"
 DASHBOARD = ROOT / "scripts" / "report.dashboard.py"
 
@@ -521,6 +521,10 @@ def test_doctor_and_dashboard_expose_all_fresh_persisted_fields(tmp_path):
         text=True,
         encoding="utf-8",
         errors="replace",
+    )
+    assert completed.stdout.strip(), (
+        "doctor subprocess returned empty stdout "
+        f"(exit code {completed.returncode})"
     )
     doctor_payload = json.loads(completed.stdout)
     doctor_handoff = doctor_payload["runtime"]["writer_handoff"]
