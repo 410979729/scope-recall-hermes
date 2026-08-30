@@ -276,12 +276,15 @@ def test_dashboard_payload_has_schema_severity_sections_and_trend(monkeypatch, t
     assert payload["summary"]["writer_lease_scope"] == "process-wide-os-lock"
     assert payload["summary"]["writer_idle_release_enabled"] is True
     assert payload["summary"]["writer_idle_release_seconds"] == 1800.0
-    assert payload["summary"]["writer_live_counters_source"] == "scope_recall_stats"
+    assert (
+        payload["summary"]["writer_live_counters_source"]
+        == "persisted_writer_handoff_telemetry"
+    )
     handoff = payload["sections"]["writer_handoff"]
     assert handoff["snapshot_kind"] == "offline_config_only"
     assert handoff["runtime_state_observed"] is False
     assert handoff["live_counters"]["observed"] is False
-    assert handoff["live_counters"]["source"] == "scope_recall_stats"
+    assert handoff["live_counters"]["source"] == "persisted_writer_handoff_telemetry"
     assert "last_handoff_failure_code" in handoff["live_counters"]["fields"]
     assert payload["trend"]["journal_unprocessed"]["delta"] == -9
     assert payload["trend"]["candidate_debt_count"]["delta"] == 2
@@ -311,7 +314,7 @@ def test_dashboard_reports_disabled_idle_release_as_offline_config_only(
     assert handoff["idle_release_enabled"] is False
     assert handoff["idle_release_seconds"] == 0.0
     assert handoff["runtime_state_observed"] is False
-    assert "writer_role" not in handoff
+    assert handoff["writer_role"] is None
 
 
 def test_dashboard_surfaces_runtime_config_load_errors(monkeypatch, tmp_path):

@@ -98,6 +98,11 @@ def _make_idle(*providers) -> None:
 def _write_handoff_details(
     *,
     idle_seconds: float,
+    process_count: int,
+    same_process_provider_count: int,
+    stages: list[str],
+    simultaneous_writer_observed: bool,
+    accepted_work_lost: bool,
     released_counts: dict[str, int],
 ) -> None:
     """Write the content-free release rehearsal details when requested."""
@@ -112,11 +117,11 @@ def _write_handoff_details(
         "schema_version": _HANDOFF_DETAILS_SCHEMA_VERSION,
         "writer_artifact_sha256": artifact_sha256,
         "idle_release_seconds": idle_seconds,
-        "process_count": 2,
-        "same_process_provider_count": 2,
-        "stages": list(_HANDOFF_STAGES),
-        "simultaneous_writer_observed": False,
-        "accepted_work_lost": False,
+        "process_count": process_count,
+        "same_process_provider_count": same_process_provider_count,
+        "stages": list(stages),
+        "simultaneous_writer_observed": simultaneous_writer_observed,
+        "accepted_work_lost": accepted_work_lost,
         "holder_count_after_release": released_counts[
             "same_process_holder_count"
         ],
@@ -196,14 +201,32 @@ def test_process_wide_idle_handoff_allows_real_second_process_commit(tmp_path):
     first = _provider()
     second = _provider()
     child: subprocess.Popen[str] | None = None
+    observed_process_ids = {os.getpid()}
+    observed_stages: list[str] = []
+    writer_role_observations: list[tuple[bool, bool]] = []
+
+    def observe_writer_roles(*, child_role: str) -> None:
+        parent_process_writer = any(
+            provider._truth_writer_role == "owner" for provider in (first, second)
+        )
+        child_process_writer = child_role == "owner"
+        writer_role_observations.append(
+            (parent_process_writer, child_process_writer)
+        )
+        assert not (parent_process_writer and child_process_writer)
+
     try:
         _initialize(first, tmp_path, "handoff-first")
         _initialize(second, tmp_path, "handoff-second")
         storage = tmp_path / "scope-recall"
+        assert first._truth_writer_role == "owner"
+        assert second._truth_writer_role == "owner"
         assert truth_writer_process_snapshot(storage) == {
             "same_process_holder_count": 2,
             "connection_pin_count": 2,
         }
+        observed_stages.append("initial_owner")
+        observe_writer_roles(child_role="not_started")
         accepted = enqueue_store(
             first,
             content=(
@@ -217,10 +240,19 @@ def test_process_wide_idle_handoff_allows_real_second_process_commit(tmp_path):
         assert accepted["status"] == "accepted"
         assert first.flush(timeout=3.0) is True
         child = _start_external_handoff_writer(storage)
+        assert child.pid != os.getpid()
+        observed_process_ids.add(child.pid)
+        assert len(observed_process_ids) == 2
         assert child.stdout is not None
         assert child.stdin is not None
-        assert child.stdout.readline().strip() == "FIRST:reader"
-        assert set(live_providers_for_database(first)) == {first, second}
+        first_child_role = child.stdout.readline().strip()
+        assert first_child_role == "FIRST:reader"
+        observed_stages.append("peer_reader")
+        observe_writer_roles(child_role=first_child_role.removeprefix("FIRST:"))
+        same_process_providers = set(live_providers_for_database(first))
+        assert same_process_providers == {first, second}
+        same_process_provider_count = len(same_process_providers)
+        assert same_process_provider_count == 2
 
         _make_idle(first, second)
         state = process_writer_handoff_state(storage)
@@ -228,25 +260,41 @@ def test_process_wide_idle_handoff_allows_real_second_process_commit(tmp_path):
 
         assert first._truth_writer_role == "reader"
         assert second._truth_writer_role == "reader"
+        assert state.handoff_generation == 1
+        observed_stages.append("idle_fence")
+        for provider in (first, second):
+            assert provider._writer_thread is None
+            assert provider._write_queue.empty()
+            assert provider._capture_queue_processing == 0
+            assert provider._writer_handoff_active_truth_work == 0
+        observed_stages.append("all_work_quiescent")
         released_counts = truth_writer_process_snapshot(storage)
         assert released_counts == {
             "same_process_holder_count": 0,
             "connection_pin_count": 0,
         }
+        observed_stages.append("os_lease_released")
+        observe_writer_roles(child_role="reader")
         assert writer_handoff_status(first)["successful_handoff_count"] == 1
 
         child.stdin.write("promote\n")
         child.stdin.flush()
-        assert child.stdout.readline().strip() == "SECOND:owner"
+        second_child_role = child.stdout.readline().strip()
+        assert second_child_role == "SECOND:owner"
+        observed_stages.append("peer_promoted")
+        observe_writer_roles(child_role=second_child_role.removeprefix("SECOND:"))
         committed = child.stdout.readline().strip()
         if committed != "COMMITTED":
             assert child.stderr is not None
             pytest.fail(
                 f"{committed}\n{child.stderr.read()}" or "child provider did not commit"
             )
+        observed_stages.append("peer_write_committed")
 
         first.on_turn_start(2, "reader must not overlap child writer")
         assert first._truth_writer_role == "reader"
+        observed_stages.append("former_owner_remains_reader")
+        observe_writer_roles(child_role="owner")
         child.stdin.write("release\n")
         child.stdin.flush()
         assert child.stdout.readline().strip() == "RELEASED"
@@ -254,6 +302,7 @@ def test_process_wide_idle_handoff_allows_real_second_process_commit(tmp_path):
 
         first.on_turn_start(3, "promote after child release")
         assert first._truth_writer_role == "owner"
+        observe_writer_roles(child_role="released")
         stored_contents = {
             str(row[0])
             for row in first._conn.execute(
@@ -261,12 +310,27 @@ def test_process_wide_idle_handoff_allows_real_second_process_commit(tmp_path):
                 ("The accepted capture%", "The child reader%"),
             ).fetchall()
         }
-        assert stored_contents == {
-            "The accepted capture must commit before the process-wide writer handoff releases its authority.",
-            "The child reader committed after exact OS lease promotion.",
-        }
+        accepted_content = (
+            "The accepted capture must commit before the process-wide writer handoff "
+            "releases its authority."
+        )
+        child_content = "The child reader committed after exact OS lease promotion."
+        assert stored_contents == {accepted_content, child_content}
+        accepted_work_lost = accepted_content not in stored_contents
+        assert accepted_work_lost is False
+        simultaneous_writer_observed = any(
+            parent_writer and child_writer
+            for parent_writer, child_writer in writer_role_observations
+        )
+        assert simultaneous_writer_observed is False
+        assert observed_stages == _HANDOFF_STAGES
         _write_handoff_details(
             idle_seconds=idle_release_seconds(first),
+            process_count=len(observed_process_ids),
+            same_process_provider_count=same_process_provider_count,
+            stages=observed_stages,
+            simultaneous_writer_observed=simultaneous_writer_observed,
+            accepted_work_lost=accepted_work_lost,
             released_counts=released_counts,
         )
     finally:
@@ -477,15 +541,16 @@ def test_capture_enqueue_racing_idle_fence_aborts_without_losing_work(
         assert capture_thread is not None
         capture_thread.join(timeout=3.0)
 
-        assert outcome == [
-            {
-                "status": "accepted",
-                "reason": "queued",
-                "intent_id": None,
-                "depth": 1,
-                "capacity": outcome[0]["capacity"],
-            }
-        ]
+        assert len(outcome) == 1
+        accepted = outcome[0]
+        assert accepted["status"] == "accepted"
+        assert accepted["reason"] == "queued"
+        assert accepted["intent_id"] is None
+        # The consumer may remove the one item before enqueue_store samples
+        # qsize(), so both snapshots are valid.  The flush and row-count checks
+        # below prove the durable exactly-once behavior this race exercises.
+        assert accepted["depth"] in {0, 1}
+        assert int(accepted["capacity"]) >= 1
         assert provider.flush(timeout=3.0) is True
         assert provider._truth_writer_role == "owner"
         assert writer_handoff_status(provider)["last_failure_code"] == (
@@ -1306,6 +1371,9 @@ def test_stats_exposes_content_free_writer_handoff_observability(tmp_path):
         handoff = provider._stats_payload()["truth_writer"]["handoff"]
         assert {
             "enabled",
+            "writer_role",
+            "writer_lease_scope",
+            "idle_release_enabled",
             "idle_release_seconds",
             "user_idle_seconds",
             "truth_idle_seconds",
@@ -1324,6 +1392,7 @@ def test_stats_exposes_content_free_writer_handoff_observability(tmp_path):
             "operator_action_required",
             "same_process_holder_count",
             "connection_pin_count",
+            "demotion_in_progress",
         } <= set(handoff)
         for key in (
             "user_idle_seconds",

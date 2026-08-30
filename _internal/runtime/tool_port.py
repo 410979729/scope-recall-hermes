@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from typing import Any, Iterator, Mapping, Sequence
 
 from ...fact_actions import EvolutionProposal, EvolutionResult
@@ -267,36 +267,43 @@ class ProviderToolRuntimeAdapter:
         provenance_refs: Sequence[Mapping[str, object]],
     ) -> EvolutionResult:
         from ...fact_evolution import execute_pipeline_proposal
+        from ...write_kernel import command_write_access
 
         scope = self.scope_object()
-        with self.query_lock():
-            return execute_pipeline_proposal(
-                self.query_connection(),
-                proposal=proposal,
-                lane=lane,
-                run_id=run_id,
-                source_key=source_key,
-                trusted_scope_id=trusted_scope_id,
-                writable_scope_ids=writable_scope_ids,
-                actor=actor,
-                source=source,
-                target=target,
-                content=content,
-                metadata=metadata,
-                runtime_config=self.config_view(),
-                dry_run=dry_run,
-                provenance_refs=provenance_refs,
-                session_id=self.session_id(),
-                platform=str(getattr(scope, "platform", "") or ""),
-                user_id=str(getattr(scope, "user_id", "") or ""),
-                chat_id=str(getattr(scope, "chat_id", "") or ""),
-                thread_id=str(getattr(scope, "thread_id", "") or ""),
-                gateway_session_key=str(
-                    getattr(scope, "gateway_session_key", "") or ""
-                ),
-                agent_identity=str(getattr(scope, "agent_identity", "") or ""),
-                agent_workspace=str(getattr(scope, "agent_workspace", "") or ""),
-            )
+        admission = (
+            nullcontext()
+            if dry_run
+            else command_write_access(self._host, user_initiated=True)
+        )
+        with admission:
+            with self.query_lock():
+                return execute_pipeline_proposal(
+                    self.query_connection(),
+                    proposal=proposal,
+                    lane=lane,
+                    run_id=run_id,
+                    source_key=source_key,
+                    trusted_scope_id=trusted_scope_id,
+                    writable_scope_ids=writable_scope_ids,
+                    actor=actor,
+                    source=source,
+                    target=target,
+                    content=content,
+                    metadata=metadata,
+                    runtime_config=self.config_view(),
+                    dry_run=dry_run,
+                    provenance_refs=provenance_refs,
+                    session_id=self.session_id(),
+                    platform=str(getattr(scope, "platform", "") or ""),
+                    user_id=str(getattr(scope, "user_id", "") or ""),
+                    chat_id=str(getattr(scope, "chat_id", "") or ""),
+                    thread_id=str(getattr(scope, "thread_id", "") or ""),
+                    gateway_session_key=str(
+                        getattr(scope, "gateway_session_key", "") or ""
+                    ),
+                    agent_identity=str(getattr(scope, "agent_identity", "") or ""),
+                    agent_workspace=str(getattr(scope, "agent_workspace", "") or ""),
+                )
 
     def shared_pool_enabled(self) -> bool:
         return bool(getattr(self._host, "_shared_pool_enabled", False))
@@ -325,24 +332,28 @@ class ProviderToolRuntimeAdapter:
 
     @contextmanager
     def write_access(self, *, capture_barrier: bool) -> Iterator[bool]:
-        """Hold the existing capture/lifecycle order without exposing either lock."""
+        """Use the same reentrant command boundary as direct provider calls."""
 
-        from ...capture import capture_mutation_barrier as mutation_barrier
         from ...write_kernel import (
-            _writer_lifecycle_lock,
-            has_positive_write_authority,
+            WRITE_AUTHORITY_BUSY,
+            command_write_access,
         )
-        from .writer_handoff import active_truth_work
 
-        barrier = mutation_barrier(self._host) if capture_barrier else nullcontext()
-        with barrier:
-            with _writer_lifecycle_lock(self._host):
-                authorized = has_positive_write_authority(self._host)
-                if not authorized:
-                    yield False
-                    return
-                with active_truth_work(self._host, user_initiated=True):
-                    yield True
+        with ExitStack() as stack:
+            try:
+                stack.enter_context(
+                    command_write_access(
+                        self._host,
+                        capture_barrier=capture_barrier,
+                        user_initiated=True,
+                    )
+                )
+            except RuntimeError as exc:
+                if str(exc) != WRITE_AUTHORITY_BUSY:
+                    raise
+                yield False
+                return
+            yield True
 
     def rollback_conn_after_error(self, context: str) -> Any:
         return _optional_call(self._host, "_rollback_conn_after_error", context)

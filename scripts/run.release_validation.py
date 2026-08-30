@@ -11,7 +11,7 @@ import hashlib
 import importlib.util
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import signal
 import shutil
 import stat
@@ -50,6 +50,9 @@ N_MINUS_ONE_VERSION = "1.10.3"
 N_MINUS_ONE_WINDOW_SCHEMA_VERSION = "scope-recall.n-minus-one-window.v1"
 ISSUE_51_DETAILS_SCHEMA_VERSION = "scope-recall.issue-51-regression-details.v1"
 ISSUE_51_DETAILS_OUTPUT_ENV = "SCOPE_RECALL_ISSUE_51_DETAILS_OUTPUT"
+ISSUE_60_SCHEMA_VERSION = "scope-recall.issue-60-regression.v1"
+ISSUE_60_DETAILS_OUTPUT_ENV = "SCOPE_RECALL_ISSUE_60_DETAILS_OUTPUT"
+ISSUE_61_SCHEMA_VERSION = "scope-recall.issue-61-applicability.v1"
 WRITER_HANDOFF_SCHEMA_VERSION = "scope-recall.writer-lease-handoff.v1"
 WRITER_HANDOFF_DETAILS_SCHEMA_VERSION = (
     "scope-recall.writer-lease-handoff-details.v1"
@@ -97,6 +100,11 @@ REHEARSAL_RECEIPTS: dict[str, tuple[str, ...]] = {
         "tests/test_relation_policy_generation.py::test_cap_plus_one_blocks_whole_generation_without_partial_items",
         "tests/test_relation_cleanup.py::test_cleanup_apply_is_backup_first_committed_and_idempotently_replayed",
     ),
+    "ISSUE_60_REGRESSION.json": (
+        "tests/test_issue_60_regression.py::test_issue_60_retry_due_time_is_bounded_and_healthy_work_is_not_starved",
+        "tests/test_issue_60_regression.py::test_issue_60_sixty_one_idle_ticks_do_not_restore_one_second_hammer",
+        "tests/test_issue_60_regression.py::test_issue_60_maintenance_is_nonblocking_and_prefetch_is_bounded_zero_write",
+    ),
     "WRITER_LEASE_HANDOFF_REHEARSAL.json": (
         "tests/test_writer_idle_handoff.py::test_process_wide_idle_handoff_allows_real_second_process_commit",
         "tests/test_writer_idle_handoff.py::test_extra_connection_pin_vetoes_process_handoff",
@@ -129,6 +137,40 @@ REHEARSAL_RECEIPTS: dict[str, tuple[str, ...]] = {
         "tests/test_writer_idle_handoff.py::test_idle_release_config_accepts_disabled_or_bounded_values",
         "tests/test_writer_idle_handoff.py::test_idle_release_config_rejects_ambiguous_or_unbounded_values",
         "tests/test_writer_idle_handoff.py::test_user_activity_generation_veto_is_content_free",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_update_started_before_fence_commits_and_vetoes_handoff",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_update_started_after_fence_is_rejected",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_merge_preserves_capture_barrier",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_archive_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_delete_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_feedback_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_govern_apply_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_dedupe_apply_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_repair_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_purge_deny_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_purge_erase_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_read_only_modes_do_not_require_write_authority",
+        "tests/test_direct_command_writer_admission.py::test_memory_mutation_service_rejects_fenced_unadmitted_mutation",
+        "tests/test_direct_command_writer_admission.py::test_memory_mutation_service_rejects_unclassified_non_owner",
+        "tests/test_direct_command_writer_admission.py::test_private_admission_surface_rejects_public_bool_and_wrong_token",
+        "tests/test_direct_command_writer_admission.py::test_accepted_capture_commits_after_shutdown_and_handoff_fences",
+        "tests/test_direct_command_writer_admission.py::test_admitted_truth_mutation_token_is_cleared_after_exception",
+        "tests/test_direct_command_writer_admission.py::test_public_store_reuses_one_active_truth_unit_and_generation",
+        "tests/test_direct_command_writer_admission.py::test_govern_acquires_query_connection_under_query_lock",
+        "tests/test_direct_command_writer_admission.py::test_tool_service_dry_run_governance_does_not_request_write_access",
+        "tests/test_direct_command_writer_admission.py::test_fact_proposal_dry_run_is_read_only_on_reader",
+        "tests/test_direct_command_writer_admission.py::test_fact_proposal_apply_reenters_command_gate_and_rejects_reader_or_fence",
+        "tests/test_direct_command_writer_admission.py::test_nested_command_gate_preserves_barrier_and_propagates_exceptions",
+        "tests/test_direct_command_writer_admission.py::test_public_provider_command_surface_uses_unified_admission",
+        "tests/test_writer_handoff_telemetry.py::test_new_authority_epoch_fences_delayed_old_reader_update",
+        "tests/test_writer_handoff_telemetry.py::test_initial_epoch_claim_linearizes_with_final_lease_release",
+        "tests/test_writer_handoff_telemetry.py::test_epoch_claim_never_takes_activity_lock_under_process_state_lock",
+        "tests/test_writer_handoff_telemetry.py::test_delayed_activity_cannot_overwrite_final_shutdown_with_owner_snapshot",
+        "tests/test_writer_handoff_telemetry.py::test_missing_invalid_and_stale_snapshots_are_explicitly_unobserved",
+        "tests/test_writer_handoff_telemetry.py::test_fresh_snapshot_activity_ages_advance_at_read_time",
+        "tests/test_writer_handoff_telemetry.py::test_runtime_writes_only_real_activity_or_state_events",
+        "tests/test_writer_handoff_telemetry.py::test_telemetry_failure_never_changes_writer_authority",
+        "tests/test_writer_handoff_telemetry.py::test_same_process_holders_share_epoch_until_final_release",
+        "tests/test_writer_handoff_telemetry.py::test_doctor_and_dashboard_expose_all_fresh_persisted_fields",
         "tests/test_writer_handoff_activity.py::test_journal_append_cannot_cross_handoff_fence_after_lifecycle_precheck",
         "tests/test_writer_handoff_activity.py::test_relation_maintenance_real_sqlite_mutation_refreshes_truth_activity",
         "tests/test_writer_handoff_activity.py::test_independent_digest_sqlite_mutation_refreshes_truth_activity",
@@ -1390,6 +1432,14 @@ def _run_pytest_receipt(
         rehearsal_environment[ISSUE_51_DETAILS_OUTPUT_ENV] = str(
             issue_51_details_path
         )
+    issue_60_details_path: Path | None = None
+    if receipt_name == "ISSUE_60_REGRESSION.json":
+        issue_60_details_path = (
+            Path(environment["TEMP"]) / "issue-60-regression-details.json"
+        )
+        rehearsal_environment[ISSUE_60_DETAILS_OUTPUT_ENV] = str(
+            issue_60_details_path
+        )
     writer_handoff_details_path: Path | None = None
     if receipt_name == "WRITER_LEASE_HANDOFF_REHEARSAL.json":
         writer_handoff_details_path = (
@@ -1492,6 +1542,44 @@ def _run_pytest_receipt(
                 "ISSUE_51_REGRESSION.json details schema mismatch"
             )
         receipt_details["issue_51_regression"] = issue_51_details
+    issue_60_details: dict[str, object] | None = None
+    if issue_60_details_path is not None:
+        if not issue_60_details_path.is_file():
+            raise ReleaseValidationError(
+                "ISSUE_60_REGRESSION.json details output is missing"
+            )
+        issue_60_details = _load_json(issue_60_details_path)
+        if issue_60_details.get("schema_version") != ISSUE_60_SCHEMA_VERSION:
+            raise ReleaseValidationError(
+                "ISSUE_60_REGRESSION.json details schema mismatch"
+            )
+        exact_issue_60: dict[str, object] = {
+            "poison_initial_attempts": 1_667,
+            "early_retry_count": 0,
+            "terminal_revive_count": 0,
+            "healthy_item_completed": True,
+            "legacy_queue_mutation_count": 0,
+            "simulated_seconds": 61,
+            "maintenance_transactions": 2,
+            "prefetch_timeout_observed": False,
+            "active_instance_touched": False,
+            "result": "passed",
+        }
+        for field, expected in exact_issue_60.items():
+            if issue_60_details.get(field) != expected:
+                raise ReleaseValidationError(
+                    f"ISSUE_60_REGRESSION.json {field} mismatch"
+                )
+        max_wait = issue_60_details.get("prefetch_max_wait_ms")
+        if (
+            isinstance(max_wait, bool)
+            or not isinstance(max_wait, int)
+            or not 0 <= max_wait <= 550
+        ):
+            raise ReleaseValidationError(
+                "ISSUE_60_REGRESSION.json prefetch_max_wait_ms mismatch"
+            )
+        receipt_details["issue_60_regression"] = issue_60_details
     writer_handoff_details: dict[str, object] | None = None
     if writer_handoff_details_path is not None:
         if not writer_handoff_details_path.is_file():
@@ -1563,6 +1651,15 @@ def _run_pytest_receipt(
             {
                 field: value
                 for field, value in writer_handoff_details.items()
+                if field != "schema_version"
+            }
+        )
+    if issue_60_details is not None:
+        receipt_payload["schema_version"] = ISSUE_60_SCHEMA_VERSION
+        receipt_payload.update(
+            {
+                field: value
+                for field, value in issue_60_details.items()
                 if field != "schema_version"
             }
         )
@@ -1855,6 +1952,90 @@ def _repository_evidence(
     )
 
 
+def _issue_61_applicability_evidence(
+    *,
+    root: Path,
+    staging: Path,
+    context: ValidationContext,
+    wheel: Path,
+    sdist: Path,
+) -> None:
+    """Prove the retired 1.10.3 visual writer is absent from 2.0 artifacts."""
+
+    artifacts = _load_script(
+        root / "scripts" / "release_candidate_artifacts.py",
+        "scope_recall_validation_issue_61_artifacts",
+    )
+    candidate = _load_script(
+        root / "scripts" / "report.candidate_manifest.py",
+        "scope_recall_validation_issue_61_source",
+    )
+    started = _utc_now()
+    source_manifest = candidate.source_manifest(root)
+    wheel_members = artifacts.read_archive_members(wheel)
+    sdist_members = artifacts.read_archive_members(sdist)
+    sdist_roots = {
+        PurePosixPath(name).parts[0]
+        for name in sdist_members
+        if PurePosixPath(name).parts
+    }
+    if len(sdist_roots) != 1:
+        raise ReleaseValidationError("Issue #61 sdist root is ambiguous")
+    sdist_root = next(iter(sdist_roots))
+    findings = {
+        "source": artifacts.legacy_visual_console_source_findings(
+            root, source_manifest
+        ),
+        "wheel": artifacts.legacy_visual_console_artifact_findings(
+            wheel_members, kind="wheel"
+        ),
+        "sdist": artifacts.legacy_visual_console_artifact_findings(
+            sdist_members,
+            kind="sdist",
+            sdist_root=sdist_root,
+        ),
+    }
+    if any(findings.values()):
+        raise ReleaseValidationError(
+            "Issue #61 retired visual-console writer is present in candidate"
+        )
+    _write_json(
+        staging / "ISSUE_61_APPLICABILITY.json",
+        {
+            "schema_version": ISSUE_61_SCHEMA_VERSION,
+            "source_commit": context.source_commit,
+            "source_tree": context.source_tree,
+            "artifact_sha256": context.wheel_sha256,
+            "wheel_sha256": context.wheel_sha256,
+            "sdist_sha256": context.sdist_sha256,
+            "started_at": started,
+            "finished_at": _utc_now(),
+            "command": [
+                "release-validation",
+                "issue-61",
+                "source-wheel-sdist-absence",
+            ],
+            "exit_code": 0,
+            "environment_boundary": {
+                "hermes_home_kind": "isolated",
+                "database_kind": "not-used",
+                "active_instance_touched": False,
+            },
+            "affected_version": "1.10.3",
+            "legacy_server_present_in_source": False,
+            "legacy_server_present_in_wheel": False,
+            "legacy_server_present_in_sdist": False,
+            "raw_truth_write_endpoint_present": False,
+            "unsafe_console_entrypoint_present": False,
+            "unsafe_console_documentation_present": False,
+            "two_point_zero_code_change_required": False,
+            "one_ten_backport_required": True,
+            "active_instance_touched": False,
+            "result": "not-applicable-to-2.0",
+        },
+    )
+
+
 def run_release_validation(
     *,
     root: Path,
@@ -1883,6 +2064,21 @@ def run_release_validation(
         raise ReleaseValidationError("candidate wheel name differs from provenance")
     if _sha256(candidate_wheel) != context.wheel_sha256:
         raise ReleaseValidationError("candidate wheel differs from provenance")
+    provenance = _load_json(evidence / "BUILD_PROVENANCE.json")
+    sdist_name, sdist_relative_path, sdist_sha256 = _artifact_descriptor(
+        provenance, "sdist"
+    )
+    candidate_sdist = evidence.joinpath(
+        *Path(sdist_relative_path).parts
+    ).resolve(strict=True)
+    try:
+        candidate_sdist.relative_to(evidence)
+    except ValueError as exc:
+        raise ReleaseValidationError("candidate sdist escapes evidence directory") from exc
+    if candidate_sdist.name != sdist_name or sdist_sha256 != context.sdist_sha256:
+        raise ReleaseValidationError("candidate sdist identity differs from provenance")
+    if _sha256(candidate_sdist) != context.sdist_sha256:
+        raise ReleaseValidationError("candidate sdist differs from provenance")
     previous_wheel = n_minus_one_wheel.resolve(strict=True)
     known_quarantine = quarantine_path.resolve(strict=True)
     hermes_probe = _load_script(
@@ -1913,6 +2109,8 @@ def run_release_validation(
         "WRITER_CANARY.json",
         "ROLLBACK_REHEARSAL.json",
         "ISSUE_51_REGRESSION.json",
+        "ISSUE_60_REGRESSION.json",
+        "ISSUE_61_APPLICABILITY.json",
         "WRITER_LEASE_HANDOFF_REHEARSAL.json",
         "INSTALL_CANDIDATE_RECEIPT.json",
         "INSTALL_N_MINUS_ONE_RECEIPT.json",
@@ -1964,6 +2162,13 @@ def run_release_validation(
                 staging=staging,
                 environment=environment,
                 ledger=ledger,
+            )
+            _issue_61_applicability_evidence(
+                root=resolved,
+                staging=staging,
+                context=context,
+                wheel=candidate_wheel,
+                sdist=candidate_sdist,
             )
             artifact_workspace = boundary / "artifact-environments"
             artifact_workspace.mkdir(parents=True)

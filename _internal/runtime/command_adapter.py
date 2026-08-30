@@ -45,7 +45,7 @@ class ProviderCommandAdapter:
 
     def store(self, request: StoreMemoryRequest) -> tuple[str, bool, str]:
         operation = _store_operation(self._host)
-        with write_kernel.hold_positive_write_authority(self._host):
+        with write_kernel.command_write_access(self._host, user_initiated=True):
             try:
                 return operation(
                     self._host,
@@ -63,66 +63,96 @@ class ProviderCommandAdapter:
                 raise
 
     def update(self, request: UpdateMemoryRequest) -> tuple[bool, str, str]:
-        return memory_ops.update_memory(
-            self._host, request.memory_id, request.content, request.target
-        )
+        with write_kernel.command_write_access(self._host, user_initiated=True):
+            return memory_ops.update_memory(
+                self._host, request.memory_id, request.content, request.target
+            )
 
     def merge(self, request: MergeMemoriesRequest) -> dict[str, object]:
-        return cast(
-            dict[str, object],
-            memory_ops.merge_memories(
-                self._host,
-                request.target_id,
-                list(request.source_ids),
-                request.content,
-                request.target,
-            ),
-        )
+        with write_kernel.command_write_access(
+            self._host, capture_barrier=True, user_initiated=True
+        ):
+            return cast(
+                dict[str, object],
+                memory_ops.merge_memories(
+                    self._host,
+                    request.target_id,
+                    list(request.source_ids),
+                    request.content,
+                    request.target,
+                ),
+            )
 
     def archive(self, request: ArchiveMemoriesRequest) -> dict[str, object]:
-        return cast(
-            dict[str, object],
-            memory_ops.archive_memories(
-                self._host,
-                list(request.ids),
-                reason=request.reason,
-                actor=request.actor,
-                batch_id=request.batch_id,
-            ),
-        )
+        with write_kernel.command_write_access(
+            self._host, capture_barrier=True, user_initiated=True
+        ):
+            return cast(
+                dict[str, object],
+                memory_ops.archive_memories(
+                    self._host,
+                    list(request.ids),
+                    reason=request.reason,
+                    actor=request.actor,
+                    batch_id=request.batch_id,
+                ),
+            )
 
     def delete(self, request: DeleteMemoriesRequest) -> DeleteMemoriesResult:
-        return memory_ops.delete_memories_result(self._host, list(request.ids))
+        with write_kernel.command_write_access(
+            self._host, capture_barrier=True, user_initiated=True
+        ):
+            return memory_ops.delete_memories_result(self._host, list(request.ids))
 
     def feedback(self, request: FeedbackMemoryRequest) -> dict[str, object]:
-        return cast(
-            dict[str, object],
-            memory_ops.feedback_memory(
-                self._host,
-                memory_id=request.memory_id,
-                rating=request.rating,
-                note=request.note,
-            ),
-        )
+        with write_kernel.command_write_access(self._host, user_initiated=True):
+            return cast(
+                dict[str, object],
+                memory_ops.feedback_memory(
+                    self._host,
+                    memory_id=request.memory_id,
+                    rating=request.rating,
+                    note=request.note,
+                ),
+            )
 
     def govern(self, request: GovernMemoriesRequest) -> dict[str, object]:
-        return cast(
-            dict[str, object],
-            memory_ops.govern_memories(
-                self._host, dry_run=request.dry_run, scope_only=request.scope_only
-            ),
-        )
+        if request.dry_run:
+            return cast(
+                dict[str, object],
+                memory_ops.govern_memories(
+                    self._host, dry_run=True, scope_only=request.scope_only
+                ),
+            )
+        with write_kernel.command_write_access(self._host, user_initiated=True):
+            return cast(
+                dict[str, object],
+                memory_ops.govern_memories(
+                    self._host, dry_run=False, scope_only=request.scope_only
+                ),
+            )
 
     def dedupe(self, request: DedupeMemoriesRequest) -> dict[str, object]:
-        return cast(
-            dict[str, object],
-            memory_ops.dedupe_memories(
-                self._host, dry_run=request.dry_run, scope_only=request.scope_only
-            ),
-        )
+        if request.dry_run:
+            return cast(
+                dict[str, object],
+                memory_ops.dedupe_memories(
+                    self._host, dry_run=True, scope_only=request.scope_only
+                ),
+            )
+        with write_kernel.command_write_access(
+            self._host, capture_barrier=True, user_initiated=True
+        ):
+            return cast(
+                dict[str, object],
+                memory_ops.dedupe_memories(
+                    self._host, dry_run=False, scope_only=request.scope_only
+                ),
+            )
 
     def repair(self) -> dict[str, object]:
-        return cast(dict[str, object], memory_ops.repair_vector(self._host))
+        with write_kernel.command_write_access(self._host, user_initiated=True):
+            return cast(dict[str, object], memory_ops.repair_vector(self._host))
 
     def fact_owned(self, request: FactOwnedMemoryIdsRequest) -> list[str]:
         return list(memory_ops.fact_owned_memory_ids(self._host, list(request.ids)))
@@ -130,16 +160,31 @@ class ProviderCommandAdapter:
     def purge(self, request: PrivacyPurgeRequest) -> dict[str, object]:
         from ...privacy_purge import run_privacy_purge
 
-        return cast(
-            dict[str, object],
-            run_privacy_purge(
-                self._host,
-                action=request.action,
-                ids=request.ids,
-                operation_id=request.operation_id,
-                confirmation=request.confirmation,
-            ),
-        )
+        action = str(request.action or "").strip().lower().replace("-", "_")
+        if action in {"plan", "status"}:
+            return cast(
+                dict[str, object],
+                run_privacy_purge(
+                    self._host,
+                    action=request.action,
+                    ids=request.ids,
+                    operation_id=request.operation_id,
+                    confirmation=request.confirmation,
+                ),
+            )
+        with write_kernel.command_write_access(
+            self._host, capture_barrier=True, user_initiated=True
+        ):
+            return cast(
+                dict[str, object],
+                run_privacy_purge(
+                    self._host,
+                    action=request.action,
+                    ids=request.ids,
+                    operation_id=request.operation_id,
+                    confirmation=request.confirmation,
+                ),
+            )
 
 
 def bind_provider_command_adapter(obj: Any) -> MemoryCommandGateway:

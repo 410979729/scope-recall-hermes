@@ -152,6 +152,10 @@ class ScopeRecallToolService:
             return not self._bool_arg(args or {}, "propose_memory", False)
         if tool_name == "scope_recall_experience_preflight":
             return not self._bool_arg(args or {}, "record_run", False)
+        if tool_name in {"scope_recall_govern", "scope_recall_dedupe"}:
+            return self._bool_arg(args or {}, "dry_run", True)
+        if tool_name == "scope_recall_evolve":
+            return self._bool_arg(args or {}, "dry_run", True)
         if tool_name == "scope_recall_purge":
             action = str((args or {}).get("action") or "").strip().lower()
             return action.replace("-", "_") in {"plan", "status"}

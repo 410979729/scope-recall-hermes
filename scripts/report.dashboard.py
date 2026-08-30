@@ -16,26 +16,12 @@ if str(ROOT) not in sys.path:
 
 try:  # package import path when installed or pytest aliases scope_recall
     from scope_recall.response_schemas import DASHBOARD_RESPONSE_SCHEMA_VERSION
+    from scope_recall.writer_lease import writer_handoff_telemetry_view
 except ImportError:  # pragma: no cover - direct source checkout execution fallback
     from response_schemas import DASHBOARD_RESPONSE_SCHEMA_VERSION
+    from writer_lease import writer_handoff_telemetry_view
 
 DOCTOR = ROOT / "scripts" / "doctor.py"
-
-WRITER_HANDOFF_LIVE_STATS_FIELDS = (
-    "writer_role",
-    "last_user_activity_age_seconds",
-    "last_truth_activity_age_seconds",
-    "same_process_holder_count",
-    "connection_pin_count",
-    "demotion_in_progress",
-    "successful_handoff_count",
-    "last_handoff_at",
-    "last_handoff_reason_code",
-    "last_handoff_failure_code",
-    "release_uncertain",
-    "operator_action_required",
-)
-
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Render scope-recall operator dashboard")
@@ -89,8 +75,10 @@ def _trend(summary: dict[str, Any], previous_summary: dict[str, Any]) -> dict[st
     return trend
 
 
-def _writer_handoff_config_summary(runtime_config: dict[str, Any]) -> dict[str, Any]:
-    """Describe configured handoff policy without claiming live-process state."""
+def _writer_handoff_config_summary(
+    runtime_config: dict[str, Any], storage_dir: Path
+) -> dict[str, Any]:
+    """Read strict persisted telemetry or expose explicit offline config only."""
 
     raw_writer_lease = runtime_config.get("writer_lease")
     writer_lease_config = (
@@ -99,18 +87,10 @@ def _writer_handoff_config_summary(runtime_config: dict[str, Any]) -> dict[str, 
     idle_release_seconds = float(
         writer_lease_config.get("idle_release_seconds", 1800.0)
     )
-    return {
-        "snapshot_kind": "offline_config_only",
-        "runtime_state_observed": False,
-        "writer_lease_scope": "process-wide-os-lock",
-        "idle_release_enabled": idle_release_seconds > 0,
-        "idle_release_seconds": idle_release_seconds,
-        "live_counters": {
-            "source": "scope_recall_stats",
-            "observed": False,
-            "fields": list(WRITER_HANDOFF_LIVE_STATS_FIELDS),
-        },
-    }
+    return writer_handoff_telemetry_view(
+        storage_dir,
+        configured_idle_release_seconds=idle_release_seconds,
+    )
 
 
 def build_dashboard(source_root: Path, hermes_home: Path, *, previous_path: Path | None = None) -> dict[str, Any]:
@@ -121,7 +101,9 @@ def build_dashboard(source_root: Path, hermes_home: Path, *, previous_path: Path
     runtime_config = doctor.load_runtime_config(source_root, hermes_home)
     config_errors = runtime_config.get("_config_load_errors") if isinstance(runtime_config.get("_config_load_errors"), list) else []
     config_check = {"ok": not config_errors, "errors": config_errors}
-    writer_handoff = _writer_handoff_config_summary(runtime_config)
+    writer_handoff = _writer_handoff_config_summary(
+        runtime_config, hermes_home / "scope-recall"
+    )
     source, source_check, source_recommendations = doctor.source_report(source_root)
     sqlite_payload, sqlite_check, sqlite_recommendations = doctor.sqlite_report(hermes_home)
     if hasattr(doctor, "memory_candidate_debt_report"):

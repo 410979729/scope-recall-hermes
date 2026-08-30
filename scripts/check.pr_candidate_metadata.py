@@ -18,6 +18,8 @@ PUBLIC_BINDING_SCHEMA_VERSION = "scope-recall.public-review-binding-index.v1"
 VERIFIER_NAME = "scripts/check.pr_candidate_metadata.py"
 VERIFIER_VERSION = "2.0.0"
 FINAL_CANDIDATE_MODE = "final-release-candidate"
+SHAREABLE_SCHEMA_VERSION = "scope-recall.shareable-evidence-index.v2"
+FINAL_EVIDENCE_PHASE = "final"
 SUPPORTED_HERMES_VERSION = "0.19.1"
 SUPPORTED_HERMES_COMMIT = "cc4cab2f592e60a197e796506de9168f74baf3ea"
 SUPPORTED_HERMES_TREE = "fcdc6093750ed0a3a556e20927799d7245ba65e4"
@@ -31,6 +33,8 @@ RECEIPT_NAME = "PR_CANDIDATE_METADATA.json"
 PUBLIC_BINDING_NAME = "PUBLIC_REVIEW_BINDING_INDEX.json"
 ISSUE_51_RECEIPT = "ISSUE_51_REGRESSION.json"
 ISSUE_58_RECEIPT = "WRITER_LEASE_HANDOFF_REHEARSAL.json"
+ISSUE_60_RECEIPT = "ISSUE_60_REGRESSION.json"
+ISSUE_61_RECEIPT = "ISSUE_61_APPLICABILITY.json"
 CONSUMED_EVIDENCE_FILES = (
     "CANDIDATE_MANIFEST.json",
     "BUILD_PROVENANCE.json",
@@ -41,6 +45,8 @@ CONSUMED_EVIDENCE_FILES = (
     "HERMES_COMPATIBILITY_PROBE.0.20.6.json",
     ISSUE_51_RECEIPT,
     ISSUE_58_RECEIPT,
+    ISSUE_60_RECEIPT,
+    ISSUE_61_RECEIPT,
 )
 PUBLIC_BINDING_ONLY_FILES = frozenset(
     {
@@ -284,8 +290,15 @@ def _shareable_file_bindings(
     *,
     root: Path,
 ) -> dict[str, str]:
-    if shareable.get("schema_version") != "scope-recall.shareable-evidence-index.v1":
+    if shareable.get("schema_version") != SHAREABLE_SCHEMA_VERSION:
         raise PRCandidateMetadataError("shareable evidence index schema is invalid")
+    if (
+        shareable.get("evidence_phase") != FINAL_EVIDENCE_PHASE
+        or shareable.get("remote_ci_bound") is not True
+    ):
+        raise PRCandidateMetadataError(
+            "PR metadata requires a final remote-CI-bound shareable evidence index"
+        )
     files = shareable.get("files")
     if not isinstance(files, list):
         raise PRCandidateMetadataError("shareable evidence index files are missing")
@@ -395,6 +408,82 @@ def _validate_issue_receipt(
             )
 
 
+def _validate_issue_60_receipt(
+    receipt: Mapping[str, object],
+    *,
+    candidate_commit: str,
+    candidate_tree: str,
+    artifact_sha256: str,
+) -> None:
+    if receipt.get("schema_version") != "scope-recall.issue-60-regression.v1":
+        raise PRCandidateMetadataError(f"{ISSUE_60_RECEIPT} schema is invalid")
+    boundary = _required_object(receipt, "environment_boundary")
+    exact: dict[str, object] = {
+        "source_commit": candidate_commit,
+        "source_tree": candidate_tree,
+        "artifact_sha256": artifact_sha256,
+        "exit_code": 0,
+        "poison_initial_attempts": 1_667,
+        "early_retry_count": 0,
+        "terminal_revive_count": 0,
+        "healthy_item_completed": True,
+        "legacy_queue_mutation_count": 0,
+        "simulated_seconds": 61,
+        "maintenance_transactions": 2,
+        "prefetch_timeout_observed": False,
+        "active_instance_touched": False,
+        "result": "passed",
+    }
+    if any(receipt.get(field) != expected for field, expected in exact.items()):
+        raise PRCandidateMetadataError(
+            f"{ISSUE_60_RECEIPT} does not prove the Issue #60 regression"
+        )
+    max_wait = receipt.get("prefetch_max_wait_ms")
+    if (
+        isinstance(max_wait, bool)
+        or not isinstance(max_wait, int)
+        or not 0 <= max_wait <= 550
+        or boundary.get("active_instance_touched") is not False
+    ):
+        raise PRCandidateMetadataError(
+            f"{ISSUE_60_RECEIPT} foreground-latency proof is invalid"
+        )
+
+
+def _validate_issue_61_receipt(
+    receipt: Mapping[str, object],
+    *,
+    candidate_commit: str,
+    candidate_tree: str,
+    wheel_sha256: str,
+    sdist_sha256: str,
+) -> None:
+    if receipt.get("schema_version") != "scope-recall.issue-61-applicability.v1":
+        raise PRCandidateMetadataError(f"{ISSUE_61_RECEIPT} schema is invalid")
+    exact: dict[str, object] = {
+        "source_commit": candidate_commit,
+        "source_tree": candidate_tree,
+        "artifact_sha256": wheel_sha256,
+        "wheel_sha256": wheel_sha256,
+        "sdist_sha256": sdist_sha256,
+        "affected_version": "1.10.3",
+        "legacy_server_present_in_source": False,
+        "legacy_server_present_in_wheel": False,
+        "legacy_server_present_in_sdist": False,
+        "raw_truth_write_endpoint_present": False,
+        "unsafe_console_entrypoint_present": False,
+        "unsafe_console_documentation_present": False,
+        "two_point_zero_code_change_required": False,
+        "one_ten_backport_required": True,
+        "active_instance_touched": False,
+        "result": "not-applicable-to-2.0",
+    }
+    if any(receipt.get(field) != expected for field, expected in exact.items()):
+        raise PRCandidateMetadataError(
+            f"{ISSUE_61_RECEIPT} does not prove 2.0 artifact non-applicability"
+        )
+
+
 def expected_marker(
     pr_snapshot: Mapping[str, object],
     evidence_dir: Path,
@@ -416,6 +505,8 @@ def expected_marker(
     )
     issue_51_path = _evidence_path(root, ISSUE_51_RECEIPT)
     issue_58_path = _evidence_path(root, ISSUE_58_RECEIPT)
+    issue_60_path = _evidence_path(root, ISSUE_60_RECEIPT)
+    issue_61_path = _evidence_path(root, ISSUE_61_RECEIPT)
     candidate = _load_object(candidate_path)
     provenance = _load_object(provenance_path)
     remote = _load_object(remote_path)
@@ -426,6 +517,8 @@ def expected_marker(
     hermes_probe = _load_object(hermes_probe_path)
     issue_51 = _load_object(issue_51_path)
     issue_58 = _load_object(issue_58_path)
+    issue_60 = _load_object(issue_60_path)
+    issue_61 = _load_object(issue_61_path)
     active_isolation_boundary = _required_object(
         active_isolation, "environment_boundary"
     )
@@ -434,6 +527,22 @@ def expected_marker(
     pr = _pr_identity(pr_snapshot)
     candidate_commit = _validated_git_sha(source.get("commit"), field="source.commit")
     candidate_tree = _validated_git_sha(source.get("tree"), field="source.tree")
+    expected_probe_candidate_source = {
+        "commit": candidate_commit,
+        "tree": candidate_tree,
+        "clean": True,
+    }
+    for label, probe in (
+        ("Hermes 0.19.1", hermes_supported),
+        ("Hermes 0.20.6", hermes_probe),
+    ):
+        if (
+            _clean_git_identity(probe, field="candidate_source")
+            != expected_probe_candidate_source
+        ):
+            raise PRCandidateMetadataError(
+                f"{label} compatibility probe candidate source differs from candidate"
+            )
     honesty_commit = _validated_git_sha(
         honesty.get("source_commit"), field="test_honesty.source_commit"
     )
@@ -503,6 +612,19 @@ def expected_marker(
         candidate_commit=candidate_commit,
         candidate_tree=candidate_tree,
         artifact_sha256=provenance_artifacts["wheel"]["sha256"],
+    )
+    _validate_issue_60_receipt(
+        issue_60,
+        candidate_commit=candidate_commit,
+        candidate_tree=candidate_tree,
+        artifact_sha256=provenance_artifacts["wheel"]["sha256"],
+    )
+    _validate_issue_61_receipt(
+        issue_61,
+        candidate_commit=candidate_commit,
+        candidate_tree=candidate_tree,
+        wheel_sha256=provenance_artifacts["wheel"]["sha256"],
+        sdist_sha256=provenance_artifacts["sdist"]["sha256"],
     )
     if pr["head_sha"] != candidate_commit:
         raise PRCandidateMetadataError("PR head does not match Candidate Manifest")
@@ -618,6 +740,11 @@ def expected_marker(
         "candidate_manifest_sha256": _sha256_file(candidate_path),
         "shareable_evidence_index_sha256": _sha256_file(shareable_path),
         "issue_disposition": {
+            "41": {
+                "disposition": "PLUGIN_WORKAROUND_ONLY",
+                "upstream_closed": False,
+                "closes_on_merge": False,
+            },
             "51": {
                 "disposition": "CLOSED_IN_CANDIDATE",
                 "receipt": ISSUE_51_RECEIPT,
@@ -629,6 +756,22 @@ def expected_marker(
                 "receipt": ISSUE_58_RECEIPT,
                 "receipt_sha256": consumed_evidence_sha256[ISSUE_58_RECEIPT],
                 "closes_on_merge": True,
+            },
+            "60": {
+                "disposition": "CLOSED_BY_REDESIGN_AND_REGRESSION_IN_2_0",
+                "affected_version_disposition": "STILL_AFFECTED_IN_1_10_3",
+                "receipt": ISSUE_60_RECEIPT,
+                "receipt_sha256": consumed_evidence_sha256[ISSUE_60_RECEIPT],
+                "one_ten_backport_required": True,
+                "closes_on_merge": False,
+            },
+            "61": {
+                "disposition": "NOT_APPLICABLE_TO_2_0_ARTIFACT",
+                "affected_version_disposition": "STILL_AFFECTED_IN_1_10_3",
+                "receipt": ISSUE_61_RECEIPT,
+                "receipt_sha256": consumed_evidence_sha256[ISSUE_61_RECEIPT],
+                "one_ten_backport_required": True,
+                "closes_on_merge": False,
             },
         },
         "local_tests": local_tests,
@@ -673,8 +816,11 @@ def render_pr_body(marker: Mapping[str, object]) -> str:
     ci = _required_object(marker, "ci")
     tests = _required_object(marker, "local_tests")
     issues = _required_object(marker, "issue_disposition")
+    issue_41 = _required_object(issues, "41")
     issue_51 = _required_object(issues, "51")
     issue_58 = _required_object(issues, "58")
+    issue_60 = _required_object(issues, "60")
+    issue_61 = _required_object(issues, "61")
     return (
         "# Scope Recall 2.0 release candidate\n\n"
         "This pull request remains Draft pending an independent re-audit. "
@@ -694,10 +840,16 @@ def render_pr_body(marker: Mapping[str, object]) -> str:
         f"`{support['probe_reason']}`. No {support['probe_version']} support claim "
         "is made by this candidate.\n\n"
         "## Issue dispositions\n\n"
+        f"- #41: `{issue_41['disposition']}`; this plugin workaround does not "
+        "claim upstream closure\n"
         f"- #51: `{issue_51['disposition']}`; receipt "
         f"`{issue_51['receipt']}` / `{issue_51['receipt_sha256']}`\n"
         f"- #58: `{issue_58['disposition']}`; receipt "
-        f"`{issue_58['receipt']}` / `{issue_58['receipt_sha256']}`\n\n"
+        f"`{issue_58['receipt']}` / `{issue_58['receipt_sha256']}`\n"
+        f"- #60: `{issue_60['disposition']}`; 1.10.3 remains affected; receipt "
+        f"`{issue_60['receipt']}` / `{issue_60['receipt_sha256']}`\n"
+        f"- #61: `{issue_61['disposition']}`; 1.10.3 remains affected; receipt "
+        f"`{issue_61['receipt']}` / `{issue_61['receipt_sha256']}`\n\n"
         "Design reference for #58: #59 by @tutan0558. This candidate "
         "independently reimplements the handoff as a process-wide coordinator "
         "for the 2.0 writer-authority model.\n\n"
