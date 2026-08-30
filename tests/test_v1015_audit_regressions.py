@@ -205,6 +205,7 @@ def test_nightly_infer_scope_accepts_explicit_fallback_platform_for_empty_db():
 
 class _FakeProvider:
     def __init__(self, conn: sqlite3.Connection, *, accessible: list[str], writable: list[str]) -> None:
+        self._truth_writer_role = "owner"
         self._conn = conn
         self._lock = threading.RLock()
         self._accessible_scope_ids = accessible
@@ -777,6 +778,7 @@ def test_scope_recall_forget_soft_archive_commit_failure_keeps_durable_sql_unarc
             self.raw.close()
 
     class Provider:
+        _truth_writer_role = "owner"
         _accessible_scope_ids = ["shared-scope"]
         _writable_scope_ids = ["shared-scope"]
         _vector_enabled = True

@@ -86,6 +86,7 @@ def _register_generation(conn: sqlite3.Connection, *, backend: str = "lancedb") 
 
 class _MemoryProvider:
     def __init__(self, conn: sqlite3.Connection, *, vector_store=None) -> None:
+        self._truth_writer_role = "owner"
         self._conn = conn
         self._lock = threading.RLock()
         self._vector_lock = threading.RLock()
@@ -547,6 +548,7 @@ def test_archive_already_archived_no_change_adds_no_event(tmp_path):
 
     result = archive_memories(provider, ["archive-already"])
 
+    assert "error" not in result
     assert result["archived"] == 0
     assert result["vector_outbox_keys"] == []
     assert conn.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0] == 0

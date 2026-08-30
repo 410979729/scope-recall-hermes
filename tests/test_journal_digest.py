@@ -738,6 +738,7 @@ def test_feedback_and_governance_previews_redact_secret_like_text(tmp_path):
     conn.commit()
 
     class FakeProvider:
+        _truth_writer_role = "owner"
         _accessible_scope_ids = [scope_id]
         _writable_scope_ids = [scope_id]
 
