@@ -29,6 +29,8 @@ try:
         ArtifactVerificationError,
         archive_member_manifest,
         artifact_name_findings,
+        legacy_visual_console_artifact_findings,
+        legacy_visual_console_source_findings,
         read_archive_members,
         sha256_file,
         verify_sdist_source_correspondence,
@@ -49,6 +51,8 @@ except ModuleNotFoundError as exc:
         ArtifactVerificationError,
         archive_member_manifest,
         artifact_name_findings,
+        legacy_visual_console_artifact_findings,
+        legacy_visual_console_source_findings,
         read_archive_members,
         sha256_file,
         verify_sdist_source_correspondence,
@@ -309,6 +313,20 @@ def _verify_artifacts(
             expected_root=sdist_root,
         ),
     }
+    legacy_visual_console = {
+        "source": legacy_visual_console_source_findings(
+            Path(__file__).resolve().parents[1], source_manifest
+        ),
+        "wheel": legacy_visual_console_artifact_findings(
+            wheel_members,
+            kind="wheel",
+        ),
+        "sdist": legacy_visual_console_artifact_findings(
+            sdist_members,
+            kind="sdist",
+            sdist_root=sdist_root,
+        ),
+    }
     scan: dict[str, object] = {
         "schema_version": "scope-recall.artifact-scan.v1",
         "wheel_missing_required": wheel_missing,
@@ -317,6 +335,7 @@ def _verify_artifacts(
         "name_policy_findings": name_findings,
         "content_findings": content_scan,
         "source_correspondence": correspondence,
+        "legacy_visual_console_findings": legacy_visual_console,
     }
     _write_json(evidence_dir / "ARTIFACT_MEMBERS_WHEEL.json", archive_member_manifest(wheel))
     _write_json(evidence_dir / "ARTIFACT_MEMBERS_SDIST.json", archive_member_manifest(sdist))
@@ -326,6 +345,7 @@ def _verify_artifacts(
         or sdist_missing
         or any(forbidden.values())
         or any(name_findings.values())
+        or any(legacy_visual_console.values())
         or any(_blocking_scan(item) for item in content_scan.values())
     ):
         raise ReleaseCandidateBuildError("distribution artifact policy scan failed")

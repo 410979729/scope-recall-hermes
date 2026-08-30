@@ -29,6 +29,7 @@ This release candidate is cumulative since the last public release, `1.10.3`. It
 - Preserved legacy projection reads and writes for N-1 interoperability; no claim-only durable user data is allowed in 2.0.x.
 - Preserved stable V1 tool names and aliases, scope isolation, current-turn recall, read-only followers, one-writer authority, and rebuildable vector companions.
 - Kept all migration IDs immutable and additive. Normal rollback disables product switches and reverts code without restoring the whole database; purge tombstones remain deny-authoritative.
+- The retired standalone visual-console writer is not distributed in 2.0; no separate process may open the truth database for mutation outside the production command and writer-authority boundary.
 
 ## [1.10.6] - 2026-08-26
 

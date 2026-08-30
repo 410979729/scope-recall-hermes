@@ -464,6 +464,9 @@ def initialize_under_lifecycle_lock(provider: Any, session_id: str, **kwargs: An
 
     try:
         _call_provider(provider, "_initialize_writer_runtime", default=lambda: initialize_writer_runtime(provider))
+        from .writer_handoff import note_writer_promotion_succeeded
+
+        note_writer_promotion_succeeded(provider)
     except BaseException:
         _call_provider(
             provider,
@@ -870,6 +873,9 @@ def shutdown_provider_process(
         raise digest_error
 
     _join_shutdown_cleanup(provider, deadline=deadline)
+    from .writer_handoff import note_writer_shutdown_succeeded
+
+    note_writer_shutdown_succeeded(provider)
     provider._shutdown_finalized = True
 
 

@@ -63,7 +63,7 @@
     },
     {
       "id": "issue_58_process_wide_writer_handoff",
-      "purpose": "Prove the default-enabled process-wide idle writer handoff with real OS locking, same-process refcounts, work vetoes, failure injection, repeated promotion, and content-free observability.",
+      "purpose": "Prove the default-enabled process-wide idle writer handoff with real OS locking, same-process refcounts, unified direct-command admission, capture serialization, work vetoes, failure injection, repeated promotion, and content-free observability.",
       "node_ids": [
         "tests/test_writer_idle_handoff.py::test_process_wide_idle_handoff_allows_real_second_process_commit",
         "tests/test_writer_idle_handoff.py::test_extra_connection_pin_vetoes_process_handoff",
@@ -96,10 +96,53 @@
         "tests/test_writer_idle_handoff.py::test_idle_release_config_accepts_disabled_or_bounded_values",
         "tests/test_writer_idle_handoff.py::test_idle_release_config_rejects_ambiguous_or_unbounded_values",
         "tests/test_writer_idle_handoff.py::test_user_activity_generation_veto_is_content_free",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_update_started_before_fence_commits_and_vetoes_handoff",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_update_started_after_fence_is_rejected",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_merge_preserves_capture_barrier",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_archive_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_delete_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_feedback_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_govern_apply_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_dedupe_apply_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_repair_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_purge_deny_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_purge_erase_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_read_only_modes_do_not_require_write_authority",
+        "tests/test_direct_command_writer_admission.py::test_memory_mutation_service_rejects_fenced_unadmitted_mutation",
+        "tests/test_direct_command_writer_admission.py::test_memory_mutation_service_rejects_unclassified_non_owner",
+        "tests/test_direct_command_writer_admission.py::test_private_admission_surface_rejects_public_bool_and_wrong_token",
+        "tests/test_direct_command_writer_admission.py::test_accepted_capture_commits_after_shutdown_and_handoff_fences",
+        "tests/test_direct_command_writer_admission.py::test_admitted_truth_mutation_token_is_cleared_after_exception",
+        "tests/test_direct_command_writer_admission.py::test_public_store_reuses_one_active_truth_unit_and_generation",
+        "tests/test_direct_command_writer_admission.py::test_govern_acquires_query_connection_under_query_lock",
+        "tests/test_direct_command_writer_admission.py::test_tool_service_dry_run_governance_does_not_request_write_access",
+        "tests/test_direct_command_writer_admission.py::test_fact_proposal_dry_run_is_read_only_on_reader",
+        "tests/test_direct_command_writer_admission.py::test_fact_proposal_apply_reenters_command_gate_and_rejects_reader_or_fence",
+        "tests/test_direct_command_writer_admission.py::test_nested_command_gate_preserves_barrier_and_propagates_exceptions",
+        "tests/test_direct_command_writer_admission.py::test_public_provider_command_surface_uses_unified_admission",
+        "tests/test_writer_handoff_telemetry.py::test_new_authority_epoch_fences_delayed_old_reader_update",
+        "tests/test_writer_handoff_telemetry.py::test_initial_epoch_claim_linearizes_with_final_lease_release",
+        "tests/test_writer_handoff_telemetry.py::test_epoch_claim_never_takes_activity_lock_under_process_state_lock",
+        "tests/test_writer_handoff_telemetry.py::test_delayed_activity_cannot_overwrite_final_shutdown_with_owner_snapshot",
+        "tests/test_writer_handoff_telemetry.py::test_missing_invalid_and_stale_snapshots_are_explicitly_unobserved",
+        "tests/test_writer_handoff_telemetry.py::test_fresh_snapshot_activity_ages_advance_at_read_time",
+        "tests/test_writer_handoff_telemetry.py::test_runtime_writes_only_real_activity_or_state_events",
+        "tests/test_writer_handoff_telemetry.py::test_telemetry_failure_never_changes_writer_authority",
+        "tests/test_writer_handoff_telemetry.py::test_same_process_holders_share_epoch_until_final_release",
+        "tests/test_writer_handoff_telemetry.py::test_doctor_and_dashboard_expose_all_fresh_persisted_fields",
         "tests/test_writer_handoff_activity.py::test_journal_append_cannot_cross_handoff_fence_after_lifecycle_precheck",
         "tests/test_writer_handoff_activity.py::test_relation_maintenance_real_sqlite_mutation_refreshes_truth_activity",
         "tests/test_writer_handoff_activity.py::test_independent_digest_sqlite_mutation_refreshes_truth_activity",
         "tests/test_writer_handoff_activity.py::test_noop_digest_does_not_refresh_truth_activity"
+      ]
+    },
+    {
+      "id": "issue_60_retry_and_prefetch_regression",
+      "purpose": "Rehearse the reported 1667-attempt retry poison shape while proving due-time enforcement, terminal non-revival, healthy-item fairness, bounded maintenance cadence, nonblocking lock acquisition, zero-write prefetch, and no foreground timeout.",
+      "node_ids": [
+        "tests/test_issue_60_regression.py::test_issue_60_retry_due_time_is_bounded_and_healthy_work_is_not_starved",
+        "tests/test_issue_60_regression.py::test_issue_60_sixty_one_idle_ticks_do_not_restore_one_second_hammer",
+        "tests/test_issue_60_regression.py::test_issue_60_maintenance_is_nonblocking_and_prefetch_is_bounded_zero_write"
       ]
     }
   ]

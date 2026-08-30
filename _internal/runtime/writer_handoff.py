@@ -10,16 +10,19 @@ must still win the ordinary non-blocking OS lease acquisition later.
 from __future__ import annotations
 
 import logging
+import secrets
 from pathlib import Path
 import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
 
 from ...embedders import close_embedder
 from ...writer_lease import (
+    WRITER_HANDOFF_TELEMETRY_FRESH_SECONDS,
     process_writer_handoff_state,
+    publish_writer_handoff_telemetry,
     truth_writer_process_snapshot,
 )
 from .peer_recovery import live_providers_for_database
@@ -136,6 +139,7 @@ def note_user_activity(provider: Any) -> None:
             "_writer_handoff_activity_generation",
             int(getattr(provider, "_writer_handoff_activity_generation", 0) or 0) + 1,
         )
+    _publish_runtime_telemetry(provider, event_kind="user_activity")
 
 
 def note_truth_activity(provider: Any) -> None:
@@ -149,6 +153,7 @@ def note_truth_activity(provider: Any) -> None:
             "_writer_handoff_activity_generation",
             int(getattr(provider, "_writer_handoff_activity_generation", 0) or 0) + 1,
         )
+    _publish_runtime_telemetry(provider, event_kind="truth_activity")
 
 
 def _connection_total_changes(provider: Any) -> int | None:
@@ -384,6 +389,177 @@ def writer_handoff_status(provider: Any) -> dict[str, Any]:
     return payload
 
 
+def _telemetry_fresh_for_seconds(provider: Any) -> float:
+    """Use a short fixed freshness window without introducing heartbeat writes."""
+
+    del provider
+    return WRITER_HANDOFF_TELEMETRY_FRESH_SECONDS
+
+
+def _publish_runtime_telemetry(
+    provider: Any,
+    *,
+    event_kind: str,
+    activate_owner: bool = False,
+    deactivate_owner: bool = False,
+    writer_role_override: str | None = None,
+) -> bool:
+    """Best-effort persisted observability for a real activity/state event.
+
+    The real OS writer lease remains the sole authority. A random, content-free
+    epoch is created only after this process owns that lease. All later reader
+    updates use ordinary epoch/sequence CAS, so an old owner cannot overwrite a
+    newer process after authority changes hands. Any telemetry failure is
+    swallowed and cannot affect writer safety or the caller's operation.
+    """
+
+    storage_dir = getattr(provider, "_storage_dir", None)
+    if storage_dir is None:
+        return False
+    try:
+        state = process_writer_handoff_state(storage_dir)
+        # Snapshot advisory counters before the process coordinator lock.  Idle
+        # handoff takes activity/provider locks before ``state.lock``; taking
+        # any of those locks from inside the claim critical section would
+        # create an ABBA deadlock.  Only lease ownership, epoch, sequence and
+        # the telemetry-file CAS need to be linearized with final release.
+        claim_status = writer_handoff_status(provider)
+
+        def publish_snapshot(
+            *,
+            status: Mapping[str, Any],
+            epoch: str,
+            sequence: int,
+            claim_authority_epoch: bool,
+        ) -> bool:
+            writer_role = str(
+                writer_role_override
+                if writer_role_override is not None
+                else status.get("writer_role", "unknown")
+            )
+            payload = {
+                "schema_version": "scope-recall.writer-handoff-telemetry.v1",
+                "authority_epoch": epoch,
+                "event_sequence": sequence,
+                "event_kind": str(event_kind or "state_changed")[:64],
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+                "fresh_for_seconds": _telemetry_fresh_for_seconds(provider),
+                "writer_role": writer_role,
+                "writer_lease_scope": "process-wide-os-lock",
+                "idle_release_enabled": bool(
+                    status.get("idle_release_enabled", False)
+                ),
+                "idle_release_seconds": float(
+                    status.get("idle_release_seconds", 0.0)
+                ),
+                "last_user_activity_age_seconds": float(
+                    status.get("last_user_activity_age_seconds", 0.0)
+                ),
+                "last_truth_activity_age_seconds": float(
+                    status.get("last_truth_activity_age_seconds", 0.0)
+                ),
+                "same_process_holder_count": int(
+                    status.get("same_process_holder_count", 0) or 0
+                ),
+                "connection_pin_count": int(
+                    status.get("connection_pin_count", 0) or 0
+                ),
+                "demotion_in_progress": bool(
+                    status.get("demotion_in_progress", False)
+                ),
+                "successful_handoff_count": int(
+                    status.get("successful_handoff_count", 0) or 0
+                ),
+                "last_handoff_at": str(status.get("last_handoff_at", "") or ""),
+                "last_handoff_reason_code": str(
+                    status.get("last_handoff_reason_code", "") or ""
+                )[:64],
+                "last_handoff_failure_code": str(
+                    status.get("last_handoff_failure_code", "") or ""
+                )[:64],
+                "release_uncertain": bool(status.get("release_uncertain", False)),
+                "operator_action_required": bool(
+                    status.get("operator_action_required", False)
+                ),
+            }
+            return bool(
+                publish_writer_handoff_telemetry(
+                    storage_dir,
+                    payload,
+                    claim_authority_epoch=claim_authority_epoch,
+                )
+            )
+
+        with state.lock:
+            lease = getattr(provider, "_truth_writer_lease", None)
+            owns_lease = bool(
+                getattr(provider, "_truth_writer_role", None) == "owner"
+                and lease is not None
+                and bool(getattr(lease, "acquired", False))
+            )
+            if activate_owner:
+                if bool(getattr(state, "release_uncertain", False)) or not owns_lease:
+                    return False
+                if not bool(getattr(state, "telemetry_owner_active", False)):
+                    state.telemetry_authority_epoch = secrets.token_hex(16)
+                    state.telemetry_event_sequence = 0
+                    state.telemetry_owner_active = True
+                    state.telemetry_epoch_published = False
+            epoch = str(getattr(state, "telemetry_authority_epoch", "") or "")
+            if not epoch:
+                return False
+            claim_epoch = bool(
+                getattr(state, "telemetry_owner_active", False)
+                and not bool(getattr(state, "telemetry_epoch_published", False))
+                and owns_lease
+            )
+            if deactivate_owner:
+                # Compute claim eligibility first, but a post-release caller is
+                # never eligible because ``owns_lease`` is false. Deactivate
+                # before I/O so concurrent old-reader events cannot claim.
+                state.telemetry_owner_active = False
+            state.telemetry_event_sequence = int(
+                getattr(state, "telemetry_event_sequence", 0) or 0
+            ) + 1
+            sequence = int(state.telemetry_event_sequence)
+            if claim_epoch:
+                # Linearize the first epoch claim with every same-process lease
+                # release.  A different process cannot become the OS owner
+                # while this RLock keeps the old process from releasing its
+                # final lease, so a delayed old claim cannot overwrite a newer
+                # owner's epoch.
+                published = publish_snapshot(
+                    status=claim_status,
+                    epoch=epoch,
+                    sequence=sequence,
+                    claim_authority_epoch=True,
+                )
+                if published:
+                    state.telemetry_epoch_published = True
+                return published
+
+        # Ordinary events take their observable snapshot only after sequence
+        # assignment.  If a shutdown/handoff transition linearizes first, this
+        # event sees the new role/counts; if it linearizes later, its higher
+        # sequence ultimately overwrites this event.  An older owner snapshot
+        # can therefore never publish with a post-shutdown sequence.
+        current_status = writer_handoff_status(provider)
+        published = publish_snapshot(
+            status=current_status,
+            epoch=epoch,
+            sequence=sequence,
+            claim_authority_epoch=False,
+        )
+        if published:
+            with state.lock:
+                if str(getattr(state, "telemetry_authority_epoch", "") or "") == epoch:
+                    state.telemetry_epoch_published = True
+        return bool(published)
+    except Exception:
+        logger.warning("Scope Recall writer handoff telemetry event was unavailable")
+        return False
+
+
 def _set_process_failure(state: Any, code: str, *, uncertain: bool) -> None:
     with state.lock:
         state.last_handoff_failure_code = str(code or "handoff_failed")[:64]
@@ -421,6 +597,35 @@ def note_writer_promotion_succeeded(provider: Any) -> None:
         state.handoff_fenced = False
         state.operator_action_required = False
         state.last_handoff_failure_code = ""
+    _publish_runtime_telemetry(
+        provider,
+        event_kind="owner_activated",
+        activate_owner=True,
+    )
+
+
+def note_writer_shutdown_succeeded(provider: Any) -> None:
+    """Persist changed local counts, deactivating only after final release."""
+
+    storage_dir = getattr(provider, "_storage_dir", None)
+    if storage_dir is None:
+        return
+    counts = truth_writer_process_snapshot(storage_dir)
+    holders = int(counts.get("same_process_holder_count", 0) or 0)
+    pins = int(counts.get("connection_pin_count", 0) or 0)
+    if holders != 0 or pins != 0:
+        _publish_runtime_telemetry(
+            provider,
+            event_kind="provider_shutdown",
+            writer_role_override="owner" if holders > 0 else "unknown",
+        )
+        return
+    _publish_runtime_telemetry(
+        provider,
+        event_kind="writer_shutdown",
+        deactivate_owner=True,
+        writer_role_override="unknown",
+    )
 
 
 def _acquire_provider_locks(
@@ -690,6 +895,8 @@ def _perform_idle_handoff(provider: Any, state: Any) -> None:
     release_started = False
     authority_released = False
     phase = "preflight"
+    telemetry_event = ""
+    telemetry_deactivate_owner = False
     try:
         with state.lock:
             if bool(getattr(state, "release_uncertain", False)):
@@ -699,6 +906,8 @@ def _perform_idle_handoff(provider: Any, state: Any) -> None:
             state.handoff_generation = int(getattr(state, "handoff_generation", 0) or 0) + 1
             state.state = "HANDOFF_PENDING"
             state.last_handoff_failure_code = ""
+
+        _publish_runtime_telemetry(provider, event_kind="handoff_pending")
 
         providers = tuple(
             peer
@@ -786,6 +995,8 @@ def _perform_idle_handoff(provider: Any, state: Any) -> None:
             )
             state.release_uncertain = False
             state.operator_action_required = False
+        telemetry_event = "handoff_succeeded"
+        telemetry_deactivate_owner = True
     except BaseException as exc:
         failure_code = _content_free_failure_code(exc, phase=phase)
         if not teardown_started:
@@ -835,6 +1046,8 @@ def _perform_idle_handoff(provider: Any, state: Any) -> None:
                 peer._truth_writer_role = "unknown"
                 peer._writer_handoff_fenced = True
             _set_process_failure(state, failure_code, uncertain=True)
+        telemetry_event = "handoff_failed"
+        telemetry_deactivate_owner = authority_released
         logger.warning(
             "Scope Recall idle writer handoff did not complete (reason=%s)",
             failure_code,
@@ -846,6 +1059,12 @@ def _perform_idle_handoff(provider: Any, state: Any) -> None:
         _release_provider_locks(submissions)
         with state.lock:
             state.handoff_thread_id = 0
+    if telemetry_event:
+        _publish_runtime_telemetry(
+            provider,
+            event_kind=telemetry_event,
+            deactivate_owner=telemetry_deactivate_owner,
+        )
 
 
 def _handoff_thread_main(provider: Any, state: Any) -> None:
@@ -918,6 +1137,7 @@ __all__ = [
     "initialize_writer_handoff_activity",
     "maybe_schedule_idle_writer_handoff",
     "note_writer_promotion_succeeded",
+    "note_writer_shutdown_succeeded",
     "note_truth_activity",
     "note_user_activity",
     "writer_handoff_status",

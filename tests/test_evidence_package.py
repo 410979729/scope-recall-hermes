@@ -118,6 +118,23 @@ def _valid_writer_handoff_details(module, wheel_sha: str) -> dict[str, object]:
     }
 
 
+def _valid_issue_60_details(module, *, prefetch_max_wait_ms: int = 50) -> dict[str, object]:
+    return {
+        "schema_version": module.ISSUE_60_SCHEMA_VERSION,
+        "poison_initial_attempts": 1_667,
+        "early_retry_count": 0,
+        "terminal_revive_count": 0,
+        "healthy_item_completed": True,
+        "legacy_queue_mutation_count": 0,
+        "simulated_seconds": 61,
+        "maintenance_transactions": 2,
+        "prefetch_timeout_observed": False,
+        "prefetch_max_wait_ms": prefetch_max_wait_ms,
+        "active_instance_touched": False,
+        "result": "passed",
+    }
+
+
 def _complete_fixture(module, tmp_path: Path) -> tuple[Path, str, str]:
     commit = "a" * 40
     tree = "b" * 40
@@ -216,6 +233,11 @@ def _complete_fixture(module, tmp_path: Path) -> tuple[Path, str, str]:
                 "schema_version": "scope-recall.hermes-compatibility-probe.v1",
                 "expected_hermes_version": version,
                 "observed_hermes_version": version,
+                "candidate_source": {
+                    "commit": commit,
+                    "tree": tree,
+                    "clean": True,
+                },
                 "hermes_source": probe_identity,
                 "result": result,
                 "support_matrix_changed": False,
@@ -388,6 +410,38 @@ def _complete_fixture(module, tmp_path: Path) -> tuple[Path, str, str]:
             continue
         if name == "PYTEST_SKIP_REPORT.json":
             _write_json(path, _valid_honesty(module))
+        elif name == "ISSUE_61_APPLICABILITY.json":
+            _write_json(
+                path,
+                {
+                    "schema_version": module.ISSUE_61_SCHEMA_VERSION,
+                    "source_commit": commit,
+                    "source_tree": tree,
+                    "artifact_sha256": wheel_sha,
+                    "wheel_sha256": wheel_sha,
+                    "sdist_sha256": sdist_sha,
+                    "started_at": "2026-08-28T00:00:00+00:00",
+                    "finished_at": "2026-08-28T00:00:01+00:00",
+                    "command": ["release-validation", "issue-61", "absence"],
+                    "exit_code": 0,
+                    "environment_boundary": {
+                        "hermes_home_kind": "isolated",
+                        "database_kind": "not-used",
+                        "active_instance_touched": False,
+                    },
+                    "affected_version": "1.10.3",
+                    "legacy_server_present_in_source": False,
+                    "legacy_server_present_in_wheel": False,
+                    "legacy_server_present_in_sdist": False,
+                    "raw_truth_write_endpoint_present": False,
+                    "unsafe_console_entrypoint_present": False,
+                    "unsafe_console_documentation_present": False,
+                    "two_point_zero_code_change_required": False,
+                    "one_ten_backport_required": True,
+                    "active_instance_touched": False,
+                    "result": "not-applicable-to-2.0",
+                },
+            )
         elif name in module.RECEIPT_FILES:
             artifact_rehearsal = name not in {
                 "DOCTOR.json",
@@ -430,6 +484,20 @@ def _complete_fixture(module, tmp_path: Path) -> tuple[Path, str, str]:
                     "issue_51_regression": _valid_issue_51_details(module),
                 }
             receipt_schema = "scope-recall.test-receipt.v1"
+            if name == "ISSUE_60_REGRESSION.json":
+                issue_60 = _valid_issue_60_details(module)
+                receipt_schema = module.ISSUE_60_SCHEMA_VERSION
+                extra.update(
+                    {
+                        key: value
+                        for key, value in issue_60.items()
+                        if key != "schema_version"
+                    }
+                )
+                extra["details"] = {
+                    "node_ids": sorted(module.ISSUE_60_REQUIRED_NODE_IDS),
+                    "issue_60_regression": issue_60,
+                }
             if name == "WRITER_LEASE_HANDOFF_REHEARSAL.json":
                 handoff = _valid_writer_handoff_details(module, wheel_sha)
                 receipt_schema = module.WRITER_HANDOFF_SCHEMA_VERSION
@@ -481,6 +549,35 @@ def _complete_fixture(module, tmp_path: Path) -> tuple[Path, str, str]:
     return evidence, commit, tree
 
 
+def _bind_final_remote_ci(
+    evidence: Path,
+    *,
+    commit: str,
+    run_id: str = "123456",
+) -> None:
+    manifest_path = evidence / "CANDIDATE_MANIFEST.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["ci_run_ids"] = [run_id]
+    _write_json(manifest_path, manifest)
+    _write_json(
+        evidence / "REMOTE_CI_BINDING.json",
+        {
+            "schema_version": "scope-recall.remote-ci-binding.v1",
+            "repository": "410979729/scope-recall-hermes",
+            "head_sha": commit,
+            "workflow_path": ".github/workflows/ci.yml",
+            "run_status": "completed",
+            "run_conclusion": "success",
+            "required_job": "ci-required",
+            "required_job_conclusion": "success",
+            "run_id": run_id,
+            "run_response_sha256": "4" * 64,
+            "jobs_response_sha256": "5" * 64,
+            "authentication_material_recorded": False,
+        },
+    )
+
+
 def test_evidence_index_requires_every_file_and_exact_source_binding(
     tmp_path: Path,
 ) -> None:
@@ -489,6 +586,8 @@ def test_evidence_index_requires_every_file_and_exact_source_binding(
 
     payload = module.build_evidence_index(evidence, expected_sha=commit)
 
+    assert payload["evidence_phase"] == module.PROVISIONAL_EVIDENCE_PHASE
+    assert payload["remote_ci_bound"] is False
     assert payload["source_commit"] == commit
     assert payload["source_tree"] == tree
     assert payload["file_count"] >= len(module.REQUIRED_INPUT_FILES)
@@ -508,6 +607,88 @@ def test_evidence_index_requires_every_file_and_exact_source_binding(
     (evidence / "RUFF.log").unlink()
     with pytest.raises(module.EvidencePackageError, match="incomplete"):
         module.build_evidence_index(evidence, expected_sha=commit)
+
+
+def test_final_evidence_requires_exact_single_remote_ci_binding(tmp_path: Path) -> None:
+    module = _load_module()
+    evidence, commit, _tree = _complete_fixture(module, tmp_path)
+
+    with pytest.raises(module.EvidencePackageError, match="requires a remote CI"):
+        module.build_evidence_index(
+            evidence,
+            expected_sha=commit,
+            evidence_phase=module.FINAL_EVIDENCE_PHASE,
+        )
+
+    _bind_final_remote_ci(evidence, commit=commit)
+    payload = module.build_evidence_index(
+        evidence,
+        expected_sha=commit,
+        evidence_phase=module.FINAL_EVIDENCE_PHASE,
+    )
+
+    assert payload["evidence_phase"] == module.FINAL_EVIDENCE_PHASE
+    assert payload["remote_ci_bound"] is True
+
+
+@pytest.mark.parametrize(
+    "run_ids",
+    [[], ["123456", "654321"], ["654321"]],
+)
+def test_final_evidence_rejects_missing_multiple_or_drifted_candidate_ci_ids(
+    tmp_path: Path,
+    run_ids: list[str],
+) -> None:
+    module = _load_module()
+    evidence, commit, _tree = _complete_fixture(module, tmp_path)
+    _bind_final_remote_ci(evidence, commit=commit)
+    manifest_path = evidence / "CANDIDATE_MANIFEST.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["ci_run_ids"] = run_ids
+    _write_json(manifest_path, manifest)
+
+    with pytest.raises(module.EvidencePackageError, match="exactly one matching"):
+        module.build_evidence_index(
+            evidence,
+            expected_sha=commit,
+            evidence_phase=module.FINAL_EVIDENCE_PHASE,
+        )
+
+
+def test_provisional_evidence_refuses_final_remote_ci_material(tmp_path: Path) -> None:
+    module = _load_module()
+    evidence, commit, _tree = _complete_fixture(module, tmp_path)
+    _bind_final_remote_ci(evidence, commit=commit)
+
+    with pytest.raises(module.EvidencePackageError, match="provisional evidence"):
+        module.build_evidence_index(evidence, expected_sha=commit)
+
+
+def test_cli_can_close_existing_evidence_as_final_after_remote_ci(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    evidence, commit, _tree = _complete_fixture(module, tmp_path)
+    _bind_final_remote_ci(evidence, commit=commit)
+
+    result = module.main(
+        [
+            "--evidence-dir",
+            str(evidence),
+            "--expected-sha",
+            commit,
+            "--evidence-phase",
+            module.FINAL_EVIDENCE_PHASE,
+        ]
+    )
+
+    shareable = json.loads(
+        (evidence / "SHAREABLE_EVIDENCE_INDEX.json").read_text(encoding="utf-8")
+    )
+    assert result == 0
+    assert shareable["schema_version"] == module.SHAREABLE_SCHEMA_VERSION
+    assert shareable["evidence_phase"] == module.FINAL_EVIDENCE_PHASE
+    assert shareable["remote_ci_bound"] is True
 
 
 def test_evidence_index_rejects_issue_51_mutation_or_scale_drift(
@@ -702,6 +883,34 @@ def test_evidence_index_rejects_supported_hermes_probe_identity_drift(
     _write_json(probe_path, probe)
 
     with pytest.raises(module.EvidencePackageError, match="supported source"):
+        module.build_evidence_index(evidence, expected_sha=commit)
+
+
+@pytest.mark.parametrize("version", ["0.19.1", "0.20.6"])
+@pytest.mark.parametrize("mutation", ["missing", "malformed", "commit", "tree"])
+def test_evidence_index_binds_each_probe_to_exact_candidate_source(
+    tmp_path: Path,
+    version: str,
+    mutation: str,
+) -> None:
+    module = _load_module()
+    evidence, commit, _tree = _complete_fixture(module, tmp_path)
+    probe_path = evidence / f"HERMES_COMPATIBILITY_PROBE.{version}.json"
+    probe = json.loads(probe_path.read_text(encoding="utf-8"))
+    if mutation == "missing":
+        probe.pop("candidate_source")
+    elif mutation == "malformed":
+        probe["candidate_source"] = "not-an-identity"
+    elif mutation == "commit":
+        probe["candidate_source"]["commit"] = "7" * 40
+    else:
+        probe["candidate_source"]["tree"] = "8" * 40
+    _write_json(probe_path, probe)
+
+    with pytest.raises(
+        module.EvidencePackageError,
+        match="candidate_source|candidate source",
+    ):
         module.build_evidence_index(evidence, expected_sha=commit)
 
 

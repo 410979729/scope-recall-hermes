@@ -18,21 +18,6 @@ DEFAULT_SOURCE_ROOT = Path(__file__).resolve().parents[1]
 if str(DEFAULT_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(DEFAULT_SOURCE_ROOT))
 
-WRITER_HANDOFF_LIVE_STATS_FIELDS = (
-    "writer_role",
-    "last_user_activity_age_seconds",
-    "last_truth_activity_age_seconds",
-    "same_process_holder_count",
-    "connection_pin_count",
-    "demotion_in_progress",
-    "successful_handoff_count",
-    "last_handoff_at",
-    "last_handoff_reason_code",
-    "last_handoff_failure_code",
-    "release_uncertain",
-    "operator_action_required",
-)
-
 try:  # installed package / pytest package-alias path
     from scope_recall.doctor_common import (
         expected_embedder_from_config,
@@ -55,6 +40,7 @@ try:  # installed package / pytest package-alias path
         DOCTOR_REQUIRED_CHECK_NAMES,
         DOCTOR_RESPONSE_SCHEMA_VERSION,
     )
+    from scope_recall.writer_lease import writer_handoff_telemetry_view
 except ImportError:  # pragma: no cover - direct source checkout execution fallback
     from doctor_common import expected_embedder_from_config, load_runtime_config, redact_secret_like_text, vector_backend_from_config, vector_enabled_from_config, vector_fallback_backend_from_config
     from doctor_event_digest import event_digest_report
@@ -70,6 +56,7 @@ except ImportError:  # pragma: no cover - direct source checkout execution fallb
         DOCTOR_REQUIRED_CHECK_NAMES,
         DOCTOR_RESPONSE_SCHEMA_VERSION,
     )
+    from writer_lease import writer_handoff_telemetry_view
 
 __all__ = [
     "disabled_vector_report",
@@ -98,6 +85,7 @@ __all__ = [
     "vector_enabled_from_config",
     "vector_fallback_backend_from_config",
     "vector_report",
+    "writer_handoff_telemetry_view",
 ]
 
 
@@ -146,18 +134,10 @@ def main() -> int:
         configured_idle_release_seconds = float(
             writer_lease_config.get("idle_release_seconds", 1800.0)
         )
-        writer_handoff_payload = {
-            "snapshot_kind": "offline_config_only",
-            "runtime_state_observed": False,
-            "writer_lease_scope": "process-wide-os-lock",
-            "idle_release_enabled": configured_idle_release_seconds > 0,
-            "idle_release_seconds": configured_idle_release_seconds,
-            "live_counters": {
-                "source": "scope_recall_stats",
-                "observed": False,
-                "fields": list(WRITER_HANDOFF_LIVE_STATS_FIELDS),
-            },
-        }
+        writer_handoff_payload = writer_handoff_telemetry_view(
+            hermes_home / "scope-recall",
+            configured_idle_release_seconds=configured_idle_release_seconds,
+        )
         if config_errors:
             recommendations.append("Fix malformed or unreadable Scope Recall config files; runtime is using defaults or partial config.")
         endpoint_payload, endpoint_check, endpoint_recommendations = endpoint_policy_report(

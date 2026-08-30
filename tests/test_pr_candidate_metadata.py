@@ -140,6 +140,11 @@ def _fixture(tmp_path: Path):
             "result": "compatible",
             "support_matrix_changed": False,
             "active_instance_touched": False,
+            "candidate_source": {
+                "commit": commit,
+                "tree": tree,
+                "clean": True,
+            },
             "hermes_source": {
                 "commit": module.SUPPORTED_HERMES_COMMIT,
                 "tree": module.SUPPORTED_HERMES_TREE,
@@ -155,6 +160,11 @@ def _fixture(tmp_path: Path):
             "result": "incompatible",
             "support_matrix_changed": False,
             "active_instance_touched": False,
+            "candidate_source": {
+                "commit": commit,
+                "tree": tree,
+                "clean": True,
+            },
             "reason": "provider_load",
             "stages": {
                 "candidate_install": "compatible",
@@ -223,6 +233,45 @@ def _fixture(tmp_path: Path):
             },
         },
     )
+    _write(
+        evidence / module.ISSUE_60_RECEIPT,
+        {
+            **receipt_base,
+            "schema_version": "scope-recall.issue-60-regression.v1",
+            "poison_initial_attempts": 1_667,
+            "early_retry_count": 0,
+            "terminal_revive_count": 0,
+            "healthy_item_completed": True,
+            "legacy_queue_mutation_count": 0,
+            "simulated_seconds": 61,
+            "maintenance_transactions": 2,
+            "prefetch_timeout_observed": False,
+            "prefetch_max_wait_ms": 50,
+            "active_instance_touched": False,
+        },
+    )
+    _write(
+        evidence / module.ISSUE_61_RECEIPT,
+        {
+            "schema_version": "scope-recall.issue-61-applicability.v1",
+            "source_commit": commit,
+            "source_tree": tree,
+            "artifact_sha256": wheel["sha256"],
+            "wheel_sha256": wheel["sha256"],
+            "sdist_sha256": sdist["sha256"],
+            "affected_version": "1.10.3",
+            "legacy_server_present_in_source": False,
+            "legacy_server_present_in_wheel": False,
+            "legacy_server_present_in_sdist": False,
+            "raw_truth_write_endpoint_present": False,
+            "unsafe_console_entrypoint_present": False,
+            "unsafe_console_documentation_present": False,
+            "two_point_zero_code_change_required": False,
+            "one_ten_backport_required": True,
+            "active_instance_touched": False,
+            "result": "not-applicable-to-2.0",
+        },
+    )
     indexed_files = []
     for filename in module.CONSUMED_EVIDENCE_FILES:
         path = evidence / filename
@@ -237,7 +286,9 @@ def _fixture(tmp_path: Path):
     _write(
         evidence / "SHAREABLE_EVIDENCE_INDEX.json",
         {
-            "schema_version": "scope-recall.shareable-evidence-index.v1",
+            "schema_version": module.SHAREABLE_SCHEMA_VERSION,
+            "evidence_phase": module.FINAL_EVIDENCE_PHASE,
+            "remote_ci_bound": True,
             "source_commit": commit,
             "source_tree": tree,
             "build_provenance_sha256": _sha256(
@@ -311,6 +362,12 @@ def test_exact_pr_marker_matches_all_candidate_evidence(tmp_path: Path):
     assert marker["issue_disposition"]["58"]["receipt_sha256"] == _sha256(
         evidence / module.ISSUE_58_RECEIPT
     )
+    assert marker["issue_disposition"]["60"]["receipt_sha256"] == _sha256(
+        evidence / module.ISSUE_60_RECEIPT
+    )
+    assert marker["issue_disposition"]["61"]["receipt_sha256"] == _sha256(
+        evidence / module.ISSUE_61_RECEIPT
+    )
 
 
 def test_public_review_binding_is_a_non_circular_second_layer(tmp_path: Path):
@@ -383,9 +440,15 @@ def test_rendered_pr_body_has_issue_closure_dispositions(tmp_path: Path):
 
     assert "Closes #51" in snapshot["body"]
     assert "Closes #58" in snapshot["body"]
+    assert "Closes #60" not in snapshot["body"]
+    assert "Closes #61" not in snapshot["body"]
+    assert "1.10.3 remains affected" in snapshot["body"]
     assert "#59 by @tutan0558" in snapshot["body"]
     assert marker["issue_disposition"]["51"]["closes_on_merge"] is True
     assert marker["issue_disposition"]["58"]["closes_on_merge"] is True
+    assert marker["issue_disposition"]["41"]["closes_on_merge"] is False
+    assert marker["issue_disposition"]["60"]["closes_on_merge"] is False
+    assert marker["issue_disposition"]["61"]["closes_on_merge"] is False
 
 
 @pytest.mark.parametrize(
@@ -506,6 +569,47 @@ def test_explicit_expected_head_sha_cannot_drift_from_candidate(tmp_path: Path):
             evidence,
             expected_head_sha="9" * 40,
         )
+
+
+@pytest.mark.parametrize("version", ["0.19.1", "0.20.6"])
+@pytest.mark.parametrize("mutation", ["missing", "malformed", "commit", "tree"])
+def test_pr_marker_binds_each_probe_to_exact_candidate_source(
+    tmp_path: Path,
+    version: str,
+    mutation: str,
+):
+    module, evidence, snapshot, _marker, _raw_path = _fixture(tmp_path)
+    filename = f"HERMES_COMPATIBILITY_PROBE.{version}.json"
+    path = evidence / filename
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if mutation == "missing":
+        payload.pop("candidate_source")
+    elif mutation == "malformed":
+        payload["candidate_source"] = "not-an-identity"
+    elif mutation == "commit":
+        payload["candidate_source"]["commit"] = "7" * 40
+    else:
+        payload["candidate_source"]["tree"] = "8" * 40
+    _write(path, payload)
+    _refresh_shareable_entry(evidence, filename)
+
+    with pytest.raises(
+        module.PRCandidateMetadataError,
+        match="candidate_source|candidate source",
+    ):
+        module.expected_marker(snapshot, evidence)
+
+
+def test_pr_marker_rejects_provisional_shareable_evidence(tmp_path: Path):
+    module, evidence, snapshot, _marker, _raw_path = _fixture(tmp_path)
+    path = evidence / "SHAREABLE_EVIDENCE_INDEX.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["evidence_phase"] = "provisional-pre-ci"
+    payload["remote_ci_bound"] = False
+    _write(path, payload)
+
+    with pytest.raises(module.PRCandidateMetadataError, match="requires a final"):
+        module.expected_marker(snapshot, evidence)
 
 
 def test_consumed_evidence_requires_exact_shareable_sha(tmp_path: Path):

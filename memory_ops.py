@@ -922,7 +922,6 @@ def govern_memories(
     """Build governance action plans for active memories.
 
     The function keeps classification, review surfaces, and optional apply behavior together so operator tools can expose the exact proposed mutation set."""
-    conn = _command_conn(provider)
     if scope_only:
         where = f"WHERE scope_id IN ({_domain_writable_placeholders(provider)})"
         params: tuple[Any, ...] = tuple(_domain_writable_scope_ids(provider))
@@ -930,6 +929,7 @@ def govern_memories(
         where = ""
         params = ()
     with _command_lock(provider):
+        conn = _command_conn(provider)
         rows = conn.execute(
             f"SELECT id, source, target, content, updated_at, metadata FROM memories {where}",
             params,

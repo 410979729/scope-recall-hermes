@@ -44,6 +44,7 @@ from .vector_runtime import replay_vector_outbox
 from . import write_kernel as write_kernel_mod
 from .write_kernel import (
     WRITE_AUTHORITY_BUSY,
+    _admitted_truth_mutation,
     _writer_lifecycle_lock,
     has_positive_write_authority,
     hold_positive_write_authority,
@@ -135,9 +136,12 @@ def _resolve_capture_authorization(
     )
 
 
+_ACCEPTED_CAPTURE_DRAIN_TOKEN = object()
+
+
 @contextmanager
 def _capture_store_authority(
-    provider: Any, *, complete_accepted_capture: bool = False
+    provider: Any, *, accepted_capture_token: object | None = None
 ) -> Iterator[None]:
     """Hold lifecycle authority for one truth-store unit.
 
@@ -146,16 +150,22 @@ def _capture_store_authority(
     shutdown is published.
     """
 
+    if accepted_capture_token is None:
+        with write_kernel_mod.command_write_access(provider):
+            yield
+        return
+
+    if accepted_capture_token is not _ACCEPTED_CAPTURE_DRAIN_TOKEN:
+        raise RuntimeError(WRITE_AUTHORITY_BUSY)
+
     from ._internal.runtime.writer_handoff import active_truth_work
 
     with _writer_lifecycle_lock(provider):
-        if complete_accepted_capture:
-            if getattr(provider, "_truth_writer_role", None) != "owner":
-                raise RuntimeError(WRITE_AUTHORITY_BUSY)
-        else:
-            write_kernel_mod.require_positive_write_authority(provider)
-        with active_truth_work(provider):
-            yield
+        if getattr(provider, "_truth_writer_role", None) != "owner":
+            raise RuntimeError(WRITE_AUTHORITY_BUSY)
+        with _admitted_truth_mutation(provider):
+            with active_truth_work(provider):
+                yield
 
 
 def _drain_relation_rebuild_debt(provider: Any) -> None:
@@ -491,7 +501,7 @@ def writer_loop(provider: Any) -> None:
                     session_id=job.get("session_id") or "",
                     metadata=job.get("metadata") or {},
                     replay_vector=False,
-                    complete_accepted_capture=True,
+                    _accepted_capture_token=_ACCEPTED_CAPTURE_DRAIN_TOKEN,
                     authorization=job.get("authorization"),
                 )
         except Exception as exc:
@@ -883,7 +893,7 @@ def store_now(
     before_commit: Callable[[sqlite3.Connection, str], dict[str, Any] | None]
     | None = None,
     replay_vector: bool = True,
-    complete_accepted_capture: bool = False,
+    _accepted_capture_token: object | None = None,
     authorization: CaptureAuthorizationEnvelope | None = None,
 ) -> tuple[str, bool, dict[str, Any] | None]:
     """Synchronously commit one sanitized capture row through SQLite truth."""
@@ -894,7 +904,7 @@ def store_now(
     if not should_capture_text(safe_content, provider._config).allowed:
         return "", False, None
     with _capture_store_authority(
-        provider, complete_accepted_capture=complete_accepted_capture
+        provider, accepted_capture_token=_accepted_capture_token
     ):
         resolved_authorization = authorization or _resolve_capture_authorization(
             provider,

@@ -29,10 +29,12 @@ except ModuleNotFoundError as exc:
 
 
 SCHEMA_VERSION = "scope-recall.evidence-index.v1"
-SHAREABLE_SCHEMA_VERSION = "scope-recall.shareable-evidence-index.v1"
+SHAREABLE_SCHEMA_VERSION = "scope-recall.shareable-evidence-index.v2"
 EVIDENCE_SCAN_SCHEMA_VERSION = "scope-recall.evidence-content-scan.v1"
 TEST_HONESTY_SCHEMA_VERSION = "scope-recall.test-honesty.v1"
 FINAL_CANDIDATE_MODE = "final-release-candidate"
+PROVISIONAL_EVIDENCE_PHASE = "provisional-pre-ci"
+FINAL_EVIDENCE_PHASE = "final"
 SUPPORTED_HERMES_VERSION = "0.19.1"
 SUPPORTED_HERMES_COMMIT = "cc4cab2f592e60a197e796506de9168f74baf3ea"
 SUPPORTED_HERMES_TREE = "fcdc6093750ed0a3a556e20927799d7245ba65e4"
@@ -45,6 +47,15 @@ ISSUE_51_REQUIRED_NODE_IDS = frozenset(
         "tests/test_relation_cleanup.py::test_cleanup_apply_is_backup_first_committed_and_idempotently_replayed",
     }
 )
+ISSUE_60_SCHEMA_VERSION = "scope-recall.issue-60-regression.v1"
+ISSUE_60_REQUIRED_NODE_IDS = frozenset(
+    {
+        "tests/test_issue_60_regression.py::test_issue_60_retry_due_time_is_bounded_and_healthy_work_is_not_starved",
+        "tests/test_issue_60_regression.py::test_issue_60_sixty_one_idle_ticks_do_not_restore_one_second_hammer",
+        "tests/test_issue_60_regression.py::test_issue_60_maintenance_is_nonblocking_and_prefetch_is_bounded_zero_write",
+    }
+)
+ISSUE_61_SCHEMA_VERSION = "scope-recall.issue-61-applicability.v1"
 WRITER_HANDOFF_SCHEMA_VERSION = "scope-recall.writer-lease-handoff.v1"
 WRITER_HANDOFF_DETAILS_SCHEMA_VERSION = (
     "scope-recall.writer-lease-handoff-details.v1"
@@ -82,6 +93,40 @@ WRITER_HANDOFF_REQUIRED_NODE_IDS = frozenset(
         "tests/test_writer_idle_handoff.py::test_idle_release_config_accepts_disabled_or_bounded_values",
         "tests/test_writer_idle_handoff.py::test_idle_release_config_rejects_ambiguous_or_unbounded_values",
         "tests/test_writer_idle_handoff.py::test_user_activity_generation_veto_is_content_free",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_update_started_before_fence_commits_and_vetoes_handoff",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_update_started_after_fence_is_rejected",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_merge_preserves_capture_barrier",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_archive_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_delete_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_feedback_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_govern_apply_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_dedupe_apply_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_repair_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_purge_deny_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_purge_erase_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_read_only_modes_do_not_require_write_authority",
+        "tests/test_direct_command_writer_admission.py::test_memory_mutation_service_rejects_fenced_unadmitted_mutation",
+        "tests/test_direct_command_writer_admission.py::test_memory_mutation_service_rejects_unclassified_non_owner",
+        "tests/test_direct_command_writer_admission.py::test_private_admission_surface_rejects_public_bool_and_wrong_token",
+        "tests/test_direct_command_writer_admission.py::test_accepted_capture_commits_after_shutdown_and_handoff_fences",
+        "tests/test_direct_command_writer_admission.py::test_admitted_truth_mutation_token_is_cleared_after_exception",
+        "tests/test_direct_command_writer_admission.py::test_public_store_reuses_one_active_truth_unit_and_generation",
+        "tests/test_direct_command_writer_admission.py::test_govern_acquires_query_connection_under_query_lock",
+        "tests/test_direct_command_writer_admission.py::test_tool_service_dry_run_governance_does_not_request_write_access",
+        "tests/test_direct_command_writer_admission.py::test_fact_proposal_dry_run_is_read_only_on_reader",
+        "tests/test_direct_command_writer_admission.py::test_fact_proposal_apply_reenters_command_gate_and_rejects_reader_or_fence",
+        "tests/test_direct_command_writer_admission.py::test_nested_command_gate_preserves_barrier_and_propagates_exceptions",
+        "tests/test_direct_command_writer_admission.py::test_public_provider_command_surface_uses_unified_admission",
+        "tests/test_writer_handoff_telemetry.py::test_new_authority_epoch_fences_delayed_old_reader_update",
+        "tests/test_writer_handoff_telemetry.py::test_initial_epoch_claim_linearizes_with_final_lease_release",
+        "tests/test_writer_handoff_telemetry.py::test_epoch_claim_never_takes_activity_lock_under_process_state_lock",
+        "tests/test_writer_handoff_telemetry.py::test_delayed_activity_cannot_overwrite_final_shutdown_with_owner_snapshot",
+        "tests/test_writer_handoff_telemetry.py::test_missing_invalid_and_stale_snapshots_are_explicitly_unobserved",
+        "tests/test_writer_handoff_telemetry.py::test_fresh_snapshot_activity_ages_advance_at_read_time",
+        "tests/test_writer_handoff_telemetry.py::test_runtime_writes_only_real_activity_or_state_events",
+        "tests/test_writer_handoff_telemetry.py::test_telemetry_failure_never_changes_writer_authority",
+        "tests/test_writer_handoff_telemetry.py::test_same_process_holders_share_epoch_until_final_release",
+        "tests/test_writer_handoff_telemetry.py::test_doctor_and_dashboard_expose_all_fresh_persisted_fields",
         "tests/test_writer_handoff_activity.py::test_journal_append_cannot_cross_handoff_fence_after_lifecycle_precheck",
         "tests/test_writer_handoff_activity.py::test_relation_maintenance_real_sqlite_mutation_refreshes_truth_activity",
         "tests/test_writer_handoff_activity.py::test_independent_digest_sqlite_mutation_refreshes_truth_activity",
@@ -130,6 +175,8 @@ REQUIRED_INPUT_FILES = (
     "WRITER_CANARY.json",
     "ROLLBACK_REHEARSAL.json",
     "ISSUE_51_REGRESSION.json",
+    "ISSUE_60_REGRESSION.json",
+    "ISSUE_61_APPLICABILITY.json",
     "WRITER_LEASE_HANDOFF_REHEARSAL.json",
     "INSTALL_CANDIDATE_RECEIPT.json",
     "INSTALL_N_MINUS_ONE_RECEIPT.json",
@@ -175,6 +222,7 @@ RECEIPT_FILES = (
     "WRITER_CANARY.json",
     "ROLLBACK_REHEARSAL.json",
     "ISSUE_51_REGRESSION.json",
+    "ISSUE_60_REGRESSION.json",
     "WRITER_LEASE_HANDOFF_REHEARSAL.json",
     "ACTIVE_ISOLATION.json",
     "REPOSITORY_CENSUS.json",
@@ -605,7 +653,30 @@ def _validated_hermes_identity(
     return identity
 
 
-def _validate_hermes_probes(root: Path) -> dict[str, object]:
+def _validate_probe_candidate_source(
+    payload: Mapping[str, object],
+    *,
+    source_commit: str,
+    source_tree: str,
+    label: str,
+) -> None:
+    identity = _validated_hermes_identity(payload, field="candidate_source")
+    if (
+        identity.get("commit") != source_commit
+        or identity.get("tree") != source_tree
+        or identity.get("clean") is not True
+    ):
+        raise EvidencePackageError(
+            f"{label} compatibility probe candidate source mismatch"
+        )
+
+
+def _validate_hermes_probes(
+    root: Path,
+    *,
+    source_commit: str,
+    source_tree: str,
+) -> dict[str, object]:
     probe_0191 = _load_object(root / "HERMES_COMPATIBILITY_PROBE.0.19.1.json")
     probe_0206 = _load_object(root / "HERMES_COMPATIBILITY_PROBE.0.20.6.json")
     if (
@@ -623,6 +694,18 @@ def _validate_hermes_probes(root: Path) -> dict[str, object]:
         or probe_0206.get("active_instance_touched") is not False
     ):
         raise EvidencePackageError("Hermes 0.20.6 compatibility probe is invalid")
+    _validate_probe_candidate_source(
+        probe_0191,
+        source_commit=source_commit,
+        source_tree=source_tree,
+        label="Hermes 0.19.1",
+    )
+    _validate_probe_candidate_source(
+        probe_0206,
+        source_commit=source_commit,
+        source_tree=source_tree,
+        label="Hermes 0.20.6",
+    )
     supported_identity = _validated_hermes_identity(
         probe_0191,
         field="hermes_source",
@@ -831,6 +914,99 @@ def _validate_issue_51_regression(payload: Mapping[str, object]) -> None:
         )
 
 
+def _validate_issue_60_regression(payload: Mapping[str, object]) -> None:
+    name = "ISSUE_60_REGRESSION.json"
+    if payload.get("schema_version") != ISSUE_60_SCHEMA_VERSION:
+        raise EvidencePackageError(f"{name} schema mismatch")
+    details = payload.get("details")
+    if not isinstance(details, dict):
+        raise EvidencePackageError(f"{name} details are missing")
+    node_ids = details.get("node_ids")
+    if not isinstance(node_ids, list) or not all(
+        isinstance(item, str) and item for item in node_ids
+    ):
+        raise EvidencePackageError(f"{name} node_ids must be a string array")
+    if len(node_ids) != len(set(node_ids)) or set(node_ids) != (
+        ISSUE_60_REQUIRED_NODE_IDS
+    ):
+        raise EvidencePackageError(f"{name} node set does not match the regression")
+    regression = details.get("issue_60_regression")
+    if not isinstance(regression, dict):
+        raise EvidencePackageError(f"{name} accident-shape proof is missing")
+    if regression.get("schema_version") != ISSUE_60_SCHEMA_VERSION:
+        raise EvidencePackageError(f"{name} details schema mismatch")
+    exact: dict[str, object] = {
+        "poison_initial_attempts": 1_667,
+        "early_retry_count": 0,
+        "terminal_revive_count": 0,
+        "healthy_item_completed": True,
+        "legacy_queue_mutation_count": 0,
+        "simulated_seconds": 61,
+        "maintenance_transactions": 2,
+        "prefetch_timeout_observed": False,
+        "active_instance_touched": False,
+        "result": "passed",
+    }
+    for field, expected in exact.items():
+        if regression.get(field) != expected or payload.get(field) != expected:
+            raise EvidencePackageError(f"{name} {field} mismatch")
+    max_wait = regression.get("prefetch_max_wait_ms")
+    if (
+        isinstance(max_wait, bool)
+        or not isinstance(max_wait, int)
+        or not 0 <= max_wait <= 550
+        or payload.get("prefetch_max_wait_ms") != max_wait
+    ):
+        raise EvidencePackageError(f"{name} prefetch_max_wait_ms mismatch")
+
+
+def _validate_issue_61_applicability(
+    payload: Mapping[str, object],
+    *,
+    source_commit: str,
+    source_tree: str,
+    wheel_sha256: str,
+    sdist_sha256: str,
+) -> None:
+    name = "ISSUE_61_APPLICABILITY.json"
+    if payload.get("schema_version") != ISSUE_61_SCHEMA_VERSION:
+        raise EvidencePackageError(f"{name} schema mismatch")
+    exact: dict[str, object] = {
+        "source_commit": source_commit,
+        "source_tree": source_tree,
+        "artifact_sha256": wheel_sha256,
+        "wheel_sha256": wheel_sha256,
+        "sdist_sha256": sdist_sha256,
+        "affected_version": "1.10.3",
+        "legacy_server_present_in_source": False,
+        "legacy_server_present_in_wheel": False,
+        "legacy_server_present_in_sdist": False,
+        "raw_truth_write_endpoint_present": False,
+        "unsafe_console_entrypoint_present": False,
+        "unsafe_console_documentation_present": False,
+        "two_point_zero_code_change_required": False,
+        "one_ten_backport_required": True,
+        "active_instance_touched": False,
+        "result": "not-applicable-to-2.0",
+    }
+    for field, expected in exact.items():
+        if payload.get(field) != expected:
+            raise EvidencePackageError(f"{name} {field} mismatch")
+    for field in ("started_at", "finished_at"):
+        if not str(payload.get(field) or ""):
+            raise EvidencePackageError(f"{name} is missing {field}")
+    command = payload.get("command")
+    if not isinstance(command, list) or not command or not all(
+        isinstance(item, str) and item for item in command
+    ):
+        raise EvidencePackageError(f"{name} command is invalid")
+    boundary = payload.get("environment_boundary")
+    if not isinstance(boundary, dict) or (
+        boundary.get("active_instance_touched") is not False
+    ):
+        raise EvidencePackageError(f"{name} isolation boundary is invalid")
+
+
 def _validate_writer_handoff_rehearsal(payload: Mapping[str, object]) -> None:
     name = "WRITER_LEASE_HANDOFF_REHEARSAL.json"
     if payload.get("schema_version") != WRITER_HANDOFF_SCHEMA_VERSION:
@@ -917,7 +1093,20 @@ def _validate_remote_ci_binding(
     return run_id
 
 
-def build_evidence_index(evidence_dir: Path, *, expected_sha: str) -> dict[str, object]:
+def _validated_evidence_phase(value: object) -> str:
+    phase = str(value or "")
+    if phase not in {PROVISIONAL_EVIDENCE_PHASE, FINAL_EVIDENCE_PHASE}:
+        raise EvidencePackageError("evidence phase is invalid")
+    return phase
+
+
+def build_evidence_index(
+    evidence_dir: Path,
+    *,
+    expected_sha: str,
+    evidence_phase: str = PROVISIONAL_EVIDENCE_PHASE,
+) -> dict[str, object]:
+    phase = _validated_evidence_phase(evidence_phase)
     requested = Path(evidence_dir)
     if requested.is_symlink():
         raise EvidencePackageError("evidence directory must not be a symlink")
@@ -977,17 +1166,25 @@ def build_evidence_index(evidence_dir: Path, *, expected_sha: str) -> dict[str, 
     ):
         raise EvidencePackageError("candidate manifest CI run IDs are invalid")
     remote_path = root / "REMOTE_CI_BINDING.json"
-    if ci_run_ids or remote_path.is_file():
-        if not remote_path.is_file():
-            raise EvidencePackageError("candidate CI run IDs lack a binding receipt")
+    remote_present = remote_path.is_file()
+    if phase == FINAL_EVIDENCE_PHASE:
+        if not remote_present:
+            raise EvidencePackageError("final evidence requires a remote CI binding receipt")
         remote_run_id = _validate_remote_ci_binding(
             _load_object(remote_path),
             source_commit=source_commit,
         )
-        if sorted(set(ci_run_ids)) != [remote_run_id]:
-            raise EvidencePackageError("candidate manifest CI run ID is not bound")
+        if ci_run_ids != [remote_run_id]:
+            raise EvidencePackageError(
+                "final evidence requires exactly one matching candidate CI run ID"
+            )
+    elif ci_run_ids or remote_present:
+        raise EvidencePackageError(
+            "provisional evidence must not contain final remote CI binding"
+        )
     artifact_hashes: set[str] = set()
     wheel_sha256 = ""
+    sdist_sha256 = ""
     for kind in ("wheel", "sdist"):
         artifact = provenance.get(kind)
         if isinstance(artifact, dict):
@@ -997,6 +1194,8 @@ def build_evidence_index(evidence_dir: Path, *, expected_sha: str) -> dict[str, 
             artifact_hashes.add(artifact_sha)
             if kind == "wheel":
                 wheel_sha256 = artifact_sha
+            else:
+                sdist_sha256 = artifact_sha
     if len(artifact_hashes) != 2:
         raise EvidencePackageError("build provenance must bind distinct wheel and sdist hashes")
     raw_honesty_payload = _load_object(root / "PYTEST_SKIP_REPORT.raw.json")
@@ -1026,7 +1225,11 @@ def build_evidence_index(evidence_dir: Path, *, expected_sha: str) -> dict[str, 
     ) == install_receipts["INSTALL_N_MINUS_ONE_RECEIPT.json"].get("environment_id"):
         raise EvidencePackageError("candidate and N-1 install environments are not distinct")
     _validate_install_command_stages(root, install_receipts)
-    rehearsal_hermes_identity = _validate_hermes_probes(root)
+    rehearsal_hermes_identity = _validate_hermes_probes(
+        root,
+        source_commit=source_commit,
+        source_tree=source_tree,
+    )
     _validate_candidate_hermes(
         candidate,
         supported_probe_identity=rehearsal_hermes_identity,
@@ -1052,6 +1255,13 @@ def build_evidence_index(evidence_dir: Path, *, expected_sha: str) -> dict[str, 
         evidence_root=root,
     )
     n_minus_one_window_sha256 = _sha256_file(n_minus_one_window_path)
+    _validate_issue_61_applicability(
+        _load_object(root / "ISSUE_61_APPLICABILITY.json"),
+        source_commit=source_commit,
+        source_tree=source_tree,
+        wheel_sha256=wheel_sha256,
+        sdist_sha256=sdist_sha256,
+    )
     for name in RECEIPT_FILES:
         receipt = _load_object(root / name)
         _validate_receipt(
@@ -1072,6 +1282,8 @@ def build_evidence_index(evidence_dir: Path, *, expected_sha: str) -> dict[str, 
             raise EvidencePackageError(f"{name} Hermes source identity mismatch")
         if name == "ISSUE_51_REGRESSION.json":
             _validate_issue_51_regression(receipt)
+        if name == "ISSUE_60_REGRESSION.json":
+            _validate_issue_60_regression(receipt)
         if name == "WRITER_LEASE_HANDOFF_REHEARSAL.json":
             _validate_writer_handoff_rehearsal(receipt)
         if name in {"MIGRATION_N_MINUS_ONE.json", "DOWNGRADE_N_MINUS_ONE.json"}:
@@ -1138,6 +1350,8 @@ def build_evidence_index(evidence_dir: Path, *, expected_sha: str) -> dict[str, 
         files.append(entry)
     return {
         "schema_version": SCHEMA_VERSION,
+        "evidence_phase": phase,
+        "remote_ci_bound": phase == FINAL_EVIDENCE_PHASE,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "source_commit": source_commit,
         "source_tree": source_tree,
@@ -1277,6 +1491,10 @@ def _shareable_evidence_index(
     shareable.sort(key=lambda item: str(item["path"]))
     return {
         "schema_version": SHAREABLE_SCHEMA_VERSION,
+        "evidence_phase": _validated_evidence_phase(
+            full_index.get("evidence_phase")
+        ),
+        "remote_ci_bound": full_index.get("remote_ci_bound") is True,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "classification": "shareable",
         "source_commit": full_index["source_commit"],
@@ -1300,6 +1518,9 @@ def _shareable_evidence_index(
 
 def write_evidence_index(evidence_dir: Path, payload: Mapping[str, object]) -> Path:
     root = evidence_dir.resolve(strict=True)
+    phase = _validated_evidence_phase(payload.get("evidence_phase"))
+    if payload.get("remote_ci_bound") is not (phase == FINAL_EVIDENCE_PHASE):
+        raise EvidencePackageError("evidence phase and remote CI binding state differ")
     shareable = _shareable_evidence_index(root, payload)
     shareable_output = root / "SHAREABLE_EVIDENCE_INDEX.json"
     rendered = json.dumps(
@@ -1320,6 +1541,7 @@ def write_evidence_index(evidence_dir: Path, payload: Mapping[str, object]) -> P
     final_payload = build_evidence_index(
         root,
         expected_sha=str(payload.get("source_commit") or ""),
+        evidence_phase=phase,
     )
     output = root / "EVIDENCE_INDEX.json"
     _write_json(output, final_payload)
@@ -1330,13 +1552,22 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--evidence-dir", type=Path, required=True)
     parser.add_argument("--expected-sha", required=True)
+    parser.add_argument(
+        "--evidence-phase",
+        choices=(PROVISIONAL_EVIDENCE_PHASE, FINAL_EVIDENCE_PHASE),
+        default=PROVISIONAL_EVIDENCE_PHASE,
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     expected_sha = _require_git_sha(args.expected_sha, field="expected_sha")
-    payload = build_evidence_index(args.evidence_dir, expected_sha=expected_sha)
+    payload = build_evidence_index(
+        args.evidence_dir,
+        expected_sha=expected_sha,
+        evidence_phase=str(args.evidence_phase),
+    )
     output = write_evidence_index(args.evidence_dir, payload)
     print(
         json.dumps(

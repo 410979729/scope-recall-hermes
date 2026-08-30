@@ -101,8 +101,8 @@ def test_doctor_reports_writer_handoff_config_without_claiming_live_state(tmp_pa
     assert handoff["idle_release_seconds"] == 1800.0
     assert handoff["snapshot_kind"] == "offline_config_only"
     assert handoff["runtime_state_observed"] is False
-    assert handoff["live_counters"]["source"] == "scope_recall_stats"
+    assert handoff["live_counters"]["source"] == "persisted_writer_handoff_telemetry"
     assert handoff["live_counters"]["observed"] is False
     assert "writer_role" in handoff["live_counters"]["fields"]
     assert "last_handoff_reason_code" in handoff["live_counters"]["fields"]
-    assert "writer_role" not in handoff
+    assert handoff["writer_role"] is None
