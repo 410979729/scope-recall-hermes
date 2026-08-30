@@ -76,6 +76,49 @@ def test_pypi_reuses_github_release_artifacts_and_verifies_sha256():
     assert "skip-existing" not in pypi_text
 
 
+def test_pypi_runs_clean_tree_gate_before_artifact_work_directories():
+    pypi = yaml.safe_load(PYPI_WORKFLOW.read_text(encoding="utf-8"))
+    prepare_steps = pypi["jobs"]["prepare"]["steps"]
+    steps = [step.get("name") for step in prepare_steps]
+
+    assert steps.index("Verify tag matches package version") < steps.index(
+        "Verify checked-out tag matches release source"
+    )
+    assert steps.index("Verify checked-out tag matches release source") < steps.index(
+        "Install release dependencies"
+    )
+    assert steps.index("Install release dependencies") < steps.index(
+        "Run tagged release gate"
+    )
+    assert steps.index("Run tagged release gate") < steps.index(
+        "Download GitHub Release artifacts"
+    )
+    assert steps.index("Download GitHub Release artifacts") < steps.index(
+        "Verify GitHub Release artifact SHA-256"
+    )
+    assert steps.index("Verify GitHub Release artifact SHA-256") < steps.index(
+        "Verify source/run-bound release provenance"
+    )
+    assert steps.index("Verify source/run-bound release provenance") < steps.index(
+        "Stage validated distributions"
+    )
+    gate_position = steps.index("Run tagged release gate")
+    before_gate = "\n".join(str(step) for step in prepare_steps[:gate_position])
+    assert "release-download" not in before_gate
+    assert "release-staging" not in before_gate
+    source_step = next(
+        step
+        for step in prepare_steps
+        if step.get("name") == "Verify checked-out tag matches release source"
+    )
+    assert source_step["env"] == {
+        "VERIFIED_SOURCE_SHA": "${{ needs.verify_release_origin.outputs.source_sha }}"
+    }
+    assert source_step["run"] == (
+        'test "$(git rev-parse HEAD)" = "${VERIFIED_SOURCE_SHA}"'
+    )
+
+
 def test_pypi_workflow_is_per_tag_concurrent_and_refuses_repeat_upload():
     pypi = yaml.safe_load(PYPI_WORKFLOW.read_text(encoding="utf-8"))
     pypi_text = PYPI_WORKFLOW.read_text(encoding="utf-8")
@@ -262,6 +305,58 @@ def test_release_gate_rejects_pypi_packages_dir_that_includes_metadata(
 
     assert gate["ok"] is False
     assert any("distribution-only" in failure for failure in gate["failures"])
+
+
+def test_release_gate_rejects_artifact_work_directory_before_clean_tree_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    shutil.copy2(RELEASE_WORKFLOW, workflows / "release.yml")
+    bad = PYPI_WORKFLOW.read_text(encoding="utf-8").replace(
+        "      - name: Install release dependencies\n",
+        "      - name: Create release workspace too early\n"
+        "        run: mkdir -p release-download\n"
+        "      - name: Install release dependencies\n",
+        1,
+    )
+    (workflows / "pypi.yml").write_text(bad, encoding="utf-8")
+    release_check = _load_release_check_module()
+    monkeypatch.setattr(release_check, "ROOT", tmp_path)
+
+    gate = release_check.pypi_workflow_gate_check()
+
+    assert gate["ok"] is False
+    assert any(
+        "before creating release artifact work directories" in failure
+        for failure in gate["failures"]
+    )
+
+
+def test_release_gate_rejects_missing_pre_execution_source_binding(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    shutil.copy2(RELEASE_WORKFLOW, workflows / "release.yml")
+    bad = PYPI_WORKFLOW.read_text(encoding="utf-8").replace(
+        'test "$(git rev-parse HEAD)" = "${VERIFIED_SOURCE_SHA}"',
+        'test -n "${VERIFIED_SOURCE_SHA}"',
+        1,
+    )
+    (workflows / "pypi.yml").write_text(bad, encoding="utf-8")
+    release_check = _load_release_check_module()
+    monkeypatch.setattr(release_check, "ROOT", tmp_path)
+
+    gate = release_check.pypi_workflow_gate_check()
+
+    assert gate["ok"] is False
+    assert any(
+        "bind the checked-out tag to the verified release source" in failure
+        for failure in gate["failures"]
+    )
 
 
 def test_release_gate_rejects_missing_tag_and_main_policy(
