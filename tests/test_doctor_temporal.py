@@ -132,6 +132,8 @@ def test_temporal_doctor_clean_report_is_read_only(tmp_path: Path) -> None:
     assert payload["single_current_overlap_groups"] == 0
     assert payload["open_interval_conflict_groups"] == 0
     assert payload["claims_without_source"] == 0
+    assert payload["successor_integrity"]["violation_count"] == 0
+    assert payload["successor_integrity"]["cycle_component_count"] == 0
     assert payload["fact_fts_integrity"]["current"] is True
     assert payload["fact_fts_integrity"]["membership_sets_checked"] is True
     assert all(
@@ -139,6 +141,67 @@ def test_temporal_doctor_clean_report_is_read_only(tmp_path: Path) -> None:
         for summary in payload["fact_fts_integrity"]["set_differences"].values()
     )
     assert recommendations == []
+    conn.close()
+
+
+def test_temporal_doctor_recursively_detects_decontented_successor_cycle(
+    tmp_path: Path,
+) -> None:
+    home, conn = _home(tmp_path)
+    for suffix in ("a", "b", "c"):
+        memory_id = f"memory-cycle-{suffix}"
+        claim_id = f"claim-cycle-{suffix}"
+        _memory(
+            conn,
+            memory_id,
+            metadata={"lifecycle": "promoted", "memory_type": "factual"},
+        )
+        insert_claim(
+            conn,
+            claim_id=claim_id,
+            memory_id=memory_id,
+            scope_id="scope-a",
+            subject="Aurora",
+            predicate="database",
+            value=f"value-{suffix}",
+            cardinality="multi",
+            recorded_at="2026-01-02T00:00:00+00:00",
+            source_type="user_message",
+            source_ref=f"message-{suffix}",
+            confidence=0.99,
+        )
+    for predecessor, successor in (("a", "b"), ("b", "c"), ("c", "a")):
+        conn.execute(
+            "UPDATE fact_claims SET superseded_by_claim_id = ? WHERE claim_id = ?",
+            (f"claim-cycle-{successor}", f"claim-cycle-{predecessor}"),
+        )
+    conn.execute(
+        """
+        UPDATE fact_claims
+        SET status = 'superseded', retired_at = '2026-02-01T00:00:00+00:00'
+        WHERE claim_id LIKE 'claim-cycle-%'
+        """
+    )
+    conn.commit()
+    before = conn.total_changes
+
+    payload, check, recommendations = temporal_evolution_report(
+        home,
+        {"fact_evolution": {"enabled": True}},
+    )
+
+    assert conn.total_changes == before
+    assert check["ok"] is False
+    assert any("successor chain invariant" in item for item in check["failures"])
+    integrity = payload["successor_integrity"]
+    assert integrity["checked_claim_count"] == 3
+    assert integrity["checked_edge_count"] == 3
+    assert integrity["cycle_component_count"] == 1
+    assert integrity["cycle_claim_count"] == 3
+    assert integrity["violation_count"] >= 1
+    assert "claim-cycle-" not in json.dumps(integrity, sort_keys=True)
+    assert payload["write_delta"] == 0
+    assert any("repair plan" in item for item in recommendations)
     conn.close()
 
 

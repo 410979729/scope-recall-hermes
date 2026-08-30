@@ -1,0 +1,46 @@
+"""Vector infrastructure behind the typed application service."""
+
+from __future__ import annotations
+
+from typing import Any, cast
+
+from ..application.vector_service import VectorGateway
+from .hook_contract import RuntimeHooks
+from .vector_view import RuntimeVectorView
+from ...vector_runtime import (
+    mark_vector_needs_repair as default_mark_vector_needs_repair,
+)
+from ...vector_runtime import setup_vector_layer as default_setup_vector_layer
+class ProviderVectorAdapter:
+    def __init__(self, host: Any, view: RuntimeVectorView, hooks: RuntimeHooks) -> None:
+        self._host = host
+        self._view = view
+        self._hooks = hooks
+
+    def setup(self) -> None:
+        operation = self._hooks.resolve(
+            "setup_vector_layer", default_setup_vector_layer
+        )
+        operation(self._host)
+
+    def status_payload(self) -> dict[str, object]:
+        return cast(dict[str, object], self._view.vector_status_view())
+
+    def embed_query_variants(
+        self, queries: tuple[str, ...]
+    ) -> tuple[tuple[float, ...], ...]:
+        rows = self._view.embed_query_variants(list(queries))
+        return tuple(tuple(float(value) for value in row) for row in rows)
+
+    def mark_needs_repair(self, reason: str) -> None:
+        operation = self._hooks.resolve(
+            "mark_vector_needs_repair",
+            default_mark_vector_needs_repair,
+        )
+        operation(self._host, reason)
+
+
+def bind_vector_gateway(
+    host: Any, view: RuntimeVectorView, hooks: RuntimeHooks
+) -> VectorGateway:
+    return ProviderVectorAdapter(host, view, hooks)

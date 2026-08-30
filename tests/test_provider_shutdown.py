@@ -14,6 +14,7 @@ import textwrap
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,6 +23,7 @@ from plugins.memory import load_memory_provider
 import scope_recall.capture as capture
 import scope_recall.provider as provider_module
 from scope_recall._internal.runtime import peer_recovery as peer_recovery_mod
+from scope_recall._internal.runtime import process_lifecycle as process_lifecycle_mod
 from scope_recall.models import RuntimeScope
 from scope_recall.provider import ScopeRecallMemoryProvider
 from writer_lease import TruthWriterLease
@@ -195,15 +197,24 @@ def test_public_shutdown_shares_one_deadline_between_writer_and_digest(
     provider = _provider(tmp_path)
     writer_timeouts: list[float] = []
     digest_timeouts: list[float] = []
+    now = {"value": 1000.0}
+
+    def fake_monotonic() -> float:
+        return now["value"]
 
     def slow_writer(_provider, *, timeout: float) -> None:
         writer_timeouts.append(timeout)
-        time.sleep(0.07)
+        now["value"] += 0.07
 
     def slow_digest(timeout: float) -> None:
         digest_timeouts.append(timeout)
-        time.sleep(max(0.0, timeout - 0.02))
+        now["value"] += max(0.0, timeout - 0.02)
 
+    monkeypatch.setattr(
+        process_lifecycle_mod,
+        "time",
+        SimpleNamespace(monotonic=fake_monotonic),
+    )
     monkeypatch.setattr(provider_module, "shutdown_writer", slow_writer)
     monkeypatch.setattr(provider._background_work(), "join_digest", slow_digest)
     monkeypatch.setattr(
@@ -212,14 +223,60 @@ def test_public_shutdown_shares_one_deadline_between_writer_and_digest(
         lambda **_kwargs: True,
     )
 
-    started = time.monotonic()
+    started = fake_monotonic()
     provider.shutdown(timeout=0.1)
-    elapsed = time.monotonic() - started
+    elapsed = fake_monotonic() - started
 
     assert len(writer_timeouts) == 1
     assert len(digest_timeouts) == 1
+    assert writer_timeouts[0] == pytest.approx(0.1)
+    assert digest_timeouts[0] == pytest.approx(0.03)
     assert 0.0 <= digest_timeouts[0] < 0.06
+    assert elapsed == pytest.approx(0.08)
     assert elapsed < 0.15
+    assert provider._shutdown_finalized is True
+
+
+def test_public_shutdown_default_keeps_windows_cleanup_headroom(
+    tmp_path, monkeypatch
+) -> None:
+    provider = _provider(tmp_path)
+    writer_timeouts: list[float] = []
+    digest_timeouts: list[float] = []
+    now = {"value": 1000.0}
+
+    def fake_monotonic() -> float:
+        return now["value"]
+
+    def loaded_windows_writer(_provider, *, timeout: float) -> None:
+        writer_timeouts.append(timeout)
+        now["value"] += 3.5
+
+    monkeypatch.setattr(
+        process_lifecycle_mod,
+        "time",
+        SimpleNamespace(monotonic=fake_monotonic),
+    )
+    monkeypatch.setattr(
+        provider_module,
+        "shutdown_writer",
+        loaded_windows_writer,
+    )
+    monkeypatch.setattr(
+        provider._background_work(),
+        "join_digest",
+        lambda timeout: digest_timeouts.append(timeout),
+    )
+    monkeypatch.setattr(
+        provider,
+        "_cleanup_failed_writer_initialization",
+        lambda **_kwargs: True,
+    )
+
+    provider.shutdown()
+
+    assert writer_timeouts == pytest.approx([10.0])
+    assert digest_timeouts == pytest.approx([6.5])
     assert provider._shutdown_finalized is True
 
 

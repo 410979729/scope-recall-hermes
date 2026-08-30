@@ -80,15 +80,29 @@ class MaintenanceLeaseError(RuntimeError):
     """Raised when a writer is blocked by an active activation lease."""
 
 
+def _verified_maintenance_database_path(database_path: Path) -> Path:
+    """Reject symlink and Windows junction indirection for a lease target."""
+
+    expanded = Path(database_path).expanduser()
+    lexical = Path(os.path.abspath(os.fspath(expanded)))
+    is_junction = getattr(os.path, "isjunction", lambda _value: False)
+    for candidate in (lexical, *lexical.parents):
+        if candidate.is_symlink() or bool(is_junction(candidate)):
+            raise MaintenanceLeaseError(
+                "activation maintenance lease cannot protect an indirect truth store"
+            )
+    resolved = lexical.resolve(strict=False)
+    if os.path.normcase(str(resolved)) != os.path.normcase(str(lexical)):
+        raise MaintenanceLeaseError(
+            "activation maintenance lease target resolution changed"
+        )
+    return lexical
+
+
 def acquire_activation_lease(database_path: Path) -> dict[str, Any]:
     """Atomically acquire the durable cooperative writer lease."""
 
-    expanded = Path(database_path).expanduser()
-    db_path = Path(os.path.abspath(os.fspath(expanded)))
-    if db_path.is_symlink() or db_path.parent.is_symlink():
-        raise MaintenanceLeaseError(
-            "activation maintenance lease cannot protect a symlinked truth store"
-        )
+    db_path = _verified_maintenance_database_path(database_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     path = activation_lease_path(db_path)
     token = uuid.uuid4().hex
@@ -320,12 +334,7 @@ def recover_stale_activation_lease(
     restored so recovery cannot silently weaken the fail-closed boundary.
     """
 
-    expanded_path = Path(database_path).expanduser()
-    db_path = Path(os.path.abspath(os.fspath(expanded_path)))
-    if db_path.is_symlink() or db_path.parent.is_symlink():
-        raise MaintenanceLeaseError(
-            "activation lease recovery cannot mutate a symlinked truth store"
-        )
+    db_path = _verified_maintenance_database_path(database_path)
     status = activation_lease_status(db_path)
     result = {
         **status,

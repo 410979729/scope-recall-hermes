@@ -17,6 +17,7 @@ from scope_recall.relation_extraction import (
     rebuild_extracted_relations,
     sync_extracted_relations_for_memory,
 )
+from scope_recall.relation_frequency_index import sync_relation_frequency_memory
 from scope_recall.sql_store import ensure_schema, store_row
 
 
@@ -65,6 +66,7 @@ def _store(
         "UPDATE memories SET updated_at=? WHERE id=?",
         (updated_at, memory_id),
     )
+    sync_relation_frequency_memory(conn, memory_id)
     conn.commit()
 
 

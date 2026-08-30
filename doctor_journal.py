@@ -10,9 +10,23 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from .digest_durable_work import (
+        JOURNAL_DURABLE_DOMAIN,
+        JOURNAL_DURABLE_OWNER_ROLES,
+        JOURNAL_DURABLE_POLICY_VERSION,
+        journal_durable_health,
+        unavailable_digest_health,
+    )
     from .doctor_common import coerce_int
     from .journal_recovery import classify_rejection_reason
 except ImportError:  # pragma: no cover - direct source-script execution fallback
+    from digest_durable_work import (  # type: ignore
+        JOURNAL_DURABLE_DOMAIN,
+        JOURNAL_DURABLE_OWNER_ROLES,
+        JOURNAL_DURABLE_POLICY_VERSION,
+        journal_durable_health,
+        unavailable_digest_health,
+    )
     from doctor_common import coerce_int
     from journal_recovery import classify_rejection_reason
 
@@ -237,9 +251,30 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
     storage_dir = hermes_home / "scope-recall"
     db_path = storage_dir / "memory.sqlite3"
     if not enabled:
-        return {"enabled": False, "status": "disabled"}, {"ok": True, "failures": []}, recommendations
+        return {
+            "enabled": False,
+            "status": "disabled",
+            "durable_work": unavailable_digest_health(
+                domain_type=JOURNAL_DURABLE_DOMAIN,
+                policy_version=JOURNAL_DURABLE_POLICY_VERSION,
+                reason_code="disabled_by_config",
+                storage_dir=storage_dir,
+                domain_roles=JOURNAL_DURABLE_OWNER_ROLES,
+            ),
+        }, {"ok": True, "failures": []}, recommendations
     if not db_path.exists():
-        return {"enabled": True, "status": "missing", "path": str(db_path)}, {"ok": False, "failures": [f"SQLite truth DB not found: {db_path}"]}, recommendations
+        return {
+            "enabled": True,
+            "status": "missing",
+            "path": str(db_path),
+            "durable_work": unavailable_digest_health(
+                domain_type=JOURNAL_DURABLE_DOMAIN,
+                policy_version=JOURNAL_DURABLE_POLICY_VERSION,
+                reason_code="truth_database_absent",
+                storage_dir=storage_dir,
+                domain_roles=JOURNAL_DURABLE_OWNER_ROLES,
+            ),
+        }, {"ok": False, "failures": [f"SQLite truth DB not found: {db_path}"]}, recommendations
 
     required_tables = {"journal_entries", "journal_digest_runs", "memory_journal_sources", "journal_rejections"}
     try:
@@ -255,7 +290,19 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
                     "path": str(db_path),
                     "status": "schema_missing",
                     "missing_tables": missing,
+                    "durable_work": unavailable_digest_health(
+                        domain_type=JOURNAL_DURABLE_DOMAIN,
+                        policy_version=JOURNAL_DURABLE_POLICY_VERSION,
+                        reason_code="schema_missing",
+                        storage_dir=storage_dir,
+                        domain_roles=JOURNAL_DURABLE_OWNER_ROLES,
+                    ),
                 }, {"ok": False, "failures": [f"journal tables missing: {missing}"]}, recommendations
+
+            durable_health = journal_durable_health(
+                conn,
+                storage_dir=storage_dir,
+            )
 
             total_entries = int(conn.execute("SELECT COUNT(*) FROM journal_entries").fetchone()[0])
             unprocessed_entries = int(
@@ -507,7 +554,20 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
             conn.close()
     except Exception as exc:
         recommendations.append("Repair or restore the SQLite truth DB before trusting journal/provenance status.")
-        return {"enabled": True, "path": str(db_path), "status": "error", "error": str(exc)}, {"ok": False, "failures": [f"journal health error: {exc}"]}, recommendations
+        return {
+            "enabled": True,
+            "path": str(db_path),
+            "status": "error",
+            "error": str(exc),
+            "durable_work": unavailable_digest_health(
+                domain_type=JOURNAL_DURABLE_DOMAIN,
+                policy_version=JOURNAL_DURABLE_POLICY_VERSION,
+                reason_code="health_read_error",
+                state="needs_repair",
+                storage_dir=storage_dir,
+                domain_roles=JOURNAL_DURABLE_OWNER_ROLES,
+            ),
+        }, {"ok": False, "failures": [f"journal health error: {exc}"]}, recommendations
 
     failures: list[str] = []
     warn_entries = max(0, coerce_int(journal_config.get("backlog_warn_entries"), 500))
@@ -698,6 +758,7 @@ def journal_report(hermes_home: Path, *, enabled: bool = True, journal_config: d
             "recent_runs": recent_runs[:10],
         },
         "last_digest_run": dict(last_run) if last_run else {},
+        "durable_work": durable_health,
         "source_links": source_links,
         "rejections": rejections,
         "orphan_source_links": orphan_sources,

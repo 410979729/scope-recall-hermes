@@ -14,8 +14,14 @@ from typing import Any
 import pytest
 
 from _scope_recall_public_memory_port import attach_public_truth_ports
+from scope_recall.lifecycle_registry import (
+    BENCHMARK_MARK_LIFECYCLE,
+    MEMORY_CLEANUP_ARCHIVE,
+    MEMORY_CLEANUP_RESTORE,
+)
 from scope_recall.lifecycle_service import hard_delete_memories, transition_memory_lifecycle
-from scope_recall.memory_ops import dedupe_memories
+import scope_recall.memory_ops as memory_ops
+from scope_recall.memory_ops import archive_memories, dedupe_memories
 from scope_recall.sql_store import ensure_schema, store_row
 from scope_recall.vector_generation import (
     GenerationIdentity,
@@ -80,6 +86,7 @@ def _register_generation(conn: sqlite3.Connection, *, backend: str = "lancedb") 
 
 class _MemoryProvider:
     def __init__(self, conn: sqlite3.Connection, *, vector_store=None) -> None:
+        self._truth_writer_role = "owner"
         self._conn = conn
         self._lock = threading.RLock()
         self._vector_lock = threading.RLock()
@@ -182,6 +189,406 @@ def test_dedupe_preserves_identical_text_with_distinct_memory_types(tmp_path):
     assert result["duplicate_groups"] == 0
     assert result["duplicates"] == 0
     assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 2
+
+
+def _archive_fixture(tmp_path: Path, *memory_ids: str, generation: bool = True):
+    conn = _conn(tmp_path / "archive.sqlite3")
+    for memory_id in memory_ids:
+        _add_memory(conn, memory_id, content=f"archive {memory_id}")
+    if generation:
+        _register_generation(conn)
+    conn.commit()
+    return conn, _MemoryProvider(conn)
+
+
+def _complete_exact_events(conn: sqlite3.Connection, event_ids: list[int]) -> dict[str, int]:
+    for event_id in event_ids:
+        conn.execute(
+            "UPDATE vector_outbox SET status='completed', completed_at=updated_at WHERE id=?",
+            (event_id,),
+        )
+    conn.commit()
+    return {"claimed": len(event_ids), "completed": len(event_ids), "failed": 0}
+
+
+def _set_exact_event_status(
+    conn: sqlite3.Connection,
+    event_ids: list[int],
+    status: str,
+) -> dict[str, int]:
+    for event_id in event_ids:
+        conn.execute(
+            "UPDATE vector_outbox SET status=? WHERE id=?",
+            (status, event_id),
+        )
+    conn.commit()
+    return {
+        "claimed": len(event_ids),
+        "completed": 0,
+        "failed": len(event_ids),
+    }
+
+
+def test_hard_delete_collects_exact_vector_outbox_keys(tmp_path):
+    conn, _provider = _archive_fixture(tmp_path, "hard-delete-key")
+
+    result = hard_delete_memories(
+        conn,
+        memory_ids=["hard-delete-key"],
+        scope_ids=["scope-a"],
+        require_vector_delete=True,
+        actor="test",
+        reason="exact key regression",
+    )
+
+    row = conn.execute(
+        "SELECT event_key FROM vector_outbox WHERE memory_id='hard-delete-key'"
+    ).fetchone()
+    assert row is not None
+    assert result["vector_outbox_keys"] == [str(row["event_key"])]
+    assert result["outbox_enqueued"] == 1
+
+
+def test_hard_delete_zero_generation_has_no_vector_debt(tmp_path):
+    conn, provider = _archive_fixture(
+        tmp_path,
+        "hard-delete-no-generation",
+        generation=False,
+    )
+    provider._vector_status = "degraded"
+    try:
+        result = memory_ops.delete_memories_result(
+            provider, ["hard-delete-no-generation"]
+        )
+
+        assert result.deleted_count == 1
+        assert result.vector_outbox_keys == ()
+        assert result.vector_pending is False
+        assert result.companion_erasure_pending is False
+        assert conn.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_hard_delete_store_unavailable_reports_exact_pending(tmp_path):
+    conn, provider = _archive_fixture(tmp_path, "hard-delete-unavailable")
+
+    result = memory_ops.delete_memories_result(provider, ["hard-delete-unavailable"])
+
+    assert result.vector_pending is True
+    assert result.companion_erasure_pending is True
+    assert len(result.vector_outbox_keys) == 1
+    assert conn.execute(
+        "SELECT status FROM vector_outbox WHERE event_key=?",
+        (result.vector_outbox_keys[0],),
+    ).fetchone()[0] == "pending"
+
+
+def test_hard_delete_unrelated_completed_backlog_does_not_clear_target_event(
+    tmp_path,
+    monkeypatch,
+):
+    conn, provider = _archive_fixture(tmp_path, "hard-delete-target")
+    generation_id = str(current_generation(conn)["generation_id"])
+    unrelated = enqueue_vector_event(
+        conn,
+        event_key="hard-delete-unrelated-completed",
+        generation_id=generation_id,
+        memory_id="unrelated",
+        operation="delete",
+    )
+    conn.execute(
+        "UPDATE vector_outbox SET status='completed', completed_at=updated_at WHERE id=?",
+        (int(unrelated["id"]),),
+    )
+    conn.commit()
+    monkeypatch.setattr(
+        vector_runtime,
+        "replay_vector_outbox_events",
+        lambda _provider, *, event_ids: {
+            "claimed": 200,
+            "completed": 200,
+            "failed": 0,
+        },
+    )
+
+    result = memory_ops.delete_memories_result(provider, ["hard-delete-target"])
+
+    assert result.vector_pending is True
+    assert result.companion_erasure_pending is True
+
+
+def test_hard_delete_exact_target_completed_clears_pending(tmp_path, monkeypatch):
+    conn, provider = _archive_fixture(tmp_path, "hard-delete-complete")
+    monkeypatch.setattr(
+        vector_runtime,
+        "replay_vector_outbox_events",
+        lambda _provider, *, event_ids: _complete_exact_events(conn, list(event_ids)),
+    )
+
+    result = memory_ops.delete_memories_result(provider, ["hard-delete-complete"])
+
+    assert result.vector_pending is False
+    assert result.companion_erasure_pending is False
+
+
+def test_hard_delete_exact_target_retry_reports_pending(tmp_path, monkeypatch):
+    conn, provider = _archive_fixture(tmp_path, "hard-delete-retry")
+    monkeypatch.setattr(
+        vector_runtime,
+        "replay_vector_outbox_events",
+        lambda _provider, *, event_ids: _set_exact_event_status(
+            conn, list(event_ids), "retry"
+        ),
+    )
+
+    result = memory_ops.delete_memories_result(provider, ["hard-delete-retry"])
+
+    assert result.vector_pending is True
+    assert conn.execute(
+        "SELECT status FROM vector_outbox WHERE event_key=?",
+        (result.vector_outbox_keys[0],),
+    ).fetchone()[0] == "retry"
+
+
+def test_hard_delete_exact_target_dead_letter_requires_repair(tmp_path, monkeypatch):
+    _conn_handle, provider = _archive_fixture(tmp_path, "hard-delete-dead-letter")
+    conn = provider._require_conn()
+    monkeypatch.setattr(
+        vector_runtime,
+        "replay_vector_outbox_events",
+        lambda _provider, *, event_ids: _set_exact_event_status(
+            conn, list(event_ids), "dead_letter"
+        ),
+    )
+
+    result = memory_ops.delete_memories_result(provider, ["hard-delete-dead-letter"])
+
+    assert result.vector_pending is True
+    assert provider._vector_status == "needs_repair"
+    assert provider._vector_reason_code == "exact_outbox_dead_letter"
+
+
+def test_hard_delete_missing_exact_event_fails_closed_pending(tmp_path, monkeypatch):
+    conn, provider = _archive_fixture(tmp_path, "hard-delete-missing")
+
+    def remove_events(_provider, *, event_ids):
+        for event_id in event_ids:
+            conn.execute("DELETE FROM vector_outbox WHERE id=?", (int(event_id),))
+        conn.commit()
+        return {"claimed": 0, "completed": 0, "failed": 0}
+
+    monkeypatch.setattr(vector_runtime, "replay_vector_outbox_events", remove_events)
+
+    result = memory_ops.delete_memories_result(provider, ["hard-delete-missing"])
+
+    assert result.vector_pending is True
+    assert result.companion_erasure_pending is True
+
+
+def test_hard_delete_multi_id_one_pending_reports_pending(tmp_path, monkeypatch):
+    conn, provider = _archive_fixture(
+        tmp_path,
+        "hard-delete-first",
+        "hard-delete-second",
+    )
+
+    def complete_first(_provider, *, event_ids):
+        return _complete_exact_events(conn, [int(event_ids[0])])
+
+    monkeypatch.setattr(vector_runtime, "replay_vector_outbox_events", complete_first)
+
+    result = memory_ops.delete_memories_result(
+        provider,
+        ["hard-delete-first", "hard-delete-second"],
+    )
+
+    assert result.deleted_count == 2
+    assert result.vector_pending is True
+
+
+def test_dedupe_uses_exact_delete_event_status(tmp_path, monkeypatch):
+    conn = _conn(tmp_path / "dedupe-exact.sqlite3")
+    _add_memory(conn, "dupe-a")
+    _add_memory(conn, "dupe-b")
+    _register_generation(conn)
+    provider = _MemoryProvider(conn)
+    monkeypatch.setattr(
+        vector_runtime,
+        "replay_vector_outbox_events",
+        lambda _provider, *, event_ids: {
+            "claimed": 200,
+            "completed": 200,
+            "failed": 0,
+        },
+    )
+
+    result = dedupe_memories(provider, dry_run=False, scope_only=False)
+
+    assert result["deleted"] == 1
+    assert result["vector_pending"] is True
+
+
+def test_archive_collects_exact_vector_outbox_keys(tmp_path):
+    conn, provider = _archive_fixture(tmp_path, "archive-a", "archive-b")
+
+    result = memory_ops._archive_memories_truth(provider, ["archive-a", "archive-b"])
+
+    rows = conn.execute(
+        "SELECT event_key FROM vector_outbox WHERE memory_id IN ('archive-a', 'archive-b') ORDER BY id"
+    ).fetchall()
+    assert result["outbox_enqueued"] == 2
+    assert result["vector_outbox_keys"] == [str(row[0]) for row in rows]
+
+
+def test_archive_no_generation_has_no_companion_debt(tmp_path):
+    conn, provider = _archive_fixture(tmp_path, "archive-no-generation", generation=False)
+
+    result = archive_memories(provider, ["archive-no-generation"])
+
+    assert result["vector_outbox_keys"] == []
+    assert result["outbox_enqueued"] == 0
+    assert result["vector_pending"] is False
+    assert result["companion_erasure_pending"] is False
+    assert conn.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0] == 0
+
+
+def test_archive_generation_present_but_store_unavailable_reports_pending(tmp_path):
+    _conn_handle, provider = _archive_fixture(tmp_path, "archive-store-unavailable")
+
+    result = archive_memories(provider, ["archive-store-unavailable"])
+
+    assert result["vector_replay"] == {"claimed": 0, "completed": 0, "failed": 0}
+    assert result["vector_outbox_status_counts"] == {"pending": 1}
+    assert result["vector_pending"] is True
+    assert result["companion_erasure_pending"] is True
+
+
+def test_archive_zero_claim_replay_does_not_clear_exact_pending_event(tmp_path, monkeypatch):
+    _conn_handle, provider = _archive_fixture(tmp_path, "archive-zero-claim")
+    monkeypatch.setattr(
+        vector_runtime,
+        "replay_vector_outbox_events",
+        lambda _provider, *, event_ids: {"claimed": 0, "completed": 0, "failed": 0},
+    )
+
+    result = archive_memories(provider, ["archive-zero-claim"])
+
+    assert result["vector_outbox_status_counts"] == {"pending": 1}
+    assert result["vector_pending"] is True
+
+
+def test_archive_unrelated_completed_backlog_does_not_clear_target_event(tmp_path, monkeypatch):
+    conn, provider = _archive_fixture(tmp_path, "archive-target")
+    generation_id = str(current_generation(conn)["generation_id"])
+    unrelated = enqueue_vector_event(
+        conn,
+        event_key="unrelated-completed",
+        generation_id=generation_id,
+        memory_id="unrelated",
+        operation="delete",
+    )
+    conn.execute(
+        "UPDATE vector_outbox SET status='completed', completed_at=updated_at WHERE id=?",
+        (int(unrelated["id"]),),
+    )
+    conn.commit()
+    monkeypatch.setattr(
+        vector_runtime,
+        "replay_vector_outbox_events",
+        lambda _provider, *, event_ids: {"claimed": 1, "completed": 1, "failed": 0},
+    )
+
+    result = archive_memories(provider, ["archive-target"])
+
+    assert result["vector_pending"] is True
+    assert result["vector_outbox_status_counts"] == {"pending": 1}
+
+
+def test_archive_exact_event_completion_clears_pending(tmp_path, monkeypatch):
+    conn, provider = _archive_fixture(tmp_path, "archive-complete")
+    monkeypatch.setattr(
+        vector_runtime,
+        "replay_vector_outbox_events",
+        lambda _provider, *, event_ids: _complete_exact_events(conn, list(event_ids)),
+    )
+
+    result = archive_memories(provider, ["archive-complete"])
+
+    assert result["vector_outbox_status_counts"] == {"completed": 1}
+    assert result["vector_pending"] is False
+    assert result["companion_erasure_pending"] is False
+
+
+def test_archive_multi_id_one_pending_reports_pending(tmp_path, monkeypatch):
+    conn, provider = _archive_fixture(tmp_path, "archive-first", "archive-second")
+
+    def complete_first(_provider, *, event_ids):
+        return _complete_exact_events(conn, [int(event_ids[0])])
+
+    monkeypatch.setattr(vector_runtime, "replay_vector_outbox_events", complete_first)
+
+    result = archive_memories(provider, ["archive-first", "archive-second"])
+
+    assert result["vector_outbox_status_counts"] == {"completed": 1, "pending": 1}
+    assert result["vector_pending"] is True
+
+
+def test_archive_already_archived_no_change_adds_no_event(tmp_path):
+    conn, provider = _archive_fixture(tmp_path, "archive-already")
+    metadata = json.loads(
+        conn.execute("SELECT metadata FROM memories WHERE id='archive-already'").fetchone()[0]
+    )
+    metadata["lifecycle"] = "archived"
+    conn.execute(
+        "UPDATE memories SET metadata=? WHERE id='archive-already'",
+        (json.dumps(metadata, sort_keys=True),),
+    )
+    conn.commit()
+
+    result = archive_memories(provider, ["archive-already"])
+
+    assert "error" not in result
+    assert result["archived"] == 0
+    assert result["vector_outbox_keys"] == []
+    assert conn.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0] == 0
+
+
+def test_archive_dead_letter_reports_needs_repair(tmp_path, monkeypatch):
+    conn, provider = _archive_fixture(tmp_path, "archive-dead-letter")
+    provider._vector_status = "ready"
+
+    def dead_letter(_provider, *, event_ids):
+        conn.execute(
+            "UPDATE vector_outbox SET status='dead_letter' WHERE id=?",
+            (int(event_ids[0]),),
+        )
+        conn.commit()
+        return {"claimed": 1, "completed": 0, "failed": 1}
+
+    monkeypatch.setattr(vector_runtime, "replay_vector_outbox_events", dead_letter)
+
+    result = archive_memories(provider, ["archive-dead-letter"])
+
+    assert result["vector_pending"] is True
+    assert result["vector_outbox_status_counts"] == {"dead_letter": 1}
+    assert provider._vector_status == "needs_repair"
+
+
+def test_archive_replay_exception_reports_companion_pending(tmp_path, monkeypatch):
+    _conn_handle, provider = _archive_fixture(tmp_path, "archive-replay-error")
+
+    def fail_replay(_provider, *, event_ids):
+        del event_ids
+        raise RuntimeError("isolated replay failure")
+
+    monkeypatch.setattr(vector_runtime, "replay_vector_outbox_events", fail_replay)
+
+    result = archive_memories(provider, ["archive-replay-error"])
+
+    assert result["vector_pending"] is True
+    assert result["companion_erasure_pending"] is True
+    assert result["vector_replay"]["failed"] == 1
 
 
 class _VectorProvider:
@@ -335,7 +742,10 @@ def test_active_fallback_generation_requires_explicit_fallback_configuration(tmp
 
     manifest = current_generation(conn)
     assert provider._vector_ready is False
-    assert provider._vector_status == "degraded"
+    assert provider._vector_status == "needs_repair"
+    assert provider._vector_reason_code == "identity_mismatch"
+    assert provider._vector_auto_recoverable is False
+    assert provider._vector_repair_required is True
     assert provider._vector_store is None
     assert manifest is not None and manifest["backend"] == "sqlite-bruteforce"
     assert not (tmp_path / "vector.sqlite3").exists()
@@ -460,8 +870,7 @@ def _relation_fixture(tmp_path: Path, *, peer_scope: str = "scope-a") -> tuple[s
         lifecycle="archived",
         actor="test",
         reason="archive before rollback",
-        event_type="rollback_fixture",
-        action="soft_archive",
+        operation_id=MEMORY_CLEANUP_ARCHIVE,
     )
     conn.commit()
     return conn, relation
@@ -476,8 +885,7 @@ def _restore_subject(conn: sqlite3.Connection, relation: dict[str, object]) -> d
         restore_relations=[relation],
         actor="test",
         reason="rollback relation",
-        event_type="rollback_fixture",
-        action="rollback_soft_archive",
+        operation_id=MEMORY_CLEANUP_RESTORE,
     )
     conn.commit()
     return result
@@ -493,8 +901,11 @@ def test_relation_rollback_skips_hidden_peer(tmp_path, peer_lifecycle):
         lifecycle=peer_lifecycle,
         actor="test",
         reason="hide peer",
-        event_type="rollback_fixture",
-        action="hide_peer",
+        operation_id=(
+            MEMORY_CLEANUP_ARCHIVE
+            if peer_lifecycle == "archived"
+            else BENCHMARK_MARK_LIFECYCLE
+        ),
     )
     conn.commit()
 

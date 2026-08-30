@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
@@ -10,6 +11,7 @@ from scope_recall.relation_extraction import (
     scope_high_frequency_relation_entities_by_scope,
 )
 from scope_recall.relation_frequency_maintenance import drain_relation_frequency_work
+from scope_recall.relation_scope_state import blocked_entities_receipt_hash
 from scope_recall.sql_store import ensure_schema
 
 
@@ -53,14 +55,22 @@ def _seed_frequency_receipt_fixture(
         """,
         (scope_id, entity, row_count),
     )
+    revision = int(
+        conn.execute(
+            "SELECT corpus_revision FROM relation_scope_statistics WHERE scope_id=?",
+            (scope_id,),
+        ).fetchone()[0]
+    )
+    blocked_json = json.dumps([entity], separators=(",", ":"))
+    blocked_sha = blocked_entities_receipt_hash(scope_id, revision, {entity})
     conn.execute(
         """
         UPDATE relation_scope_statistics
-        SET visible_memory_count=?, statistics_revision=-1,
-            blocked_entities_json='[]', blocked_entities_sha256=''
+        SET visible_memory_count=?, statistics_revision=?,
+            blocked_entities_json=?, blocked_entities_sha256=?
         WHERE scope_id=?
         """,
-        (row_count, scope_id),
+        (row_count, revision, blocked_json, blocked_sha, scope_id),
     )
     conn.commit()
 

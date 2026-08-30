@@ -36,6 +36,14 @@ from scope_recall_migrate_status_runtime.truth_connection import connect_truth_d
 REPORT_SCHEMA_VERSION = "migration_status_report.v1"
 
 
+def configure_utf8_stdout() -> None:
+    """Keep the machine-readable JSON stream stable across Windows code pages."""
+
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(reconfigure):
+        reconfigure(encoding="utf-8", errors="strict")
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Report Scope Recall SQLite schema migration status")
     parser.add_argument("--hermes-home", default=os.environ.get("HERMES_HOME", "~/.hermes"), help="Hermes home/profile path")
@@ -86,6 +94,7 @@ def build_payload(db_path: Path) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_utf8_stdout()
     args = parse_args(argv)
     payload = build_payload(db_path_from_args(args))
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))

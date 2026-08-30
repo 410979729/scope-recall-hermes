@@ -363,6 +363,44 @@ SCOPE_RECALL_SEARCH_SCHEMA = {
     },
 }
 
+SCOPE_RECALL_INSPECTOR_SCHEMA = {
+    "name": "scope_recall_inspector",
+    "description": (
+        "Explain the exact production Recall Packet for one read-only search, "
+        "including provenance, truth state, token cost, confidence, timeline, "
+        "and non-executing correction/archive/purge plans."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Search query."},
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20,
+                "default": 5,
+            },
+            "recall_mode": {
+                "type": "string",
+                "enum": ["advisory", "strict"],
+                "default": "advisory",
+            },
+            "include_content": {
+                "type": "boolean",
+                "default": False,
+                "description": "Include sanitized memory content; summaries are always shown.",
+            },
+            "format": {
+                "type": "string",
+                "enum": ["json", "text"],
+                "default": "json",
+            },
+        },
+        "required": ["query"],
+        "additionalProperties": False,
+    },
+}
+
 SCOPE_RECALL_MEMORY_SCHEMA = {
     "name": "scope_recall_memory",
     "description": "Compact memory operations: inspect, feedback, update, merge, or forget by exact id.",
@@ -430,6 +468,47 @@ SCOPE_RECALL_FORGET_SCHEMA = {
             "reason": {"type": "string", "description": "Operator-readable reason for the audited forget/archive action."},
             "hard_delete": {"type": "boolean", "description": "Maintenance-only: hard delete instead of soft archive."},
         },
+    },
+}
+
+SCOPE_RECALL_PURGE_SCHEMA = {
+    "name": "scope_recall_purge",
+    "description": (
+        "Explicit two-phase privacy purge for exact memory ids. Maintenance-only: "
+        "plan is zero-write, deny commits an irreversible visibility tombstone, and "
+        "erase performs idempotent physical removal after a second confirmation."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["plan", "status", "deny", "erase"],
+            },
+            "id": {
+                "type": "string",
+                "maxLength": MAX_MEMORY_ID_LENGTH,
+                "description": "One exact memory id for plan or deny.",
+            },
+            "ids": {
+                "type": "array",
+                "maxItems": MAX_MEMORY_IDS_PER_REQUEST,
+                "items": {"type": "string", "maxLength": MAX_MEMORY_ID_LENGTH},
+                "description": "Exact memory ids for plan or deny.",
+            },
+            "operation_id": {
+                "type": "string",
+                "maxLength": 96,
+                "description": "Plan-generated operation id; required after plan.",
+            },
+            "confirmation": {
+                "type": "string",
+                "maxLength": 64,
+                "description": "Exact phase confirmation returned by plan or deny.",
+            },
+        },
+        "required": ["action"],
+        "additionalProperties": False,
     },
 }
 

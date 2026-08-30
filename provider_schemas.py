@@ -11,6 +11,7 @@ from typing import Any
 
 from .config_schema import build_config_registry
 from .gating import config_bool
+from .tool_profiles import normalize_tool_profile
 from .tool_runtime_spec import TOOL_SPECS, visible_tool_specs
 
 
@@ -19,12 +20,7 @@ def build_config_schema() -> list[dict[str, Any]]:
 
 
 def _schema_profile(config: dict[str, Any]) -> str:
-    profile = str(config.get("tool_schema_profile") or "compact").strip().lower().replace("-", "_")
-    if profile in {"legacy", "compat", "standard"}:
-        return "standard"
-    if profile not in {"compact", "standard"}:
-        return "compact"
-    return profile
+    return normalize_tool_profile(config.get("tool_schema_profile"))
 
 
 def _extra_tool_names(raw_extra_tools: Any) -> list[str]:
@@ -56,8 +52,10 @@ def _flag_set(config: dict[str, Any]) -> set[str]:
     return flags
 
 
-def build_tool_schemas(config: dict[str, Any], *, agent_context: str = "primary") -> list[dict[str, Any]]:
-    """Build the public tool schema list for compact, standard, and optional maintenance surfaces."""
+def build_tool_schemas(
+    config: dict[str, Any], *, agent_context: str = "primary"
+) -> list[dict[str, Any]]:
+    """Build one canonical profile without weakening independent feature gates."""
 
     if not config_bool(config, "enable_tools", True):
         return []
@@ -73,7 +71,11 @@ def build_tool_schemas(config: dict[str, Any], *, agent_context: str = "primary"
             schema_by_name[spec.name] = spec.schema
         elif gate == "experience" and "experience" in flags:
             schema_by_name[spec.name] = spec.schema
-        elif gate == "experience+maintenance" and "experience" in flags and "maintenance" in flags:
+        elif (
+            gate == "experience+maintenance"
+            and "experience" in flags
+            and "maintenance" in flags
+        ):
             schema_by_name[spec.name] = spec.schema
         elif gate in flags:
             schema_by_name[spec.name] = spec.schema

@@ -690,6 +690,12 @@ def attach_freshness_metadata(
     declaration and replace the ambiguous nested view without rewriting SQLite.
     """
 
+    # Program 3 projections historically used ``fact_key`` before freshness
+    # also used that outward compatibility key.  Preserve the canonical Claim
+    # slot under an unambiguous name before freshness projects or removes its
+    # own key, so the read-side compiler never groups unrelated legacy rows.
+    if metadata.get("fact_claim_id") and metadata.get("fact_key"):
+        metadata.setdefault("fact_claim_key", str(metadata["fact_key"]))
     _preserve_declared_freshness(metadata)
     authoritative = _authoritative_freshness_view(freshness)
     metadata["freshness_authority"] = "fact_freshness"

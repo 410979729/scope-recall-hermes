@@ -139,9 +139,16 @@ class TruthSession:
         try:
             conn.close()
         except Exception:
-            logger.exception("Scope Recall SQLite close failed after %s", context)
+            owner = self._owner
+            if owner is not None and bool(
+                getattr(owner, "_writer_handoff_fenced", False)
+            ):
+                logger.warning(
+                    "Scope Recall SQLite close failed during fenced writer handoff"
+                )
+            else:
+                logger.exception("Scope Recall SQLite close failed after %s", context)
             if self._conn is conn:
-                owner = self._owner
                 if owner is not None:
                     owner._truth_writer_role = "unknown"
             if reraise:
@@ -189,6 +196,40 @@ class TruthSession:
             logger.exception("Scope Recall SQLite rollback failed after %s", context)
             self.quarantine(conn, context)
 
+    @staticmethod
+    def _merge_peer_recovery_report(
+        payload: dict[str, Any], report: dict[str, Any]
+    ) -> None:
+        """Merge one nonblocking peer sweep without double-counting peers."""
+
+        counters = {
+            "peer_providers_checked",
+            "peer_rollbacks",
+            "peer_rollback_errors",
+            "peer_busy_skipped",
+        }
+        for key, value in report.items():
+            if key not in counters:
+                payload[key] = value
+        payload["peer_providers_checked"] = max(
+            int(payload.get("peer_providers_checked", 0) or 0),
+            int(report.get("peer_providers_checked", 0) or 0),
+        )
+        payload["peer_rollbacks"] = int(payload.get("peer_rollbacks", 0) or 0) + int(
+            report.get("peer_rollbacks", 0) or 0
+        )
+        payload["peer_rollback_errors"] = int(
+            payload.get("peer_rollback_errors", 0) or 0
+        ) + int(report.get("peer_rollback_errors", 0) or 0)
+        latest_busy = int(report.get("peer_busy_skipped", 0) or 0)
+        payload["peer_busy_skipped"] = latest_busy
+        payload["peer_busy_skipped_total"] = int(
+            payload.get("peer_busy_skipped_total", 0) or 0
+        ) + latest_busy
+        payload["peer_recovery_passes"] = int(
+            payload.get("peer_recovery_passes", 0) or 0
+        ) + 1
+
     def recover_after_error(
         self,
         context: str,
@@ -204,19 +245,64 @@ class TruthSession:
             "write_probe": False,
             "reconnect_pending": False,
         }
+        first_peer_busy = 0
+        first_peer_errors = 0
         if peer_rollback is not None:
-            payload.update(peer_rollback(context))
+            first_peer_report = dict(peer_rollback(context))
+            self._merge_peer_recovery_report(payload, first_peer_report)
+            first_peer_busy = int(first_peer_report.get("peer_busy_skipped", 0) or 0)
+            first_peer_errors = int(
+                first_peer_report.get("peer_rollback_errors", 0) or 0
+            )
         owner = self._owner
         lock = getattr(owner, "_lock", None) if owner is not None else None
         if lock is None:
             lock = self._own_lock
+        first_peer_unresolved = bool(first_peer_busy or first_peer_errors)
         with lock:
-            return self._recover_unlocked(
+            payload = self._recover_unlocked(
                 context,
                 payload,
                 open_writer=open_writer,
                 write_probe=write_probe,
+                defer_reopen_on_probe_failure=first_peer_unresolved,
             )
+            should_recheck_peer = (
+                peer_rollback is not None
+                and first_peer_busy > 0
+                and first_peer_errors == 0
+                and not bool(payload.get("recovered"))
+                and not bool(payload.get("reconnect_pending"))
+                and self._conn is not None
+            )
+        if not should_recheck_peer:
+            if first_peer_unresolved:
+                payload["peer_recovery_deferred"] = not bool(payload.get("recovered"))
+            return payload
+
+        # A peer may have held its lifecycle only for a short maintenance unit.
+        # Recheck once after the first write probe, outside our connection lock.
+        # Both sweeps remain nonblocking and the provider lifecycle stays held by
+        # the caller, preserving lifecycle -> provider-lock ordering.
+        assert peer_rollback is not None
+        second_peer_report = dict(peer_rollback(context))
+        self._merge_peer_recovery_report(payload, second_peer_report)
+        unresolved_peer = bool(
+            int(second_peer_report.get("peer_busy_skipped", 0) or 0)
+            or int(second_peer_report.get("peer_rollback_errors", 0) or 0)
+        )
+        with lock:
+            payload = self._recover_unlocked(
+                context,
+                payload,
+                open_writer=open_writer,
+                write_probe=write_probe,
+                defer_reopen_on_probe_failure=unresolved_peer,
+            )
+        payload["peer_recovery_deferred"] = unresolved_peer and not bool(
+            payload.get("recovered")
+        )
+        return payload
 
     def _recover_unlocked(
         self,
@@ -225,6 +311,7 @@ class TruthSession:
         *,
         open_writer: Callable[[], sqlite3.Connection] | None,
         write_probe: Callable[[sqlite3.Connection], bool] | None,
+        defer_reopen_on_probe_failure: bool = False,
     ) -> dict[str, Any]:
         conn = self._conn
         if conn is None:
@@ -245,6 +332,8 @@ class TruthSession:
         if not rollback_failed and probe(conn):
             payload["recovered"] = True
             payload["write_probe"] = True
+            return payload
+        if not rollback_failed and defer_reopen_on_probe_failure:
             return payload
         owner = self._owner
         db_path = None if owner is None else getattr(owner, "_db_path", None)

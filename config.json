@@ -29,6 +29,9 @@
   "query_char_limit": 1000,
   "min_capture_length": 40,
   "capture_queue_capacity": 256,
+  "writer_lease": {
+    "idle_release_seconds": 1800.0
+  },
   "journal": {
     "allow_heuristic_fallback": false,
     "allow_session_end_llm": false,
@@ -87,6 +90,13 @@
   "relation_extraction_max_pairs": 1000,
   "relation_sync_neighbor_limit": 32,
   "relation_rebuild_chunk_pairs": 250,
+  "relation_reclassification_candidate_cap": 250,
+  "relation_policy_generation_enabled": false,
+  "relation_maintenance_interval_seconds": 30.0,
+  "relation_maintenance_wall_clock_seconds": 0.5,
+  "relation_maintenance_max_attempts": 5,
+  "relation_maintenance_backoff_base_seconds": 5.0,
+  "relation_maintenance_backoff_max_seconds": 300.0,
   "event_digest": {
     "enabled": true,
     "write_candidates": false,
@@ -100,6 +110,17 @@
     "journal_mode": "preview",
     "tool_mode": "preview",
     "maintenance_mode": "preview"
+  },
+  "fact_backfill": {
+    "shadow_enabled": false
+  },
+  "recall_compiler": {
+    "current_truth_enabled": true,
+    "conflict_enabled": true,
+    "budgeter_enabled": false,
+    "renderer_enabled": true,
+    "token_budget": 320,
+    "per_item_token_budget": 96
   },
   "temporal_queries": {
     "enabled": false,
@@ -147,7 +168,7 @@
     "<available_skills>[\\s\\S]*?</available_skills>"
   ],
   "enable_tools": true,
-  "tool_schema_profile": "compact",
+  "tool_schema_profile": "core",
   "tool_schema_extra_tools": [],
   "maintenance_tools_enabled": false,
   "secret_index_tools_enabled": false,
@@ -185,6 +206,9 @@
     "archive_assistant_scratch": true,
     "archive_duplicates": true,
     "hard_delete_sensitive": false
+  },
+  "purge": {
+    "enabled": true
   },
   "curated_memory": {
     "mode": "single-user",

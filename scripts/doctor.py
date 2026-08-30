@@ -30,6 +30,7 @@ try:  # installed package / pytest package-alias path
     from scope_recall.doctor_event_digest import event_digest_report
     from scope_recall.doctor_endpoint import endpoint_policy_report
     from scope_recall.doctor_experience import experience_config_summary, experience_report, nightly_digest_report
+    from scope_recall.doctor_extensions import extension_report
     from scope_recall.doctor_journal import journal_enabled_from_config, journal_report
     from scope_recall.doctor_source import source_report
     from scope_recall.doctor_sqlite import memory_candidate_debt_report, memory_quality_lint_report, memory_secret_report, runtime_pipeline_report, sqlite_report
@@ -39,11 +40,13 @@ try:  # installed package / pytest package-alias path
         DOCTOR_REQUIRED_CHECK_NAMES,
         DOCTOR_RESPONSE_SCHEMA_VERSION,
     )
+    from scope_recall.writer_lease import writer_handoff_telemetry_view
 except ImportError:  # pragma: no cover - direct source checkout execution fallback
     from doctor_common import expected_embedder_from_config, load_runtime_config, redact_secret_like_text, vector_backend_from_config, vector_enabled_from_config, vector_fallback_backend_from_config
     from doctor_event_digest import event_digest_report
     from doctor_endpoint import endpoint_policy_report
     from doctor_experience import experience_config_summary, experience_report, nightly_digest_report
+    from doctor_extensions import extension_report
     from doctor_journal import journal_enabled_from_config, journal_report
     from doctor_source import source_report
     from doctor_sqlite import memory_candidate_debt_report, memory_quality_lint_report, memory_secret_report, runtime_pipeline_report, sqlite_report
@@ -53,6 +56,7 @@ except ImportError:  # pragma: no cover - direct source checkout execution fallb
         DOCTOR_REQUIRED_CHECK_NAMES,
         DOCTOR_RESPONSE_SCHEMA_VERSION,
     )
+    from writer_lease import writer_handoff_telemetry_view
 
 __all__ = [
     "disabled_vector_report",
@@ -60,6 +64,7 @@ __all__ = [
     "endpoint_policy_report",
     "experience_config_summary",
     "experience_report",
+    "extension_report",
     "expected_embedder_from_config",
     "journal_enabled_from_config",
     "journal_report",
@@ -80,6 +85,7 @@ __all__ = [
     "vector_enabled_from_config",
     "vector_fallback_backend_from_config",
     "vector_report",
+    "writer_handoff_telemetry_view",
 ]
 
 
@@ -121,6 +127,17 @@ def main() -> int:
         runtime_config = load_runtime_config(source_root, hermes_home)
         config_errors = runtime_config.get("_config_load_errors") if isinstance(runtime_config.get("_config_load_errors"), list) else []
         config_check = {"ok": not config_errors, "errors": config_errors}
+        raw_writer_lease = runtime_config.get("writer_lease")
+        writer_lease_config = (
+            raw_writer_lease if isinstance(raw_writer_lease, dict) else {}
+        )
+        configured_idle_release_seconds = float(
+            writer_lease_config.get("idle_release_seconds", 1800.0)
+        )
+        writer_handoff_payload = writer_handoff_telemetry_view(
+            hermes_home / "scope-recall",
+            configured_idle_release_seconds=configured_idle_release_seconds,
+        )
         if config_errors:
             recommendations.append("Fix malformed or unreadable Scope Recall config files; runtime is using defaults or partial config.")
         endpoint_payload, endpoint_check, endpoint_recommendations = endpoint_policy_report(
@@ -149,6 +166,9 @@ def main() -> int:
         )
         experience_payload, experience_check, experience_recommendations = experience_report(hermes_home)
         experience_payload["config"] = experience_config_summary(runtime_config)
+        extension_payload, extension_check, extension_recommendations = extension_report(
+            runtime_config
+        )
         nightly_payload, nightly_check, nightly_recommendations = nightly_digest_report(hermes_home)
         if vector_enabled_from_config(runtime_config):
             backend = vector_backend_from_config(runtime_config)
@@ -167,6 +187,7 @@ def main() -> int:
         payload["runtime"] = {
             "hermes_home": str(hermes_home),
             "config_load": {"errors": config_errors},
+            "writer_handoff": writer_handoff_payload,
             "endpoint_policy": endpoint_payload,
             "expected_embedder": expected_embedder,
             "vector_backend": backend,
@@ -178,6 +199,7 @@ def main() -> int:
             "memory_secret_scan": secret_payload,
             "journal": journal_payload,
             "experience": experience_payload,
+            "extensions": extension_payload,
             "nightly_digest": nightly_payload,
             "runtime_pipelines": pipeline_payload,
             "vector": vector_payload,
@@ -192,6 +214,7 @@ def main() -> int:
         checks["memory_secret_scan"] = secret_check
         checks["journal_provenance"] = journal_check
         checks["experience_kernel"] = experience_check
+        checks["extensions"] = extension_check
         checks["nightly_digest"] = nightly_check
         checks["runtime_pipelines"] = pipeline_check
         checks["vector_companion"] = vector_check
@@ -204,6 +227,7 @@ def main() -> int:
         recommendations.extend(secret_recommendations)
         recommendations.extend(journal_recommendations)
         recommendations.extend(experience_recommendations)
+        recommendations.extend(extension_recommendations)
         recommendations.extend(nightly_recommendations)
         recommendations.extend(pipeline_recommendations)
         recommendations.extend(vector_recommendations)

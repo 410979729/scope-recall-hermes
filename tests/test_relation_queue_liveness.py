@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+# Historical counterexamples for the removed legacy worker. Program 0 replaces
+# this engine with finite containment/focus work and tests that live contract in
+# test_relation_containment.py and test_relation_rebuild_retirement.py.
+__test__ = False
+
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone

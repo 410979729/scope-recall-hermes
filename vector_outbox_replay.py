@@ -151,6 +151,10 @@ def replay_committed_vector_events(
 
     while claimed < max_events:
         with _held(db_lock):
+            if conn.in_transaction:
+                raise RuntimeError(
+                    "vector replay claim requires an idle SQLite connection"
+                )
             events = claim_vector_events(
                 conn,
                 generation_id=resolved_generation,

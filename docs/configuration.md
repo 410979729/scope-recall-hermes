@@ -112,6 +112,10 @@ This file is generated from the packaged `config.json` registry. It lists every 
 - `experience.promotion_min_tool_entries` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `experience.promotion_min_tool_entries` in the `experience` group. Default: `1`
 - `experience.promotion_require_verification` (boolean; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `experience.promotion_require_verification` in the `experience` group. Default: `true`
 
+## `fact_backfill`
+
+- `fact_backfill.shadow_enabled` (boolean; risk: `medium`; restart_required: `no`) — Enable read-only historical SplitPlan shadow generation. Shadow artifacts remain non-authoritative; applying one exact plan still requires an explicit plan-bound approval, source CAS, and the atomic Fact Executor boundary. Default: `false`
+
 ## `fact_evolution`
 
 - `fact_evolution.enabled` (boolean; risk: `high`; restart_required: `yes`) — Enable structured Fact Evolution. This switch is high risk because an already configured apply mode can persist durable memory immediately; resident providers require reload. Default: `false`
@@ -206,9 +210,22 @@ Treat chat aliases as explicit operator access-control grants.
 
 - `per_turn_extraction.enabled` (boolean; risk: `low`; restart_required: `no`) — Scope Recall configuration key `per_turn_extraction.enabled` in the `per_turn_extraction` group. Default: `false`
 
+## `purge`
+
+- `purge.enabled` (boolean; risk: `medium`; restart_required: `no`) — Enable the explicit deny-first privacy purge maintenance surface. maintenance_tools_enabled and exact two-phase confirmations remain required. Default: `true`
+
 ## `query_char_limit`
 
 - `query_char_limit` (integer; risk: `low`; restart_required: `no`) — Scope Recall configuration key `query_char_limit` in the `query_char_limit` group. Default: `1000`
+
+## `recall_compiler`
+
+- `recall_compiler.budgeter_enabled` (boolean; risk: `medium`; restart_required: `no`) — Apply the Recall Packet token budget to the unique retrieved CandidateSet. Disabled preserves the V1 item-limit behavior. Default: `false`
+- `recall_compiler.conflict_enabled` (boolean; risk: `medium`; restart_required: `no`) — Expose query-side conflicts from the unique CandidateSet without selecting a winner. Disabled removes only conflict annotations and does not change current-truth, budget, or rendering decisions. Default: `true`
+- `recall_compiler.current_truth_enabled` (boolean; risk: `medium`; restart_required: `no`) — Use the Context Compiler current-truth stage on the unique retrieved CandidateSet. Disabled keeps the V1 result order while shadow metrics remain content-free. Default: `true`
+- `recall_compiler.per_item_token_budget` (integer; risk: `medium`; restart_required: `no`) — Maximum estimated summary tokens contributed by one compiled Recall Packet item. Default: `96`
+- `recall_compiler.renderer_enabled` (boolean; risk: `medium`; restart_required: `no`) — Enable the Recall Packet prompt renderer. Disabled preserves the byte-compatible V1 prompt renderer. Default: `true`
+- `recall_compiler.token_budget` (integer; risk: `medium`; restart_required: `no`) — Maximum estimated prompt tokens in one compiled Recall Packet. Default: `320`
 
 ## `reflection`
 
@@ -243,9 +260,37 @@ Treat chat aliases as explicit operator access-control grants.
 
 - `relation_extraction_max_pairs` (integer; risk: `medium`; restart_required: `yes`) — Maximum comparison budget for one relation extraction operation (1 to 5000 pairs). Default: `1000`
 
+## `relation_maintenance_backoff_base_seconds`
+
+- `relation_maintenance_backoff_base_seconds` (number; risk: `medium`; restart_required: `yes`) — Initial retry delay for failed bounded relation maintenance work (0.1 to 3600 seconds). Default: `5.0`
+
+## `relation_maintenance_backoff_max_seconds`
+
+- `relation_maintenance_backoff_max_seconds` (number; risk: `medium`; restart_required: `yes`) — Maximum retry delay for failed bounded relation maintenance work (1 to 86400 seconds). Default: `300.0`
+
+## `relation_maintenance_interval_seconds`
+
+- `relation_maintenance_interval_seconds` (number; risk: `medium`; restart_required: `yes`) — Minimum interval between bounded relation maintenance ticks (1 to 3600 seconds). Default: `30.0`
+
+## `relation_maintenance_max_attempts`
+
+- `relation_maintenance_max_attempts` (integer; risk: `medium`; restart_required: `yes`) — Maximum attempts before failed relation maintenance work becomes terminal poison (1 to 20 attempts). Default: `5`
+
+## `relation_maintenance_wall_clock_seconds`
+
+- `relation_maintenance_wall_clock_seconds` (number; risk: `medium`; restart_required: `yes`) — Wall-clock budget for one bounded relation maintenance tick (0.05 to 10 seconds). Default: `0.5`
+
 ## `relation_rebuild_chunk_pairs`
 
-- `relation_rebuild_chunk_pairs` (integer; risk: `medium`; restart_required: `yes`) — Maximum relation pairs processed by one background rebuild chunk (1 to 1000 pairs). Default: `250`
+- `relation_rebuild_chunk_pairs` (integer; risk: `medium`; restart_required: `yes`) — Maximum items processed by one bounded relation maintenance lane (1 to 1000 items); retained as the compatibility name for finite change, focus, backfill, and reclassification work. Default: `250`
+
+## `relation_reclassification_candidate_cap`
+
+- `relation_reclassification_candidate_cap` (integer; risk: `medium`; restart_required: `yes`) — Maximum affected candidates inspected before reclassification refuses the entire mutation without partial work (1 to 5000 candidates). Default: `250`
+
+## `relation_policy_generation_enabled`
+
+- `relation_policy_generation_enabled` (boolean; risk: `medium`; restart_required: `yes`) — Enable Program 2 finite, leased relation policy generations. Default `false` preserves Program 0 containment execution. Default: `false`
 
 ## `relation_sync_neighbor_limit`
 
@@ -329,7 +374,7 @@ Treat chat aliases as explicit operator access-control grants.
 
 ## `tool_schema_profile`
 
-- `tool_schema_profile` (string; risk: `low`; restart_required: `yes`; choices: `compact, standard`) — Scope Recall configuration key `tool_schema_profile` in the `tool_schema_profile` group. Default: `"compact"`
+- `tool_schema_profile` (string; risk: `low`; restart_required: `yes`; choices: `core, compatibility, maintenance, developer, extension, compact, standard`) — Select the Primary Agent schema profile. Profiles never grant maintenance or extension authority; compact and standard remain 2.0.x aliases. Default: `"core"`
 
 ## `vector`
 
@@ -378,3 +423,7 @@ Treat chat aliases as explicit operator access-control grants.
 - `vector.table_name` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.table_name` in the `vector` group. Default: `"memories"`
 - `vector.top_k` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.top_k` in the `vector` group. Default: `8`
 - `vector.write_outbox_replay_limit` (integer; risk: `medium`; restart_required: `yes`) — Maximum durable vector outbox events replayed after one committed memory write so transient backlog converges during normal traffic. Default: `20`
+
+## `writer_lease`
+
+- `writer_lease.idle_release_seconds` (number; risk: `medium`; restart_required: `yes`) — Seconds of process-wide user and truth inactivity required before every same-store writer is safely fenced, drained, and demoted to read-only. Default 1800; 0 explicitly disables handoff; positive values must be 30 to 86400. Default: `1800.0`

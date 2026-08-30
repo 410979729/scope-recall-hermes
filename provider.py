@@ -9,15 +9,13 @@ import os
 import queue
 import sqlite3
 import threading
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from agent.memory_provider import MemoryProvider  # type: ignore[reportMissingImports]
 
 from .capture import (
-    capture_turn_fallbacks,
-    capture_turn_llm_candidates,
-    flush_writer,
     shutdown_writer,
     start_writer,
 )
@@ -28,11 +26,14 @@ from .write_kernel import (
     holding_truth_writer_lease,
     sanitized_truth_writer_owner,
 )
-from .capture_filters import sanitize_capture_text, should_capture_text
-from .capture_llm import extract_capture_candidates
+from .capture_llm import extract_capture_candidates  # noqa: F401 - compatibility hook
 from .config import load_runtime_config, save_runtime_config
 from .journal import ensure_journal_schema, run_journal_digest
+from ._internal.compatibility.provider_runtime import (
+    build_provider_runtime_dependencies,
+)
 from ._internal.runtime.composition import RuntimeComposition, assemble_runtime
+from ._internal.runtime.process_lifecycle import DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
 from ._internal.runtime import peer_recovery as _peer_recovery
 from ._internal.runtime.truth_session import TruthSession
 from ._internal.runtime.background import BackgroundWork
@@ -45,7 +46,12 @@ from .maintenance_lease import (
 )
 from .embedders import BaseEmbedder
 from .gating import clean_text, config_bool, dedup_key, normalize_query, should_skip_retrieval
-from .governance import extract_candidates
+from .governance import extract_candidates  # noqa: F401 - compatibility hook
+from ._internal.application.capture_journal import (
+    CaptureTurnRequest,
+    JournalMessagesRequest,
+    JournalTurnRequest,
+)
 from ._internal.runtime.kernel import KERNEL
 from ._internal.runtime.hooks import observe_memory_write
 from ._internal.runtime.storage import (
@@ -57,12 +63,8 @@ from ._internal.runtime.storage import (
     truth_has_unprocessed_journal,
 )
 from ._internal.experience.runtime import (
+    backfill_skill_anchors,
     run_experience_preflight,
-)
-from ._internal.journal.runtime import (
-    append_session_tool_journal_entries,
-    append_turn_journal_entries,
-    stage_pre_compress_journal_entries,
 )
 from ._internal.journal.tool_trace import tool_journal_content
 from .memory_ops import (
@@ -75,7 +77,7 @@ from .memory_ops import (
     govern_memories,  # noqa: F401
     merge_memories,  # noqa: F401
     repair_vector,  # noqa: F401
-    store_memory_now,
+    store_memory_now,  # noqa: F401 - compatibility patch point resolved by command gateway
     update_memory,  # noqa: F401
 )
 from .migration import migrate_legacy_scope_recall_storage
@@ -113,7 +115,6 @@ from .tooling import ScopeRecallToolService
 from .truth_connection import connect_truth_database
 from .vector_bootstrap import bootstrap_fresh_vector_companion
 from .vector_runtime import setup_vector_layer
-from .experience_store import backfill_skill_anchors
 from .freshness import backfill_untracked_memory_freshness
 
 logger = logging.getLogger(__name__)
@@ -182,7 +183,11 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._config: dict[str, Any] = {}
         self._retrieval_config: dict[str, Any] = {}
         self._vector_config: dict[str, Any] = {}
-        self._composition = assemble_runtime(self)
+        self._composition = assemble_runtime(
+            build_provider_runtime_dependencies(
+                self, truth_cls=TruthSession, background_cls=BackgroundWork
+            )
+        )
         self._truth = self._composition.truth
         self._lock = threading.RLock()
         self._write_queue: queue.Queue[Any] = new_write_queue()
@@ -222,6 +227,17 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._vector_enabled = False
         self._vector_ready = False
         self._vector_status = "disabled"
+        self._vector_reason_code = "disabled_by_config"
+        self._vector_auto_recoverable = False
+        self._vector_repair_required = False
+        self._vector_usable_for_query = False
+        self._vector_debt_counts: dict[str, int] = {
+            "pending": 0,
+            "processing": 0,
+            "retry": 0,
+            "dead_letter": 0,
+            "replayable": 0,
+        }
         self._vector_message = ""
         self._vector_row_count = 0
         self._vector_unique_id_count = 0
@@ -247,6 +263,13 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         self._writer_lifecycle_lock = threading.RLock()
         self._background = self._composition.background
         self._foreground_busy_count = 0
+        self._writer_handoff_activity_lock = threading.RLock()
+        self._writer_handoff_last_user_activity = time.monotonic()
+        self._writer_handoff_last_truth_activity = time.monotonic()
+        self._writer_handoff_activity_generation = 0
+        self._writer_handoff_active_truth_work = 0
+        self._writer_handoff_last_probe = 0.0
+        self._writer_handoff_fenced = False
         self._last_event_digest_report: dict[str, Any] = {
             "enabled": False,
             "dry_run": True,
@@ -317,32 +340,50 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         return self._bind_composition().initialize(session_id, **kwargs)
 
     def _has_live_initialize_runtime(self) -> bool:
-        return self._bind_composition().lifecycle.has_live_initialize_runtime(self)
+        return self._bind_composition().lifecycle.has_live_initialize_runtime()
 
     def _initialize_under_lifecycle_lock(self, session_id: str, **kwargs) -> None:
         return self._bind_composition().lifecycle.initialize_under_lifecycle_lock(
-            self, session_id, **kwargs
+            session_id, kwargs
         )
 
     def _initialize_writer_runtime(self) -> None:
-        return self._bind_composition().lifecycle.initialize_writer_runtime(self)
+        return self._bind_composition().lifecycle.initialize_writer_runtime()
 
     def _cleanup_failed_writer_initialization(
         self, *, reraise_companion_errors: bool = False
     ) -> bool:
         return self._bind_composition().lifecycle.cleanup_failed_writer_initialization(
-            self, reraise_companion_errors=reraise_companion_errors
+            reraise_companion_errors=reraise_companion_errors
         )
 
     def _initialize_read_only_runtime(self) -> None:
-        return self._bind_composition().lifecycle.initialize_read_only_runtime(self)
+        return self._bind_composition().lifecycle.initialize_read_only_runtime()
 
     def _truth_writes_blocked(self) -> bool:
         """Return whether durable write surfaces must stay disabled."""
 
-        return (
-            self._shutdown_requested.is_set() or self._truth_writer_role != "owner"
+        if (
+            self._shutdown_requested.is_set()
+            or self._truth_writer_role != "owner"
+            or bool(getattr(self, "_writer_handoff_fenced", False))
+        ):
+            return True
+        storage_dir = getattr(self, "_storage_dir", None)
+        if storage_dir is None:
+            return False
+        from .writer_lease import process_writer_handoff_state
+        from ._internal.runtime.writer_handoff import (
+            current_truth_work_started_before_fence,
         )
+
+        state = process_writer_handoff_state(storage_dir)
+        with state.lock:
+            if bool(getattr(state, "release_uncertain", False)):
+                return True
+            if bool(getattr(state, "handoff_fenced", False)):
+                return not current_truth_work_started_before_fence(self)
+            return False
 
     def _register_provider_instance(self) -> None:
         _peer_recovery.register_provider_instance(self)
@@ -406,6 +447,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         del message, kwargs
+        from ._internal.runtime.writer_handoff import note_user_activity
+
+        note_user_activity(self)
         self._current_turn = int(turn_number or 0)
         if self._truth_writes_blocked():
             self._maybe_promote_to_writer()
@@ -445,45 +489,21 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         if self._scope.agent_context != "primary":
             return
 
-        clean_user = sanitize_capture_text(self._clean_text(user_content))
-        clean_assistant = sanitize_capture_text(self._clean_text(assistant_content))
-        min_capture = int(self._config_value("min_capture_length", 40))
-        user_filter = should_capture_text(clean_user, self._config)
-        assistant_filter = should_capture_text(clean_assistant, self._config)
-        journal_filter_config = dict(self._config)
-        journal_filter_config["capture_hard_max_chars"] = -1
-        journal_user_filter = should_capture_text(clean_user, journal_filter_config)
-        journal_assistant_filter = should_capture_text(clean_assistant, journal_filter_config)
-        if journal_user_filter.allowed or journal_assistant_filter.allowed:
-            if append_turn_journal_entries(
-                self,
-                clean_user=clean_user,
-                clean_assistant=clean_assistant,
-                user_allowed=journal_user_filter.allowed,
-                assistant_allowed=journal_assistant_filter.allowed,
+        runtime = self._bind_composition()
+        plan = runtime.capture.prepare_turn(
+            CaptureTurnRequest(user_content, assistant_content)
+        )
+        if plan.journal_user_allowed or plan.journal_assistant_allowed:
+            if runtime.journal.append_turn(
+                JournalTurnRequest(
+                    clean_user=plan.clean_user,
+                    clean_assistant=plan.clean_assistant,
+                    user_allowed=plan.journal_user_allowed,
+                    assistant_allowed=plan.journal_assistant_allowed,
+                )
             ):
                 self._maybe_start_background_journal_digest()
-
-        # ── LLM semantic extraction (preferred when explicitly enabled) ──
-        llm_extracted, capture_policy_blocked = capture_turn_llm_candidates(
-            self,
-            clean_user=clean_user,
-            clean_assistant=clean_assistant,
-            user_allowed=user_filter.allowed,
-            assistant_allowed=assistant_filter.allowed,
-            extract_fn=extract_capture_candidates,
-        )
-        capture_turn_fallbacks(
-            self,
-            clean_user=clean_user,
-            clean_assistant=clean_assistant,
-            user_allowed=user_filter.allowed,
-            assistant_allowed=assistant_filter.allowed,
-            llm_extracted=llm_extracted,
-            capture_policy_blocked=capture_policy_blocked,
-            min_capture=min_capture,
-            extract_candidates_fn=extract_candidates,
-        )
+        runtime.capture.capture_turn(plan)
 
     def _event_digest_config(self) -> dict[str, Any]:
         raw = self._config.get("event_digest")
@@ -499,7 +519,11 @@ class ScopeRecallMemoryProvider(MemoryProvider):
 
         The hook should be compact and safe because it is injected into compression prompts, not treated as new user truth.
         """
-        appended, roles = stage_pre_compress_journal_entries(self, messages)
+        staged = self._bind_composition().journal.stage_pre_compress(
+            self._journal_messages_request(messages)
+        )
+        appended = staged.appended
+        roles = staged.roles
         if not appended:
             return ""
         self._dry_run_event_candidates(kind="pre_compress", messages=messages)
@@ -540,7 +564,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         if self._truth_writes_blocked():
             return
         self._append_session_tool_journal(messages)
-        flush_writer(self, timeout=3.0)
+        self._bind_composition().capture.flush(3.0)
         self._run_session_end_journal_digest()
 
     def _journal_config(self) -> dict[str, Any]:
@@ -548,7 +572,17 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         return raw_journal if isinstance(raw_journal, dict) else {}
 
     def _append_session_tool_journal(self, messages: List[Dict[str, Any]]) -> None:
-        append_session_tool_journal_entries(self, messages)
+        self._bind_composition().journal.append_session_tools(
+            self._journal_messages_request(messages)
+        )
+
+    @staticmethod
+    def _journal_messages_request(
+        messages: List[Dict[str, Any]],
+    ) -> JournalMessagesRequest:
+        return JournalMessagesRequest(
+            tuple(cast(dict[str, object], dict(message)) for message in messages)
+        )
 
     def _tool_journal_content(self, message: Dict[str, Any]) -> str:
         """Decide how much tool result content should be captured into the journal."""
@@ -666,7 +700,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         }
 
     def vector_status_view(self) -> dict[str, Any]:
-        return self._bind_composition().vector_view.vector_status_view()
+        return cast(
+            dict[str, Any], self._bind_composition().vector.status_payload()
+        )
 
     def retrieval_status_view(self) -> dict[str, Any]:
         config = dict(getattr(self, "_retrieval_config", None) or {})
@@ -678,6 +714,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         }
 
     def runtime_status_view(self) -> dict[str, Any]:
+        from ._internal.runtime.writer_handoff import writer_handoff_status
+
         thread = getattr(self, "_writer_thread", None)
         digest_thread = getattr(self, "_journal_digest_thread", None)
         db_path = getattr(self, "_db_path", None)
@@ -690,6 +728,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             "truth_writer_owner": sanitized_truth_writer_owner(
                 getattr(self, "_truth_writer_owner", {})
             ),
+            "writer_handoff": writer_handoff_status(self),
             "last_adjudication_report": dict(
                 getattr(self, "_last_adjudication_report", {}) or {}
             ),
@@ -731,13 +770,18 @@ class ScopeRecallMemoryProvider(MemoryProvider):
     def recall_service_view(self) -> Any:
         return self._recall_service
 
-    def shutdown(self, *, timeout: float = 3.0) -> None:
+    def recall_limit(self) -> int:
+        return self._retrieve_limit()
+
+    def shutdown(
+        self, *, timeout: float = DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
+    ) -> None:
         self._bind_composition().shutdown(timeout=timeout)
 
     def flush(self, timeout: float = 2.0) -> bool:
         if self._runtime_memory_disabled():
             return True
-        return flush_writer(self, timeout=timeout)
+        return self._bind_composition().capture.flush(timeout)
 
     def _search_db_memories(self, query: str, *, limit: int) -> List[RecallItem]:
         return search_db_memories(self, query, limit=limit)
@@ -754,8 +798,8 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         semantic_merge: bool = False,
         scope_mode: str | None = None,
     ) -> tuple[str, bool, str]:
-        # Inject this function's store_memory_now so globals patches reach
-        # CommandKernel. Authority, one schedule, and rollback stay there.
+        # The compatibility gateway resolves this module's store_memory_now at
+        # execution time so existing patch points remain valid.
         return KERNEL.store(
             self._composition.command_port,
             content=content,
@@ -765,7 +809,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             metadata=metadata,
             allow_duplicate=allow_duplicate,
             semantic_merge=semantic_merge,
-            scope_mode=scope_mode, store_memory_now=store_memory_now,
+            scope_mode=scope_mode,
         )
 
     def _find_semantic_merge_candidate(
@@ -792,7 +836,7 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         return fact_owned_memory_ids(self, ids)
 
     def _delete_memories(self, ids: list[str]) -> int:
-        return KERNEL.delete(self._composition.command_port, ids)
+        return KERNEL.delete(self._composition.command_port, ids).deleted_count
 
     def _dedupe_memories(self, *, dry_run: bool = True, scope_only: bool = True) -> dict[str, Any]:
         return KERNEL.dedupe(self._composition.command_port, dry_run=dry_run, scope_only=scope_only)
@@ -866,7 +910,12 @@ class ScopeRecallMemoryProvider(MemoryProvider):
         )
 
     def _embed_query_variants(self, queries: List[str]) -> List[List[float]]:
-        return self._bind_composition().vector_view.embed_query_variants(queries)
+        return [
+            list(row)
+            for row in self._bind_composition().vector.embed_query_variants(
+                tuple(queries)
+            )
+        ]
 
     def _search_vector_memories(self, query: str, *, limit: int) -> List[RecallItem]:
         return search_vector_memories(self, query, limit=limit)
@@ -902,7 +951,11 @@ class ScopeRecallMemoryProvider(MemoryProvider):
             composition = getattr(self, "_composition", None)
             if composition is not None:
                 return composition
-            composition = assemble_runtime(self)
+            composition = assemble_runtime(
+                build_provider_runtime_dependencies(
+                    self, truth_cls=TruthSession, background_cls=BackgroundWork
+                )
+            )
             object.__setattr__(self, "_composition", composition)
             object.__setattr__(self, "_truth", composition.truth)
             object.__setattr__(self, "_background", composition.background)
@@ -1113,10 +1166,6 @@ class ScopeRecallMemoryProvider(MemoryProvider):
     def rollback_conn_after_error(self, context: str) -> None:
         """Public cleanup declared by MemoryCommandPort."""
         self._rollback_conn_after_error(context)
-
-    def write_target(self) -> object:
-        """Provider-shaped domain target for memory_ops / write_kernel / shared bridge."""
-        return self
 
     def config_view(self) -> dict[str, Any]:
         return dict(self._config)

@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Mapping
 
+from .fact_repository import fact_successor_integrity_report
 from .temporal_facts import fact_fts_integrity_status
 from .truth_connection import connect_truth_database
 
@@ -323,6 +324,10 @@ def temporal_evolution_report(
         overlaps = _single_current_overlaps(conn, now_iso)
         open_conflicts = _open_interval_conflicts(conn)
         sourceless = _sourceless_claims(conn)
+        successor_integrity = fact_successor_integrity_report(
+            conn,
+            sample_limit=20,
+        )
         review_debt = _review_debt(conn, tables)
         recent = _recent_receipts(conn, tables, cutoff_iso)
         mental_model_debt = _mental_model_debt(conn)
@@ -376,6 +381,15 @@ def temporal_evolution_report(
         failures.append(f"single-value open interval conflicts: {open_conflicts}")
     if sourceless:
         failures.append(f"claims without usable source provenance: {sourceless}")
+    if int(successor_integrity["violation_count"]):
+        failures.append(
+            "fact successor chain invariant violations: "
+            f"{successor_integrity['violation_count']}"
+        )
+        recommendations.append(
+            "Successor-chain corruption requires an explicit reviewed repair plan; "
+            "do not rewrite or delete Claim history automatically."
+        )
     if write_delta:
         failures.append(f"read-only temporal doctor wrote {write_delta} row changes")
     if coverage["eligible_memory_count"] and coverage["coverage_rate"] < 1.0:
@@ -401,6 +415,7 @@ def temporal_evolution_report(
         "single_current_overlap_groups": overlaps,
         "open_interval_conflict_groups": open_conflicts,
         "claims_without_source": sourceless,
+        "successor_integrity": successor_integrity,
         "evolution_review_debt": review_debt,
         "recent_evolution": recent,
         "mental_model_candidate_debt": mental_model_debt,

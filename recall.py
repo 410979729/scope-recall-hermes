@@ -26,6 +26,7 @@ from .recall_pipeline import (
     safe_recall_item as _safe_recall_item,
     trim_recall_budget,
 )
+from .relation_containment import generated_relation_scope_policy
 from .schemas import DEFAULT_EVIDENCE_DIVERSITY_DEPTH, MAX_EVIDENCE_DIVERSITY_DEPTH
 from .scoring import combine_scores, reciprocal_rank_fusion
 from .temporal_query import (
@@ -80,6 +81,9 @@ class RecallService:
         self._last_funnel_trace: ContextVar[dict[str, Any] | None] = ContextVar(
             f"{prefix}.funnel_trace", default=None
         )
+        self._last_recall_packet: ContextVar[Any] = ContextVar(
+            f"{prefix}.recall_packet", default=None
+        )
         self._last_evidence_set_trace: ContextVar[dict[str, Any] | None] = ContextVar(
             f"{prefix}.evidence_set_trace", default=None
         )
@@ -102,6 +106,16 @@ class RecallService:
     @last_funnel_trace.setter
     def last_funnel_trace(self, value: dict[str, Any]) -> None:
         self._last_funnel_trace.set(dict(value or {}))
+
+    @property
+    def last_recall_packet(self) -> Any:
+        """Return the exact active packet from this context's latest search."""
+
+        return self._last_recall_packet.get()
+
+    @last_recall_packet.setter
+    def last_recall_packet(self, value: Any) -> None:
+        self._last_recall_packet.set(value)
 
     @property
     def last_evidence_set_trace(self) -> dict[str, Any]:
@@ -623,7 +637,10 @@ class RecallService:
     def _persisted_relation_evidence(self, memory_ids: list[str]) -> dict[str, dict[str, Any]]:
         """Collect relation evidence for candidate memories from persisted graph companion rows.
 
-        The evidence enriches ranking and explanations, but absence of graph rows must not hide the underlying SQLite memory."""
+        Generated edges are admitted only while both endpoint scopes have a
+        current containment receipt.  Manual/reviewed edges remain available,
+        and an unavailable generated signal never hides the SQLite candidate.
+        """
         ids = sorted({str(memory_id) for memory_id in memory_ids if str(memory_id)})
         if not ids or not hasattr(self.provider, "_require_conn"):
             return {}
@@ -653,15 +670,27 @@ class RecallService:
             relation_rows.append({"id": related_id, "confidence": confidence})
 
         id_set = set(ids)
-        scopes = [str(scope_id) for scope_id in (getattr(self.provider, "_accessible_scope_ids", []) or []) if str(scope_id)]
+        scopes = [
+            str(scope_id)
+            for scope_id in (
+                getattr(self.provider, "_accessible_scope_ids", []) or []
+            )
+            if str(scope_id)
+        ]
         scope_clause = ""
         scope_params: list[str] = []
         if scopes:
             scope_placeholders = ",".join("?" for _ in scopes)
-            scope_clause = f" AND s.scope_id IN ({scope_placeholders}) AND t.scope_id IN ({scope_placeholders})"
+            scope_clause = (
+                f" AND s.scope_id IN ({scope_placeholders})"
+                f" AND t.scope_id IN ({scope_placeholders})"
+            )
             scope_params = [*scopes, *scopes]
         relation_sql = f"""
-                    SELECT r.source_memory_id, r.target_memory_id, r.relation_type, r.confidence
+                    SELECT r.source_memory_id, r.target_memory_id,
+                           r.relation_type, r.confidence, r.note,
+                           s.scope_id AS source_scope_id,
+                           t.scope_id AS target_scope_id
                     FROM memory_relations r
                     JOIN memories s ON s.id = r.source_memory_id
                     JOIN memories t ON t.id = r.target_memory_id
@@ -670,19 +699,63 @@ class RecallService:
                       AND {ordinary_recall_lifecycle_visible_sql('t')}{scope_clause}
                     """
         relation_params = [*ids, *ids, *scope_params]
+        memory_scope_sql = f"""
+            SELECT id, scope_id
+            FROM memories
+            WHERE id IN ({placeholders})
+        """
         try:
             lock = getattr(self.provider, "_lock", None)
-            if lock is None:
-                rows = self.provider._require_conn().execute(relation_sql, relation_params).fetchall()
-            else:
+            if lock is not None:
                 with lock:
-                    rows = self.provider._require_conn().execute(relation_sql, relation_params).fetchall()
+                    conn = self.provider._require_conn()
+                    memory_scope_rows = conn.execute(memory_scope_sql, ids).fetchall()
+                    endpoint_scopes = {
+                        str(row[1]) for row in memory_scope_rows if str(row[1] or "")
+                    }
+                    policy = generated_relation_scope_policy(conn, endpoint_scopes)
+                    rows = conn.execute(relation_sql, relation_params).fetchall()
+            else:
+                conn = self.provider._require_conn()
+                memory_scope_rows = conn.execute(memory_scope_sql, ids).fetchall()
+                endpoint_scopes = {
+                    str(row[1]) for row in memory_scope_rows if str(row[1] or "")
+                }
+                policy = generated_relation_scope_policy(conn, endpoint_scopes)
+                rows = conn.execute(relation_sql, relation_params).fetchall()
         except Exception:
             return {}
+
+        memory_scopes = {str(row[0]): str(row[1]) for row in memory_scope_rows}
+        for memory_id, scope_id in memory_scopes.items():
+            scope_policy = policy.get(scope_id) or {}
+            if bool(scope_policy.get("generated_signal_enabled")):
+                continue
+            payload = _payload(memory_id)
+            payload["generated_signal_disabled"] = True
+            payload["generated_signal_reason"] = str(
+                scope_policy.get("reason_code") or "containment_state_missing"
+            )
+            payload["relation_scope_state"] = str(
+                scope_policy.get("state") or "disabled"
+            )
 
         for row in rows:
             source_id = str(row["source_memory_id"])
             target_id = str(row["target_memory_id"])
+            note = str(row["note"] or "").strip().lower()
+            if note.startswith("relation-extraction:"):
+                source_scope = str(row["source_scope_id"])
+                target_scope = str(row["target_scope_id"])
+                if source_scope != target_scope:
+                    continue
+                source_policy = policy.get(source_scope) or {}
+                target_policy = policy.get(target_scope) or {}
+                if not (
+                    bool(source_policy.get("generated_signal_enabled"))
+                    and bool(target_policy.get("generated_signal_enabled"))
+                ):
+                    continue
             relation_type = str(row["relation_type"] or "").strip().lower()
             if not relation_type:
                 continue
@@ -703,6 +776,15 @@ class RecallService:
                 "ids": sorted(payload.get("ids") or []),
                 "outgoing": payload.get("outgoing") or {},
                 "incoming": payload.get("incoming") or {},
+                "generated_signal_disabled": bool(
+                    payload.get("generated_signal_disabled")
+                ),
+                "generated_signal_reason": str(
+                    payload.get("generated_signal_reason") or ""
+                ),
+                "relation_scope_state": str(
+                    payload.get("relation_scope_state") or ""
+                ),
             }
         return normalized
 

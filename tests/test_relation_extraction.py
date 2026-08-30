@@ -848,10 +848,11 @@ def test_focus_relation_budget_defers_unscanned_pairs_without_partial_delete():
         )
     ]
     assert result["ok"] is True
-    assert result["blocked"] is False
-    assert result["deferred"] is True
-    assert result["selected_peer_count"] == 1
-    assert result["compared_pairs"] == 1
+    assert result["blocked"] is True
+    assert result["deferred"] is False
+    assert result["immediate_status"] == "candidate_cap_exceeded"
+    assert result["selected_peer_count"] == 0
+    assert result["compared_pairs"] == 0
     stale = conn.execute(
         """
         SELECT note FROM memory_relations
@@ -861,31 +862,11 @@ def test_focus_relation_budget_defers_unscanned_pairs_without_partial_delete():
         """
     ).fetchone()
     assert stale is not None
-    assert after != before
+    assert after == before
     queued = conn.execute(
         "SELECT status FROM relation_rebuild_queue WHERE focus_memory_id='focus-newest'"
     ).fetchone()
-    assert queued["status"] == "pending"
-
-    from scope_recall.relation_rebuild_queue import drain_relation_rebuild_queue
-
-    drained = drain_relation_rebuild_queue(
-        conn,
-        max_events=2,
-        pair_limit=1,
-        lease_seconds=0,
-    )
-    assert drained["failed"] == 0
-    assert drained["events_completed"] == 1
-    stale_after = conn.execute(
-        """
-        SELECT note FROM memory_relations
-        WHERE source_memory_id='focus-newest'
-          AND target_memory_id='peer-truncated'
-          AND relation_type='same_topic'
-        """
-    ).fetchone()
-    assert stale_after is None
+    assert queued is None
 
 
 def test_relation_extraction_does_not_add_non_conflict_edges_for_contradicting_pair():

@@ -179,6 +179,7 @@ def _load_provider_for_home(hermes_home: Path) -> Any:
 def _mark_archived(plugin: Any, memory_id: str) -> None:
     package = plugin.__class__.__module__.rsplit(".", 1)[0]
     lifecycle_service = importlib.import_module(f"{package}.lifecycle_service")
+    lifecycle_registry = importlib.import_module(f"{package}.lifecycle_registry")
     with plugin._lock:
         conn = plugin._require_conn()
         row = conn.execute(
@@ -195,8 +196,7 @@ def _mark_archived(plugin: Any, memory_id: str) -> None:
                 expected_updated_at=str(row["updated_at"] or ""),
                 actor="synthetic-retrieval-benchmark",
                 reason="isolated benchmark fixture lifecycle marker",
-                event_type="benchmark_fixture_lifecycle",
-                action="archive_fixture",
+                operation_id=lifecycle_registry.BENCHMARK_ARCHIVE,
             )
             conn.commit()
         except Exception:

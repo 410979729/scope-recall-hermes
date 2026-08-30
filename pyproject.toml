@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-scope-recall"
-version = "1.10.5"
+version = "2.0.0"
 description = "Hermes scoped memory provider with journal-first capture, SQLite truth, vector companions, and hybrid RRF retrieval."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -21,7 +21,11 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
 ]
-dependencies = ["PyYAML>=6.0,<7", "jsonschema>=4.22,<5"]
+dependencies = [
+  "PyYAML>=6.0,<7",
+  "jsonschema>=4.22,<5",
+  "tzdata>=2025.3,<2027; sys_platform == 'win32'",
+]
 
 [project.scripts]
 hermes-scope-recall = "scope_recall.cli:main"
@@ -61,6 +65,8 @@ include-package-data = true
 packages = [
   "scope_recall",
   "scope_recall._internal",
+  "scope_recall._internal.application",
+  "scope_recall._internal.compatibility",
   "scope_recall._internal.runtime",
   "scope_recall._internal.contracts",
   "scope_recall._internal.journal",
@@ -137,6 +143,7 @@ include = [
   "doctor_sqlite.py",
   "doctor_temporal.py",
   "digest_state.py",
+  "durable_work.py",
   "write_kernel.py",
   "doctor_vector.py",
   "doctor_event_digest.py",
@@ -225,6 +232,7 @@ include = [
   "retention_profiles.py",
   "relation_entity_policy.py",
   "relation_extraction.py",
+  "relation_policy_generation.py",
   "relation_frequency_index.py",
   "relation_frequency_maintenance.py",
   "relation_rebuild_queue.py",

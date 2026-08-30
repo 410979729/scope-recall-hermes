@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import inspect
+import sqlite3
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +25,7 @@ from scope_recall._internal.recall.tuning import (
 from scope_recall.memory_queries import context_payload
 from scope_recall.models import RecallItem
 from scope_recall.prompting import render_current_turn_recall
+import scope_recall.prompting as prompting_module
 from scope_recall.recall import RecallService
 from scope_recall.tooling import ScopeRecallToolService
 
@@ -108,6 +110,9 @@ class _DummyProvider:
     def _retrieve_limit(self) -> int:
         return 5
 
+    def recall_limit(self) -> int:
+        return self._retrieve_limit()
+
     def _mark_recalled(self, memory_ids: list[str]) -> None:
         return None
 
@@ -129,6 +134,8 @@ def _production_python_files() -> list[Path]:
     files = []
     for path in PLUGIN_ROOT.rglob("*.py"):
         rel = path.relative_to(PLUGIN_ROOT)
+        if any(part.startswith(".") for part in rel.parts):
+            continue
         if any(part in {"tests", "__pycache__", "build", "dist"} for part in rel.parts):
             continue
         files.append(path)
@@ -292,6 +299,10 @@ def test_unpatched_search_collects_each_source_once() -> None:
     service = RecallService(provider)
     results = service.search_memories("Deploy command is uv run app.", limit=5)
     assert [item.id for item in results] == ["memory-1"]
+    assert any(
+        str(key).startswith("recall_packet_")
+        for key in (results[0].metadata or {})
+    )
     assert provider.db_calls == 1
     assert provider.vector_calls == 1
     trace = service.last_funnel_trace
@@ -300,7 +311,289 @@ def test_unpatched_search_collects_each_source_once() -> None:
     assert "temporal_stale_removed" in (PLUGIN_ROOT / "_internal" / "recall" / "orchestrator.py").read_text(encoding="utf-8")
     for stage in ("lexical", "vector", "curated", "rrf", "merge", "graph", "fact_freshness", "ranked"):
         assert stage in trace["stages"]
+    compiler_trace = trace["stages"]["compiler"]
+    assert compiler_trace["same_candidate_set"] is True
+    assert compiler_trace["renderer_enabled"] is True
+    assert "memory-1" not in str(compiler_trace)
     assert trace["recall_mode"] == "advisory"
+
+
+def test_compiler_flags_do_not_trigger_a_second_retrieval() -> None:
+    provider = _DummyProvider()
+    provider._config["recall_compiler"] = {
+        "current_truth_enabled": True,
+        "conflict_enabled": True,
+        "budgeter_enabled": True,
+        "renderer_enabled": True,
+        "token_budget": 160,
+        "per_item_token_budget": 40,
+    }
+    service = RecallService(provider)
+
+    results = service.search_memories("Deploy command is uv run app.", limit=5)
+
+    assert [item.id for item in results] == ["memory-1"]
+    assert any(
+        str(key).startswith("recall_packet_")
+        for key in (results[0].metadata or {})
+    )
+    assert provider.db_calls == 1
+    assert provider.vector_calls == 1
+    compiler_trace = service.last_funnel_trace["stages"]["compiler"]
+    assert compiler_trace["current_truth_enabled"] is True
+    assert compiler_trace["conflict_enabled"] is True
+    assert compiler_trace["budgeter_enabled"] is True
+    assert compiler_trace["renderer_enabled"] is True
+
+
+def test_renderer_fallback_does_not_disable_conflict_or_budget_stages() -> None:
+    provider = _DummyProvider()
+    provider._config["recall_compiler"] = {
+        "current_truth_enabled": False,
+        "conflict_enabled": True,
+        "budgeter_enabled": True,
+        "renderer_enabled": False,
+        "token_budget": 320,
+        "per_item_token_budget": 96,
+    }
+    shared = {"relation_evidence_types": ["contradicts"]}
+    left = RecallItem(
+        id="left",
+        content="left conflict evidence",
+        summary="left conflict evidence",
+        source="tool-store",
+        target="memory",
+        score=0.9,
+        updated_at="2026-08-01T00:00:00+00:00",
+        metadata={
+            **shared,
+            "lexical_score": 0.9,
+            "relation_contradiction_ids": ["right"],
+        },
+    )
+    right = RecallItem(
+        id="right",
+        content="right conflict evidence",
+        summary="right conflict evidence",
+        source="tool-store",
+        target="memory",
+        score=0.8,
+        updated_at="2026-08-01T00:00:00+00:00",
+        metadata={
+            **shared,
+            "lexical_score": 0.8,
+            "relation_contradiction_ids": ["left"],
+        },
+    )
+
+    def collect_conflict(_query, *, limit):
+        provider.db_calls += 1
+        return [left, right][:limit]
+
+    provider._search_db_memories = collect_conflict  # type: ignore[method-assign]
+    provider._recall_service = RecallService(provider)
+    provider._recall_service._persisted_relation_evidence = (  # type: ignore[method-assign]
+        lambda _ids: {
+            "left": {
+                "count": 1,
+                "types": ["contradicts"],
+                "outgoing": {"contradicts": [{"id": "right", "confidence": 0.9}]},
+            },
+            "right": {
+                "count": 1,
+                "types": ["contradicts"],
+                "outgoing": {"contradicts": [{"id": "left", "confidence": 0.9}]},
+            },
+        }
+    )
+
+    rendered = render_current_turn_recall(
+        provider, "Please recall the conflicting evidence now."
+    )
+
+    packet = provider._recall_service.last_recall_packet
+    compiler_trace = provider._recall_service.last_funnel_trace["stages"]["compiler"]
+    assert rendered.startswith("## Scope Recall Relevant Memories\n")
+    assert packet.conflict_count == 2
+    assert all(item.conflict for item in packet.items)
+    assert compiler_trace["conflict_enabled"] is True
+    assert compiler_trace["budgeter_enabled"] is True
+    assert compiler_trace["renderer_enabled"] is False
+
+
+def test_prompt_renderer_consumes_or_derives_from_orchestrator_packet(
+    monkeypatch,
+) -> None:
+    provider = _DummyProvider()
+    provider._recall_service = RecallService(provider)
+    captured: dict[str, object] = {}
+    original_derive = prompting_module.derive_recall_packet
+
+    def capture_derive(parent_packet, selected_items):
+        selected = list(selected_items)
+        derived = original_derive(parent_packet, selected)
+        captured.update(
+            {
+                "parent": parent_packet,
+                "selected_ids": [item.id for item in selected],
+                "derived": derived,
+            }
+        )
+        return derived
+
+    monkeypatch.setattr(prompting_module, "derive_recall_packet", capture_derive)
+
+    rendered = render_current_turn_recall(
+        provider, "Please recall the deploy command from durable memory."
+    )
+
+    parent = captured["parent"]
+    derived = captured["derived"]
+    assert parent is provider._recall_service.last_recall_packet
+    assert derived.parent_candidate_fingerprint == parent.candidate_fingerprint
+    assert derived.candidate_fingerprint == parent.candidate_fingerprint
+    assert captured["selected_ids"] == [item.item.id for item in derived.items]
+    assert rendered.startswith("## Scope Recall Packet\n")
+
+
+def test_no_second_retrieval_in_prompt_rendering() -> None:
+    provider = _DummyProvider()
+    provider._recall_service = RecallService(provider)
+
+    render_current_turn_recall(
+        provider, "Please recall the deploy command from durable memory."
+    )
+
+    assert provider.db_calls == 1
+    assert provider.vector_calls == 1
+    source = (PLUGIN_ROOT / "prompting.py").read_text(encoding="utf-8")
+    assert source.count("search_memories(") == 1
+    assert "CandidateSet.from_items" not in source
+    assert "compile_recall_packet" not in source
+
+
+def test_query_path_remains_truth_zero_write() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE sentinel(value TEXT NOT NULL)")
+    conn.execute("INSERT INTO sentinel(value) VALUES ('unchanged')")
+    conn.commit()
+    provider = _DummyProvider()
+    original_search = provider._search_db_memories
+
+    def query_truth_once(_query, *, limit):
+        assert conn.execute("SELECT value FROM sentinel").fetchone() == ("unchanged",)
+        return original_search(_query, limit=limit)
+
+    provider._search_db_memories = query_truth_once  # type: ignore[method-assign]
+    before_changes = conn.total_changes
+    before_dump = tuple(conn.iterdump())
+
+    RecallService(provider).search_memories("Deploy command is uv run app.", limit=5)
+
+    assert conn.total_changes == before_changes
+    assert tuple(conn.iterdump()) == before_dump
+    assert provider.db_calls == 1
+    assert provider.vector_calls == 1
+    conn.close()
+
+
+def test_current_truth_default_removes_stale_claim_projection_without_query_write() -> None:
+    provider = _DummyProvider()
+    shared = {
+        "scope_id": provider._shared_scope_id,
+        "fact_claim_key": "fact:joy-city",
+    }
+    stale = RecallItem(
+        id="city-old",
+        content="Joy lives in Mumbai.",
+        summary="Joy lives in Mumbai.",
+        source="tool-store",
+        target="memory",
+        score=0.95,
+        updated_at="2026-01-01T00:00:00+00:00",
+        metadata={**shared, "fact_claim_id": "claim-old", "lexical_score": 0.95},
+    )
+    current = RecallItem(
+        id="city-current",
+        content="Joy lives in Tokyo.",
+        summary="Joy lives in Tokyo.",
+        source="tool-store",
+        target="memory",
+        score=0.75,
+        updated_at="2026-08-01T00:00:00+00:00",
+        metadata={**shared, "fact_claim_id": "claim-current", "lexical_score": 0.75},
+    )
+    def collect_once(_query, *, limit):
+        provider.db_calls += 1
+        return [stale, current][:limit]
+
+    provider._search_db_memories = collect_once  # type: ignore[method-assign]
+    service = RecallService(provider)
+    service._fact_freshness_evidence = lambda _ids: {  # type: ignore[method-assign]
+        "city-old": {"status": "stale", "fact_key": "legacy-city", "truth_type": "factual"},
+        "city-current": {"status": "current", "fact_key": "legacy-city", "truth_type": "factual"},
+    }
+
+    results = service.search_memories("Where does Joy live now?", limit=5)
+
+    assert [item.id for item in results] == ["city-current"]
+    assert provider.db_calls == 1
+    assert provider.vector_calls == 1
+    compiler_trace = service.last_funnel_trace["stages"]["compiler"]
+    assert compiler_trace["current_truth_removed"] == 1
+    assert compiler_trace["active_current_truth_removed"] == 1
+    assert any(
+        str(key).startswith("recall_packet_")
+        for key in (results[0].metadata or {})
+    )
+
+
+def test_current_truth_default_has_an_explicit_v1_rollback_switch() -> None:
+    provider = _DummyProvider()
+    provider._config["recall_compiler"] = {"current_truth_enabled": False}
+    shared = {
+        "scope_id": provider._shared_scope_id,
+        "fact_claim_key": "fact:joy-city",
+    }
+    stale = RecallItem(
+        id="city-old",
+        content="Joy lives in Mumbai.",
+        summary="Joy lives in Mumbai.",
+        source="tool-store",
+        target="memory",
+        score=0.95,
+        updated_at="2026-01-01T00:00:00+00:00",
+        metadata={**shared, "fact_claim_id": "claim-old", "lexical_score": 0.95},
+    )
+    current = RecallItem(
+        id="city-current",
+        content="Joy lives in Tokyo.",
+        summary="Joy lives in Tokyo.",
+        source="tool-store",
+        target="memory",
+        score=0.75,
+        updated_at="2026-08-01T00:00:00+00:00",
+        metadata={**shared, "fact_claim_id": "claim-current", "lexical_score": 0.75},
+    )
+
+    def collect_once(_query, *, limit):
+        provider.db_calls += 1
+        return [stale, current][:limit]
+
+    provider._search_db_memories = collect_once  # type: ignore[method-assign]
+    service = RecallService(provider)
+    service._fact_freshness_evidence = lambda _ids: {  # type: ignore[method-assign]
+        "city-old": {"status": "stale", "fact_key": "legacy-city", "truth_type": "factual"},
+        "city-current": {"status": "current", "fact_key": "legacy-city", "truth_type": "factual"},
+    }
+
+    results = service.search_memories("Where does Joy live now?", limit=5)
+
+    assert {item.id for item in results} == {"city-old", "city-current"}
+    assert len(results) == 2
+    assert service.last_funnel_trace["stages"]["compiler"]["current_truth_enabled"] is False
+    assert service.last_funnel_trace["stages"]["compiler"]["current_truth_removed"] == 1
+    assert service.last_funnel_trace["stages"]["compiler"]["active_current_truth_removed"] == 0
 
 
 def test_vector_top_k_controls_vector_depth_without_expanding_final_limit() -> None:

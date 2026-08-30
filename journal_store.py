@@ -480,6 +480,20 @@ def load_unprocessed_journal_entries(
     placeholders = ",".join("?" for _ in clean_scope_ids)
     exclusion_sql = ""
     aliased_exclusion_sql = ""
+    purge_exclusion_sql = ""
+    aliased_purge_exclusion_sql = ""
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='privacy_purge_source_tombstones'"
+    ).fetchone() is not None:
+        purge_exclusion_sql = (
+            " AND NOT EXISTS (SELECT 1 FROM privacy_purge_source_tombstones ppst "
+            "WHERE ppst.journal_entry_id = journal_entries.id)"
+        )
+        aliased_purge_exclusion_sql = (
+            " AND NOT EXISTS (SELECT 1 FROM privacy_purge_source_tombstones ppst "
+            "WHERE ppst.journal_entry_id = je.id)"
+        )
     params: list[object] = [*clean_scope_ids]
     if clean_excluded:
         excluded_placeholders = ",".join("?" for _ in clean_excluded)
@@ -494,6 +508,7 @@ def load_unprocessed_journal_entries(
             WHERE scope_id IN ({placeholders})
               AND (processed_run_id IS NULL OR processed_run_id = '')
               {exclusion_sql}
+              {purge_exclusion_sql}
         )
     """
     session_count = int(conn.execute(session_count_sql, params).fetchone()[0] or 0)
@@ -517,6 +532,7 @@ def load_unprocessed_journal_entries(
             WHERE je.scope_id IN ({placeholders})
               AND (je.processed_run_id IS NULL OR je.processed_run_id = '')
               {aliased_exclusion_sql}
+              {aliased_purge_exclusion_sql}
         ),
         session_side AS (
             SELECT scope_id, session_id, MIN(scope_recall_wrap_side) AS active_side

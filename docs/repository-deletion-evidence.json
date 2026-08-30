@@ -1,0 +1,20 @@
+{
+  "schema_version": "scope-recall.repository-deletion-evidence.v1",
+  "program": "Program 6A",
+  "base_commit": "f63c953d8c4ca3c8185671ff0a3cb67579c30b60",
+  "base_tree": "6917f5c15ef67815ef6166e9043d0d556af8b510",
+  "deleted_files": [],
+  "deletion_authorized": false,
+  "verification": {
+    "expected_deleted_file_count": 0,
+    "required_command": "git diff --diff-filter=D --name-only f63c953d8c4ca3c8185671ff0a3cb67579c30b60...HEAD",
+    "status": "no_high_confidence_deletions"
+  },
+  "renamed_files": [],
+  "candidate_review": {
+    "high_confidence_candidates": [],
+    "static_reference_evidence": "No tracked file was both unreferenced and outside package, CLI, CI, release, migration, repair, and rollback surfaces.",
+    "dynamic_surface_evidence": "Census, package-source discovery, release invariant node ids, compatibility registry strings, and workflow/script references were reviewed before disposition."
+  },
+  "note": "From the frozen public base, Program 6A preserved every tracked file because none met the two-independent-evidence deletion threshold. Intermediate-branch filename changes are not presented as public-base renames."
+}

@@ -1,0 +1,149 @@
+{
+  "schema_version": "scope-recall.release-candidate-rehearsals.v1",
+  "candidate_version": "2.0.0",
+  "requires_full_ci": true,
+  "active_instance_allowed": false,
+  "gates": [
+    {
+      "id": "activity_snapshot_migration",
+      "purpose": "Upgrade a verified isolated N-1 activity snapshot while proving the source database is byte-for-byte unchanged.",
+      "node_ids": [
+        "tests/test_release_candidate_rehearsals.py::test_activity_snapshot_upgrade_preserves_source_and_payload",
+        "tests/test_sqlite_backup.py::test_verified_online_backup_healthy_path_records_health_and_logical_equivalence"
+      ]
+    },
+    {
+      "id": "n_minus_one_n_n_minus_one",
+      "purpose": "Prove N-1 preflight, N dual-write projection compatibility, and deny-by-default legacy authority routing.",
+      "node_ids": [
+        "tests/test_upgrade_compatibility.py::test_n_minus_one_isolation_key_passes_read_only_upgrade_preflight",
+        "tests/test_schema_migrations.py::test_relation_policy_generation_migration_upgrades_pre_0014_in_place",
+        "tests/test_fact_executor.py::test_add_applies_all_mandatory_surfaces_in_one_committed_transaction",
+        "tests/test_fact_authority_router.py::test_missing_unknown_legacy_aliases_and_projection_marker_never_authorize_claim"
+      ]
+    },
+    {
+      "id": "purge_restore_replay",
+      "purpose": "Prove a restored copy reinstates deny state before any writer can use it.",
+      "node_ids": [
+        "tests/test_privacy_purge.py::test_restore_replay_reinstates_deny_before_writer_use"
+      ]
+    },
+    {
+      "id": "readonly_canary",
+      "purpose": "Prove the read-only follower denies writes and unknown tools by default.",
+      "node_ids": [
+        "tests/test_readonly_follower_tools.py::test_readonly_follower_default_denies_writes_and_unknown_tools"
+      ]
+    },
+    {
+      "id": "writer_canary",
+      "purpose": "Prove the writer loads through Hermes discovery and exposes a current schema before activation is considered.",
+      "node_ids": [
+        "tests/test_installer.py::test_installer_runtime_verify_loads_provider_tools_and_schema",
+        "tests/test_installer.py::test_installed_plugin_loads_through_hermes_memory_discovery"
+      ]
+    },
+    {
+      "id": "rollback_rehearsal",
+      "purpose": "Prove rollback restores the verified backup and preserves the displaced candidate as a backup.",
+      "node_ids": [
+        "tests/test_installer.py::test_installer_rollback_restores_backup_and_backs_up_current_plugin"
+      ]
+    },
+    {
+      "id": "issue_51_accident_scale_regression",
+      "purpose": "Rehearse the reported 2046-memory and 1136-row legacy relation incident while proving zero idle mutation, exact focus work, cap refusal, and backup-first idempotent cleanup.",
+      "node_ids": [
+        "tests/test_issue_51_regression.py::test_issue_51_regression",
+        "tests/test_relation_rebuild_retirement.py::test_every_legacy_execution_surface_is_a_zero_write_refusal",
+        "tests/test_relation_policy_generation.py::test_cap_plus_one_blocks_whole_generation_without_partial_items",
+        "tests/test_relation_cleanup.py::test_cleanup_apply_is_backup_first_committed_and_idempotently_replayed"
+      ]
+    },
+    {
+      "id": "issue_58_process_wide_writer_handoff",
+      "purpose": "Prove the default-enabled process-wide idle writer handoff with real OS locking, same-process refcounts, unified direct-command admission, capture serialization, work vetoes, failure injection, repeated promotion, and content-free observability.",
+      "node_ids": [
+        "tests/test_writer_idle_handoff.py::test_process_wide_idle_handoff_allows_real_second_process_commit",
+        "tests/test_writer_idle_handoff.py::test_extra_connection_pin_vetoes_process_handoff",
+        "tests/test_writer_idle_handoff.py::test_active_same_process_peer_vetoes_process_handoff",
+        "tests/test_writer_idle_handoff.py::test_writer_loop_automatically_schedules_idle_handoff",
+        "tests/test_writer_idle_handoff.py::test_wall_clock_rollback_cannot_extend_process_cooldown",
+        "tests/test_writer_idle_handoff.py::test_activity_generation_change_aborts_and_resumes_all_writers",
+        "tests/test_writer_idle_handoff.py::test_capture_enqueue_racing_idle_fence_aborts_without_losing_work",
+        "tests/test_writer_idle_handoff.py::test_direct_tool_write_started_before_fence_commits_and_vetoes_handoff",
+        "tests/test_writer_idle_handoff.py::test_activity_after_final_check_linearizes_after_release_and_promotes",
+        "tests/test_writer_idle_handoff.py::test_resource_close_failure_retains_authority_and_never_reports_reader",
+        "tests/test_writer_idle_handoff.py::test_writer_connection_close_failure_restores_healthy_owner",
+        "tests/test_writer_idle_handoff.py::test_connection_pin_close_failure_is_retried_before_owner_restore",
+        "tests/test_writer_idle_handoff.py::test_os_lease_release_failure_fences_process_and_requires_restart",
+        "tests/test_writer_idle_handoff.py::test_writer_restore_failure_stays_owner_degraded_and_fenced",
+        "tests/test_writer_idle_handoff.py::test_process_fence_refuses_new_same_process_join",
+        "tests/test_writer_idle_handoff.py::test_truth_work_started_after_process_fence_cannot_inherit_old_authority",
+        "tests/test_writer_idle_handoff.py::test_handoff_thread_cannot_join_a_new_named_holder",
+        "tests/test_writer_idle_handoff.py::test_handoff_recovery_pin_cannot_create_missing_authority",
+        "tests/test_writer_idle_handoff.py::test_only_handoff_thread_may_join_existing_recovery_pin",
+        "tests/test_writer_idle_handoff.py::test_every_busy_surface_vetoes_idle_handoff",
+        "tests/test_writer_idle_handoff.py::test_quiesce_failure_restores_owner_without_releasing_authority",
+        "tests/test_writer_idle_handoff.py::test_abort_resume_failure_is_owner_degraded_and_logs_only_fixed_codes",
+        "tests/test_writer_idle_handoff.py::test_resume_waits_for_prior_sentinel_consumer_before_starting_replacement",
+        "tests/test_writer_idle_handoff.py::test_read_only_reopen_failure_never_resurrects_released_writer",
+        "tests/test_writer_idle_handoff.py::test_failure_telemetry_never_exposes_exception_text_or_local_path",
+        "tests/test_writer_idle_handoff.py::test_successful_promotion_clears_recoverable_reader_degradation",
+        "tests/test_writer_idle_handoff.py::test_twenty_reader_writer_round_trips_do_not_leak_process_authority",
+        "tests/test_writer_idle_handoff.py::test_stats_exposes_content_free_writer_handoff_observability",
+        "tests/test_writer_idle_handoff.py::test_idle_release_config_accepts_disabled_or_bounded_values",
+        "tests/test_writer_idle_handoff.py::test_idle_release_config_rejects_ambiguous_or_unbounded_values",
+        "tests/test_writer_idle_handoff.py::test_user_activity_generation_veto_is_content_free",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_update_started_before_fence_commits_and_vetoes_handoff",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_update_started_after_fence_is_rejected",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_merge_preserves_capture_barrier",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_archive_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_delete_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_feedback_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_govern_apply_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_dedupe_apply_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_repair_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_purge_deny_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_purge_erase_is_accounted_as_truth_work",
+        "tests/test_direct_command_writer_admission.py::test_direct_command_read_only_modes_do_not_require_write_authority",
+        "tests/test_direct_command_writer_admission.py::test_memory_mutation_service_rejects_fenced_unadmitted_mutation",
+        "tests/test_direct_command_writer_admission.py::test_memory_mutation_service_rejects_unclassified_non_owner",
+        "tests/test_direct_command_writer_admission.py::test_private_admission_surface_rejects_public_bool_and_wrong_token",
+        "tests/test_direct_command_writer_admission.py::test_accepted_capture_commits_after_shutdown_and_handoff_fences",
+        "tests/test_direct_command_writer_admission.py::test_admitted_truth_mutation_token_is_cleared_after_exception",
+        "tests/test_direct_command_writer_admission.py::test_public_store_reuses_one_active_truth_unit_and_generation",
+        "tests/test_direct_command_writer_admission.py::test_govern_acquires_query_connection_under_query_lock",
+        "tests/test_direct_command_writer_admission.py::test_tool_service_dry_run_governance_does_not_request_write_access",
+        "tests/test_direct_command_writer_admission.py::test_fact_proposal_dry_run_is_read_only_on_reader",
+        "tests/test_direct_command_writer_admission.py::test_fact_proposal_apply_reenters_command_gate_and_rejects_reader_or_fence",
+        "tests/test_direct_command_writer_admission.py::test_nested_command_gate_preserves_barrier_and_propagates_exceptions",
+        "tests/test_direct_command_writer_admission.py::test_public_provider_command_surface_uses_unified_admission",
+        "tests/test_writer_handoff_telemetry.py::test_new_authority_epoch_fences_delayed_old_reader_update",
+        "tests/test_writer_handoff_telemetry.py::test_initial_epoch_claim_linearizes_with_final_lease_release",
+        "tests/test_writer_handoff_telemetry.py::test_epoch_claim_never_takes_activity_lock_under_process_state_lock",
+        "tests/test_writer_handoff_telemetry.py::test_delayed_activity_cannot_overwrite_final_shutdown_with_owner_snapshot",
+        "tests/test_writer_handoff_telemetry.py::test_missing_invalid_and_stale_snapshots_are_explicitly_unobserved",
+        "tests/test_writer_handoff_telemetry.py::test_fresh_snapshot_activity_ages_advance_at_read_time",
+        "tests/test_writer_handoff_telemetry.py::test_runtime_writes_only_real_activity_or_state_events",
+        "tests/test_writer_handoff_telemetry.py::test_telemetry_failure_never_changes_writer_authority",
+        "tests/test_writer_handoff_telemetry.py::test_same_process_holders_share_epoch_until_final_release",
+        "tests/test_writer_handoff_telemetry.py::test_doctor_and_dashboard_expose_all_fresh_persisted_fields",
+        "tests/test_writer_handoff_activity.py::test_journal_append_cannot_cross_handoff_fence_after_lifecycle_precheck",
+        "tests/test_writer_handoff_activity.py::test_relation_maintenance_real_sqlite_mutation_refreshes_truth_activity",
+        "tests/test_writer_handoff_activity.py::test_independent_digest_sqlite_mutation_refreshes_truth_activity",
+        "tests/test_writer_handoff_activity.py::test_noop_digest_does_not_refresh_truth_activity"
+      ]
+    },
+    {
+      "id": "issue_60_retry_and_prefetch_regression",
+      "purpose": "Rehearse the reported 1667-attempt retry poison shape while proving due-time enforcement, terminal non-revival, healthy-item fairness, bounded maintenance cadence, nonblocking lock acquisition, zero-write prefetch, and no foreground timeout.",
+      "node_ids": [
+        "tests/test_issue_60_regression.py::test_issue_60_retry_due_time_is_bounded_and_healthy_work_is_not_starved",
+        "tests/test_issue_60_regression.py::test_issue_60_sixty_one_idle_ticks_do_not_restore_one_second_hammer",
+        "tests/test_issue_60_regression.py::test_issue_60_maintenance_is_nonblocking_and_prefetch_is_bounded_zero_write"
+      ]
+    }
+  ]
+}

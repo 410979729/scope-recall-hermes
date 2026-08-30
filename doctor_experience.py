@@ -10,9 +10,23 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from .digest_durable_work import (
+        NIGHTLY_DURABLE_DOMAIN,
+        NIGHTLY_DURABLE_OWNER_ROLES,
+        NIGHTLY_DURABLE_POLICY_VERSION,
+        nightly_durable_health,
+        unavailable_digest_health,
+    )
     from .doctor_common import redact_secret_like_text
     from .freshness import fact_freshness_report
 except ImportError:  # pragma: no cover - direct source-script execution fallback
+    from digest_durable_work import (  # type: ignore
+        NIGHTLY_DURABLE_DOMAIN,
+        NIGHTLY_DURABLE_OWNER_ROLES,
+        NIGHTLY_DURABLE_POLICY_VERSION,
+        nightly_durable_health,
+        unavailable_digest_health,
+    )
     from doctor_common import redact_secret_like_text
     from freshness import fact_freshness_report
 
@@ -320,10 +334,22 @@ def nightly_digest_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, 
 
     The report helps operators decide whether automated digest output is trustworthy before relying on generated memories."""
     recommendations: list[str] = []
-    db_path = hermes_home / "scope-recall" / "memory.sqlite3"
+    storage_dir = hermes_home / "scope-recall"
+    db_path = storage_dir / "memory.sqlite3"
     required_tables = {"nightly_digest_runs"}
     if not db_path.exists():
-        return {"enabled": True, "status": "missing", "path": str(db_path)}, {"ok": False, "failures": [f"SQLite truth DB not found: {db_path}"]}, [
+        return {
+            "enabled": True,
+            "status": "missing",
+            "path": str(db_path),
+            "durable_work": unavailable_digest_health(
+                domain_type=NIGHTLY_DURABLE_DOMAIN,
+                policy_version=NIGHTLY_DURABLE_POLICY_VERSION,
+                reason_code="truth_database_absent",
+                storage_dir=storage_dir,
+                domain_roles=NIGHTLY_DURABLE_OWNER_ROLES,
+            ),
+        }, {"ok": False, "failures": [f"SQLite truth DB not found: {db_path}"]}, [
             "Initialize scope-recall or restore memory.sqlite3 before trusting nightly digest status."
         ]
     try:
@@ -338,7 +364,18 @@ def nightly_digest_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, 
                     "path": str(db_path),
                     "status": "not_initialized",
                     "missing_tables": missing,
+                    "durable_work": unavailable_digest_health(
+                        domain_type=NIGHTLY_DURABLE_DOMAIN,
+                        policy_version=NIGHTLY_DURABLE_POLICY_VERSION,
+                        reason_code="schema_missing",
+                        storage_dir=storage_dir,
+                        domain_roles=NIGHTLY_DURABLE_OWNER_ROLES,
+                    ),
                 }, {"ok": True, "failures": []}, ["Run scripts/nightly-digest.py once if this deployment uses nightly digest consolidation."]
+            durable_health = nightly_durable_health(
+                conn,
+                storage_dir=storage_dir,
+            )
             total_runs = int(conn.execute("SELECT COUNT(*) FROM nightly_digest_runs").fetchone()[0])
             rows = [
                 dict(row)
@@ -364,7 +401,20 @@ def nightly_digest_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, 
             conn.close()
     except Exception as exc:
         recommendations.append("Repair or restore the SQLite truth DB before trusting nightly digest status.")
-        return {"enabled": True, "path": str(db_path), "status": "error", "error": str(exc)}, {"ok": False, "failures": [f"nightly digest health error: {exc}"]}, recommendations
+        return {
+            "enabled": True,
+            "path": str(db_path),
+            "status": "error",
+            "error": str(exc),
+            "durable_work": unavailable_digest_health(
+                domain_type=NIGHTLY_DURABLE_DOMAIN,
+                policy_version=NIGHTLY_DURABLE_POLICY_VERSION,
+                reason_code="health_read_error",
+                state="needs_repair",
+                storage_dir=storage_dir,
+                domain_roles=NIGHTLY_DURABLE_OWNER_ROLES,
+            ),
+        }, {"ok": False, "failures": [f"nightly digest health error: {exc}"]}, recommendations
 
     for row in rows:
         row["error"] = redact_secret_like_text(row.get("error") or "")
@@ -412,5 +462,6 @@ def nightly_digest_report(hermes_home: Path) -> tuple[dict[str, Any], dict[str, 
         "recent_open_fallbacks": len(recent_fallbacks),
         "recent_historical_fallbacks": len(historical_recent_fallbacks),
         "consecutive_errors": consecutive_errors,
+        "durable_work": durable_health,
     }
     return payload, {"ok": not failures, "failures": failures}, recommendations

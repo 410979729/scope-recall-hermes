@@ -12,7 +12,10 @@ import pytest
 import scope_recall.relation_extraction as relation_extraction
 import scope_recall.relation_frequency_maintenance as frequency_maintenance
 from scope_recall.relation_extraction import sync_extracted_relations_for_memory
-from scope_recall.relation_frequency_index import sync_relation_frequency_memory
+from scope_recall.relation_frequency_index import (
+    ensure_relation_frequency_index_schema,
+    sync_relation_frequency_memory,
+)
 from scope_recall.sql_store import delete_rows, ensure_schema, store_row
 
 
@@ -67,6 +70,33 @@ def _visible_count(conn: sqlite3.Connection, scope_id: str) -> int:
         (scope_id,),
     ).fetchone()
     return int(row[0]) if row is not None else 0
+
+
+def test_frequency_schema_ensure_does_not_rewrite_current_generation_receipts() -> None:
+    conn = sqlite3.connect(":memory:")
+    ensure_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO memories(
+            id, scope_id, source, target, content, summary,
+            created_at, updated_at, metadata
+        ) VALUES(
+            'memory-pending', 'scope-a', 'fixture', 'project',
+            'Alpha Service fact', 'Alpha Service fact',
+            '2026-08-26T00:00:00+00:00', '2026-08-26T00:00:00+00:00',
+            '{"entities":["Alpha Service"]}'
+        )
+        """
+    )
+    assert conn.execute(
+        "SELECT COUNT(*) FROM relation_frequency_changes"
+    ).fetchone()[0] == 1
+
+    before = conn.total_changes
+    ensure_relation_frequency_index_schema(conn)
+
+    assert conn.total_changes == before
+    conn.close()
 
 
 def test_relation_frequency_delta_is_atomic_across_lifecycle_move_and_delete() -> None:
@@ -282,9 +312,10 @@ def test_immediate_relation_sync_never_scans_all_truth_in_a_large_scope(
     conn.set_trace_callback(None)
 
     assert result["ok"] is True
-    assert result["deferred"] is True
-    assert result["selected_peer_count"] == 25
-    assert result["total_peer_count"] == 26
+    assert result["deferred"] is False
+    assert result["status"] == "synced"
+    assert result["selected_peer_count"] == result["total_peer_count"]
+    assert result["total_peer_count"] <= 25
     assert bounded_calls and all(len(ids) <= 26 for ids in bounded_calls)
     assert not any("select count(*) from memories" in sql for sql in statements)
     assert not any(
@@ -355,7 +386,14 @@ def test_relation_frequency_poison_row_does_not_block_healthy_rows(
     assert "ValueError" in failure[2]
     assert conn.execute(
         "SELECT COUNT(*) FROM relation_frequency_changes WHERE memory_id='a-poison'"
-    ).fetchone()[0] == 0
+    ).fetchone()[0] == 1
+    assert frequency_maintenance._drain_change_rows(conn, 10) == 0
+    assert tuple(
+        conn.execute(
+            "SELECT attempts, status FROM relation_frequency_failures "
+            "WHERE memory_id='a-poison'"
+        ).fetchone()
+    ) == (3, "dead_letter")
     report = frequency_maintenance.relation_frequency_index_report(conn)
     assert report["status"] == "error"
     assert report["dead_letter_failures"] == 1

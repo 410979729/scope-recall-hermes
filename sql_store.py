@@ -21,7 +21,10 @@ from .capture_filters import (
 from .gating import compact_text, dedup_key
 from .governance import classify_memory, merge_metadata
 from .graph import backfill_memory_entities, ensure_graph_schema, sync_memory_entities
-from .fact_repository import require_fact_mutation_authority
+from .fact_repository import (
+    FACT_EXECUTOR_MUTATION_AUTHORITY,
+    require_fact_mutation_authority,
+)
 from .freshness import upsert_memory_freshness
 from .lifecycle_policy import ordinary_recall_lifecycle_visible, ordinary_recall_lifecycle_visible_sql
 from .lexical_generation import (
@@ -39,6 +42,30 @@ from .operator_ledger import (
     OPERATOR_LEDGER_SCHEMA_VERSION,
     ensure_operator_ledger_schema,
     operator_ledger_schema_status,
+)
+from .privacy_purge_schema import (
+    PRIVACY_PURGE_MIGRATION_DESCRIPTION,
+    PRIVACY_PURGE_MIGRATION_ID,
+    PRIVACY_PURGE_MIGRATION_PLUGIN_VERSION,
+    PRIVACY_PURGE_SCHEMA_VERSION,
+    ensure_privacy_purge_schema,
+    privacy_purge_schema_status,
+)
+from .relation_containment import (
+    RELATION_CONTAINMENT_MIGRATION_DESCRIPTION,
+    RELATION_CONTAINMENT_MIGRATION_ID,
+    RELATION_CONTAINMENT_MIGRATION_PLUGIN_VERSION,
+    RELATION_CONTAINMENT_SCHEMA_VERSION,
+    ensure_relation_containment_schema,
+    relation_containment_schema_status,
+)
+from .relation_policy_generation import (
+    RELATION_POLICY_GENERATION_MIGRATION_DESCRIPTION,
+    RELATION_POLICY_GENERATION_MIGRATION_ID,
+    RELATION_POLICY_GENERATION_MIGRATION_PLUGIN_VERSION,
+    RELATION_POLICY_GENERATION_SCHEMA_VERSION,
+    ensure_relation_policy_generation_schema,
+    relation_policy_generation_schema_status,
 )
 from .relation_frequency_index import (
     RELATION_FREQUENCY_FAILURE_MIGRATION_DESCRIPTION,
@@ -100,7 +127,7 @@ from .vector_reconciliation import (
 )
 
 ENTRY_DELIMITER = "\n§\n"
-SCHEMA_VERSION = LEXICAL_SCHEMA_VERSION
+SCHEMA_VERSION = PRIVACY_PURGE_SCHEMA_VERSION
 BASELINE_SCHEMA_VERSION = 10600
 BASELINE_MIGRATION_ID = "0001_baseline_v1_6_0"
 BASELINE_MIGRATION_PLUGIN_VERSION = "1.6.0"
@@ -184,6 +211,24 @@ EXPECTED_SCHEMA_MIGRATIONS: tuple[dict[str, Any], ...] = (
         "description": LEXICAL_MIGRATION_DESCRIPTION,
         "schema_version": LEXICAL_SCHEMA_VERSION,
     },
+    {
+        "id": RELATION_CONTAINMENT_MIGRATION_ID,
+        "plugin_version": RELATION_CONTAINMENT_MIGRATION_PLUGIN_VERSION,
+        "description": RELATION_CONTAINMENT_MIGRATION_DESCRIPTION,
+        "schema_version": RELATION_CONTAINMENT_SCHEMA_VERSION,
+    },
+    {
+        "id": RELATION_POLICY_GENERATION_MIGRATION_ID,
+        "plugin_version": RELATION_POLICY_GENERATION_MIGRATION_PLUGIN_VERSION,
+        "description": RELATION_POLICY_GENERATION_MIGRATION_DESCRIPTION,
+        "schema_version": RELATION_POLICY_GENERATION_SCHEMA_VERSION,
+    },
+    {
+        "id": PRIVACY_PURGE_MIGRATION_ID,
+        "plugin_version": PRIVACY_PURGE_MIGRATION_PLUGIN_VERSION,
+        "description": PRIVACY_PURGE_MIGRATION_DESCRIPTION,
+        "schema_version": PRIVACY_PURGE_SCHEMA_VERSION,
+    },
 )
 
 
@@ -246,9 +291,12 @@ def ensure_schema_migrations(conn: sqlite3.Connection) -> None:
     ensure_temporal_fact_schema(conn)
     ensure_relation_rebuild_schema(conn)
     ensure_relation_frequency_index_schema(conn)
+    ensure_relation_containment_schema(conn)
+    ensure_relation_policy_generation_schema(conn)
     ensure_vector_reconciliation_schema(conn)
     ensure_operator_ledger_schema(conn)
     ensure_lexical_generation_schema(conn)
+    ensure_privacy_purge_schema(conn)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -378,9 +426,12 @@ def schema_migration_status(conn: sqlite3.Connection) -> dict[str, Any]:
     temporal_status = temporal_fact_schema_status(conn)
     relation_status = relation_rebuild_schema_status(conn)
     relation_frequency_status = relation_frequency_index_schema_status(conn)
+    relation_containment_status = relation_containment_schema_status(conn)
+    relation_policy_generation_status = relation_policy_generation_schema_status(conn)
     vector_reconciliation_status = vector_reconciliation_schema_status(conn)
     operator_status = operator_ledger_schema_status(conn)
     lexical_status = lexical_schema_status(conn)
+    privacy_purge_status = privacy_purge_schema_status(conn)
     return {
         "schema_version": SCHEMA_VERSION,
         "user_version": user_version,
@@ -392,9 +443,12 @@ def schema_migration_status(conn: sqlite3.Connection) -> dict[str, Any]:
             and bool(temporal_status["current"])
             and bool(relation_status["current"])
             and bool(relation_frequency_status["current"])
+            and bool(relation_containment_status["current"])
+            and bool(relation_policy_generation_status["current"])
             and bool(vector_reconciliation_status["current"])
             and bool(operator_status["current"])
             and bool(lexical_status["current"])
+            and bool(privacy_purge_status["current"])
         ),
         "newer_schema": newer_schema,
         "missing_migrations": missing,
@@ -403,9 +457,12 @@ def schema_migration_status(conn: sqlite3.Connection) -> dict[str, Any]:
         "temporal_facts": temporal_status,
         "relation_rebuild_queue": relation_status,
         "relation_frequency_index": relation_frequency_status,
+        "relation_containment": relation_containment_status,
+        "relation_policy_generation": relation_policy_generation_status,
         "vector_reconciliation": vector_reconciliation_status,
         "operator_ledger": operator_status,
         "lexical_generation": lexical_status,
+        "privacy_purge": privacy_purge_status,
     }
 
 
@@ -455,10 +512,12 @@ def ensure_schema(conn: sqlite3.Connection, *, commit: bool = True) -> None:
     ensure_governance_schema(conn)
     ensure_relation_rebuild_schema(conn)
     ensure_relation_frequency_index_schema(conn)
+    ensure_relation_containment_schema(conn)
     from .vector_generation import ensure_vector_generation_schema
 
     ensure_vector_generation_schema(conn)
     ensure_vector_reconciliation_schema(conn)
+    ensure_privacy_purge_schema(conn)
     ensure_schema_migrations(conn)
     rebuild_fts_if_empty(conn, commit=False)
     backfill_memory_entities(conn)
@@ -948,6 +1007,7 @@ def store_row(
     commit: bool = True,
     timestamp: str = "",
     enqueue_vector_intent: bool = True,
+    fact_projection_authority: str = "",
 ) -> tuple[str, str, str, bool]:
 
     """Insert one durable memory row into the SQLite truth store.
@@ -965,6 +1025,34 @@ def store_row(
     content = enrich_content_with_artifact_anchors(content)
     summary = compact_text(content, 220)
     key = dedup_key(content)
+    requested_fact_metadata: dict[str, Any] | None = None
+    if fact_projection_authority:
+        if fact_projection_authority != FACT_EXECUTOR_MUTATION_AUTHORITY:
+            raise PermissionError(
+                "initial canonical fact Projection requires Fact Executor authority"
+            )
+        try:
+            raw_fact_metadata = (
+                json.loads(metadata) if isinstance(metadata, str) else metadata
+            )
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("canonical fact Projection metadata is invalid") from exc
+        if not isinstance(raw_fact_metadata, dict):
+            raise ValueError("canonical fact Projection metadata must be an object")
+        requested_fact_metadata = raw_fact_metadata
+        requested_lifecycle = str(
+            requested_fact_metadata.get("lifecycle") or ""
+        ).strip().lower()
+        if requested_lifecycle not in {"active", "promoted"}:
+            raise ValueError(
+                "initial canonical fact Projection must be recall-visible"
+            )
+        if not str(requested_fact_metadata.get("fact_claim_id") or "").strip() or not str(
+            requested_fact_metadata.get("fact_claim_key") or ""
+        ).strip():
+            raise ValueError(
+                "initial canonical fact Projection requires Claim identity"
+            )
     if not allow_duplicate:
         existing = conn.execute(
             f"""
@@ -1022,7 +1110,27 @@ def store_row(
                 raise
             return str(existing["id"]), str(existing["summary"]), now, False
 
-    metadata_payload = merge_metadata(dict(classify_memory(content, target, source)), metadata)
+    classified_metadata = dict(classify_memory(content, target, source))
+    reviewed_fact_lifecycle = ""
+    if requested_fact_metadata is not None:
+        requested_lifecycle = str(
+            requested_fact_metadata.get("lifecycle") or ""
+        ).strip().lower()
+        classification_blocks_visibility = (
+            str(classified_metadata.get("lifecycle") or "").strip().lower()
+            == "candidate"
+            or bool(classified_metadata.get("expires_at"))
+        )
+        if not classification_blocks_visibility:
+            # A reviewed Claim may promote the otherwise-scratch ``general``
+            # projection. Temporary/expiring content stays provisional so the
+            # Executor postcondition rejects and rolls the whole unit back.
+            reviewed_fact_lifecycle = requested_lifecycle
+    metadata_payload = merge_metadata(
+        dict(classified_metadata),
+        metadata,
+        reviewed_fact_lifecycle=reviewed_fact_lifecycle,
+    )
     metadata_payload = merge_artifact_metadata(metadata_payload, content)
     safe_metadata, _ = sanitize_structured_value(metadata_payload)
     metadata_payload = safe_metadata if isinstance(safe_metadata, dict) else {}

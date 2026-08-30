@@ -32,22 +32,19 @@ from .capture_filters import (
     should_capture_text,
 )
 from .capture_outcomes import ensure_outcome_accounted, handle_capture_enqueue
+from .gating import config_bool
 from .memory_mutation import MemoryMutationService
 from .models import recall_scope_mode
-from .relation_frequency_maintenance import (
-    drain_relation_frequency_work,
-    relation_frequency_debt_exists,
-)
-from .relation_rebuild_queue import (
-    drain_relation_rebuild_queue,
-    relation_rebuild_debt_exists,
-)
+from .relation_frequency_maintenance import drain_relation_frequency_work
+from .relation_containment import record_relation_lock_contention
 from .scope import canonical_user_id
 from .sql_store import store_row
+from .sqlite_recovery import is_sqlite_lock_contention
 from .vector_runtime import replay_vector_outbox
 from . import write_kernel as write_kernel_mod
 from .write_kernel import (
     WRITE_AUTHORITY_BUSY,
+    _admitted_truth_mutation,
     _writer_lifecycle_lock,
     has_positive_write_authority,
     hold_positive_write_authority,
@@ -59,7 +56,6 @@ _WRITE_KERNEL_REEXPORT_COMPAT = (
     hold_positive_write_authority,
     require_positive_write_authority,
 )
-
 logger = logging.getLogger(__name__)
 
 
@@ -140,9 +136,12 @@ def _resolve_capture_authorization(
     )
 
 
+_ACCEPTED_CAPTURE_DRAIN_TOKEN = object()
+
+
 @contextmanager
 def _capture_store_authority(
-    provider: Any, *, complete_accepted_capture: bool = False
+    provider: Any, *, accepted_capture_token: object | None = None
 ) -> Iterator[None]:
     """Hold lifecycle authority for one truth-store unit.
 
@@ -151,20 +150,52 @@ def _capture_store_authority(
     shutdown is published.
     """
 
+    if accepted_capture_token is None:
+        with write_kernel_mod.command_write_access(provider):
+            yield
+        return
+
+    if accepted_capture_token is not _ACCEPTED_CAPTURE_DRAIN_TOKEN:
+        raise RuntimeError(WRITE_AUTHORITY_BUSY)
+
+    from ._internal.runtime.writer_handoff import active_truth_work
+
     with _writer_lifecycle_lock(provider):
-        if complete_accepted_capture:
-            if getattr(provider, "_truth_writer_role", None) != "owner":
-                raise RuntimeError(WRITE_AUTHORITY_BUSY)
-        else:
-            write_kernel_mod.require_positive_write_authority(provider)
-        yield
+        if getattr(provider, "_truth_writer_role", None) != "owner":
+            raise RuntimeError(WRITE_AUTHORITY_BUSY)
+        with _admitted_truth_mutation(provider):
+            with active_truth_work(provider):
+                yield
 
 
 def _drain_relation_rebuild_debt(provider: Any) -> None:
-    """Run one bounded idle maintenance tick under lifecycle authority."""
+    """Run one bounded idle tick without waiting behind foreground authority."""
 
-    with _writer_lifecycle_lock(provider):
-        _drain_relation_rebuild_debt_locked(provider)
+    from ._internal.runtime.writer_handoff import active_truth_work
+
+    lifecycle_lock = _writer_lifecycle_lock(provider)
+    acquire = getattr(lifecycle_lock, "acquire", None)
+    release = getattr(lifecycle_lock, "release", None)
+    if callable(acquire) and callable(release):
+        if not bool(acquire(blocking=False)):
+            provider._relation_maintenance_lock_contention_skips = int(
+                getattr(provider, "_relation_maintenance_lock_contention_skips", 0)
+                or 0
+            ) + 1
+            provider._relation_maintenance_consecutive_failures = int(
+                getattr(provider, "_relation_maintenance_consecutive_failures", 0)
+                or 0
+            ) + 1
+            return
+        try:
+            with active_truth_work(provider):
+                _drain_relation_rebuild_debt_locked(provider)
+        finally:
+            release()
+        return
+    with lifecycle_lock:
+        with active_truth_work(provider):
+            _drain_relation_rebuild_debt_locked(provider)
 
 
 def _drain_relation_rebuild_debt_locked(provider: Any) -> None:
@@ -175,6 +206,62 @@ def _drain_relation_rebuild_debt_locked(provider: Any) -> None:
     maintenance_stop = getattr(provider, "_maintenance_stop", None)
     if maintenance_stop is not None and maintenance_stop.is_set():
         return
+
+    # Vector reconciliation, like relation maintenance below, must never adopt
+    # a transaction opened by a foreground caller.  Check the published
+    # connection before either lane while the lifecycle gate is held.  The
+    # provider lock remains nonblocking so idle maintenance cannot queue behind
+    # foreground work.
+    require_conn = getattr(provider, "_require_conn", None)
+    if callable(require_conn):
+        provider_lock = getattr(provider, "_lock", None)
+        acquired = True
+        if provider_lock is not None:
+            acquired = bool(provider_lock.acquire(blocking=False))
+        if not acquired:
+            setattr(
+                provider,
+                "_relation_maintenance_lock_contention_skips",
+                int(
+                    getattr(provider, "_relation_maintenance_lock_contention_skips", 0)
+                    or 0
+                )
+                + 1,
+            )
+            setattr(
+                provider,
+                "_relation_maintenance_consecutive_failures",
+                int(
+                    getattr(provider, "_relation_maintenance_consecutive_failures", 0)
+                    or 0
+                )
+                + 1,
+            )
+            return
+        try:
+            conn = require_conn()
+            if bool(getattr(conn, "in_transaction", False)):
+                setattr(
+                    provider,
+                    "_relation_maintenance_busy_skips",
+                    int(getattr(provider, "_relation_maintenance_busy_skips", 0) or 0)
+                    + 1,
+                )
+                setattr(
+                    provider,
+                    "_relation_maintenance_consecutive_failures",
+                    int(
+                        getattr(
+                            provider, "_relation_maintenance_consecutive_failures", 0
+                        )
+                        or 0
+                    )
+                    + 1,
+                )
+                return
+        finally:
+            if provider_lock is not None:
+                provider_lock.release()
 
     if (
         getattr(provider, "_vector_store", None) is not None
@@ -205,30 +292,127 @@ def _drain_relation_rebuild_debt_locked(provider: Any) -> None:
         return
     if not bool(provider._config.get("relation_extraction_enabled", True)):
         return
-    configured_pairs = int(
-        provider._config.get("relation_rebuild_chunk_pairs", 250) or 250
-    )
-    pair_limit = max(1, min(configured_pairs, 1000))
-    with provider._lock:
-        conn = provider._require_conn()
-        if relation_frequency_debt_exists(conn):
-            drain_relation_frequency_work(
-                conn,
-                change_limit=pair_limit,
-                backfill_limit=pair_limit,
-                reclassification_limit=pair_limit,
-                commit=True,
-            )
-        if not relation_rebuild_debt_exists(conn):
+    write_queue = getattr(provider, "_write_queue", None)
+    if write_queue is not None and callable(getattr(write_queue, "qsize", None)):
+        if int(write_queue.qsize() or 0) > 0:
+            provider._relation_maintenance_busy_skips = int(
+                getattr(provider, "_relation_maintenance_busy_skips", 0) or 0
+            ) + 1
+            provider._relation_maintenance_consecutive_failures = int(
+                getattr(provider, "_relation_maintenance_consecutive_failures", 0)
+                or 0
+            ) + 1
             return
-        result = drain_relation_rebuild_queue(
-            conn,
-            max_events=1,
-            pair_limit=pair_limit,
-            lease_seconds=120,
+    if int(getattr(provider, "_capture_queue_processing", 0) or 0) > 0:
+        provider._relation_maintenance_busy_skips = int(
+            getattr(provider, "_relation_maintenance_busy_skips", 0) or 0
+        ) + 1
+        provider._relation_maintenance_consecutive_failures = int(
+            getattr(provider, "_relation_maintenance_consecutive_failures", 0)
+            or 0
+        ) + 1
+        return
+
+    config = provider._config
+    configured_pairs = int(config.get("relation_rebuild_chunk_pairs", 250) or 250)
+    pair_limit = max(1, min(configured_pairs, 1000))
+    wall_clock_seconds = max(
+        0.05,
+        min(float(config.get("relation_maintenance_wall_clock_seconds", 0.5) or 0.5), 10.0),
+    )
+    deadline = time.monotonic() + wall_clock_seconds
+    provider_lock = getattr(provider, "_lock", None)
+    acquired = True
+    if provider_lock is not None:
+        acquired = bool(provider_lock.acquire(blocking=False))
+    if not acquired:
+        provider._relation_maintenance_lock_contention_skips = int(
+            getattr(provider, "_relation_maintenance_lock_contention_skips", 0) or 0
+        ) + 1
+        provider._relation_maintenance_consecutive_failures = int(
+            getattr(provider, "_relation_maintenance_consecutive_failures", 0) or 0
+        ) + 1
+        return
+    try:
+        conn = provider._require_conn()
+        # The shared provider connection can carry a transaction opened by a
+        # foreground caller after it releases the provider lock.  Idle
+        # maintenance must not adopt that transaction: the bounded drain uses
+        # ``commit=True`` and would otherwise commit work it does not own.
+        if bool(getattr(conn, "in_transaction", False)):
+            setattr(
+                provider,
+                "_relation_maintenance_busy_skips",
+                int(getattr(provider, "_relation_maintenance_busy_skips", 0) or 0) + 1,
+            )
+            setattr(
+                provider,
+                "_relation_maintenance_consecutive_failures",
+                int(
+                    getattr(provider, "_relation_maintenance_consecutive_failures", 0)
+                    or 0
+                )
+                + 1,
+            )
+            return
+        deferred_contention = int(
+            getattr(provider, "_relation_maintenance_lock_contention_skips", 0) or 0
         )
+        if deferred_contention:
+            record_relation_lock_contention(
+                conn,
+                scope_ids=getattr(provider, "_accessible_scope_ids", None),
+                count=deferred_contention,
+            )
+            provider._relation_maintenance_lock_contention_skips = 0
+        result = drain_relation_frequency_work(
+            conn,
+            change_limit=pair_limit,
+            focus_limit=pair_limit,
+            backfill_limit=pair_limit,
+            reclassification_limit=pair_limit,
+            relation_candidate_cap=max(
+                1,
+                min(
+                    int(config.get("relation_reclassification_candidate_cap", 250) or 250),
+                    5000,
+                ),
+            ),
+            relation_max_attempts=max(
+                1,
+                min(int(config.get("relation_maintenance_max_attempts", 5) or 5), 20),
+            ),
+            relation_policy_generation_enabled=config_bool(
+                config, "relation_policy_generation_enabled", False
+            ),
+            wall_clock_seconds=wall_clock_seconds,
+            backoff_base_seconds=max(
+                0.1,
+                float(config.get("relation_maintenance_backoff_base_seconds", 5.0) or 5.0),
+            ),
+            backoff_max_seconds=max(
+                float(config.get("relation_maintenance_backoff_base_seconds", 5.0) or 5.0),
+                float(config.get("relation_maintenance_backoff_max_seconds", 300.0) or 300.0),
+            ),
+            deadline_monotonic=deadline,
+            commit=True,
+        )
+        provider._relation_maintenance_consecutive_failures = 0
+    except Exception as exc:
+        if is_sqlite_lock_contention(exc):
+            provider._relation_maintenance_lock_contention_skips = int(
+                getattr(provider, "_relation_maintenance_lock_contention_skips", 0)
+                or 0
+            ) + 1
+        provider._relation_maintenance_consecutive_failures = int(
+            getattr(provider, "_relation_maintenance_consecutive_failures", 0) or 0
+        ) + 1
+        raise
+    finally:
+        if provider_lock is not None:
+            provider_lock.release()
     if int(result.get("failed", 0) or 0):
-        logger.warning("Scope Recall relation rebuild chunk failed: %s", result)
+        logger.warning("Scope Recall relation containment tick failed: %s", result)
 
 
 def start_writer(provider: Any) -> None:
@@ -284,10 +468,38 @@ def writer_loop(provider: Any) -> None:
             ):
                 continue
             now = time.monotonic()
+            from ._internal.runtime.writer_handoff import (
+                maybe_schedule_idle_writer_handoff,
+            )
+
+            if maybe_schedule_idle_writer_handoff(provider):
+                continue
             last_drain = float(
                 getattr(provider, "_last_relation_rebuild_drain", 0.0) or 0.0
             )
-            if now - last_drain >= 1.0:
+            config = getattr(provider, "_config", {}) or {}
+            base_interval = max(
+                1.0,
+                min(
+                    float(config.get("relation_maintenance_interval_seconds", 30.0) or 30.0),
+                    3600.0,
+                ),
+            )
+            failures = max(
+                0,
+                int(getattr(provider, "_relation_maintenance_consecutive_failures", 0) or 0),
+            )
+            backoff_base = max(
+                0.1,
+                float(config.get("relation_maintenance_backoff_base_seconds", 5.0) or 5.0),
+            )
+            backoff_max = max(
+                backoff_base,
+                float(config.get("relation_maintenance_backoff_max_seconds", 300.0) or 300.0),
+            )
+            retry_delay = min(backoff_max, backoff_base * (2 ** min(failures, 12)))
+            maintenance_interval = max(base_interval, retry_delay if failures else 0.0)
+            if now - last_drain >= maintenance_interval:
                 provider._last_relation_rebuild_drain = now
                 try:
                     _drain_relation_rebuild_debt(provider)
@@ -345,7 +557,7 @@ def writer_loop(provider: Any) -> None:
                     session_id=job.get("session_id") or "",
                     metadata=job.get("metadata") or {},
                     replay_vector=False,
-                    complete_accepted_capture=True,
+                    _accepted_capture_token=_ACCEPTED_CAPTURE_DRAIN_TOKEN,
                     authorization=job.get("authorization"),
                 )
         except Exception as exc:
@@ -465,6 +677,90 @@ def shutdown_writer(provider: Any, timeout: float = 3.0) -> None:
     provider._writer_thread = None
 
 
+def quiesce_writer_for_handoff(provider: Any, timeout: float = 3.0) -> None:
+    """Drain and stop a writer while the caller holds its submission fence.
+
+    Unlike process shutdown this does not publish ``shutdown_requested`` and
+    therefore remains reversible until resource teardown begins.  The caller
+    must keep the capture-submission lock and writer-handoff fence for the
+    entire operation.
+    """
+
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    if not bool(getattr(provider, "_writer_handoff_fenced", False)):
+        raise RuntimeError("writer_handoff_fence_missing")
+    if not flush_writer(provider, timeout=_remaining(deadline)):
+        raise RuntimeError("writer_handoff_flush_failed")
+    maintenance_stop = getattr(provider, "_maintenance_stop", None)
+    if maintenance_stop is not None:
+        maintenance_stop.set()
+    stop = getattr(provider, "_stop", None)
+    if stop is None:
+        raise RuntimeError("writer_handoff_stop_event_missing")
+    stop.set()
+    thread = getattr(provider, "_writer_thread", None)
+    if thread is not None and thread is threading.current_thread():
+        raise RuntimeError("writer_handoff_cannot_join_current_thread")
+    if thread is not None and thread.is_alive():
+        remaining = _remaining(deadline)
+        if remaining <= 0 or not put_work(
+            getattr(provider, "_write_queue", None),
+            None,
+            timeout=min(CONTROL_PUT_TIMEOUT_SECONDS, remaining),
+        ):
+            raise RuntimeError("writer_handoff_stop_publish_failed")
+        thread.join(timeout=_remaining(deadline))
+    if thread is not None and thread.is_alive():
+        raise RuntimeError("writer_handoff_stop_timeout")
+    work_queue = getattr(provider, "_write_queue", None)
+    if work_queue is None or not work_queue.empty():
+        raise RuntimeError("writer_handoff_queue_not_empty")
+    setattr(provider, "_writer_thread", None)
+
+
+def resume_writer_after_handoff(provider: Any) -> None:
+    """Resume a quiesced writer after a pre-teardown handoff veto."""
+
+    shutdown = getattr(provider, "_shutdown_requested", None)
+    if shutdown is not None and shutdown.is_set():
+        raise RuntimeError("writer_handoff_resume_during_shutdown")
+    stop = getattr(provider, "_stop", None)
+    if stop is None:
+        raise RuntimeError("writer_handoff_stop_event_missing")
+    prior = getattr(provider, "_writer_thread", None)
+    if prior is threading.current_thread():
+        raise RuntimeError("writer_handoff_resume_from_writer_thread")
+    if prior is not None and prior.is_alive() and not stop.is_set():
+        maintenance_stop = getattr(provider, "_maintenance_stop", None)
+        if maintenance_stop is not None:
+            maintenance_stop.clear()
+        return
+    if prior is not None and prior.is_alive():
+        # A quiesce timeout can occur after the stop sentinel was published.
+        # Do not clear ``_stop`` or claim OWNER while that consumer is still
+        # alive: it may consume the sentinel just after start_writer decides
+        # that an existing thread is healthy.  Boundedly finish the old
+        # consumer first; failure remains fenced/uncertain at the coordinator.
+        prior.join(timeout=3.0)
+    if prior is not None and prior.is_alive():
+        raise RuntimeError("writer_handoff_resume_wait_timeout")
+    work_queue = getattr(provider, "_write_queue", None)
+    if work_queue is None or not work_queue.empty():
+        raise RuntimeError("writer_handoff_resume_queue_not_empty")
+    # ``provider`` is intentionally structural here (tests and alternate hosts
+    # supply compatible writer runtimes), so keep the reversible handoff state
+    # update dynamic in the same way as the reads above.
+    setattr(provider, "_writer_thread", None)
+    stop.clear()
+    maintenance_stop = getattr(provider, "_maintenance_stop", None)
+    if maintenance_stop is not None:
+        maintenance_stop.clear()
+    start_writer(provider)
+    resumed = getattr(provider, "_writer_thread", None)
+    if resumed is None or not resumed.is_alive():
+        raise RuntimeError("writer_handoff_resume_start_failed")
+
+
 @contextmanager
 def capture_mutation_barrier(provider: Any, timeout: float = 2.0) -> Iterator[None]:
     """Drain accepted captures, then exclude new enqueue through a mutation.
@@ -525,6 +821,12 @@ def enqueue_store(
 ) -> dict[str, Any]:
     """Sanitize and publish one capture to the finite process-local queue."""
 
+    # Enter the process-wide handoff activity gate before waiting for the
+    # submission lock.  A capture that begins while the idle fence is being
+    # assembled must veto that handoff instead of waking after demotion and
+    # being rejected by an authority state that changed underneath it.
+    from ._internal.runtime.writer_handoff import active_truth_work
+
     safe_content = sanitize_capture_text(content)
     safe_metadata_raw, _ = sanitize_structured_value(metadata or {})
     safe_metadata = safe_metadata_raw if isinstance(safe_metadata_raw, dict) else {}
@@ -541,63 +843,67 @@ def enqueue_store(
             capacity=capacity,
         )
 
-    with _capture_submission_lock(provider):
-        with _writer_lifecycle_lock(provider):
-            shutdown_requested = getattr(provider, "_shutdown_requested", None)
-            if (
-                (shutdown_requested is not None and shutdown_requested.is_set())
-                or provider._stop.is_set()
-            ):
-                raise RuntimeError("Scope Recall writer is shutting down")
-            if not has_positive_write_authority(provider):
-                return _enqueue_result(
+    with active_truth_work(provider):
+        with _capture_submission_lock(provider):
+            with _writer_lifecycle_lock(provider):
+                shutdown_requested = getattr(provider, "_shutdown_requested", None)
+                if (
+                    (shutdown_requested is not None and shutdown_requested.is_set())
+                    or provider._stop.is_set()
+                ):
+                    raise RuntimeError("Scope Recall writer is shutting down")
+                if not has_positive_write_authority(provider):
+                    return _enqueue_result(
+                        provider,
+                        status="rejected",
+                        reason="write_authority",
+                        depth=int(getattr(work_queue, "qsize", lambda: 0)()),
+                        capacity=capacity,
+                    )
+                if work_queue is None:
+                    return _enqueue_result(
+                        provider,
+                        status="deferred",
+                        reason="writer_unavailable",
+                        depth=0,
+                        capacity=capacity,
+                    )
+                thread = getattr(provider, "_writer_thread", None)
+                if thread is None or not thread.is_alive():
+                    return _enqueue_result(
+                        provider,
+                        status="deferred",
+                        reason="writer_unavailable",
+                        depth=int(getattr(work_queue, "qsize", lambda: 0)()),
+                        capacity=capacity,
+                    )
+                authorization = _resolve_capture_authorization(
                     provider,
-                    status="rejected",
-                    reason="write_authority",
-                    depth=int(getattr(work_queue, "qsize", lambda: 0)()),
-                    capacity=capacity,
+                    target=target,
+                    source=source,
                 )
-            if work_queue is None:
-                return _enqueue_result(
-                    provider,
-                    status="deferred",
-                    reason="writer_unavailable",
-                    depth=0,
-                    capacity=capacity,
-                )
-            thread = getattr(provider, "_writer_thread", None)
-            if thread is None or not thread.is_alive():
-                return _enqueue_result(
-                    provider,
-                    status="deferred",
-                    reason="writer_unavailable",
-                    depth=int(getattr(work_queue, "qsize", lambda: 0)()),
-                    capacity=capacity,
-                )
-            authorization = _resolve_capture_authorization(
-                provider,
-                target=target,
-                source=source,
-            )
-            job = {
-                "kind": "store",
-                "content": safe_content,
-                "source": str(source),
-                "target": str(target),
-                "session_id": str(session_id),
-                "metadata": safe_metadata,
-                "authorization": authorization,
-            }
-            try:
-                work_queue.put_nowait(job)
-            except queue.Full:
-                return _enqueue_result(
-                    provider,
-                    status="rejected",
-                    reason="queue_full",
-                    depth=int(work_queue.qsize()),
-                    capacity=capacity,
-                )
+                job = {
+                    "kind": "store",
+                    "content": safe_content,
+                    "source": str(source),
+                    "target": str(target),
+                    "session_id": str(session_id),
+                    "metadata": safe_metadata,
+                    "authorization": authorization,
+                }
+                try:
+                    work_queue.put_nowait(job)
+                except queue.Full:
+                    return _enqueue_result(
+                        provider,
+                        status="rejected",
+                        reason="queue_full",
+                        depth=int(work_queue.qsize()),
+                        capacity=capacity,
+                    )
+            from ._internal.runtime.writer_handoff import note_truth_activity
+
+            note_truth_activity(provider)
             return {
                 "status": "accepted",
                 "reason": "queued",
@@ -643,7 +949,7 @@ def store_now(
     before_commit: Callable[[sqlite3.Connection, str], dict[str, Any] | None]
     | None = None,
     replay_vector: bool = True,
-    complete_accepted_capture: bool = False,
+    _accepted_capture_token: object | None = None,
     authorization: CaptureAuthorizationEnvelope | None = None,
 ) -> tuple[str, bool, dict[str, Any] | None]:
     """Synchronously commit one sanitized capture row through SQLite truth."""
@@ -654,7 +960,7 @@ def store_now(
     if not should_capture_text(safe_content, provider._config).allowed:
         return "", False, None
     with _capture_store_authority(
-        provider, complete_accepted_capture=complete_accepted_capture
+        provider, accepted_capture_token=_accepted_capture_token
     ):
         resolved_authorization = authorization or _resolve_capture_authorization(
             provider,
@@ -795,8 +1101,6 @@ def capture_turn_fallbacks(
     extract_candidates_fn: Callable[..., Any],
 ) -> None:
     """Legacy regex/raw capture fallbacks after LLM capture."""
-
-    from .gating import config_bool
 
     extracted = False
     per_turn_cfg = provider._config.get("per_turn_extraction") if isinstance(provider._config.get("per_turn_extraction"), dict) else {}

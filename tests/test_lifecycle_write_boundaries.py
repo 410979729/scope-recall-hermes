@@ -18,6 +18,7 @@ ALLOWED_METADATA_SQL = {
     ("lifecycle_service.py", "transition_memory_lifecycle"),
     ("journal.py", "_merge_metadata"),
     ("nightly_digest.py", "merge_candidate_metadata"),
+    ("privacy_purge.py", "_redact_journal_sources"),
 }
 ALLOWED_LIFECYCLE_PLANNERS = {
     ("governance.py", "merge_metadata"),
@@ -27,10 +28,14 @@ ALLOWED_LIFECYCLE_PLANNERS = {
     ("scripts/migrate.legacy_hygiene.py", "planned_updates"),
 }
 ALLOWED_HARD_DELETE_SQL = {("sql_store.py", "delete_rows")}
-ALLOWED_DELETE_ROWS_CALLS = {("lifecycle_service.py", "hard_delete_memories")}
+ALLOWED_DELETE_ROWS_CALLS = {
+    ("lifecycle_service.py", "hard_delete_memories"),
+    ("privacy_purge.py", "erase_privacy_purge"),
+}
 
 
 GENERATED_SOURCE_ROOTS = {
+    ".execution",
     ".hermes-agent-src",
     ".venv",
     "build",
@@ -65,9 +70,12 @@ def _parents(tree: ast.AST) -> dict[ast.AST, ast.AST]:
 def test_python_sources_ignore_generated_copies(tmp_path: Path) -> None:
     source = tmp_path / "runtime.py"
     generated = tmp_path / "build" / "lib" / "scope_recall" / "runtime.py"
+    evidence_copy = tmp_path / ".execution" / "evidence" / "runtime.py"
     source.write_text("VALUE = 1\n", encoding="utf-8")
     generated.parent.mkdir(parents=True)
     generated.write_text("VALUE = 1\n", encoding="utf-8")
+    evidence_copy.parent.mkdir(parents=True)
+    evidence_copy.write_text("VALUE = 1\n", encoding="utf-8")
 
     assert _python_sources(tmp_path) == [source]
 

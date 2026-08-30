@@ -578,8 +578,24 @@ def _doctor_report_without_ready_scan(tmp_path):
     )
 
 
+def _remove_and_check_durable_work(
+    payload: dict[str, object], *, state: str, reason_code: str
+) -> None:
+    durable = payload.pop("durable_work")
+    assert isinstance(durable, dict)
+    assert durable["schema_version"] == "durable_work.v1"
+    assert durable["domain_type"] == "vector_causal_outbox"
+    assert durable["state"] == state
+    assert durable["reason_code"] == reason_code
+
+
 def test_doctor_absent_db_exposes_empty_inactive_generation_inventory(tmp_path):
     payload, check, recommendations = _doctor_report_without_ready_scan(tmp_path)
+    _remove_and_check_durable_work(
+        payload,
+        state="disabled",
+        reason_code="truth_database_absent",
+    )
     assert payload == {
         "status": "absent",
         "registered": False,
@@ -599,6 +615,11 @@ def test_doctor_legacy_unregistered_exposes_empty_inactive_generation_inventory(
     conn.close()
 
     payload, check, recommendations = _doctor_report_without_ready_scan(tmp_path)
+    _remove_and_check_durable_work(
+        payload,
+        state="disabled",
+        reason_code="schema_missing",
+    )
     assert payload == {
         "status": "legacy_unregistered",
         "registered": False,
@@ -626,6 +647,11 @@ def test_doctor_initialized_unregistered_exposes_empty_inactive_generation_inven
     conn.close()
 
     payload, check, recommendations = _doctor_report_without_ready_scan(tmp_path)
+    _remove_and_check_durable_work(
+        payload,
+        state="disabled",
+        reason_code="no_active_generation",
+    )
     assert payload == {
         "status": "legacy_unregistered",
         "registered": False,
@@ -635,6 +661,54 @@ def test_doctor_initialized_unregistered_exposes_empty_inactive_generation_inven
     }
     assert check == {"ok": True, "failures": []}
     assert any("not registered" in item for item in recommendations)
+
+
+def test_doctor_manifests_without_pointer_require_repair(tmp_path):
+    from scope_recall.vector_generation import ensure_vector_generation_schema
+
+    storage = tmp_path / "scope-recall"
+    storage.mkdir()
+    conn = sqlite3.connect(storage / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    ensure_vector_generation_schema(conn)
+    register_generation(
+        conn,
+        generation_id="orphan-active",
+        identity=GenerationIdentity(
+            backend="sqlite-bruteforce",
+            provider="local-hash",
+            model="hash-v1",
+            dimensions=8,
+        ),
+        storage_path=".",
+        status="active",
+    )
+    conn.commit()
+    conn.close()
+
+    payload, check, recommendations = _doctor_report_without_ready_scan(tmp_path)
+
+    _remove_and_check_durable_work(
+        payload,
+        state="needs_repair",
+        reason_code="generation_pointer_missing",
+    )
+
+    assert payload == {
+        "status": "generation_incomplete",
+        "registered": True,
+        "current_generation_id": "",
+        "orphan_generation_count": 1,
+        "inactive_generation_inventory": [],
+        "rebuild_from_sqlite_required": False,
+    }
+    assert check == {
+        "ok": False,
+        "failures": ["vector generation manifests exist without a current pointer"],
+    }
+    assert recommendations == [
+        "Restore the current generation pointer or CAS-activate a validated READY generation before normal runtime startup."
+    ]
 
 
 def test_doctor_missing_manifest_exposes_empty_inactive_generation_inventory(tmp_path):
@@ -652,6 +726,11 @@ def test_doctor_missing_manifest_exposes_empty_inactive_generation_inventory(tmp
     conn.close()
 
     payload, check, recommendations = _doctor_report_without_ready_scan(tmp_path)
+    _remove_and_check_durable_work(
+        payload,
+        state="needs_repair",
+        reason_code="current_generation_manifest_missing",
+    )
     assert payload == {
         "status": "generation_incomplete",
         "registered": True,

@@ -12,6 +12,11 @@ from typing import Any
 from scope_recall import doctor_sqlite  # type: ignore[attr-defined]
 from scope_recall.lexical_generation import LEXICAL_MIGRATION_ID
 from scope_recall.operator_ledger import OPERATOR_LEDGER_MIGRATION_ID
+from scope_recall.privacy_purge_schema import PRIVACY_PURGE_MIGRATION_ID
+from scope_recall.relation_containment import RELATION_CONTAINMENT_MIGRATION_ID
+from scope_recall.relation_policy_generation import (
+    RELATION_POLICY_GENERATION_MIGRATION_ID,
+)
 from scope_recall.relation_frequency_index import (
     RELATION_FREQUENCY_FAILURE_MIGRATION_ID,
     RELATION_FREQUENCY_INDEX_MIGRATION_ID,
@@ -72,12 +77,16 @@ def test_sqlite_report_opens_truth_db_read_only(tmp_path, monkeypatch):
         RELATION_REBUILD_EXPIRY_MIGRATION_ID,
         RELATION_FREQUENCY_FAILURE_MIGRATION_ID,
         LEXICAL_MIGRATION_ID,
+        RELATION_CONTAINMENT_MIGRATION_ID,
+        RELATION_POLICY_GENERATION_MIGRATION_ID,
+        PRIVACY_PURGE_MIGRATION_ID,
     ]
     assert payload["relation_frequency_index"]["status"] == "schema_missing"
     assert check == {"ok": True, "failures": []}
     assert recommendations == [
         "Relation frequency index schema is missing; initialize with the current provider before relying on bounded relation sync.",
         "Relation rebuild queue schema is missing; initialize with the current provider before relying on bounded relation sync.",
+        "Relation containment schema is missing; initialize with the current provider before trusting generated relation signals.",
         "Operator ledger schema is missing; initialize with the current provider before relying on filesystem receipts.",
         "SQLite schema migration ledger is not current; run the current scope-recall provider or installer doctor to apply baseline schema metadata before release rollout.",
     ]

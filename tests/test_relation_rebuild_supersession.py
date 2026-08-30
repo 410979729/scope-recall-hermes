@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+# Historical counterexamples for the removed legacy worker. The executable
+# retirement contract is covered by test_relation_rebuild_retirement.py and the
+# release AST gate; these fixtures remain readable but are no longer collected.
+__test__ = False
+
 import sqlite3
 import threading
 from pathlib import Path

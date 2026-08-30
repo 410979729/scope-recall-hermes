@@ -131,7 +131,7 @@ def test_distribution_metadata_exposes_official_standalone_install_shape():
     pyproject = tomllib.loads((PLUGIN_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert pyproject["project"]["name"] == "hermes-scope-recall"
-    assert pyproject["project"]["version"] == "1.10.5"
+    assert pyproject["project"]["version"] == "2.0.0"
     assert pyproject["project"]["scripts"] == {
         "hermes-scope-recall": "scope_recall.cli:main"
     }
@@ -177,6 +177,8 @@ def test_installer_copy_ignores_only_relative_artifacts_not_venv_ancestor(tmp_pa
         target.write_text(content, encoding="utf-8")
     (fake_source / "__pycache__").mkdir()
     (fake_source / "__pycache__" / "ignored.pyc").write_bytes(b"pyc")
+    (fake_source / ".execution").mkdir()
+    (fake_source / ".execution" / "local-run.txt").write_text("private", encoding="utf-8")
     monkeypatch.setattr(installer, "source_root", lambda: fake_source)
 
     result = installer.install(hermes_home=tmp_path / "home")
@@ -188,6 +190,7 @@ def test_installer_copy_ignores_only_relative_artifacts_not_venv_ancestor(tmp_pa
     assert (plugin_dir / "provider.py").is_file()
     assert (plugin_dir / "plugin.yaml").is_file()
     assert not (plugin_dir / "__pycache__").exists()
+    assert not (plugin_dir / ".execution").exists()
 
 
 def test_installer_copies_plugin_and_verify_accepts_it(tmp_path):
@@ -1796,14 +1799,14 @@ def test_installer_upgrade_backs_up_existing_plugin_and_reports_versions(tmp_pat
     assert result["installed"] is True
     assert result["previous_plugin_existed"] is True
     assert result["previous_version"] == "0.9.0"
-    assert result["manifest_version"] == "1.10.5"
-    assert result["new_version"] == "1.10.5"
+    assert result["manifest_version"] == "2.0.0"
+    assert result["new_version"] == "2.0.0"
     backup_path = Path(result["backup_path"])
     assert backup_path.is_dir()
     assert tmp_path in backup_path.parents
     assert "version: 0.9.0" in (backup_path / "plugin.yaml").read_text(encoding="utf-8")
     assert "previous plugin" in (backup_path / "__init__.py").read_text(encoding="utf-8")
-    assert "version: 1.10.5" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 2.0.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
     assert any("restart" in step.lower() for step in result["next_steps"])
     assert any("doctor" in step for step in result["next_steps"])
     assert result["rollback_command"].endswith(str(backup_path))
@@ -1815,7 +1818,7 @@ def test_installer_rollback_restores_backup_and_backs_up_current_plugin(tmp_path
     plugin_dir = tmp_path / "plugins" / PLUGIN_NAME
     _write_installed_plugin(plugin_dir, version="0.9.0", marker="previous plugin")
     upgrade = installer.install(hermes_home=tmp_path)
-    assert "version: 1.10.5" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 2.0.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
 
     rollback = installer.rollback(hermes_home=tmp_path, backup_dir=upgrade["backup_path"])
 
@@ -1823,10 +1826,10 @@ def test_installer_rollback_restores_backup_and_backs_up_current_plugin(tmp_path
     assert rollback["dry_run"] is False
     assert rollback["restored"] is True
     assert rollback["restored_version"] == "0.9.0"
-    assert rollback["replaced_version"] == "1.10.5"
+    assert rollback["replaced_version"] == "2.0.0"
     current_backup = Path(rollback["current_backup_path"])
     assert current_backup.is_dir()
-    assert "version: 1.10.5" in (current_backup / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 2.0.0" in (current_backup / "plugin.yaml").read_text(encoding="utf-8")
     assert "version: 0.9.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
     assert "previous plugin" in (plugin_dir / "__init__.py").read_text(encoding="utf-8")
 
@@ -1903,7 +1906,7 @@ def test_installer_cli_upgrade_dry_run_and_rollback_are_routed_by_product_cli(tm
 
     upgrade = installer.install(hermes_home=tmp_path)
     assert cli.main(["rollback", "--hermes-home", str(tmp_path), "--backup-dir", upgrade["backup_path"], "--dry-run", "--json"]) == 0
-    assert "version: 1.10.5" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 2.0.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
 
 
 def test_installer_runtime_verify_reports_missing_memory_setup(tmp_path):
@@ -1955,6 +1958,9 @@ def test_installer_runtime_verify_reports_schema_ledger_repair_steps_without_rei
         "0010_relation_rebuild_lease_expiry_budget_v1_8_0",
         "0011_relation_frequency_failure_queue_v1_8_0",
         "0012_lexical_shadow_index_v1_9_0",
+        "0013_relation_containment_v1_10_6",
+        "0014_relation_policy_generation_v1_10_6",
+        "0015_privacy_purge_v2_0_0",
     ]
     assert "SQLite schema migration ledger is not current" in verify_result["failures"]
     assert any("migrate status" in step for step in verify_result["next_steps"])
@@ -2278,7 +2284,10 @@ def test_nested_clone_build_and_fresh_venv_ignore_polluted_parent(tmp_path):
             ".git",
             ".hermes",
             ".hermes-agent-src",
+            ".execution",
             ".pytest_cache",
+            ".ruff_cache",
+            ".venv",
             "__pycache__",
             "*.pyc",
             "build",

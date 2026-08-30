@@ -38,11 +38,13 @@ except ImportError:  # pragma: no cover - direct source checkout execution fallb
 
 DEFAULT_CASES = ROOT / "benchmarks" / "curated_recall_quality_cases_v2.json"
 COPY_IGNORE_PATTERNS = (
+    ".execution",
     ".git",
     ".hermes",
     ".hermes-agent-src",
     ".pytest_cache",
     ".ruff_cache",
+    ".venv",
     "__pycache__",
     "*.pyc",
     "build",
@@ -192,6 +194,7 @@ def _mark_lifecycle(plugin: Any, memory_id: str, lifecycle: str) -> None:
     normalized = str(lifecycle or "").strip().lower()
     package = plugin.__class__.__module__.rsplit(".", 1)[0]
     lifecycle_service = importlib.import_module(f"{package}.lifecycle_service")
+    lifecycle_registry = importlib.import_module(f"{package}.lifecycle_registry")
     with plugin._lock:
         conn = plugin._require_conn()
         row = conn.execute(
@@ -208,8 +211,7 @@ def _mark_lifecycle(plugin: Any, memory_id: str, lifecycle: str) -> None:
                 expected_updated_at=str(row["updated_at"] or ""),
                 actor="golden-benchmark-fixture",
                 reason="isolated golden benchmark lifecycle marker",
-                event_type="benchmark_fixture_lifecycle",
-                action="mark_fixture_lifecycle",
+                operation_id=lifecycle_registry.BENCHMARK_MARK_LIFECYCLE,
             )
             conn.commit()
         except Exception:

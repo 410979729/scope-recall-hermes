@@ -46,6 +46,18 @@ def _live_peer_recovery(provider):
         recovery = __import__(name, fromlist=["PROVIDER_REGISTRY"])
     return recovery
 
+
+def _live_writer_handoff(provider):
+    """Resolve writer-handoff state from this provider's plugin namespace."""
+
+    module = inspect.getmodule(type(provider))
+    assert module is not None
+    name = f"{module.__name__.rsplit('.', 1)[0]}._internal.runtime.writer_handoff"
+    handoff = sys.modules.get(name)
+    if handoff is None:
+        handoff = __import__(name, fromlist=["active_truth_work"])
+    return handoff
+
 READ_ONLY_STATUS = "active_read_only"
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _WORKSPACE_PROVIDER = (_REPO_ROOT / "provider.py").resolve()
@@ -1411,6 +1423,56 @@ def test_peer_rollback_skips_when_peer_lifecycle_held(tmp_path):
                     tracker.inner.rollback()
             except Exception:
                 pass
+        for item in (writer, peer):
+            try:
+                item.shutdown()
+            except Exception:
+                pass
+
+
+def test_peer_rollback_skips_reentrant_active_truth_work(tmp_path):
+    """A same-thread RLock reentry must not roll back an active peer unit."""
+
+    _write_config(tmp_path, {"vector": {"enabled": False}})
+    writer = _provider()
+    peer = _provider()
+    try:
+        _initialize(writer, tmp_path, "reentrant-active-writer")
+        _initialize(peer, tmp_path, "reentrant-active-peer")
+        for item in (writer, peer):
+            item._maintenance_stop.set()
+        for item in (writer, peer):
+            with item._writer_lifecycle_lock:
+                pass
+        handoff = _live_writer_handoff(peer)
+
+        with peer._writer_lifecycle_lock:
+            with handoff.active_truth_work(peer):
+                with peer._lock:
+                    conn = peer._require_conn()
+                    conn.execute("BEGIN IMMEDIATE")
+                    conn.execute(
+                        "CREATE TABLE IF NOT EXISTS reentrant_peer_probe("
+                        "label TEXT PRIMARY KEY)"
+                    )
+                    conn.execute(
+                        "INSERT INTO reentrant_peer_probe(label) VALUES ('active')"
+                    )
+                    assert conn.in_transaction is True
+                    assert peer._writer_handoff_active_truth_work == 1
+
+                    report = writer._rollback_peer_provider_transactions(
+                        "reentrant active truth work"
+                    )
+
+                    assert report["peer_providers_checked"] >= 1
+                    assert report["peer_busy_skipped"] == 1
+                    assert report["peer_rollbacks"] == 0
+                    assert report["peer_rollback_errors"] == 0
+                    assert conn.in_transaction is True
+                    conn.rollback()
+        assert peer._writer_handoff_active_truth_work == 0
+    finally:
         for item in (writer, peer):
             try:
                 item.shutdown()

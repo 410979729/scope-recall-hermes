@@ -95,6 +95,11 @@ class BackgroundWork:
         with self.lock:
             if callable(is_set) and is_set():
                 return
+            # Recheck the writer-handoff fence under the single-flight lock;
+            # otherwise a digest can start after the outer check while an
+            # idle handoff is publishing its process fence.
+            if callable(blocked) and blocked():
+                return
             if self.thread is not None and self.thread.is_alive():
                 return
             if drain_while_idle:
@@ -135,12 +140,14 @@ class BackgroundWork:
         digest_fn: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
         from ..journal.runtime import run_provider_background_journal_digest
+        from .writer_handoff import active_truth_work
 
-        run_provider_background_journal_digest(
-            self._provider,
-            journal_config,
-            digest_fn=digest_fn or active_run_journal_digest(),
-        )
+        with active_truth_work(self._provider):
+            run_provider_background_journal_digest(
+                self._provider,
+                journal_config,
+                digest_fn=digest_fn or active_run_journal_digest(),
+            )
 
     def run_session_end_digest(
         self,
@@ -148,16 +155,15 @@ class BackgroundWork:
         digest_fn: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
         from ..journal.runtime import run_provider_session_end_journal_digest
+        from .writer_handoff import active_truth_work
 
-        run_provider_session_end_journal_digest(
-            self._provider,
-            digest_fn=digest_fn or active_run_journal_digest(),
-        )
+        with active_truth_work(self._provider):
+            run_provider_session_end_journal_digest(
+                self._provider,
+                digest_fn=digest_fn or active_run_journal_digest(),
+            )
 
     def maybe_promote(self, *, trigger: str) -> None:
-        from ...experience_promotion import promote_experiences
-        from ..experience.runtime import run_experience_promotion
-
         provider = self._provider
         shutdown = getattr(provider, "_shutdown_requested", None)
         is_set = getattr(shutdown, "is_set", None)
@@ -175,6 +181,8 @@ class BackgroundWork:
             return
         if not config_bool(experience_config, "auto_promotion_enabled", False):
             return
+        from ..experience.runtime import run_experience_promotion
+
         try:
             limit_sessions = int(experience_config.get("auto_promotion_limit_sessions") or 20)
         except (TypeError, ValueError):
@@ -183,7 +191,6 @@ class BackgroundWork:
             result = run_experience_promotion(
                 provider,
                 limit_sessions=max(1, limit_sessions),
-                promote_fn=promote_experiences,
             )
             logger.info("Scope Recall auto experience promotion after %s: %s", trigger, result)
         except Exception:

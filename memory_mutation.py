@@ -27,6 +27,21 @@ class MemoryMutationService:
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
         with self._provider._lock:
+            from .write_kernel import (
+                _truth_mutation_is_admitted,
+                has_positive_write_authority,
+            )
+
+            role_is_owner = (
+                getattr(self._provider, "_truth_writer_role", None) == "owner"
+            )
+            has_admitted_owner = role_is_owner and _truth_mutation_is_admitted(
+                self._provider
+            )
+            if not has_positive_write_authority(self._provider) and not has_admitted_owner:
+                raise MemoryMutationTransactionError(
+                    "durable mutation requires admitted truth-writer authority"
+                )
             conn = self._provider._require_conn()
             if conn.in_transaction:
                 raise MemoryMutationTransactionError(

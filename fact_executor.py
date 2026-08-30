@@ -22,9 +22,12 @@ from .capture_filters import (
 )
 from .evolution_policy import EvolutionPolicyDecision
 from .fact_actions import EvolutionAction, EvolutionPlan, EvolutionResult
+from .fact_authority import is_fact_projection_marker, route_fact_authority
 from .fact_repository import (
     FACT_EXECUTOR_MUTATION_AUTHORITY,
+    FACT_EXECUTOR_PENDING_SUCCESSOR_AUTHORITY,
     TemporalConflictError,
+    assert_canonical_projection_pair,
     close_claim_interval,
     insert_claim,
     link_claim_evidence,
@@ -32,6 +35,14 @@ from .fact_repository import (
 )
 from .freshness import upsert_memory_freshness
 from .graph_relations import upsert_relation
+from .lifecycle_registry import (
+    FACT_EVOLUTION_ADOPT,
+    FACT_EVOLUTION_ENRICH,
+    FACT_EVOLUTION_RETRACT,
+    FACT_EVOLUTION_SUPERSEDE,
+    FACT_EVOLUTION_SUPERSEDE_CLAIM,
+    resolve_lifecycle_operation,
+)
 from .lifecycle_service import LifecycleConflictError, transition_memory_lifecycle
 from .sql_store import record_governance_audit_event, store_row
 from .vector_generation import current_generation_id, enqueue_vector_event
@@ -482,15 +493,28 @@ def _new_memory_and_claim(
     content = context.memory_content.strip() or (
         f"{claim.subject} {claim.predicate}: {claim.display_value}"
     )
+    authority_route = route_fact_authority(context.metadata.get("memory_type"))
+    if authority_route.claim_backed:
+        projection_memory_type = authority_route.canonical_type
+    elif is_fact_projection_marker(context.metadata.get("memory_type")):
+        # Direct internal callers before Program 3 used this projection marker.
+        # Their trusted Executor path remains readable as the canonical factual
+        # subtype, but the marker itself never grants authority at the router.
+        projection_memory_type = "factual"
+    else:
+        raise FactExecutionError(
+            "new canonical Projection requires a Claim-backed memory type"
+        )
     metadata = dict(context.metadata)
     metadata.update(
         {
-            "memory_type": "fact",
+            "memory_type": projection_memory_type,
             "fact_key": claim.fact_key,
+            "fact_claim_key": claim.fact_key,
             "fact_claim_id": claim_id,
             "evolution_action_id": plan.action_id,
             "evolution_action": plan.proposal.action.value,
-            "lifecycle": "active",
+            "lifecycle": "promoted",
         }
     )
     safe_metadata, _ = sanitize_structured_value(metadata)
@@ -515,6 +539,7 @@ def _new_memory_and_claim(
         commit=False,
         timestamp=timestamp,
         enqueue_vector_intent=False,
+        fact_projection_authority=FACT_EXECUTOR_MUTATION_AUTHORITY,
     )
     if not inserted or stored_id != memory_id:
         raise FactExecutionConflictError("successor memory insert did not create the expected row")
@@ -599,11 +624,17 @@ def _new_memory_and_claim(
         )
 
     event_id = _stable_id("factgov", f"{plan.action_id}:successor")
+    operation = resolve_lifecycle_operation(
+        {
+            EvolutionAction.ADD: FACT_EVOLUTION_ADOPT,
+            EvolutionAction.SUPERSEDE: FACT_EVOLUTION_SUPERSEDE_CLAIM,
+        }[plan.proposal.action]
+    )
     record_governance_audit_event(
         conn,
         event_id=event_id,
-        event_type="fact_evolution",
-        action=plan.proposal.action.value,
+        event_type=operation.legacy_event_type,
+        action=operation.legacy_action,
         scope_id=context.scope_id,
         target_id=memory_id,
         batch_id=plan.action_id,
@@ -619,6 +650,17 @@ def _new_memory_and_claim(
         created_at=timestamp,
     )
     receipt["audit_event_ids"].append(event_id)
+    receipt["projection_pairs"].append(
+        assert_canonical_projection_pair(
+            conn,
+            memory_id=memory_id,
+            claim_id=claim_id,
+            scope_id=context.scope_id,
+            fact_key=claim.fact_key,
+            memory_type=projection_memory_type,
+        )
+    )
+    _fault(fault_injector, "after_projection_invariant")
     return memory_id, claim_id
 
 
@@ -653,11 +695,12 @@ def _link_enrichment(
             receipt=receipt,
         )
         event_id = _stable_id("factgov", f"{plan.action_id}:enrich:{memory_id}")
+        operation = resolve_lifecycle_operation(FACT_EVOLUTION_ENRICH)
         record_governance_audit_event(
             conn,
             event_id=event_id,
-            event_type="fact_evolution",
-            action="enrich",
+            event_type=operation.legacy_event_type,
+            action=operation.legacy_action,
             scope_id=context.scope_id,
             target_id=memory_id,
             batch_id=plan.action_id,
@@ -797,6 +840,7 @@ def execute_fact_plan(
             "audit_event_ids": [],
             "vector_outbox_keys": [],
             "vector_outbox_events": [],
+            "projection_pairs": [],
             "replayed": False,
         }
 
@@ -817,6 +861,13 @@ def execute_fact_plan(
                         valid_to=claim.valid_from or None,
                         status="superseded",
                         superseded_by_claim_id=successor_claim_id,
+                        expected_scope_id=context.scope_id,
+                        expected_fact_key=claim.fact_key,
+                        pending_successor_scope_id=context.scope_id,
+                        pending_successor_fact_key=claim.fact_key,
+                        pending_successor_authority=(
+                            FACT_EXECUTOR_PENDING_SUCCESSOR_AUTHORITY
+                        ),
                     )
                 transition = transition_memory_lifecycle(
                     conn,
@@ -831,8 +882,7 @@ def execute_fact_plan(
                     expected_lifecycle=_target_lifecycle(target_rows[memory_id]),
                     actor=context.actor,
                     reason=plan.proposal.reason,
-                    event_type="fact_evolution",
-                    action="supersede_old",
+                    operation_id=FACT_EVOLUTION_SUPERSEDE,
                     batch_id=plan.action_id,
                     timestamp=timestamp,
                     fact_mutation_authority=FACT_EXECUTOR_MUTATION_AUTHORITY,
@@ -893,6 +943,9 @@ def execute_fact_plan(
             )
 
         elif action is EvolutionAction.RETRACT:
+            retract_claim_draft = plan.proposal.claim
+            if retract_claim_draft is None:
+                raise FactExecutionError("claim is required for retraction")
             for memory_id, claim_ids in target_claim_ids.items():
                 _link_runtime_provenance(
                     conn,
@@ -908,6 +961,8 @@ def execute_fact_plan(
                         claim_id=claim_id,
                         retired_at=timestamp,
                         valid_to=effective_at,
+                        expected_scope_id=context.scope_id,
+                        expected_fact_key=retract_claim_draft.fact_key,
                     )
                 transition = transition_memory_lifecycle(
                     conn,
@@ -918,8 +973,7 @@ def execute_fact_plan(
                     expected_lifecycle=_target_lifecycle(target_rows[memory_id]),
                     actor=context.actor,
                     reason=plan.proposal.reason,
-                    event_type="fact_evolution",
-                    action="retract",
+                    operation_id=FACT_EVOLUTION_RETRACT,
                     batch_id=plan.action_id,
                     timestamp=timestamp,
                     fact_mutation_authority=FACT_EXECUTOR_MUTATION_AUTHORITY,

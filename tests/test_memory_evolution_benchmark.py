@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 from types import ModuleType
 
 import pytest
@@ -60,6 +63,14 @@ def test_memory_evolution_fixture_covers_required_scenarios() -> None:
     }
 
 
+def test_benchmark_import_preserves_active_checkout_package_alias() -> None:
+    active_package = sys.modules["scope_recall"]
+
+    _module()
+
+    assert sys.modules["scope_recall"] is active_package
+
+
 def test_memory_evolution_benchmark_meets_release_thresholds() -> None:
     result = _module().run_benchmark(CASES)
     assert result["passed"] is True
@@ -92,3 +103,34 @@ def test_memory_evolution_benchmark_rejects_incomplete_fixture(tmp_path: Path) -
 
     with pytest.raises(ValueError, match="at least ten"):
         _module().run_benchmark(incomplete)
+
+
+def test_benchmark_process_prefers_checkout_over_stale_installed_package(
+    tmp_path: Path,
+) -> None:
+    stale_root = tmp_path / "stale-site"
+    stale_package = stale_root / "scope_recall"
+    stale_package.mkdir(parents=True)
+    (stale_package / "__init__.py").write_text(
+        "__version__ = '0.0.0-stale'\n",
+        encoding="utf-8",
+    )
+    (stale_package / "fact_repository.py").write_text(
+        "STALE_PACKAGE = True\n",
+        encoding="utf-8",
+    )
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(stale_root)
+
+    completed = subprocess.run(
+        [sys.executable, str(SCRIPT), "--json"],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout)["passed"] is True

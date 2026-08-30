@@ -9,7 +9,9 @@ import logging
 import time  # noqa: F401
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
+
+from ._internal.application.memory_commands import DeleteMemoriesResult
 
 from .capture import capture_mutation_barrier, store_now
 from .writer_lease import sanitized_truth_writer_owner  # noqa: F401
@@ -36,10 +38,18 @@ from .lifecycle_policy import (
     PROFILE_HIDDEN_LIFECYCLES,
     ordinary_recall_lifecycle_visible_sql,
 )
+from .lifecycle_registry import (
+    GOVERNANCE_CLASSIFY_METADATA,
+    HARD_DELETE_DEDUPE,
+    HARD_DELETE_EXPLICIT,
+    HARD_DELETE_MERGE_SOURCE,
+    SCOPE_FORGET_ARCHIVE,
+)
 from .models import recall_scope_mode, resolve_store_scope_mode  # noqa: F401
 from .memory_text_merge import automatic_merge_is_safe
 from .memory_mutation import MemoryMutationService
 from .relation_extraction import sync_extracted_relations_for_memory
+from .response_schemas import retention_response_contract
 from .graph_relations import graph_relation_stats  # noqa: F401
 from .sql_store import (
     exact_duplicate_groups,
@@ -50,8 +60,9 @@ from .sql_store import (
 from .sqlite_params import chunked_sql_parameters
 from .vector_generation import enqueue_current_vector_event
 from .vector_runtime import (
-    mark_vector_needs_repair,
+    mark_vector_replay_degraded,
     refresh_vector_audit,  # noqa: F401
+    replay_and_classify_exact_vector_intents,
     replay_vector_outbox,
     setup_vector_layer,
     vector_delete_intent_required,
@@ -82,26 +93,10 @@ from ._internal.memory.scope import (  # noqa: E402
 )
 
 
-def _write_target(provider: Any) -> Any:
-    """Return the Provider-shaped domain object declared by MemoryCommandPort."""
-
-    getter = getattr(provider, "write_target", None)
-    if callable(getter):
-        target = getter()
-        if target is not None:
-            return target
-    return provider
-
-
 def _require_command_method(provider: Any, name: str) -> Any:
     getter = getattr(provider, name, None)
     if callable(getter):
         return getter
-    target = _write_target(provider)
-    if target is not provider:
-        getter = getattr(target, name, None)
-        if callable(getter):
-            return getter
     raise TypeError(f"MemoryCommandPort.{name} is required")
 
 
@@ -142,7 +137,7 @@ def _domain_writable_scope_ids(provider: Any) -> list[str]:
         raw = getter()
         values = list(raw) if isinstance(raw, (list, tuple)) else []
         return [str(item) for item in values if str(item)]
-    return _writable_scope_params(_write_target(provider))
+    return _writable_scope_params(provider)
 
 
 def _domain_writable_placeholders(provider: Any) -> str:
@@ -222,8 +217,7 @@ def _rollback_provider_conn_after_error(provider: Any, context: str) -> None:
     if callable(rollback):
         rollback(context)
         return
-    target = _write_target(provider)
-    rollback = getattr(target, "rollback_conn_after_error", None)
+    rollback = getattr(provider, "rollback_conn_after_error", None)
     if callable(rollback):
         rollback(context)
 
@@ -347,7 +341,7 @@ def store_memory_now(
         )
 
     memory_id, inserted, relation_result = store_now(
-        _write_target(provider),
+        provider,
         content=content,
         source=source,
         target=target,
@@ -595,7 +589,7 @@ def update_memory(
     only after truth commits.
     """
 
-    mutation = MemoryMutationService(_write_target(provider))
+    mutation = MemoryMutationService(provider)
     updated = False
     summary = ""
     updated_at = ""
@@ -691,9 +685,9 @@ def update_memory(
 
     if updated:
         try:
-            replay_vector_outbox(_write_target(provider))
+            replay_vector_outbox(provider)
         except Exception as exc:
-            mark_vector_needs_repair(_write_target(provider), exc)
+            mark_vector_replay_degraded(provider, exc)
             logger.warning(
                 "Scope Recall vector outbox replay failed after atomic update: %s",
                 exc,
@@ -715,12 +709,13 @@ def merge_memories(
             str(memory_id) for memory_id in source_ids if str(memory_id).strip()
         )
     )
-    mutation = MemoryMutationService(_write_target(provider))
+    mutation = MemoryMutationService(provider)
     summary = ""
     updated_at = ""
     requested_target = ""
     requested_mode = ""
     delete_ids: list[str] = []
+    merge_vector_outbox_keys: list[str] = []
     try:
         with mutation.transaction() as conn:
             placeholders = _domain_writable_placeholders(provider)
@@ -860,41 +855,41 @@ def merge_memories(
                     local_peer_limit=_relation_local_neighbor_limit(provider),
                     commit=False,
                 )
-            enqueue_current_vector_event(
+            target_vector_outbox_key = enqueue_current_vector_event(
                 conn,
                 memory_id=target_id,
                 operation="upsert",
                 updated_at=str(updated_row["updated_at"]),
                 reason="atomic memory merge target update",
             )
+            if target_vector_outbox_key:
+                merge_vector_outbox_keys.append(target_vector_outbox_key)
             delete_ids = [
                 str(row["id"])
                 for row in source_rows
                 if str(row["id"]) != target_id
             ]
-            deleted = delete_memories(
+            delete_result = delete_memories_result(
                 provider,
                 delete_ids,
                 transaction_conn=conn,
             )
-            if deleted != len(delete_ids):
+            if delete_result.deleted_count != len(delete_ids):
                 raise RuntimeError(
                     "merge source delete row-count mismatch: "
-                    f"expected={len(delete_ids)}, deleted={deleted}"
+                    f"expected={len(delete_ids)}, "
+                    f"deleted={delete_result.deleted_count}"
                 )
+            merge_vector_outbox_keys.extend(delete_result.vector_outbox_keys)
     except Exception:
         # The transaction context has already rolled back every companion write.
         # Preserve the established merge API: callers receive the original fault.
         raise
 
-    try:
-        replay_vector_outbox(_write_target(provider))
-    except Exception as exc:
-        mark_vector_needs_repair(_write_target(provider), exc)
-        logger.warning(
-            "Scope Recall vector outbox replay failed after atomic merge: %s",
-            exc,
-        )
+    vector_completion = _exact_vector_completion_payload(
+        provider,
+        merge_vector_outbox_keys,
+    )
     return {
         "merged": True,
         "target_id": target_id,
@@ -905,6 +900,18 @@ def merge_memories(
         "deleted": len(delete_ids),
         "summary": summary,
         "updated_at": updated_at,
+        "vector_status": str(vector_completion.get("vector_status") or ""),
+        "vector_pending": bool(vector_completion.get("vector_pending")),
+        "companion_erasure_pending": bool(
+            vector_completion.get("vector_pending")
+        ),
+        "vector_error": str(vector_completion.get("vector_error") or ""),
+        "vector_outbox_status_counts": dict(
+            vector_completion.get("vector_outbox_status_counts") or {}
+        ),
+        "vector_outbox_event_ids": list(
+            vector_completion.get("vector_outbox_event_ids") or []
+        ),
     }
 
 
@@ -915,7 +922,6 @@ def govern_memories(
     """Build governance action plans for active memories.
 
     The function keeps classification, review surfaces, and optional apply behavior together so operator tools can expose the exact proposed mutation set."""
-    conn = _command_conn(provider)
     if scope_only:
         where = f"WHERE scope_id IN ({_domain_writable_placeholders(provider)})"
         params: tuple[Any, ...] = tuple(_domain_writable_scope_ids(provider))
@@ -923,6 +929,7 @@ def govern_memories(
         where = ""
         params = ()
     with _command_lock(provider):
+        conn = _command_conn(provider)
         rows = conn.execute(
             f"SELECT id, source, target, content, updated_at, metadata FROM memories {where}",
             params,
@@ -1002,7 +1009,7 @@ def govern_memories(
         write_conn = _command_conn(provider)
         if write_conn.in_transaction:
             write_conn.rollback()
-        with MemoryMutationService(_write_target(provider)).transaction() as write_conn:
+        with MemoryMutationService(provider).transaction() as write_conn:
             for (
                 metadata_json,
                 memory_id,
@@ -1019,8 +1026,7 @@ def govern_memories(
                     expected_lifecycle=expected_lifecycle,
                     actor="scope-recall-governance",
                     reason="governance metadata classification",
-                    event_type="memory_governance",
-                    action="classify_metadata",
+                    operation_id=GOVERNANCE_CLASSIFY_METADATA,
                 )
     review_candidates = sorted(
         review_candidates,
@@ -1038,17 +1044,74 @@ def govern_memories(
     }
 
 
-def delete_memories(
+def _delete_memories_result(
+    requested_ids: list[str],
+    result: Mapping[str, Any],
+) -> DeleteMemoriesResult:
+    deleted_ids = tuple(
+        dict.fromkeys(
+            str(memory_id).strip()
+            for memory_id in (result.get("ids") or [])
+            if str(memory_id).strip()
+        )
+    )
+    deleted_id_set = set(deleted_ids)
+    normalized_requested = tuple(dict.fromkeys(requested_ids))
+    unexpected_ids = deleted_id_set - set(normalized_requested)
+    if unexpected_ids:
+        raise RuntimeError("hard delete result included an unrequested identity")
+    skipped_ids = tuple(
+        memory_id
+        for memory_id in normalized_requested
+        if memory_id not in deleted_id_set
+    )
+    deleted_count = int(result.get("deleted") or 0)
+    if deleted_count != len(deleted_ids):
+        raise RuntimeError(
+            "hard delete result count/identity mismatch: "
+            f"deleted={deleted_count}, ids={len(deleted_ids)}"
+        )
+    vector_pending = bool(result.get("vector_pending"))
+    companion_erasure_pending = bool(
+        vector_pending or result.get("companion_erasure_pending")
+    )
+    vector_outbox_keys = tuple(
+        dict.fromkeys(
+            str(event_key).strip()
+            for event_key in (result.get("vector_outbox_keys") or [])
+            if str(event_key).strip()
+        )
+    )
+    return DeleteMemoriesResult(
+        requested_ids=normalized_requested,
+        deleted_ids=deleted_ids,
+        skipped_ids=skipped_ids,
+        deleted_count=deleted_count,
+        vector_pending=vector_pending,
+        companion_erasure_pending=companion_erasure_pending,
+        data_retained=bool(skipped_ids or companion_erasure_pending),
+        mutation_applied=deleted_count > 0,
+        vector_outbox_keys=vector_outbox_keys,
+    )
+
+
+def delete_memories_result(
     provider: Any,
     ids: list[str],
     *,
     transaction_conn: Any | None = None,
-) -> int:
-    requested_ids = [str(memory_id) for memory_id in ids if str(memory_id).strip()]
+) -> DeleteMemoriesResult:
+    requested_ids = list(
+        dict.fromkeys(
+            str(memory_id).strip()
+            for memory_id in ids
+            if str(memory_id).strip()
+        )
+    )
     if not requested_ids:
-        return 0
+        return _delete_memories_result([], {"deleted": 0, "ids": []})
     if transaction_conn is not None:
-        require_vector_delete = vector_delete_intent_required(_write_target(provider))
+        require_vector_delete = vector_delete_intent_required(provider)
         result = hard_delete_memories(
             transaction_conn,
             memory_ids=requested_ids,
@@ -1057,19 +1120,34 @@ def delete_memories(
             require_vector_delete=require_vector_delete,
             actor="scope-recall-memory-ops",
             reason="atomic memory merge source delete",
-            event_type="scope_recall_merge_source_delete",
+            operation_id=HARD_DELETE_MERGE_SOURCE,
             batch_id=f"merge_delete_{uuid.uuid4().hex}",
             commit=False,
         )
-        return int(result["deleted"])
+        return _delete_memories_result(requested_ids, result)
     result = _hard_delete_provider_memories(
         provider,
         requested_ids,
         scope_ids=_domain_writable_scope_ids(provider),
         reason="explicit memory hard delete",
-        event_type="scope_recall_hard_delete",
+        operation_id=HARD_DELETE_EXPLICIT,
     )
-    return int(result["deleted"])
+    return _delete_memories_result(requested_ids, result)
+
+
+def delete_memories(
+    provider: Any,
+    ids: list[str],
+    *,
+    transaction_conn: Any | None = None,
+) -> int:
+    """Legacy count-only wrapper retained through the 2.0.x window."""
+
+    return delete_memories_result(
+        provider,
+        ids,
+        transaction_conn=transaction_conn,
+    ).deleted_count
 
 
 def _hard_delete_provider_memories(
@@ -1078,18 +1156,81 @@ def _hard_delete_provider_memories(
     *,
     scope_ids: list[str] | None,
     reason: str,
-    event_type: str,
+    operation_id: str,
 ) -> dict[str, Any]:
     """Commit hard-delete truth plus outbox and expose companion status."""
 
-    with capture_mutation_barrier(_write_target(provider)):
+    with capture_mutation_barrier(provider):
         return _hard_delete_provider_memories_after_capture_flush(
             provider,
             ids,
             scope_ids=scope_ids,
             reason=reason,
-            event_type=event_type,
+            operation_id=operation_id,
         )
+
+
+def _exact_vector_completion_payload(
+    provider: Any,
+    event_keys: list[str] | tuple[str, ...],
+) -> dict[str, Any]:
+    """Return fail-closed completion state for one exact causal event set."""
+
+    resolved_keys = list(
+        dict.fromkeys(
+            str(event_key).strip()
+            for event_key in event_keys
+            if str(event_key).strip()
+        )
+    )
+    if not resolved_keys:
+        return {
+            "vector_replay": {"claimed": 0, "completed": 0, "failed": 0},
+            "vector_outbox_status_counts": {},
+            "vector_outbox_event_ids": [],
+            "vector_status": "not_required",
+            "vector_pending": False,
+            "vector_error": "",
+        }
+    try:
+        completion = replay_and_classify_exact_vector_intents(provider, resolved_keys)
+    except Exception as exc:
+        safe_error = sanitize_report_text(str(exc))
+        mark_vector_replay_degraded(provider, safe_error)
+        return {
+            "vector_replay": {
+                "claimed": 0,
+                "completed": 0,
+                "failed": 1,
+                "pending": True,
+                "error": safe_error,
+            },
+            "vector_outbox_status_counts": {"unresolved": len(resolved_keys)},
+            "vector_outbox_event_ids": [],
+            "vector_status": "pending",
+            "vector_pending": True,
+            "vector_error": safe_error,
+        }
+    vector_pending = not bool(completion.get("all_completed"))
+    vector_error = ""
+    if vector_pending:
+        vector_error = sanitize_report_text(
+            str(_command_vector_status(provider).get("message") or "")
+        )
+        if not vector_error and int(completion.get("missing") or 0):
+            vector_error = "exact vector outbox intent is missing"
+        elif not vector_error and int(completion.get("dead_letter") or 0):
+            vector_error = "exact vector outbox intent reached dead-letter status"
+    return {
+        "vector_replay": dict(completion.get("replay") or {}),
+        "vector_outbox_status_counts": dict(
+            completion.get("status_counts") or {}
+        ),
+        "vector_outbox_event_ids": list(completion.get("event_ids") or []),
+        "vector_status": "pending" if vector_pending else "completed",
+        "vector_pending": vector_pending,
+        "vector_error": vector_error,
+    }
 
 
 def _hard_delete_provider_memories_after_capture_flush(
@@ -1098,12 +1239,12 @@ def _hard_delete_provider_memories_after_capture_flush(
     *,
     scope_ids: list[str] | None,
     reason: str,
-    event_type: str,
+    operation_id: str,
 ) -> dict[str, Any]:
     """Perform hard delete while the caller excludes new capture enqueue."""
 
     with _command_lock(provider):
-        require_vector_delete = vector_delete_intent_required(_write_target(provider))
+        require_vector_delete = vector_delete_intent_required(provider)
 
         result = hard_delete_memories(
             _command_conn(provider),
@@ -1113,24 +1254,24 @@ def _hard_delete_provider_memories_after_capture_flush(
             require_vector_delete=require_vector_delete,
             actor="scope-recall-memory-ops",
             reason=reason,
-            event_type=event_type,
+            operation_id=operation_id,
             batch_id=f"hard_delete_{uuid.uuid4().hex}",
         )
-    replay_result = (
-        replay_vector_outbox(_write_target(provider))
-        if require_vector_delete
-        else {"claimed": 0, "completed": 0, "failed": 0}
+    event_keys = tuple(
+        str(event_key).strip()
+        for event_key in result.get("vector_outbox_keys", [])
+        if str(event_key).strip()
     )
-    result["vector_replay"] = replay_result
-    if int(replay_result.get("failed") or 0) > 0:
-        result["vector_status"] = "pending"
-        result["vector_pending"] = True
-        result["vector_error"] = sanitize_report_text(
-            str(_command_vector_status(provider).get("message") or "vector delete replay failed")
+    result.update(_exact_vector_completion_payload(provider, event_keys))
+    requested_count = len(set(str(memory_id) for memory_id in ids if str(memory_id)))
+    result.update(
+        retention_response_contract(
+            mode="hard_delete",
+            data_retained=int(result.get("deleted") or 0) < requested_count,
+            mutation_applied=int(result.get("deleted") or 0) > 0,
+            companion_erasure_pending=bool(result.get("vector_pending")),
         )
-    elif int(replay_result.get("completed") or 0) >= int(result.get("outbox_enqueued") or 0):
-        result["vector_status"] = "completed" if require_vector_delete else "not_required"
-        result["vector_pending"] = False
+    )
     return result
 
 
@@ -1171,18 +1312,25 @@ def _archive_memories_truth(
         "deleted": 0,
         "ids": [],
         "skipped": requested_ids,
+        "outbox_enqueued": 0,
+        "vector_outbox_keys": [],
         "batch_id": batch,
         "receipt": {
             "action": "soft_archive",
             "batch_id": batch,
             "restore_path": f"python3 scripts/governance.cleanup.py --rollback-batch --batch-id {batch} --apply",
         },
+        **retention_response_contract(
+            mode="archive",
+            data_retained=True,
+            mutation_applied=False,
+        ),
     }
     if not requested_ids:
         return payload
     now = datetime.now(timezone.utc).isoformat()
     try:
-        with MemoryMutationService(_write_target(provider)).transaction() as conn:
+        with MemoryMutationService(provider).transaction() as conn:
             scope_params = _domain_writable_scope_ids(provider)
             rows: list[Any] = []
             for id_chunk in chunked_sql_parameters(
@@ -1234,12 +1382,13 @@ def _archive_memories_truth(
                 MemoryMutationService.abort(conn)
                 return payload
             archived_ids: list[str] = []
+            vector_outbox_keys: list[str] = []
             for row in rows:
                 memory_id = str(row["id"])
                 metadata = load_metadata(row["metadata"])
                 if str(metadata.get("lifecycle") or "").strip().lower() == "archived":
                     continue
-                transition_memory_lifecycle(
+                transition = transition_memory_lifecycle(
                     conn,
                     memory_id=memory_id,
                     lifecycle="archived",
@@ -1256,12 +1405,16 @@ def _archive_memories_truth(
                     expected_updated_at=str(row["updated_at"] or ""),
                     actor=actor or "scope_recall_forget",
                     reason=reason or "scope_recall_forget",
-                    event_type="scope_recall_forget",
-                    action="soft_archive",
+                    operation_id=SCOPE_FORGET_ARCHIVE,
                     batch_id=batch,
                     timestamp=now,
                 )
                 archived_ids.append(memory_id)
+                vector_outbox_key = str(
+                    transition.get("vector_outbox_key") or ""
+                ).strip()
+                if transition.get("outbox_enqueued") and vector_outbox_key:
+                    vector_outbox_keys.append(vector_outbox_key)
     except Exception as exc:
         safe_error = sanitize_report_text(str(exc))
         payload["archived"] = 0
@@ -1277,7 +1430,10 @@ def _archive_memories_truth(
         )
         return payload
     payload["archived"] = len(archived_ids)
+    payload["mutation_applied"] = bool(archived_ids)
     payload["ids"] = archived_ids
+    payload["vector_outbox_keys"] = vector_outbox_keys
+    payload["outbox_enqueued"] = len(vector_outbox_keys)
     archived_id_set = set(archived_ids)
     payload["skipped"] = [
         memory_id for memory_id in requested_ids if memory_id not in archived_id_set
@@ -1301,7 +1457,7 @@ def archive_memories(
 ) -> dict[str, Any]:
     """Soft-archive memories, then replay companion intent outside truth lock."""
 
-    with capture_mutation_barrier(_write_target(provider)):
+    with capture_mutation_barrier(provider):
         return _archive_memories_after_capture_flush(
             provider,
             ids,
@@ -1330,17 +1486,37 @@ def _archive_memories_after_capture_flush(
     )
     if not payload.get("ids"):
         return payload
-    try:
-        payload["vector_replay"] = replay_vector_outbox(_write_target(provider))
-    except Exception as exc:
-        safe_error = sanitize_report_text(str(exc))
-        mark_vector_needs_repair(_write_target(provider), safe_error)
-        payload["vector_replay"] = {
-            "completed": 0,
-            "failed": 1,
-            "pending": True,
-            "error": safe_error,
-        }
+    event_keys = [
+        str(event_key)
+        for event_key in payload.get("vector_outbox_keys", [])
+        if str(event_key).strip()
+    ]
+    if not event_keys:
+        payload["vector_replay"] = {"claimed": 0, "completed": 0, "failed": 0}
+        payload["vector_status"] = "not_required"
+        payload["vector_pending"] = False
+        payload.update(
+            retention_response_contract(
+                mode="archive",
+                data_retained=True,
+                mutation_applied=bool(payload.get("ids")),
+                companion_erasure_pending=False,
+            )
+        )
+        return payload
+    vector_completion = _exact_vector_completion_payload(provider, event_keys)
+    payload.update(vector_completion)
+    vector_pending = bool(vector_completion.get("vector_pending"))
+    payload["vector_pending"] = vector_pending
+    payload["vector_status"] = "pending" if vector_pending else "completed"
+    payload.update(
+        retention_response_contract(
+            mode="archive",
+            data_retained=True,
+            mutation_applied=bool(payload.get("ids")),
+            companion_erasure_pending=vector_pending,
+        )
+    )
     return payload
 
 
@@ -1368,7 +1544,7 @@ def dedupe_memories(provider: Any, *, dry_run: bool = True, scope_only: bool = T
         delete_ids,
         scope_ids=_domain_writable_scope_ids(provider) if scope_only else None,
         reason="exact duplicate cleanup",
-        event_type="memory_dedupe_hard_delete",
+        operation_id=HARD_DELETE_DEDUPE,
     )
     payload.update(
         {
@@ -1383,7 +1559,7 @@ def dedupe_memories(provider: Any, *, dry_run: bool = True, scope_only: bool = T
 
 
 def repair_vector(provider: Any) -> dict[str, Any]:
-    target = _write_target(provider)
+    target = provider
     setup_vector_layer(target)
     return {
         "repaired": _command_vector_status(provider).get("status") == "ready",
@@ -1408,7 +1584,7 @@ def feedback_memory(
             "id": memory_id,
         }
 
-    with MemoryMutationService(_write_target(provider)).transaction() as conn:
+    with MemoryMutationService(provider).transaction() as conn:
         row = conn.execute(
             f"SELECT * FROM memories WHERE id = ? AND scope_id IN ({_domain_writable_placeholders(provider)})",
             [memory_id, *_domain_writable_scope_ids(provider)],

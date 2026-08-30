@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib
 import importlib.util
 import json
 import math
@@ -35,18 +34,27 @@ MAX_SECOND_START_SECONDS_BY_SIZE = {
 def _bootstrap_source_package() -> None:
     """Prefer this checkout even when an older scope_recall is installed."""
 
-    if str(ROOT.parent) not in sys.path:
-        sys.path.insert(0, str(ROOT.parent))
-    try:
-        importlib.import_module("scope_recall.fact_repository")
-        return
-    except ImportError:
-        for name in list(sys.modules):
-            if name == "scope_recall" or name.startswith("scope_recall."):
-                sys.modules.pop(name, None)
+    source_init = (ROOT / "__init__.py").resolve()
+    loaded_package = sys.modules.get("scope_recall")
+    loaded_file = getattr(loaded_package, "__file__", None)
+    if loaded_file is not None:
+        try:
+            if Path(loaded_file).resolve() == source_init:
+                return
+        except OSError:
+            pass
+    for loaded_path in getattr(loaded_package, "__path__", ()):
+        try:
+            if Path(loaded_path).resolve() == ROOT.resolve():
+                return
+        except OSError:
+            pass
+    for name in list(sys.modules):
+        if name == "scope_recall" or name.startswith("scope_recall."):
+            sys.modules.pop(name, None)
     spec = importlib.util.spec_from_file_location(
         "scope_recall",
-        ROOT / "__init__.py",
+        source_init,
         submodule_search_locations=[str(ROOT)],
     )
     if spec is None or spec.loader is None:
@@ -250,6 +258,10 @@ def _build_fixture(path: Path, rows: int) -> tuple[sqlite3.Connection, dict[str,
         ),
     )
     conn.commit()
+    # The fixture writes truth rows directly, bypassing the ordinary mutation
+    # path that synchronizes additive companion state.  Complete that fixture
+    # migration before measuring a subsequent, already-current startup.
+    ensure_schema(conn)
     build_seconds = time.perf_counter() - started
     second_start_changes_before = conn.total_changes
     second_start_started = time.perf_counter()
@@ -258,11 +270,13 @@ def _build_fixture(path: Path, rows: int) -> tuple[sqlite3.Connection, dict[str,
     second_start_write_delta = conn.total_changes - second_start_changes_before
     second_start_budget = MAX_SECOND_START_SECONDS_BY_SIZE.get(rows, 5.0)
     if second_start_write_delta != 0:
+        conn.close()
         raise AssertionError(
             "complete temporal DB second-start unexpectedly wrote "
             f"{second_start_write_delta} rows"
         )
     if second_start_seconds > second_start_budget:
+        conn.close()
         raise AssertionError(
             "complete temporal DB second-start exceeded budget: "
             f"{second_start_seconds:.4f}s > {second_start_budget:.4f}s"
@@ -473,7 +487,7 @@ def run_benchmark(*, sizes: tuple[int, ...], rounds: int) -> dict[str, Any]:
         scenarios = [_scenario(root, rows, rounds=rounds) for rows in sizes]
         return {
             "schema_version": "scope-recall.temporal-scale.v2",
-            "candidate_version": "1.10.5",
+            "candidate_version": "2.0.0",
             "live_database_used": False,
             "sizes": list(sizes),
             "rounds_per_query": rounds,

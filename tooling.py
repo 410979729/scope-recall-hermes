@@ -8,11 +8,12 @@ import json
 import logging
 import sqlite3
 from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError, version
+from threading import Lock
 from typing import Any, Callable
 
 from tools.registry import tool_error  # type: ignore[reportMissingImports]
 
-from .capture import capture_mutation_barrier
 from .capture_filters import (
     CaptureFilterResult,
     sanitize_report_text,
@@ -30,14 +31,14 @@ from .schemas import (
     MAX_MEMORY_IDS_PER_REQUEST,
 )
 from .tool_validation import validate_tool_arguments
-from .experience_preflight import experience_preflight
-from .experience_promotion import promote_experiences
-from .experience_store import (
+from ._internal.experience.tool_api import (
     create_playbook,
+    experience_preflight,
     experience_stats,
     find_duplicate_playbooks,
     inspect_playbook,
     merge_playbooks,
+    promote_experiences,
     record_playbook_feedback,
     review_playbook,
     search_playbooks,
@@ -51,6 +52,10 @@ from .fact_tooling import (
 from .forgetting import build_forgetting_report, run_forgetting
 from .secret_index import build_secret_index
 from .temporal_query import query_fact_views
+from .tool_profiles import normalize_tool_profile, schema_budget
+from .provider_schemas import build_tool_schemas
+from .response_schemas import retention_response_contract
+from ._internal.contracts.tool_runtime_spec import tool_spec_by_name
 from ._internal.runtime.tool_port import bind_tool_runtime_port
 
 logger = logging.getLogger(__name__)
@@ -65,6 +70,12 @@ TOOL_ALIASES = {
     "lancepro_search": "scope_recall_search",
     "lancepro_stats": "scope_recall_stats",
 }
+
+_TOOL_SPECS_BY_NAME = tool_spec_by_name()
+try:
+    _TOOL_GOVERNANCE_VERSION = version("hermes-scope-recall")
+except PackageNotFoundError:  # pragma: no cover - unpacked source fallback
+    _TOOL_GOVERNANCE_VERSION = "source"
 
 
 class _MemoryIdsArgumentError(ValueError):
@@ -83,6 +94,8 @@ class ScopeRecallToolService:
 
     def __init__(self, provider: Any) -> None:
         self._port = bind_tool_runtime_port(provider)
+        self._tool_usage_lock = Lock()
+        self._tool_usage: dict[str, dict[str, Any]] = {}
 
     def normalize_tool_name(self, tool_name: str) -> str:
         return TOOL_ALIASES.get(tool_name, tool_name)
@@ -96,6 +109,7 @@ class ScopeRecallToolService:
             "scope_recall_stats",
             "scope_recall_inspect",
             "scope_recall_explain",
+            "scope_recall_inspector",
             "scope_recall_related",
             "scope_recall_entity",
             "scope_recall_probe",
@@ -127,23 +141,36 @@ class ScopeRecallToolService:
         if tool_name == "scope_recall_memory":
             action = str((args or {}).get("action") or "").strip().lower()
             action = action.replace("-", "_")
-            aliases = {"rate": "feedback", "delete": "forget", "remove": "forget", "get": "inspect"}
+            aliases = {
+                "rate": "feedback",
+                "delete": "forget",
+                "remove": "forget",
+                "get": "inspect",
+            }
             return aliases.get(action, action) == "inspect"
         if tool_name == "scope_recall_reflect":
             return not self._bool_arg(args or {}, "propose_memory", False)
         if tool_name == "scope_recall_experience_preflight":
             return not self._bool_arg(args or {}, "record_run", False)
+        if tool_name in {"scope_recall_govern", "scope_recall_dedupe"}:
+            return self._bool_arg(args or {}, "dry_run", True)
+        if tool_name == "scope_recall_evolve":
+            return self._bool_arg(args or {}, "dry_run", True)
+        if tool_name == "scope_recall_purge":
+            action = str((args or {}).get("action") or "").strip().lower()
+            return action.replace("-", "_") in {"plan", "status"}
         return False
 
-    def _capture_barrier_required(
-        self, tool_name: str, args: dict[str, Any]
-    ) -> bool:
+    def _capture_barrier_required(self, tool_name: str, args: dict[str, Any]) -> bool:
         if tool_name in {"scope_recall_forget", "scope_recall_merge"}:
             return True
         if tool_name == "scope_recall_dedupe":
             return not self._bool_arg(args, "dry_run", True)
         if tool_name == "scope_recall_forgetting_run":
             return not self._bool_arg(args, "dry_run", True)
+        if tool_name == "scope_recall_purge":
+            action = str((args or {}).get("action") or "").strip().lower()
+            return action.replace("-", "_") in {"deny", "erase"}
         if tool_name != "scope_recall_memory":
             return False
         action = str((args or {}).get("action") or "").strip().lower()
@@ -175,6 +202,7 @@ class ScopeRecallToolService:
             "scope_recall_stats": self._handle_stats,
             "scope_recall_inspect": self._handle_inspect,
             "scope_recall_explain": self._handle_explain,
+            "scope_recall_inspector": self._handle_recall_inspector,
             "scope_recall_benchmark": self._handle_benchmark,
             "scope_recall_fact": self._handle_fact,
             "scope_recall_evolve": self._handle_evolve,
@@ -189,22 +217,69 @@ class ScopeRecallToolService:
             "scope_recall_experience_promote": self._handle_experience_promote,
             "scope_recall_forgetting_report": self._handle_forgetting_report,
             "scope_recall_forgetting_run": self._handle_forgetting_run,
+            "scope_recall_purge": self._handle_purge,
         }
         handler = handlers.get(normalized)
         if self._reader_tool_allowed(normalized, payload):
-            return self._invoke_handler(tool_name, normalized, handler, payload)
-        if self._capture_barrier_required(normalized, payload):
-            with capture_mutation_barrier(self._port.evidence_runtime()):
-                with self._port.writer_lifecycle_lock():
-                    if not self._port.has_positive_write_authority():
-                        return self._truth_write_blocked_error(normalized)
-                    return self._invoke_handler(
+            response = self._invoke_handler(tool_name, normalized, handler, payload)
+        else:
+            with self._port.write_access(
+                capture_barrier=self._capture_barrier_required(normalized, payload)
+            ) as write_allowed:
+                if not write_allowed:
+                    response = self._truth_write_blocked_error(normalized)
+                else:
+                    response = self._invoke_handler(
                         tool_name, normalized, handler, payload
                     )
-        with self._port.writer_lifecycle_lock():
-            if not self._port.has_positive_write_authority():
-                return self._truth_write_blocked_error(normalized)
-            return self._invoke_handler(tool_name, normalized, handler, payload)
+        self._record_tool_call(tool_name, normalized, response)
+        return response
+
+    def _record_tool_call(
+        self, original_name: str, normalized_name: str, response: str
+    ) -> None:
+        """Record bounded governance counters without args, output, or user data."""
+
+        known = normalized_name in _TOOL_SPECS_BY_NAME
+        key = normalized_name if known else "unknown"
+        try:
+            decoded = json.loads(response)
+        except (TypeError, ValueError):
+            decoded = None
+        failed = isinstance(decoded, dict) and bool(decoded.get("error"))
+        spec = _TOOL_SPECS_BY_NAME.get(normalized_name)
+        maintenance_dependency = bool(
+            spec is not None and "maintenance" in str(spec.feature_gate or "")
+        )
+        alias_used = known and original_name != normalized_name
+        now = _now_iso()
+        with self._tool_usage_lock:
+            entry = self._tool_usage.setdefault(
+                key,
+                {
+                    "call_count": 0,
+                    "success_count": 0,
+                    "error_count": 0,
+                    "alias_usage_count": 0,
+                    "last_used_version": "",
+                    "last_used_at": "",
+                    "maintenance_dependency": maintenance_dependency,
+                },
+            )
+            entry["call_count"] += 1
+            entry["error_count" if failed else "success_count"] += 1
+            if alias_used:
+                entry["alias_usage_count"] += 1
+            entry["last_used_version"] = _TOOL_GOVERNANCE_VERSION
+            entry["last_used_at"] = now
+
+    def tool_governance_snapshot(self) -> dict[str, dict[str, Any]]:
+        """Return a content-free copy suitable for stats and profile review."""
+
+        with self._tool_usage_lock:
+            return {
+                name: dict(values) for name, values in sorted(self._tool_usage.items())
+            }
 
     def _invoke_handler(
         self,
@@ -454,7 +529,9 @@ class ScopeRecallToolService:
         return "locked" in message or "transaction" in message
 
     def _handle_store_secret_index(self, args: dict[str, Any]) -> str:
-        if not config_bool(self._port.config_view(), "secret_index_tools_enabled", False):
+        if not config_bool(
+            self._port.config_view(), "secret_index_tools_enabled", False
+        ):
             return tool_error(
                 "scope_recall_store_secret_index requires secret_index_tools_enabled=true"
             )
@@ -651,6 +728,13 @@ class ScopeRecallToolService:
         )
 
     def _handle_forget(self, args: dict[str, Any]) -> str:
+        hard_delete_requested = self._bool_arg(args, "hard_delete", False)
+        mode = "hard_delete" if hard_delete_requested else "archive"
+        no_mutation = retention_response_contract(
+            mode=mode,
+            data_retained=True,
+            mutation_applied=False,
+        )
         try:
             ids = self._memory_ids_arg(args)
         except _MemoryIdsArgumentError as exc:
@@ -659,18 +743,19 @@ class ScopeRecallToolService:
                 invalid_arguments=True,
                 field=exc.field,
                 constraint=exc.constraint,
+                **no_mutation,
             )
         if not ids:
             return tool_error(
-                "ids are required for scope_recall_forget; search or inspect first, then pass exact ids"
+                "ids are required for scope_recall_forget; search or inspect first, then pass exact ids",
+                **no_mutation,
             )
-        reason = self._port.clean_text(
-            str(args.get("reason") or "scope_recall_forget")
-        )
-        if self._bool_arg(args, "hard_delete", False):
+        reason = self._port.clean_text(str(args.get("reason") or "scope_recall_forget"))
+        if hard_delete_requested:
             if not self._operator_mode_enabled():
                 return tool_error(
-                    "scope_recall_forget hard_delete requires maintenance_tools_enabled=true"
+                    "scope_recall_forget hard_delete requires maintenance_tools_enabled=true",
+                    **no_mutation,
                 )
             blocked_fact_ids = self._port.fact_owned_memory_ids(ids)
             if blocked_fact_ids:
@@ -689,21 +774,90 @@ class ScopeRecallToolService:
                             "hard_delete_blocked",
                             reason="fact mutation requires structured Fact Evolution/review",
                         ),
+                        **no_mutation,
                     }
                 )
-            deleted = self._port.delete_memories(ids)
+            result = self._port.delete_memories(ids)
             return self._json(
                 {
                     "archived": 0,
-                    "deleted": deleted,
-                    "ids": ids,
+                    "deleted": result.deleted_count,
+                    "ids": list(result.deleted_ids),
+                    "requested_ids": list(result.requested_ids),
+                    "skipped_ids": list(result.skipped_ids),
+                    "vector_pending": result.vector_pending,
                     "hard_delete": True,
                     "receipt": self._receipt("hard_delete", reason=reason),
+                    **retention_response_contract(
+                        mode="hard_delete",
+                        data_retained=result.data_retained,
+                        mutation_applied=result.mutation_applied,
+                        companion_erasure_pending=result.companion_erasure_pending,
+                    ),
                 }
             )
         return self._json(
-            self._port.archive_memories(
-                ids, reason=reason, actor="scope_recall_forget"
+            self._port.archive_memories(ids, reason=reason, actor="scope_recall_forget")
+        )
+
+    def _handle_purge(self, args: dict[str, Any]) -> str:
+        no_mutation = retention_response_contract(
+            mode="privacy_purge",
+            data_retained=True,
+            mutation_applied=False,
+        )
+        if not self._operator_mode_enabled():
+            return tool_error(
+                "scope_recall_purge requires maintenance_tools_enabled=true",
+                **no_mutation,
+            )
+        raw_config = self._port.config_view().get("purge")
+        purge_config = raw_config if isinstance(raw_config, dict) else {}
+        if not config_bool(purge_config, "enabled", True):
+            return tool_error(
+                "privacy purge is disabled by purge.enabled=false",
+                **no_mutation,
+            )
+        action = str(args.get("action") or "").strip().lower().replace("-", "_")
+        if action not in {"plan", "status", "deny", "erase"}:
+            return tool_error(
+                "action must be one of: plan, status, deny, erase",
+                **no_mutation,
+            )
+        try:
+            ids = self._memory_ids_arg(args)
+        except _MemoryIdsArgumentError as exc:
+            return tool_error(
+                str(exc),
+                invalid_arguments=True,
+                field=exc.field,
+                constraint=exc.constraint,
+                **no_mutation,
+            )
+        if action in {"plan", "deny"} and not ids:
+            return tool_error(
+                "exact ids are required for purge plan or deny", **no_mutation
+            )
+        if action in {"status", "erase"} and ids:
+            return tool_error(
+                "ids are not accepted for purge status or erase", **no_mutation
+            )
+        operation_id = str(args.get("operation_id") or "").strip()
+        if action in {"status", "deny", "erase"} and not operation_id:
+            return tool_error(
+                f"operation_id is required for purge {action}", **no_mutation
+            )
+        confirmation = str(args.get("confirmation") or "").strip()
+        if action in {"deny", "erase"} and not confirmation:
+            return tool_error(
+                f"confirmation is required for purge {action}", **no_mutation
+            )
+        return self._json(
+            self._port.purge_memories(
+                action=action,
+                ids=ids,
+                operation_id=operation_id,
+                confirmation=confirmation,
             )
         )
 
@@ -911,11 +1065,11 @@ class ScopeRecallToolService:
             )
         limit = max(1, min(1000, int(args.get("limit") or 200)))
         raw_forgetting = self._port.config_view().get("forgetting")
-        forgetting_config = (
-            raw_forgetting if isinstance(raw_forgetting, dict) else {}
-        )
+        forgetting_config = raw_forgetting if isinstance(raw_forgetting, dict) else {}
         if not config_bool(forgetting_config, "enabled", True):
-            return tool_error("forgetting tools are disabled by forgetting.enabled=false")
+            return tool_error(
+                "forgetting tools are disabled by forgetting.enabled=false"
+            )
         with self._port.query_lock():
             payload = build_forgetting_report(
                 self._port.query_connection(),
@@ -932,11 +1086,11 @@ class ScopeRecallToolService:
             )
         limit = max(1, min(1000, int(args.get("limit") or 200)))
         raw_forgetting = self._port.config_view().get("forgetting")
-        forgetting_config = (
-            raw_forgetting if isinstance(raw_forgetting, dict) else {}
-        )
+        forgetting_config = raw_forgetting if isinstance(raw_forgetting, dict) else {}
         if not config_bool(forgetting_config, "enabled", True):
-            return tool_error("forgetting tools are disabled by forgetting.enabled=false")
+            return tool_error(
+                "forgetting tools are disabled by forgetting.enabled=false"
+            )
         soft_archive = (
             self._bool_arg(args, "soft_archive", True)
             if "soft_archive" in args
@@ -961,7 +1115,15 @@ class ScopeRecallToolService:
 
     def _handle_stats(self, args: dict[str, Any]) -> str:
         del args
-        return self._json(self._port.stats_payload())
+        payload = dict(self._port.stats_payload())
+        config = self._port.config_view()
+        payload["tool_governance"] = {
+            "profile": normalize_tool_profile(config.get("tool_schema_profile")),
+            "schema_budget": schema_budget(build_tool_schemas(config)),
+            "usage": self.tool_governance_snapshot(),
+            "content_free": True,
+        }
+        return self._json(payload)
 
     def _handle_inspect(self, args: dict[str, Any]) -> str:
         memory_id = str(args.get("id") or "").strip()
@@ -979,6 +1141,26 @@ class ScopeRecallToolService:
         if isinstance(payload, dict):
             payload.setdefault("humanized", True)
         return self._json(payload)
+
+    def _handle_recall_inspector(self, args: dict[str, Any]) -> str:
+        query = self._clean_query(args)
+        if not query:
+            return tool_error("query is required")
+        recall_mode = str(args.get("recall_mode") or "advisory").strip().lower()
+        if recall_mode not in {"advisory", "strict"}:
+            return tool_error("recall_mode must be advisory or strict")
+        output_format = str(args.get("format") or "json").strip().lower()
+        if output_format not in {"json", "text"}:
+            return tool_error("format must be json or text")
+        return self._json(
+            self._port.recall_inspector(
+                query=query,
+                limit=self._limit(args),
+                recall_mode=recall_mode,
+                include_content=self._bool_arg(args, "include_content", False),
+                output_format=output_format,
+            )
+        )
 
     def _handle_benchmark(self, args: dict[str, Any]) -> str:
         char_limit = int(self._port.config_value("query_char_limit", 1000))
@@ -1003,9 +1185,7 @@ class ScopeRecallToolService:
             queries = [str(query) for query in raw_queries]
         else:
             queries = []
-        queries = [
-            self._port.normalize_query(query, char_limit) for query in queries
-        ]
+        queries = [self._port.normalize_query(query, char_limit) for query in queries]
         queries = [query for query in queries if query]
         if not queries and not cases:
             return tool_error("queries or cases is required")
@@ -1081,9 +1261,7 @@ class ScopeRecallToolService:
             return tool_error(
                 "scope_recall_evolve requires maintenance_tools_enabled=true"
             )
-        return self._json(
-            execute_maintenance_evolution(self._port, args=args)
-        )
+        return self._json(execute_maintenance_evolution(self._port, args=args))
 
     def _handle_reflect(self, args: dict[str, Any]) -> str:
         return self._json(self._port.run_reflection(args=args))
@@ -1100,7 +1278,11 @@ class ScopeRecallToolService:
         scope = self._port.scope_object()
         if scope is None:
             return []
-        config = self._port.config_view() if isinstance(self._port.config_view(), dict) else {}
+        config = (
+            self._port.config_view()
+            if isinstance(self._port.config_view(), dict)
+            else {}
+        )
         return runtime_accessible_scope_ids(scope, config)
 
     def _experience_enabled(self) -> bool:
@@ -1396,9 +1578,7 @@ class ScopeRecallToolService:
 
     def _retrieval_limit(self, args: dict[str, Any]) -> int:
         if args.get("limit") is None:
-            default_limit = (self._port.retrieval_config_view() or {}).get(
-                "top_k"
-            ) or 5
+            default_limit = (self._port.retrieval_config_view() or {}).get("top_k") or 5
         else:
             default_limit = args.get("limit")
         return max(1, min(50, int(default_limit or 5)))
@@ -1507,9 +1687,7 @@ class ScopeRecallToolService:
             "evidence_rrf_score": self._rounded_metadata(
                 metadata, "evidence_rrf_score"
             ),
-            "evidence_query_hits": int(
-                metadata.get("evidence_query_hits") or 0
-            ),
+            "evidence_query_hits": int(metadata.get("evidence_query_hits") or 0),
             "evidence_query_ranks": metadata.get("evidence_query_ranks")
             if isinstance(metadata.get("evidence_query_ranks"), dict)
             else {},

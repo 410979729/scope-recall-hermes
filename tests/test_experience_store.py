@@ -1719,15 +1719,15 @@ def test_playbooks_apply_receipt_publish_failure_leaves_repairable_debt(
     cli = _load_playbooks_cli()
     db_path = tmp_path / "memory.sqlite3"
     _create_legacy_playbook_db(db_path)
-    mirror_os = cli.mirror_operator_receipt.__globals__["os"]
-    original_link = mirror_os.link
+    mirror_globals = cli.mirror_operator_receipt.__globals__
+    original_publish = mirror_globals["_publish_receipt_link"]
 
     def fail_receipt_link(source: Path, destination: Path) -> None:
         if Path(destination).parent.name == "receipts":
             raise OSError("injected receipt publish failure")
-        original_link(source, destination)
+        original_publish(source, destination)
 
-    monkeypatch.setattr(mirror_os, "link", fail_receipt_link)
+    monkeypatch.setitem(mirror_globals, "_publish_receipt_link", fail_receipt_link)
     payload = cli.build_payload(_playbook_apply_args(cli, db_path))
 
     assert payload["ok"] is True
@@ -1737,7 +1737,7 @@ def test_playbooks_apply_receipt_publish_failure_leaves_repairable_debt(
     assert not list((tmp_path / "receipts").glob("*.tmp"))
     assert not list((tmp_path / "receipts").glob("*.json"))
 
-    monkeypatch.setattr(mirror_os, "link", original_link)
+    monkeypatch.setitem(mirror_globals, "_publish_receipt_link", original_publish)
     repair = cli.build_payload(
         cli.parse_args(["receipts", "--db", str(db_path), "--apply"])
     )

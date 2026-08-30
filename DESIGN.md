@@ -325,7 +325,7 @@ The configured vector companion layer syncs incrementally from SQLite truth on i
 - unchanged rows are left alone
 - after sync, stats record physical row count, unique id count, and duplicate extra rows
 
-If vector companion delete/upsert fails, SQLite remains authoritative and the provider marks vector state as `needs_repair`; the truth-row write is not reported as lost.
+If vector companion delete/upsert replay fails while the durable outbox intent remains retryable, SQLite remains authoritative and the provider marks vector state as `degraded`; the truth-row write is not reported as lost. Dead-letter debt, audit mismatch, duplicate physical rows, unreadable storage, or incompatible generation marks `needs_repair`. The public contract separates the four-state `state` (`ready`, `degraded`, `needs_repair`, `disabled`) from `reason_code` and also exposes `auto_recoverable`, `repair_required`, `usable_for_query`, `message`, and aggregate `debt_counts`.
 
 Full rebuild is no longer the default init path. For deep maintenance or release-grade storage hygiene, run `scripts/repair.vector_index.py` to rebuild the configured vector companion from SQLite truth with an automatic backup.
 

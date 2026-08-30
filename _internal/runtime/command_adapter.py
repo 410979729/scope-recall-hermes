@@ -1,176 +1,194 @@
-"""Concrete MemoryCommandPort. Distinct from Provider and the query adapter."""
+"""Compatibility gateway from application commands to the legacy runtime."""
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, cast
 
-from .ports import MemoryCommandPort
+from ..application.memory_commands import (
+    ArchiveMemoriesRequest,
+    DedupeMemoriesRequest,
+    DeleteMemoriesRequest,
+    DeleteMemoriesResult,
+    FactOwnedMemoryIdsRequest,
+    FeedbackMemoryRequest,
+    GovernMemoriesRequest,
+    MemoryCommandGateway,
+    MergeMemoriesRequest,
+    PrivacyPurgeRequest,
+    StoreMemoryRequest,
+    UpdateMemoryRequest,
+)
+from ... import memory_ops, write_kernel
 
 
-def _call(host: Any, name: str, *args: Any, **kwargs: Any) -> Any:
-    fn = getattr(host, name, None)
+def _rollback_after_error(host: Any, context: str) -> None:
+    fn = getattr(host, "rollback_conn_after_error", None)
     if not callable(fn):
-        raise AttributeError(name)
-    return fn(*args, **kwargs)
+        fn = getattr(host, "_rollback_conn_after_error", None)
+    if callable(fn):
+        fn(context)
 
 
-def _optional_mapping(host: Any, name: str) -> dict[str, Any]:
-    fn = getattr(host, name, None)
-    if not callable(fn):
-        return {}
-    payload = fn()
-    return dict(payload) if isinstance(payload, Mapping) else {}
+def _store_operation(host: Any) -> Any:
+    bound = getattr(host, "_store_now", None)
+    function = getattr(bound, "__func__", bound)
+    namespace = getattr(function, "__globals__", {})
+    candidate = namespace.get("store_memory_now") if isinstance(namespace, dict) else None
+    return candidate if callable(candidate) else memory_ops.store_memory_now
 
 
 class ProviderCommandAdapter:
-    """Command-port identity for RuntimeComposition.command_port.
-
-    This object is not the Hermes Provider, not the query adapter, and not the
-    tool port. CommandKernel talks to declared methods here. Domain modules that
-    still need the Provider-shaped object use write_target(). Command methods
-    forward to the host public wrappers so CommandKernel never has to unwrap.
-    """
+    """Infrastructure gateway; Provider-shaped access is confined here."""
 
     def __init__(self, host: Any) -> None:
         self._host = host
 
-    def write_target(self) -> object:
-        return self._host
+    def store(self, request: StoreMemoryRequest) -> tuple[str, bool, str]:
+        operation = _store_operation(self._host)
+        with write_kernel.command_write_access(self._host, user_initiated=True):
+            try:
+                return operation(
+                    self._host,
+                    content=request.content,
+                    source=request.source,
+                    target=request.target,
+                    session_id=request.session_id,
+                    metadata=request.metadata,
+                    allow_duplicate=request.allow_duplicate,
+                    semantic_merge=request.semantic_merge,
+                    scope_mode=request.scope_mode,
+                )
+            except Exception:
+                _rollback_after_error(self._host, "store_now")
+                raise
 
-    def query_connection(self) -> Any:
-        return _call(self._host, "query_connection")
+    def update(self, request: UpdateMemoryRequest) -> tuple[bool, str, str]:
+        with write_kernel.command_write_access(self._host, user_initiated=True):
+            return memory_ops.update_memory(
+                self._host, request.memory_id, request.content, request.target
+            )
 
-    def query_lock(self) -> Any:
-        return _call(self._host, "query_lock")
+    def merge(self, request: MergeMemoriesRequest) -> dict[str, object]:
+        with write_kernel.command_write_access(
+            self._host, capture_barrier=True, user_initiated=True
+        ):
+            return cast(
+                dict[str, object],
+                memory_ops.merge_memories(
+                    self._host,
+                    request.target_id,
+                    list(request.source_ids),
+                    request.content,
+                    request.target,
+                ),
+            )
 
-    def rollback_conn_after_error(self, context: str) -> None:
-        _call(self._host, "rollback_conn_after_error", context)
+    def archive(self, request: ArchiveMemoriesRequest) -> dict[str, object]:
+        with write_kernel.command_write_access(
+            self._host, capture_barrier=True, user_initiated=True
+        ):
+            return cast(
+                dict[str, object],
+                memory_ops.archive_memories(
+                    self._host,
+                    list(request.ids),
+                    reason=request.reason,
+                    actor=request.actor,
+                    batch_id=request.batch_id,
+                ),
+            )
 
-    def store_now(
-        self,
-        *,
-        content: str,
-        source: str,
-        target: str,
-        session_id: str,
-        metadata: dict[str, object] | None = None,
-        allow_duplicate: bool = False,
-        semantic_merge: bool = False,
-        scope_mode: str | None = None,
-    ) -> tuple[str, bool, str]:
-        return _call(
-            self._host,
-            "store_now",
-            content=content,
-            source=source,
-            target=target,
-            session_id=session_id,
-            metadata=metadata,
-            allow_duplicate=allow_duplicate,
-            semantic_merge=semantic_merge,
-            scope_mode=scope_mode,
-        )
+    def delete(self, request: DeleteMemoriesRequest) -> DeleteMemoriesResult:
+        with write_kernel.command_write_access(
+            self._host, capture_barrier=True, user_initiated=True
+        ):
+            return memory_ops.delete_memories_result(self._host, list(request.ids))
 
-    def command_update_memory(
-        self, memory_id: str, content: str, target: str | None = None
-    ) -> tuple[bool, str, str]:
-        return _call(self._host, "command_update_memory", memory_id, content, target)
+    def feedback(self, request: FeedbackMemoryRequest) -> dict[str, object]:
+        with write_kernel.command_write_access(self._host, user_initiated=True):
+            return cast(
+                dict[str, object],
+                memory_ops.feedback_memory(
+                    self._host,
+                    memory_id=request.memory_id,
+                    rating=request.rating,
+                    note=request.note,
+                ),
+            )
 
-    def command_merge_memories(
-        self,
-        target_id: str,
-        source_ids: list[str],
-        content: str | None = None,
-        target: str | None = None,
-    ) -> dict[str, object]:
-        return _call(self._host, "command_merge_memories", target_id, source_ids, content, target)
+    def govern(self, request: GovernMemoriesRequest) -> dict[str, object]:
+        if request.dry_run:
+            return cast(
+                dict[str, object],
+                memory_ops.govern_memories(
+                    self._host, dry_run=True, scope_only=request.scope_only
+                ),
+            )
+        with write_kernel.command_write_access(self._host, user_initiated=True):
+            return cast(
+                dict[str, object],
+                memory_ops.govern_memories(
+                    self._host, dry_run=False, scope_only=request.scope_only
+                ),
+            )
 
-    def command_archive_memories(
-        self,
-        ids: list[str],
-        *,
-        reason: str = "scope_recall_forget",
-        actor: str = "scope_recall_forget",
-        batch_id: str = "",
-    ) -> dict[str, object]:
-        return _call(
-            self._host,
-            "command_archive_memories",
-            ids,
-            reason=reason,
-            actor=actor,
-            batch_id=batch_id,
-        )
+    def dedupe(self, request: DedupeMemoriesRequest) -> dict[str, object]:
+        if request.dry_run:
+            return cast(
+                dict[str, object],
+                memory_ops.dedupe_memories(
+                    self._host, dry_run=True, scope_only=request.scope_only
+                ),
+            )
+        with write_kernel.command_write_access(
+            self._host, capture_barrier=True, user_initiated=True
+        ):
+            return cast(
+                dict[str, object],
+                memory_ops.dedupe_memories(
+                    self._host, dry_run=False, scope_only=request.scope_only
+                ),
+            )
 
-    def command_delete_memories(self, ids: list[str]) -> int:
-        return int(_call(self._host, "command_delete_memories", ids))
+    def repair(self) -> dict[str, object]:
+        with write_kernel.command_write_access(self._host, user_initiated=True):
+            return cast(dict[str, object], memory_ops.repair_vector(self._host))
 
-    def command_feedback_memory(
-        self, *, memory_id: str, rating: str, note: str = ""
-    ) -> dict[str, object]:
-        return _call(
-            self._host, "command_feedback_memory", memory_id=memory_id, rating=rating, note=note
-        )
+    def fact_owned(self, request: FactOwnedMemoryIdsRequest) -> list[str]:
+        return list(memory_ops.fact_owned_memory_ids(self._host, list(request.ids)))
 
-    def command_govern_memories(
-        self, *, dry_run: bool = True, scope_only: bool = True
-    ) -> dict[str, object]:
-        return _call(self._host, "command_govern_memories", dry_run=dry_run, scope_only=scope_only)
+    def purge(self, request: PrivacyPurgeRequest) -> dict[str, object]:
+        from ...privacy_purge import run_privacy_purge
 
-    def command_dedupe_memories(
-        self, *, dry_run: bool = True, scope_only: bool = True
-    ) -> dict[str, object]:
-        return _call(self._host, "command_dedupe_memories", dry_run=dry_run, scope_only=scope_only)
-
-    def command_repair_vector(self) -> dict[str, object]:
-        return _call(self._host, "command_repair_vector")
-
-    def fact_owned_memory_ids(self, ids: list[str]) -> list[str]:
-        return list(_call(self._host, "fact_owned_memory_ids", ids))
-
-    def clean_text(self, text: object) -> str:
-        return str(_call(self._host, "clean_text", text) or "")
-
-    def config_view(self) -> dict[str, object]:
-        return _optional_mapping(self._host, "config_view")
-
-    def config_value(self, key: str, default: object = None) -> object:
-        fn = getattr(self._host, "config_value", None)
-        if callable(fn):
-            return fn(key, default)
-        return self.config_view().get(key, default)
-
-    def query_scope_view(self) -> Mapping[str, Any]:
-        return _optional_mapping(self._host, "query_scope_view")
-
-    def scope_id(self) -> str:
-        return str(self.query_scope_view().get("scope_id") or "")
-
-    def shared_scope_id(self) -> str:
-        return str(self.query_scope_view().get("shared_scope_id") or "")
-
-    def shared_pool_scope_id(self) -> str:
-        return str(self.query_scope_view().get("shared_pool_scope_id") or "")
-
-    def writable_scope_ids(self) -> list[str]:
-        return [
-            str(item)
-            for item in (self.query_scope_view().get("writable_scope_ids") or [])
-            if str(item)
-        ]
-
-    def vector_status_view(self) -> Mapping[str, Any]:
-        return _optional_mapping(self._host, "vector_status_view")
-
-    def has_positive_write_authority(self) -> bool:
-        return bool(_call(self._host, "has_positive_write_authority"))
-
-    def writer_lifecycle_lock(self) -> object:
-        return _call(self._host, "writer_lifecycle_lock")
+        action = str(request.action or "").strip().lower().replace("-", "_")
+        if action in {"plan", "status"}:
+            return cast(
+                dict[str, object],
+                run_privacy_purge(
+                    self._host,
+                    action=request.action,
+                    ids=request.ids,
+                    operation_id=request.operation_id,
+                    confirmation=request.confirmation,
+                ),
+            )
+        with write_kernel.command_write_access(
+            self._host, capture_barrier=True, user_initiated=True
+        ):
+            return cast(
+                dict[str, object],
+                run_privacy_purge(
+                    self._host,
+                    action=request.action,
+                    ids=request.ids,
+                    operation_id=request.operation_id,
+                    confirmation=request.confirmation,
+                ),
+            )
 
 
-def bind_provider_command_adapter(obj: Any) -> MemoryCommandPort:
-    """Return the unique command adapter for a composition host."""
+def bind_provider_command_adapter(obj: Any) -> MemoryCommandGateway:
+    """Return the infrastructure gateway for a composition host."""
 
     if isinstance(obj, ProviderCommandAdapter):
         return obj

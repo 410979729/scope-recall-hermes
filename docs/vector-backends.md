@@ -10,6 +10,12 @@ Scope Recall keeps SQLite memory rows as the source of truth. Vector stores are 
 
 The alias `sqlite` is normalized to `sqlite-bruteforce`.
 
+## Public health contract
+
+Runtime stats and the combined Doctor vector report expose one four-state contract: `ready`, `degraded`, `needs_repair`, or `disabled`. Detailed conditions are carried by `reason_code`, never by extra state values. The same payload includes `auto_recoverable`, `repair_required`, `usable_for_query`, `message`, and aggregate `debt_counts`.
+
+Retryable durable outbox debt is `degraded`; a safe already-open companion may remain usable while replay catches up. Dead-letter/retry-exhausted work, audit mismatch, duplicate physical rows, unreadable storage, incompatible generation, or other unrecoverable divergence is `needs_repair`. Ordinary recall falls back to SQLite/lexical retrieval whenever vector query use is unsafe. A fresh pending event within the normal replay cycle does not cause state flapping.
+
 ## Generation pinning and fallback
 
 On a fresh setup with no active generation, Scope Recall may use the explicitly configured fallback backend and/or fallback embedder to create a real, empty generation. This lets credential-free installs complete with a companion that can accept the first memory instead of reporting `not_initialized`.

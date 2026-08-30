@@ -15,6 +15,41 @@ from ...sqlite_recovery import is_sqlite_lock_contention
 logger = logging.getLogger(__name__)
 
 
+def _digest_result_mutated_truth(result: dict[str, Any]) -> bool:
+    """Recognize durable digest work without relying on provider pager deltas."""
+
+    if str(result.get("run_id") or "").strip():
+        return True
+    for field in ("processed_entries", "inserted", "updated", "skipped"):
+        try:
+            if int(result.get(field) or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    try:
+        if int(result.get("backlog_delta") or 0) != 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    counts = result.get("counts")
+    if isinstance(counts, dict):
+        for value in counts.values():
+            try:
+                if int(value or 0) > 0:
+                    return True
+            except (TypeError, ValueError):
+                continue
+    return False
+
+
+def _note_digest_truth_activity(provider: Any, result: dict[str, Any]) -> None:
+    if not _digest_result_mutated_truth(result):
+        return
+    from ..runtime.writer_handoff import note_truth_activity
+
+    note_truth_activity(provider)
+
+
 def append_scoped_journal_entries(
     provider: Any,
     entries: list[dict[str, Any]],
@@ -27,34 +62,44 @@ def append_scoped_journal_entries(
 
     if not entries:
         return 0
+    from ...write_kernel import _writer_lifecycle_lock, has_positive_write_authority
+    from ..runtime.writer_handoff import active_truth_work
+
     appended = 0
-    with provider._lock:
-        conn = provider._require_conn()
-        ensure_journal_schema(conn, commit=False)
-        opened = not bool(getattr(conn, "in_transaction", False))
-        if opened:
-            conn.execute("BEGIN IMMEDIATE")
-        try:
-            for entry in entries:
-                inserted = append_journal_entry(
-                    conn,
-                    scope=provider._scope,
-                    scope_id=provider._scope_id,
-                    shared_scope_id=provider._shared_scope_id,
-                    session_id=provider._session_id,
-                    turn_number=int(entry.get("turn_number") or 0),
-                    role=str(entry.get("role") or ""),
-                    content=entry.get("content"),
-                    metadata=entry.get("metadata"),
-                )
-                if inserted:
-                    appended += 1
-            if opened:
-                conn.commit()
-        except Exception:
-            if opened and getattr(conn, "in_transaction", False):
-                conn.rollback()
-            raise
+    # The lifecycle gate is the final authority check for every journal
+    # producer.  Earlier hook checks are advisory only; without this boundary a
+    # handoff could fence/close/release between the check and BEGIN IMMEDIATE.
+    with _writer_lifecycle_lock(provider):
+        if not has_positive_write_authority(provider):
+            return 0
+        with active_truth_work(provider):
+            with provider._lock:
+                conn = provider._require_conn()
+                ensure_journal_schema(conn, commit=False)
+                opened = not bool(getattr(conn, "in_transaction", False))
+                if opened:
+                    conn.execute("BEGIN IMMEDIATE")
+                try:
+                    for entry in entries:
+                        inserted = append_journal_entry(
+                            conn,
+                            scope=provider._scope,
+                            scope_id=provider._scope_id,
+                            shared_scope_id=provider._shared_scope_id,
+                            session_id=provider._session_id,
+                            turn_number=int(entry.get("turn_number") or 0),
+                            role=str(entry.get("role") or ""),
+                            content=entry.get("content"),
+                            metadata=entry.get("metadata"),
+                        )
+                        if inserted:
+                            appended += 1
+                    if opened:
+                        conn.commit()
+                except Exception:
+                    if opened and getattr(conn, "in_transaction", False):
+                        conn.rollback()
+                    raise
     return appended
 
 
@@ -133,6 +178,7 @@ def run_provider_background_journal_digest(
                 )
                 result = run_once()
             last_result = result
+            _note_digest_truth_activity(provider, result)
             ok = bool(result.get("ok", result.get("status") == "ok"))
             status = "ok" if ok else str(result.get("status") or "error")
             error = "" if ok else compact_text(sanitize_report_text(str(result.get("error") or result.get("message") or result)), 240)
@@ -218,6 +264,7 @@ def run_provider_session_end_journal_digest(
             limit_entries=max(1, limit_entries),
             dry_run=False,
         )
+        _note_digest_truth_activity(provider, result)
         if result.get("ok", result.get("status") == "ok"):
             work = getattr(provider, "_background", None)
             if work is not None:

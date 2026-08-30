@@ -52,6 +52,20 @@ def test_copy_fallback_validates_content_identity_not_absolute_path(tmp_path, mo
         assert_same_source(plugin_dir / "provider.py", repo / "provider.py", label="provider.py")
 
 
+def test_explicit_copy_keeps_writable_plugin_tree_inside_fixture(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "provider.py").write_text("MARKER = 'workspace'\n", encoding="utf-8")
+    plugin_dir = tmp_path / "hermes-home" / "plugins" / "scope-recall"
+
+    kind = install_plugin_tree(plugin_dir, repo, force_copy=True)
+
+    assert kind == "copy"
+    assert not plugin_dir.is_symlink()
+    plugin_dir.resolve().relative_to(tmp_path.resolve())
+    assert_same_source(plugin_dir / "provider.py", repo / "provider.py", label="provider.py")
+
+
 def test_force_copy_lane_does_not_claim_symlink_privilege(tmp_path, monkeypatch):
     monkeypatch.setenv(ASSUME_NO_SYMLINK_ENV, "1")
 

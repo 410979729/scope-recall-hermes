@@ -914,7 +914,10 @@ def test_setup_vector_layer_fails_closed_for_manifestless_nonempty_truth(tmp_pat
 
     try:
         assert provider._vector_ready is False
-        assert provider._vector_status == "degraded"
+        assert provider._vector_status == "needs_repair"
+        assert provider._vector_reason_code == "generation_incomplete"
+        assert provider._vector_auto_recoverable is False
+        assert provider._vector_repair_required is True
         assert "explicit_migration_required" in provider._vector_message
         assert provider._vector_store is None
         assert current_generation(provider._conn) is None

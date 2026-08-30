@@ -57,6 +57,39 @@ def test_journal_llm_retry_preserves_journal_call_llm_monkeypatch_and_sanitizati
     assert "/tmp/hermes-secret-output.log" not in message
 
 
+def test_journal_llm_missing_api_key_is_non_retryable_without_sleep(monkeypatch):
+    calls = {"count": 0}
+    sleeps: list[float] = []
+
+    def missing_key(*_args, **_kwargs):
+        calls["count"] += 1
+        # A generic legacy/cross-package hook must classify the same as the
+        # typed production error; Hermes test installs can load both package
+        # identities in one process.
+        raise RuntimeError("API key not found for nightly digest")
+
+    monkeypatch.setattr(journal_module, "call_llm", missing_key)
+    monkeypatch.setattr(journal_llm.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    with pytest.raises(journal_llm.JournalDigestLLMError) as excinfo:
+        journal_llm._call_llm_with_retries(
+            "prompt",
+            model="test-model",
+            base_url="https://api.openai.com",
+            api_key="",
+            timeout=60,
+            api_mode="chat_completions",
+            max_attempts=3,
+            retry_delay=1,
+        )
+
+    assert excinfo.value.attempts == 1
+    assert excinfo.value.error_kind == "auth"
+    assert excinfo.value.retryable is False
+    assert calls["count"] == 1
+    assert sleeps == []
+
+
 def test_journal_llm_passes_explicit_insecure_endpoint_opt_in(monkeypatch):
     captured: dict[str, object] = {}
 

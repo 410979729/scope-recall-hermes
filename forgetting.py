@@ -12,9 +12,14 @@ from typing import Any, Protocol, Sequence
 
 from .capture_filters import contains_secret_like_text, sanitize_report_text, should_capture_text
 from .gating import compact_text
+from .lifecycle_registry import FORGETTING_ARCHIVE, HARD_DELETE_FORGETTING
 from .lifecycle_service import hard_delete_memories, transition_memory_lifecycle
 from .maintenance_ops import json_dumps_stable, make_batch_id, now_utc_iso
-from .response_schemas import FORGETTING_REPORT_SCHEMA_VERSION, FORGETTING_RUN_SCHEMA_VERSION
+from .response_schemas import (
+    FORGETTING_REPORT_SCHEMA_VERSION,
+    FORGETTING_RUN_SCHEMA_VERSION,
+    retention_response_contract,
+)
 from .sql_store import ensure_schema
 
 
@@ -265,8 +270,7 @@ def _archive_memory(
         expected_updated_at=str(row["updated_at"] or ""),
         actor=actor,
         reason=reason,
-        event_type="forgetting",
-        action="soft_archive",
+        operation_id=FORGETTING_ARCHIVE,
         batch_id=batch_id,
         timestamp=at,
     )
@@ -291,6 +295,7 @@ def run_forgetting(
 
     Default behavior is soft archive with rollback evidence; hard delete paths are intentionally explicit because durable memory cleanup must be auditable and reversible where possible."""
     policy = _forgetting_policy(config)
+    requested_mode = "hard_delete" if hard_delete else "archive"
     if not policy["enabled"]:
         return {
             "schema_version": FORGETTING_RUN_SCHEMA_VERSION,
@@ -300,6 +305,11 @@ def run_forgetting(
             "deleted": 0,
             "archive_ids": [],
             "delete_ids": [],
+            **retention_response_contract(
+                mode=requested_mode,
+                data_retained=True,
+                mutation_applied=False,
+            ),
         }
     if not dry_run:
         ensure_schema(conn)
@@ -341,6 +351,11 @@ def run_forgetting(
         "review_debt": len(review_debt_items),
         "archive_ids": [item["id"] for item in soft_items],
         "delete_ids": [item["id"] for item in hard_items],
+        **retention_response_contract(
+            mode=requested_mode,
+            data_retained=True,
+            mutation_applied=False,
+        ),
     }
     if hard_delete_requested and not hard_delete_allowed:
         result["policy_error"] = (
@@ -383,6 +398,13 @@ def run_forgetting(
         result["vector_deleted"] = 0
         result["vector_error"] = vector_error
         result["delete_ids"] = []
+        result.update(
+            retention_response_contract(
+                mode=requested_mode,
+                data_retained=True,
+                mutation_applied=bool(archived),
+            )
+        )
         return result
     deleted = 0
     if deleted_ids:
@@ -395,7 +417,7 @@ def run_forgetting(
                 require_vector_delete=not allow_sql_delete_without_vector,
                 actor=actor,
                 reason="secret-like-content",
-                event_type="forgetting",
+                operation_id=HARD_DELETE_FORGETTING,
                 batch_id=batch,
                 timestamp=now,
             )
@@ -417,4 +439,16 @@ def run_forgetting(
     result["vector_deleted"] = vector_deleted
     if vector_error:
         result["vector_error"] = vector_error
+    result.update(
+        retention_response_contract(
+            mode=requested_mode,
+            data_retained=(
+                bool(archived_ids)
+                or not deleted_ids
+                or deleted < len([item for item in hard_items if item.get("id")])
+            ),
+            mutation_applied=bool(archived or deleted),
+            companion_erasure_pending=bool(result.get("vector_pending")),
+        )
+    )
     return result

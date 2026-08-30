@@ -88,6 +88,8 @@ Owns:
 - assertion creation, evidence linking, and CAS interval closing primitives that do not commit;
 - fact-ownership inspection and the explicit mutation-authority guard used by legacy repositories and lifecycle services;
 - transaction time (`recorded_at` / `retired_at`) and valid time (`valid_from` / `valid_to`);
+- full successor-chain validation before mutation: no self/arbitrary cycle, dangling target, cross-scope/fact edge, or illegal retired target; import/migration callers use this same checker;
+- Claim close CAS over claim ID, expected status/retired state, scope, and fact identity; the only missing-successor exception is the Fact Executor's identity-bound pending successor inside one deferred-FK transaction;
 - read-only `current`, `as_of`, and `history` queries;
 - scope, interval, cardinality, timestamp, and row-to-contract validation.
 
@@ -123,6 +125,7 @@ Owns:
 
 - application of one validated `FactAction` under `BEGIN IMMEDIATE` or a caller-owned savepoint;
 - optimistic preconditions (`expected_updated_at`, expected current assertion, scope/access checks);
+- exact Claim close preconditions (expected Claim IDs, status/retired state, scope, and fact identity) plus the transaction-local pending-successor authority;
 - atomic coordination of temporal assertions, memory lifecycle/metadata, freshness, relations, governance audit, and durable vector outbox intents;
 - idempotency and replay-safe receipts;
 - rollback on any mandatory-surface failure;
@@ -339,7 +342,7 @@ Each implementation batch must include:
 5. current/as-of/history truth-table tests;
 6. scope-isolation and private-artifact scans;
 7. deterministic `benchmark.memory_evolution.py` and `benchmark.reflection.py` thresholds;
-8. read-only `doctor_temporal.py` telemetry for claim coverage, interval/provenance integrity, review debt, recent receipts, and mental-model candidates;
+8. read-only `doctor_temporal.py` telemetry for claim coverage, interval/provenance integrity, recursive successor-chain corruption, review debt, recent receipts, and mental-model candidates;
 9. full pytest, Ruff, Pyright, release checks, golden recall, wheel/sdist scans;
 10. isolated-profile rehearsal before any live replacement.
 

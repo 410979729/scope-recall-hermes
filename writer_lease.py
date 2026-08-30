@@ -9,7 +9,9 @@ processes do not become a second uncoordinated writer.
 Exactly one process per storage directory may hold the OS lease. Later
 provider instances degrade to read-only recall. Same-process peer providers
 share one refcounted OS lock so issue #43 dirty-peer recovery still works.
-The lock is process-lifetime: the kernel releases it on crash or exit.
+The kernel releases the lock on crash or exit; the runtime may also perform a
+coordinated, fail-closed idle handoff after every same-process holder and
+connection pin has quiesced.
 Shared registry state is bound to ``os.getpid()``. A fork child closes
 inherited lock-handle copies without unlinking the parent sidecar and must
 attempt a fresh OS lock instead of joining inherited same-process state.
@@ -23,13 +25,17 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
+import re
 import sys
 import threading
 import types
+import uuid
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, IO, Iterator
+from typing import Any, IO, Iterator, Mapping
 
 try:  # pragma: no cover - exercised on POSIX hosts
     import fcntl as _fcntl
@@ -44,6 +50,44 @@ logger = logging.getLogger(__name__)
 
 TRUTH_WRITER_LEASE_FILENAME = ".truth-writer.lease"
 TRUTH_WRITER_LEASE_INFO_FILENAME = ".truth-writer.lease.info"
+WRITER_HANDOFF_TELEMETRY_FILENAME = ".writer-handoff.telemetry.json"
+WRITER_HANDOFF_TELEMETRY_LOCK_FILENAME = ".writer-handoff.telemetry.lock"
+WRITER_HANDOFF_TELEMETRY_SCHEMA_VERSION = (
+    "scope-recall.writer-handoff-telemetry.v1"
+)
+WRITER_HANDOFF_TELEMETRY_FRESH_SECONDS = 300.0
+WRITER_HANDOFF_OBSERVABILITY_FIELDS = (
+    "writer_role",
+    "writer_lease_scope",
+    "idle_release_enabled",
+    "idle_release_seconds",
+    "last_user_activity_age_seconds",
+    "last_truth_activity_age_seconds",
+    "same_process_holder_count",
+    "connection_pin_count",
+    "demotion_in_progress",
+    "successful_handoff_count",
+    "last_handoff_at",
+    "last_handoff_reason_code",
+    "last_handoff_failure_code",
+    "release_uncertain",
+    "operator_action_required",
+)
+
+_WRITER_HANDOFF_TELEMETRY_MAX_BYTES = 16_384
+_WRITER_HANDOFF_TELEMETRY_ALLOWED_KEYS = frozenset(
+    {
+        "schema_version",
+        "authority_epoch",
+        "event_sequence",
+        "event_kind",
+        "observed_at",
+        "fresh_for_seconds",
+        *WRITER_HANDOFF_OBSERVABILITY_FIELDS,
+    }
+)
+_WRITER_HANDOFF_REASON_RE = re.compile(r"[a-z0-9_]{0,64}\Z")
+_WRITER_HANDOFF_EPOCH_RE = re.compile(r"[0-9a-f]{32}\Z")
 
 ALLOWED_TRUTH_WRITER_ROLES = frozenset(
     {
@@ -84,6 +128,8 @@ def _shared_lock_and_registry() -> tuple[threading.Lock, dict[str, _ProcessLease
     setattr(candidate, "registry", {})
     setattr(candidate, "pid", os.getpid())
     setattr(candidate, "poisoned", False)
+    setattr(candidate, "handoff_states_lock", threading.RLock())
+    setattr(candidate, "handoff_states", {})
     holder = sys.modules.setdefault(_SHARED_STATE_NAME, candidate)
     lock = getattr(holder, "lock", None)
     registry = getattr(holder, "registry", None)
@@ -97,6 +143,10 @@ def _shared_lock_and_registry() -> tuple[threading.Lock, dict[str, _ProcessLease
         setattr(holder, "pid", os.getpid())
     if not hasattr(holder, "poisoned"):
         setattr(holder, "poisoned", False)
+    if not isinstance(getattr(holder, "handoff_states_lock", None), type(threading.RLock())):
+        setattr(holder, "handoff_states_lock", threading.RLock())
+    if not isinstance(getattr(holder, "handoff_states", None), dict):
+        setattr(holder, "handoff_states", {})
     return lock, registry
 
 
@@ -140,6 +190,8 @@ def _reset_inherited_writer_lease_state() -> None:
     setattr(holder, "registry", {})
     setattr(holder, "pid", current_pid)
     setattr(holder, "poisoned", poisoned)
+    setattr(holder, "handoff_states_lock", threading.RLock())
+    setattr(holder, "handoff_states", {})
     _bind_module_shared_state(holder)
 
 
@@ -194,6 +246,93 @@ class _ProcessLeaseState:
         self.handle = handle
         self.holders = 0
         self.connection_pins = 0
+
+
+class _ProcessWriterHandoffState:
+    """Alias-neutral process coordinator state for one canonical truth store."""
+
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.orchestration_lock = threading.Lock()
+        self.state = "READER"
+        self.handoff_fenced = False
+        self.handoff_in_progress = False
+        self.handoff_thread_id = 0
+        self.handoff_generation = 0
+        self.successful_handoff_count = 0
+        self.last_handoff_at = ""
+        self.last_handoff_monotonic = 0.0
+        self.last_handoff_reason_code = ""
+        self.last_handoff_failure_code = ""
+        self.release_uncertain = False
+        self.operator_action_required = False
+        # Advisory telemetry is deliberately separate from writer authority.
+        # One random epoch is shared by all same-process holders. A later OS
+        # owner installs a different epoch so a delayed old reader cannot
+        # overwrite the new owner's persisted snapshot.
+        self.telemetry_authority_epoch = ""
+        self.telemetry_event_sequence = 0
+        self.telemetry_owner_active = False
+        self.telemetry_epoch_published = False
+
+
+def process_writer_handoff_state(storage_dir: Path) -> Any:
+    """Return the process-wide coordinator for one canonical storage identity."""
+
+    _refresh_shared_state()
+    lease_path, _ = _lease_paths(Path(storage_dir))
+    key = _canonical_registry_key(lease_path)
+    holder = sys.modules[_SHARED_STATE_NAME]
+    lock = getattr(holder, "handoff_states_lock")
+    states = getattr(holder, "handoff_states")
+    with lock:
+        state = states.get(key)
+        if state is None:
+            state = _ProcessWriterHandoffState()
+            states[key] = state
+        # State can originate from another import alias or an older live
+        # module instance. Additive defaults keep the coordinator compatible
+        # without replacing locks that another caller may already hold.
+        if not hasattr(state, "orchestration_lock"):
+            state.orchestration_lock = threading.Lock()
+        if not hasattr(state, "handoff_fenced"):
+            state.handoff_fenced = False
+        if not hasattr(state, "handoff_in_progress"):
+            state.handoff_in_progress = False
+        if not hasattr(state, "handoff_thread_id"):
+            state.handoff_thread_id = 0
+        if not hasattr(state, "last_handoff_monotonic"):
+            state.last_handoff_monotonic = 0.0
+        if not hasattr(state, "telemetry_authority_epoch"):
+            state.telemetry_authority_epoch = ""
+        if not hasattr(state, "telemetry_event_sequence"):
+            state.telemetry_event_sequence = 0
+        if not hasattr(state, "telemetry_owner_active"):
+            state.telemetry_owner_active = False
+        if not hasattr(state, "telemetry_epoch_published"):
+            state.telemetry_epoch_published = False
+        return state
+
+
+def truth_writer_process_snapshot(storage_dir: Path) -> dict[str, int]:
+    """Return sanitized process-local holder/pin counts for observability."""
+
+    _refresh_shared_state()
+    lease_path, _ = _lease_paths(Path(storage_dir))
+    key = _canonical_registry_key(lease_path)
+    holder = sys.modules[_SHARED_STATE_NAME]
+    registry_lock = getattr(holder, "lock", _PROCESS_REGISTRY_LOCK)
+    registry = getattr(holder, "registry", _PROCESS_REGISTRY)
+    with registry_lock:
+        state = registry.get(key)
+        if state is None:
+            return {"same_process_holder_count": 0, "connection_pin_count": 0}
+        return {
+            "same_process_holder_count": max(0, int(getattr(state, "holders", 0) or 0)),
+            "connection_pin_count": max(
+                0, int(getattr(state, "connection_pins", 0) or 0)
+            ),
+        }
 
 
 _PROCESS_REGISTRY_LOCK, _PROCESS_REGISTRY = _shared_lock_and_registry()
@@ -329,6 +468,341 @@ def _try_lock_exclusive_nonblocking(handle: IO[bytes]) -> bool:
     return False
 
 
+def _telemetry_utc_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _telemetry_number(value: Any, *, minimum: float = 0.0) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if not math.isfinite(number) or number < minimum:
+        return None
+    return number
+
+
+def _validated_writer_handoff_telemetry(
+    payload: Any,
+) -> dict[str, Any] | None:
+    """Validate the exact content-free telemetry schema.
+
+    The persisted snapshot is advisory only. Unknown fields are rejected so a
+    future writer cannot accidentally expose a path, principal, host, or truth
+    content through Doctor/dashboard.
+    """
+
+    if not isinstance(payload, dict) or set(payload) != (
+        _WRITER_HANDOFF_TELEMETRY_ALLOWED_KEYS
+    ):
+        return None
+    if payload.get("schema_version") != WRITER_HANDOFF_TELEMETRY_SCHEMA_VERSION:
+        return None
+    epoch = payload.get("authority_epoch")
+    if not isinstance(epoch, str) or _WRITER_HANDOFF_EPOCH_RE.fullmatch(epoch) is None:
+        return None
+    sequence = payload.get("event_sequence")
+    if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
+        return None
+    event_kind = payload.get("event_kind")
+    if (
+        not isinstance(event_kind, str)
+        or not event_kind
+        or _WRITER_HANDOFF_REASON_RE.fullmatch(event_kind) is None
+    ):
+        return None
+    if _telemetry_utc_datetime(payload.get("observed_at")) is None:
+        return None
+    fresh_for = _telemetry_number(payload.get("fresh_for_seconds"), minimum=30.0)
+    if fresh_for != WRITER_HANDOFF_TELEMETRY_FRESH_SECONDS:
+        return None
+    role = payload.get("writer_role")
+    if role not in {"owner", "reader", "unknown"}:
+        return None
+    if payload.get("writer_lease_scope") != "process-wide-os-lock":
+        return None
+    idle_enabled = payload.get("idle_release_enabled")
+    if type(idle_enabled) is not bool:
+        return None
+    idle_seconds = _telemetry_number(payload.get("idle_release_seconds"))
+    if idle_seconds is None or (
+        idle_seconds != 0.0 and not 30.0 <= idle_seconds <= 86_400.0
+    ):
+        return None
+    if idle_enabled != (idle_seconds > 0.0):
+        return None
+    for field in (
+        "last_user_activity_age_seconds",
+        "last_truth_activity_age_seconds",
+    ):
+        if _telemetry_number(payload.get(field)) is None:
+            return None
+    for field in (
+        "same_process_holder_count",
+        "connection_pin_count",
+        "successful_handoff_count",
+    ):
+        value = payload.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None
+    for field in (
+        "demotion_in_progress",
+        "release_uncertain",
+        "operator_action_required",
+    ):
+        if type(payload.get(field)) is not bool:
+            return None
+    last_handoff_at = payload.get("last_handoff_at")
+    if not isinstance(last_handoff_at, str) or (
+        last_handoff_at and _telemetry_utc_datetime(last_handoff_at) is None
+    ):
+        return None
+    for field in ("last_handoff_reason_code", "last_handoff_failure_code"):
+        value = payload.get(field)
+        if not isinstance(value, str) or _WRITER_HANDOFF_REASON_RE.fullmatch(value) is None:
+            return None
+    return dict(payload)
+
+
+def _load_writer_handoff_telemetry(path: Path) -> dict[str, Any] | None:
+    try:
+        if not path.is_file() or path.stat().st_size > (
+            _WRITER_HANDOFF_TELEMETRY_MAX_BYTES
+        ):
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return _validated_writer_handoff_telemetry(payload)
+
+
+@contextmanager
+def _try_writer_handoff_telemetry_lock(
+    storage_dir: Path,
+) -> Iterator[bool]:
+    """Try one independent cross-process advisory lock without blocking safety."""
+
+    handle: IO[bytes] | None = None
+    acquired = False
+    try:
+        storage = Path(storage_dir).expanduser().resolve(strict=False)
+        storage.mkdir(parents=True, exist_ok=True)
+        handle = (storage / WRITER_HANDOFF_TELEMETRY_LOCK_FILENAME).open("a+b")
+        acquired = _try_lock_exclusive_nonblocking(handle)
+    except Exception:
+        acquired = False
+    try:
+        yield acquired
+    finally:
+        if handle is not None:
+            try:
+                handle.close()
+            except Exception:
+                pass
+
+
+def _atomic_write_writer_handoff_telemetry(
+    path: Path, payload: Mapping[str, Any]
+) -> None:
+    temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            os.fspath(temporary),
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            0o600,
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            descriptor = None
+            json.dump(payload, stream, ensure_ascii=False, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def publish_writer_handoff_telemetry(
+    storage_dir: Path,
+    payload: Mapping[str, Any],
+    *,
+    claim_authority_epoch: bool,
+) -> bool:
+    """Atomically publish an advisory snapshot under epoch/sequence CAS.
+
+    ``claim_authority_epoch`` is reserved for a process that already owns the
+    real OS writer lease. The sidecar never grants or transfers authority.
+    Ordinary updates require the persisted epoch to match, which prevents a
+    delayed former owner/reader from overwriting a newer owner's snapshot.
+    Every error is telemetry-only and returns ``False``.
+    """
+
+    candidate = _validated_writer_handoff_telemetry(dict(payload))
+    if candidate is None:
+        return False
+    storage = Path(storage_dir).expanduser().resolve(strict=False)
+    path = storage / WRITER_HANDOFF_TELEMETRY_FILENAME
+    try:
+        with _try_writer_handoff_telemetry_lock(storage) as acquired:
+            if not acquired:
+                return False
+            current = _load_writer_handoff_telemetry(path)
+            if claim_authority_epoch:
+                if (
+                    current is not None
+                    and current["authority_epoch"] == candidate["authority_epoch"]
+                    and int(current["event_sequence"])
+                    >= int(candidate["event_sequence"])
+                ):
+                    return False
+            else:
+                if (
+                    current is None
+                    or current["authority_epoch"] != candidate["authority_epoch"]
+                    or int(current["event_sequence"])
+                    >= int(candidate["event_sequence"])
+                ):
+                    return False
+            _atomic_write_writer_handoff_telemetry(path, candidate)
+            return True
+    except Exception:
+        logger.warning("Scope Recall writer handoff telemetry update was unavailable")
+        return False
+
+
+def read_writer_handoff_telemetry(
+    storage_dir: Path,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Read one strict, freshness-bounded persisted snapshot without writing."""
+
+    path = (
+        Path(storage_dir).expanduser().resolve(strict=False)
+        / WRITER_HANDOFF_TELEMETRY_FILENAME
+    )
+    if not path.is_file():
+        return {"status": "missing", "snapshot": None, "snapshot_age_seconds": None}
+    snapshot = _load_writer_handoff_telemetry(path)
+    if snapshot is None:
+        return {"status": "invalid", "snapshot": None, "snapshot_age_seconds": None}
+    observed_at = _telemetry_utc_datetime(snapshot["observed_at"])
+    assert observed_at is not None
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    age = (current - observed_at).total_seconds()
+    if age < -60.0:
+        return {"status": "invalid", "snapshot": None, "snapshot_age_seconds": None}
+    bounded_age = max(0.0, age)
+    if bounded_age > float(snapshot["fresh_for_seconds"]):
+        return {
+            "status": "stale",
+            "snapshot": None,
+            "snapshot_age_seconds": round(bounded_age, 3),
+        }
+    return {
+        "status": "fresh",
+        "snapshot": snapshot,
+        "snapshot_age_seconds": round(bounded_age, 3),
+    }
+
+
+def writer_handoff_telemetry_view(
+    storage_dir: Path,
+    *,
+    configured_idle_release_seconds: float = 1800.0,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Return Doctor/dashboard telemetry without inventing unobserved live state."""
+
+    try:
+        configured = float(configured_idle_release_seconds)
+    except (TypeError, ValueError):
+        configured = 1800.0
+    if not math.isfinite(configured) or (
+        configured != 0.0 and not 30.0 <= configured <= 86_400.0
+    ):
+        configured = 1800.0
+    fields: dict[str, Any] = {
+        field: None for field in WRITER_HANDOFF_OBSERVABILITY_FIELDS
+    }
+    fields.update(
+        {
+            "writer_lease_scope": "process-wide-os-lock",
+            "idle_release_enabled": configured > 0.0,
+            "idle_release_seconds": configured,
+        }
+    )
+    result = read_writer_handoff_telemetry(storage_dir, now=now)
+    snapshot = result.get("snapshot")
+    observed_snapshot = (
+        snapshot
+        if result.get("status") == "fresh" and isinstance(snapshot, dict)
+        else None
+    )
+    observed = observed_snapshot is not None
+    snapshot_age_seconds = result.get("snapshot_age_seconds")
+    if observed_snapshot is not None:
+        fields.update(
+            {
+                field: observed_snapshot[field]
+                for field in WRITER_HANDOFF_OBSERVABILITY_FIELDS
+            }
+        )
+        elapsed = max(0.0, float(snapshot_age_seconds or 0.0))
+        for age_field in (
+            "last_user_activity_age_seconds",
+            "last_truth_activity_age_seconds",
+        ):
+            fields[age_field] = round(
+                float(observed_snapshot[age_field]) + elapsed,
+                3,
+            )
+    freshness = {
+        "status": str(result.get("status") or "invalid"),
+        "age_seconds": snapshot_age_seconds,
+        "fresh_for_seconds": (
+            float(observed_snapshot["fresh_for_seconds"])
+            if observed_snapshot is not None
+            else None
+        ),
+    }
+    return {
+        **fields,
+        "snapshot_kind": (
+            "persisted_runtime_state" if observed else "offline_config_only"
+        ),
+        "runtime_state_observed": observed,
+        "runtime_state_source": "persisted_writer_handoff_telemetry",
+        "telemetry_authoritative": False,
+        "telemetry_status": freshness["status"],
+        "observed_at": (
+            str(observed_snapshot["observed_at"])
+            if observed_snapshot is not None
+            else ""
+        ),
+        "freshness": freshness,
+        "live_counters": {
+            "source": "persisted_writer_handoff_telemetry",
+            "observed": observed,
+            "fields": list(WRITER_HANDOFF_OBSERVABILITY_FIELDS),
+        },
+    }
+
+
 class TruthWriterLease:
     """Per-process writer lease handle for one storage directory.
 
@@ -350,6 +824,62 @@ class TruthWriterLease:
         return bool(self._acquired and self._acquired_pid == os.getpid())
 
     def acquire(self) -> dict[str, Any]:
+        """Serialize acquisition against process-wide idle handoff."""
+
+        handoff = process_writer_handoff_state(self._storage_dir)
+        with handoff.lock:
+            if bool(getattr(handoff, "handoff_fenced", False)):
+                if (
+                    int(getattr(handoff, "handoff_thread_id", 0) or 0)
+                    != threading.get_ident()
+                    or self._role != "truth_connection"
+                ):
+                    return {
+                        "status": "busy",
+                        "scope": "process_handoff",
+                        "owner": {},
+                    }
+                return self._join_existing_handoff_authority()
+            result = self._acquire_under_handoff()
+            if result.get("status") == "acquired":
+                handoff.state = "OWNER"
+            return result
+
+    def _join_existing_handoff_authority(self) -> dict[str, Any]:
+        """Join one recovery pin without creating or reacquiring OS authority."""
+
+        _refresh_shared_state()
+        if self._acquired and self._acquired_pid == os.getpid():
+            return {"status": "acquired", "owner": _sanitized_owner(self._role)}
+        if self._acquired:
+            self._acquired = False
+            self._acquired_pid = None
+        if _shared_state_poisoned():
+            return {"status": "busy", "scope": "fork_state_error", "owner": {}}
+        holder = sys.modules.get(_SHARED_STATE_NAME)
+        registry_lock = getattr(holder, "lock", _PROCESS_REGISTRY_LOCK)
+        registry = getattr(holder, "registry", _PROCESS_REGISTRY)
+        with registry_lock:
+            key = _canonical_registry_key(self._lease_path)
+            self._registry_key = key
+            state = registry.get(key)
+            if state is None or int(getattr(state, "holders", 0) or 0) <= 0:
+                return {
+                    "status": "busy",
+                    "scope": "process_handoff_recovery_missing_authority",
+                    "owner": {},
+                }
+            state.connection_pins += 1
+            self._pin_only = True
+            self._acquired = True
+            self._acquired_pid = os.getpid()
+            return {
+                "status": "acquired",
+                "scope": "same_process_handoff_recovery",
+                "owner": _sanitized_owner(self._role),
+            }
+
+    def _acquire_under_handoff(self) -> dict[str, Any]:
         """Acquire or join this process's writer lease, or report busy.
 
         Returns ``{"status": "acquired", ...}`` or
@@ -439,6 +969,19 @@ class TruthWriterLease:
             }
 
     def release(self) -> None:
+        """Serialize release against process-wide idle handoff."""
+
+        handoff = process_writer_handoff_state(self._storage_dir)
+        with handoff.lock:
+            self._release_under_handoff()
+            snapshot = truth_writer_process_snapshot(self._storage_dir)
+            if (
+                snapshot["same_process_holder_count"] == 0
+                and snapshot["connection_pin_count"] == 0
+            ):
+                handoff.state = "READER"
+
+    def _release_under_handoff(self) -> None:
         """Drop one holder. Last release closes the locked OS handle under the lock.
 
         Non-last holders only decrement the refcount. The last holder keeps
@@ -556,9 +1099,19 @@ __all__ = [
     "ALLOWED_TRUTH_WRITER_ROLES",
     "TRUTH_WRITER_LEASE_FILENAME",
     "TRUTH_WRITER_LEASE_INFO_FILENAME",
+    "WRITER_HANDOFF_OBSERVABILITY_FIELDS",
+    "WRITER_HANDOFF_TELEMETRY_FILENAME",
+    "WRITER_HANDOFF_TELEMETRY_FRESH_SECONDS",
+    "WRITER_HANDOFF_TELEMETRY_LOCK_FILENAME",
+    "WRITER_HANDOFF_TELEMETRY_SCHEMA_VERSION",
     "TruthWriterBusyError",
     "TruthWriterLease",
     "holding_truth_writer_lease",
+    "process_writer_handoff_state",
+    "publish_writer_handoff_telemetry",
+    "read_writer_handoff_telemetry",
     "read_truth_writer_owner",
     "sanitized_truth_writer_owner",
+    "truth_writer_process_snapshot",
+    "writer_handoff_telemetry_view",
 ]
