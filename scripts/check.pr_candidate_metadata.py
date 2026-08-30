@@ -434,6 +434,16 @@ def expected_marker(
     pr = _pr_identity(pr_snapshot)
     candidate_commit = _validated_git_sha(source.get("commit"), field="source.commit")
     candidate_tree = _validated_git_sha(source.get("tree"), field="source.tree")
+    honesty_commit = _validated_git_sha(
+        honesty.get("source_commit"), field="test_honesty.source_commit"
+    )
+    honesty_tree = _validated_git_sha(
+        honesty.get("source_tree"), field="test_honesty.source_tree"
+    )
+    if honesty_commit != candidate_commit or honesty_tree != candidate_tree:
+        raise PRCandidateMetadataError(
+            "test honesty source identity differs from candidate"
+        )
     if _required_text(candidate, "candidate_version") != "2.0.0":
         raise PRCandidateMetadataError("Candidate Manifest version is not 2.0.0")
     if candidate.get("candidate_mode") != FINAL_CANDIDATE_MODE:

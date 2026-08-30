@@ -391,11 +391,27 @@ def _require_git_sha(value: object, *, field: str) -> str:
     return rendered
 
 
+def _test_honesty_source_identity(
+    payload: Mapping[str, object],
+) -> tuple[str, str]:
+    return (
+        _require_git_sha(
+            payload.get("source_commit"),
+            field="test_honesty.source_commit",
+        ),
+        _require_git_sha(
+            payload.get("source_tree"),
+            field="test_honesty.source_tree",
+        ),
+    )
+
+
 def validate_test_honesty(payload: Mapping[str, object]) -> dict[str, object]:
     """Validate exact final test accounting without allowing hidden green paths."""
 
     if payload.get("schema_version") != TEST_HONESTY_SCHEMA_VERSION:
         raise EvidencePackageError("unsupported test honesty schema")
+    _test_honesty_source_identity(payload)
     numeric_fields = (
         "collected",
         "passed",
@@ -987,6 +1003,13 @@ def build_evidence_index(evidence_dir: Path, *, expected_sha: str) -> dict[str, 
     shareable_honesty_payload = _load_object(root / "PYTEST_SKIP_REPORT.json")
     validate_test_honesty_pair(raw_honesty_payload, shareable_honesty_payload)
     honesty = validate_test_honesty(shareable_honesty_payload)
+    honesty_commit, honesty_tree = _test_honesty_source_identity(
+        shareable_honesty_payload
+    )
+    if honesty_commit != source_commit:
+        raise EvidencePackageError("test honesty source_commit mismatch")
+    if honesty_tree != source_tree:
+        raise EvidencePackageError("test honesty source_tree mismatch")
     install_receipts = {
         name: _load_object(root / name) for name in INSTALL_RECEIPT_FILES
     }

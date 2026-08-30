@@ -34,9 +34,16 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _valid_honesty(module) -> dict[str, object]:
+def _valid_honesty(
+    module,
+    *,
+    source_commit: str = "a" * 40,
+    source_tree: str = "b" * 40,
+) -> dict[str, object]:
     return {
         "schema_version": module.TEST_HONESTY_SCHEMA_VERSION,
+        "source_commit": source_commit,
+        "source_tree": source_tree,
         "collected": 3,
         "passed": 2,
         "failed": 0,
@@ -256,7 +263,11 @@ def _complete_fixture(module, tmp_path: Path) -> tuple[Path, str, str]:
     n_minus_one_install_sha = _sha256(
         evidence / "INSTALL_N_MINUS_ONE_RECEIPT.json"
     )
-    honesty = _valid_honesty(module)
+    honesty = _valid_honesty(
+        module,
+        source_commit=commit,
+        source_tree=tree,
+    )
     _write_json(evidence / "PYTEST_SKIP_REPORT.raw.json", honesty)
     _write_json(evidence / "PYTEST_SKIP_REPORT.json", honesty)
     created_database_sha = "0" * 64
@@ -484,6 +495,8 @@ def test_evidence_index_requires_every_file_and_exact_source_binding(
     assert payload["test_honesty"]["skipped_node_ids"] == [
         "tests/test_x.py::test_skip"
     ]
+    assert "source_commit" not in payload["test_honesty"]
+    assert "source_tree" not in payload["test_honesty"]
     issue_51_entry = next(
         item
         for item in payload["files"]
@@ -514,6 +527,48 @@ def test_evidence_index_rejects_issue_51_mutation_or_scale_drift(
         module.build_evidence_index(evidence, expected_sha=commit)
 
 
+@pytest.mark.parametrize(
+    ("field", "stale_value", "message"),
+    [
+        ("source_commit", "f" * 40, "test honesty source_commit mismatch"),
+        ("source_tree", "e" * 40, "test honesty source_tree mismatch"),
+    ],
+)
+def test_evidence_index_rejects_stale_test_honesty_source_identity(
+    tmp_path: Path,
+    field: str,
+    stale_value: str,
+    message: str,
+) -> None:
+    module = _load_module()
+    evidence, commit, _tree = _complete_fixture(module, tmp_path)
+    for name in ("PYTEST_SKIP_REPORT.raw.json", "PYTEST_SKIP_REPORT.json"):
+        path = evidence / name
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload[field] = stale_value
+        _write_json(path, payload)
+
+    with pytest.raises(module.EvidencePackageError, match=message):
+        module.build_evidence_index(evidence, expected_sha=commit)
+
+
+def test_evidence_index_rejects_unpaired_raw_test_honesty_source_drift(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    evidence, commit, _tree = _complete_fixture(module, tmp_path)
+    path = evidence / "PYTEST_SKIP_REPORT.raw.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["source_commit"] = "f" * 40
+    _write_json(path, payload)
+
+    with pytest.raises(
+        module.EvidencePackageError,
+        match="shareable test honesty is not an exact path-only redaction",
+    ):
+        module.build_evidence_index(evidence, expected_sha=commit)
+
+
 def test_test_honesty_refuses_hidden_reruns_and_bad_accounting() -> None:
     module = _load_module()
     payload = _valid_honesty(module)
@@ -524,6 +579,31 @@ def test_test_honesty_refuses_hidden_reruns_and_bad_accounting() -> None:
     payload = _valid_honesty(module)
     payload["collected"] = 4
     with pytest.raises(module.EvidencePackageError, match="collected count"):
+        module.validate_test_honesty(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("source_commit", None),
+        ("source_tree", "not-a-git-object-id"),
+    ],
+)
+def test_test_honesty_requires_exact_source_identity(
+    field: str,
+    value: object,
+) -> None:
+    module = _load_module()
+    payload = _valid_honesty(module)
+    if value is None:
+        payload.pop(field)
+    else:
+        payload[field] = value
+
+    with pytest.raises(
+        module.EvidencePackageError,
+        match=rf"test_honesty\.{field} must be a full lowercase Git SHA",
+    ):
         module.validate_test_honesty(payload)
 
 
