@@ -168,7 +168,10 @@ def test_idle_relation_maintenance_does_not_adopt_existing_transaction(
     conn = sqlite3.connect(":memory:", check_same_thread=False)
     provider._conn = conn
     provider._require_conn = lambda: conn
-    calls = {"drain": 0}
+    provider._vector_store = object()
+    provider._embedder = object()
+    provider._vector_generation_id = "dirty-transaction-generation"
+    calls = {"vector": 0, "drain": 0}
 
     monkeypatch.setattr(capture, "has_positive_write_authority", lambda _provider: True)
 
@@ -176,7 +179,15 @@ def test_idle_relation_maintenance_does_not_adopt_existing_transaction(
         calls["drain"] += 1
         return {}
 
+    def unexpected_vector(*_args, **_kwargs):
+        calls["vector"] += 1
+        return {}
+
     monkeypatch.setattr(capture, "drain_relation_frequency_work", unexpected_drain)
+    monkeypatch.setattr(
+        "scope_recall.vector_runtime.run_bounded_vector_reconciliation",
+        unexpected_vector,
+    )
 
     try:
         conn.execute("CREATE TABLE transaction_probe(value TEXT)")
@@ -186,7 +197,7 @@ def test_idle_relation_maintenance_does_not_adopt_existing_transaction(
 
         capture._drain_relation_rebuild_debt_locked(provider)
 
-        assert calls["drain"] == 0
+        assert calls == {"vector": 0, "drain": 0}
         assert conn.in_transaction is True
         assert provider._relation_maintenance_busy_skips == 1
         conn.rollback()
