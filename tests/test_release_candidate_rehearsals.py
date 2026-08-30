@@ -30,6 +30,7 @@ EXPECTED_GATES = {
     "rollback_rehearsal",
     "issue_51_accident_scale_regression",
     "issue_58_process_wide_writer_handoff",
+    "issue_60_retry_and_prefetch_regression",
 }
 
 

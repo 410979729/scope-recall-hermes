@@ -170,6 +170,7 @@ def test_soft_archive_chunks_selection_and_fact_guard(tmp_path: Path) -> None:
 
     class Provider:
         def __init__(self, connection: sqlite3.Connection) -> None:
+            self._truth_writer_role = "owner"
             self._conn = connection
             self._lock = threading.RLock()
             self._writable_scope_ids = ["scope-a"]
@@ -239,6 +240,7 @@ def test_merge_chunks_source_lookup_and_atomic_delete(tmp_path: Path) -> None:
 
     class Provider:
         def __init__(self, connection: sqlite3.Connection) -> None:
+            self._truth_writer_role = "owner"
             self._conn = connection
             self._lock = threading.RLock()
             self._scope_id = "scope-a"

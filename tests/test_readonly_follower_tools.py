@@ -157,8 +157,13 @@ def test_readonly_follower_default_denies_writes_and_unknown_tools(tmp_path):
                 fact.get("error") or ""
             )
 
+            govern_preview = json.loads(
+                reader.handle_tool_call("scope_recall_govern", {"dry_run": True})
+            )
+            assert govern_preview.get("dry_run") is True
+            assert "truth_writer_busy" not in str(govern_preview.get("error") or "")
+
             denied = [
-                ("scope_recall_govern", {"dry_run": True}),
                 ("scope_recall_forgetting_run", {"apply": False}),
                 (
                     "scope_recall_reflect",
