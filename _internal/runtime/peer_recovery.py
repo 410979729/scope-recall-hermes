@@ -168,6 +168,14 @@ def rollback_peer_provider_transactions(provider: Any, context: str) -> dict[str
             result["peer_busy_skipped"] += 1
             continue
         try:
+            # ``threading.RLock`` is reentrant, so a same-thread nested
+            # recovery can acquire a peer lifecycle that is still executing an
+            # admitted truth unit.  The process handoff activity counter is the
+            # public veto for that case; never inspect or roll back its SQLite
+            # transaction while the counter is positive.
+            if int(getattr(peer, "_writer_handoff_active_truth_work", 0) or 0) > 0:
+                result["peer_busy_skipped"] += 1
+                continue
             acquired = try_acquire_nonblocking(peer_lock)
             if not acquired:
                 result["peer_busy_skipped"] += 1

@@ -207,6 +207,37 @@ def _drain_relation_rebuild_debt_locked(provider: Any) -> None:
     if maintenance_stop is not None and maintenance_stop.is_set():
         return
 
+    # Vector reconciliation, like relation maintenance below, must never adopt
+    # a transaction opened by a foreground caller.  Check the published
+    # connection before either lane while the lifecycle gate is held.  The
+    # provider lock remains nonblocking so idle maintenance cannot queue behind
+    # foreground work.
+    provider_lock = getattr(provider, "_lock", None)
+    acquired = True
+    if provider_lock is not None:
+        acquired = bool(provider_lock.acquire(blocking=False))
+    if not acquired:
+        provider._relation_maintenance_lock_contention_skips = int(
+            getattr(provider, "_relation_maintenance_lock_contention_skips", 0) or 0
+        ) + 1
+        provider._relation_maintenance_consecutive_failures = int(
+            getattr(provider, "_relation_maintenance_consecutive_failures", 0) or 0
+        ) + 1
+        return
+    try:
+        conn = provider._require_conn()
+        if bool(getattr(conn, "in_transaction", False)):
+            provider._relation_maintenance_busy_skips = int(
+                getattr(provider, "_relation_maintenance_busy_skips", 0) or 0
+            ) + 1
+            provider._relation_maintenance_consecutive_failures = int(
+                getattr(provider, "_relation_maintenance_consecutive_failures", 0) or 0
+            ) + 1
+            return
+    finally:
+        if provider_lock is not None:
+            provider_lock.release()
+
     if (
         getattr(provider, "_vector_store", None) is not None
         and getattr(provider, "_embedder", None) is not None

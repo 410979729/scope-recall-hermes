@@ -360,6 +360,14 @@ def test_scope_recall_store_recovers_peer_provider_dirty_transaction(tmp_path, m
                 agent_identity="yuheng",
                 agent_workspace="hermes",
             )
+        # This regression owns the orphan transaction timing.  Suppress and
+        # drain unrelated idle maintenance before creating it so the peer is
+        # observably idle when recovery begins.
+        for plugin in (provider_a, provider_b):
+            plugin._maintenance_stop.set()
+        for plugin in (provider_a, provider_b):
+            with plugin._writer_lifecycle_lock:
+                pass
         with provider_a._lock:
             conn_a = provider_a._require_conn()
             conn_a.execute("BEGIN IMMEDIATE")
@@ -408,6 +416,101 @@ def test_scope_recall_store_recovers_peer_provider_dirty_transaction(tmp_path, m
             assert provider_a._require_conn().in_transaction is False
         _assert_sqlite_writer_released(provider_b)
     finally:
+        provider_b.shutdown()
+        provider_a.shutdown()
+
+
+def test_sqlite_recovery_rechecks_transiently_busy_peer_before_reopen(
+    tmp_path, monkeypatch
+):
+    _write_scope_recall_config(tmp_path, {"vector": {"enabled": False}})
+    provider_a = load_memory_provider("scope-recall")
+    provider_b = load_memory_provider("scope-recall")
+    assert provider_a is not None
+    assert provider_b is not None
+    lifecycle_held = threading.Event()
+    release_lifecycle = threading.Event()
+    lifecycle_released = threading.Event()
+    holder: threading.Thread | None = None
+    try:
+        for index, plugin in enumerate((provider_a, provider_b), start=1):
+            plugin.initialize(
+                f"session-peer-recheck-{index}",
+                hermes_home=str(tmp_path),
+                platform="cli",
+                agent_context="primary",
+                agent_identity="yuheng",
+                agent_workspace="hermes",
+            )
+            plugin._maintenance_stop.set()
+        for plugin in (provider_a, provider_b):
+            with plugin._writer_lifecycle_lock:
+                pass
+
+        with provider_a._lock:
+            conn_a = provider_a._require_conn()
+            conn_a.execute("BEGIN IMMEDIATE")
+            conn_a.execute(
+                "CREATE TABLE IF NOT EXISTS peer_recheck_probe(marker TEXT PRIMARY KEY)"
+            )
+            conn_a.execute("INSERT INTO peer_recheck_probe(marker) VALUES ('orphan')")
+            assert conn_a.in_transaction is True
+        with provider_b._lock:
+            conn_b = provider_b._require_conn()
+
+        def hold_peer_lifecycle() -> None:
+            with provider_a._writer_lifecycle_lock:
+                lifecycle_held.set()
+                release_lifecycle.wait(timeout=5.0)
+            lifecycle_released.set()
+
+        holder = threading.Thread(
+            target=hold_peer_lifecycle,
+            name="peer-recovery-transient-lifecycle",
+        )
+        holder.start()
+        assert lifecycle_held.wait(timeout=2.0)
+
+        original_probe = provider_b._sqlite_write_probe
+        probe_calls = 0
+
+        def controlled_probe(conn):
+            nonlocal probe_calls
+            probe_calls += 1
+            if probe_calls == 1:
+                release_lifecycle.set()
+                assert lifecycle_released.wait(timeout=2.0)
+                return False
+            return original_probe(conn)
+
+        def unexpected_reopen():
+            raise AssertionError("transient peer contention must not reopen SQLite")
+
+        monkeypatch.setattr(provider_b, "_sqlite_write_probe", controlled_probe)
+        monkeypatch.setattr(provider_b, "_open_runtime_connection", unexpected_reopen)
+
+        report = provider_b._recover_sqlite_connection_after_error(
+            "transient peer lifecycle regression"
+        )
+
+        assert report["recovered"] is True
+        assert report["reopened"] is False
+        assert report["write_probe"] is True
+        assert report["peer_recovery_passes"] == 2
+        assert report["peer_busy_skipped_total"] == 1
+        assert report["peer_busy_skipped"] == 0
+        assert report["peer_rollbacks"] == 1
+        assert report["peer_rollback_errors"] == 0
+        assert report["peer_recovery_deferred"] is False
+        assert probe_calls == 2
+        with provider_b._lock:
+            assert provider_b._require_conn() is conn_b
+        with provider_a._lock:
+            assert provider_a._require_conn().in_transaction is False
+    finally:
+        release_lifecycle.set()
+        if holder is not None:
+            holder.join(timeout=2.0)
         provider_b.shutdown()
         provider_a.shutdown()
 
