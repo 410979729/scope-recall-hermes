@@ -66,6 +66,43 @@ def _fingerprint(conn: sqlite3.Connection) -> tuple[int, int, int]:
     )
 
 
+def _assert_strict_contract_equal(
+    actual: object,
+    expected: object,
+    *,
+    path: str = "$",
+) -> None:
+    assert type(actual) is type(expected), (
+        f"{path}: type mismatch: {type(actual).__name__} != "
+        f"{type(expected).__name__}"
+    )
+    if isinstance(actual, dict):
+        assert isinstance(expected, dict)
+        assert actual.keys() == expected.keys(), (
+            f"{path}: key mismatch: {actual.keys()} != {expected.keys()}"
+        )
+        for key, value in actual.items():
+            _assert_strict_contract_equal(
+                value,
+                expected[key],
+                path=f"{path}.{key}",
+            )
+        return
+    if isinstance(actual, (list, tuple)):
+        assert isinstance(expected, (list, tuple))
+        assert len(actual) == len(expected), (
+            f"{path}: length mismatch: {len(actual)} != {len(expected)}"
+        )
+        for index, value in enumerate(actual):
+            _assert_strict_contract_equal(
+                value,
+                expected[index],
+                path=f"{path}[{index}]",
+            )
+        return
+    assert actual == expected, f"{path}: value mismatch: {actual!r} != {expected!r}"
+
+
 def test_typed_query_application_matches_legacy_payloads_without_writes(
     differential_provider,
 ) -> None:
@@ -122,8 +159,20 @@ def test_typed_query_application_matches_legacy_payloads_without_writes(
     assert after == before
 
 
-def test_typed_stats_matches_legacy_stable_contract(differential_provider) -> None:
+def test_typed_stats_matches_legacy_stable_contract(
+    differential_provider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     provider, _memory_id = differential_provider
+    original_runtime_status_view = provider.runtime_status_view
+    frozen_handoff = dict(original_runtime_status_view()["writer_handoff"])
+
+    def stable_runtime_status_view() -> dict[str, object]:
+        payload = dict(original_runtime_status_view())
+        payload["writer_handoff"] = dict(frozen_handoff)
+        return payload
+
+    monkeypatch.setattr(provider, "runtime_status_view", stable_runtime_status_view)
     typed = provider._stats_payload()
     legacy = memory_queries.stats_payload(provider)
     volatile = {
@@ -131,6 +180,8 @@ def test_typed_stats_matches_legacy_stable_contract(differential_provider) -> No
         "journal_digest_last_finished",
         "write_transactions",
     }
-    for key in sorted(set(typed) | set(legacy)):
-        if key not in volatile:
-            assert typed.get(key) == legacy.get(key), key
+    stable_typed = {key: value for key, value in typed.items() if key not in volatile}
+    stable_legacy = {
+        key: value for key, value in legacy.items() if key not in volatile
+    }
+    _assert_strict_contract_equal(stable_typed, stable_legacy)

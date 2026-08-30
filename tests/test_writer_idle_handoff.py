@@ -1309,6 +1309,8 @@ def test_stats_exposes_content_free_writer_handoff_observability(tmp_path):
             "idle_release_seconds",
             "user_idle_seconds",
             "truth_idle_seconds",
+            "last_user_activity_age_seconds",
+            "last_truth_activity_age_seconds",
             "active_truth_work",
             "process_state",
             "handoff_generation",
@@ -1323,6 +1325,22 @@ def test_stats_exposes_content_free_writer_handoff_observability(tmp_path):
             "same_process_holder_count",
             "connection_pin_count",
         } <= set(handoff)
+        for key in (
+            "user_idle_seconds",
+            "truth_idle_seconds",
+            "last_user_activity_age_seconds",
+            "last_truth_activity_age_seconds",
+        ):
+            assert type(handoff[key]) in {int, float}
+            assert handoff[key] >= 0
+        assert (
+            handoff["last_user_activity_age_seconds"]
+            == handoff["user_idle_seconds"]
+        )
+        assert (
+            handoff["last_truth_activity_age_seconds"]
+            == handoff["truth_idle_seconds"]
+        )
         serialized = json.dumps(handoff, sort_keys=True)
         assert str(tmp_path) not in serialized
         assert "handoff-user" not in serialized
