@@ -189,15 +189,6 @@ jobs:
               raise SystemExit(f"SHA256SUMS lists missing artifacts: {', '.join(extra)}")
           print("verified", len(artifacts), "GitHub Release artifacts", file=sys.stderr)
           PY
-      - name: Stage validated distributions
-        env:
-          RELEASE_TAG: ${{ steps.release_tag.outputs.release_tag }}
-        run: |
-          python .github/scripts/stage_release_assets.py \
-            --source-dir release-download \
-            --packages-dir release-staging/packages \
-            --metadata-dir release-staging/metadata \
-            --version "${RELEASE_TAG#v}"
       - name: Verify source/run-bound release provenance
         env:
           RELEASE_TAG: ${{ steps.release_tag.outputs.release_tag }}
@@ -216,6 +207,24 @@ jobs:
           test "$(git rev-parse 'HEAD^{tree}')" = "${SOURCE_TREE}"
           test "${VERIFIED_SOURCE_SHA}" = "${SOURCE_SHA}"
           test "${VERIFIED_RELEASE_RUN_ID}" = "${RELEASE_RUN_ID}"
+      - name: Stage validated distributions
+        env:
+          RELEASE_TAG: ${{ steps.release_tag.outputs.release_tag }}
+        run: |
+          python .github/scripts/stage_release_assets.py \
+            --source-dir release-download \
+            --packages-dir release-staging/packages \
+            --metadata-dir release-staging/metadata \
+            --version "${RELEASE_TAG#v}"
+      - name: Verify staged release provenance package set
+        env:
+          RELEASE_TAG: ${{ steps.release_tag.outputs.release_tag }}
+          WORKFLOW_RUN_STATUS: ${{ needs.verify_release_origin.outputs.workflow_run_status }}
+          WORKFLOW_RUN_CONCLUSION: ${{ needs.verify_release_origin.outputs.workflow_run_conclusion }}
+        run: |
+          SOURCE_SHA="$(python -c 'import json; print(json.load(open("release-download/RELEASE-PROVENANCE.json", encoding="utf-8"))["source_sha"])')"
+          SOURCE_TREE="$(python -c 'import json; print(json.load(open("release-download/RELEASE-PROVENANCE.json", encoding="utf-8"))["source_tree"])')"
+          RELEASE_RUN_ID="$(python -c 'import json; print(json.load(open("release-download/RELEASE-PROVENANCE.json", encoding="utf-8"))["workflow"]["run_id"])')"
           python .github/scripts/release_provenance.py verify \
             --provenance release-download/RELEASE-PROVENANCE.json \
             --repository "${GITHUB_REPOSITORY}" \
