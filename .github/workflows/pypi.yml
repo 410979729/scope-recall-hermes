@@ -189,6 +189,15 @@ jobs:
               raise SystemExit(f"SHA256SUMS lists missing artifacts: {', '.join(extra)}")
           print("verified", len(artifacts), "GitHub Release artifacts", file=sys.stderr)
           PY
+      - name: Stage validated distributions
+        env:
+          RELEASE_TAG: ${{ steps.release_tag.outputs.release_tag }}
+        run: |
+          python .github/scripts/stage_release_assets.py \
+            --source-dir release-download \
+            --packages-dir release-staging/packages \
+            --metadata-dir release-staging/metadata \
+            --version "${RELEASE_TAG#v}"
       - name: Verify source/run-bound release provenance
         env:
           RELEASE_TAG: ${{ steps.release_tag.outputs.release_tag }}
@@ -216,16 +225,7 @@ jobs:
             --workflow-run-id "${RELEASE_RUN_ID}" \
             --workflow-run-status "${WORKFLOW_RUN_STATUS}" \
             --workflow-run-conclusion "${WORKFLOW_RUN_CONCLUSION}" \
-            --packages-dir release-download
-      - name: Stage validated distributions
-        env:
-          RELEASE_TAG: ${{ steps.release_tag.outputs.release_tag }}
-        run: |
-          python .github/scripts/stage_release_assets.py \
-            --source-dir release-download \
-            --packages-dir release-staging/packages \
-            --metadata-dir release-staging/metadata \
-            --version "${RELEASE_TAG#v}"
+            --packages-dir release-staging/packages
       - name: Refuse repeated PyPI publish
         env:
           RELEASE_TAG: ${{ steps.release_tag.outputs.release_tag }}
