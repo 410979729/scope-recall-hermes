@@ -406,6 +406,62 @@ def test_valid_citation_ids_do_not_authorize_unsupported_answer_candidate(
     assert provider._conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == before
 
 
+def test_reflection_candidate_reuses_transport_noise_capture_gate(
+    tmp_path: Path,
+) -> None:
+    provider = ReflectionToolProvider(
+        tmp_path,
+        maintenance_enabled=True,
+        write_candidates=True,
+    )
+    wrapper_observation = (
+        "[CONTEXT COMPACTION - REFERENCE ONLY] Aurora uses PostgreSQL."
+    )
+    second_observation = "Aurora requires row-level security."
+    _insert_memory(
+        provider,
+        memory_id="memory-one",
+        content=wrapper_observation,
+        source="tool-store",
+    )
+    _insert_memory(
+        provider,
+        memory_id="memory-two",
+        content=second_observation,
+        source="event-digest",
+    )
+    response = {
+        "observations": [
+            {
+                "text": wrapper_observation,
+                "citations": ["memory:memory-one"],
+            },
+            {
+                "text": second_observation,
+                "citations": ["memory:memory-two"],
+            },
+        ],
+        "inferences": [],
+        "uncertainties": [],
+        "answer": f"{wrapper_observation}\n{second_observation}",
+        "citations": ["memory:memory-one", "memory:memory-two"],
+        "followup_queries": [],
+    }
+    provider._reflection_transport = lambda _prompt: json.dumps(response)
+    before = provider._conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+
+    payload = _payload(
+        ScopeRecallToolService(provider),
+        {"query": "Aurora storage", "propose_memory": True},
+    )
+
+    assert payload["ok"] is True
+    assert payload["candidate"]["created"] is False
+    assert payload["candidate"]["reason"] == "storage_policy_rejected"
+    assert "CONTEXT COMPACTION" in payload["candidate"]["policy_reason"]
+    assert provider._conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == before
+
+
 def test_same_provenance_root_does_not_satisfy_candidate_source_diversity(
     tmp_path: Path,
 ) -> None:

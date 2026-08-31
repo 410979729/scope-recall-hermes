@@ -156,7 +156,7 @@ def build_search_plan(*, limit: int, retrieval_config: dict[str, Any], vector_co
 
 def initial_trace(*, query: str, plan: RecallSearchPlan, accessible_scope_count: int) -> dict[str, Any]:
     return {
-        "query": query,
+        "query_length": len(str(query or "")),
         "limit": plan.bounded_limit,
         "configured_top_k": plan.configured_top_k,
         "candidate_pool": plan.candidate_pool,
@@ -171,6 +171,12 @@ def initial_trace(*, query: str, plan: RecallSearchPlan, accessible_scope_count:
             "freshness_strict_excluded": 0,
             "relation_contradiction_suppressed": 0,
             "vector_only_below_min_score": 0,
+            "vector_only_below_min_margin": 0,
+            "vector_background_unavailable": 0,
+            "opaque_vector_rejected_count": 0,
+            "candidate_admission_rejected_count": 0,
+            "candidate_lifecycle_egress_rejected": 0,
+            "no_admissible_evidence": 0,
             "below_min_score": 0,
         },
         "timings_ms": {},
@@ -250,6 +256,12 @@ def humanize_filter_trace(trace: dict[str, Any]) -> list[dict[str, Any]]:
         "general_policy_removed": "General scratch rows removed by the configured general-memory policy.",
         "entity_scope_mismatch": "Rows removed because entity scoping did not match the query context.",
         "vector_only_below_min_score": "Vector-only rows rejected because their semantic score was below the stricter vector-only threshold.",
+        "vector_only_below_min_margin": "Vector-only rows rejected because they did not separate from the background neighbor by the configured margin.",
+        "vector_background_unavailable": "Vector-only rows rejected because no real background neighbor was available to prove score separation.",
+        "opaque_vector_rejected_count": "Vector-only rows rejected because the query was an opaque identifier or transport-like noise.",
+        "candidate_admission_rejected_count": "Rows rejected because no query-side lexical, temporal, curated, exact-identifier, or calibrated vector evidence admitted them.",
+        "candidate_lifecycle_egress_rejected": "Rows rejected at the final boundary because their lifecycle is not visible to ordinary recall.",
+        "no_admissible_evidence": "Searches that ended with no candidate satisfying the absolute evidence contract.",
         "below_min_score": "Rows rejected because final score was below the retrieval minimum.",
     }
     explanations: list[dict[str, Any]] = []

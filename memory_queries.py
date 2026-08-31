@@ -12,7 +12,13 @@ import time
 from typing import Any
 
 from .capture_filters import sanitize_structured_value
+from .candidate_review import candidate_identity_fields
 from .adjudication_schedule import adjudication_schedule_status, schedule_target_id
+from .curation_observability import (
+    curation_status_projection,
+    latest_nightly_digest_observation,
+)
+from .fact_observability import fact_observability_report
 from .writer_lease import sanitized_truth_writer_owner
 from .freshness import attach_freshness_metadata, fact_freshness_report, memory_freshness_map
 from .gating import compact_text
@@ -23,6 +29,7 @@ from .lifecycle_policy import PROFILE_HIDDEN_LIFECYCLES  # noqa: F401
 from ._internal.memory.scope import accessible_scope_params, payload_entities, scope_placeholders
 from .models import recall_scope_mode
 from .operator_ledger import operator_ledger_report
+from .scoring import lexical_score
 from ._internal.recall.pipeline import humanize_filter_trace, humanize_recall_components
 from .capture_control import capture_queue_report
 from .relation_containment import relation_containment_report
@@ -174,7 +181,7 @@ def _profile_targets(targets: list[str] | None, *, include_general: bool) -> lis
 
 def _profile_row_payload(row: Any) -> dict[str, Any]:
     metadata = load_metadata(row["metadata"] if "metadata" in row.keys() else "{}")
-    return {
+    payload = {
         "id": str(row["id"]),
         "target": str(row["target"]),
         "source": str(row["source"]),
@@ -193,6 +200,10 @@ def _profile_row_payload(row: Any) -> dict[str, Any]:
         "confidence": clamp_float(metadata.get("confidence"), default=0.5),
         "entities": payload_entities(metadata),
     }
+    payload.update(
+        candidate_identity_fields(source=str(row["source"]), metadata=metadata)
+    )
+    return payload
 
 
 def _profile_curated_items(
@@ -229,7 +240,12 @@ def _profile_curated_items(
 
 
 def _profile_relevant_ids(
-    provider: Any, *, query: str, entity: str, limit: int
+    provider: Any,
+    *,
+    query: str,
+    entity: str,
+    limit: int,
+    include_candidates: bool = False,
 ) -> set[str]:
     relevant: set[str] = set()
     if query:
@@ -237,6 +253,40 @@ def _profile_relevant_ids(
             query, limit=max(10, min(50, limit * 4))
         ):
             relevant.add(str(item.id))
+        if include_candidates:
+            with _query_lock(provider):
+                candidate_rows = (
+                    _query_conn(provider)
+                    .execute(
+                        f"""
+                    SELECT id, source, target, content, summary
+                    FROM memories
+                    WHERE scope_id IN ({scope_placeholders(provider)})
+                      AND LOWER(COALESCE(
+                          CASE WHEN json_valid(metadata)
+                          THEN json_extract(metadata, '$.lifecycle')
+                          ELSE '' END,
+                          ''
+                      )) IN ('candidate', 'in_progress')
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                        [
+                            *accessible_scope_params(provider),
+                            max(50, min(500, limit * 40)),
+                        ],
+                    )
+                    .fetchall()
+                )
+            for row in candidate_rows:
+                if lexical_score(
+                    query=query,
+                    content=str(row["content"] or ""),
+                    summary=str(row["summary"] or ""),
+                    source=str(row["source"] or ""),
+                    target=str(row["target"] or "memory"),
+                ) > 0.0:
+                    relevant.add(str(row["id"]))
     normalized_entity = normalize_entity(entity)
     if normalized_entity:
         with _query_lock(provider):
@@ -249,7 +299,9 @@ def _profile_relevant_ids(
                 JOIN memories m ON m.id = e.memory_id
                 WHERE e.entity = ?
                   AND m.scope_id IN ({scope_placeholders(provider)})
-                  AND {lifecycle_visible_sql("m")}
+                  AND {_profile_lifecycle_sql(
+                      "m", include_candidates=include_candidates
+                  )}
                 LIMIT ?
                 """,
                     [
@@ -265,7 +317,10 @@ def _profile_relevant_ids(
 
 
 def _profile_lifecycle_sql(
-    alias: str = "m", *, include_candidates: bool = False
+    alias: str = "m",
+    *,
+    include_candidates: bool = False,
+    include_general_scratch: bool = False,
 ) -> str:
     lifecycle_expr = (
         f"LOWER(COALESCE(CASE WHEN json_valid({alias}.metadata) "
@@ -273,6 +328,8 @@ def _profile_lifecycle_sql(
     )
     if include_candidates:
         return f"{lifecycle_expr} NOT IN ('archived', 'superseded', 'obsolete', 'rejected')"
+    if include_general_scratch:
+        return f"{lifecycle_expr} IN ('promoted', 'scratch')"
     return f"{lifecycle_expr} = 'promoted'"
 
 
@@ -303,7 +360,11 @@ def _profile_rows_for_target(
             FROM memories m
             WHERE m.target = ?
               AND m.scope_id IN ({scope_placeholders(provider)})
-              AND {_profile_lifecycle_sql("m", include_candidates=include_candidates)}{relevance_clause}
+              AND {_profile_lifecycle_sql(
+                  "m",
+                  include_candidates=include_candidates,
+                  include_general_scratch=target == "general",
+              )}{relevance_clause}
             ORDER BY
                 CASE m.source
                     WHEN 'tool-store' THEN 0
@@ -353,7 +414,11 @@ def profile_payload(
     max_chars = max(120, min(4000, int(max_chars or 1200)))
     selected_targets = _profile_targets(targets, include_general=include_general)
     relevant_ids = _profile_relevant_ids(
-        provider, query=query, entity=entity, limit=limit
+        provider,
+        query=query,
+        entity=entity,
+        limit=limit,
+        include_candidates=bool(include_candidates),
     )
     relevance_requested = bool(query.strip() or entity.strip())
 
@@ -370,7 +435,7 @@ def profile_payload(
             limit=limit,
             relevant_ids=relevant_ids,
             filter_to_relevance=filter_to_relevance,
-            include_candidates=bool(include_candidates or target == "general"),
+            include_candidates=bool(include_candidates),
         )
         sections[target] = {"count": len(items), "items": items}
         all_items.extend(items)
@@ -463,7 +528,7 @@ def context_payload(
             entity_counts.items(), key=lambda pair: (-pair[1], pair[0])
         )[:10]
     ]
-    return {
+    payload = {
         "query": query,
         "count": len(records),
         "context": compact_context_lines(
@@ -472,6 +537,10 @@ def context_payload(
         "entities": top_entities,
         "results": records,
     }
+    if not records:
+        payload["retrieval_status"] = "no_relevant_memory"
+        payload["reason_codes"] = ["no_admissible_evidence"]
+    return payload
 
 
 def probe_entity(provider: Any, *, entity: str, limit: int = 10) -> dict[str, Any]:
@@ -592,6 +661,12 @@ def inspect_memory(provider: Any, *, memory_id: str) -> dict[str, Any]:
             [memory_id, memory_id, memory_id, *scope_params],
         ).fetchall()
     metadata = load_metadata(row["metadata"])
+    identity = candidate_identity_fields(
+        source=str(row["source"]), metadata=metadata
+    )
+    public_metadata = dict(metadata)
+    if "automatic_admission" in public_metadata:
+        public_metadata["automatic_admission"] = identity["automatic_admission"]
     memory = {
         "id": str(row["id"]),
         "scope_id": str(row["scope_id"]),
@@ -601,8 +676,9 @@ def inspect_memory(provider: Any, *, memory_id: str) -> dict[str, Any]:
         "summary": str(row["summary"]),
         "created_at": str(row["created_at"]),
         "updated_at": str(row["updated_at"]),
-        "metadata": metadata,
+        "metadata": public_metadata,
     }
+    memory.update(identity)
     feedback = [dict(item) for item in feedback_rows]
     relations = [dict(item) for item in relation_rows]
     payload = {
@@ -980,6 +1056,10 @@ def stats_payload(provider: Any) -> dict[str, Any]:
     conn = _query_conn(provider)
     scope_view = _query_scope_view(provider)
     vector_view = _vector_status_view(provider)
+    runtime_view = _runtime_status_view(provider)
+    observability_config = _as_str_dict(
+        runtime_view.get("observability_config")
+    )
     with _query_lock(provider):
         total = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
         scoped = conn.execute(
@@ -1033,8 +1113,13 @@ def stats_payload(provider: Any) -> dict[str, Any]:
         capture_queue = capture_queue_report(provider)
         operator_ledger = operator_ledger_report(conn)
         freshness = fact_freshness_report(conn)
+        fact_evolution_observability = fact_observability_report(
+            conn,
+            observability_config,
+        )
+        nightly_digest_observation = latest_nightly_digest_observation(conn)
         adjudication_report = dict(
-            _runtime_status_view(provider).get("last_adjudication_report") or {}
+            runtime_view.get("last_adjudication_report") or {}
         )
         writable_scope_ids = tuple(
             str(scope_id)
@@ -1058,7 +1143,6 @@ def stats_payload(provider: Any) -> dict[str, Any]:
                 # not available instead of creating schema as a side effect.
                 adjudication_report["schedule"] = {"status": "unavailable"}
                 adjudication_report["l4_schedule"] = {"status": "unavailable"}
-    runtime_view = _runtime_status_view(provider)
     retrieval_view = _retrieval_status_view(provider)
     vector_table = str(vector_view.get("table") or "")
     vector_embedder: dict[str, Any] = _as_str_dict(vector_view.get("embedder"))
@@ -1066,6 +1150,18 @@ def stats_payload(provider: Any) -> dict[str, Any]:
         vector_embedder = _as_str_dict(vector_view.get("embedder"))
     failed_writes = int(runtime_view.get("writer_failed_writes") or 0)
     reported_failures = int(runtime_view.get("writer_reported_failures") or 0)
+    journal_digest_status = {
+        "thread_alive": bool(runtime_view.get("journal_digest_thread_alive")),
+        "last_started": float(runtime_view.get("journal_digest_last_started") or 0.0),
+        "last_finished": float(runtime_view.get("journal_digest_last_finished") or 0.0),
+        "last_status": str(
+            runtime_view.get("journal_digest_last_status") or "never_run"
+        ),
+        "last_error": str(runtime_view.get("journal_digest_last_error") or ""),
+        "consecutive_failures": int(
+            runtime_view.get("journal_digest_consecutive_failures") or 0
+        ),
+    }
     return {
         "provider": runtime_view.get("name") or getattr(provider, "name", ""),
         "scope_id": scope_view.get("scope_id") or "",
@@ -1113,14 +1209,13 @@ def stats_payload(provider: Any) -> dict[str, Any]:
             **freshness,
             "startup_backfill": dict(runtime_view.get("freshness_backfill") or {}),
         },
-        "journal_digest": {
-            "thread_alive": bool(runtime_view.get("journal_digest_thread_alive")),
-            "last_started": float(runtime_view.get("journal_digest_last_started") or 0.0),
-            "last_finished": float(runtime_view.get("journal_digest_last_finished") or 0.0),
-            "last_status": str(runtime_view.get("journal_digest_last_status") or "never_run"),
-            "last_error": str(runtime_view.get("journal_digest_last_error") or ""),
-            "consecutive_failures": int(runtime_view.get("journal_digest_consecutive_failures") or 0),
-        },
+        "fact_evolution": fact_evolution_observability,
+        "curation": curation_status_projection(
+            observability_config,
+            journal_digest=journal_digest_status,
+            nightly_digest=nightly_digest_observation,
+        ),
+        "journal_digest": journal_digest_status,
         "vector": {
             "schema_version": str(vector_view.get("schema_version") or "vector_status.v1"),
             "enabled": bool(vector_view.get("enabled")),

@@ -7,7 +7,11 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any
 
-from .capture_filters import sanitize_report_text, should_capture_text
+from .capture_filters import (
+    classify_transport_noise,
+    sanitize_report_text,
+    should_capture_text,
+)
 from .gating import compact_text
 from .governance import extract_candidates
 from .sql_store import fts_integrity_report
@@ -72,9 +76,18 @@ def build_hygiene_report(conn: Any, vector_store: Any = None, limit: int = 200) 
         duplicate_map[(str(row["scope_id"] or ""), target, key)].append(row)
 
         capture_result = should_capture_text(content)
+        transport = classify_transport_noise(content)
         preview = _preview(row)
-        if not capture_result.allowed and capture_result.reason.startswith("skip-pattern:"):
-            item = dict(preview, reason=capture_result.reason)
+        if transport.blocked or (
+            not capture_result.allowed
+            and capture_result.reason.startswith("skip-pattern:")
+        ):
+            reason = (
+                f"transport-noise:{transport.reason_codes[0]}"
+                if transport.blocked
+                else capture_result.reason
+            )
+            item = dict(preview, reason=reason)
             runtime_noise.append(item)
             delete_candidates.setdefault(str(row["id"]), dict(item, reason="runtime-wrapper-noise"))
         if target == "general" and source == "turn-assistant":
@@ -84,7 +97,7 @@ def build_hygiene_report(conn: Any, vector_store: Any = None, limit: int = 200) 
             very_short.append(preview)
         if len(content) >= VERY_LONG_CHARS:
             very_long.append(preview)
-        if target == "general" and capture_result.allowed:
+        if target == "general" and capture_result.allowed and not transport.blocked:
             extracted = extract_candidates(content)
             if extracted:
                 promotion_candidates.append(

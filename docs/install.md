@@ -41,6 +41,55 @@ The standalone `rollback --backup-dir ...` command restores a plugin copy only. 
 
 ## 2. Verify, upgrade, and rollback
 
+### Recommended automatic upgrade (1.10.3 and later)
+
+Ordinary users and agents should not run the manual compatibility/repair flow
+below. Upgrade the package in the same Python environment that runs Hermes and
+invoke the fixed stable updater:
+
+```bash
+python -m pip install --upgrade hermes-scope-recall
+hermes-scope-recall update --json
+```
+
+The active plugin proves its exact home from its own location. The standalone
+command uses an inherited `HERMES_HOME`; without either authority it refuses
+to run rather than guessing a platform-default or stale home. Only an external
+maintainer shell for a non-default install needs `--hermes-home`; ordinary
+agents never choose among profiles.
+
+Agents must claim success only when the response contains
+`"upgrade_complete": true`. A detached launch returns
+`"outcome": "upgrade_in_progress"` and
+`"next_action_code": "wait_for_automatic_restart"`; that means the updater is
+still working. Transient release-network failures receive three automatic
+attempts before the only permitted user action becomes rerunning this same
+command. Users never select a repair, embedding identity, or rollback policy.
+If support is genuinely required, the response includes a content-free
+`support_receipt` object to forward unchanged. Do not inspect or attach the
+memory database.
+
+There are no repository, URL, archive, candidate, checksum, memory-adjudication,
+embedding, vector-repair, or rollback choices. The command binds to the exact
+Hermes home, fetches only the official stable GitHub Release, verifies the
+release manifest and canonical candidate tree, freezes an external worker,
+stops that home's gateway, and either starts the verified candidate or the
+provably restored previous version. It never sends memory content to an
+embedding API. Unsafe vector companion state is preserved and disabled as
+rebuildable debt while SQLite truth and lexical recall remain usable.
+
+The operation is crash-resumable. After a power loss, reboot, killed process,
+or transient download failure, run the same command again: it resumes the sole
+incomplete operation before making a new network request. It never guesses when
+the durable activation evidence is ambiguous; in that exceptional case it
+keeps the writer stopped and returns a content-free recovery reason.
+
+After `2.0.1` is active, `hermes scope-recall update` provides the same
+zero-choice path and derives the exact Hermes home from the active plugin.
+
+The manual commands below remain maintainer/operator diagnostics, not a normal
+upgrade requirement.
+
 Run structural verification:
 
 ```bash

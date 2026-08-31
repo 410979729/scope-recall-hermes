@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import json
 import threading
 
 from scope_recall.evidence_retrieval import merge_evidence_rankings
@@ -22,7 +23,10 @@ def _item(memory_id: str, score: float) -> RecallItem:
         target="general",
         score=score,
         updated_at="2026-08-09T00:00:00+00:00",
-        metadata={"original": memory_id},
+        metadata={
+            "original": memory_id,
+            "candidate_admission": {"admitted": True},
+        },
     )
 
 
@@ -30,16 +34,29 @@ def test_trace_state_is_request_local_across_threads() -> None:
     service = RecallService(object())
     barrier = threading.Barrier(2)
 
-    def write_then_read(query: str) -> str:
-        service.last_funnel_trace = {"query": query}
-        service.last_evidence_set_trace = {"primary_query": query}
+    def write_then_read(request_index: int, query: str) -> int:
+        service.last_funnel_trace = {
+            "query": query,
+            "request_label": query,
+            "request_index": request_index,
+        }
+        service.last_evidence_set_trace = {
+            "primary_query": query,
+            "request_label": query,
+            "request_index": request_index,
+        }
         barrier.wait(timeout=2.0)
-        assert service.last_evidence_set_trace["primary_query"] == query
-        return str(service.last_funnel_trace["query"])
+        assert service.last_evidence_set_trace["request_index"] == request_index
+        assert "primary_query" not in service.last_evidence_set_trace
+        assert "request_label" not in service.last_evidence_set_trace
+        return int(service.last_funnel_trace["request_index"])
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [pool.submit(write_then_read, query) for query in ("alpha", "beta")]
-        assert [future.result(timeout=2.0) for future in futures] == ["alpha", "beta"]
+        futures = [
+            pool.submit(write_then_read, index, query)
+            for index, query in enumerate(("alpha", "beta"))
+        ]
+        assert [future.result(timeout=2.0) for future in futures] == [0, 1]
 
 
 def test_direct_search_signature_cannot_bypass_egress_sanitization() -> None:
@@ -215,7 +232,54 @@ def test_recall_service_evidence_set_deduplicates_variants_and_captures_trace() 
     assert service.last_evidence_set_trace["query_count"] == 2
     assert service.last_evidence_set_trace["returned_ids"] == ["a", "c", "b"]
     assert len(service.last_evidence_set_trace["query_traces"]) == 2
-    assert service.last_funnel_trace["query"] == "main question"
+    assert "query" not in service.last_funnel_trace
+    assert service.last_funnel_trace["final"]["returned_count"] == 1
+    serialized_trace = json.dumps(
+        service.last_evidence_set_trace,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    assert "main question" not in serialized_trace
+    assert "second subject" not in serialized_trace
+
+
+def test_public_trace_setters_recursively_remove_query_and_candidate_text() -> None:
+    service = RecallService(object())
+    marker = "PRIVATE-QUERY-MARKER-771"
+
+    service.last_funnel_trace = {
+        "query": marker,
+        "nested": {
+            "content": marker,
+            "summary": marker,
+            "request_label": marker,
+            "status": "ok",
+        },
+    }
+    service.last_evidence_set_trace = {
+        "queries": [marker],
+        "query_traces": [
+            {
+                "raw_query": marker,
+                "request_label": marker,
+                "returned_ids": ["memory-1"],
+            }
+        ],
+    }
+
+    serialized = json.dumps(
+        {
+            "funnel": service.last_funnel_trace,
+            "evidence": service.last_evidence_set_trace,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    assert marker not in serialized
+    assert service.last_funnel_trace["nested"] == {"status": "ok"}
+    assert service.last_evidence_set_trace["query_traces"] == [
+        {"returned_ids": ["memory-1"]}
+    ]
 
 
 def test_recall_service_batches_query_embeddings_once_without_changing_fusion() -> None:

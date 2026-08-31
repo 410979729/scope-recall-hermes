@@ -1,0 +1,10 @@
+{
+  "negative_case_count": 10,
+  "negative_nonempty_count": 0,
+  "negative_surface_count": 30,
+  "passed": true,
+  "positive_case_count": 6,
+  "positive_hit_count": 6,
+  "positive_hit_rate": 1.0,
+  "schema_version": 1
+}

@@ -124,6 +124,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "fact_backfill": {
         "shadow_enabled": False,
     },
+    "curation": {
+        "owner": "internal",
+    },
     "recall_compiler": {
         "current_truth_enabled": True,
         "conflict_enabled": True,
@@ -239,6 +242,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "min_score": 0.18,
         "vector_min_score": 0.12,
         "vector_only_min_score": 0.70,
+        "vector_only_min_margin": 0.035,
+        "zero_signal_gate_enabled": True,
+        "opaque_query_vector_only_enabled": False,
         "include_general": "same-scope",
         "general_weight": 0.35,
         "general_min_importance": 0.2,
@@ -380,6 +386,7 @@ CONFIG_OPEN_MAP_PATHS = frozenset(
 CONFIG_BOOL_OR_OBJECT_PATHS = frozenset({"curated_memory"})
 CONFIG_ENUM_VALUES: dict[str, frozenset[str]] = {
     "automatic_digest_default_lifecycle": frozenset({"candidate", "promoted"}),
+    "curation.owner": frozenset({"external", "internal", "manual"}),
 }
 CONFIG_BOUNDED_INTEGER_PATHS: dict[str, tuple[int, int]] = {
     "relation_extraction_max_pairs": (1, 5000),

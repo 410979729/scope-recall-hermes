@@ -220,12 +220,31 @@ def search_db_memories(
     fts_query = build_fts_query(tokens)
     rows: list[sqlite3.Row] = []
     supplemental_row_ids: set[str] = set()
+    exact_identifier_row_ids: set[str] = set()
     try:
         configured_pool = int((provider._retrieval_config or {}).get("candidate_pool") or 0)
     except (TypeError, ValueError):
         configured_pool = 0
     candidate_pool = max(limit * 2, limit, configured_pool)
     with provider._lock:
+        # Exact memory identifiers are a separate, bounded lexical authority.
+        # This lets opaque identifiers (UUID/SHA/project-style IDs) find the
+        # row they literally name without granting those queries vector-only
+        # admission.  Scope and ordinary lifecycle constraints remain the
+        # same as every other public recall lane.
+        exact_query = str(query or "").strip()
+        if exact_query:
+            exact_rows = conn.execute(
+                """
+                SELECT m.*, NULL AS bm25_score
+                FROM memories m
+                WHERE m.id = ? AND m.scope_id IN ({}) AND {}
+                LIMIT 1
+                """.format(_scope_placeholders(provider), _ACTIVE_MEMORY_SQL_M),
+                [exact_query, *_accessible_scope_params(provider)],
+            ).fetchall()
+            rows.extend(exact_rows)
+            exact_identifier_row_ids.update(str(row["id"]) for row in exact_rows)
         supplemental_table = supplemental_table_for_search(
             conn,
             generation_override,
@@ -370,12 +389,17 @@ def search_db_memories(
     min_score = float((provider._retrieval_config or {}).get("min_score") or provider._config_value("min_score", 0.18))
     results: list[RecallItem] = []
     for row in dedup_rows.values():
-        score = lexical_score(
-            query=query,
-            content=row["content"],
-            summary=row["summary"],
-            source=row["source"],
-            target=row["target"],
+        exact_identifier_evidence = str(row["id"]) in exact_identifier_row_ids
+        score = (
+            1.0
+            if exact_identifier_evidence
+            else lexical_score(
+                query=query,
+                content=row["content"],
+                summary=row["summary"],
+                source=row["source"],
+                target=row["target"],
+            )
         )
         supplemental_score = 0.0
         if str(row["id"]) in supplemental_row_ids:
@@ -408,6 +432,8 @@ def search_db_memories(
             results[-1].metadata["bm25_raw"] = bm25_raw_scores[str(row["id"])]
         if results[-1].metadata is not None and supplemental_score > 0.0:
             results[-1].metadata["supplemental_lexical_score"] = supplemental_score
+        if results[-1].metadata is not None and exact_identifier_evidence:
+            results[-1].metadata["exact_identifier_evidence"] = True
     results.sort(key=lambda item: float(item.score), reverse=True)
     return results[: max(0, int(limit))]
 

@@ -396,7 +396,7 @@ def build_candidate_manifest(
     provenance_path: Path,
     hermes_root: Path | None = None,
     ci_run_ids: Sequence[str] = (),
-    expected_version: str = "2.0.0",
+    expected_version: str = "2.0.1",
     require_clean: bool = True,
     development_snapshot: bool = False,
 ) -> dict[str, object]:
@@ -523,7 +523,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--provenance", type=Path, required=True)
     parser.add_argument("--ci-run-id", action="append", default=[])
-    parser.add_argument("--expected-version", default="2.0.0")
+    parser.add_argument("--expected-version", default="2.0.1")
     return parser.parse_args(argv)
 
 

@@ -19,6 +19,14 @@ from typing import Any, NoReturn
 
 from .maintenance_lease import ACTIVATION_GUARD_TRIGGER_PREFIX
 from .truth_connection import connect_truth_database
+from .windows_filesystem import (
+    io_path,
+    make_dirs,
+    path_exists,
+    path_is_file,
+    path_is_symlink,
+    public_path,
+)
 
 
 _FileIdentity = tuple[int, int]
@@ -31,7 +39,7 @@ class SqliteBackupError(RuntimeError):
 
 
 def _as_path(path: str | Path) -> Path:
-    return Path(os.path.abspath(os.fspath(Path(path).expanduser())))
+    return public_path(path)
 
 
 def _sidecar_paths(path: Path) -> tuple[Path, Path, Path]:
@@ -48,7 +56,7 @@ def _stat_identity(stat_result: os.stat_result) -> _FileIdentity:
 
 def _path_identity(path: Path) -> _FileIdentity | None:
     try:
-        return _stat_identity(path.stat(follow_symlinks=False))
+        return _stat_identity(os.stat(io_path(path), follow_symlinks=False))
     except FileNotFoundError:
         return None
 
@@ -71,12 +79,12 @@ def _remove_owned_sqlite_artifacts(
             failures.append(f"{path}: ownership changed; refusing cleanup")
             return failures
         try:
-            path.unlink()
+            os.unlink(io_path(path))
         except OSError as exc:
             failures.append(f"{path}: {type(exc).__name__}: {exc}")
 
     for sidecar in _sidecar_paths(path):
-        if sidecar.exists() or sidecar.is_symlink():
+        if path_exists(sidecar) or path_is_symlink(sidecar):
             failures.append(f"{sidecar}: unowned sidecar preserved")
     return failures
 
@@ -222,14 +230,17 @@ def _reserve_staging_path(destination: Path) -> tuple[Path, int, _FileIdentity]:
         if os.path.normcase(str(staging)) == os.path.normcase(str(destination)):
             continue
         try:
-            descriptor = os.open(staging, flags, 0o600)
+            descriptor = os.open(io_path(staging), flags, 0o600)
         except FileExistsError:
             continue
         try:
             identity = _stat_identity(os.fstat(descriptor))
         except OSError:
             os.close(descriptor)
-            staging.unlink(missing_ok=True)
+            try:
+                os.unlink(io_path(staging))
+            except FileNotFoundError:
+                pass
             raise
         return staging, descriptor, identity
     raise SqliteBackupError("unable to reserve a unique SQLite backup staging path")
@@ -257,19 +268,19 @@ def _publish_staged_backup(
         raise SqliteBackupError(
             "SQLite backup staging ownership changed before publish"
         )
-    if destination.exists() or destination.is_symlink():
+    if path_exists(destination) or path_is_symlink(destination):
         raise SqliteBackupError(
             "refusing to overwrite destination SQLite asset created concurrently: "
             f"{destination}"
         )
     for sidecar in _sidecar_paths(destination):
-        if sidecar.exists() or sidecar.is_symlink():
+        if path_exists(sidecar) or path_is_symlink(sidecar):
             raise SqliteBackupError(
                 "refusing SQLite backup publish while a destination sidecar was "
                 f"created concurrently: {sidecar}"
             )
     try:
-        os.link(staging, destination)
+        os.link(io_path(staging), io_path(destination))
     except FileExistsError as exc:
         raise SqliteBackupError(
             "refusing to overwrite destination SQLite asset created concurrently: "
@@ -285,7 +296,7 @@ def _publish_staged_backup(
             "published SQLite backup identity does not match verified staging inode"
         )
     for sidecar in _sidecar_paths(destination):
-        if sidecar.exists() or sidecar.is_symlink():
+        if path_exists(sidecar) or path_is_symlink(sidecar):
             raise SqliteBackupError(
                 "destination sidecar appeared during SQLite backup publish; "
                 f"published file retained for manual inspection: {sidecar}"
@@ -308,14 +319,14 @@ def inspect_sqlite_health(path: str | Path) -> dict[str, Any]:
         "foreign_key_violation_present": False,
         "error": "",
     }
-    if db_path.is_symlink():
+    if path_is_symlink(db_path):
         return {
             **base,
             "quick_check": "symlink_refused",
             "integrity_check": "symlink_refused",
             "error": f"refusing symlinked SQLite path: {db_path}",
         }
-    if not db_path.is_file():
+    if not path_is_file(db_path):
         return {
             **base,
             "quick_check": "not_a_file",
@@ -323,7 +334,7 @@ def inspect_sqlite_health(path: str | Path) -> dict[str, Any]:
             "error": f"SQLite path is not a file: {db_path}",
         }
     try:
-        connection = connect_truth_database(db_path, mode="ro", timeout=30)
+        connection = connect_truth_database(io_path(db_path), mode="ro", timeout=30)
     except Exception as exc:  # noqa: BLE001 - health must stay structured
         return {
             **base,
@@ -393,11 +404,11 @@ def logical_fingerprint(path: str | Path) -> str:
     """Hash schema/rows while excluding reserved temporary activation guards."""
 
     db_path = _as_path(path)
-    if db_path.is_symlink():
+    if path_is_symlink(db_path):
         raise SqliteBackupError(f"refusing symlinked SQLite path: {db_path}")
-    if not db_path.is_file():
+    if not path_is_file(db_path):
         raise SqliteBackupError(f"SQLite path is not a file: {db_path}")
-    connection = connect_truth_database(db_path, mode="ro", timeout=30)
+    connection = connect_truth_database(io_path(db_path), mode="ro", timeout=30)
     try:
         ignored_trigger_statements = _activation_guard_trigger_statements(connection)
         digest = hashlib.sha256()
@@ -462,21 +473,21 @@ def verified_online_backup(
             f"refusing SQLite backup when source and destination are the same "
             f"absolute path: {source}"
         )
-    if source.is_symlink():
+    if path_is_symlink(source):
         raise SqliteBackupError(
             f"refusing activation against symlinked SQLite truth DB: {source}"
         )
-    if not source.is_file():
+    if not path_is_file(source):
         raise SqliteBackupError(f"SQLite truth path is not a file: {source}")
-    if destination.is_symlink():
+    if path_is_symlink(destination):
         raise SqliteBackupError(f"refusing symlinked SQLite backup path: {destination}")
 
-    if destination.exists():
+    if path_exists(destination):
         raise SqliteBackupError(
             f"refusing to overwrite preexisting destination SQLite asset: {destination}"
         )
     for sidecar in _sidecar_paths(destination):
-        if sidecar.exists() or sidecar.is_symlink():
+        if path_exists(sidecar) or path_is_symlink(sidecar):
             raise SqliteBackupError(
                 f"refusing backup while preexisting destination sidecar exists: {sidecar}"
             )
@@ -487,7 +498,7 @@ def verified_online_backup(
             f"SQLite source health check failed: {source_health.get('error') or source}"
         )
 
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    make_dirs(destination.parent, exist_ok=True)
     staging: Path | None = None
     staging_identity: _FileIdentity | None = None
     staging_descriptor: int | None = None
@@ -499,8 +510,8 @@ def verified_online_backup(
             destination
         )
         staging_cleanup_pending = True
-        source_conn = connect_truth_database(source, mode="ro", timeout=30)
-        dest_conn = connect_truth_database(staging, mode="rw")
+        source_conn = connect_truth_database(io_path(source), mode="ro", timeout=30)
+        dest_conn = connect_truth_database(io_path(staging), mode="rw")
         if _stat_identity(os.fstat(staging_descriptor)) != staging_identity:
             raise SqliteBackupError(
                 "SQLite backup staging reservation handle identity changed before transfer"

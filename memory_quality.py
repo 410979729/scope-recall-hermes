@@ -330,8 +330,22 @@ def quality_decision_for_memory(row: sqlite3.Row | Mapping[str, Any]) -> MemoryQ
         return MemoryQualityDecision("keep_candidate", f"unsupported_memory_type:{memory_type or 'unknown'}", **base)
     if not evidence_refs:
         return MemoryQualityDecision("keep_candidate", "missing_evidence_anchor", risk="medium", **base)
+    reviewed_admission = bool(
+        metadata.get("admission_reviewed_at")
+        or metadata.get("candidate_reviewed_at")
+    )
+    event_derived = source == "event-digest" or bool(metadata.get("event_digest"))
+    if event_derived and not reviewed_admission:
+        # Keep legacy event candidates (created before automatic_admission was
+        # persisted) behind the same review boundary as new rows.
+        return MemoryQualityDecision(
+            "keep_candidate",
+            "event_digest_requires_operator_review",
+            risk="medium",
+            **base,
+        )
     admission = metadata.get("automatic_admission")
-    if isinstance(admission, Mapping) and not metadata.get("admission_reviewed_at"):
+    if isinstance(admission, Mapping) and not reviewed_admission:
         route = str(admission.get("route") or "memory_review").strip().lower()
         if route == "experience_review":
             return MemoryQualityDecision(

@@ -168,11 +168,25 @@ def test_entity_probe_related_and_profile_hide_lifecycle_removed_memories(provid
         entities=["project-atlas", "obsolete-neighbor"],
         lifecycle="obsolete",
     )
+    candidate_id = _store(
+        provider,
+        content="Project Atlas pending candidate should remain review-only until explicit promotion.",
+        entities=["project-atlas", "candidate-neighbor"],
+        lifecycle="candidate",
+    )
+    # Simulate stale companion rows from an older build.  Ordinary entity graph
+    # surfaces must still enforce the memory row lifecycle at read time.
+    with provider._lock:
+        provider._require_conn().executemany(
+            "INSERT OR REPLACE INTO memory_entities(memory_id, entity, weight, source) VALUES (?, ?, 1.0, 'legacy-fixture')",
+            [(candidate_id, "project-atlas"), (candidate_id, "candidate-neighbor")],
+        )
+        provider._require_conn().commit()
 
     probe = provider._probe_entity(entity="project-atlas", limit=10)
     probe_ids = {item["id"] for item in probe["results"]}
     assert active_id in probe_ids
-    assert {archived_id, rejected_id, superseded_id, obsolete_id}.isdisjoint(probe_ids)
+    assert {archived_id, rejected_id, superseded_id, obsolete_id, candidate_id}.isdisjoint(probe_ids)
     active_probe = next(item for item in probe["results"] if item["id"] == active_id)
     assert {"read_file", "search_files"}.isdisjoint(set(active_probe["entities"]))
 
@@ -180,14 +194,35 @@ def test_entity_probe_related_and_profile_hide_lifecycle_removed_memories(provid
     related_names = {item["entity"] for item in related["related"]}
     assert "visible-neighbor" in related_names
     assert {"read_file", "search_files"}.isdisjoint(related_names)
-    assert {"archived-neighbor", "rejected-neighbor", "superseded-neighbor", "obsolete-neighbor"}.isdisjoint(related_names)
+    assert {
+        "archived-neighbor",
+        "rejected-neighbor",
+        "superseded-neighbor",
+        "obsolete-neighbor",
+        "candidate-neighbor",
+    }.isdisjoint(related_names)
 
     profile = provider._profile_payload(entity="project-atlas", targets=["project"], include_curated=False, limit=10)
     profile_ids = {item["id"] for item in profile["sections"]["project"]["items"]}
     assert active_id in profile_ids
-    assert {archived_id, rejected_id, superseded_id, obsolete_id}.isdisjoint(profile_ids)
+    assert {archived_id, rejected_id, superseded_id, obsolete_id, candidate_id}.isdisjoint(profile_ids)
     active_profile = next(item for item in profile["sections"]["project"]["items"] if item["id"] == active_id)
     assert {"read_file", "search_files"}.isdisjoint(set(active_profile["entities"]))
+
+    review_profile = provider._profile_payload(
+        entity="project-atlas",
+        targets=["project"],
+        include_candidates=True,
+        include_curated=False,
+        limit=10,
+    )
+    review_profile_ids = {
+        item["id"] for item in review_profile["sections"]["project"]["items"]
+    }
+    assert {active_id, candidate_id}.issubset(review_profile_ids)
+    assert {archived_id, rejected_id, superseded_id, obsolete_id}.isdisjoint(
+        review_profile_ids
+    )
 
 
 def test_extract_entities_filters_tool_trace_and_api_noise_tokens():

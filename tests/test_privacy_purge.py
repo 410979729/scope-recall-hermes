@@ -6,9 +6,13 @@ import json
 import pytest
 
 from plugins.memory import load_memory_provider
+from scope_recall.candidate_extraction import ExtractedCandidate
+from scope_recall.candidate_review import review_candidate
+from scope_recall.candidate_store import store_event_candidates
 from scope_recall.fact_repository import insert_claim, link_claim_evidence
 from scope_recall.journal_store import load_unprocessed_journal_entries
 from scope_recall.privacy_purge import replay_privacy_purge_receipts, run_privacy_purge
+from scope_recall.sql_store import record_governance_audit_event
 from scope_recall.windows_filesystem import atomic_write_text, read_text
 
 
@@ -271,6 +275,134 @@ def test_purge_erase_reports_not_retained(provider):
     assert repeated["status"] == "completed"
     assert repeated["data_retained"] is False
     assert repeated["mutation_applied"] is False
+
+
+def test_purge_redacts_event_candidate_governance_payload_copies(provider):
+    marker = "PURGE-EVENT-CANDIDATE-PRIVATE-9f81"
+    evidence_marker = "journal:PRIVATE-EVIDENCE-9f81"
+    conn = provider._require_conn()
+    stored = store_event_candidates(
+        conn,
+        candidates=[
+            ExtractedCandidate(
+                target="memory",
+                content=f"Stable workflow detail {marker} requires review.",
+                memory_type="workflow",
+                confidence=0.92,
+                evidence_refs=[evidence_marker],
+                metadata={"private_marker": f"{marker}-METADATA"},
+            )
+        ],
+        scope=provider._scope,
+        scope_id=provider._scope_id,
+        session_id=provider._session_id,
+        dry_run=False,
+    )
+    memory_id = str(stored["ids"][0])
+    reviewed = review_candidate(
+        conn,
+        memory_id=memory_id,
+        action="promote",
+        dry_run=False,
+        actor="purge-regression",
+    )
+    assert reviewed["applied"] is True
+    audit_before = conn.execute(
+        "SELECT * FROM governance_audit_events "
+        "WHERE event_type='event_candidate' AND target_id=?",
+        (memory_id,),
+    ).fetchone()
+    assert audit_before is not None
+    # New events are content-free at creation; emulate the 2.0 legacy shape
+    # so the patch also proves old payload copies are erased during Purge.
+    conn.execute(
+        "UPDATE governance_audit_events SET after_json=? WHERE id=?",
+        (
+            json.dumps({"summary": marker, "evidence_refs": [evidence_marker]}),
+            audit_before["id"],
+        ),
+    )
+    record_governance_audit_event(
+        conn,
+        event_id="purge-nested-cursor-fixture",
+        event_type="memory_auto_adjudication",
+        action="candidate_scan_cursor",
+        target_id="queue-safe-identity",
+        after={"last_scanned_id": memory_id},
+        reason="nested cursor purge fixture",
+        actor="test",
+        dry_run=False,
+    )
+    record_governance_audit_event(
+        conn,
+        event_id="purge-nested-export-fixture",
+        event_type="external_memory_export",
+        action="export",
+        target_id="export-safe-identity",
+        after={"record_ids": ["unrelated-memory", memory_id]},
+        reason="nested export purge fixture",
+        actor="test",
+        dry_run=False,
+    )
+    conn.commit()
+
+    plan = _tool(
+        provider, "scope_recall_purge", {"action": "plan", "id": memory_id}
+    )
+    denied = _tool(
+        provider,
+        "scope_recall_purge",
+        {
+            "action": "deny",
+            "id": memory_id,
+            "operation_id": plan["operation_id"],
+            "confirmation": plan["confirmation"],
+        },
+    )
+    erased = _tool(
+        provider,
+        "scope_recall_purge",
+        {
+            "action": "erase",
+            "operation_id": plan["operation_id"],
+            "confirmation": denied["erase_confirmation"],
+        },
+    )
+
+    assert erased["status"] == "completed"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM memories WHERE id=?", (memory_id,)
+    ).fetchone()[0] == 0
+    audit_after = conn.execute(
+        "SELECT target_id, before_json, after_json, reason "
+        "FROM governance_audit_events WHERE id=?",
+        (audit_before["id"],),
+    ).fetchone()
+    all_governance = conn.execute(
+        "SELECT * FROM governance_audit_events ORDER BY id"
+    ).fetchall()
+    rendered = json.dumps(
+        [dict(row) for row in all_governance], ensure_ascii=False
+    )
+    assert memory_id not in rendered
+    assert marker not in rendered
+    assert evidence_marker not in rendered
+    assert json.loads(audit_after["after_json"]) == {"privacy_purged": True}
+    for event_id in (
+        "purge-nested-cursor-fixture",
+        "purge-nested-export-fixture",
+    ):
+        nested = conn.execute(
+            "SELECT target_id, before_json, after_json "
+            "FROM governance_audit_events WHERE id=?",
+            (event_id,),
+        ).fetchone()
+        assert nested["target_id"] in {
+            "queue-safe-identity",
+            "export-safe-identity",
+        }
+        assert json.loads(nested["before_json"]) == {"privacy_purged": True}
+        assert json.loads(nested["after_json"]) == {"privacy_purged": True}
 
 
 def test_purge_removes_claim_evidence_and_degrades_shared_journal_provenance(provider):

@@ -209,7 +209,8 @@ def test_search_explain_and_benchmark_include_recall_funnel_trace(tmp_path):
             )
         )
         trace = search_payload["funnel_trace"]
-        assert trace["query"] == "Project Orion release checklist"
+        assert "query" not in trace
+        assert trace["query_length"] == len("Project Orion release checklist")
         assert trace["limit"] == 3
         assert trace["candidate_pool"] >= 3
         assert trace["vector_top_k"] >= trace["candidate_pool"]
