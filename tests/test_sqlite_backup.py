@@ -787,9 +787,15 @@ def test_verified_online_backup_never_closes_reused_descriptor_after_close_error
         ):
             close_attempts += 1
             real_close(descriptor)
-            reused = os.open(unrelated_path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
-            unrelated_descriptors.append(reused)
-            assert reused == descriptor
+            opened = os.open(
+                unrelated_path,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+            if opened != descriptor:
+                os.dup2(opened, descriptor)
+                real_close(opened)
+            unrelated_descriptors.append(descriptor)
             raise OSError("injected post-close error after fd reuse")
         close_attempts += int(descriptor == captured_descriptors[0])
         real_close(descriptor)
