@@ -16,6 +16,7 @@ import pytest
 
 from plugins.memory import load_memory_provider
 
+import scope_recall._internal.runtime.writer_handoff as writer_handoff_module
 from scope_recall.config import DEFAULT_CONFIG, validate_config_override
 from scope_recall.capture import enqueue_store
 from writer_lease import (
@@ -49,6 +50,23 @@ _HANDOFF_STAGES = [
     "peer_write_committed",
     "former_owner_remains_reader",
 ]
+
+
+@pytest.fixture(autouse=True)
+def _disable_ambient_writer_handoff_scheduler(monkeypatch):
+    """Keep direct handoff regressions isolated from the live writer loop.
+
+    Tests that exercise scheduling retain the imported production function,
+    while the writer loop's dynamic import sees this no-op for the duration of
+    each test.  This prevents a background handoff from racing a direct
+    ``_perform_idle_handoff`` call after ``_make_idle`` moves the clock.
+    """
+
+    monkeypatch.setattr(
+        writer_handoff_module,
+        "maybe_schedule_idle_writer_handoff",
+        lambda _provider: False,
+    )
 
 
 def _provider():
