@@ -1,0 +1,11 @@
+{
+  "candidate_ordinary_leak_count": 0,
+  "explicit_profile_visible_count": 1,
+  "explicit_review_visible_count": 1,
+  "passed": true,
+  "read_total_changes_delta": 0,
+  "schema_version": 1,
+  "unreviewed_auto_promote_count": 0,
+  "wrapper_insert_count": 0,
+  "wrapper_total_changes_delta": 0
+}

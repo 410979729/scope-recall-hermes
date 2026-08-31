@@ -22,8 +22,14 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .artifacts import artifact_anchor_block, extract_artifacts
-from .capture_filters import sanitize_report_text, sanitize_structured_value, should_capture_text
+from .capture_filters import (
+    classify_transport_noise,
+    sanitize_report_text,
+    sanitize_structured_value,
+    should_capture_text,
+)
 from .config import load_runtime_config
+from .curation_observability import curation_owner
 from .digest_pollution import assess_digest_batch
 from .digest_quality import score_digest_candidate
 from .digest_run_results import nightly_digest_metadata, nightly_digest_result, nightly_status_payload
@@ -1030,7 +1036,13 @@ def _parse_llm_candidates_with_status(
             verification=extract_verification_hints([content]),
             evolution=proposal,
         )
-        if candidate_is_allowed(candidate):
+        # Transport wrappers are never admission-eligible, but retain them as
+        # quarantine-only proposals so the downstream pollution barrier can
+        # produce a durable, exclusive leave-state receipt instead of causing
+        # the source row to retry forever as an unresolved parse.
+        if candidate_is_allowed(candidate) or classify_transport_noise(
+            candidate.content
+        ).blocked:
             candidates.append(candidate)
         else:
             filtered += 1
@@ -1845,6 +1857,18 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
 
     The pipeline collects sessions, extracts candidates, applies quality gates, and writes a durable run result so cron output can distinguish success, fallback, quarantine, and no-op states."""
     hermes_home = options.hermes_home.expanduser().resolve()
+    storage_dir = hermes_home / "scope-recall"
+    runtime_config = load_runtime_config(Path(__file__).resolve().parent, storage_dir)
+    owner = curation_owner(runtime_config)
+    if owner != "internal":
+        return {
+            "ok": True,
+            "status": "disabled_by_owner",
+            "owner": owner,
+            "reason_code": "curation_owner_is_not_internal",
+            "digest_date": str(options.digest_date),
+            "sessions": 0,
+        }
     db_path = resolve_session_db(hermes_home, options.state_db)
     if db_path is None or not db_path.exists():
         return {"ok": True, "status": "no_session_db", "digest_date": str(options.digest_date), "sessions": 0}
@@ -1858,7 +1882,6 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
     if not bundles:
         return {"ok": True, "status": "no_messages", "digest_date": str(options.digest_date), "source_db": str(db_path), "sessions": 0}
 
-    storage_dir = hermes_home / "scope-recall"
     writer_lease: TruthWriterLease | None = None
     conn: sqlite3.Connection | None = None
     vector_runtime: DigestVectorRuntime | None = None
@@ -1889,7 +1912,6 @@ def run_digest(options: DigestOptions) -> dict[str, Any]:
         run_id = uuid.uuid4().hex
         started_at = datetime.now(timezone.utc).isoformat()
         llm_config = resolve_llm_config(hermes_home, options)
-        runtime_config = load_runtime_config(Path(__file__).resolve().parent, storage_dir)
         fallback_platform = next((bundle.source for bundle in bundles if bundle.source), "cli")
         fallback_user_id = next((bundle.user_id for bundle in bundles if bundle.user_id), "")
         if not options.dry_run:

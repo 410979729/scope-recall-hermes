@@ -42,8 +42,8 @@ if str(ROOT) not in sys.path:
 from secret_patterns import scan_secret_like_text, secret_scan_shadow  # noqa: E402
 from scripts.release_changelog import extract_version_section  # noqa: E402
 
-PACKAGE_VERSION = "2.0.0"
-PUBLIC_RELEASE_BASELINE = "1.10.3"
+PACKAGE_VERSION = "2.0.1"
+PUBLIC_RELEASE_BASELINE = "2.0.0"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 RELEASE_READINESS_DOC = f"docs/release-readiness.{PACKAGE_VERSION}.md"
 GENERATED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist"}
@@ -311,6 +311,8 @@ REQUIRED_SOURCE_FILES = {
     "benchmarks/reflection_cases.json",
     "benchmarks/golden_recall_hybrid_cases.json",
     "benchmarks/experience_replay_cases.json",
+    "benchmarks/NEGATIVE_RETRIEVAL_BENCHMARK.json",
+    "benchmarks/CANDIDATE_ISOLATION_REHEARSAL.json",
     "examples/external_bridge/import.jsonl",
     "examples/external_bridge/export.jsonl",
     "examples/external_bridge/conflict_resolution.jsonl",
@@ -578,6 +580,8 @@ REQUIRED_WHEEL = {
     "scope_recall/benchmarks/reflection_cases.json",
     "scope_recall/benchmarks/golden_recall_hybrid_cases.json",
     "scope_recall/benchmarks/experience_replay_cases.json",
+    "scope_recall/benchmarks/NEGATIVE_RETRIEVAL_BENCHMARK.json",
+    "scope_recall/benchmarks/CANDIDATE_ISOLATION_REHEARSAL.json",
     "scope_recall/examples/external_bridge/import.jsonl",
     "scope_recall/examples/external_bridge/export.jsonl",
     "scope_recall/examples/external_bridge/conflict_resolution.jsonl",
@@ -723,6 +727,18 @@ REQUIRED_CHANGELOG_TERMS_BY_VERSION = {
         "Recall Inspector",
         "N-1",
     ),
+    "2.0.1": (
+        "managed upgrade",
+        "operation journal",
+        "resumable",
+        "idempotent",
+        "N-1",
+        "zero-signal",
+        "candidate isolation",
+        "transport wrapper",
+        "Fact adoption",
+        "curation owner",
+    ),
 }
 PUBLIC_RELEASE_BASELINES_BY_VERSION = {
     "1.10.2": "1.9.2",
@@ -731,6 +747,7 @@ PUBLIC_RELEASE_BASELINES_BY_VERSION = {
     "1.10.5": "1.10.3",
     "1.10.6": "1.10.3",
     "2.0.0": "1.10.3",
+    "2.0.1": "2.0.0",
 }
 REQUIRED_CHANGELOG_TERMS = REQUIRED_CHANGELOG_TERMS_BY_VERSION.get(
     PACKAGE_VERSION, ()
@@ -1520,6 +1537,25 @@ def _run_json_benchmark(
     return result, payload if isinstance(payload, dict) else None
 
 
+def _run_hotfix_evidence(
+    script_path: str,
+) -> tuple[dict[str, object], dict[str, object] | None]:
+    """Execute a deterministic hotfix runner without trusting its fixture."""
+
+    result = run([sys.executable, script_path])
+    if result["returncode"] != 0:
+        return result, None
+    try:
+        payload = json.loads(str(result["stdout"] or "{}"))
+    except json.JSONDecodeError as exc:
+        return {
+            "returncode": result.get("returncode"),
+            "error": f"invalid hotfix evidence json from {script_path}: {exc}",
+            "result": result,
+        }, None
+    return result, payload if isinstance(payload, dict) else None
+
+
 def _int_payload_value(payload: dict[str, object], key: str) -> int:
     value = payload.get(key)
     if isinstance(value, bool):
@@ -1601,6 +1637,155 @@ _LEXICAL_V2_FIELDS = frozenset(
 _LEXICAL_SHADOW_P95_TARGET_MS = 100.0
 _LEXICAL_RELEASE_LATENCY_RATIO_BUDGET = 4.0
 _LEXICAL_RELEASE_MIN_ROUNDS = 20
+
+_NEGATIVE_RETRIEVAL_EVIDENCE_FIELDS = frozenset(
+    {
+        "schema_version",
+        "negative_case_count",
+        "negative_surface_count",
+        "negative_nonempty_count",
+        "positive_case_count",
+        "positive_hit_count",
+        "positive_hit_rate",
+        "passed",
+    }
+)
+_CANDIDATE_ISOLATION_EVIDENCE_FIELDS = frozenset(
+    {
+        "schema_version",
+        "wrapper_insert_count",
+        "wrapper_total_changes_delta",
+        "candidate_ordinary_leak_count",
+        "unreviewed_auto_promote_count",
+        "explicit_profile_visible_count",
+        "explicit_review_visible_count",
+        "read_total_changes_delta",
+        "passed",
+    }
+)
+
+
+def validate_negative_retrieval_evidence(payload: dict[str, object]) -> bool:
+    """Recompute every negative-retrieval verdict from strict scalar fields."""
+
+    if (
+        set(payload) != _NEGATIVE_RETRIEVAL_EVIDENCE_FIELDS
+        or type(payload.get("schema_version")) is not int
+        or payload.get("schema_version") != 1
+        or type(payload.get("passed")) is not bool
+        or payload.get("passed") is not True
+    ):
+        return False
+    negative_cases = _strict_payload_int(payload, "negative_case_count")
+    negative_surfaces = _strict_payload_int(payload, "negative_surface_count")
+    negative_nonempty = _strict_payload_int(payload, "negative_nonempty_count")
+    positive_cases = _strict_payload_int(payload, "positive_case_count")
+    positive_hits = _strict_payload_int(payload, "positive_hit_count")
+    positive_rate = payload.get("positive_hit_rate")
+    if (
+        negative_cases != 10
+        or negative_surfaces != 30
+        or negative_surfaces != negative_cases * 3
+        or negative_nonempty != 0
+        or positive_cases != 6
+        or positive_hits != 6
+        or type(positive_rate) is not float
+        or not math.isfinite(positive_rate)
+        or positive_rate != 1.0
+    ):
+        return False
+    return math.isclose(
+        positive_rate,
+        positive_hits / positive_cases,
+        rel_tol=0.0,
+        abs_tol=0.0,
+    )
+
+
+def validate_candidate_isolation_evidence(payload: dict[str, object]) -> bool:
+    """Validate the complete candidate isolation and zero-write contract."""
+
+    if (
+        set(payload) != _CANDIDATE_ISOLATION_EVIDENCE_FIELDS
+        or type(payload.get("schema_version")) is not int
+        or payload.get("schema_version") != 1
+        or type(payload.get("passed")) is not bool
+        or payload.get("passed") is not True
+    ):
+        return False
+    expected_counts = {
+        "wrapper_insert_count": 0,
+        "wrapper_total_changes_delta": 0,
+        "candidate_ordinary_leak_count": 0,
+        "unreviewed_auto_promote_count": 0,
+        "explicit_profile_visible_count": 1,
+        "explicit_review_visible_count": 1,
+        "read_total_changes_delta": 0,
+    }
+    return all(
+        _strict_payload_int(payload, key) == expected
+        for key, expected in expected_counts.items()
+    )
+
+
+def _load_frozen_hotfix_evidence(
+    relative_path: str,
+) -> tuple[dict[str, object] | None, str]:
+    try:
+        payload = json.loads((ROOT / relative_path).read_text(encoding="utf-8"))
+    except Exception as exc:
+        return None, f"invalid frozen evidence {relative_path}: {type(exc).__name__}"
+    if not isinstance(payload, dict):
+        return None, f"frozen evidence {relative_path} must be a JSON object"
+    return payload, ""
+
+
+def hotfix_release_evidence_check() -> dict[str, object]:
+    """Run current code, validate its schema, then bind it to frozen evidence."""
+
+    contracts = (
+        (
+            "negative_retrieval",
+            "scripts/benchmark.negative_retrieval.py",
+            "benchmarks/NEGATIVE_RETRIEVAL_BENCHMARK.json",
+            validate_negative_retrieval_evidence,
+        ),
+        (
+            "candidate_isolation",
+            "scripts/rehearse.candidate_isolation.py",
+            "benchmarks/CANDIDATE_ISOLATION_REHEARSAL.json",
+            validate_candidate_isolation_evidence,
+        ),
+    )
+    reports: dict[str, object] = {}
+    overall_ok = True
+    for name, script_path, fixture_path, validator in contracts:
+        run_result, current = _run_hotfix_evidence(script_path)
+        frozen, frozen_error = _load_frozen_hotfix_evidence(fixture_path)
+        current_valid = isinstance(current, dict) and validator(current)
+        frozen_valid = isinstance(frozen, dict) and validator(frozen)
+        exact_match = bool(
+            current_valid and frozen_valid and current == frozen
+        )
+        contract_ok = bool(
+            run_result.get("returncode") == 0
+            and current_valid
+            and frozen_valid
+            and exact_match
+        )
+        overall_ok = overall_ok and contract_ok
+        reports[name] = {
+            "ok": contract_ok,
+            "script": script_path,
+            "fixture": fixture_path,
+            "returncode": run_result.get("returncode"),
+            "current_schema_valid": current_valid,
+            "frozen_schema_valid": frozen_valid,
+            "exact_match": exact_match,
+            "frozen_error": frozen_error,
+            "metrics": current,
+        }
+    return {"ok": overall_ok, "contracts": reports}
 
 def validate_lexical_benchmark_payload(payload: dict[str, object]) -> bool:
     """Validate the v2 release payload and recompute all derived hard gates.
@@ -1764,6 +1949,7 @@ def benchmark_check() -> dict[str, object]:
     )
     if lexical_payload is None:
         return {"ok": False, "lexical_cjk_result": lexical_result}
+    hotfix_evidence = hotfix_release_evidence_check()
 
     expected_golden_profiles = (
         ("curated_recall_regression_v2", 100),
@@ -1803,7 +1989,8 @@ def benchmark_check() -> dict[str, object]:
         and temporal_ok
         and reflection_ok
         and scale_ok
-        and lexical_ok,
+        and lexical_ok
+        and bool(hotfix_evidence.get("ok")),
         "schema_version": golden_payloads[0].get("schema_version"),
         "golden_profiles": [
             {
@@ -1823,6 +2010,7 @@ def benchmark_check() -> dict[str, object]:
         "reflection_metrics": reflection_payload.get("metrics"),
         "temporal_scale_metrics": scale_payload,
         "lexical_cjk_metrics": lexical_payload,
+        "hotfix_release_evidence": hotfix_evidence,
     }
 
 

@@ -124,6 +124,37 @@ def test_candidate_classifier_requires_evidence_before_auto_promotion(tmp_path):
     assert decision.lane == "needs_review"
 
 
+def test_legacy_event_candidate_cannot_auto_promote_without_review_receipt(tmp_path):
+    db_path = tmp_path / "memory.sqlite3"
+    conn = _conn(db_path)
+    try:
+        _insert_memory(
+            conn,
+            "legacy-event-candidate",
+            target="user",
+            source="event-digest",
+            summary="Stable user preference",
+            content="User prefers concise Chinese answers with verification evidence.",
+            metadata={
+                "event_digest": True,
+                "memory_type": "preference",
+                "confidence": 0.99,
+                "importance": 0.9,
+            },
+            updated_at="2025-01-01T00:00:00+00:00",
+        )
+        row = conn.execute(
+            "SELECT * FROM memories WHERE id='legacy-event-candidate'"
+        ).fetchone()
+        decision = classify_candidate_row(row)
+    finally:
+        conn.close()
+
+    assert decision.action == "keep_candidate"
+    assert decision.reason == "event_digest_requires_operator_review"
+    assert decision.lane == "needs_review"
+
+
 def test_candidate_report_keeps_conflicting_candidate_for_review(tmp_path):
     db_path = tmp_path / "memory.sqlite3"
     conn = _conn(db_path)

@@ -412,7 +412,7 @@ from pathlib import Path
 import scope_recall
 from scope_recall import installer
 
-assert importlib.metadata.version("hermes-scope-recall") == "2.0.0"
+assert importlib.metadata.version("hermes-scope-recall") == "2.0.1"
 home = Path(os.environ["HERMES_HOME"])
 installed = installer.install(home)
 verified = installer.verify(home)
@@ -500,7 +500,7 @@ def _verify_install(
     if (
         doctor.get("ok") is not True
         or doctor.get("schema_version") != "doctor_report.v1"
-        or doctor.get("source", {}).get("pyproject_version") != "2.0.0"
+        or doctor.get("source", {}).get("pyproject_version") != "2.0.1"
     ):
         raise ReleaseCandidateBuildError(f"{kind} installed Doctor verification failed")
     return python, stages

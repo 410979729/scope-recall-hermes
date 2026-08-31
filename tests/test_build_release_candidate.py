@@ -69,18 +69,18 @@ def test_candidate_build_selects_exactly_one_versioned_wheel_and_sdist(
     tmp_path: Path,
 ) -> None:
     build = _load_module()
-    wheel = tmp_path / "hermes_scope_recall-2.0.0-py3-none-any.whl"
-    sdist = tmp_path / "hermes_scope_recall-2.0.0.tar.gz"
+    wheel = tmp_path / "hermes_scope_recall-2.0.1-py3-none-any.whl"
+    sdist = tmp_path / "hermes_scope_recall-2.0.1.tar.gz"
     wheel.write_bytes(b"wheel")
     sdist.write_bytes(b"sdist")
 
-    assert build._select_distribution_artifacts(tmp_path, "2.0.0") == (
+    assert build._select_distribution_artifacts(tmp_path, "2.0.1") == (
         wheel,
         sdist,
     )
     (tmp_path / "unexpected.whl").write_bytes(b"other")
     with pytest.raises(build.ReleaseCandidateBuildError, match="exactly"):
-        build._select_distribution_artifacts(tmp_path, "2.0.0")
+        build._select_distribution_artifacts(tmp_path, "2.0.1")
 
 
 def test_candidate_build_environment_is_bounded_to_isolated_directory(
@@ -315,7 +315,7 @@ def test_candidate_install_stages_use_bounded_stage_specific_timeouts(
             elif log_path.name.endswith("_DOCTOR.log"):
                 log_path.write_text(
                     '{"ok": true, "schema_version": "doctor_report.v1", '
-                    '"source": {"pyproject_version": "2.0.0"}}\n',
+                    '"source": {"pyproject_version": "2.0.1"}}\n',
                     encoding="utf-8",
                 )
             else:
@@ -392,7 +392,7 @@ def test_sdist_module_runner_precreates_basetemp_parent(
         build,
         "read_archive_members",
         lambda _path: {
-            "hermes_scope_recall-2.0.0/tests/test_fixture.py": b"def test_ok(): pass\n"
+            "hermes_scope_recall-2.0.1/tests/test_fixture.py": b"def test_ok(): pass\n"
         },
     )
     def fake_environment(boundary: Path, **_kwargs):

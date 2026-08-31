@@ -41,20 +41,166 @@ class CaptureFilterResult:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class TransportNoiseDecision:
+    """Pure, content-only classification for transport and recovery wrappers."""
+
+    blocked: bool
+    reason_codes: tuple[str, ...] = ()
+
+
+_TRANSPORT_PREFIX_CHARS = 512
+_UNICODE_DASH_TRANSLATION = str.maketrans(
+    {
+        "\u2010": "-",
+        "\u2011": "-",
+        "\u2012": "-",
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2015": "-",
+        "\u2212": "-",
+        "\ufe58": "-",
+        "\ufe63": "-",
+        "\uff0d": "-",
+    }
+)
+_MARKDOWN_LEADER_RE = re.compile(
+    r"(?m)^[ \t]*(?:(?:>[ \t]*)+|(?:[-*+][ \t]+)|(?:\d{1,3}[.)][ \t]+))+"
+)
+_TRANSPORT_ROLE_LEADER_RE = re.compile(
+    r"(?im)^[ \t]*(?:system|assistant|user|message|note|context|handoff)[ \t]*:[ \t]*"
+)
+_TRANSPORT_NOISE_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "context_compaction_wrapper",
+        re.compile(
+            r"(?:^|\n)[^\w\n]{0,24}\[\s*context\s+compaction\b|"
+            r"(?:^|\n)\s*earlier\s+turns?\s+were\s+compacted\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "reference_only_wrapper",
+        re.compile(
+            r"(?:^|\n)\s*(?:\[\s*reference\s+only\s*\]|#{1,6}\s*reference\s+only|reference\s+only)(?=\s|$)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "context_compression_continuation",
+        re.compile(r"(?:^|\n)\s*conversation\s+continues?\s+after\s+context\s+compression", re.IGNORECASE),
+    ),
+    (
+        "conversation_history_wrapper",
+        re.compile(r"(?:^|\n)\s*the\s+conversation\s+history\s+below\s+is\s+intact\b", re.IGNORECASE),
+    ),
+    (
+        "interrupted_turn_wrapper",
+        re.compile(r"(?:^|\n)\s*your\s+previous\s+turn\s+was\s+interrupted\b", re.IGNORECASE),
+    ),
+    (
+        "processing_handoff_wrapper",
+        re.compile(r"(?:^|\n)\s*finish\s+processing\s+those\s+results\s+and\s+summarize\s+what\s+was\s+accomplished\b", re.IGNORECASE),
+    ),
+    (
+        "telegram_history_wrapper",
+        re.compile(r"(?:^|\n)\s*\[?\s*recent\s+telegram\s+chat\s+history\b", re.IGNORECASE),
+    ),
+    (
+        "historical_task_snapshot_wrapper",
+        re.compile(r"(?:^|\n)\s*(?:#{1,6}\s*)?historical\s+task\s+snapshot\b", re.IGNORECASE),
+    ),
+    (
+        "background_process_wrapper",
+        re.compile(r"(?:^|\n)\s*\[?\s*important\s*:\s*background\s+process\b", re.IGNORECASE),
+    ),
+    (
+        "skill_library_wrapper",
+        re.compile(r"(?:^|\n)\s*review\s+the\s+conversation\s+above\s+and\s+update\s+the\s+skill\s+library", re.IGNORECASE),
+    ),
+    (
+        "tool_execution_wrapper",
+        re.compile(r"(?:^|\n)\s*(?:\[[^\]\n]{0,48}\]\s*)?tool\s+execution\s+wrapper\b", re.IGNORECASE),
+    ),
+    (
+        "gateway_recovery_wrapper",
+        re.compile(r"(?:^|\n)\s*(?:gateway\s+recovery\s+wrapper\b|\[\s*system\s+note\s*:\s*gateway\s+recovered\b)", re.IGNORECASE),
+    ),
+    (
+        "system_note_wrapper",
+        re.compile(r"(?:^|\n)\s*\[\s*system\s+note\s*:", re.IGNORECASE),
+    ),
+    (
+        "native_compaction_wrapper",
+        re.compile(r"(?:^|\n)\s*(?:encrypted|native)\s+(?:context\s+)?compaction\s+(?:marker|wrapper)\b", re.IGNORECASE),
+    ),
+    (
+        "preserved_task_wrapper",
+        re.compile(r"(?:^|\n)\s*\[\s*your\s+active\s+task\s+list\s+was\s+preserved\s+across\s+context\s+compression\s*\]", re.IGNORECASE),
+    ),
+)
+
+
+def _transport_prefix(text: Any) -> str:
+    """Normalize only the bounded structural prefix used by wrapper rules."""
+
+    if text is None:
+        return ""
+    if isinstance(text, bytes):
+        raw = text.decode("utf-8", errors="replace")
+    else:
+        raw = str(text)
+    prefix = raw.lstrip("\ufeff\x00 \t\r\n")[:_TRANSPORT_PREFIX_CHARS]
+    prefix = prefix.translate(_UNICODE_DASH_TRANSLATION)
+    # Telegram/Markdown can quote or list-prefix every wrapper line. Removing
+    # only structural leaders preserves the prose itself for anchored rules.
+    prefix = _MARKDOWN_LEADER_RE.sub("", prefix)
+    # Transport envelopes frequently prefix the first line with a bounded role
+    # label (for example ``System:``). Removing only that structural label
+    # keeps an inline wrapper marker at the same trusted beginning boundary.
+    prefix = _TRANSPORT_ROLE_LEADER_RE.sub("", prefix)
+    return prefix.casefold()
+
+
+def classify_transport_noise(text: Any) -> TransportNoiseDecision:
+    """Identify transport wrappers without treating ordinary discussion as noise.
+
+    Rules inspect a bounded beginning of the text. This catches quoted/listed
+    wrappers while allowing legitimate prose that merely discusses compaction,
+    gateways, or tool execution later in a durable memory.
+    """
+
+    prefix = _transport_prefix(text)
+    if not prefix:
+        return TransportNoiseDecision(False, ())
+    reasons = tuple(
+        code for code, pattern in _TRANSPORT_NOISE_RULES if pattern.search(prefix)
+    )
+    return TransportNoiseDecision(bool(reasons), reasons)
+
+
+_TRANSPORT_REASON_LABELS = {
+    "context_compaction_wrapper": "CONTEXT COMPACTION",
+    "reference_only_wrapper": "REFERENCE ONLY",
+    "context_compression_continuation": "Conversation continues after context compression",
+    "conversation_history_wrapper": "conversation history wrapper",
+    "interrupted_turn_wrapper": "previous turn interrupted",
+    "processing_handoff_wrapper": "finish processing results",
+    "telegram_history_wrapper": "Recent Telegram",
+    "historical_task_snapshot_wrapper": "Historical Task Snapshot",
+    "background_process_wrapper": "Background process",
+    "skill_library_wrapper": "skill library",
+    "tool_execution_wrapper": "tool execution wrapper",
+    "gateway_recovery_wrapper": "System note / gateway recovery wrapper",
+    "system_note_wrapper": "System note",
+    "native_compaction_wrapper": "native compaction marker",
+    "preserved_task_wrapper": "active task list",
+}
+
+
 DEFAULT_CAPTURE_SKIP_PATTERNS: tuple[str, ...] = (
-    r"^\[Recent Telegram chat history",
-    r"^\[CONTEXT COMPACTION",
-    r"Earlier turns were compacted into the summary below",
-    r"Conversation continues after context compression",
-    r"^\[System note:",
-    r"The conversation history below is intact",
-    r"Your previous turn was interrupted",
-    r"finish processing those results and summarize what was accomplished",
-    r"^\[Your active task list was preserved across context compression\]",
-    r"^\[IMPORTANT: Background process ",
     r"^## Active Task(?:\n|\r|$)",
     r"^## Remaining Work(?:\n|\r|$)",
-    r"^Review the conversation above and update the skill library",
     r"call the memory tool .*output only the raw json",
     r"reply with ok and nothing else",
     r"^\s*you are an ai assistant",
@@ -429,6 +575,14 @@ def should_capture_text(text: Any, config: dict[str, Any] | None = None) -> Capt
         return CaptureFilterResult(False, "empty")
     if is_trivial(cleaned):
         return CaptureFilterResult(False, "trivial")
+
+    transport = classify_transport_noise(cleaned)
+    if transport.blocked:
+        labels = [
+            _TRANSPORT_REASON_LABELS.get(code, code)
+            for code in transport.reason_codes
+        ]
+        return CaptureFilterResult(False, f"transport-noise:{','.join(labels)}")
 
     max_chars = int((config or {}).get("capture_hard_max_chars") or 4000)
     if max_chars > 0 and len(cleaned) > max_chars:

@@ -411,7 +411,7 @@ def test_n_minus_one_second_timeout_closes_both_pipes(
         module._run_n_minus_one_window_stage(
             python=Path(sys.executable),
             stage="candidate_upgrade",
-            expected_version="2.0.0",
+            expected_version="2.0.1",
             install_receipt={},
             artifact_sha256="b" * 64,
             runner=tmp_path / "runner.py",
@@ -531,7 +531,7 @@ def test_issue_51_receipt_embeds_content_free_rehearsal_details(
         context=context,
         install_receipt={
             "environment_id": "1" * 64,
-            "installed_distribution": "hermes-scope-recall==2.0.0",
+            "installed_distribution": "hermes-scope-recall==2.0.1",
             "direct_url_sha256": "2" * 64,
             "record_sha256": "3" * 64,
         },

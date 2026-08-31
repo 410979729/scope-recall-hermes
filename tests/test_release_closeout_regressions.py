@@ -66,6 +66,30 @@ def _write_release_provenance_fixture(tmp_path: Path):
     return provenance, packages, receipt
 
 
+def _write_release_download_fixture(
+    tmp_path: Path,
+    *,
+    version: str = "1.10.4",
+) -> tuple[Path, dict[str, Path]]:
+    source = tmp_path / "download"
+    source.mkdir()
+    artifacts = {
+        "wheel": source / f"hermes_scope_recall-{version}-py3-none-any.whl",
+        "sdist": source / f"hermes_scope_recall-{version}.tar.gz",
+        "stable_archive": source / f"scope-recall-hermes-{version}.tar.gz",
+        "stable_manifest": source / "scope-recall-stable-update.json",
+    }
+    for name, path in artifacts.items():
+        path.write_bytes(name.encode("ascii"))
+    sums = "\n".join(
+        f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}"
+        for path in artifacts.values()
+    )
+    (source / "SHA256SUMS").write_text(sums + "\n", encoding="utf-8")
+    (source / "RELEASE-PROVENANCE.json").write_text("{}\n", encoding="utf-8")
+    return source, artifacts
+
+
 def test_public_migration_info_exposes_only_logical_status() -> None:
     private_windows = "C:/" + "Users/Alice/private/memory.sqlite3"
     private_posix = "/" + "home/alice/private/memory.sqlite3"
@@ -85,21 +109,12 @@ def test_public_migration_info_exposes_only_logical_status() -> None:
 
 def test_pypi_stager_separates_packages_from_checksum(tmp_path: Path) -> None:
     stager = _load_release_asset_stager()
-    source = tmp_path / "download"
     packages = tmp_path / "staged" / "packages"
     metadata = tmp_path / "staged" / "metadata"
-    source.mkdir()
     version = "1.10.4"
-    wheel = source / f"hermes_scope_recall-{version}-py3-none-any.whl"
-    sdist = source / f"hermes_scope_recall-{version}.tar.gz"
-    wheel.write_bytes(b"wheel")
-    sdist.write_bytes(b"sdist")
-    sums = "\n".join(
-        f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}"
-        for path in (wheel, sdist)
-    )
-    (source / "SHA256SUMS").write_text(sums + "\n", encoding="utf-8")
-    (source / "RELEASE-PROVENANCE.json").write_text("{}\n", encoding="utf-8")
+    source, artifacts = _write_release_download_fixture(tmp_path, version=version)
+    wheel = artifacts["wheel"]
+    sdist = artifacts["sdist"]
 
     receipt = stager.stage_release_assets(
         source,
@@ -109,6 +124,12 @@ def test_pypi_stager_separates_packages_from_checksum(tmp_path: Path) -> None:
     )
 
     assert receipt["packages"] == sorted((wheel.name, sdist.name))
+    assert receipt["stable_update_assets"] == sorted(
+        (
+            artifacts["stable_archive"].name,
+            artifacts["stable_manifest"].name,
+        )
+    )
     assert sorted(path.name for path in packages.iterdir()) == sorted(
         (wheel.name, sdist.name)
     )
@@ -116,6 +137,63 @@ def test_pypi_stager_separates_packages_from_checksum(tmp_path: Path) -> None:
         "RELEASE-PROVENANCE.json",
         "SHA256SUMS",
     ]
+    assert all(
+        not (packages / artifacts[key].name).exists()
+        for key in ("stable_archive", "stable_manifest")
+    )
+
+
+@pytest.mark.parametrize(
+    "unexpected_name",
+    (
+        "unexpected.whl",
+        "unexpected.tar.gz",
+        "unexpected.json",
+    ),
+)
+def test_pypi_stager_rejects_every_unknown_release_asset(
+    tmp_path: Path,
+    unexpected_name: str,
+) -> None:
+    stager = _load_release_asset_stager()
+    source, _artifacts = _write_release_download_fixture(tmp_path)
+    (source / unexpected_name).write_bytes(b"unexpected")
+
+    with pytest.raises(ValueError, match="unexpected asset"):
+        stager.stage_release_assets(
+            source,
+            packages_dir=tmp_path / "packages",
+            metadata_dir=tmp_path / "metadata",
+            version="1.10.4",
+        )
+
+
+def test_pypi_stager_verifies_stable_update_asset_checksum(tmp_path: Path) -> None:
+    stager = _load_release_asset_stager()
+    source, artifacts = _write_release_download_fixture(tmp_path)
+    artifacts["stable_archive"].write_bytes(b"tampered stable archive")
+
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        stager.stage_release_assets(
+            source,
+            packages_dir=tmp_path / "packages",
+            metadata_dir=tmp_path / "metadata",
+            version="1.10.4",
+        )
+
+
+def test_pypi_workflow_verifies_only_staged_distribution_packages() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "pypi.yml").read_text(
+        encoding="utf-8"
+    )
+    stage_index = workflow.index("python .github/scripts/stage_release_assets.py")
+    provenance_index = workflow.index(
+        "python .github/scripts/release_provenance.py verify"
+    )
+
+    assert stage_index < provenance_index
+    assert "--packages-dir release-staging/packages" in workflow
+    assert "--packages-dir release-download" not in workflow
 
 
 def test_windows_cli_capture_helpers_decode_utf8_strictly() -> None:

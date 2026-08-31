@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import re
 from typing import Any
 
-from .capture_filters import sanitize_report_text
+from .capture_filters import classify_transport_noise, sanitize_report_text
 from .fact_actions import EvolutionAction, EvolutionProposal
 from .fact_evidence import (
     AUTHORITATIVE_EVIDENCE_SOURCE_TYPES,
@@ -128,6 +128,8 @@ def _candidate_evidence(
 def _text_reasons(text: str, *, memory_type: str) -> list[str]:
     safe = sanitize_report_text(str(text or ""))
     reasons = [reason for reason, pattern in _RULES if pattern.search(safe)]
+    transport = classify_transport_noise(text)
+    reasons.extend(f"transport_noise:{code}" for code in transport.reason_codes)
     normalized_type = str(memory_type or "").strip().lower()
     if (
         "test_run_snapshot" in reasons

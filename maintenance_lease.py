@@ -99,13 +99,25 @@ def _verified_maintenance_database_path(database_path: Path) -> Path:
     return lexical
 
 
-def acquire_activation_lease(database_path: Path) -> dict[str, Any]:
-    """Atomically acquire the durable cooperative writer lease."""
+def acquire_activation_lease(
+    database_path: Path,
+    *,
+    capability_token: str = "",
+) -> dict[str, Any]:
+    """Atomically acquire the durable cooperative writer lease.
+
+    Managed activation may pre-commit a random capability into its external
+    transaction journal before this filesystem mutation.  Supplying that
+    capability closes the crash window between lease acquisition and snapshot
+    publication.  Ordinary callers continue to receive a fresh random token.
+    """
 
     db_path = _verified_maintenance_database_path(database_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     path = activation_lease_path(db_path)
-    token = uuid.uuid4().hex
+    token = str(capability_token or uuid.uuid4().hex).strip().lower()
+    if len(token) != 32 or any(character not in "0123456789abcdef" for character in token):
+        raise MaintenanceLeaseError("activation lease capability token is invalid")
     payload = {
         "kind": "scope-recall-activation-maintenance",
         "token": token,
@@ -113,6 +125,7 @@ def acquire_activation_lease(database_path: Path) -> dict[str, Any]:
         "created_at": datetime.now(timezone.utc).isoformat(),
         "database_path": str(db_path),
     }
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n"
     try:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError as exc:
@@ -120,10 +133,22 @@ def acquire_activation_lease(database_path: Path) -> dict[str, Any]:
             "an activation maintenance lease already exists"
         ) from exc
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+            handle.write(serialized)
             handle.flush()
             os.fsync(handle.fileno())
+        # Reopen the published capability before any SQLite guard mutation.
+        # On Windows this also issues a second FlushFileBuffers through fsync;
+        # losing or truncating the directory entry therefore fails before the
+        # caller can advance its durable activation phase.
+        with open(path, "r+b") as published:
+            actual = published.read().decode("utf-8", errors="strict")
+            if actual != serialized:
+                raise MaintenanceLeaseError(
+                    "activation maintenance lease durable publish mismatch"
+                )
+            published.flush()
+            os.fsync(published.fileno())
     except Exception:
         path.unlink(missing_ok=True)
         raise

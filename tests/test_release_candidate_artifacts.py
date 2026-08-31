@@ -39,7 +39,7 @@ def _complete_wheel(
     source_files: dict[str, bytes],
     package_files: dict[str, bytes],
     *,
-    version: str = "2.0.0",
+    version: str = "2.0.1",
 ) -> dict[str, bytes]:
     dist_info = f"hermes_scope_recall-{version}.dist-info"
     members = dict(package_files)
@@ -130,7 +130,7 @@ def test_wheel_and_sdist_members_bind_to_exact_tracked_source(tmp_path: Path) ->
         ),
     )
     sdist = tmp_path / "candidate.tar.gz"
-    root = "hermes_scope_recall-2.0.0"
+    root = "hermes_scope_recall-2.0.1"
     _write_sdist(
         sdist,
         {
@@ -233,14 +233,14 @@ def test_wheel_unknown_generated_member_fails_closed(tmp_path: Path) -> None:
             "scope_recall/LICENSE": source_files["LICENSE"],
         },
     )
-    members["hermes_scope_recall-2.0.0.dist-info/private.txt"] = b"unexpected\n"
+    members["hermes_scope_recall-2.0.1.dist-info/private.txt"] = b"unexpected\n"
 
     with pytest.raises(artifacts.ArtifactVerificationError, match="generated-member"):
         artifacts.verify_wheel_source_correspondence(members, source)
 
 
 def test_sdist_test_allowlist_is_exact(tmp_path: Path) -> None:
-    root = "hermes_scope_recall-2.0.0"
+    root = "hermes_scope_recall-2.0.1"
     sdist = tmp_path / "candidate.tar.gz"
     _write_sdist(
         sdist,

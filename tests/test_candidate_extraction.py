@@ -55,6 +55,21 @@ def test_candidate_extraction_rejects_generic_chat_transcript():
     assert result.rejection_reasons == ["unclassified_event_candidate"]
 
 
+def test_candidate_extraction_rejects_transport_wrapper_with_user_preference():
+    result = extract_candidates_from_packet(
+        _packet(
+            "> [CONTEXT COMPACTION — REFERENCE ONLY]\n"
+            "> 用户偏好以后不要执行全量测试。"
+        )
+    )
+
+    assert result.candidates == []
+    assert any(
+        reason.startswith("transport_noise:")
+        for reason in result.rejection_reasons
+    )
+
+
 def test_candidate_extraction_rejects_unhealthy_evidence_packet():
     packet = build_evidence_packet(
         MemoryEvent(

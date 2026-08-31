@@ -206,6 +206,37 @@ def test_lanes_promote_aged_and_archive_noise_and_defer_young(tmp_path):
     assert _lifecycle(conn, "noise") == "candidate"
 
 
+def test_aged_unreviewed_event_candidate_never_enters_auto_promote_lane(tmp_path):
+    hermes_home, conn = _home(tmp_path)
+    _insert_candidate(
+        conn,
+        "aged-event-candidate",
+        summary="Stable event-derived workflow",
+        content="Run pytest and doctor before rollout.",
+        metadata={
+            "event_digest": True,
+            "origin_kind": "event_digest",
+            "automatic_admission": {
+                "source": "event_digest",
+                "route": "memory_review",
+                "reviewed": False,
+            },
+        },
+        age_hours=72,
+    )
+
+    report = run_auto_adjudication(
+        hermes_home,
+        {},
+        llm_call=None,
+        scope_ids=("scope-test",),
+    )
+
+    assert report["ok"] is True
+    assert _lifecycle(conn, "aged-event-candidate") == "candidate"
+    assert report["lanes"]["promoted"] == 0
+
+
 def test_lane_rollback_never_reports_uncommitted_transitions_as_applied(
     tmp_path, monkeypatch
 ):

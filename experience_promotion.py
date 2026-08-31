@@ -12,7 +12,11 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
-from .capture_filters import contains_secret_like_text, sanitize_report_text
+from .capture_filters import (
+    classify_transport_noise,
+    contains_secret_like_text,
+    sanitize_report_text,
+)
 from .experience_classification import classify_experience_task
 from .experience_evidence import extract_evidence_anchors
 from .experience_quality import assess_experience_quality
@@ -440,8 +444,27 @@ def promote_experiences(
     result["schema_missing"] = missing_experience_tables
 
     for entries in _load_candidate_sessions(conn, accessible_scope_ids=accessible_scope_ids, limit_sessions=limit_sessions):
+        transport_reasons: set[str] = set()
+        clean_entries: list[sqlite3.Row] = []
+        for entry in entries:
+            entry_content = str(entry["content"] or "")
+            transport = classify_transport_noise(entry_content)
+            if transport.blocked:
+                transport_reasons.update(transport.reason_codes)
+                continue
+            clean_entries.append(entry)
+        if transport_reasons:
+            entries = clean_entries
         if len(entries) < min_entries:
             result["skipped"] += 1
+            if transport_reasons:
+                result["items"].append(
+                    {
+                        "action": "skip",
+                        "reason": "transport_noise_insufficient_evidence",
+                        "transport_reason_codes": sorted(transport_reasons),
+                    }
+                )
             continue
         text = _entry_text(entries)
         if contains_secret_like_text(text):
@@ -498,6 +521,33 @@ def promote_experiences(
             result["items"].append({"action": "skip", "reason": "similar_playbook_exists", "similar_playbook": similar})
             continue
         playbook_id = _hash_id("pb_auto", episode_id, title)
+        candidate_summary_text = _entry_text(
+            [
+                entry
+                for entry in entries
+                if not classify_transport_noise(str(entry["content"] or "")).blocked
+            ]
+        )
+        safe_summary = sanitize_report_text(
+            compact_text(candidate_summary_text, 500)
+        )
+        persistence_transport_reasons: set[str] = set()
+        for candidate_text in (storage_goal, title, safe_summary):
+            persistence_transport_reasons.update(
+                classify_transport_noise(candidate_text).reason_codes
+            )
+        if persistence_transport_reasons:
+            result["skipped"] += 1
+            result["items"].append(
+                {
+                    "action": "skip",
+                    "reason": "transport_noise_persistence_revalidation",
+                    "transport_reason_codes": sorted(
+                        persistence_transport_reasons
+                    ),
+                }
+            )
+            continue
         if dry_run:
             result["episodes_created"] += 1
             result["handbooks_created"] += 1
@@ -552,7 +602,7 @@ def promote_experiences(
                 "source": "experience_promotion",
                 "journal_entry_ids": entry_ids,
                 "evidence_anchor_count": len(evidence_anchors),
-                "safe_summary": sanitize_report_text(compact_text(text, 500)),
+                "safe_summary": safe_summary,
                 "quality_gate": quality,
                 "classification": {
                     "task_class": classification.task_class,

@@ -226,9 +226,33 @@ def test_pypi_passes_one_verified_successful_run_snapshot_to_prepare():
             "${{ needs.verify_release_origin.outputs.workflow_run_conclusion }}"
         ),
     }
-    provenance_run = provenance_step["run"]
-    assert "--workflow-run-status \"${WORKFLOW_RUN_STATUS}\"" in provenance_run
-    assert "--workflow-run-conclusion \"${WORKFLOW_RUN_CONCLUSION}\"" in provenance_run
+    source_run = provenance_step["run"]
+    assert 'test "${VERIFIED_SOURCE_SHA}" = "${SOURCE_SHA}"' in source_run
+    assert 'test "${VERIFIED_RELEASE_RUN_ID}" = "${RELEASE_RUN_ID}"' in source_run
+
+    package_provenance_step = next(
+        step
+        for step in prepare_job["steps"]
+        if step.get("name") == "Verify staged release provenance package set"
+    )
+    assert package_provenance_step["env"] == {
+        "RELEASE_TAG": "${{ steps.release_tag.outputs.release_tag }}",
+        "WORKFLOW_RUN_STATUS": (
+            "${{ needs.verify_release_origin.outputs.workflow_run_status }}"
+        ),
+        "WORKFLOW_RUN_CONCLUSION": (
+            "${{ needs.verify_release_origin.outputs.workflow_run_conclusion }}"
+        ),
+    }
+    package_provenance_run = package_provenance_step["run"]
+    assert (
+        "--workflow-run-status \"${WORKFLOW_RUN_STATUS}\""
+        in package_provenance_run
+    )
+    assert (
+        "--workflow-run-conclusion \"${WORKFLOW_RUN_CONCLUSION}\""
+        in package_provenance_run
+    )
 
 
 def test_release_toolchain_uses_bounded_constraints_shipped_with_source():

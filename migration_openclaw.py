@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .capture_filters import sanitize_structured_value
+from .capture_filters import classify_transport_noise, sanitize_structured_value
 from .gating import compact_text, dedup_key
 from .governance import classify_memory
 from .graph import sync_memory_entities
@@ -181,12 +181,21 @@ def build_import_plan(
             empty_rows += 1
             continue
         row_id = str(raw.get("id") or row.id)
+        transport = classify_transport_noise(row.content)
         if row.target not in allowed:
             rejections.append({
                 "row_id": row_id,
                 "target": row.target,
                 "reason": "target_not_allowed",
                 "snippet": sanitize_snippet(row.content),
+            })
+        elif transport.blocked:
+            rejections.append({
+                "row_id": row_id,
+                "target": row.target,
+                "reason": "transport_noise",
+                "reason_codes": list(transport.reason_codes),
+                "snippet": "[REDACTED_TRANSPORT_WRAPPER]",
             })
         elif looks_like_raw_transcript(row.content):
             rejections.append({
@@ -320,6 +329,20 @@ def import_mapped_rows(conn: sqlite3.Connection, rows: list[ImportedMemoryRow], 
     """Import sanitized OpenClaw rows into Scope Recall SQLite truth.
 
     The importer records ledger entries and skips already-seen fingerprints so repeated runs are idempotent."""
+    blocked_rows = [
+        (row.id, classify_transport_noise(row.content).reason_codes)
+        for row in rows
+        if classify_transport_noise(row.content).blocked
+    ]
+    if blocked_rows:
+        reason_codes = sorted(
+            {code for _memory_id, codes in blocked_rows for code in codes}
+        )
+        raise ValueError(
+            "transport noise refused before import writes: "
+            + ",".join(reason_codes)
+        )
+
     inserted_rows: list[dict[str, str]] = []
     skipped_rows: list[dict[str, str]] = []
     graph_failures: list[dict[str, str]] = []

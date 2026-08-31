@@ -47,6 +47,9 @@ _DESCRIPTION_OVERRIDES = {
     "retrieval.mode": "Recall mode: lexical, vector, or hybrid.",
     "retrieval.relation_rerank_enabled": "Enable small relation-graph rerank bonuses after primary recall scoring.",
     "retrieval.vector_only_min_score": "Minimum score for vector-only candidates to survive recall filtering.",
+    "retrieval.vector_only_min_margin": "Minimum separation between vector-only recall candidates and the bounded background neighbor.",
+    "retrieval.zero_signal_gate_enabled": "Require absolute query-side evidence before any ordinary Search, Context, or Prefetch result may leave recall.",
+    "retrieval.opaque_query_vector_only_enabled": "Allow opaque identifier or high-entropy queries to use vector-only evidence. Disabled by default; exact lexical identifiers remain available.",
     "retrieval.fact_freshness_untracked_penalty": "Score penalty for factual memories without tracked freshness evidence.",
     "retrieval.fact_freshness_needs_live_check_penalty": "Score penalty for factual memories that require a live check.",
     "retrieval.fact_freshness_stale_penalty": "Score penalty for factual memories marked stale.",
@@ -94,6 +97,7 @@ _DESCRIPTION_OVERRIDES = {
     "fact_evolution.tool_mode": "Resident public tool-lane mode. Caller evidence remains non-authoritative until a runtime-owned evidence registry is available; provider reload is required.",
     "fact_evolution.maintenance_mode": "Explicit maintenance-lane mode. reviewed_apply permits maintenance-gated operator corrections and is high risk; provider reload is required.",
     "fact_backfill.shadow_enabled": "Enable read-only historical SplitPlan shadow generation. Shadow artifacts remain non-authoritative; applying one exact plan still requires an explicit plan-bound approval, source CAS, and the atomic Fact Executor boundary.",
+    "curation.owner": "Select whether Scope Recall internal lanes, an external Hermes curation schedule, or a manual operator owns curation. External health remains unobserved unless Hermes supplies it.",
     "recall_compiler.current_truth_enabled": "Use the Context Compiler current-truth stage on the unique retrieved CandidateSet. Disabled keeps the V1 result order while shadow metrics remain content-free.",
     "recall_compiler.conflict_enabled": "Expose query-side conflicts from the unique CandidateSet without selecting a winner. Disabled removes only conflict annotations and does not change current-truth, budget, or rendering decisions.",
     "recall_compiler.budgeter_enabled": "Apply the Recall Packet token budget to the unique retrieved CandidateSet. Disabled preserves the V1 item-limit behavior.",
@@ -152,6 +156,7 @@ _MEDIUM_RISK_PREFIXES = (
     "relation_",
     "writer_lease.",
     "fact_backfill.",
+    "curation.",
     "recall_compiler.",
 )
 _RESTART_PREFIXES = (
@@ -166,6 +171,7 @@ _RESTART_PREFIXES = (
     "reflection.",
     "relation_",
     "writer_lease.",
+    "curation.",
 )
 _FACT_EVOLUTION_RISKS = {
     "fact_evolution.enabled": "high",
@@ -216,6 +222,7 @@ _CHOICES = {
         "anthropic_messages",
     ],
     "curated_memory.mode": ["single-user", "explicit-users", "profile-global", "disabled"],
+    "curation.owner": ["internal", "external", "manual"],
     "fact_evolution.mode": ["preview", "auto_apply", "reviewed_apply"],
     "fact_evolution.nightly_mode": ["preview", "auto_apply"],
     "fact_evolution.journal_mode": ["preview", "auto_apply"],

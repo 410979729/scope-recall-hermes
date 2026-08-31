@@ -551,7 +551,7 @@ def test_release_invariant_manifest_is_versioned_unique_and_executable():
 
     manifest = release_check.release_invariant_manifest()
     assert manifest["schema"] == "scope-recall.release-invariants.v1"
-    assert manifest["suite_count"] == 13
+    assert manifest["suite_count"] == 14
     assert manifest["node_count"] >= 50
     suites = manifest["suites"]
     suite_ids = {suite["id"] for suite in suites}
@@ -568,6 +568,7 @@ def test_release_invariant_manifest_is_versioned_unique_and_executable():
         "sixteenth-independent-audit-performance-liveness-blockers",
         "seventeenth-independent-audit-security-transaction-liveness-blockers",
         "program0-g0-stabilization-contracts",
+        "hotfix-2.0.1-retrieval-and-candidate-isolation",
         "lexical-shadow-and-windows-rollout-release-blockers",
     } == suite_ids
     nodes = [node for suite in suites for node in suite["nodes"]]
@@ -790,11 +791,11 @@ def test_release_identity_requires_version_newer_than_latest_tag():
     assert "mutually exclusive" in conflicting_modes["error"]
 
 
-def test_v200_release_candidate_identity_surfaces_are_consistent():
+def test_v201_release_candidate_identity_surfaces_are_consistent():
     """Bind the source candidate to every authoritative version surface."""
 
-    expected_version = "2.0.0"
-    release_check = _load_release_check_module("scope_recall_check_release_v200_identity")
+    expected_version = "2.0.1"
+    release_check = _load_release_check_module("scope_recall_check_release_v201_identity")
     lexical_generation = importlib.import_module(
         f"{PACKAGE_NAME}.lexical_generation"
     )
@@ -809,7 +810,7 @@ def test_v200_release_candidate_identity_surfaces_are_consistent():
     assert _package_version() == expected_version
     assert f"version: {expected_version}" in plugin_manifest
     assert release_check.PACKAGE_VERSION == expected_version
-    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.2.0.0.md"
+    assert release_check.RELEASE_READINESS_DOC == "docs/release-readiness.2.0.1.md"
     assert (PLUGIN_ROOT / release_check.RELEASE_READINESS_DOC).is_file()
     assert f"## [{expected_version}]" in changelog
     assert f"Version `{expected_version}`" in readme
@@ -820,22 +821,22 @@ def test_v200_release_candidate_identity_surfaces_are_consistent():
     assert relation_containment.RELATION_CONTAINMENT_MIGRATION_PLUGIN_VERSION == "1.10.6"
 
     identity = release_check.release_version_identity_check(
-        tags=["v1.8.7", "v1.9.2", "v1.10.2", "v1.10.3"]
+        tags=["v1.8.7", "v1.9.2", "v1.10.2", "v1.10.3", "v2.0.0"]
     )
     assert identity["ok"] is True
     assert identity["release_eligible"] is True
-    assert identity["expected_release_tag"] == "v2.0.0"
-    assert identity["latest_release_tag"] == "v1.10.3"
+    assert identity["expected_release_tag"] == "v2.0.1"
+    assert identity["latest_release_tag"] == "v2.0.0"
 
 
-def test_v200_changelog_starts_at_the_last_public_release():
-    release_check = _load_release_check_module("scope_recall_check_release_v200_changelog")
+def test_v201_changelog_starts_at_the_last_public_release():
+    release_check = _load_release_check_module("scope_recall_check_release_v201_changelog")
 
-    assert release_check.PACKAGE_VERSION == "2.0.0"
-    assert release_check.PUBLIC_RELEASE_BASELINE == "1.10.3"
+    assert release_check.PACKAGE_VERSION == "2.0.1"
+    assert release_check.PUBLIC_RELEASE_BASELINE == "2.0.0"
     changelog = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    section = release_check.changelog_section(changelog, "2.0.0")
-    assert "since the last public release, `1.10.3`" in section
+    section = release_check.changelog_section(changelog, "2.0.1")
+    assert "since the last public release, `2.0.0`" in section
     for term in release_check.REQUIRED_CHANGELOG_TERMS:
         assert term in section
     historical = release_check.changelog_section(changelog, "1.10.2")
@@ -854,8 +855,8 @@ def test_v200_changelog_starts_at_the_last_public_release():
     assert stabilization_gate["missing_terms"] == []
 
 
-def test_v200_public_wording_covers_product_contracts():
-    """Every current public surface must describe the 2.0 product boundary."""
+def test_v200_historical_public_wording_covers_product_contracts():
+    """The frozen 2.0.0 release surfaces retain the 2.0 product boundary."""
 
     release_check = _load_release_check_module(
         "scope_recall_check_release_v200_product"
@@ -879,18 +880,18 @@ def test_v200_public_wording_covers_product_contracts():
         assert "recall inspector" in lowered, name
 
 
-def test_v200_public_surfaces_name_1103_as_the_public_baseline():
-    release_check = _load_release_check_module("scope_recall_check_release_v200_baseline_truth")
+def test_v201_public_surfaces_name_200_as_the_public_baseline():
+    release_check = _load_release_check_module("scope_recall_check_release_v201_baseline_truth")
 
     truth = release_check.public_release_baseline_truth_check()
     assert truth["ok"] is True, truth
-    assert release_check.PUBLIC_RELEASE_BASELINE == "1.10.3"
+    assert release_check.PUBLIC_RELEASE_BASELINE == "2.0.0"
     readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
     stability = (PLUGIN_ROOT / "docs" / "stability.md").read_text(encoding="utf-8")
-    readiness = (PLUGIN_ROOT / "docs" / "release-readiness.2.0.0.md").read_text(encoding="utf-8")
-    assert "last packaged `1.10.3`" in readme
-    assert "last packaged `1.10.3`" in stability
-    assert "Public release baseline: `1.10.3`." in readiness
+    readiness = (PLUGIN_ROOT / release_check.RELEASE_READINESS_DOC).read_text(encoding="utf-8")
+    assert "last packaged `2.0.0`" in readme
+    assert "last packaged `2.0.0`" in stability
+    assert "Public release baseline: `2.0.0`." in readiness
 
 
 def test_ruff_lint_contract_is_explicit_across_toolchain_upgrades():
@@ -1176,17 +1177,16 @@ def test_changelog_completeness_gate_requires_current_release_terms():
     assert failed["section_found"] is False
     assert failed["missing_terms"] == list(release_check.REQUIRED_CHANGELOG_TERMS)
     assert set(failed["missing_terms"]) == {
-        "Fact authority",
-        "legacy projection",
-        "relation generation",
-        "DurableWork",
-        "Recall Packet",
-        "current truth",
-        "deny-first",
-        "tool profiles",
-        "extension boundaries",
-        "Recall Inspector",
+        "managed upgrade",
+        "operation journal",
+        "resumable",
+        "idempotent",
         "N-1",
+        "zero-signal",
+        "candidate isolation",
+        "transport wrapper",
+        "Fact adoption",
+        "curation owner",
     }
 
     missing_baseline = (
@@ -2991,7 +2991,21 @@ def test_openai_compatible_embedder_rotates_to_next_key_after_failure(monkeypatc
             self.timeout = timeout
             self.max_retries = max_retries
 
+    class _FakeHttpClient:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class _FakeHttpx:
+        Client = _FakeHttpClient
+
     monkeypatch.setattr("scope_recall.embedders.OpenAI", _FakeOpenAI)
+    monkeypatch.setattr(
+        "scope_recall.embedders.DefaultHttpxClient", _FakeHttpClient
+    )
+    monkeypatch.setattr("scope_recall.embedders._httpx", _FakeHttpx)
     embedder = OpenAICompatibleEmbedder(
         model="gemini-embedding-001",
         api_key=["public-test-key-1", "public-test-key-2"],
@@ -3142,6 +3156,83 @@ def test_release_gate_fails_closed_without_traceback_when_git_missing(
     assert "Traceback" not in captured.err
 
 
+def test_hotfix_release_evidence_is_required_in_source_wheel_and_sdist() -> None:
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_hotfix_evidence_packaging"
+    )
+    version = _package_version()
+    sources = {
+        "benchmarks/NEGATIVE_RETRIEVAL_BENCHMARK.json",
+        "benchmarks/CANDIDATE_ISOLATION_REHEARSAL.json",
+    }
+
+    assert sources <= release_check.REQUIRED_SOURCE_FILES
+    assert {f"scope_recall/{path}" for path in sources} <= release_check.REQUIRED_WHEEL
+    assert {
+        f"hermes_scope_recall-{version}/{path}" for path in sources
+    } <= release_check.REQUIRED_SDIST
+
+
+def test_hotfix_release_evidence_rejects_tampered_passed_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release_check = _load_release_check_module(
+        "scope_recall_check_release_hotfix_evidence_tamper"
+    )
+    negative = json.loads(
+        (PLUGIN_ROOT / "benchmarks" / "NEGATIVE_RETRIEVAL_BENCHMARK.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    candidate = json.loads(
+        (PLUGIN_ROOT / "benchmarks" / "CANDIDATE_ISOLATION_REHEARSAL.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert release_check.validate_negative_retrieval_evidence(negative) is True
+    assert release_check.validate_candidate_isolation_evidence(candidate) is True
+
+    unknown_field = dict(negative)
+    unknown_field["undeclared"] = 0
+    missing_field = dict(candidate)
+    del missing_field["read_total_changes_delta"]
+    assert release_check.validate_negative_retrieval_evidence(unknown_field) is False
+    assert release_check.validate_candidate_isolation_evidence(missing_field) is False
+
+    current = {
+        "scripts/benchmark.negative_retrieval.py": dict(negative),
+        "scripts/rehearse.candidate_isolation.py": dict(candidate),
+    }
+
+    def fake_runner(script_path: str):
+        payload = current[script_path]
+        return {"returncode": 0, "stdout": json.dumps(payload), "stderr": ""}, payload
+
+    monkeypatch.setattr(release_check, "_run_hotfix_evidence", fake_runner)
+    current["scripts/benchmark.negative_retrieval.py"]["negative_nonempty_count"] = 1
+    assert current["scripts/benchmark.negative_retrieval.py"]["passed"] is True
+    negative_failure = release_check.hotfix_release_evidence_check()
+    assert negative_failure["ok"] is False
+    assert (
+        negative_failure["contracts"]["negative_retrieval"]["current_schema_valid"]
+        is False
+    )
+
+    current["scripts/benchmark.negative_retrieval.py"] = dict(negative)
+    current["scripts/rehearse.candidate_isolation.py"][
+        "candidate_ordinary_leak_count"
+    ] = 1
+    assert current["scripts/rehearse.candidate_isolation.py"]["passed"] is True
+    candidate_failure = release_check.hotfix_release_evidence_check()
+    assert candidate_failure["ok"] is False
+    assert (
+        candidate_failure["contracts"]["candidate_isolation"][
+            "current_schema_valid"
+        ]
+        is False
+    )
+
+
 def test_release_benchmark_gate_accepts_lexical_50k_release_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     release_check = _load_release_check_module(
         "scope_recall_check_release_lexical_50k_contract"
@@ -3211,6 +3302,11 @@ def test_release_benchmark_gate_accepts_lexical_50k_release_contract(monkeypatch
             "stdout": json.dumps({"benchmark_name": "graph_relation_rerank_v1", "passed": True, "metrics": {}}),
             "stderr": "",
         },
+    )
+    monkeypatch.setattr(
+        release_check,
+        "hotfix_release_evidence_check",
+        lambda: {"ok": True, "contracts": {}},
     )
 
     result = release_check.benchmark_check()

@@ -531,7 +531,7 @@ def test_historical_location_question_does_not_request_current_state():
     assert query_requests_current_state("where was Yuheng previously") is False
 
 
-def test_chinese_location_intent_ranks_current_host_above_operator_noise():
+def test_chinese_location_intent_filters_operator_noise():
     query = "玉衡在哪"
     operator_noise = RecallItem(
         id="release-noise",
@@ -589,7 +589,7 @@ def test_chinese_location_intent_ranks_current_host_above_operator_noise():
 
     results = RecallService(provider).search_memories(query, limit=5)
 
-    assert [item.id for item in results][:2] == ["current-windows-host", "release-noise"]
+    assert [item.id for item in results] == ["current-windows-host"]
 
 
 def test_intent_match_breaks_equal_score_tie_before_recency():
@@ -619,7 +619,7 @@ def test_intent_match_breaks_equal_score_tie_before_recency():
     assert [item.id for item in ranked] == ["current-host", "identity"]
 
 
-def test_current_os_query_prefers_current_state_and_suppresses_weak_local_hits():
+def test_current_os_query_keeps_current_state_and_suppresses_weak_or_stale_hits():
     query = "你现在跑什么系统"
     stale_decision = RecallItem(
         id="stale-wsl-decision",
@@ -698,16 +698,12 @@ def test_current_os_query_prefers_current_state_and_suppresses_weak_local_hits()
 
     results = RecallService(provider).search_memories(query, limit=5)
 
-    assert [item.id for item in results][:2] == [
-        "current-windows-host",
-        "stale-wsl-decision",
-    ]
-    assert "local-task-preference" not in {item.id for item in results}
+    assert [item.id for item in results] == ["current-windows-host"]
     by_id = {item.id: item for item in results}
     assert by_id["current-windows-host"].metadata["intent_matched"] is True
 
 
-def test_current_os_query_does_not_rank_linux_manual_above_debian_answer():
+def test_current_os_query_filters_unrelated_linux_manual():
     query = "你现在跑什么系统"
     current_answer = RecallItem(
         id="real-debian-current",
@@ -754,13 +750,9 @@ def test_current_os_query_does_not_rank_linux_manual_above_debian_answer():
 
     results = RecallService(provider).search_memories(query, limit=5)
 
-    assert [item.id for item in results][:2] == [
-        "real-debian-current",
-        "unrelated-linux-manual",
-    ]
+    assert [item.id for item in results] == ["real-debian-current"]
     by_id = {item.id: item for item in results}
     assert by_id["real-debian-current"].metadata["intent_matched"] is True
-    assert by_id["unrelated-linux-manual"].metadata["intent_matched"] is False
 
 
 def test_current_os_query_requires_answer_evidence_for_platform_documents():
@@ -820,9 +812,8 @@ def test_current_os_query_requires_answer_evidence_for_platform_documents():
         results = service.search_memories(query, limit=5)
         by_id = {item.id: item for item in results}
 
-        assert [item.id for item in results][:2] == [answer.id, reference.id]
+        assert [item.id for item in results] == [answer.id]
         assert by_id[answer.id].metadata["intent_matched"] is True
-        assert by_id[reference.id].metadata["intent_matched"] is False
 
 
 def test_archived_duplicate_does_not_suppress_active_duplicate():
@@ -975,7 +966,7 @@ def test_vector_only_filter_uses_packaged_default_threshold_without_override():
     threshold = float(DEFAULT_CONFIG["retrieval"]["vector_only_min_score"])
     below = RecallItem(
         id="below-default",
-        content="Vector-only candidate immediately below the packaged default.",
+        content="Ocean weather forecast from a distant sensor.",
         summary="below default",
         source="tool-store",
         target="memory",
@@ -989,7 +980,7 @@ def test_vector_only_filter_uses_packaged_default_threshold_without_override():
     )
     at_default = RecallItem(
         id="at-default",
-        content="Vector-only candidate exactly at the packaged default.",
+        content="Ocean weather forecast from a distant sensor.",
         summary="at default",
         source="tool-store",
         target="memory",
@@ -1008,20 +999,38 @@ def test_vector_only_filter_uses_packaged_default_threshold_without_override():
         "fact_freshness_untracked_penalty": 0.0,
     }
 
+    background = [
+        RecallItem(
+            id=f"background-{index}",
+            content=f"Garden irrigation schedule row {index}.",
+            summary="unrelated background",
+            source="tool-store",
+            target="memory",
+            score=threshold - 0.10 - (index * 0.01),
+            updated_at="2026-05-01T00:00:00+00:00",
+            metadata={
+                "lexical_score": 0.0,
+                "vector_score": threshold - 0.10 - (index * 0.01),
+                "scope_id": "shared-scope",
+            },
+        )
+        for index in range(4)
+    ]
     below_service = RecallService(
-        DummyProvider(config, db_items=[], vector_items=[below])
+        DummyProvider(config, db_items=[], vector_items=[below, *background])
     )
     at_service = RecallService(
-        DummyProvider(config, db_items=[], vector_items=[at_default])
+        DummyProvider(config, db_items=[], vector_items=[at_default, *background])
     )
 
-    assert below_service.search_memories("semantic-only query", limit=5) == []
-    assert [item.id for item in at_service.search_memories("semantic-only query", limit=5)] == [
+    query = "database architecture recall"
+    assert below_service.search_memories(query, limit=5) == []
+    assert [item.id for item in at_service.search_memories(query, limit=5)] == [
         "at-default"
     ]
     assert (
         below_service.last_funnel_trace["filters"]["vector_only_below_min_score"]
-        == 1
+        == 1 + len(background)
     )
 
 

@@ -289,7 +289,7 @@ def _validate_n_minus_one_window(
         ),
         (
             "candidate_upgrade_write",
-            "hermes-scope-recall==2.0.0",
+            "hermes-scope-recall==2.0.1",
             candidate_install,
             candidate_artifact_sha256,
         ),
@@ -301,7 +301,7 @@ def _validate_n_minus_one_window(
         ),
         (
             "candidate_final_verify",
-            "hermes-scope-recall==2.0.0",
+            "hermes-scope-recall==2.0.1",
             candidate_install,
             candidate_artifact_sha256,
         ),
