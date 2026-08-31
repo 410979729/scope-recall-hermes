@@ -53,6 +53,7 @@ def _store(
     target: str = "ops",
     source: str = "tool-store",
     scope_id: str = "shared-scope",
+    metadata: dict[str, object] | None = None,
 ) -> None:
     store_row(
         conn,
@@ -69,6 +70,7 @@ def _store(
         source=source,
         target=target,
         content=content,
+        metadata=metadata,
     )
 
 
@@ -107,6 +109,35 @@ def test_search_db_memories_keeps_relevant_lexical_hits():
     results = search_db_memories(provider, "OpenClaw gateway 天璇", limit=5)
 
     assert [item.id for item in results] == ["ops-openclaw"]
+
+
+def test_search_db_memories_allows_exact_opaque_memory_identifier():
+    conn = _conn()
+    _store(
+        conn,
+        memory_id="c799ccd3",
+        content="The release candidate passed the independent audit.",
+    )
+    provider = FakeProvider(conn)
+
+    results = search_db_memories(provider, "c799ccd3", limit=5)
+
+    assert [item.id for item in results] == ["c799ccd3"]
+    assert results[0].metadata["exact_identifier_evidence"] is True
+
+
+def test_exact_identifier_cannot_bypass_candidate_lifecycle():
+    conn = _conn()
+    _store(
+        conn,
+        memory_id="XAS-OPS-001",
+        content="XAS-OPS-001 awaits explicit candidate review.",
+        source="event-digest",
+        metadata={"lifecycle": "candidate", "event_digest": True},
+    )
+    provider = FakeProvider(conn)
+
+    assert search_db_memories(provider, "XAS-OPS-001", limit=5) == []
 
 
 def test_indexed_lexical_hits_do_not_fall_through_to_leading_wildcard_like():

@@ -13,6 +13,7 @@ from typing import Any
 
 from .artifacts import enrich_content_with_artifact_anchors, merge_artifact_metadata
 from .capture_filters import (
+    classify_transport_noise,
     contains_secret_like_text,
     sanitize_capture_text,
     sanitize_report_text,
@@ -1022,6 +1023,16 @@ def store_row(
         return "", "", now, False
     if contains_secret_like_text(content):
         raise ValueError("plaintext secret-like content rejected at durable store boundary")
+    preflight_metadata = merge_metadata(
+        dict(classify_memory(content, target, source)), metadata
+    )
+    if str(preflight_metadata.get("lifecycle") or "").strip().lower() == "candidate":
+        transport = classify_transport_noise(content)
+        if transport.blocked:
+            raise ValueError(
+                "transport noise rejected at candidate store boundary: "
+                + ",".join(transport.reason_codes)
+            )
     content = enrich_content_with_artifact_anchors(content)
     summary = compact_text(content, 220)
     key = dedup_key(content)
@@ -1134,6 +1145,13 @@ def store_row(
     metadata_payload = merge_artifact_metadata(metadata_payload, content)
     safe_metadata, _ = sanitize_structured_value(metadata_payload)
     metadata_payload = safe_metadata if isinstance(safe_metadata, dict) else {}
+    if str(metadata_payload.get("lifecycle") or "").strip().lower() == "candidate":
+        transport = classify_transport_noise(content)
+        if transport.blocked:
+            raise ValueError(
+                "transport noise rejected at candidate store boundary: "
+                + ",".join(transport.reason_codes)
+            )
     metadata_json = json.dumps(metadata_payload, ensure_ascii=False, sort_keys=True)
 
     try:
@@ -1293,6 +1311,14 @@ def update_row(
     metadata_payload = merge_artifact_metadata(metadata_payload, content)
     safe_metadata, _ = sanitize_structured_value(metadata_payload)
     metadata_payload = safe_metadata if isinstance(safe_metadata, dict) else {}
+    lifecycle = str(metadata_payload.get("lifecycle") or "").strip().lower()
+    if lifecycle == "candidate":
+        transport = classify_transport_noise(content)
+        if transport.blocked:
+            raise ValueError(
+                "transport noise rejected at candidate update boundary: "
+                + ",".join(transport.reason_codes)
+            )
     metadata_json = json.dumps(metadata_payload, ensure_ascii=False, sort_keys=True)
     conn.execute(
         """
@@ -1303,7 +1329,6 @@ def update_row(
         (content, summary, new_target, updated_at, dedup_key(content), metadata_json, memory_id, str(row["scope_id"])),
     )
     conn.execute("DELETE FROM memories_fts WHERE memory_id = ?", (memory_id,))
-    lifecycle = str(metadata_payload.get("lifecycle") or "").strip().lower()
     if ordinary_recall_lifecycle_visible(lifecycle=lifecycle, target=new_target):
         conn.execute("INSERT INTO memories_fts(memory_id, content, summary) VALUES (?, ?, ?)", (memory_id, content, summary))
         sync_memory_entities(conn, memory_id=memory_id, content=content, target=new_target, metadata=metadata_payload)

@@ -4,6 +4,34 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-08-30
+
+This patch is cumulative since the last public release, `2.0.0`. It completes the production managed upgrade path for ordinary users and hardens the 2.0 memory runtime: one fixed official stable source, an external resumable idempotent operation journal, strict state transitions, exact-Hermes-home restart control, zero-signal recall admission, candidate isolation, and explicit observability ownership.
+
+### Added
+- Added `hermes-scope-recall update --hermes-home <path>` and `hermes scope-recall update` as zero-choice stable update commands. Users do not supply a repository, URL, archive, candidate path, checksum, migration policy, vector policy, or rollback decision; rerunning the same command resumes the sole incomplete operation before any network request.
+- Added a fixed-repository stable release stager with bounded HTTPS downloads, a strict release manifest, deterministic canonical tree identity, a custom link-free USTAR extractor, atomic reusable cache bundles, and content-free failures.
+- Added `managed-upgrade` auto/prepare/worker/status/resume with a frozen external runner and a private activation handle under `<HERMES_HOME>/scope-recall/upgrades/operations/<id>`. Sealed plans, fsynced append-only transitions, OS locks, exact-home gateway identity, and bounded restart retries make power-loss and process-crash recovery idempotent.
+- Added deterministic GitHub Release source/manifest production and exact PyPI asset separation. Stable update assets are checksum-verified but can never be mistaken for PyPI distributions.
+- Added the H1 zero-signal query contract across Search, Context, and Prefetch. Opaque UUID/SHA/base64/high-entropy queries require an exact lexical identifier match, while vector-only candidates require positive semantic evidence, an absolute score floor, and separation from a real background neighbor.
+- Added H2 candidate isolation metadata and maintenance evidence: Event Digest candidates retain explicit origin, lifecycle, automatic-admission, and review state; transport wrapper text is rejected again at the storage boundary; ordinary recall remains candidate-blind while explicit Profile/Review inspection remains available.
+- Added O1 Fact adoption observability that separates feature enablement, claim/projection/evidence coverage, fact-owned memory coverage, shadow-backfill state, and last apply evidence without creating a new fact authority.
+- Added O2 `curation owner` state for internal, external, and manual ownership, with distinct journal, legacy-nightly, and external-Hermes observations instead of conflating those execution chains.
+- Added deterministic negative-retrieval and candidate-isolation evidence runners. The release checker executes current code, validates every scalar field, and requires an exact match to the frozen evidence rather than trusting `passed=true`.
+
+### Changed
+- Managed activation classifies Doctor checks explicitly: storage/config/runtime safety failures roll back, while memory-quality and rebuildable-companion debt remain visible maintenance advisories instead of asking an end user or a weak model to adjudicate memories during upgrade.
+- Invalid, stale, or manifestless vector companion state is preserved as rebuildable debt and automatically disabled for activation without deleting companion files or sending memory content to an embedding service. SQLite truth and lexical recall remain available.
+
+### Fixed
+- Persisted the installer activation snapshot, plugin replacement phase, rollback capability, and commit result outside the replaceable plugin tree so a crash cannot turn a known transaction into a guessed restart.
+- Refused symlink, junction, reparse-point, special-file, path-collision, oversized archive/tree, unsafe redirect, cache overlap, current-state drift, and ambiguous gateway/installer boundaries.
+- Refused unrelated nearest-neighbor winners when no admissible query-side evidence exists, including random opaque input that previously returned the least-bad memory.
+- Refused unreviewed Event Digest candidate promotion and transport-wrapper persistence without deleting or rewriting existing candidate debt.
+
+### Compatibility
+- Preserved SQLite truth, stable V1 identities, and the N-1/N/N-1 window. Managed upgrade performs no hosted embedding rebuild or memory-content egress. A provably committed candidate is started; a provably compensated failure restarts N-1; an ambiguous state remains stopped and fail closed.
+
 ## [2.0.0] - 2026-08-27
 
 This release candidate is cumulative since the last public release, `1.10.3`. It completes the Scope Recall 2.0 product contract while preserving SQLite truth, stable V1 provider/tool identities, additive migration, and the N-1/N/N-1 compatibility window.

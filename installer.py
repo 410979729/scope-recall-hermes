@@ -25,6 +25,7 @@ from typing import Any, Callable
 
 from .activation_transaction import (
     ActivationSnapshotError,
+    abort_interrupted_activation_capture,
     capture_activation_state,
     committed_activation_receipt,
     compensate_activation_failure,
@@ -40,16 +41,20 @@ from .installer_yaml import (
     set_memory_provider_yaml_text,
 )
 from .response_schemas import (
+    DOCTOR_ACTIVATION_ADVISORY_CHECK_NAMES,
+    DOCTOR_ACTIVATION_SAFETY_CHECK_NAMES,
     DOCTOR_REQUIRED_CHECK_NAMES,
     DOCTOR_RESPONSE_SCHEMA_VERSION,
 )
 from .recovery_commands import quote_argument, restore_file_command
+from .sqlite_backup import logical_fingerprint as sqlite_logical_fingerprint
 from .vector_bootstrap import vector_companion_presence
 from .vector_generation_preflight import validate_generation_for_activation
 from .vector_store import normalize_vector_backend
 from .windows_filesystem import (
     copy_file,
     copy_tree as filesystem_copy_tree,
+    atomic_write_text,
     io_path,
     make_dirs,
     move_path,
@@ -101,6 +106,8 @@ _EXCLUDED_FILE_GLOBS = (
 )
 _DOCTOR_STDOUT_LIMIT_BYTES = 1_000_000
 _DOCTOR_STDERR_LIMIT_BYTES = 1_000_000
+_MANAGED_TRANSACTION_SCHEMA = "scope-recall.managed-activation-transaction.v1"
+_MANAGED_TRANSACTION_FILENAME = "activation-transaction.json"
 
 
 class _BoundedPipeCapture:
@@ -168,6 +175,288 @@ def _register_activation_sqlite_epoch(snapshot: dict[str, Any]) -> str:
 
 class InstallError(RuntimeError):
     """Raised when the scope-recall installer cannot safely proceed."""
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _managed_json_value(value: Any) -> Any:
+    """Convert an activation snapshot to a strict, lossless JSON surface."""
+
+    if isinstance(value, Path):
+        return str(value)
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        if not all(isinstance(key, str) for key in value):
+            raise InstallError("managed activation state contains a non-string key")
+        return {key: _managed_json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_managed_json_value(item) for item in value]
+    raise InstallError(
+        "managed activation state contains an unsupported value: "
+        f"{type(value).__name__}"
+    )
+
+
+def _managed_unsigned(document: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in document.items() if key != "sha256"}
+
+
+def _managed_canonical_bytes(document: dict[str, Any]) -> bytes:
+    return json.dumps(
+        document,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _managed_seal(document: dict[str, Any]) -> dict[str, Any]:
+    unsigned = _managed_unsigned(_managed_json_value(document))
+    return {
+        **unsigned,
+        "sha256": hashlib.sha256(_managed_canonical_bytes(unsigned)).hexdigest(),
+    }
+
+
+def _managed_path_is_linklike(path: Path) -> bool:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    if path.is_symlink():
+        return True
+    attributes = int(getattr(info, "st_file_attributes", 0) or 0)
+    reparse_flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    return bool(attributes & reparse_flag)
+
+
+def _validate_managed_state_dir(
+    home: Path,
+    managed_state_dir: str | os.PathLike[str] | None,
+    *,
+    create: bool,
+) -> Path:
+    if managed_state_dir is None or not str(managed_state_dir).strip():
+        raise InstallError("managed upgrade requires an explicit private state directory")
+    home = home.expanduser().resolve()
+    operations_root = (home / "scope-recall" / "upgrades" / "operations").resolve(
+        strict=False
+    )
+    raw = Path(managed_state_dir).expanduser()
+    state_dir = raw.resolve(strict=False)
+    if (
+        state_dir.name != "private"
+        or state_dir.parent.parent != operations_root
+        or not state_dir.parent.name
+        or state_dir.parent.name in {".", ".."}
+        or ".." in state_dir.parent.name
+    ):
+        raise InstallError(
+            "managed state must be the private directory of one exact operation"
+        )
+    for candidate in (state_dir.parent, state_dir):
+        if _managed_path_is_linklike(candidate):
+            raise InstallError("managed state refuses symlink or reparse-point paths")
+    if create:
+        make_dirs(state_dir, exist_ok=True)
+        try:
+            state_dir.chmod(0o700)
+        except OSError:
+            pass
+    if not state_dir.is_dir():
+        raise InstallError("managed private state directory does not exist")
+    return state_dir
+
+
+def _managed_transaction_path(state_dir: Path) -> Path:
+    path = state_dir / _MANAGED_TRANSACTION_FILENAME
+    if _managed_path_is_linklike(path):
+        raise InstallError("managed activation transaction cannot be a link")
+    return path
+
+
+def _managed_durable_replace(source: Path, destination: Path) -> None:
+    """Publish the activation handle with write-through semantics on Windows."""
+
+    if os.name != "nt":
+        os.replace(io_path(source), io_path(destination))
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    move_file_ex = ctypes.WinDLL("kernel32", use_last_error=True).MoveFileExW
+    move_file_ex.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+    move_file_ex.restype = wintypes.BOOL
+    if not move_file_ex(
+        io_path(source),
+        io_path(destination),
+        0x1 | 0x8,  # MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _write_managed_transaction(
+    state_dir: Path,
+    document: dict[str, Any],
+) -> dict[str, Any]:
+    path = _managed_transaction_path(state_dir)
+    sealed = _managed_seal(document)
+    payload = _managed_canonical_bytes(sealed) + b"\n"
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=io_path(state_dir),
+    )
+    temporary = Path(temporary_name)
+    try:
+        try:
+            os.chmod(temporary, 0o600)
+        except OSError:
+            pass
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _managed_durable_replace(temporary, path)
+        with open(io_path(path), "r+b") as published:
+            if published.read() != payload:
+                raise InstallError(
+                    "managed activation transaction durable publish mismatch"
+                )
+            published.flush()
+            os.fsync(published.fileno())
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+        try:
+            directory_fd = os.open(io_path(state_dir), os.O_RDONLY)
+        except OSError:
+            directory_fd = -1
+        if directory_fd >= 0:
+            try:
+                os.fsync(directory_fd)
+            except OSError:
+                pass
+            finally:
+                os.close(directory_fd)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        remove_path(temporary, missing_ok=True, ignore_errors=True)
+    return sealed
+
+
+def _read_managed_transaction(state_dir: Path) -> dict[str, Any]:
+    path = _managed_transaction_path(state_dir)
+    if not path.is_file():
+        raise InstallError("managed activation transaction is missing")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8", errors="strict"))
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise InstallError("managed activation transaction is unreadable") from exc
+    if not isinstance(payload, dict):
+        raise InstallError("managed activation transaction is not an object")
+    supplied = str(payload.get("sha256") or "")
+    expected = hashlib.sha256(
+        _managed_canonical_bytes(_managed_unsigned(payload))
+    ).hexdigest()
+    if not supplied or supplied != expected:
+        raise InstallError("managed activation transaction integrity check failed")
+    if payload.get("schema_version") != _MANAGED_TRANSACTION_SCHEMA:
+        raise InstallError("managed activation transaction schema is incompatible")
+    return payload
+
+
+def _begin_managed_transaction_intent(
+    state_dir: Path,
+    *,
+    home: Path,
+    target: Path,
+    previous_plugin_existed: bool,
+    previous_version: str,
+    target_version: str,
+    requires_vector_degrade: bool,
+    capture_lease_token: str,
+) -> dict[str, Any]:
+    path = _managed_transaction_path(state_dir)
+    if path.exists():
+        raise InstallError(
+            "managed activation transaction already exists; resume it instead"
+        )
+    now = _utc_now_iso()
+    return _write_managed_transaction(
+        state_dir,
+        {
+            "schema_version": _MANAGED_TRANSACTION_SCHEMA,
+            "phase": "snapshot_pending",
+            "created_at": now,
+            "updated_at": now,
+            "hermes_home": str(home),
+            "plugin_dir": str(target),
+            "previous_plugin_existed": bool(previous_plugin_existed),
+            "previous_version": str(previous_version),
+            "target_version": str(target_version),
+            "requires_vector_degrade": bool(requires_vector_degrade),
+            "capture_lease_token": str(capture_lease_token),
+            "plugin_backup_path": "",
+            "plugin_replaced": False,
+            "snapshot": {},
+            "last_transaction": {},
+        },
+    )
+
+
+def _begin_managed_transaction(
+    state_dir: Path,
+    *,
+    home: Path,
+    target: Path,
+    snapshot: dict[str, Any],
+    previous_plugin_existed: bool,
+    previous_version: str,
+    target_version: str,
+    requires_vector_degrade: bool,
+) -> dict[str, Any]:
+    """Compatibility helper for already-captured test/operator snapshots."""
+
+    lease = snapshot.get("maintenance_lease")
+    raw_lease = lease if isinstance(lease, dict) else {}
+    capture_token = str(raw_lease.get("token") or uuid.uuid4().hex)
+    _begin_managed_transaction_intent(
+        state_dir,
+        home=home,
+        target=target,
+        previous_plugin_existed=previous_plugin_existed,
+        previous_version=previous_version,
+        target_version=target_version,
+        requires_vector_degrade=requires_vector_degrade,
+        capture_lease_token=capture_token,
+    )
+    return _advance_managed_transaction(
+        state_dir,
+        "snapshot_captured",
+        snapshot=snapshot,
+    )
+
+
+def _advance_managed_transaction(
+    state_dir: Path,
+    phase: str,
+    **updates: Any,
+) -> dict[str, Any]:
+    current = _read_managed_transaction(state_dir)
+    document = {
+        **_managed_unsigned(current),
+        **updates,
+        "phase": str(phase),
+        "updated_at": _utc_now_iso(),
+    }
+    return _write_managed_transaction(state_dir, document)
 
 
 def _platform_default_hermes_home() -> Path:
@@ -610,7 +899,12 @@ def _bootstrap_installed_provider(
     }
 
 
-def _postdeploy_doctor_verify(home: Path, plugin_dir: Path) -> dict[str, Any]:
+def _postdeploy_doctor_verify(
+    home: Path,
+    plugin_dir: Path,
+    *,
+    managed_upgrade: bool = False,
+) -> dict[str, Any]:
     """Run the installed candidate's canonical operator doctor before commit.
 
     The subprocess uses isolated Python import semantics so another installed
@@ -776,10 +1070,25 @@ def _postdeploy_doctor_verify(home: Path, plugin_dir: Path) -> dict[str, Any]:
     if not schema_ok:
         failed_checks.append("doctor_schema_version")
     reported_ok = payload.get("ok") is True
-    if not reported_ok:
-        failed_checks.append("doctor_report")
     process_ok = int(completed.returncode) == 0
-    if not process_ok:
+    safety_failed_checks = [
+        name
+        for name in DOCTOR_ACTIVATION_SAFETY_CHECK_NAMES
+        if not bool(bounded_checks.get(name, {}).get("ok"))
+    ]
+    advisory_failed_checks = [
+        name
+        for name in DOCTOR_ACTIVATION_ADVISORY_CHECK_NAMES
+        if not bool(bounded_checks.get(name, {}).get("ok"))
+    ]
+    contract_failed = bool(missing_checks or unexpected_checks or not schema_ok)
+    managed_process_ok = int(completed.returncode) in {0, 1}
+    if not managed_upgrade:
+        if not reported_ok:
+            failed_checks.append("doctor_report")
+        if not process_ok:
+            failed_checks.append("doctor_process")
+    elif not managed_process_ok:
         failed_checks.append("doctor_process")
     failures: list[str] = []
     if missing_checks:
@@ -796,18 +1105,38 @@ def _postdeploy_doctor_verify(home: Path, plugin_dir: Path) -> dict[str, Any]:
         )
     if not schema_ok:
         failures.append("candidate doctor response schema version is incompatible")
-    if not reported_ok:
+    if not reported_ok and not managed_upgrade:
         failures.append("candidate doctor did not report ok=true")
-    if not process_ok:
+    if not process_ok and not managed_upgrade:
         failures.append(f"candidate doctor exited with status {completed.returncode}")
+    if managed_upgrade and safety_failed_checks:
+        failures.append(
+            "candidate doctor failed activation safety checks: "
+            + ", ".join(safety_failed_checks)
+        )
+    if managed_upgrade and not managed_process_ok:
+        failures.append(f"candidate doctor exited with status {completed.returncode}")
+    safety_gate_ok = (
+        not contract_failed
+        and not safety_failed_checks
+        and (managed_process_ok if managed_upgrade else process_ok)
+    )
     return {
         "requested": True,
-        "ok": reported_ok and process_ok and not failed_checks,
+        "ok": (
+            safety_gate_ok
+            if managed_upgrade
+            else reported_ok and process_ok and not failed_checks
+        ),
         "returncode": int(completed.returncode),
         "schema_version": (
             reported_schema if isinstance(reported_schema, str) else ""
         ),
         "failed_checks": failed_checks,
+        "safety_gate_ok": safety_gate_ok,
+        "safety_failed_checks": safety_failed_checks,
+        "advisory_failed_checks": advisory_failed_checks,
+        "managed_upgrade_policy": bool(managed_upgrade),
         "failures": failures,
         # Never forward doctor details, runtime payloads, unknown checks,
         # recommendations, stdout, or stderr.  Canonical names and booleans are
@@ -821,16 +1150,30 @@ def _activation_payload(
     home: Path,
     plugin_dir: Path,
     snapshot: dict[str, Any],
+    *,
+    managed_upgrade: bool = False,
+    progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     config_payload = _write_memory_provider_config(home)
+    if progress is not None:
+        progress("config_updated", snapshot)
     bootstrap_payload = _bootstrap_installed_provider(
         home,
         plugin_dir,
         snapshot=snapshot,
     )
+    if progress is not None:
+        # Bootstrap may perform additive SQLite migrations and refreshes the
+        # activation-owned fingerprint. Persist that refreshed epoch before
+        # the next failure point.
+        progress("bootstrap_complete", snapshot)
     runtime_ok = bool(bootstrap_payload["runtime_verify"].get("ok"))
     postdeploy_doctor = (
-        _postdeploy_doctor_verify(home, plugin_dir)
+        _postdeploy_doctor_verify(
+            home,
+            plugin_dir,
+            managed_upgrade=managed_upgrade,
+        )
         if runtime_ok
         else {
             "requested": False,
@@ -841,6 +1184,8 @@ def _activation_payload(
             "recommendations": [],
         }
     )
+    if progress is not None:
+        progress("doctor_complete", snapshot)
     return {
         "activation_requested": True,
         "activated": runtime_ok and bool(postdeploy_doctor.get("ok")),
@@ -901,6 +1246,58 @@ def _detach_exception_tracebacks(exc: BaseException) -> None:
     gc.collect()
 
 
+def _disable_vector_for_managed_upgrade(home: Path) -> dict[str, Any]:
+    """Persist a local-only lexical fallback after vector preflight debt.
+
+    The activation snapshot is captured before this function runs, so every
+    byte is restored by the ordinary compensation path when activation fails.
+    The updater never deletes vector companions and never attempts an
+    embedding rebuild; an operator can explicitly re-enable and repair the
+    derived index after the version upgrade has completed.
+    """
+
+    config_path = home / "scope-recall" / "config.json"
+    if config_path.is_symlink():
+        raise InstallError(
+            "managed upgrade refuses to replace a symlinked Scope Recall config"
+        )
+    raw = "{}"
+    if config_path.is_file():
+        raw = config_path.read_text(encoding="utf-8", errors="strict")
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise InstallError(
+            "managed upgrade cannot disable an unreadable Scope Recall config"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise InstallError("managed upgrade requires a JSON object provider config")
+    raw_vector = payload.get("vector")
+    if raw_vector is not None and not isinstance(raw_vector, dict):
+        raise InstallError("managed upgrade requires vector config to be an object")
+    vector = dict(raw_vector or {})
+    previously_enabled = config_bool(vector, "enabled", True)
+    if vector.get("enabled") is False:
+        return {
+            "applied": False,
+            "previously_enabled": previously_enabled,
+            "mode": "sqlite-lexical",
+            "content_egress": False,
+        }
+    vector["enabled"] = False
+    payload["vector"] = vector
+    atomic_write_text(
+        config_path,
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    )
+    return {
+        "applied": True,
+        "previously_enabled": previously_enabled,
+        "mode": "sqlite-lexical",
+        "content_egress": False,
+    }
+
+
 def _activate_installed_target(
     home: Path,
     target: Path,
@@ -911,15 +1308,69 @@ def _activate_installed_target(
     previous_version: str,
     plugin_backup_path: str,
     plugin_replaced: bool,
+    managed_upgrade: bool = False,
+    degrade_vector: bool = False,
+    managed_state_dir: Path | None = None,
 ) -> dict[str, Any]:
     activation: dict[str, Any] = {}
     transaction: dict[str, Any] = {}
+    commit_decided = False
     try:
-        activation = _activation_payload(home, target, snapshot)
+        if managed_upgrade:
+            if managed_state_dir is None:
+                raise InstallError("managed activation state directory is missing")
+            _advance_managed_transaction(
+                managed_state_dir,
+                "activating",
+                activation_step="starting",
+                snapshot=snapshot,
+                plugin_backup_path=plugin_backup_path,
+                plugin_replaced=bool(plugin_replaced),
+            )
+
+        def persist_progress(step: str, current_snapshot: dict[str, Any]) -> None:
+            if managed_upgrade:
+                assert managed_state_dir is not None
+                _advance_managed_transaction(
+                    managed_state_dir,
+                    "activating",
+                    activation_step=step,
+                    snapshot=current_snapshot,
+                    plugin_backup_path=plugin_backup_path,
+                    plugin_replaced=bool(plugin_replaced),
+                )
+
+        if degrade_vector:
+            result["managed_vector_degrade"] = _disable_vector_for_managed_upgrade(
+                home
+            )
+            persist_progress("vector_degraded", snapshot)
+        activation = (
+            _activation_payload(
+                home,
+                target,
+                snapshot,
+                managed_upgrade=True,
+                progress=persist_progress,
+            )
+            if managed_upgrade
+            else _activation_payload(home, target, snapshot)
+        )
         result.update(activation)
         runtime_failure = _activation_runtime_failure(activation)
         if runtime_failure:
             raise InstallError(runtime_failure)
+        if managed_upgrade:
+            assert managed_state_dir is not None
+            commit_decided = True
+            _advance_managed_transaction(
+                managed_state_dir,
+                "commit_started",
+                activation_step="validated",
+                snapshot=snapshot,
+                plugin_backup_path=plugin_backup_path,
+                plugin_replaced=bool(plugin_replaced),
+            )
         transaction = committed_activation_receipt(
             snapshot,
             plugin_dir=target,
@@ -953,6 +1404,56 @@ def _activate_installed_target(
             "message": str(exc)[:1000],
         }
         _detach_exception_tracebacks(exc)
+        if managed_upgrade and commit_decided and managed_state_dir is not None:
+            pending_transaction = transaction or {
+                "status": "commit_cleanup_pending",
+                "automatic_rollback": False,
+                "failures": ["activation commit cleanup must be retried"],
+                "restore_commands": [],
+            }
+            durable = True
+            try:
+                _advance_managed_transaction(
+                    managed_state_dir,
+                    "commit_cleanup_pending",
+                    activation_step="commit_cleanup_pending",
+                    snapshot=snapshot,
+                    last_transaction=pending_transaction,
+                    plugin_backup_path=plugin_backup_path,
+                    plugin_replaced=bool(plugin_replaced),
+                )
+            except Exception:
+                # ``commit_started`` is already durable.  Never reverse that
+                # decision; the frozen outer worker will retry this phase.
+                durable = False
+            result.update(
+                {
+                    "ok": False,
+                    "installed": True,
+                    "activated": False,
+                    "mode": "managed-commit-cleanup-pending",
+                    "safe_to_restart_previous": False,
+                    "managed_retryable": True,
+                    "activation_error": activation_error,
+                    "activation_transaction": pending_transaction,
+                    "managed_commit_state_durable": durable,
+                }
+            )
+            return result
+        if managed_upgrade and managed_state_dir is not None:
+            try:
+                _advance_managed_transaction(
+                    managed_state_dir,
+                    "rollback_started",
+                    activation_step="failed",
+                    snapshot=snapshot,
+                    plugin_backup_path=plugin_backup_path,
+                    plugin_replaced=bool(plugin_replaced),
+                )
+            except Exception:
+                # Compensation still owns the in-memory capability. Never skip
+                # rollback merely because the external journal became damaged.
+                pass
         transaction = compensate_activation_failure(
             snapshot,
             plugin_dir=target,
@@ -972,6 +1473,9 @@ def _activate_installed_target(
                     if transaction["automatic_rollback"]
                     else "activation-failed-rollback-failed"
                 ),
+                "safe_to_restart_previous": bool(
+                    transaction["automatic_rollback"]
+                ),
                 "activation_error": activation_error,
                 "activation_transaction": transaction,
                 "verify": verify(home),
@@ -988,6 +1492,28 @@ def _activate_installed_target(
             result["next_steps"].extend(
                 str(item) for item in transaction.get("restore_commands", [])
             )
+        if managed_upgrade and managed_state_dir is not None:
+            try:
+                _advance_managed_transaction(
+                    managed_state_dir,
+                    (
+                        "rolled_back"
+                        if bool(transaction.get("automatic_rollback"))
+                        else "rollback_failed"
+                    ),
+                    snapshot=snapshot,
+                    last_transaction=transaction,
+                    plugin_backup_path=plugin_backup_path,
+                    plugin_replaced=bool(plugin_replaced),
+                )
+            except Exception as journal_exc:
+                result["ok"] = False
+                result["safe_to_restart_previous"] = False
+                result["mode"] = "managed-journal-finalization-failed"
+                result["journal_error"] = {
+                    "type": type(journal_exc).__name__,
+                    "message": sanitize_report_text(str(journal_exc))[:500],
+                }
         return result
 
     result["activation_transaction"] = transaction
@@ -997,6 +1523,18 @@ def _activate_installed_target(
     _extend_rollback_commands(result, commands)
     result["verify"] = activation["runtime_verify"]
     result["ok"] = bool(result["verify"].get("ok"))
+    result["safe_to_restart_previous"] = False
+    if managed_upgrade:
+        assert managed_state_dir is not None
+        _advance_managed_transaction(
+            managed_state_dir,
+            "committed",
+            activation_step="complete",
+            snapshot=snapshot,
+            last_transaction=transaction,
+            plugin_backup_path=plugin_backup_path,
+            plugin_replaced=bool(plugin_replaced),
+        )
     return result
 
 
@@ -1089,6 +1627,8 @@ def _manifestless_vector_state_failures(
 def _upgrade_compatibility_preflight(
     home: Path,
     candidate_source: Path,
+    *,
+    managed_upgrade: bool = False,
 ) -> dict[str, Any]:
     """Read-only N-1 contract check performed before backup or replacement."""
 
@@ -1096,6 +1636,7 @@ def _upgrade_compatibility_preflight(
     runtime_config = load_runtime_config(candidate_source, storage_dir)
     config_errors = load_runtime_config_errors(runtime_config)
     failures: list[str] = []
+    recoverable_vector_debt: list[str] = []
     next_steps: list[str] = []
     if config_errors:
         failures.extend(str(item.get("message") or "runtime config error") for item in config_errors)
@@ -1160,7 +1701,7 @@ def _upgrade_compatibility_preflight(
                         )
                     except Exception as exc:
                         safe_error = sanitize_report_text(str(exc))[:300] or type(exc).__name__
-                        failures.append(
+                        recoverable_vector_debt.append(
                             f"ready vector generation {generation_id} is not upgrade-compatible: {safe_error}"
                         )
                         vector_checks.append(
@@ -1175,20 +1716,23 @@ def _upgrade_compatibility_preflight(
                     conn,
                     runtime_config,
                 )
-                failures.extend(manifestless_failures)
+                recoverable_vector_debt.extend(manifestless_failures)
             finally:
                 conn.close()
         except Exception as exc:
             safe_error = sanitize_report_text(str(exc))[:300] or type(exc).__name__
             failures.append(f"cannot inspect existing vector generation state: {safe_error}")
-    if any(not bool(item.get("ok")) for item in vector_checks):
+    if any(not bool(item.get("ok")) for item in vector_checks) and not managed_upgrade:
         next_steps.append(
             "Explicitly rebuild or migrate each invalid READY vector generation so a bound physical preflight receipt is produced, then rerun install."
         )
-    if manifestless_failures:
+    if manifestless_failures and not managed_upgrade:
         next_steps.append(
             "Run scripts/migrate.vector_generation.py with --dry-run, then --apply --activate under confirmed maintenance, and rerun the upgrade."
         )
+
+    if not managed_upgrade:
+        failures.extend(recoverable_vector_debt)
 
     return {
         "ok": not failures,
@@ -1204,6 +1748,11 @@ def _upgrade_compatibility_preflight(
             "ok": not manifestless_failures,
             "failures": manifestless_failures,
         },
+        "managed_upgrade": bool(managed_upgrade),
+        "recoverable_vector_debt": recoverable_vector_debt,
+        "requires_vector_degrade": bool(
+            managed_upgrade and recoverable_vector_debt
+        ),
         "failures": failures,
         "next_steps": next_steps,
     }
@@ -1236,10 +1785,15 @@ def _revalidate_upgrade_compatibility(
     candidate_source: Path,
     *,
     initial: dict[str, Any],
+    managed_upgrade: bool = False,
 ) -> dict[str, Any]:
     """Re-run canonical checks at the first plugin mutation boundary."""
 
-    current = _upgrade_compatibility_preflight(home, candidate_source)
+    current = _upgrade_compatibility_preflight(
+        home,
+        candidate_source,
+        managed_upgrade=managed_upgrade,
+    )
     current["revalidated_before_target_mutation"] = True
     if not bool(current.get("ok")):
         failures = [str(item) for item in current.get("failures", [])]
@@ -1431,6 +1985,69 @@ def verify(hermes_home: str | os.PathLike[str] | None = None, *, runtime: bool =
     return payload
 
 
+def managed_upgrade_preflight(
+    hermes_home: str | os.PathLike[str] | None = None,
+    *,
+    candidate_tree: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    """Return the complete read-only installer gate for a managed candidate.
+
+    This public seam lets an external frozen runner decide whether it may stop
+    a target gateway. It performs no backup, lease acquisition, config update,
+    plugin copy, schema bootstrap, repair, or network request.
+    """
+
+    home = resolve_hermes_home(hermes_home)
+    candidate = (
+        Path(candidate_tree).expanduser().resolve()
+        if candidate_tree is not None
+        else source_root()
+    )
+    missing = [rel for rel in REQUIRED_PLUGIN_FILES if not (candidate / rel).is_file()]
+    if missing:
+        return {
+            "ok": False,
+            "read_only": True,
+            "content_egress": False,
+            "candidate_dir": str(candidate),
+            "target_version": "",
+            "previous_version": _read_manifest_version(plugin_dir_for(home)),
+            "failures": [
+                "candidate is missing required plugin files: " + ", ".join(missing)
+            ],
+            "compatibility": {"requested": False},
+        }
+    if _read_manifest_name(candidate) != PLUGIN_NAME:
+        return {
+            "ok": False,
+            "read_only": True,
+            "content_egress": False,
+            "candidate_dir": str(candidate),
+            "target_version": _read_manifest_version(candidate),
+            "previous_version": _read_manifest_version(plugin_dir_for(home)),
+            "failures": ["candidate plugin manifest name is not scope-recall"],
+            "compatibility": {"requested": False},
+        }
+    compatibility = _upgrade_compatibility_preflight(
+        home,
+        candidate,
+        managed_upgrade=True,
+    )
+    return {
+        "ok": bool(compatibility.get("ok")),
+        "read_only": True,
+        "content_egress": False,
+        "candidate_dir": str(candidate),
+        "target_version": _read_manifest_version(candidate),
+        "previous_version": _read_manifest_version(plugin_dir_for(home)),
+        "requires_vector_degrade": bool(
+            compatibility.get("requires_vector_degrade")
+        ),
+        "failures": [str(item) for item in compatibility.get("failures", [])],
+        "compatibility": compatibility,
+    }
+
+
 def install(
     hermes_home: str | os.PathLike[str] | None = None,
     *,
@@ -1438,11 +2055,28 @@ def install(
     force: bool = False,
     activate: bool = False,
     maintenance_mode: bool = False,
+    managed_upgrade: bool = False,
+    managed_state_dir: str | os.PathLike[str] | None = None,
 ) -> dict[str, Any]:
     """Install or upgrade the plugin copy in a Hermes home with backup and rollback metadata.
 
     Writes are explicit, source paths are validated, and operator output includes enough evidence to reverse a bad copy."""
     home = resolve_hermes_home(hermes_home)
+    private_state: Path | None = None
+    if managed_upgrade and not (activate and maintenance_mode):
+        raise InstallError(
+            "managed upgrade requires activation under confirmed maintenance mode"
+        )
+    if managed_upgrade:
+        private_state = _validate_managed_state_dir(
+            home,
+            managed_state_dir,
+            create=True,
+        )
+        if _managed_transaction_path(private_state).exists():
+            raise InstallError(
+                "managed activation transaction already exists; resume it instead"
+            )
     source = source_root()
     target = plugin_dir_for(home)
     if not all((source / rel).is_file() for rel in REQUIRED_PLUGIN_FILES):
@@ -1469,6 +2103,7 @@ def install(
         "rollback_commands": [],
         "activation_requested": activate,
         "maintenance_mode_confirmed": bool(maintenance_mode),
+        "managed_upgrade": bool(managed_upgrade),
         "activated": False,
         "config_updated": False,
         "config_path": str(home / "config.yaml"),
@@ -1478,14 +2113,23 @@ def install(
         "runtime_verify": {"requested": False},
         "postdeploy_doctor": {"requested": False},
         "upgrade_compatibility": {"requested": True},
+        "mutation_started": False,
+        "safe_to_restart_previous": False,
         "next_steps": _next_steps(home),
     }
-    compatibility = _upgrade_compatibility_preflight(home, source)
+    compatibility = _upgrade_compatibility_preflight(
+        home,
+        source,
+        managed_upgrade=managed_upgrade,
+    )
     result["upgrade_compatibility"] = compatibility
     if not bool(compatibility.get("ok")):
         result["ok"] = False
         result["next_steps"] = list(compatibility.get("next_steps") or [])
-        if dry_run:
+        if dry_run or managed_upgrade:
+            if managed_upgrade:
+                result["mode"] = "managed-preflight-failed-safe"
+                result["safe_to_restart_previous"] = True
             return result
         failures = [str(item) for item in compatibility.get("failures", [])]
         detail = "; ".join(failures[:5]) or "unknown compatibility failure"
@@ -1518,6 +2162,9 @@ def install(
                 "pass --force to replace it"
             )
 
+    managed_flags = {
+        "degrade_vector": bool(compatibility.get("requires_vector_degrade"))
+    }
     activation_snapshot: dict[str, Any] | None = None
     if activate:
         truth_db = home / "scope-recall" / "memory.sqlite3"
@@ -1526,15 +2173,125 @@ def install(
                 "activation against an existing truth DB requires --maintenance-mode; "
                 "stop the gateway and all Scope Recall writers before retrying"
             )
+        capture_lease_token = ""
+        if managed_upgrade:
+            assert private_state is not None
+            capture_lease_token = uuid.uuid4().hex
+            try:
+                _begin_managed_transaction_intent(
+                    private_state,
+                    home=home,
+                    target=target,
+                    previous_plugin_existed=previous_plugin_existed,
+                    previous_version=previous_version,
+                    target_version=new_version,
+                    requires_vector_degrade=managed_flags["degrade_vector"],
+                    capture_lease_token=capture_lease_token,
+                )
+            except Exception as exc:
+                result.update(
+                    {
+                        "ok": False,
+                        "mode": "managed-journal-start-failed-safe",
+                        "safe_to_restart_previous": True,
+                        "activation_error": {
+                            "type": type(exc).__name__,
+                            "message": sanitize_report_text(str(exc))[:500],
+                        },
+                    }
+                )
+                return result
         try:
             activation_snapshot = capture_activation_state(
                 home,
                 writer_quiesced=maintenance_mode,
+                activation_lease_token=capture_lease_token,
             )
         except ActivationSnapshotError as exc:
+            if managed_upgrade:
+                assert private_state is not None
+                rollback_receipt = {
+                    "status": "rolled_back",
+                    "automatic_rollback": True,
+                    "failures": [],
+                    "restore_commands": [],
+                }
+                durable = True
+                try:
+                    _advance_managed_transaction(
+                        private_state,
+                        "rolled_back",
+                        snapshot={},
+                        last_transaction=rollback_receipt,
+                    )
+                except Exception:
+                    durable = False
+                result.update(
+                    {
+                        "ok": False,
+                        "mode": (
+                            "managed-snapshot-failed-safe"
+                            if durable
+                            else "managed-snapshot-failed-journal-uncertain"
+                        ),
+                        "safe_to_restart_previous": durable,
+                        "activation_error": {
+                            "type": type(exc).__name__,
+                            "message": sanitize_report_text(str(exc))[:500],
+                        },
+                        "activation_transaction": rollback_receipt,
+                    }
+                )
+                return result
             raise InstallError(
                 f"cannot safely snapshot activation pre-state: {exc}"
             ) from exc
+        if managed_upgrade:
+            assert private_state is not None
+            try:
+                _advance_managed_transaction(
+                    private_state,
+                    "snapshot_captured",
+                    snapshot=activation_snapshot,
+                )
+            except Exception as exc:
+                transaction = compensate_activation_failure(
+                    activation_snapshot,
+                    plugin_dir=target,
+                    previous_plugin_existed=previous_plugin_existed,
+                    previous_version=previous_version,
+                    plugin_backup_path="",
+                    plugin_replaced=False,
+                )
+                automatic_rollback = bool(transaction.get("automatic_rollback"))
+                durable = True
+                try:
+                    _advance_managed_transaction(
+                        private_state,
+                        "rolled_back" if automatic_rollback else "rollback_failed",
+                        snapshot=activation_snapshot,
+                        last_transaction=transaction,
+                    )
+                except Exception:
+                    durable = False
+                result.update(
+                    {
+                        "ok": False,
+                        "mode": (
+                            "managed-journal-start-failed-safe"
+                            if automatic_rollback and durable
+                            else "managed-journal-start-failed-rollback-failed"
+                        ),
+                        "safe_to_restart_previous": automatic_rollback and durable,
+                        "activation_error": {
+                            "type": type(exc).__name__,
+                            "message": sanitize_report_text(str(exc))[:500],
+                        },
+                        "activation_transaction": transaction,
+                    }
+                )
+                return result
+        result["mutation_started"] = True
 
     if same_tree:
         result["mode"] = "already-installed"
@@ -1549,23 +2306,31 @@ def install(
                 previous_version=previous_version,
                 plugin_backup_path="",
                 plugin_replaced=False,
+                managed_upgrade=managed_upgrade,
+                degrade_vector=managed_flags["degrade_vector"],
+                managed_state_dir=private_state,
             )
         result["verify"] = verify(home)
         result["ok"] = bool(result["verify"]["ok"])
         return result
 
     def revalidate_before_target_mutation() -> None:
-        result["upgrade_compatibility"] = _revalidate_upgrade_compatibility(
+        current = _revalidate_upgrade_compatibility(
             home,
             source,
             initial=compatibility,
+            managed_upgrade=managed_upgrade,
         )
+        result["upgrade_compatibility"] = current
+        if current.get("requires_vector_degrade"):
+            managed_flags["degrade_vector"] = True
 
     staging_root = public_path(
         tempfile.mkdtemp(prefix="sr.stg.", dir=io_path(target.parent))
     )
     staging = staging_root / PLUGIN_NAME
     backup_path = ""
+    plugin_mutation_started = False
     try:
         _copy_tree(source, staging)
         if path_exists(target) or path_is_symlink(target):
@@ -1579,11 +2344,50 @@ def install(
             result["backup_path"] = backup_path
             result["rollback_command"] = _rollback_command(home, backup_path)
             result["rollback_commands"] = [result["rollback_command"]]
+            if managed_upgrade:
+                assert private_state is not None
+                _advance_managed_transaction(
+                    private_state,
+                    "plugin_backed_up",
+                    snapshot=activation_snapshot,
+                    plugin_backup_path=backup_path,
+                    plugin_replaced=False,
+                )
             revalidate_before_target_mutation()
+            if managed_upgrade:
+                assert private_state is not None
+                _advance_managed_transaction(
+                    private_state,
+                    "plugin_mutation_started",
+                    snapshot=activation_snapshot,
+                    plugin_backup_path=backup_path,
+                    plugin_replaced=True,
+                )
+            plugin_mutation_started = True
             _remove_existing_plugin(target)
         try:
             revalidate_before_target_mutation()
+            if not plugin_mutation_started:
+                if managed_upgrade:
+                    assert private_state is not None
+                    _advance_managed_transaction(
+                        private_state,
+                        "plugin_mutation_started",
+                        snapshot=activation_snapshot,
+                        plugin_backup_path=backup_path,
+                        plugin_replaced=True,
+                    )
+                plugin_mutation_started = True
             move_path(staging, target)
+            if managed_upgrade:
+                assert private_state is not None
+                _advance_managed_transaction(
+                    private_state,
+                    "candidate_installed",
+                    snapshot=activation_snapshot,
+                    plugin_backup_path=backup_path,
+                    plugin_replaced=True,
+                )
         except Exception:
             if backup_path and not path_exists(target):
                 _copy_existing_plugin(Path(backup_path), target)
@@ -1591,14 +2395,72 @@ def install(
     except Exception as exc:
         if activate:
             assert activation_snapshot is not None
+            if managed_upgrade and private_state is not None:
+                try:
+                    _advance_managed_transaction(
+                        private_state,
+                        "rollback_started",
+                        snapshot=activation_snapshot,
+                        plugin_backup_path=backup_path,
+                        plugin_replaced=bool(plugin_mutation_started),
+                    )
+                except Exception:
+                    pass
             transaction = compensate_activation_failure(
                 activation_snapshot,
                 plugin_dir=target,
                 previous_plugin_existed=previous_plugin_existed,
                 previous_version=previous_version,
                 plugin_backup_path=backup_path,
-                plugin_replaced=bool(backup_path),
+                plugin_replaced=bool(plugin_mutation_started),
             )
+            if managed_upgrade:
+                automatic_rollback = bool(transaction.get("automatic_rollback"))
+                result.update(
+                    {
+                        "ok": False,
+                        "installed": False,
+                        "activated": False,
+                        "mode": (
+                            "managed-copy-failed-rolled-back"
+                            if automatic_rollback
+                            else "managed-copy-failed-rollback-failed"
+                        ),
+                        "safe_to_restart_previous": automatic_rollback,
+                        "activation_error": {
+                            "type": type(exc).__name__,
+                            "message": sanitize_report_text(str(exc))[:500],
+                        },
+                        "activation_transaction": transaction,
+                        "verify": verify(home),
+                    }
+                )
+                _extend_rollback_commands(
+                    result,
+                    [str(item) for item in transaction.get("restore_commands", [])],
+                )
+                if private_state is not None:
+                    try:
+                        _advance_managed_transaction(
+                            private_state,
+                            (
+                                "rolled_back"
+                                if automatic_rollback
+                                else "rollback_failed"
+                            ),
+                            snapshot=activation_snapshot,
+                            plugin_backup_path=backup_path,
+                            plugin_replaced=bool(plugin_mutation_started),
+                            last_transaction=transaction,
+                        )
+                    except Exception as journal_exc:
+                        result["safe_to_restart_previous"] = False
+                        result["mode"] = "managed-journal-finalization-failed"
+                        result["journal_error"] = {
+                            "type": type(journal_exc).__name__,
+                            "message": sanitize_report_text(str(journal_exc))[:500],
+                        }
+                return result
             if not bool(transaction.get("automatic_rollback")):
                 failures = "; ".join(
                     str(item)
@@ -1625,10 +2487,280 @@ def install(
             previous_version=previous_version,
             plugin_backup_path=backup_path,
             plugin_replaced=True,
+            managed_upgrade=managed_upgrade,
+            degrade_vector=managed_flags["degrade_vector"],
+            managed_state_dir=private_state,
         )
     result["verify"] = verify(home)
     result["ok"] = bool(result["verify"]["ok"])
     return result
+
+
+def _managed_retry_rollback_epoch(
+    phase: str,
+    snapshot: dict[str, Any],
+) -> None:
+    """Make an interrupted, already-restored SQLite compensation repeatable.
+
+    We only accept the current database as the rollback pre-state when it is
+    logically identical to the verified activation backup. Arbitrary drift is
+    never adopted as installer-owned state.
+    """
+
+    if phase not in {"rollback_started", "rollback_failed"}:
+        return
+    sqlite_snapshot = snapshot.get("sqlite")
+    if not isinstance(sqlite_snapshot, dict):
+        raise InstallError("managed activation snapshot is missing SQLite state")
+    current = Path(str(sqlite_snapshot.get("path") or ""))
+    backup_raw = str(sqlite_snapshot.get("backup_path") or "")
+    if not bool(sqlite_snapshot.get("preexisting")):
+        if not current.exists():
+            refresh_activation_sqlite_epoch(snapshot)
+        return
+    backup = Path(backup_raw) if backup_raw else Path()
+    if not current.is_file() or not backup.is_file():
+        return
+    try:
+        current_logical = sqlite_logical_fingerprint(current)
+        backup_logical = sqlite_logical_fingerprint(backup)
+    except Exception:
+        return
+    if current_logical == backup_logical:
+        refresh_activation_sqlite_epoch(snapshot)
+
+
+def resume_managed_upgrade(
+    *,
+    managed_state_dir: str | os.PathLike[str],
+    hermes_home: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    """Resume or safely compensate one sealed managed activation transaction."""
+
+    raw_state = Path(managed_state_dir).expanduser().resolve(strict=False)
+    initial = _read_managed_transaction(raw_state)
+    recorded_home_raw = initial.get("hermes_home")
+    if not isinstance(recorded_home_raw, str) or not recorded_home_raw.strip():
+        raise InstallError("managed transaction Hermes home is missing")
+    recorded_home = resolve_hermes_home(recorded_home_raw)
+    if hermes_home is not None and resolve_hermes_home(hermes_home) != recorded_home:
+        raise InstallError("managed transaction is bound to a different Hermes home")
+    state_dir = _validate_managed_state_dir(
+        recorded_home,
+        raw_state,
+        create=False,
+    )
+    current = _read_managed_transaction(state_dir)
+    phase = str(current.get("phase") or "")
+    target = Path(str(current.get("plugin_dir") or "")).expanduser().resolve(
+        strict=False
+    )
+    expected_target = plugin_dir_for(recorded_home).resolve(strict=False)
+    if target != expected_target:
+        raise InstallError("managed transaction plugin path is outside the target home")
+    raw_snapshot = current.get("snapshot")
+    if not isinstance(raw_snapshot, dict):
+        raise InstallError("managed transaction activation snapshot is missing")
+    snapshot = dict(raw_snapshot)
+    previous_plugin_existed = bool(current.get("previous_plugin_existed"))
+    previous_version = str(current.get("previous_version") or "")
+    target_version = str(current.get("target_version") or "")
+    plugin_backup_path = str(current.get("plugin_backup_path") or "")
+    plugin_replaced = bool(current.get("plugin_replaced"))
+
+    if phase == "committed":
+        return {
+            "ok": True,
+            "mode": "managed-already-committed",
+            "resumed": False,
+            "safe_to_restart_previous": False,
+            "manifest_version": target_version,
+            "activation_transaction": dict(current.get("last_transaction") or {}),
+        }
+    if phase == "rolled_back":
+        return {
+            "ok": False,
+            "mode": "managed-already-rolled-back",
+            "resumed": False,
+            "safe_to_restart_previous": True,
+            "manifest_version": previous_version,
+            "activation_transaction": dict(current.get("last_transaction") or {}),
+        }
+
+    if phase == "snapshot_pending":
+        if previous_plugin_existed:
+            previous_identity_ok = (
+                _read_manifest_name(target) == PLUGIN_NAME
+                and _read_manifest_version(target) == previous_version
+            )
+        else:
+            previous_identity_ok = not (path_exists(target) or path_is_symlink(target))
+        if not previous_identity_ok:
+            raise InstallError(
+                "managed snapshot intent found unexpected plugin state"
+            )
+        cleanup = abort_interrupted_activation_capture(
+            recorded_home,
+            expected_lease_token=str(current.get("capture_lease_token") or ""),
+        )
+        if cleanup.get("ok") is not True:
+            raise InstallError(
+                "managed snapshot capture barrier could not be safely recovered"
+            )
+        transaction = {
+            "status": "rolled_back",
+            "automatic_rollback": True,
+            "failures": [],
+            "restore_commands": [],
+        }
+        _advance_managed_transaction(
+            state_dir,
+            "rolled_back",
+            snapshot={},
+            last_transaction=transaction,
+        )
+        return {
+            "ok": False,
+            "mode": "managed-snapshot-intent-recovered",
+            "resumed": True,
+            "mutation_started": False,
+            "safe_to_restart_previous": True,
+            "manifest_version": previous_version,
+            "activation_transaction": transaction,
+        }
+
+    if phase in {"commit_started", "commit_cleanup_pending"}:
+        if (
+            _read_manifest_name(target) != PLUGIN_NAME
+            or _read_manifest_version(target) != target_version
+        ):
+            raise InstallError(
+                "managed commit cleanup found unexpected candidate identity"
+            )
+        transaction = committed_activation_receipt(
+            snapshot,
+            plugin_dir=target,
+            previous_plugin_existed=previous_plugin_existed,
+            plugin_backup_path=plugin_backup_path,
+            plugin_replaced=plugin_replaced,
+        )
+        committed = str(transaction.get("status") or "") == "committed"
+        _advance_managed_transaction(
+            state_dir,
+            "committed" if committed else "commit_cleanup_pending",
+            activation_step="complete" if committed else "commit_cleanup_pending",
+            snapshot=snapshot,
+            last_transaction=transaction,
+            plugin_backup_path=plugin_backup_path,
+            plugin_replaced=plugin_replaced,
+        )
+        return {
+            "ok": committed,
+            "mode": (
+                "managed-resume-commit-complete"
+                if committed
+                else "managed-commit-cleanup-pending"
+            ),
+            "resumed": True,
+            "mutation_started": True,
+            "safe_to_restart_previous": False,
+            "manifest_version": target_version,
+            "managed_retryable": not committed,
+            "activation_transaction": transaction,
+        }
+
+    if phase in {"candidate_installed", "activating"}:
+        if _read_manifest_name(target) != PLUGIN_NAME or (
+            target_version and _read_manifest_version(target) != target_version
+        ):
+            phase = "candidate_identity_mismatch"
+        else:
+            result: dict[str, Any] = {
+                "ok": True,
+                "dry_run": False,
+                "installed": True,
+                "mode": "managed-resume-activation",
+                "source_dir": str(target),
+                "hermes_home": str(recorded_home),
+                "plugin_dir": str(target),
+                "manifest_version": target_version,
+                "new_version": target_version,
+                "previous_plugin_existed": previous_plugin_existed,
+                "previous_version": previous_version,
+                "backup_path": plugin_backup_path,
+                "rollback_command": "",
+                "rollback_commands": [],
+                "activation_requested": True,
+                "maintenance_mode_confirmed": True,
+                "managed_upgrade": True,
+                "activated": False,
+                "mutation_started": True,
+                "safe_to_restart_previous": False,
+                "next_steps": [],
+                "resumed": True,
+            }
+            return _activate_installed_target(
+                recorded_home,
+                target,
+                result=result,
+                snapshot=snapshot,
+                previous_plugin_existed=previous_plugin_existed,
+                previous_version=previous_version,
+                plugin_backup_path=plugin_backup_path,
+                plugin_replaced=plugin_replaced,
+                managed_upgrade=True,
+                degrade_vector=bool(current.get("requires_vector_degrade")),
+                managed_state_dir=state_dir,
+            )
+
+    _managed_retry_rollback_epoch(phase, snapshot)
+    try:
+        _advance_managed_transaction(
+            state_dir,
+            "rollback_started",
+            snapshot=snapshot,
+            plugin_backup_path=plugin_backup_path,
+            plugin_replaced=plugin_replaced,
+        )
+    except Exception:
+        # A valid handle was already loaded. Continue compensation with its
+        # in-memory capability, but never authorize a restart without a final
+        # durable receipt.
+        pass
+    transaction = compensate_activation_failure(
+        snapshot,
+        plugin_dir=target,
+        previous_plugin_existed=previous_plugin_existed,
+        previous_version=previous_version,
+        plugin_backup_path=plugin_backup_path,
+        plugin_replaced=plugin_replaced,
+    )
+    automatic_rollback = bool(transaction.get("automatic_rollback"))
+    durable = True
+    try:
+        _advance_managed_transaction(
+            state_dir,
+            "rolled_back" if automatic_rollback else "rollback_failed",
+            snapshot=snapshot,
+            plugin_backup_path=plugin_backup_path,
+            plugin_replaced=plugin_replaced,
+            last_transaction=transaction,
+        )
+    except Exception:
+        durable = False
+    return {
+        "ok": False,
+        "mode": (
+            "managed-resume-rolled-back"
+            if automatic_rollback and durable
+            else "managed-resume-manual-recovery-required"
+        ),
+        "resumed": True,
+        "safe_to_restart_previous": automatic_rollback and durable,
+        "manifest_version": previous_version if automatic_rollback else "",
+        "activation_transaction": transaction,
+        "verify": verify(recorded_home) if automatic_rollback else {"requested": False},
+    }
 
 
 def rollback(

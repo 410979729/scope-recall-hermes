@@ -21,15 +21,24 @@ def test_search_plan_and_initial_trace_preserve_existing_keys():
     assert plan.configured_top_k == 7
     assert plan.vector_top_k == 9
     assert trace["limit"] == 2
-    assert trace["filters"] == {
-        "lifecycle_removed": 0,
-        "general_policy_removed": 0,
-        "entity_scope_mismatch": 0,
-        "vector_only_below_min_score": 0,
-        "below_min_score": 0,
-        "freshness_strict_excluded": 0,
-        "relation_contradiction_suppressed": 0,
-    }
+    assert trace["query_length"] == len("project atlas")
+    assert "query" not in trace
+    for key in (
+        "lifecycle_removed",
+        "general_policy_removed",
+        "entity_scope_mismatch",
+        "vector_only_below_min_score",
+        "vector_only_below_min_margin",
+        "vector_background_unavailable",
+        "opaque_vector_rejected_count",
+        "candidate_admission_rejected_count",
+        "candidate_lifecycle_egress_rejected",
+        "no_admissible_evidence",
+        "below_min_score",
+        "freshness_strict_excluded",
+        "relation_contradiction_suppressed",
+    ):
+        assert trace["filters"][key] == 0
 
 
 def test_recall_dedup_key_separates_general_and_durable_and_curated():

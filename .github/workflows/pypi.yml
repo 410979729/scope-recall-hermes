@@ -207,16 +207,6 @@ jobs:
           test "$(git rev-parse 'HEAD^{tree}')" = "${SOURCE_TREE}"
           test "${VERIFIED_SOURCE_SHA}" = "${SOURCE_SHA}"
           test "${VERIFIED_RELEASE_RUN_ID}" = "${RELEASE_RUN_ID}"
-          python .github/scripts/release_provenance.py verify \
-            --provenance release-download/RELEASE-PROVENANCE.json \
-            --repository "${GITHUB_REPOSITORY}" \
-            --source-sha "${SOURCE_SHA}" \
-            --source-tree "${SOURCE_TREE}" \
-            --release-tag "${RELEASE_TAG}" \
-            --workflow-run-id "${RELEASE_RUN_ID}" \
-            --workflow-run-status "${WORKFLOW_RUN_STATUS}" \
-            --workflow-run-conclusion "${WORKFLOW_RUN_CONCLUSION}" \
-            --packages-dir release-download
       - name: Stage validated distributions
         env:
           RELEASE_TAG: ${{ steps.release_tag.outputs.release_tag }}
@@ -226,6 +216,25 @@ jobs:
             --packages-dir release-staging/packages \
             --metadata-dir release-staging/metadata \
             --version "${RELEASE_TAG#v}"
+      - name: Verify staged release provenance package set
+        env:
+          RELEASE_TAG: ${{ steps.release_tag.outputs.release_tag }}
+          WORKFLOW_RUN_STATUS: ${{ needs.verify_release_origin.outputs.workflow_run_status }}
+          WORKFLOW_RUN_CONCLUSION: ${{ needs.verify_release_origin.outputs.workflow_run_conclusion }}
+        run: |
+          SOURCE_SHA="$(python -c 'import json; print(json.load(open("release-download/RELEASE-PROVENANCE.json", encoding="utf-8"))["source_sha"])')"
+          SOURCE_TREE="$(python -c 'import json; print(json.load(open("release-download/RELEASE-PROVENANCE.json", encoding="utf-8"))["source_tree"])')"
+          RELEASE_RUN_ID="$(python -c 'import json; print(json.load(open("release-download/RELEASE-PROVENANCE.json", encoding="utf-8"))["workflow"]["run_id"])')"
+          python .github/scripts/release_provenance.py verify \
+            --provenance release-download/RELEASE-PROVENANCE.json \
+            --repository "${GITHUB_REPOSITORY}" \
+            --source-sha "${SOURCE_SHA}" \
+            --source-tree "${SOURCE_TREE}" \
+            --release-tag "${RELEASE_TAG}" \
+            --workflow-run-id "${RELEASE_RUN_ID}" \
+            --workflow-run-status "${WORKFLOW_RUN_STATUS}" \
+            --workflow-run-conclusion "${WORKFLOW_RUN_CONCLUSION}" \
+            --packages-dir release-staging/packages
       - name: Refuse repeated PyPI publish
         env:
           RELEASE_TAG: ${{ steps.release_tag.outputs.release_tag }}

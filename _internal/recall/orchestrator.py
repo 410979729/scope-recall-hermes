@@ -13,6 +13,13 @@ from typing import Any
 
 from . import pipeline as recall_pipeline
 from .compiler import CandidateSet, CompilerPolicy, compile_recall_packet
+from .query_signal import (
+    CandidateAdmission,
+    DEFAULT_VECTOR_ONLY_MIN_MARGIN,
+    VECTOR_BACKGROUND_RANK,
+    assess_candidate_admission,
+    assess_query_signal,
+)
 from ...freshness import CURRENT_STATUSES, STALE_STATUSES, attach_freshness_metadata
 from ...gating import config_bool, matched_query_intent_terms
 from ...graph import apply_quality_weight, entity_overlap_bonus
@@ -35,6 +42,7 @@ REQUIRED_TRACE_STAGES = (
     "temporal_current",
     "rrf",
     "merge",
+    "candidate_admission",
     "graph",
     "fact_freshness",
     "compiler",
@@ -48,6 +56,12 @@ REQUIRED_FILTER_KEYS = (
     "relation_contradiction_suppressed",
     "entity_scope_mismatch",
     "vector_only_below_min_score",
+    "vector_only_below_min_margin",
+    "vector_background_unavailable",
+    "opaque_vector_rejected_count",
+    "candidate_admission_rejected_count",
+    "candidate_lifecycle_egress_rejected",
+    "no_admissible_evidence",
     "below_min_score",
 )
 
@@ -150,12 +164,14 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
     )
     bounded_limit = plan.bounded_limit
     candidate_pool = plan.candidate_pool
-    vector_depth = plan.vector_top_k
+    # The calibrated background neighbour must not vary with output limit.
+    vector_depth = max(plan.vector_top_k, VECTOR_BACKGROUND_RANK)
     trace: dict[str, Any] = recall_pipeline.initial_trace(
         query=query,
         plan=plan,
         accessible_scope_count=len(getattr(host.provider, "_accessible_scope_ids", []) or []),
     )
+    trace["vector_top_k"] = vector_depth
     trace["recall_mode"] = normalized_recall_mode
     query_stage = recall_pipeline.normalize_query(query)
     intent_terms = query_stage["intent_terms"]
@@ -261,26 +277,148 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
         + curated_candidates
         + temporal_candidates
     )
+    # Assess each candidate before content de-duplication. Otherwise an exact
+    # queried identifier can be discarded in favour of a newer same-content
+    # row before its exact authority is evaluated.
+    before_lifecycle = len(all_candidates)
+    policy_candidates = host._filter_recall_lifecycle(all_candidates)
+    trace["filters"]["lifecycle_removed"] += max(
+        0, before_lifecycle - len(policy_candidates)
+    )
+    before_general = len(policy_candidates)
+    policy_candidates = host._apply_general_policy(policy_candidates)
+    trace["filters"]["general_policy_removed"] = max(
+        0, before_general - len(policy_candidates)
+    )
+    trace["stages"]["candidate_after_policy"] = host._trace_stage(
+        policy_candidates
+    )
+
+    zero_signal_gate_enabled = config_bool(
+        retrieval_cfg,
+        "zero_signal_gate_enabled",
+        True,
+    )
+    opaque_query_vector_only_enabled = config_bool(
+        retrieval_cfg,
+        "opaque_query_vector_only_enabled",
+        False,
+    )
+    vector_only_min_score = float(
+        retrieval_cfg.get("vector_only_min_score")
+        or DEFAULT_VECTOR_ONLY_MIN_SCORE
+    )
+    vector_only_min_margin = float(
+        retrieval_cfg.get("vector_only_min_margin")
+        or DEFAULT_VECTOR_ONLY_MIN_MARGIN
+    )
+    vector_scores = sorted(
+        (
+            float((item.metadata or {}).get("vector_score") or 0.0)
+            for item in vector_candidates
+            if float((item.metadata or {}).get("vector_score") or 0.0) > 0.0
+        ),
+        reverse=True,
+    )
+    vector_background_score: float | None = None
+    if len(vector_scores) > 1:
+        # Use a fixed calibrated neighbour independent of requested output
+        # limit. If fewer rows exist, the last real neighbour is the only
+        # honest available background.
+        background_rank = min(VECTOR_BACKGROUND_RANK, len(vector_scores))
+        vector_background_score = vector_scores[background_rank - 1]
+
+    admissions: list[CandidateAdmission] = []
+    admitted_results: list[RecallItem] = []
+    admission_rejected: list[RecallItem] = []
+    lexical_admission_count = 0
+    vector_only_admission_count = 0
+    for item in policy_candidates:
+        meta = dict(item.metadata or {})
+        if zero_signal_gate_enabled:
+            admission = assess_candidate_admission(
+                query,
+                candidate_id=item.id,
+                content=item.content,
+                summary=item.summary,
+                source=item.source,
+                target=item.target,
+                vector_score=float(meta.get("vector_score") or 0.0),
+                vector_background_score=vector_background_score,
+                vector_only_min_score=vector_only_min_score,
+                vector_only_min_margin=vector_only_min_margin,
+                opaque_query_vector_only_enabled=opaque_query_vector_only_enabled,
+                temporal_authoritative=bool(
+                    meta.get("temporal_authoritative")
+                    or meta.get("temporal_fact_current")
+                ),
+            )
+        else:
+            admission = CandidateAdmission(
+                admitted=True,
+                reason_codes=("zero_signal_gate_disabled",),
+                lexical_evidence=bool(float(meta.get("lexical_score") or 0.0) > 0.0),
+                vector_evidence=False,
+                curated_evidence=False,
+                temporal_evidence=False,
+                exact_identifier_evidence=bool(meta.get("exact_identifier_evidence")),
+            )
+        admissions.append(admission)
+        meta["candidate_admission"] = {
+            "admitted": admission.admitted,
+            "reason_codes": list(admission.reason_codes),
+            "lexical_evidence": admission.lexical_evidence,
+            "vector_evidence": admission.vector_evidence,
+            "curated_evidence": admission.curated_evidence,
+            "temporal_evidence": admission.temporal_evidence,
+            "exact_identifier_evidence": admission.exact_identifier_evidence,
+        }
+        meta["vector_only_min_margin"] = vector_only_min_margin
+        meta["vector_background_score"] = vector_background_score
+        item.metadata = meta
+        if admission.admitted:
+            admitted_results.append(item)
+            if admission.lexical_evidence or admission.curated_evidence or admission.temporal_evidence:
+                lexical_admission_count += 1
+            if admission.vector_evidence:
+                vector_only_admission_count += 1
+            continue
+        meta["rejected_reason"] = "no_admissible_evidence"
+        admission_rejected.append(item)
+        trace["filters"]["candidate_admission_rejected_count"] += 1
+        if "opaque_query_vector_only_denied" in admission.reason_codes:
+            trace["filters"]["opaque_vector_rejected_count"] += 1
+        if "vector_only_below_min_score" in admission.reason_codes:
+            trace["filters"]["vector_only_below_min_score"] += 1
+        if "vector_only_below_min_margin" in admission.reason_codes:
+            trace["filters"]["vector_only_below_min_margin"] += 1
+        if "vector_background_unavailable" in admission.reason_codes:
+            trace["filters"]["vector_background_unavailable"] += 1
+
+    query_signal = assess_query_signal(query, admissions)
+    trace["query_signal_state"] = query_signal.state
+    trace["zero_signal_query"] = not bool(admitted_results)
+    trace["lexical_admission_count"] = lexical_admission_count
+    trace["vector_only_admission_count"] = vector_only_admission_count
+    if not admitted_results:
+        trace["filters"]["no_admissible_evidence"] = 1
+    trace["stages"]["candidate_admission"] = {
+        "input_count": len(admissions),
+        "admitted_count": len(admitted_results),
+        "rejected_count": len(admission_rejected),
+    }
     merged = recall_pipeline.merge_recall_candidates(
-        all_candidates,
+        admitted_results,
         content_dedup_key=host.provider._dedup_key,
         preferred_duplicate=host._preferred_duplicate,
         final_score=host.final_score,
     )
-
     trace["stages"]["merge"] = {
-        "input_count": len(all_candidates),
+        "input_count": len(admitted_results),
         "output_count": len(merged),
-        "deduped_count": max(0, len(all_candidates) - len(merged)),
+        "deduped_count": max(0, len(admitted_results) - len(merged)),
     }
     results = list(merged.values())
-    before_lifecycle = len(results)
-    results = host._filter_recall_lifecycle(results)
-    trace["filters"]["lifecycle_removed"] += max(0, before_lifecycle - len(results))
-    before_general = len(results)
-    results = host._apply_general_policy(results)
-    trace["filters"]["general_policy_removed"] = max(0, before_general - len(results))
-    trace["stages"]["candidate_after_policy"] = host._trace_stage(results)
     entity_graph_scores = host._entity_graph_scores(query, results)
     relation_evidence = host._persisted_relation_evidence([item.id for item in results])
     contradiction_loser_ids = _deterministic_contradiction_loser_ids(
@@ -306,9 +444,8 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
     # substantially higher bar than the broad vector candidate threshold.
     # This keeps the semantic companion useful for strong hits while
     # preventing mid-confidence neighbor drift from injecting stale topics.
-    vector_only_min_score = float(retrieval_cfg.get("vector_only_min_score") or DEFAULT_VECTOR_ONLY_MIN_SCORE)
     filtered: list[RecallItem] = []
-    rejected: list[RecallItem] = []
+    rejected: list[RecallItem] = list(admission_rejected)
     host.last_rejected_candidates = []
     for item in results:
         meta = dict(item.metadata or {})
@@ -444,6 +581,7 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
                 "final_score": base_score,
                 "min_score": min_score,
                 "vector_only_min_score": vector_only_min_score,
+                "vector_only_min_margin": vector_only_min_margin,
                 "rejected_reason": "",
             }
         )
@@ -471,15 +609,30 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
             item.metadata = meta
             rejected.append(item)
             continue
-        lexical_score = float(meta.get("lexical_score") or 0.0)
         vector_score = float(meta.get("vector_score") or 0.0)
-        if host._entity_scope_mismatch(query, item, meta):
+        admission_payload = meta.get("candidate_admission")
+        admission_payload = (
+            admission_payload if isinstance(admission_payload, dict) else {}
+        )
+        vector_only_candidate = vector_score > 0.0 and not any(
+            bool(admission_payload.get(key))
+            for key in (
+                "lexical_evidence",
+                "curated_evidence",
+                "temporal_evidence",
+                "exact_identifier_evidence",
+            )
+        )
+        if (
+            not bool(admission_payload.get("exact_identifier_evidence"))
+            and host._entity_scope_mismatch(query, item, meta)
+        ):
             meta["rejected_reason"] = "entity_scope_mismatch"
             trace["filters"]["entity_scope_mismatch"] += 1
             item.metadata = meta
             rejected.append(item)
             continue
-        if lexical_score <= 0.0 and vector_score > 0.0 and base_score < vector_only_min_score:
+        if vector_only_candidate and base_score < vector_only_min_score:
             meta["rejected_reason"] = "vector_only_below_min_score"
             trace["filters"]["vector_only_below_min_score"] += 1
             item.metadata = meta
@@ -614,6 +767,25 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
         ),
     )
     active_items = active_packet.as_recall_items()
+    lifecycle_safe_items = _host_callable(
+        host,
+        "_filter_recall_lifecycle",
+        recall_pipeline.filter_recall_lifecycle,
+    )(active_items)
+    trace["filters"]["candidate_lifecycle_egress_rejected"] += max(
+        0,
+        len(active_items) - len(lifecycle_safe_items),
+    )
+    admission_safe_items: list[RecallItem] = []
+    for item in lifecycle_safe_items:
+        admission_payload = (item.metadata or {}).get("candidate_admission")
+        if isinstance(admission_payload, dict) and bool(
+            admission_payload.get("admitted")
+        ):
+            admission_safe_items.append(item)
+            continue
+        trace["filters"]["candidate_admission_rejected_count"] += 1
+    active_items = admission_safe_items
     returned = (
         sanitize_recall_window(active_items, limit=bounded_limit)
         if sanitize_output

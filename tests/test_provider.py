@@ -1437,7 +1437,15 @@ def test_profile_surface_defaults_to_promoted_only_and_can_include_candidates(tm
             conn.commit()
         default_payload = json.loads(plugin.handle_tool_call("scope_recall_profile", {"targets": ["ops"], "max_chars": 2000}))
         candidate_payload = json.loads(
-            plugin.handle_tool_call("scope_recall_profile", {"targets": ["ops"], "include_candidates": True, "max_chars": 2000})
+            plugin.handle_tool_call(
+                "scope_recall_profile",
+                {
+                    "query": "provisional rollout note",
+                    "targets": ["ops"],
+                    "include_candidates": True,
+                    "max_chars": 2000,
+                },
+            )
         )
     finally:
         plugin.shutdown()
@@ -1453,6 +1461,8 @@ def test_profile_surface_defaults_to_promoted_only_and_can_include_candidates(tm
 
 
 def test_profile_surface_includes_local_general_only_when_requested(tmp_path):
+    from scope_recall.sql_store import store_row
+
     _write_scope_recall_config(tmp_path, {"vector": {"enabled": False}})
     plugin = load_memory_provider("scope-recall")
     assert plugin is not None
@@ -1477,8 +1487,38 @@ def test_profile_surface_includes_local_general_only_when_requested(tmp_path):
             )
         )
         assert stored["stored"] is True
+        with plugin._lock:
+            scope = plugin._scope
+            candidate_id, *_ = store_row(
+                plugin._require_conn(),
+                memory_id="general-candidate-profile-regression",
+                scope_id=plugin._scope_id,
+                platform=scope.platform,
+                user_id=scope.user_id,
+                chat_id=scope.chat_id,
+                thread_id=scope.thread_id,
+                gateway_session_key=scope.gateway_session_key,
+                agent_identity=scope.agent_identity,
+                agent_workspace=scope.agent_workspace,
+                session_id=plugin._session_id,
+                source="memory-candidate",
+                target="general",
+                content="General profile provisional candidate must require explicit review visibility.",
+                metadata=json.dumps({"lifecycle": "candidate"}),
+                allow_duplicate=True,
+            )
         default_payload = json.loads(plugin.handle_tool_call("scope_recall_profile", {"max_chars": 1200}))
         general_payload = json.loads(plugin.handle_tool_call("scope_recall_profile", {"include_general": True, "max_chars": 1200}))
+        candidate_payload = json.loads(
+            plugin.handle_tool_call(
+                "scope_recall_profile",
+                {
+                    "include_general": True,
+                    "include_candidates": True,
+                    "max_chars": 2000,
+                },
+            )
+        )
     finally:
         plugin.shutdown()
 
@@ -1486,6 +1526,12 @@ def test_profile_surface_includes_local_general_only_when_requested(tmp_path):
     assert default_payload["sections"]["general"]["count"] == 0
     assert "temporary chat context" in general_payload["context"]
     assert general_payload["sections"]["general"]["count"] == 1
+    assert candidate_id not in {
+        item["id"] for item in general_payload["sections"]["general"]["items"]
+    }
+    assert candidate_id in {
+        item["id"] for item in candidate_payload["sections"]["general"]["items"]
+    }
 
 
 def test_sync_turn_does_not_store_raw_user_turns_by_default(provider):
@@ -3976,6 +4022,54 @@ def test_semantic_merge_does_not_absorb_confirmed_store_into_candidate(provider)
     candidate = provider._require_conn().execute("SELECT content, metadata FROM memories WHERE id = ?", (first["id"],)).fetchone()
     assert json.loads(str(candidate["metadata"]))["lifecycle"] == "candidate"
     assert candidate["content"] == "Joy prefers concise replies."
+
+
+def test_explicit_merge_cannot_promote_or_consume_unreviewed_candidate(provider):
+    promoted = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_store",
+            {"content": "Stable promoted release workflow.", "target": "project"},
+        )
+    )
+    candidate = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_store",
+            {"content": "Unreviewed event candidate detail.", "target": "project"},
+        )
+    )
+    conn = provider._require_conn()
+    metadata = json.loads(
+        conn.execute(
+            "SELECT metadata FROM memories WHERE id=?", (candidate["id"],)
+        ).fetchone()[0]
+    )
+    metadata.update({"lifecycle": "candidate", "event_digest": True})
+    conn.execute(
+        "UPDATE memories SET source='event-digest', metadata=? WHERE id=?",
+        (json.dumps(metadata, ensure_ascii=False, sort_keys=True), candidate["id"]),
+    )
+    conn.commit()
+
+    result = json.loads(
+        provider.handle_tool_call(
+            "scope_recall_merge",
+            {"target_id": promoted["id"], "source_ids": [candidate["id"]]},
+        )
+    )
+
+    assert result["merged"] is False
+    assert result["blocked_lifecycles"] == {candidate["id"]: "candidate"}
+    rows = {
+        str(row["id"]): str(row["content"])
+        for row in conn.execute(
+            "SELECT id, content FROM memories WHERE id IN (?, ?)",
+            (promoted["id"], candidate["id"]),
+        )
+    }
+    assert rows == {
+        promoted["id"]: "Stable promoted release workflow.",
+        candidate["id"]: "Unreviewed event candidate detail.",
+    }
 
 
 def test_semantic_merge_does_not_hide_conflicting_memory(provider):

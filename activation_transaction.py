@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any, TypeGuard
 
 from .maintenance_lease import (
+    ACTIVATION_GUARD_TRIGGER_PREFIX,
+    activation_lease_path,
     acquire_activation_lease,
     ensure_activation_guard_triggers,
     read_activation_lease,
@@ -678,6 +680,7 @@ def capture_activation_state(
     home: Path,
     *,
     writer_quiesced: bool = False,
+    activation_lease_token: str = "",
 ) -> dict[str, Any]:
     """Capture activation pre-state with an explicit writer-quiescence contract."""
 
@@ -722,7 +725,10 @@ def capture_activation_state(
     if db_path.exists() and not db_path.is_file():
         raise ActivationSnapshotError(f"SQLite truth path is not a file: {db_path}")
     vector_companions: list[dict[str, Any]] = []
-    lease = acquire_activation_lease(db_path)
+    lease = acquire_activation_lease(
+        db_path,
+        capability_token=activation_lease_token,
+    )
     try:
         vector_companions = _capture_vector_companions(storage_dir)
         if db_path.is_file():
@@ -802,6 +808,84 @@ def capture_activation_state(
         "storage_config": storage_config,
         "sqlite": sqlite_snapshot,
         "vector_companions": vector_companions,
+    }
+
+
+def abort_interrupted_activation_capture(
+    home: Path,
+    *,
+    expected_lease_token: str,
+) -> dict[str, Any]:
+    """Remove only the exact precommitted lease/guards of a crashed capture.
+
+    The caller must hold the managed operation's home and operation OS locks.
+    Those locks prove that the process which owned this capability is no longer
+    executing the capture.  No plugin/config/storage payload has been mutated
+    while the durable installer phase remains ``snapshot_pending``.
+    """
+
+    token = str(expected_lease_token or "").strip().lower()
+    if len(token) != 32 or any(character not in "0123456789abcdef" for character in token):
+        return {"ok": False, "reason": "capture_lease_capability_invalid"}
+    db_path = home.expanduser().resolve() / "scope-recall" / "memory.sqlite3"
+    try:
+        payload = read_activation_lease(db_path)
+    except Exception:
+        return {"ok": False, "reason": "capture_lease_unreadable"}
+
+    if payload is None:
+        if not db_path.is_file():
+            return {"ok": True, "guards_removed": 0, "lease_released": True}
+        try:
+            connection = connect_truth_database(db_path, mode="ro", timeout=5.0)
+            try:
+                guard_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM sqlite_master "
+                        "WHERE type='trigger' AND name LIKE ?",
+                        (f"{ACTIVATION_GUARD_TRIGGER_PREFIX}%",),
+                    ).fetchone()[0]
+                )
+            finally:
+                connection.close()
+        except Exception:
+            return {"ok": False, "reason": "capture_guard_state_unreadable"}
+        return {
+            "ok": guard_count == 0,
+            "guards_removed": 0,
+            "lease_released": guard_count == 0,
+            "reason": "" if guard_count == 0 else "capture_guards_without_lease",
+        }
+
+    if str(payload.get("token") or "").strip().lower() != token:
+        return {"ok": False, "reason": "capture_lease_capability_mismatch"}
+    lease = {
+        "path": activation_lease_path(db_path),
+        "database_path": db_path,
+        "token": token,
+        "payload": payload,
+        "acquired": True,
+        "released": False,
+    }
+    removed: list[str] = []
+    try:
+        if db_path.is_file():
+            removed = _remove_sqlite_activation_guards(db_path)
+        if not release_activation_lease(lease):
+            if db_path.is_file():
+                _install_sqlite_activation_guards(db_path, lease_token=token)
+            return {"ok": False, "reason": "capture_lease_release_failed"}
+    except Exception:
+        try:
+            if db_path.is_file() and activation_lease_path(db_path).is_file():
+                _install_sqlite_activation_guards(db_path, lease_token=token)
+        except Exception:
+            pass
+        return {"ok": False, "reason": "capture_barrier_cleanup_failed"}
+    return {
+        "ok": True,
+        "guards_removed": len(removed),
+        "lease_released": True,
     }
 
 

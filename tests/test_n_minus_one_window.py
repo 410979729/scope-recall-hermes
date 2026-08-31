@@ -69,7 +69,7 @@ def _fixture():
         environment_id="candidate-environment",
         python_sha="b" * 64,
         artifact_sha="c" * 64,
-        version="2.0.0",
+        version="2.0.1",
     )
     previous = _install(
         environment_id="n-minus-one-environment",
@@ -105,7 +105,7 @@ def _fixture():
         _stage(
             "candidate_upgrade_write",
             install=candidate,
-            version="2.0.0",
+            version="2.0.1",
             before=created,
             after=upgraded,
             details={
@@ -125,7 +125,7 @@ def _fixture():
         _stage(
             "candidate_final_verify",
             install=candidate,
-            version="2.0.0",
+            version="2.0.1",
             before=upgraded,
             after=upgraded,
             details={
@@ -266,7 +266,7 @@ def test_receipt_rejects_same_environment_id_for_n_and_n_minus_one():
 
 def test_receipt_rejects_distribution_label_without_matching_interpreter_probe():
     candidate, previous, receipt = _fixture()
-    receipt["stages"][0]["installed_distribution"] = "hermes-scope-recall==2.0.0"
+    receipt["stages"][0]["installed_distribution"] = "hermes-scope-recall==2.0.1"
     with pytest.raises(Exception, match="stage identity"):
         _validate(candidate, previous, receipt)
 
@@ -305,5 +305,5 @@ def test_stage_runner_rejects_version_label_inconsistent_with_stage(tmp_path, mo
             database=tmp_path / "truth.sqlite3",
             hermes_home=tmp_path / "home",
             source_root=ROOT,
-            expected_version="2.0.0",
+            expected_version="2.0.1",
         )

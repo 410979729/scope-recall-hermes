@@ -238,7 +238,14 @@ def run_benchmark(cases_path: Path = DEFAULT_CASES) -> dict[str, Any]:
     before = provider._conn.total_changes
     pack = build_reflection_evidence_pack(
         provider,
-        query="Project Aurora",
+        # This benchmark validates reflection grounding over all eight fixed
+        # evidence shapes, not the relevance of a single recall query.  Name
+        # every fixture concept so the production query-signal gate honestly
+        # admits the complete benchmark evidence pack.
+        query=(
+            "Project Aurora Borealis PostgreSQL deployment eu-west-1 Alice Bob "
+            "Migration Alpha Beta canary production rollout signed artifacts MySQL"
+        ),
         budget=ReflectionBudget(max_evidence=8, max_chars=4_000),
     )
     allowed = {item.evidence_id for item in pack.evidence}

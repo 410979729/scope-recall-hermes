@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 
 from plugins.memory import load_memory_provider
+from scope_recall.candidate_extraction import ExtractedCandidate
+from scope_recall.candidate_store import store_event_candidates
 
 
 def _write_config(hermes_home, values):
@@ -76,6 +78,62 @@ def test_inspect_returns_row_metadata_feedback_and_relations(tmp_path):
         assert "relations" in inspected
     finally:
         plugin.shutdown()
+
+
+def test_inspect_exposes_event_candidate_origin_lifecycle_and_review_status(tmp_path):
+    plugin = _provider(tmp_path)
+    try:
+        candidate = ExtractedCandidate(
+            target="user",
+            content="User prefers concise Chinese answers with exact verification evidence.",
+            memory_type="preference",
+            confidence=0.9,
+            evidence_refs=["session:observe:turn:1"],
+        )
+        with plugin._lock:
+            report = store_event_candidates(
+                plugin._require_conn(),
+                candidates=[candidate],
+                scope=plugin._scope,
+                scope_id=plugin._scope_id,
+                session_id=plugin._session_id,
+                dry_run=False,
+            )
+            row = plugin._require_conn().execute(
+                "SELECT metadata FROM memories WHERE id = ?", (report["ids"][0],)
+            ).fetchone()
+            metadata = json.loads(str(row["metadata"] or "{}"))
+            metadata["automatic_admission"]["private_operator_path"] = (
+                "C:/private/operator"
+            )
+            metadata["automatic_admission"]["nested"] = {
+                "token": "must-not-escape"
+            }
+            plugin._require_conn().execute(
+                "UPDATE memories SET metadata = ? WHERE id = ?",
+                (json.dumps(metadata, sort_keys=True), report["ids"][0]),
+            )
+            plugin._require_conn().commit()
+        inspected = json.loads(
+            plugin.handle_tool_call("scope_recall_inspect", {"id": report["ids"][0]})
+        )
+    finally:
+        plugin.shutdown()
+
+    memory = inspected["memory"]
+    assert memory["origin_kind"] == "event_digest"
+    assert memory["source"] == "event-digest"
+    assert memory["lifecycle"] == "candidate"
+    assert memory["review_status"] == "pending"
+    assert memory["automatic_admission"] == {
+        "source": "event_digest",
+        "route": "memory_review",
+        "reviewed": False,
+    }
+    assert memory["metadata"]["automatic_admission"] == memory[
+        "automatic_admission"
+    ]
+    assert "must-not-escape" not in json.dumps(inspected, sort_keys=True)
 
 
 def test_explain_reports_component_scores_and_decay(tmp_path):

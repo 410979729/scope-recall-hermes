@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 import scope_recall.cli as cli
-from scope_recall.candidate_review import review_candidate
+from scope_recall.candidate_review import candidate_identity_fields, review_candidate
 from scope_recall.sql_store import ensure_schema, store_row
 from scope_recall.vector_generation import GenerationIdentity, bootstrap_legacy_generation
 
@@ -38,7 +38,21 @@ def _make_db(tmp_path: Path) -> Path:
             source="event-digest",
             target="memory",
             content="Candidate review commands should be dry-run first.",
-            metadata=json.dumps({"event_digest": True, "lifecycle": "candidate"}, ensure_ascii=False),
+            metadata=json.dumps(
+                {
+                    "event_digest": True,
+                    "origin_kind": "event_digest",
+                    "lifecycle": "candidate",
+                    "candidate_status": "needs_review",
+                    "review_status": "pending",
+                    "automatic_admission": {
+                        "source": "event_digest",
+                        "route": "memory_review",
+                        "reviewed": False,
+                    },
+                },
+                ensure_ascii=False,
+            ),
             allow_duplicate=True,
         )
         store_row(
@@ -71,6 +85,68 @@ def _metadata(db_path: Path, memory_id: str) -> dict:
         return json.loads(row["metadata"])
     finally:
         conn.close()
+
+
+def test_candidate_identity_fields_whitelist_public_admission_contract():
+    fields = candidate_identity_fields(
+        source="event-digest",
+        metadata={
+            "lifecycle": "candidate",
+            "automatic_admission": {
+                "source": "EVENT_DIGEST",
+                "route": "memory_review",
+                "reviewed": "false",
+                "time_sensitive": "true",
+                "reviewed_at": "2026-08-30T12:34:56+00:00",
+                "private_operator_path": "C:/private/operator",
+                "credentials": {"token": "must-not-escape"},
+                "nested": {"arbitrary": ["private"]},
+            },
+        },
+    )
+
+    assert fields["automatic_admission"] == {
+        "source": "event_digest",
+        "route": "memory_review",
+        "reviewed": False,
+        "time_sensitive": True,
+        "reviewed_at": "2026-08-30T12:34:56+00:00",
+    }
+    serialized = json.dumps(fields, ensure_ascii=False, sort_keys=True)
+    assert "private_operator_path" not in serialized
+    assert "must-not-escape" not in serialized
+    assert "arbitrary" not in serialized
+    poisoned_timestamp = candidate_identity_fields(
+        source="event-digest",
+        metadata={
+            "automatic_admission": {
+                "source": "event_digest",
+                "route": "memory_review",
+                "reviewed": False,
+                "reviewed_at": "2026-08-30T12:34:56+00:00 C:/private",
+            }
+        },
+    )
+    assert "reviewed_at" not in poisoned_timestamp["automatic_admission"]
+
+    poisoned_identity = candidate_identity_fields(
+        source="event-digest",
+        metadata={
+            "origin_kind": "C:/private/operator",
+            "lifecycle": {"private": "must-not-escape"},
+            "review_status": "needs review C:/private",
+            "event_digest": True,
+        },
+    )
+    assert poisoned_identity["origin_kind"] == "event_digest"
+    assert poisoned_identity["lifecycle"] == "active"
+    assert poisoned_identity["review_status"] == ""
+    poisoned_serialized = json.dumps(
+        poisoned_identity, ensure_ascii=False, sort_keys=True
+    )
+    assert "C:/private/operator" not in poisoned_serialized
+    assert "must-not-escape" not in poisoned_serialized
+    assert "needs review" not in poisoned_serialized
 
 
 def _run_review(*args: str) -> subprocess.CompletedProcess[str]:
@@ -109,7 +185,57 @@ def test_candidate_review_promote_defaults_to_dry_run_without_mutation(tmp_path:
     assert payload["ok"] is True
     assert payload["dry_run"] is True
     assert payload["after"]["lifecycle"] == "promoted"
+    assert payload["after"]["automatic_admission"]["reviewed"] is True
+    assert payload["after"]["review_status"] == "promoted"
+    assert payload["after"]["origin_kind"] == "event_digest"
     assert _metadata(db_path, "candidate-1").get("candidate_review_action") is None
+
+
+def test_candidate_review_dry_run_and_apply_never_echo_untrusted_metadata(
+    tmp_path: Path,
+):
+    db_path = _make_db(tmp_path)
+    metadata = _metadata(db_path, "candidate-1")
+    metadata["private_operator_path"] = "C:/private/operator/MARKER-PATH-771"
+    metadata["automatic_admission"].update(
+        {
+            "credentials": {"token": "MARKER-" + "TOKEN-771"},
+            "nested": {"arbitrary": ["MARKER-NESTED-771"]},
+        }
+    )
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE memories SET metadata=? WHERE id='candidate-1'",
+            (json.dumps(metadata, ensure_ascii=False, sort_keys=True),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    dry_run = _run_review(
+        "promote", "--db", str(db_path), "--id", "candidate-1", "--json"
+    )
+    applied = _run_review(
+        "promote",
+        "--db",
+        str(db_path),
+        "--id",
+        "candidate-1",
+        "--apply",
+        "--json",
+    )
+
+    assert dry_run.returncode == 0, dry_run.stderr
+    assert applied.returncode == 0, applied.stderr
+    for raw in (dry_run.stdout, applied.stdout):
+        payload = json.loads(raw)
+        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        assert "MARKER-PATH-771" not in serialized
+        assert "MARKER-TOKEN-771" not in serialized
+        assert "MARKER-NESTED-771" not in serialized
+        assert payload["after"]["automatic_admission"]["source"] == "event_digest"
+        assert payload["after"]["automatic_admission"]["reviewed"] is True
 
 
 def test_candidate_review_apply_archives_and_writes_audit_event(tmp_path: Path):
@@ -165,6 +291,9 @@ def test_candidate_review_apply_archives_and_writes_audit_event(tmp_path: Path):
     metadata = _metadata(db_path, "candidate-1")
     assert metadata["lifecycle"] == "archived"
     assert metadata["candidate_review_action"] == "archive"
+    assert metadata["automatic_admission"]["reviewed"] is True
+    assert metadata["admission_reviewed_at"]
+    assert metadata["review_status"] == "archived"
     conn = sqlite3.connect(db_path)
     try:
         audit_count = conn.execute("SELECT COUNT(*) FROM governance_audit_events WHERE event_type = 'memory_candidate_review'").fetchone()[0]

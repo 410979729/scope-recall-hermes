@@ -19,6 +19,11 @@ if str(DEFAULT_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(DEFAULT_SOURCE_ROOT))
 
 try:  # installed package / pytest package-alias path
+    from scope_recall.curation_observability import (
+        curation_owner,
+        curation_status_projection,
+        disabled_nightly_digest_payload,
+    )
     from scope_recall.doctor_common import (
         expected_embedder_from_config,
         load_runtime_config,
@@ -42,6 +47,7 @@ try:  # installed package / pytest package-alias path
     )
     from scope_recall.writer_lease import writer_handoff_telemetry_view
 except ImportError:  # pragma: no cover - direct source checkout execution fallback
+    from curation_observability import curation_owner, curation_status_projection, disabled_nightly_digest_payload
     from doctor_common import expected_embedder_from_config, load_runtime_config, redact_secret_like_text, vector_backend_from_config, vector_enabled_from_config, vector_fallback_backend_from_config
     from doctor_event_digest import event_digest_report
     from doctor_endpoint import endpoint_policy_report
@@ -125,6 +131,7 @@ def main() -> int:
     if args.hermes_home:
         hermes_home = Path(args.hermes_home).expanduser().resolve()
         runtime_config = load_runtime_config(source_root, hermes_home)
+        owner = curation_owner(runtime_config)
         config_errors = runtime_config.get("_config_load_errors") if isinstance(runtime_config.get("_config_load_errors"), list) else []
         config_check = {"ok": not config_errors, "errors": config_errors}
         raw_writer_lease = runtime_config.get("writer_lease")
@@ -169,7 +176,19 @@ def main() -> int:
         extension_payload, extension_check, extension_recommendations = extension_report(
             runtime_config
         )
-        nightly_payload, nightly_check, nightly_recommendations = nightly_digest_report(hermes_home)
+        if owner == "internal":
+            nightly_payload, nightly_check, nightly_recommendations = (
+                nightly_digest_report(hermes_home)
+            )
+        else:
+            nightly_payload = disabled_nightly_digest_payload(owner)
+            nightly_check = {"ok": True, "failures": []}
+            nightly_recommendations = []
+        curation_payload = curation_status_projection(
+            runtime_config,
+            journal_digest=journal_payload,
+            nightly_digest=nightly_payload,
+        )
         if vector_enabled_from_config(runtime_config):
             backend = vector_backend_from_config(runtime_config)
             fallback_backend = vector_fallback_backend_from_config(runtime_config)
@@ -198,6 +217,7 @@ def main() -> int:
             "event_digest": event_digest_payload,
             "memory_secret_scan": secret_payload,
             "journal": journal_payload,
+            "curation": curation_payload,
             "experience": experience_payload,
             "extensions": extension_payload,
             "nightly_digest": nightly_payload,

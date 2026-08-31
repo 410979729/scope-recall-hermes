@@ -33,13 +33,13 @@ def _load_module():
 def _write_provenance(candidate, tmp_path: Path) -> Path:
     artifact_dir = tmp_path / "artifacts"
     artifact_dir.mkdir()
-    wheel = artifact_dir / "hermes_scope_recall-2.0.0-py3-none-any.whl"
+    wheel = artifact_dir / "hermes_scope_recall-2.0.1-py3-none-any.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr("scope_recall/__init__.py", "__all__ = []\n")
-    sdist = artifact_dir / "hermes_scope_recall-2.0.0.tar.gz"
+    sdist = artifact_dir / "hermes_scope_recall-2.0.1.tar.gz"
     with tarfile.open(sdist, "w:gz") as archive:
         content = b"candidate fixture\n"
-        info = tarfile.TarInfo("hermes_scope_recall-2.0.0/README.md")
+        info = tarfile.TarInfo("hermes_scope_recall-2.0.1/README.md")
         info.size = len(content)
         archive.addfile(info, io.BytesIO(content))
 
@@ -102,14 +102,14 @@ def test_development_manifest_is_explicitly_non_release_and_denies_authority(
     payload = candidate.build_candidate_manifest(
         ROOT,
         provenance_path=provenance,
-        expected_version="2.0.0",
+        expected_version="2.0.1",
         require_clean=False,
         development_snapshot=True,
     )
 
     assert payload["schema_version"] == "scope-recall.candidate-manifest.v1"
     assert payload["candidate_mode"] == candidate.DEVELOPMENT_SNAPSHOT_MODE
-    assert payload["candidate_version"] == "2.0.0"
+    assert payload["candidate_version"] == "2.0.1"
     assert payload["hermes"] == {
         "commit": "unbound",
         "tree": "unbound",
@@ -143,7 +143,7 @@ def test_final_candidate_manifest_rejects_missing_hermes_root(tmp_path: Path) ->
         candidate.build_candidate_manifest(
             ROOT,
             provenance_path=provenance,
-            expected_version="2.0.0",
+            expected_version="2.0.1",
             require_clean=False,
         )
 
@@ -170,7 +170,7 @@ def test_final_candidate_manifest_binds_exact_supported_hermes(
         ROOT,
         provenance_path=provenance,
         hermes_root=tmp_path / "pinned-hermes",
-        expected_version="2.0.0",
+        expected_version="2.0.1",
         require_clean=False,
     )
 
@@ -277,7 +277,7 @@ def test_candidate_manifest_refuses_artifact_provenance_mismatch(
         candidate.build_candidate_manifest(
             ROOT,
             provenance_path=provenance,
-            expected_version="2.0.0",
+            expected_version="2.0.1",
             require_clean=False,
         )
 
@@ -289,6 +289,7 @@ def test_candidate_manifest_cli_accepts_provenance_not_arbitrary_artifacts() -> 
         candidate.parse_args(["--artifact", "unbound.whl"])
     parsed = candidate.parse_args(["--provenance", "BUILD_PROVENANCE.json"])
     assert parsed.provenance == Path("BUILD_PROVENANCE.json")
+    assert parsed.expected_version == "2.0.1"
     assert parsed.development_snapshot is False
     development = candidate.parse_args(
         ["--provenance", "BUILD_PROVENANCE.json", "--development-snapshot"]

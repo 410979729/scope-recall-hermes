@@ -715,15 +715,22 @@ class ScopeRecallMemoryProvider(MemoryProvider):
 
     def runtime_status_view(self) -> dict[str, Any]:
         from ._internal.runtime.writer_handoff import writer_handoff_status
+        from .curation_observability import curation_observability_config
+        from .fact_observability import fact_observability_config
 
         thread = getattr(self, "_writer_thread", None)
         digest_thread = getattr(self, "_journal_digest_thread", None)
         db_path = getattr(self, "_db_path", None)
+        observability_config = {
+            **fact_observability_config(self._config),
+            **curation_observability_config(self._config),
+        }
         return {
             "status": str(getattr(self, "_runtime_status", "") or ""),
             "name": self.name,
             "hermes_home": getattr(self, "_hermes_home", None),
             "db_path": str(db_path) if db_path else "",
+            "observability_config": observability_config,
             "truth_writer_role": str(getattr(self, "_truth_writer_role", "unknown") or "unknown"),
             "truth_writer_owner": sanitized_truth_writer_owner(
                 getattr(self, "_truth_writer_owner", {})

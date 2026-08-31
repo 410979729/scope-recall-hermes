@@ -22,7 +22,7 @@ from typing import Mapping, Sequence
 
 SCHEMA_VERSION = "scope-recall.n-minus-one-stage.v1"
 N_MINUS_ONE_VERSION = "1.10.3"
-CANDIDATE_VERSION = "2.0.0"
+CANDIDATE_VERSION = "2.0.1"
 STAGES = (
     "n_minus_one_create",
     "candidate_upgrade_write",

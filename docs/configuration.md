@@ -86,6 +86,10 @@ This file is generated from the packaged `config.json` registry. It lists every 
 - `curated_memory.allowed_user_ids` (array; risk: `low`; restart_required: `no`) — Scope Recall configuration key `curated_memory.allowed_user_ids` in the `curated_memory` group. Default: `[]`
 - `curated_memory.mode` (string; risk: `low`; restart_required: `no`; choices: `single-user, explicit-users, profile-global, disabled`) — Scope Recall configuration key `curated_memory.mode` in the `curated_memory` group. Default: `"single-user"`
 
+## `curation`
+
+- `curation.owner` (string; risk: `medium`; restart_required: `yes`; choices: `internal`, `external`, `manual`) — Select whether Scope Recall internal lanes, an external Hermes curation schedule, or a manual operator owns curation. External health remains unobserved unless Hermes supplies it. Default: `internal`
+
 ## `enable_tools`
 
 - `enable_tools` (boolean; risk: `low`; restart_required: `no`) — Scope Recall configuration key `enable_tools` in the `enable_tools` group. Default: `true`
@@ -349,6 +353,9 @@ Treat chat aliases as explicit operator access-control grants.
 - `retrieval.top_k` (integer; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.top_k` in the `retrieval` group. Default: `5`
 - `retrieval.vector_min_score` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.vector_min_score` in the `retrieval` group. Default: `0.12`
 - `retrieval.vector_only_min_score` (number; risk: `medium`; restart_required: `no`) — Minimum score for vector-only candidates to survive recall filtering. Default: `0.7`
+- `retrieval.vector_only_min_margin` (number; risk: `medium`; restart_required: `no`) — Minimum separation between vector-only recall candidates and the bounded background neighbor. Default: `0.035`
+- `retrieval.zero_signal_gate_enabled` (boolean; risk: `medium`; restart_required: `no`) — Require absolute query-side evidence before any ordinary Search, Context, or Prefetch result may leave recall. Default: `true`
+- `retrieval.opaque_query_vector_only_enabled` (boolean; risk: `medium`; restart_required: `no`) — Allow opaque identifier or high-entropy queries to use vector-only evidence. Disabled by default; exact lexical identifiers remain available. Default: `false`
 - `retrieval.vector_weight` (number; risk: `medium`; restart_required: `no`) — Scope Recall configuration key `retrieval.vector_weight` in the `retrieval` group. Default: `0.55`
 
 ## `secret_index_tools_enabled`
