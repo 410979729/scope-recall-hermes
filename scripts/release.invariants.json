@@ -187,6 +187,39 @@
       ]
     },
     {
+      "id": "hotfix-2.0.1-retrieval-and-candidate-isolation",
+      "nodes": [
+        "tests/test_query_signal_assessment.py::test_query_signal_exposes_all_four_states",
+        "tests/test_query_signal_assessment.py::test_opaque_queries_cannot_use_vector_only_evidence",
+        "tests/test_query_signal_assessment.py::test_natural_chinese_query_is_not_treated_as_opaque",
+        "tests/test_query_signal_assessment.py::test_short_natural_english_word_is_not_treated_as_opaque",
+        "tests/test_query_signal_assessment.py::test_natural_mixed_language_query_is_not_treated_as_opaque",
+        "tests/test_query_signal_assessment.py::test_rare_random_cjk_still_allows_strict_exact_lexical_match",
+        "tests/test_query_signal_assessment.py::test_single_vector_neighbor_cannot_invent_a_background_baseline",
+        "tests/test_zero_signal_retrieval.py::test_negative_zero_signal_is_empty_on_search_context_and_prefetch",
+        "tests/test_zero_signal_retrieval.py::test_single_semantic_vector_neighbor_has_no_margin_evidence",
+        "tests/test_search_context_empty_contract.py::test_search_empty_response_is_additive_and_explicit",
+        "tests/test_search_context_empty_contract.py::test_context_empty_response_is_additive_and_explicit",
+        "tests/test_capture_filters.py::test_transport_noise_classifier_normalizes_structural_prefixes",
+        "tests/test_capture_filters.py::test_transport_noise_classifier_allows_legitimate_discussion",
+        "tests/test_candidate_store.py::test_store_event_candidates_revalidates_transport_noise_and_does_not_write",
+        "tests/test_candidate_store.py::test_store_event_candidates_caller_cannot_override_admission_invariants",
+        "tests/test_candidate_review.py::test_candidate_identity_fields_whitelist_public_admission_contract",
+        "tests/test_memory_candidate_promotion.py::test_legacy_event_candidate_cannot_auto_promote_without_review_receipt",
+        "tests/test_entity_graph_hygiene.py::test_entity_probe_related_and_profile_hide_lifecycle_removed_memories",
+        "tests/test_candidate_hygiene_report.py::test_report_is_read_only_bounded_and_never_emits_candidate_text",
+        "tests/test_fact_observability.py::test_fact_observability_separates_feature_gate_from_adoption",
+        "tests/test_fact_observability.py::test_fact_observability_reports_real_coverage_without_writes",
+        "tests/test_curation_observability.py::test_curation_owner_is_validated_and_defaults_internal",
+        "tests/test_observability_stats.py::test_stats_exposes_fact_adoption_and_separate_curation_lanes",
+        "tests/test_privacy_purge.py::test_purge_redacts_event_candidate_governance_payload_copies",
+        "tests/test_hotfix_release_evidence.py::test_negative_retrieval_runner_recomputes_frozen_evidence",
+        "tests/test_hotfix_release_evidence.py::test_candidate_isolation_runner_recomputes_frozen_evidence",
+        "tests/test_managed_upgrade_real_install.py::test_exact_v2_0_0_tag_to_v2_0_1_managed_upgrade_preserves_patch_baseline",
+        "tests/test_managed_upgrade.py::test_safe_automatic_rollback_restarts_only_previous_version"
+      ]
+    },
+    {
       "id": "lexical-shadow-and-windows-rollout-release-blockers",
       "nodes": [
         "tests/test_windows_filesystem.py::test_copy_tree_crosses_legacy_windows_limit_without_prefix_leak",

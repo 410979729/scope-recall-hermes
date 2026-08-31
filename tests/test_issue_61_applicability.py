@@ -10,7 +10,7 @@ from scripts import release_candidate_artifacts as artifacts
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SDIST_ROOT = "hermes_scope_recall-2.0.0"
+SDIST_ROOT = "hermes_scope_recall-2.0.1"
 
 
 def _candidate_manifest() -> ModuleType:
@@ -75,7 +75,7 @@ def test_sdist_has_no_server_py() -> None:
 
 def test_distribution_has_no_port_18766_console_entrypoint() -> None:
     clean = {
-        "hermes_scope_recall-2.0.0.dist-info/entry_points.txt": (
+        "hermes_scope_recall-2.0.1.dist-info/entry_points.txt": (
             b"[console_scripts]\nhermes-scope-recall = scope_recall.cli:main\n"
         )
     }
@@ -107,7 +107,7 @@ def test_renamed_ui_python_and_neutral_entrypoint_cannot_bypass_wheel_gate() -> 
             b"PORT = 18766\n"
             b"def main():\n    Flask(__name__).run(port=PORT)\n"
         ),
-        "hermes_scope_recall-2.0.0.dist-info/entry_points.txt": (
+        "hermes_scope_recall-2.0.1.dist-info/entry_points.txt": (
             b"[console_scripts]\n"
             b"scope-recall-ui = scope_recall.ui:main\n"
         ),
@@ -117,7 +117,7 @@ def test_renamed_ui_python_and_neutral_entrypoint_cannot_bypass_wheel_gate() -> 
         poisoned, kind="wheel"
     ) == [
         {
-            "path": "hermes_scope_recall-2.0.0.dist-info/entry_points.txt",
+            "path": "hermes_scope_recall-2.0.1.dist-info/entry_points.txt",
             "reason": "legacy_console_entrypoint",
         },
         {
@@ -193,7 +193,7 @@ def test_renamed_raw_console_writer_is_blocked_in_sdist_without_legacy_port() ->
 
 def test_distribution_metadata_cannot_hide_legacy_console_port() -> None:
     wheel = {
-        "hermes_scope_recall-2.0.0.dist-info/METADATA": (
+        "hermes_scope_recall-2.0.1.dist-info/METADATA": (
             b"Metadata-Version: 2.4\n"
             b"Project-URL: Local UI, http://localhost:18766\n"
         )
@@ -209,7 +209,7 @@ def test_distribution_metadata_cannot_hide_legacy_console_port() -> None:
         wheel, kind="wheel"
     ) == [
         {
-            "path": "hermes_scope_recall-2.0.0.dist-info/METADATA",
+            "path": "hermes_scope_recall-2.0.1.dist-info/METADATA",
             "reason": "legacy_console_port",
         }
     ]
@@ -229,7 +229,7 @@ def test_embedded_product_prose_is_not_mistaken_for_an_entrypoint() -> None:
         b"visual-console writer.\n"
     )
     wheel = {
-        "hermes_scope_recall-2.0.0.dist-info/METADATA": (
+        "hermes_scope_recall-2.0.1.dist-info/METADATA": (
             b"Metadata-Version: 2.4\nDescription: Safe boundary.\n\n"
             + product_statement
         )
@@ -241,7 +241,7 @@ def test_embedded_product_prose_is_not_mistaken_for_an_entrypoint() -> None:
         )
     }
     actual_entrypoint = {
-        "hermes_scope_recall-2.0.0.dist-info/entry_points.txt": (
+        "hermes_scope_recall-2.0.1.dist-info/entry_points.txt": (
             b"[console_scripts]\n"
             b"visual-console = scope_recall.cli:main\n"
         )
@@ -257,7 +257,7 @@ def test_embedded_product_prose_is_not_mistaken_for_an_entrypoint() -> None:
         actual_entrypoint, kind="wheel"
     ) == [
         {
-            "path": "hermes_scope_recall-2.0.0.dist-info/entry_points.txt",
+            "path": "hermes_scope_recall-2.0.1.dist-info/entry_points.txt",
             "reason": "legacy_console_entrypoint",
         }
     ]

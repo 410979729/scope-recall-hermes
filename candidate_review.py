@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Mapping
+from datetime import datetime
 from typing import Any
 
 from .graph import lifecycle_is_hidden
@@ -32,6 +34,129 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
+def _public_admission_token(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    token = value.strip().casefold()
+    if not token or len(token) > 64:
+        return ""
+    if not all(character.isalnum() or character in "._:-" for character in token):
+        return ""
+    return token
+
+
+def _public_admission_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in {0, 1}:
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().casefold() in {"1", "true", "yes", "on"}
+    return False
+
+
+def _public_automatic_admission(value: Any) -> dict[str, Any]:
+    """Project only the stable, non-private admission contract."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    admission: dict[str, Any] = {
+        "source": _public_admission_token(value.get("source")),
+        "route": _public_admission_token(value.get("route")),
+        "reviewed": _public_admission_bool(value.get("reviewed")),
+    }
+    if "time_sensitive" in value:
+        admission["time_sensitive"] = _public_admission_bool(
+            value.get("time_sensitive")
+        )
+    reviewed_at = value.get("reviewed_at")
+    if isinstance(reviewed_at, str):
+        timestamp = reviewed_at.strip()
+        if 10 <= len(timestamp) <= 64:
+            try:
+                normalized_timestamp = datetime.fromisoformat(
+                    timestamp.replace("Z", "+00:00")
+                ).isoformat()
+            except ValueError:
+                pass
+            else:
+                admission["reviewed_at"] = normalized_timestamp
+    return admission
+
+
+def candidate_identity_fields(
+    *, source: str, metadata: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Return explicit origin/lifecycle/review fields for public payloads."""
+
+    meta = dict(metadata or {})
+    raw_admission = meta.get("automatic_admission")
+    admission = _public_automatic_admission(raw_admission)
+    lifecycle = _public_admission_token(meta.get("lifecycle")) or "active"
+    normalized_source = str(source or "").strip()
+    origin_kind = _public_admission_token(meta.get("origin_kind"))
+    if not origin_kind:
+        origin_kind = str(admission.get("source") or "").strip()
+    if not origin_kind and (
+        bool(meta.get("event_digest"))
+        or normalized_source.lower() == "event-digest"
+    ):
+        origin_kind = "event_digest"
+    if not origin_kind:
+        origin_kind = (
+            _public_admission_token(normalized_source.replace("-", "_"))
+            or "unknown"
+        )
+    review_status = _public_admission_token(
+        meta.get("review_status") or meta.get("candidate_status") or ""
+    )
+    if not review_status and (
+        meta.get("admission_reviewed_at") or meta.get("candidate_reviewed_at")
+    ):
+        review_status = "reviewed"
+    if not review_status and lifecycle == "candidate":
+        review_status = "pending"
+    return {
+        "origin_kind": origin_kind,
+        "source": normalized_source,
+        "lifecycle": lifecycle,
+        "automatic_admission": admission,
+        "review_status": review_status,
+    }
+
+
+def _public_snapshot_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Project a lifecycle snapshot onto the explicit review API contract."""
+
+    raw = dict(payload or {})
+    metadata_value = raw.get("metadata")
+    metadata = dict(metadata_value) if isinstance(metadata_value, Mapping) else {}
+    source = str(raw.get("source") or "")
+    identity = candidate_identity_fields(source=source, metadata=metadata)
+    candidate_status = _public_admission_token(metadata.get("candidate_status"))
+    public_metadata: dict[str, Any] = {
+        "origin_kind": identity["origin_kind"],
+        "lifecycle": identity["lifecycle"],
+        "candidate_status": candidate_status,
+        "review_status": identity["review_status"],
+        "automatic_admission": identity["automatic_admission"],
+    }
+    for key in ("event_digest", "correction_possible"):
+        if key in metadata:
+            public_metadata[key] = _public_admission_bool(metadata.get(key))
+    return {
+        key: raw.get(key, "")
+        for key in ("id", "scope_id", "source", "target", "summary", "updated_at")
+    } | {
+        "metadata": public_metadata,
+        "lifecycle": identity["lifecycle"],
+        "candidate_status": candidate_status,
+        "origin_kind": identity["origin_kind"],
+        "automatic_admission": identity["automatic_admission"],
+        "review_status": identity["review_status"],
+    }
+
+
 def _load_row(conn: sqlite3.Connection, memory_id: str) -> sqlite3.Row | None:
     return conn.execute(
         """
@@ -45,7 +170,7 @@ def _load_row(conn: sqlite3.Connection, memory_id: str) -> sqlite3.Row | None:
 
 def _snapshot(row: sqlite3.Row, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     meta = _json_loads(row["metadata"]) if metadata is None else dict(metadata)
-    return {
+    payload = {
         "id": str(row["id"]),
         "scope_id": str(row["scope_id"] or ""),
         "source": str(row["source"] or ""),
@@ -56,6 +181,7 @@ def _snapshot(row: sqlite3.Row, metadata: dict[str, Any] | None = None) -> dict[
         "lifecycle": str(meta.get("lifecycle") or "active"),
         "candidate_status": str(meta.get("candidate_status") or ""),
     }
+    return _public_snapshot_payload(payload)
 
 
 def _candidate_like(row: sqlite3.Row, metadata: dict[str, Any]) -> bool:
@@ -84,23 +210,33 @@ def transition_candidate_metadata(
     updated["candidate_reviewed_at"] = at
     updated["candidate_reviewed_by"] = actor
     updated["candidate_review_action"] = action
+    automatic_admission = updated.get("automatic_admission")
+    if isinstance(automatic_admission, Mapping):
+        reviewed_admission = dict(automatic_admission)
+        reviewed_admission["reviewed"] = True
+        reviewed_admission["reviewed_at"] = at
+        updated["automatic_admission"] = reviewed_admission
+        updated["admission_reviewed_at"] = at
     if batch_id:
         updated["candidate_promotion_batch_id"] = batch_id
     if action == "promote":
         updated["lifecycle"] = "promoted"
         updated["candidate_status"] = "promoted"
+        updated["review_status"] = "promoted"
         updated["promoted_at"] = at
         updated["promoted_by"] = actor
         updated["promotion_reason"] = reason
     elif action == "archive":
         updated["lifecycle"] = "archived"
         updated["candidate_status"] = "archived"
+        updated["review_status"] = "archived"
         updated["archived_at"] = at
         updated["archived_by"] = actor
         updated["archive_reason"] = reason
     else:
         updated["lifecycle"] = "superseded"
         updated["candidate_status"] = "superseded"
+        updated["review_status"] = "superseded"
         updated["superseded_by"] = superseded_by
         updated["superseded_at"] = at
         updated["superseded_by_actor"] = actor
@@ -218,6 +354,6 @@ def review_candidate(
     result["status"] = "applied"
     result["applied"] = True
     result["updated_at"] = transition["updated_at"]
-    result["after"] = transition["after"]
+    result["after"] = _public_snapshot_payload(transition["after"])
     result["outbox_enqueued"] = transition["outbox_enqueued"]
     return result

@@ -487,7 +487,7 @@ def run_benchmark(*, sizes: tuple[int, ...], rounds: int) -> dict[str, Any]:
         scenarios = [_scenario(root, rows, rounds=rounds) for rows in sizes]
         return {
             "schema_version": "scope-recall.temporal-scale.v2",
-            "candidate_version": "2.0.0",
+            "candidate_version": "2.0.1",
             "live_database_used": False,
             "sizes": list(sizes),
             "rounds_per_query": rounds,

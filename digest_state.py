@@ -13,6 +13,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+from .capture_filters import classify_transport_noise
 from .gating import clean_text
 from .journal_llm import JournalDigestLLMError
 
@@ -57,13 +58,6 @@ TOOL_NOISE_RE = re.compile(
     r"search_files|read_file|tool execute_",
     re.IGNORECASE,
 )
-COMPACTION_MARKERS = (
-    "[CONTEXT COMPACTION",
-    "Historical Task Snapshot",
-    "[Recent Telegram chat history",
-)
-
-
 @dataclass(frozen=True)
 class LeavePlan:
     skipped_ids: list[int] = field(default_factory=list)
@@ -344,8 +338,7 @@ def has_tool_promotion_signal(text: str) -> bool:
 
 
 def is_compaction_or_wrapper(text: str) -> bool:
-    raw = text or ""
-    return any(marker in raw for marker in COMPACTION_MARKERS)
+    return classify_transport_noise(text).blocked
 
 
 def is_tool_noise(text: str) -> bool:

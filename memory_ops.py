@@ -767,6 +767,33 @@ def merge_memories(
                     "missing_source_ids": missing_source_ids,
                     "deleted": 0,
                 }
+            non_mergeable_lifecycles = (
+                PROFILE_HIDDEN_LIFECYCLES - {"scratch"}
+            ) | {"in_progress"}
+            lifecycle_rows = [target_row, *source_rows]
+            blocked_lifecycles = {
+                str(row["id"]): str(
+                    load_metadata(row["metadata"]).get("lifecycle") or "promoted"
+                )
+                .strip()
+                .lower()
+                for row in lifecycle_rows
+                if str(
+                    load_metadata(row["metadata"]).get("lifecycle") or "promoted"
+                )
+                .strip()
+                .lower()
+                in non_mergeable_lifecycles
+            }
+            if blocked_lifecycles:
+                MemoryMutationService.abort(conn)
+                return {
+                    "merged": False,
+                    "error": "memory lifecycle requires explicit restore or candidate review before merge",
+                    "target_id": target_id,
+                    "blocked_lifecycles": blocked_lifecycles,
+                    "deleted": 0,
+                }
             mutation_error = _fact_mutation_error_payload(
                 conn,
                 [target_id, *found_source_ids],

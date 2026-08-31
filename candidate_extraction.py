@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 import re
 from typing import Any
 
+from .capture_filters import classify_transport_noise
 from .event_digest import EvidencePacket
 
 _EPHEMERAL_RELEASE_RE = re.compile(
@@ -80,6 +81,10 @@ def extract_candidates_from_packet(packet: EvidencePacket, *, dry_run: bool = Tr
             packet_metadata=dict(packet.metadata or {}),
         )
     content = packet.content.strip()
+    transport = classify_transport_noise(content)
+    rejection_reasons.extend(
+        f"transport_noise:{code}" for code in transport.reason_codes
+    )
     if _EPHEMERAL_RELEASE_RE.search(content):
         rejection_reasons.append("ephemeral_release_state")
     if _LOW_VALUE_RE.search(content) and not _USER_PREFERENCE_RE.search(content):

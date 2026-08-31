@@ -118,6 +118,10 @@ jobs:
         env:
           RELEASE_TAG: ${{ needs.verify_release_policy.outputs.release_tag }}
         run: |
+          python scripts/build.stable_update_assets.py \
+            --source . \
+            --output-dir stable-update-assets \
+            --release-tag "${RELEASE_TAG}"
           python -m build --no-isolation
           python .github/scripts/extract_changelog_release_notes.py \
             --version "${RELEASE_TAG#v}" \
@@ -128,9 +132,10 @@ jobs:
           from pathlib import Path
 
           lines = []
-          for artifact in sorted(Path("dist").iterdir()):
-              digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
-              lines.append(f"{digest}  {artifact.name}")
+          for root in (Path("dist"), Path("stable-update-assets")):
+              for artifact in sorted(root.iterdir()):
+                  digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+                  lines.append(f"{digest}  {artifact.name}")
           Path("SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY
           python .github/scripts/release_provenance.py create \
@@ -148,6 +153,7 @@ jobs:
           name: scope-recall-release
           path: |
             dist/*
+            stable-update-assets/*
             release-notes.md
             SHA256SUMS
             RELEASE-PROVENANCE.json
@@ -185,6 +191,7 @@ jobs:
           gh release create "${RELEASE_TAG}" \
             --repo "${GITHUB_REPOSITORY}" \
             release-assets/dist/* \
+            release-assets/stable-update-assets/* \
             release-assets/SHA256SUMS \
             release-assets/RELEASE-PROVENANCE.json \
             --title "scope-recall ${RELEASE_TAG}" \

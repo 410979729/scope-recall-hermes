@@ -558,7 +558,7 @@ def test_verified_online_backup_preserves_destination_created_during_publish(
 
     def racing_link(source_path, destination_path, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
         nonlocal link_attempts
-        if Path(destination_path) == destination:
+        if sqlite_backup.public_path(destination_path) == destination:
             link_attempts += 1
             _write_truth_db(destination, marker="external-publisher")
         return real_link(source_path, destination_path, *args, **kwargs)
@@ -1041,7 +1041,7 @@ def test_verified_online_backup_partial_cleanup_failure_is_explicit(
     def boom(source_conn, destination_conn):  # noqa: ANN001, ARG001
         raise sqlite3.OperationalError("injected transfer failure")
 
-    original_unlink = Path.unlink
+    original_unlink = os.unlink
     real_reserve = sqlite_backup._reserve_staging_path
     captured_staging: list[Path] = []
 
@@ -1050,14 +1050,15 @@ def test_verified_online_backup_partial_cleanup_failure_is_explicit(
         captured_staging.append(staging)
         return staging, descriptor, identity
 
-    def flaky_unlink(self, *args, **kwargs):  # noqa: ANN001
-        if self == destination or self in captured_staging:
+    def flaky_unlink(path, *args, **kwargs):  # noqa: ANN001
+        public = sqlite_backup.public_path(path)
+        if public == destination or public in captured_staging:
             raise OSError("injected unlink failure")
-        return original_unlink(self, *args, **kwargs)
+        return original_unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(sqlite_backup, "_transfer_online_backup", boom)
     monkeypatch.setattr(sqlite_backup, "_reserve_staging_path", capture_reservation)
-    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+    monkeypatch.setattr(sqlite_backup.os, "unlink", flaky_unlink)
 
     with pytest.raises(SqliteBackupError, match="partial cleanup failure"):
         verified_online_backup(source, destination)

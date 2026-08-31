@@ -47,9 +47,57 @@ python scripts/benchmark.locomo.py \
 
 The three categories near 50% remain the clearest future improvement areas: multi-hop evidence completeness, temporal evidence presentation, and open-domain synthesis. We do not claim a cross-vendor ranking, because public LoCoMo evaluations use materially different models, judges, prompts, and dataset variants.
 
-Version `2.0.0` is the release candidate on the last packaged `1.10.3` line. It preserves SQLite truth and the stable V1 provider/tool identities while making strict Fact authority with legacy projection compatibility, finite relation generation, the Recall Packet current-truth compiler, deny-first Purge, governed tool profiles, optional extension boundaries, and the read-only Recall Inspector the coherent 2.0 product contract. All schema work remains additive, and the N-1/N/N-1 rollback window remains open throughout 2.0.x.
+Version `2.0.1` is the managed-upgrade and retrieval-hygiene patch on the last packaged `2.0.0` line. It preserves SQLite truth and the stable V1 provider/tool identities while making strict Fact authority with legacy projection compatibility, finite relation generation, the Recall Packet current-truth compiler, deny-first Purge, governed tool profiles, optional extension boundaries, and the read-only Recall Inspector the coherent 2.0 product contract. All schema work remains additive, and the N-1/N/N-1 rollback window remains open throughout 2.0.x.
 
 Scope Recall 2.0 does not ship the retired standalone visual-console writer or any separate truth-database mutation endpoint. Every durable mutation remains behind the production command application, writer authority, lifecycle fence, and audit boundaries.
+
+### Automatic upgrade from 1.10.3 or later
+
+Upgrade the Python package in the same environment as Hermes, then run one
+decision-free command:
+
+```bash
+python -m pip install --upgrade hermes-scope-recall
+hermes-scope-recall update --json
+```
+
+When invoked by the active plugin, the updater proves the exact home from the
+plugin location. The standalone command uses the inherited `HERMES_HOME`.
+If neither authority is present it refuses to run instead of guessing a
+platform-default or stale home. An external maintainer shell may supply an
+explicit `--hermes-home`; ordinary agents never need to choose among profiles.
+
+Automation must report completion only when the JSON says
+`"upgrade_complete": true`. A successful detached launch instead reports
+`"outcome": "upgrade_in_progress"`, `"upgrade_complete": false`, and
+`"next_action_code": "wait_for_automatic_restart"`; it is accepted work, not
+a completed upgrade. Retryable release-network failures are retried three times
+automatically and then return the single fixed action
+`rerun_same_update_command`, never a database or rollback decision.
+When `next_action_code` is `submit_support_receipt`, the same JSON contains a
+content-free `support_receipt` object that can be forwarded unchanged; users
+must not inspect or attach the memory database.
+
+The updater accepts no repository, URL, archive, candidate, checksum, memory
+cleanup, embedding, or rollback policy from the user. It downloads only the
+latest stable Release from `410979729/scope-recall-hermes`, verifies the fixed
+manifest, archive hash, canonical source tree, package identity, and version,
+then stops and restarts only that Hermes home. A failed activation automatically
+restores N-1 when the saved evidence proves that rollback is safe. An ambiguous
+state remains stopped instead of risking a partial writer. Rerun the same
+command after a process crash, reboot, or transient network failure; it resumes
+the sole incomplete frozen operation before contacting GitHub.
+
+Once `2.0.1` or later is active, the equivalent plugin command is:
+
+```bash
+hermes scope-recall update
+```
+
+Legacy vector metadata or companion debt never causes memory rows to be sent to
+an embedding provider during upgrade. The updater preserves the companion,
+temporarily disables unsafe vector use, and keeps SQLite truth plus lexical
+recall available; vector rebuilding remains optional later maintenance.
 
 The `1.8.6` patch hardened legacy fact-freshness maintenance, Unicode secret filtering, operator portability, truth-connection ownership, lifecycle relation restore, and semantic deduplication. It preserves the 1.8.5 Windows activation-lease PID fix and includes the 1.8.4 deep-audit closure for deterministic freshness, validator, truth-store permission, operator recovery, secret scanning, and cross-platform release gates. Its 1.8.3 predecessor hardened current-state recall, canonical chat identity boundaries, Windows repair and rollback, bounded vector-outbox history, and model-calibrated vector-only filtering. The `1.8.2` release made memory startup honest and local-model tool use reliable. If a configured local embedding model cannot actually load, Scope Recall now reports the degradation and uses a compatible fallback only for a fresh generation; it never opens an existing generation with a different embedding space. It also adds `light`, `balanced`, and `full` semantic retention profiles and fixes LM Studio/llama.cpp grammar initialization without deleting structured claim, freshness, or evolution capabilities. Durable `user`, `memory`, `project`, and `ops` fact actions resolve to shared durable scope, while `general` remains local scratch on every integration path. Existing ordinary-memory behavior remains the default because the new evolution, temporal-query, and Reflection surfaces are opt-in. The `1.7.2` release published a compatibility-preserving storage and governance hardening patch: ordinary recall uses one lifecycle policy across journal, nightly, deduplication, and vector paths; vector rebuilds support immutable generations and explicit compare-and-swap activation; metadata and import provenance are sanitized before durable or operator-visible sinks; candidate, freshness, and config mutations fail closed; and folded inline data URLs are removed without losing surrounding prose. It builds on version 1.7.1's runtime-config, candidate-browser, external-bridge, and release-gate fixes. Version 1.7.0 published the productization feature set on the stable V1 release line: event-digest evidence packets, reviewable candidate extraction, read-only memory browsing, candidate governance commands, Experience-to-skill bridge helpers, optional PGVector companion support, external shared-memory bridge contracts, explicit sensitivity governance, release-gate progress output, and same-process peer-provider SQLite lock recovery for `scope_recall_store`. Version 1.6.3 closed issue #25 with conservative SQLite lock recovery and a single safe retry for `scope_recall_store` while keeping non-SQLite business errors non-retryable. Version 1.6.2 added graph-relation backfill/benchmark visibility and hardened Experience review and journal-digest bookkeeping without changing the stable V1 runtime contract. Version 1.6.1 published documentation, packaging, and release-provenance updates without changing the stable V1 runtime contract. The 1.6.0 release packages a compatibility-preserving refactor of the doctor, graph-hygiene, maintenance, digest-result, recall-pipeline, and provider-schema internals while keeping the stable V1 commercial-governance line introduced in 1.5.0. The 1.5 line includes promoted-only profile lifecycle safety, candidate-memory promotion planning, graph-hygiene repair, fail-closed vector-repair fallback handling, governance cleanup, journal recovery, an operator dashboard, repository-owned golden benchmarks, stricter release gates, fail-closed hard-delete safety, packaged benchmark fixtures, Recall Funnel observability, synthetic retrieval-regression benchmarking, and default-safe vector fallback behavior. Runtime Experience packet injection is enabled by default through `experience.prefetch_enabled=true` and can be disabled with `experience.prefetch_enabled=false`; background automatic promotion remains an explicit operator opt-in through `experience.auto_promotion_enabled=true`, and low-risk auto-promotion remains a second explicit opt-in through `experience.auto_promote_low_risk=true`. By default, successful low-risk scans create candidate playbooks, high-risk playbooks stay review-gated, and final-failure or low-signal traces are not promoted. It keeps the `scope_recall_profile` surface added in v1.3.0, compression-boundary journal staging through Hermes' `on_pre_compress()` memory-provider hook, inline attachment-marker sanitization, the supported standalone install shape added in v1.1.0, and native-safe LanceDB probing with fresh-bootstrap SQLite vector fallback for non-AVX hosts.
 
@@ -220,7 +268,12 @@ hermes-scope-recall verify --runtime --hermes-home "${HERMES_HOME:-$HOME/.hermes
 
 `install --activate` copies the plugin into `$HERMES_HOME/plugins/scope-recall`, sets `memory.provider: scope-recall` in `$HERMES_HOME/config.yaml`, bootstraps `$HERMES_HOME/scope-recall/memory.sqlite3`, and returns JSON verification plus rollback evidence. Before replacing or migrating anything, it captures the plugin/config/provider-config pre-state and uses SQLite's online backup API for an existing truth DB. A config, migration, provider-load, or runtime-verification failure automatically restores every captured surface and returns `ok=false` with an `activation_transaction` receipt. See [`docs/install.md`](docs/install.md) for the complete install, verify, upgrade, and rollback guide.
 
-### Upgrade and rollback
+### Maintainer-only manual upgrade and rollback diagnostics
+
+The commands in this subsection are retained for historical recovery and
+maintainer investigation. They are **not** the ordinary 1.10.3-to-2.0.1
+upgrade path. Ordinary users and weak agents should use only the automatic
+updater above and must not inspect embedding identities or select a rollback.
 
 When replacing an existing plugin copy, use the explicit upgrade verb so the JSON output records `previous_version`, `new_version`, backup paths, verification details, and rollback commands:
 
@@ -848,7 +901,7 @@ Optional Graph, Experience, Playbook, Reflection, and External Bridge boundaries
 and their disable/Doctor paths are documented in
 [`docs/extensions.2.0.md`](docs/extensions.2.0.md).
 
-Release candidate `2.0.0` is cumulative since the last packaged `1.10.3` release:
+Release candidate `2.0.1` is cumulative since the last packaged `2.0.0` release:
 
 - Strict Fact authority reuses the existing Fact Ledger and atomically keeps the legacy memory projection readable for N-1 compatibility.
 - Finite relation generation and shared DurableWork contracts replace unbounded rebuild behavior without creating a second scheduler or work authority.

@@ -56,6 +56,57 @@ from ._internal.recall.tuning import (
 
 _RECALL_HIDDEN_LIFECYCLE_VALUES = ORDINARY_RECALL_HIDDEN_LIFECYCLE_VALUES
 _RECALL_HIDDEN_LIFECYCLE_TYPES = set(_RECALL_HIDDEN_LIFECYCLE_VALUES)
+_TRACE_SAFE_TEXT_FIELDS = frozenset(
+    {
+        "id",
+        "query_signal_state",
+        "recall_mode",
+        "status",
+        "strategy",
+        "warning",
+    }
+)
+_TRACE_SAFE_TEXT_SEQUENCE_FIELDS = frozenset(
+    {
+        "ids",
+        "reason_codes",
+        "returned_ids",
+    }
+)
+_TRACE_DROPPED = object()
+
+
+def _content_free_trace(value: Any, *, field: str = "") -> Any:
+    """Project diagnostics onto a content-free, fail-closed value grammar.
+
+    Trace callers may add new keys over time, so a blacklist cannot guarantee
+    that raw query or candidate text stays private.  Numeric/boolean counters
+    and nested structures are safe by construction; string values survive only
+    for the fixed diagnostic enum/identifier fields declared above.
+    """
+
+    if isinstance(value, dict):
+        projected: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized_key = str(key).strip().casefold()
+            cleaned = _content_free_trace(item, field=normalized_key)
+            if cleaned is not _TRACE_DROPPED:
+                projected[str(key)] = cleaned
+        return projected
+    if isinstance(value, (list, tuple)):
+        projected_items: list[Any] = []
+        for item in value:
+            cleaned = _content_free_trace(item, field=field)
+            if cleaned is not _TRACE_DROPPED:
+                projected_items.append(cleaned)
+        return projected_items
+    if isinstance(value, str):
+        if field in _TRACE_SAFE_TEXT_FIELDS or field in _TRACE_SAFE_TEXT_SEQUENCE_FIELDS:
+            return value
+        return _TRACE_DROPPED
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return _TRACE_DROPPED
 
 
 def _sanitize_recall_window(
@@ -105,7 +156,8 @@ class RecallService:
 
     @last_funnel_trace.setter
     def last_funnel_trace(self, value: dict[str, Any]) -> None:
-        self._last_funnel_trace.set(dict(value or {}))
+        sanitized = _content_free_trace(dict(value or {}))
+        self._last_funnel_trace.set(sanitized if isinstance(sanitized, dict) else {})
 
     @property
     def last_recall_packet(self) -> Any:
@@ -123,7 +175,10 @@ class RecallService:
 
     @last_evidence_set_trace.setter
     def last_evidence_set_trace(self, value: dict[str, Any]) -> None:
-        self._last_evidence_set_trace.set(dict(value or {}))
+        sanitized = _content_free_trace(dict(value or {}))
+        self._last_evidence_set_trace.set(
+            sanitized if isinstance(sanitized, dict) else {}
+        )
 
     @property
     def last_temporal_query_diagnostics(self) -> dict[str, Any]:
@@ -196,9 +251,12 @@ class RecallService:
             rankings.append((variant, results))
             query_traces.append(
                 {
-                    "query": variant,
+                    "query_index": index,
+                    "query_length": len(variant),
                     "returned_ids": [item.id for item in results],
-                    "funnel_trace": dict(self.last_funnel_trace or {}),
+                    "funnel_trace": _content_free_trace(
+                        dict(self.last_funnel_trace or {})
+                    ),
                 }
             )
         bounded_diversity_depth = max(
@@ -213,6 +271,18 @@ class RecallService:
             limit=bounded_limit,
             diversity_depth=bounded_diversity_depth,
         )
+        # Every production ranking above came through the unique orchestrator.
+        # Refuse any item whose admission marker was lost or forged during
+        # multi-query fusion rather than letting RRF manufacture relevance.
+        admission_safe_ranked: list[RecallItem] = []
+        admission_egress_rejected = 0
+        for item in merged_ranked:
+            admission = (item.metadata or {}).get("candidate_admission")
+            if isinstance(admission, dict) and bool(admission.get("admitted")):
+                admission_safe_ranked.append(item)
+            else:
+                admission_egress_rejected += 1
+        merged_ranked = admission_safe_ranked
         merged = _sanitize_recall_window(merged_ranked, limit=bounded_limit)
         self.last_funnel_trace = (
             dict(query_traces[0]["funnel_trace"] or {})
@@ -221,14 +291,14 @@ class RecallService:
         )
         self.last_evidence_set_trace = {
             "strategy": "multi_query_rrf_diversity",
-            "primary_query": queries[0] if queries else "",
             "query_count": len(queries),
-            "queries": queries,
+            "query_lengths": [len(value) for value in queries],
             "per_query_limit": bounded_per_query,
             "diversity_depth": bounded_diversity_depth,
             "limit": bounded_limit,
             "query_traces": query_traces,
             "returned_ids": [item.id for item in merged],
+            "candidate_admission_egress_rejected": admission_egress_rejected,
         }
         return merged
 

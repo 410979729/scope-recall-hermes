@@ -1,4 +1,4 @@
-"""Content-free, isolated evidence contracts for the 2.0.0 release candidate."""
+"""Content-free, isolated evidence contracts for the 2.0.1 release candidate."""
 
 from __future__ import annotations
 
@@ -119,7 +119,7 @@ def test_candidate_rehearsal_spec_names_exact_collectable_nodes() -> None:
     payload = json.loads(REHEARSAL_SPEC.read_text(encoding="utf-8"))
 
     assert payload["schema_version"] == "scope-recall.release-candidate-rehearsals.v1"
-    assert payload["candidate_version"] == "2.0.0"
+    assert payload["candidate_version"] == "2.0.1"
     assert payload["requires_full_ci"] is True
     assert payload["active_instance_allowed"] is False
     gates = payload["gates"]
@@ -184,4 +184,4 @@ def test_candidate_evidence_assets_are_release_packaged() -> None:
         "scope_recall/scripts/release.candidate_rehearsals.json"
         in release_check.REQUIRED_WHEEL
     )
-    assert "hermes_scope_recall-2.0.0/tests/plugin_source.py" in release_check.REQUIRED_SDIST
+    assert "hermes_scope_recall-2.0.1/tests/plugin_source.py" in release_check.REQUIRED_SDIST

@@ -612,6 +612,9 @@ class ScopeRecallToolService:
             "count": len(results),
             "results": [self._serialize_recall_item(item) for item in results],
         }
+        if not results:
+            payload["retrieval_status"] = "no_relevant_memory"
+            payload["reason_codes"] = ["no_admissible_evidence"]
         raw_temporal_diagnostics = getattr(
             recall,
             "last_temporal_query_diagnostics",

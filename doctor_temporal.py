@@ -7,6 +7,10 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Mapping
 
+from .fact_observability import (
+    fact_observability_report,
+    unavailable_fact_observability,
+)
 from .fact_repository import fact_successor_integrity_report
 from .temporal_facts import fact_fts_integrity_status
 from .truth_connection import connect_truth_database
@@ -262,7 +266,15 @@ def temporal_evolution_report(
     recommendations: list[str] = []
     if not db_path.exists():
         return (
-            {"status": "missing", "path": str(db_path), "features": enabled},
+            {
+                "status": "missing",
+                "path": str(db_path),
+                "features": enabled,
+                "fact_adoption": unavailable_fact_observability(
+                    runtime_config,
+                    reason_code="truth_database_absent",
+                ),
+            },
             {"ok": True, "failures": []},
             recommendations,
         )
@@ -306,6 +318,11 @@ def temporal_evolution_report(
                 "path": str(db_path),
                 "features": enabled,
                 "missing_tables": missing,
+                "fact_adoption": unavailable_fact_observability(
+                    runtime_config,
+                    reason_code="schema_missing",
+                    missing_tables=missing,
+                ),
                 "write_delta": conn.total_changes - before,
             }
             failures = ["enabled temporal/reflection feature lacks fact schema"] if any_enabled else []
@@ -320,7 +337,16 @@ def temporal_evolution_report(
         now = datetime.now(timezone.utc)
         now_iso = now.isoformat()
         cutoff_iso = (now - timedelta(days=30)).isoformat()
-        coverage = _claim_coverage(conn)
+        fact_adoption = fact_observability_report(conn, runtime_config)
+        coverage = {
+            "eligible_memory_count": int(
+                fact_adoption.get("eligible_memory_count") or 0
+            ),
+            "claimed_memory_count": int(
+                fact_adoption.get("claimed_memory_count") or 0
+            ),
+            "coverage_rate": float(fact_adoption.get("coverage_ratio") or 0.0),
+        }
         overlaps = _single_current_overlaps(conn, now_iso)
         open_conflicts = _open_interval_conflicts(conn)
         sourceless = _sourceless_claims(conn)
@@ -334,7 +360,15 @@ def temporal_evolution_report(
         write_delta = conn.total_changes - before
     except Exception as exc:
         return (
-            {"status": "error", "path": str(db_path), "error": str(exc)},
+            {
+                "status": "error",
+                "path": str(db_path),
+                "error": str(exc),
+                "fact_adoption": unavailable_fact_observability(
+                    runtime_config,
+                    reason_code="health_read_error",
+                ),
+            },
             {"ok": False, "failures": [f"temporal evolution doctor error: {exc}"]},
             ["Repair or restore SQLite before relying on temporal/reflection health telemetry."],
         )
@@ -412,6 +446,7 @@ def temporal_evolution_report(
         "foreign_key_integrity": foreign_key_integrity,
         "fact_fts_integrity": fact_fts_integrity,
         "claim_coverage": coverage,
+        "fact_adoption": fact_adoption,
         "single_current_overlap_groups": overlaps,
         "open_interval_conflict_groups": open_conflicts,
         "claims_without_source": sourceless,

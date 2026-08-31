@@ -687,6 +687,87 @@ def _redact_journal_sources(
     return counts
 
 
+def _redact_targeted_governance_audits(
+    conn: sqlite3.Connection,
+    *,
+    targets: Sequence[tuple[str, str]],
+) -> int:
+    """Remove purge-target identity and payload copies from durable audits.
+
+    Governance history survives ordinary lifecycle cleanup. Target identity
+    may appear either in ``target_id`` or nested inside cursor/export payloads,
+    so both locations are scanned structurally before the Projection row is
+    physically erased. The deterministic target hash preserves direct audit
+    correlation without retaining an erasable identifier.
+    """
+
+    if not targets or not _table_exists(conn, "governance_audit_events"):
+        return 0
+    target_hashes = {
+        str(memory_id): _target_hash(str(scope_id), str(memory_id))
+        for scope_id, memory_id in targets
+        if str(memory_id)
+    }
+    if not target_hashes:
+        return 0
+
+    def contains_target(value: Any) -> bool:
+        if isinstance(value, str):
+            return value in target_hashes
+        if isinstance(value, dict):
+            return any(
+                contains_target(key) or contains_target(item)
+                for key, item in value.items()
+            )
+        if isinstance(value, (list, tuple)):
+            return any(contains_target(item) for item in value)
+        return False
+
+    def serialized_contains_target(raw: Any) -> bool:
+        text = str(raw or "")
+        try:
+            decoded = json.loads(text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return any(
+                json.dumps(memory_id, ensure_ascii=False) in text
+                for memory_id in target_hashes
+            )
+        return contains_target(decoded)
+
+    redacted = 0
+    redacted_payload = _canonical_json({"privacy_purged": True})
+    rows = conn.execute(
+        "SELECT id, target_id, before_json, after_json "
+        "FROM governance_audit_events ORDER BY id"
+    ).fetchall()
+    for row in rows:
+        target_id = str(row["target_id"] or "")
+        direct_target = target_id in target_hashes
+        payload_target = serialized_contains_target(
+            row["before_json"]
+        ) or serialized_contains_target(row["after_json"])
+        if not direct_target and not payload_target:
+            continue
+        conn.execute(
+            """
+            UPDATE governance_audit_events
+            SET target_id=?,
+                before_json=?,
+                after_json=?,
+                reason='privacy purge redacted target audit'
+            WHERE id=?
+            """,
+            (
+                target_hashes[target_id] if direct_target else target_id,
+                redacted_payload,
+                redacted_payload,
+                row["id"],
+            ),
+        )
+        redacted += 1
+    return redacted
+
+
 def _vector_intents_complete(conn: sqlite3.Connection, operation_id: str) -> bool:
     row = conn.execute(
         """
@@ -777,6 +858,9 @@ def erase_privacy_purge(
                         "current writable authority no longer covers every denied target"
                     )
                 memory_ids = [str(row["id"]) for row in rows]
+                purge_targets = [
+                    (str(row["scope_id"]), str(row["id"])) for row in rows
+                ]
                 expected_count = int(current["target_count"])
                 tombstone_count = int(
                     conn.execute(
@@ -795,6 +879,10 @@ def erase_privacy_purge(
                     operation_id=op_id,
                     memory_ids=memory_ids,
                     timestamp=erased_at,
+                )
+                governance_audit_redacted = _redact_targeted_governance_audits(
+                    conn,
+                    targets=purge_targets,
                 )
                 claim_count = 0
                 evidence_count = 0
@@ -843,6 +931,7 @@ def erase_privacy_purge(
                         "projection_deleted": deleted,
                         "claim_deleted": claim_count,
                         "evidence_deleted": evidence_count,
+                        "governance_audit_redacted": governance_audit_redacted,
                         **provenance_counts,
                     },
                     reason="confirmed privacy purge physical erasure",
@@ -866,6 +955,7 @@ def erase_privacy_purge(
                     "projection_deleted": deleted,
                     "claim_deleted": claim_count,
                     "evidence_deleted": evidence_count,
+                    "governance_audit_redacted": governance_audit_redacted,
                     "scope_set_hash": str(current["scope_set_hash"]),
                     "request_fingerprint": fingerprint,
                     "erased_at": erased_at,

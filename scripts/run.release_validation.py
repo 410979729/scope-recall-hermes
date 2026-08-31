@@ -1117,7 +1117,7 @@ def _run_n_minus_one_window(
         (
             candidate_python,
             "candidate_upgrade_write",
-            "2.0.0",
+            "2.0.1",
             candidate_install,
             context.wheel_sha256,
         ),
@@ -1131,7 +1131,7 @@ def _run_n_minus_one_window(
         (
             candidate_python,
             "candidate_final_verify",
-            "2.0.0",
+            "2.0.1",
             candidate_install,
             context.wheel_sha256,
         ),
@@ -2177,7 +2177,7 @@ def run_release_validation(
                     root=resolved,
                     artifact=candidate_wheel,
                     artifact_sha256=context.wheel_sha256,
-                    expected_version="2.0.0",
+                    expected_version="2.0.1",
                     label="candidate",
                     workspace=artifact_workspace,
                     staging=staging,

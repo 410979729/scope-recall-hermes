@@ -97,6 +97,7 @@ def test_repository_census_schema_and_committed_governance_are_coherent() -> Non
         "CR-002",
         "CR-003",
     }
+    assert compatibility["candidate_version"] == "2.0.1"
     assert all(
         entry["removal_epoch"] == "not_scheduled"
         for entry in compatibility["entries"]

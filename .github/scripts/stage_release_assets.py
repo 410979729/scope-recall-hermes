@@ -18,6 +18,13 @@ def _expected_package_names(version: str) -> tuple[str, str]:
     )
 
 
+def _expected_stable_update_names(version: str) -> tuple[str, str]:
+    return (
+        f"scope-recall-hermes-{version}.tar.gz",
+        "scope-recall-stable-update.json",
+    )
+
+
 def _read_checksums(path: Path) -> dict[str, str]:
     checksums: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -27,6 +34,10 @@ def _read_checksums(path: Path) -> dict[str, str]:
         if len(fields) != 2 or len(fields[0]) != 64:
             raise ValueError("SHA256SUMS contains a malformed entry")
         digest, name = fields
+        try:
+            bytes.fromhex(digest)
+        except ValueError as exc:
+            raise ValueError("SHA256SUMS contains a malformed entry") from exc
         normalized = Path(name).name
         if normalized != name or normalized in checksums:
             raise ValueError("SHA256SUMS contains an unsafe or duplicate name")
@@ -47,7 +58,7 @@ def stage_release_assets(
     metadata_dir: Path,
     version: str,
 ) -> dict[str, Any]:
-    """Stage exactly one wheel and one sdist, with metadata outside packages."""
+    """Verify the exact Release inventory and stage only PyPI distributions."""
 
     source = Path(source_dir)
     sums_path = source / "SHA256SUMS"
@@ -56,24 +67,31 @@ def stage_release_assets(
         raise ValueError("release assets are missing SHA256SUMS")
     if not provenance_path.is_file():
         raise ValueError("release assets are missing RELEASE-PROVENANCE.json")
-    expected_names = _expected_package_names(version)
-    package_paths = [source / name for name in expected_names]
+    package_names = _expected_package_names(version)
+    stable_update_names = _expected_stable_update_names(version)
+    hashed_names = (*package_names, *stable_update_names)
+    package_paths = [source / name for name in package_names]
+    stable_update_paths = [source / name for name in stable_update_names]
     if any(not path.is_file() for path in package_paths):
         raise ValueError("release assets do not contain the expected wheel and sdist")
+    if any(not path.is_file() for path in stable_update_paths):
+        raise ValueError("release assets do not contain the stable-update assets")
 
-    distributions = sorted(
-        path.name
-        for path in source.iterdir()
-        if path.is_file()
-        and (path.name.endswith(".whl") or path.name.endswith(".tar.gz"))
-    )
-    if distributions != sorted(expected_names):
-        raise ValueError("release assets contain unexpected distributions")
+    expected_inventory = {
+        *hashed_names,
+        sums_path.name,
+        provenance_path.name,
+    }
+    actual_inventory = {path.name for path in source.iterdir()}
+    if actual_inventory != expected_inventory or any(
+        path.is_symlink() or not path.is_file() for path in source.iterdir()
+    ):
+        raise ValueError("release assets contain an unexpected asset")
 
     checksums = _read_checksums(sums_path)
-    if sorted(checksums) != sorted(expected_names):
-        raise ValueError("SHA256SUMS must list exactly the expected distributions")
-    for path in package_paths:
+    if set(checksums) != set(hashed_names):
+        raise ValueError("SHA256SUMS must list exactly the expected hashed assets")
+    for path in (*package_paths, *stable_update_paths):
         actual = hashlib.sha256(path.read_bytes()).hexdigest()
         if checksums[path.name] != actual:
             raise ValueError(f"SHA-256 mismatch for {path.name}")
@@ -86,7 +104,8 @@ def stage_release_assets(
     shutil.copy2(provenance_path, metadata_dir / provenance_path.name)
     return {
         "ok": True,
-        "packages": sorted(expected_names),
+        "packages": sorted(package_names),
+        "stable_update_assets": sorted(stable_update_names),
         "metadata": sorted((sums_path.name, provenance_path.name)),
     }
 

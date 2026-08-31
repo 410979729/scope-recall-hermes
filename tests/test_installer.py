@@ -131,7 +131,7 @@ def test_distribution_metadata_exposes_official_standalone_install_shape():
     pyproject = tomllib.loads((PLUGIN_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert pyproject["project"]["name"] == "hermes-scope-recall"
-    assert pyproject["project"]["version"] == "2.0.0"
+    assert pyproject["project"]["version"] == "2.0.1"
     assert pyproject["project"]["scripts"] == {
         "hermes-scope-recall": "scope_recall.cli:main"
     }
@@ -1799,14 +1799,14 @@ def test_installer_upgrade_backs_up_existing_plugin_and_reports_versions(tmp_pat
     assert result["installed"] is True
     assert result["previous_plugin_existed"] is True
     assert result["previous_version"] == "0.9.0"
-    assert result["manifest_version"] == "2.0.0"
-    assert result["new_version"] == "2.0.0"
+    assert result["manifest_version"] == "2.0.1"
+    assert result["new_version"] == "2.0.1"
     backup_path = Path(result["backup_path"])
     assert backup_path.is_dir()
     assert tmp_path in backup_path.parents
     assert "version: 0.9.0" in (backup_path / "plugin.yaml").read_text(encoding="utf-8")
     assert "previous plugin" in (backup_path / "__init__.py").read_text(encoding="utf-8")
-    assert "version: 2.0.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 2.0.1" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
     assert any("restart" in step.lower() for step in result["next_steps"])
     assert any("doctor" in step for step in result["next_steps"])
     assert result["rollback_command"].endswith(str(backup_path))
@@ -1818,7 +1818,7 @@ def test_installer_rollback_restores_backup_and_backs_up_current_plugin(tmp_path
     plugin_dir = tmp_path / "plugins" / PLUGIN_NAME
     _write_installed_plugin(plugin_dir, version="0.9.0", marker="previous plugin")
     upgrade = installer.install(hermes_home=tmp_path)
-    assert "version: 2.0.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 2.0.1" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
 
     rollback = installer.rollback(hermes_home=tmp_path, backup_dir=upgrade["backup_path"])
 
@@ -1826,10 +1826,10 @@ def test_installer_rollback_restores_backup_and_backs_up_current_plugin(tmp_path
     assert rollback["dry_run"] is False
     assert rollback["restored"] is True
     assert rollback["restored_version"] == "0.9.0"
-    assert rollback["replaced_version"] == "2.0.0"
+    assert rollback["replaced_version"] == "2.0.1"
     current_backup = Path(rollback["current_backup_path"])
     assert current_backup.is_dir()
-    assert "version: 2.0.0" in (current_backup / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 2.0.1" in (current_backup / "plugin.yaml").read_text(encoding="utf-8")
     assert "version: 0.9.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
     assert "previous plugin" in (plugin_dir / "__init__.py").read_text(encoding="utf-8")
 
@@ -1906,7 +1906,7 @@ def test_installer_cli_upgrade_dry_run_and_rollback_are_routed_by_product_cli(tm
 
     upgrade = installer.install(hermes_home=tmp_path)
     assert cli.main(["rollback", "--hermes-home", str(tmp_path), "--backup-dir", upgrade["backup_path"], "--dry-run", "--json"]) == 0
-    assert "version: 2.0.0" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+    assert "version: 2.0.1" in (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
 
 
 def test_installer_runtime_verify_reports_missing_memory_setup(tmp_path):
@@ -2225,6 +2225,8 @@ def test_installed_plugin_loads_through_hermes_memory_discovery(tmp_path, monkey
 
 
 def test_installed_plugin_loads_from_outside_repo_without_source_alias(tmp_path):
+    import plugins
+
     from scope_recall import installer
 
     hermes_home = tmp_path / "hermes-home"
@@ -2235,7 +2237,10 @@ def test_installed_plugin_loads_from_outside_repo_without_source_alias(tmp_path)
     env = dict(os.environ)
     env["HERMES_HOME"] = str(hermes_home)
     env["PYTHONNOUSERSITE"] = "1"
-    env.pop("PYTHONPATH", None)
+    # Keep only the Hermes host import root.  The assertion below still proves
+    # that the Scope Recall source checkout is not available as an alias.
+    hermes_import_root = Path(plugins.__file__).resolve().parents[1]
+    env["PYTHONPATH"] = str(hermes_import_root)
     env.pop("PYTHONHOME", None)
     code = """
 import json, pathlib, sys
@@ -2269,14 +2274,16 @@ print(json.dumps(payload, sort_keys=True))
 
 
 def test_nested_clone_build_and_fresh_venv_ignore_polluted_parent(tmp_path):
-    outer = tmp_path / "polluted-parent"
+    # Keep the deliberately nested checkout below Windows' legacy path limit;
+    # wheel staging adds another long bdist/package-data suffix.
+    outer = tmp_path / "p"
     poison = outer / "scope_recall"
     poison.mkdir(parents=True)
     (poison / "__init__.py").write_text(
         "raise RuntimeError('polluted parent package imported')\n",
         encoding="utf-8",
     )
-    clone = outer / "nested" / "scope-recall"
+    clone = outer / "n" / "s"
     shutil.copytree(
         PLUGIN_ROOT,
         clone,

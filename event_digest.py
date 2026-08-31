@@ -10,7 +10,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from .capture_filters import contains_secret_like_text, redact_secret_like_text, sanitize_report_text
+from .capture_filters import (
+    classify_transport_noise,
+    contains_secret_like_text,
+    redact_secret_like_text,
+    sanitize_report_text,
+)
 
 _EVENT_KIND_ALIASES = {
     "task-complete": "task_closeout",
@@ -107,6 +112,10 @@ def build_evidence_packet(event: MemoryEvent, *, min_content_chars: int = 16, ma
         rejection_reasons.append("unknown_event_kind")
     if secret_like:
         rejection_reasons.append("plaintext_secret_rejected")
+    transport = classify_transport_noise(raw_content)
+    rejection_reasons.extend(
+        f"transport_noise:{code}" for code in transport.reason_codes
+    )
     if len(sanitized) < min_content_chars:
         rejection_reasons.append("low_signal")
     metadata = {
@@ -190,7 +199,7 @@ def run_provider_event_candidate_pass(
             metadata={"source": "provider-hook", "role": role},
         )
         packet = build_evidence_packet(event)
-        extraction = extract_candidates_from_packet(packet, dry_run=True)
+        extraction = extract_candidates_from_packet(packet, dry_run=dry_run)
         seen += 1
         proposed += len(extraction.candidates)
         proposed_candidates.extend(extraction.candidates)

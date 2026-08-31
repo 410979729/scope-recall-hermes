@@ -4,6 +4,8 @@ The CLI keeps operator actions explicit: install, upgrade, verify, rollback, and
 
 from __future__ import annotations
 
+import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -65,8 +67,14 @@ _HELP = """hermes-scope-recall: Scope Recall operator CLI
 
 Usage:
   hermes-scope-recall install [installer options]
+  hermes-scope-recall update [--hermes-home <path>] [--json]
   hermes-scope-recall upgrade [installer options]
   hermes-scope-recall rollback --backup-dir <path> [installer options]
+  hermes-scope-recall managed-upgrade auto [--hermes-home <path>]
+  hermes-scope-recall managed-upgrade prepare --hermes-home <path> --candidate <path> --expected-tree-sha256 <sha256>
+  hermes-scope-recall managed-upgrade worker --hermes-home <path> --operation-id <id>
+  hermes-scope-recall managed-upgrade status --hermes-home <path> --operation-id <id>
+  hermes-scope-recall managed-upgrade resume --hermes-home <path> --operation-id <id>
   hermes-scope-recall verify [verify options]
   hermes-scope-recall doctor [doctor options]
   hermes-scope-recall dashboard [dashboard options]
@@ -149,6 +157,73 @@ def _match_script_command(argv: list[str]) -> tuple[str, list[str]] | None:
     return None
 
 
+def _active_plugin_home() -> Path:
+    """Resolve the exact Hermes home that loaded this plugin CLI."""
+
+    plugin_dir = Path(__file__).resolve().parent
+    if plugin_dir.name != "scope-recall" or plugin_dir.parent.name != "plugins":
+        raise ValueError("scope_recall_cli_not_loaded_from_active_plugin")
+    return plugin_dir.parent.parent.resolve()
+
+
+def register_cli(parent_parser: argparse.ArgumentParser) -> None:
+    """Expose the zero-choice updater through ``hermes scope-recall``."""
+
+    commands = parent_parser.add_subparsers(
+        dest="scope_recall_command_name",
+        required=True,
+    )
+    update = commands.add_parser(
+        "update",
+        help="safely update to the latest official stable Scope Recall",
+    )
+    update.set_defaults(func=scope_recall_command)
+
+    for name in ("update-status", "update-resume"):
+        command = commands.add_parser(name)
+        command.add_argument("--operation-id", required=True)
+        command.set_defaults(func=scope_recall_command)
+
+
+def scope_recall_command(args: argparse.Namespace) -> int:
+    """Handle the active-plugin CLI without asking the model for decisions."""
+
+    from . import managed_upgrade
+
+    try:
+        home = _active_plugin_home()
+        command = str(args.scope_recall_command_name)
+        if command == "update":
+            payload = managed_upgrade.auto_update(
+                hermes_home=home,
+            )
+        elif command == "update-status":
+            payload = managed_upgrade.status(
+                hermes_home=home,
+                operation_id=str(args.operation_id),
+            )
+        elif command == "update-resume":
+            payload = managed_upgrade.resume(
+                hermes_home=home,
+                operation_id=str(args.operation_id),
+            )
+        else:
+            raise managed_upgrade.ManagedUpgradeError("unknown_command")
+    except OSError:
+        payload = managed_upgrade.failure_payload(
+            "scope_recall_cli_home_unavailable"
+        )
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return 2
+    except (ValueError, managed_upgrade.ManagedUpgradeError) as exc:
+        reason = getattr(exc, "reason_code", str(exc))
+        payload = managed_upgrade.failure_payload(str(reason))
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return 2
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    return 0 if payload.get("ok") else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args or args[0] in {"-h", "--help", "help"}:
@@ -156,6 +231,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args[0] in {"install", "verify", "upgrade", "rollback"}:
         return installer.main(args)
+    if args[0] == "update":
+        from . import managed_upgrade
+
+        return managed_upgrade.main(["auto", *args[1:]])
+    if args[0] == "managed-upgrade":
+        from . import managed_upgrade
+
+        return managed_upgrade.main(args)
     matched = _match_script_command(args)
     if matched is not None:
         script_name, forwarded = matched

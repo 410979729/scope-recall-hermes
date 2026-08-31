@@ -116,7 +116,18 @@ def _make_db(tmp_path: Path) -> Path:
         _insert_browser_row(
             conn,
             memory_id="cand-1",
-            metadata={"lifecycle": "candidate", "memory_type": "factual"},
+            metadata={
+                "origin_kind": "event_digest",
+                "lifecycle": "candidate",
+                "candidate_status": "needs_review",
+                "review_status": "pending",
+                "memory_type": "factual",
+                "automatic_admission": {
+                    "source": "event_digest",
+                    "route": "memory_review",
+                    "reviewed": False,
+                },
+            },
         )
         conn.commit()
     finally:
@@ -208,6 +219,16 @@ def test_memory_browser_lists_candidates_and_explains_recall_preview(tmp_path: P
     payload = json.loads(candidates.stdout)
     assert payload["count"] == 1
     assert payload["candidates"][0]["id"] == "cand-1"
+    candidate = payload["candidates"][0]
+    assert candidate["origin_kind"] == "event_digest"
+    assert candidate["source"] == "event-digest"
+    assert candidate["lifecycle"] == "candidate"
+    assert candidate["review_status"] == "pending"
+    assert candidate["automatic_admission"] == {
+        "source": "event_digest",
+        "route": "memory_review",
+        "reviewed": False,
+    }
 
     explain = _run_browser("recall", "explain", "--db", str(db_path), "--query", "project browser", "--json")
     assert explain.returncode == 0, explain.stderr

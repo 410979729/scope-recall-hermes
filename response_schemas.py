@@ -31,6 +31,43 @@ DOCTOR_REQUIRED_CHECK_NAMES = (
     "temporal_evolution",
     "vector_companion",
 )
+
+# Managed upgrades must not make ordinary users adjudicate historical memory
+# quality before new code can start.  This registry is the explicit, reviewed
+# activation contract: safety failures block and roll back; advisory failures
+# are preserved as maintenance debt without mutating semantic memory rows.
+# Keep the two sets a complete, disjoint partition of
+# ``DOCTOR_REQUIRED_CHECK_NAMES`` so callers never infer severity from names or
+# human-readable Doctor text.
+DOCTOR_ACTIVATION_SAFETY_CHECK_NAMES = (
+    "config_load",
+    "endpoint_policy",
+    "extensions",
+    "runtime_pipelines",
+    "source_metadata",
+    "sqlite_truth",
+    "temporal_evolution",
+)
+DOCTOR_ACTIVATION_ADVISORY_CHECK_NAMES = (
+    "event_digest",
+    "experience_kernel",
+    "journal_provenance",
+    "memory_candidate_debt",
+    "memory_quality_lint",
+    "memory_secret_scan",
+    "nightly_digest",
+    "vector_companion",
+)
+
+if (
+    set(DOCTOR_ACTIVATION_SAFETY_CHECK_NAMES)
+    | set(DOCTOR_ACTIVATION_ADVISORY_CHECK_NAMES)
+) != set(DOCTOR_REQUIRED_CHECK_NAMES):
+    raise RuntimeError("Doctor activation policy does not cover every required check")
+if set(DOCTOR_ACTIVATION_SAFETY_CHECK_NAMES) & set(
+    DOCTOR_ACTIVATION_ADVISORY_CHECK_NAMES
+):
+    raise RuntimeError("Doctor activation safety and advisory checks overlap")
 DASHBOARD_RESPONSE_SCHEMA_VERSION = "dashboard_report.v1"
 GOLDEN_BENCHMARK_RESPONSE_SCHEMA_VERSION = "golden_benchmark_report.v1"
 EXPERIENCE_REPLAY_RESPONSE_SCHEMA_VERSION = "experience_replay_report.v1"

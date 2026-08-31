@@ -12,10 +12,12 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from .candidate_review import candidate_identity_fields
 from .capture_filters import contains_secret_like_text, sanitize_mapping_key, sanitize_report_text
 from .lifecycle_policy import ordinary_recall_lifecycle_visible
 
 _CANDIDATE_SUMMARY_METADATA_KEYS = {
+    "automatic_admission",
     "candidate_status",
     "confidence",
     "entities",
@@ -24,7 +26,9 @@ _CANDIDATE_SUMMARY_METADATA_KEYS = {
     "importance",
     "lifecycle",
     "memory_type",
+    "origin_kind",
     "recommended_action",
+    "review_status",
     "risk_flags",
     "tags",
 }
@@ -90,6 +94,10 @@ def _row_payload(row: sqlite3.Row, *, include_content: bool = False, raw: bool =
     raw_metadata = _parse_json(row["metadata"])
     raw_content = str(row["content"] or "")
     metadata = raw_metadata if raw else _sanitize_metadata(raw_metadata, derived_from_sensitive_content=contains_secret_like_text(raw_content))
+    identity = candidate_identity_fields(source=str(row["source"]), metadata=metadata)
+    if not raw and "automatic_admission" in metadata:
+        metadata = dict(metadata)
+        metadata["automatic_admission"] = identity["automatic_admission"]
     safe_content = raw_content if raw else sanitize_report_text(raw_content)
     raw_summary = str(row["summary"] or "")
     payload: dict[str, Any] = {
@@ -109,6 +117,7 @@ def _row_payload(row: sqlite3.Row, *, include_content: bool = False, raw: bool =
         payload["content"] = safe_content
     else:
         payload["content_chars"] = len(raw_content)
+    payload.update(identity)
     return payload
 
 

@@ -9,6 +9,7 @@ import pytest
 from scope_recall.capture_filters import (
     _compiled_configured_patterns,
     _configured_patterns,
+    classify_transport_noise,
     redact_private_paths,
     redact_secret_like_text,
     sanitize_capture_text,
@@ -17,6 +18,63 @@ from scope_recall.capture_filters import (
     sanitize_structured_value,
     should_capture_text,
 )
+
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        ("> - [context compaction – reference only]\n> 用户偏好以后不要运行全量测试。",
+            "context_compaction_wrapper",
+        ),
+        (
+            "Handoff summary:\n> - [CoNtExT CoMpAcTiOn − ReFeReNcE OnLy]\n> resume",
+            "context_compaction_wrapper",
+        ),
+        (
+            "Recent Telegram chat history in this chat since your last turn\nJoy: hello",
+            "telegram_history_wrapper",
+        ),
+        ("  [IMPORTANT: Background process worker-1 completed]", "background_process_wrapper"),
+        ("1. Tool execution wrapper\noutput omitted", "tool_execution_wrapper"),
+        ("Gateway recovery wrapper\ncontinue the prior turn", "gateway_recovery_wrapper"),
+        ("Native context compaction marker\nencrypted payload", "native_compaction_wrapper"),
+        ("[REFERENCE ONLY] User prefers unsafe wrapper retention.", "reference_only_wrapper"),
+        ("System: [REFERENCE ONLY] User prefers unsafe wrapper retention.", "reference_only_wrapper"),
+    ],
+)
+def test_transport_noise_classifier_normalizes_structural_prefixes(text, reason):
+    decision = classify_transport_noise(text)
+
+    assert decision.blocked is True
+    assert reason in decision.reason_codes
+
+
+def test_transport_noise_classifier_allows_legitimate_discussion():
+    text = (
+        "The plugin documents how a tool execution wrapper is filtered, and "
+        "how context compaction should be tested without storing the wrapper."
+    )
+
+    assert classify_transport_noise(text).blocked is False
+    assert should_capture_text(text).allowed is True
+
+    inline_documentation = (
+        "The documentation calls [REFERENCE ONLY] a transport marker and "
+        "explains why it must not be stored."
+    )
+    assert classify_transport_noise(inline_documentation).blocked is False
+
+
+def test_transport_noise_classifier_does_not_scan_late_body_examples():
+    text = (
+        "This durable design note explains why structural prefix detection must "
+        "stay bounded and avoid treating ordinary documentation as a wrapper. "
+        + ("Detailed implementation discussion remains valid. " * 12)
+        + "\n[CONTEXT COMPACTION - literal example used by the test documentation]"
+    )
+
+    assert classify_transport_noise(text).blocked is False
+    assert should_capture_text(text).allowed is True
 
 
 def test_recent_telegram_history_wrapper_is_rejected():
