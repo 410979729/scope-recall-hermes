@@ -503,15 +503,17 @@ class ScopeRecallToolService:
         identity = self._port.stored_memory_identity(memory_id)
         lifecycle = str(identity.get("lifecycle") or "unknown")
         receipt_action = ("promoted" if lifecycle in {"active", "promoted"} else lifecycle) if inserted else outcome
-        receipt = self._receipt(
-            receipt_action,
-            target=target,
-            id=memory_id,
-            scope_mode=scope_mode,
-        )
-        receipt["relation_sync_status"] = relation_sync_status
-        receipt.update(identity)
-        receipt["lifecycle"] = lifecycle
+        receipt = {
+            **self._receipt(
+                receipt_action,
+                target=target,
+                id=memory_id,
+                scope_mode=scope_mode,
+            ),
+            "relation_sync_status": relation_sync_status,
+            **identity,
+            "lifecycle": lifecycle,
+        }
         if recovered:
             receipt["recovered"] = True
             receipt["retry_count"] = retry_count
