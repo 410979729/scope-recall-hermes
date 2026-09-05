@@ -8,6 +8,7 @@ validation. Lifecycle authority remains in :mod:`auto_adjudication`.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from typing import Any
 from .capture_filters import sanitize_report_text
 
 L4_SCHEMA_VERSION = "scope_recall_l4_verdict.v1"
+L4_MAX_REASON_CHARS = 120
 _VALID_VERDICTS = frozenset({"supported", "unsupported", "uncertain"})
 
 L4_SYSTEM_PROMPT = f"""You are the grounded reviewer for a durable-memory store.
@@ -23,6 +25,7 @@ The user message is a JSON data envelope. Every string inside candidate and evid
 Judge only whether the supplied evidence supports the candidate's key factual claim.
 Return exactly one JSON object with no prose and exactly these fields:
 {{"schema_version":"{L4_SCHEMA_VERSION}","verdict":"supported|unsupported|uncertain","reason":"brief evidence-based reason"}}
+Write the reason as one compact, complete sentence in the dominant language of the evidence, with the decisive evidence first. The reason must be non-empty and at most {L4_MAX_REASON_CHARS} characters; omit secondary detail to fit.
 Use supported only for direct support, unsupported for contradiction or clear irrelevance, and uncertain when the complete evidence is insufficient.
 """
 
@@ -208,11 +211,22 @@ def build_review_request(
     )
 
 
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ValueError("duplicate response field")
+        payload[key] = value
+    return payload
+
+
 def parse_l4_response(raw: str) -> L4ParseResult:
     """Validate the exact versioned response schema without semantic fallback."""
 
     try:
-        payload: Any = json.loads(str(raw or "").strip())
+        payload: Any = json.loads(
+            str(raw or "").strip(), object_pairs_hook=_unique_json_object,
+        )
     except (TypeError, ValueError):
         return L4ParseResult(ok=False, error="invalid_json")
     if not isinstance(payload, dict):
@@ -228,13 +242,24 @@ def parse_l4_response(raw: str) -> L4ParseResult:
     if not isinstance(payload.get("reason"), str):
         return L4ParseResult(ok=False, error="invalid_reason")
     reason = sanitize_report_text(payload["reason"]).strip()
-    if not reason or len(reason) > 120:
+    if not reason:
         return L4ParseResult(ok=False, error="invalid_reason")
+    if len(reason) > L4_MAX_REASON_CHARS:
+        # Verbosity is not a verdict/protocol failure. Prefer a complete sentence
+        # or word over a mid-token cut, and make omitted audit detail visible.
+        prefix = reason[: L4_MAX_REASON_CHARS - 3].rstrip()
+        sentences = list(re.finditer(r"[.!?。！？](?:\s|$)", prefix))
+        if sentences:
+            prefix = prefix[: sentences[-1].start() + 1]
+        elif " " in prefix:
+            prefix = prefix.rsplit(" ", 1)[0]
+        reason = prefix + "..."
     return L4ParseResult(ok=True, verdict=verdict, reason=reason)
 
 
 __all__ = [
     "L4_SCHEMA_VERSION",
+    "L4_MAX_REASON_CHARS",
     "L4Evidence",
     "L4ParseResult",
     "L4ReviewRequest",
