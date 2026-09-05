@@ -70,7 +70,8 @@ class RequestDeadline:
 
     def remaining(self, now: float | None = None) -> float:
         current = time.monotonic() if now is None else float(now)
-        return self.deadline_monotonic - current
+        leftover = self.deadline_monotonic - current
+        return min(self.budget_seconds, leftover)
 
     def exhausted(self, now: float | None = None) -> bool:
         return self.remaining(now) <= 0.0
