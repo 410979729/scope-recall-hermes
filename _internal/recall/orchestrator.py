@@ -24,16 +24,22 @@ from ...freshness import CURRENT_STATUSES, STALE_STATUSES, attach_freshness_meta
 from ...gating import config_bool, matched_query_intent_terms
 from ...graph import apply_quality_weight, entity_overlap_bonus
 from ...models import RecallItem
+from .deadline import (
+    RequestDeadline,
+    bind_request_deadline,
+    current_request_deadline,
+    reset_request_deadline,
+    resolve_foreground_budget_seconds,
+)
 from .ports import RecallSearchHost
 from .request import RecallSearchRequest
+from .sources import RecallSourceContext, collect_sources
 from .tuning import (
-    DEFAULT_ENTITY_DISTANCE_WEIGHT,
-    DEFAULT_ENTITY_WEIGHT,
-    DEFAULT_METADATA_WEIGHT,
     DEFAULT_MIN_SCORE,
     DEFAULT_VECTOR_ONLY_MIN_SCORE,
     INTENT_UNMATCHED_BM25_FACTOR,
 )
+from .weights import effective_retrieval_weights
 
 REQUIRED_TRACE_STAGES = (
     "lexical",
@@ -176,53 +182,90 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
     query_stage = recall_pipeline.normalize_query(query)
     intent_terms = query_stage["intent_terms"]
     current_state_requested = query_stage["current_state_requested"]
-
-    stage_start = time.perf_counter()
-    raw_lexical_candidates = host.provider._search_db_memories(query, limit=candidate_pool)
+    ranking_weights = effective_retrieval_weights(retrieval_cfg)
+    metadata_weight = ranking_weights["metadata_weight"]
+    entity_weight = ranking_weights["entity_weight"]
+    entity_distance_weight = ranking_weights["entity_distance_weight"]
+    deadline = current_request_deadline()
+    if deadline is None:
+        if request.deadline_monotonic is not None:
+            deadline = RequestDeadline.from_absolute(request.deadline_monotonic)
+        else:
+            deadline = RequestDeadline.from_budget(
+                resolve_foreground_budget_seconds(
+                    getattr(host.provider, "_config", {})
+                )
+            )
+    token = None
+    if current_request_deadline() is None:
+        token = bind_request_deadline(deadline)
+    try:
+        collected = collect_sources(
+            RecallSourceContext(
+                query=query,
+                candidate_pool=candidate_pool,
+                vector_depth=vector_depth,
+                query_vector=tuple(query_vector) if query_vector is not None else None,
+                deadline=deadline,
+            ),
+            host.source_capabilities(),
+        )
+    finally:
+        if token is not None:
+            reset_request_deadline(token)
+    raw_lexical_candidates = list(collected.lexical.items)
     lexical_candidates = host._filter_recall_lifecycle(raw_lexical_candidates)
-    trace["filters"]["lifecycle_removed"] += max(0, len(raw_lexical_candidates) - len(lexical_candidates))
-    trace["stages"]["lexical"] = host._trace_stage(lexical_candidates, raw_count=len(raw_lexical_candidates))
-    trace["timings_ms"]["lexical"] = host._elapsed_ms(stage_start)
+    trace["filters"]["lifecycle_removed"] += max(
+        0, len(raw_lexical_candidates) - len(lexical_candidates)
+    )
+    lexical_stage = host._trace_stage(
+        lexical_candidates, raw_count=collected.lexical.raw_count
+    )
+    lexical_stage["state"] = collected.lexical.state
+    if collected.lexical.reason_code:
+        lexical_stage["reason_code"] = collected.lexical.reason_code
+    trace["stages"]["lexical"] = lexical_stage
+    trace["timings_ms"]["lexical"] = collected.lexical.elapsed_ms
 
-    effective_query_vector = query_vector
-    stage_start = time.perf_counter()
-    if effective_query_vector is None:
-        raw_vector_candidates = host.provider._search_vector_memories(
-            query,
-            limit=vector_depth,
-        )
-    else:
-        raw_vector_candidates = host.provider._search_vector_memories_with_vector(
-            effective_query_vector,
-            limit=vector_depth,
-        )
+    raw_vector_candidates = list(collected.vector.items)
     vector_candidates = host._filter_recall_lifecycle(raw_vector_candidates)
-    trace["filters"]["lifecycle_removed"] += max(0, len(raw_vector_candidates) - len(vector_candidates))
-    trace["stages"]["vector"] = host._trace_stage(vector_candidates, raw_count=len(raw_vector_candidates))
-    trace["timings_ms"]["vector"] = host._elapsed_ms(stage_start)
+    trace["filters"]["lifecycle_removed"] += max(
+        0, len(raw_vector_candidates) - len(vector_candidates)
+    )
+    vector_stage = host._trace_stage(
+        vector_candidates, raw_count=collected.vector.raw_count
+    )
+    vector_stage["state"] = collected.vector.state
+    if collected.vector.reason_code:
+        vector_stage["reason_code"] = collected.vector.reason_code
+    trace["stages"]["vector"] = vector_stage
+    trace["timings_ms"]["vector"] = collected.vector.elapsed_ms
 
-    stage_start = time.perf_counter()
-    curated_candidates = host.provider._search_curated_memories(query)
-    trace["stages"]["curated"] = host._trace_stage(curated_candidates)
-    trace["timings_ms"]["curated"] = host._elapsed_ms(stage_start)
+    curated_candidates = list(collected.curated.items)
+    curated_stage = host._trace_stage(curated_candidates)
+    curated_stage["state"] = collected.curated.state
+    if collected.curated.reason_code:
+        curated_stage["reason_code"] = collected.curated.reason_code
+    trace["stages"]["curated"] = curated_stage
+    trace["timings_ms"]["curated"] = collected.curated.elapsed_ms
+    trace["source_unavailable"] = collected.unavailable_entries()
 
     temporal_candidates: list[RecallItem] = []
-    temporal_memory_ids = list(
-        dict.fromkeys(
-            item.id
-            for item in (
-                lexical_candidates + vector_candidates + curated_candidates
-            )
-            if item.id
+    if collected.temporal.state == "unavailable":
+        diagnostics = {
+            "state": "unavailable",
+            "reason_code": collected.temporal.reason_code,
+            "candidate_count": 0,
+            "current_claims_usable": False,
+        }
+        host.last_temporal_query_diagnostics = diagnostics
+        trace["stages"]["temporal_current"] = dict(diagnostics)
+        trace["timings_ms"]["temporal_current"] = collected.temporal.elapsed_ms
+    elif collected.temporal.state == "ok":
+        temporal_candidates = list(collected.temporal.items)
+        suppressed_memory_ids = frozenset(
+            collected.temporal.extra.get("suppressed_memory_ids") or ()
         )
-    )
-    temporal_payload = host._temporal_current_candidates(
-        query,
-        limit=candidate_pool,
-        candidate_memory_ids=temporal_memory_ids,
-    )
-    if temporal_payload is not None:
-        temporal_candidates, suppressed_memory_ids = temporal_payload
         current_memory_ids = {item.id for item in temporal_candidates}
         before_temporal_filter = (
             len(lexical_candidates)
@@ -259,6 +302,9 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
         trace["stages"]["temporal_current"] = host._trace_stage(
             temporal_candidates
         )
+        trace["timings_ms"]["temporal_current"] = collected.temporal.elapsed_ms
+    else:
+        trace["timings_ms"]["temporal_current"] = collected.temporal.elapsed_ms
 
     rrf_by_id = host._rrf_scores(
         lexical_candidates,
@@ -463,16 +509,13 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
         meta["matched_intent_terms"] = matched_intent_terms
         meta["current_state_requested"] = current_state_requested
         pre_quality_score = host.final_score(meta)
-        metadata_weight = float(retrieval_cfg.get("metadata_weight") or DEFAULT_METADATA_WEIGHT)
         quality_adjusted_score = apply_quality_weight(
             pre_quality_score,
             meta,
             weight=metadata_weight,
         )
-        entity_weight = float(retrieval_cfg.get("entity_weight") or DEFAULT_ENTITY_WEIGHT)
         entity_overlap = entity_overlap_bonus(query, meta, weight=entity_weight)
         entity_distance_score = entity_graph_scores.get(item.id, 0.0)
-        entity_distance_weight = float(retrieval_cfg.get("entity_distance_weight", DEFAULT_ENTITY_DISTANCE_WEIGHT))
         entity_distance_bonus = entity_distance_score * entity_distance_weight
         relation_payload = relation_evidence.get(item.id, {})
         relation_types = [

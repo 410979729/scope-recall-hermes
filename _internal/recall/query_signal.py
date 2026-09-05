@@ -13,7 +13,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
-from ...gating import clean_text, is_trivial, semantic_query_tokens
+from ...gating import (
+    clean_text,
+    document_supports_mixed_letter_digit_identifiers,
+    is_trivial,
+    semantic_query_tokens,
+)
 from ...scoring import lexical_score
 
 QuerySignalState = Literal[
@@ -347,12 +352,21 @@ def assess_candidate_admission(
         margin_floor = _bounded_score(vector_only_min_margin, default=0.035)
         margin = score - background
         semantic_tokens = semantic_query_tokens(normalized_query)
+        identifier_supported = document_supports_mixed_letter_digit_identifiers(
+            normalized_query,
+            content,
+            summary,
+            temporal_text,
+            candidate_id,
+        )
         if score <= 0.0:
             reason_codes.append("vector_score_not_positive")
         elif opaque and not opaque_query_vector_only_enabled:
             reason_codes.append("opaque_query_vector_only_denied")
         elif not semantic_tokens:
             reason_codes.append("query_has_no_semantic_tokens")
+        elif not identifier_supported:
+            reason_codes.append("unmatched_mixed_identifier")
         elif score < absolute_floor:
             reason_codes.append("vector_only_below_min_score")
         elif not background_available:

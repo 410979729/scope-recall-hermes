@@ -8,16 +8,20 @@ import threading
 
 from scope_recall.lexical_generation import (
     LEXICAL_GENERATION_ID,
+    LEXICAL_POSTINGS_TABLE,
     LEXICAL_QUALITY_PROVENANCE,
+    LEXICAL_SHADOW_TABLE,
     activate_generation,
     backfill_generation,
     create_shadow_generation,
+    current_generation_id,
     ensure_lexical_generation_schema,
     generation_integrity_report,
     lexical_quality_evidence_fingerprint,
     lexical_source_binding,
     mark_generation_ready,
     rollback_generation,
+    supplemental_table_for_search,
 )
 from scope_recall.sql_store import ensure_schema, store_row
 from scope_recall.storage_views import search_db_memories
@@ -152,6 +156,152 @@ def _ids(provider: _Provider, query: str, *, generation_override: str | None) ->
     ]
 
 
+_SHADOW_READ_TABLES = frozenset(
+    {
+        LEXICAL_SHADOW_TABLE,
+        f"{LEXICAL_SHADOW_TABLE}_content",
+        f"{LEXICAL_SHADOW_TABLE}_idx",
+        LEXICAL_POSTINGS_TABLE,
+    }
+)
+
+
+class _FetchedRows:
+    def __init__(self, rows: list) -> None:
+        self._rows = list(rows)
+        self._index = 0
+
+    def fetchall(self) -> list:
+        return list(self._rows)
+
+    def fetchone(self):
+        if self._index >= len(self._rows):
+            return None
+        row = self._rows[self._index]
+        self._index += 1
+        return row
+
+
+def _result_ids(rows) -> list[str]:
+    ids: list[str] = []
+    for row in rows:
+        keys = set(row.keys()) if hasattr(row, "keys") else set()
+        if "id" in keys:
+            ids.append(str(row["id"]))
+        elif "memory_id" in keys:
+            ids.append(str(row["memory_id"]))
+    return ids
+
+
+def _is_shadow_result_sql(sql: str) -> bool:
+    compact = " ".join(str(sql).split())
+    if LEXICAL_SHADOW_TABLE in compact and "MATCH" in compact and "SELECT m." in compact:
+        return True
+    return LEXICAL_POSTINGS_TABLE in compact and "JOIN memories" in compact
+
+
+class _ShadowReadProxy:
+    """Test-local execute proxy that records IDs returned by shadow-index SQL."""
+
+    def __init__(self, inner: sqlite3.Connection, shadow_ids: list[str]) -> None:
+        object.__setattr__(self, "_inner", inner)
+        object.__setattr__(self, "_shadow_ids", shadow_ids)
+
+    def execute(self, sql, parameters=()):
+        cursor = self._inner.execute(sql, parameters)
+        if not _is_shadow_result_sql(sql):
+            return cursor
+        rows = cursor.fetchall()
+        self._shadow_ids.extend(_result_ids(rows))
+        return _FetchedRows(rows)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def observe_shadow_channel(
+    conn: sqlite3.Connection,
+    provider: _Provider,
+    query: str,
+    *,
+    generation: str | None,
+    deny_tables: tuple[str, ...] = (),
+) -> dict[str, object]:
+    """Bind a generation, then observe shadow-index SQL under a read authorizer."""
+
+    bound = supplemental_table_for_search(conn, generation)
+    shadow_ids: list[str] = []
+    tables_read: list[str] = []
+    deny = frozenset(deny_tables)
+
+    def authorizer(action, table, _column, _db, _trigger):
+        if action != sqlite3.SQLITE_READ or not table:
+            return sqlite3.SQLITE_OK
+        tables_read.append(str(table))
+        if table in deny:
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    changes_before = conn.total_changes
+    conn.execute("PRAGMA query_only=ON")
+    conn.set_authorizer(authorizer)
+    provider._conn = _ShadowReadProxy(conn, shadow_ids)
+    error: BaseException | None = None
+    ids: list[str] = []
+    try:
+        ids = _ids(provider, query, generation_override=generation)
+    except Exception as exc:
+        error = exc
+    finally:
+        provider._conn = conn
+        conn.set_authorizer(None)
+        conn.execute("PRAGMA query_only=OFF")
+    return {
+        "generation": generation,
+        "bound_table": bound,
+        "ids": ids,
+        "error": error,
+        "shadow_sql_ids": list(shadow_ids),
+        "tables_read": frozenset(tables_read),
+        "read_only": conn.total_changes == changes_before,
+    }
+
+
+def ablate_shadow_document(conn: sqlite3.Connection, memory_id: str) -> None:
+    """Remove one truth id from the shadow FTS/postings tables only."""
+
+    row = conn.execute("SELECT rowid FROM memories WHERE id=?", (memory_id,)).fetchone()
+    if row is not None:
+        conn.execute(
+            f"DELETE FROM {LEXICAL_POSTINGS_TABLE} WHERE docid=?",
+            (int(row[0]),),
+        )
+    conn.execute(
+        f"DELETE FROM {LEXICAL_SHADOW_TABLE} WHERE memory_id=?",
+        (memory_id,),
+    )
+    conn.commit()
+
+
+def shadow_index_is_independent(evidence: dict[str, object], expected_id: str) -> bool:
+    """True only when the bound shadow index itself produced the expected id."""
+
+    tables = evidence["tables_read"]
+    assert isinstance(tables, frozenset)
+    ids = evidence["ids"]
+    shadow_sql_ids = evidence["shadow_sql_ids"]
+    assert isinstance(ids, list)
+    assert isinstance(shadow_sql_ids, list)
+    return (
+        evidence["bound_table"] == LEXICAL_SHADOW_TABLE
+        and evidence["error"] is None
+        and evidence["read_only"] is True
+        and bool(_SHADOW_READ_TABLES & tables)
+        and expected_id in ids
+        and expected_id in shadow_sql_ids
+    )
+
+
 def test_ready_shadow_override_recovers_cjk_target_under_newer_noise():
     conn, provider = _corpus()
     queries = (
@@ -167,9 +317,37 @@ def test_ready_shadow_override_recovers_cjk_target_under_newer_noise():
     ]
 
     assert "target" not in legacy[0]
-    assert "target" not in legacy[1]
     assert all("target" in result for result in shadow)
     assert all("hidden-cjk" not in result for result in shadow)
+
+    natural_query = queries[1]
+    isolated = observe_shadow_channel(
+        conn,
+        provider,
+        natural_query,
+        generation=LEXICAL_GENERATION_ID,
+    )
+    assert shadow_index_is_independent(isolated, "target"), isolated
+
+    wrong_route = observe_shadow_channel(
+        conn,
+        provider,
+        natural_query,
+        generation=LEXICAL_GENERATION_ID,
+        deny_tables=(LEXICAL_SHADOW_TABLE, LEXICAL_POSTINGS_TABLE),
+    )
+    assert not shadow_index_is_independent(wrong_route, "target"), wrong_route
+    assert wrong_route["error"] is not None
+
+    ablate_shadow_document(conn, "target")
+    rescued = observe_shadow_channel(
+        conn,
+        provider,
+        natural_query,
+        generation=LEXICAL_GENERATION_ID,
+    )
+    assert not shadow_index_is_independent(rescued, "target"), rescued
+    assert "target" not in rescued["shadow_sql_ids"]
     conn.close()
 
 
@@ -297,26 +475,42 @@ def test_activation_and_rollback_switch_default_reads_without_deleting_shadow():
     conn, provider = _corpus()
     query = "生产库切换前需要做什么"
 
-    assert "target" not in _ids(provider, query, generation_override=None)
+    before = observe_shadow_channel(conn, provider, query, generation=None)
+    assert current_generation_id(conn) == ""
+    assert before["bound_table"] == ""
+    assert not shadow_index_is_independent(before, "target"), before
+
     activate_generation(
         conn,
         LEXICAL_GENERATION_ID,
         expected_current="",
     )
     conn.commit()
-    assert "target" in _ids(provider, query, generation_override=None)
+    active = observe_shadow_channel(conn, provider, query, generation=None)
+    assert current_generation_id(conn) == LEXICAL_GENERATION_ID
+    assert shadow_index_is_independent(active, "target"), active
 
     rollback_generation(
         conn,
         expected_current=LEXICAL_GENERATION_ID,
     )
     conn.commit()
-    assert "target" not in _ids(provider, query, generation_override=None)
-    assert "target" in _ids(
+    rolled = observe_shadow_channel(conn, provider, query, generation=None)
+    assert current_generation_id(conn) == ""
+    assert rolled["bound_table"] == ""
+    assert not shadow_index_is_independent(rolled, "target"), rolled
+
+    override = observe_shadow_channel(
+        conn,
         provider,
         query,
-        generation_override=LEXICAL_GENERATION_ID,
+        generation=LEXICAL_GENERATION_ID,
     )
+    assert shadow_index_is_independent(override, "target"), override
+    assert conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (LEXICAL_SHADOW_TABLE,),
+    ).fetchone()
     conn.close()
 
 

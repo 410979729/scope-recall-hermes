@@ -6,7 +6,13 @@ with ``record_run=False`` so a reader path cannot write experience_runs.
 
 from __future__ import annotations
 
+import sqlite3
 from typing import Any
+
+from ...recall_sqlite_budget import using_request_busy_timeout
+from ...sqlite_recovery import is_sqlite_lock_contention
+from ..recall.deadline import acquire_until, current_request_deadline
+from ..recall.sources import SourceUnavailable
 
 
 def backfill_skill_anchors(*args: Any, **kwargs: Any) -> Any:
@@ -20,15 +26,32 @@ def backfill_skill_anchors(*args: Any, **kwargs: Any) -> Any:
 def run_experience_preflight(provider: Any, *, query: str) -> dict[str, Any]:
     from ...experience_preflight import experience_preflight
 
-    with provider._lock:
-        return experience_preflight(
-            provider._require_conn(),
-            query=query,
-            accessible_scope_ids=provider._accessible_scope_ids,
-            config=provider._config,
-            record_run=False,
-            scope_id=provider._scope_id,
-        )
+    deadline = current_request_deadline()
+    lock = getattr(provider, "_lock", None)
+    held = False
+    if lock is not None:
+        if not acquire_until(lock, deadline):
+            raise SourceUnavailable("experience", "provider_lock_timeout")
+        held = True
+    try:
+        conn = provider._require_conn()
+        try:
+            with using_request_busy_timeout(conn):
+                return experience_preflight(
+                    conn,
+                    query=query,
+                    accessible_scope_ids=provider._accessible_scope_ids,
+                    config=provider._config,
+                    record_run=False,
+                    scope_id=provider._scope_id,
+                )
+        except sqlite3.Error as exc:
+            if is_sqlite_lock_contention(exc):
+                raise SourceUnavailable("experience", "sqlite_lock_timeout") from exc
+            raise
+    finally:
+        if held and lock is not None:
+            lock.release()
 
 
 __all__ = [
