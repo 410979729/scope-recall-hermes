@@ -628,10 +628,32 @@ class _VectorProvider:
         return f"{summary}\n{content}"
 
 
-def test_lancedb_fallback_registers_actual_sqlite_generation(tmp_path, monkeypatch):
+@pytest.fixture
+def lance_store_factory(monkeypatch):
+    """Inject dependency availability at the cross-platform factory boundary."""
+    import scope_recall.vector_bootstrap as vector_bootstrap
+    import scope_recall.vector_store as vector_store
+
+    original_factory = vector_store.build_vector_store
+
+    def factory(backend, **kwargs):
+        if backend == "lancedb":
+            return vector_store.LanceVectorStore(
+                Path(kwargs["storage_dir"]) / "lancedb",
+                table_name=kwargs["table_name"], dimensions=kwargs["dimensions"],
+                metric=kwargs.get("metric", "cosine"),
+            )
+        return original_factory(backend, **kwargs)
+
+    monkeypatch.setattr(vector_runtime, "build_vector_store", factory)
+    monkeypatch.setattr(vector_bootstrap, "build_vector_store", factory)
+    return vector_store.LanceVectorStore
+
+
+def test_lancedb_fallback_registers_actual_sqlite_generation(tmp_path, monkeypatch, lance_store_factory):
     conn = _conn(tmp_path / "memory.sqlite3")
     provider = _VectorProvider(conn, tmp_path)
-    monkeypatch.setattr(vector_runtime.LanceVectorStore, "is_available", lambda self: False)
+    monkeypatch.setattr(lance_store_factory, "is_available", lambda self: False)
 
     vector_runtime.setup_vector_layer(provider)
 
@@ -645,7 +667,7 @@ def test_lancedb_fallback_registers_actual_sqlite_generation(tmp_path, monkeypat
     provider._vector_store.close()
 
 
-def test_corrupt_truth_header_degrades_vector_startup(tmp_path, monkeypatch):
+def test_corrupt_truth_header_degrades_vector_startup(tmp_path, monkeypatch, lance_store_factory):
     """A failed live pager probe must keep the vector companion non-ready."""
 
     conn = _conn(tmp_path / "memory.sqlite3")
@@ -659,7 +681,7 @@ def test_corrupt_truth_header_degrades_vector_startup(tmp_path, monkeypatch):
             "error": "SQLite truth database probe failed",
         },
     )
-    monkeypatch.setattr(vector_runtime.LanceVectorStore, "is_available", lambda self: False)
+    monkeypatch.setattr(lance_store_factory, "is_available", lambda self: False)
 
     vector_runtime.setup_vector_layer(provider)
 
@@ -677,10 +699,11 @@ def test_active_sqlite_fallback_generation_reopens_without_implicit_backend_swit
     tmp_path,
     monkeypatch,
     lancedb_recovers,
+    lance_store_factory,
 ):
     conn = _conn(tmp_path / "memory.sqlite3")
     first = _VectorProvider(conn, tmp_path)
-    monkeypatch.setattr(vector_runtime.LanceVectorStore, "is_available", lambda self: False)
+    monkeypatch.setattr(lance_store_factory, "is_available", lambda self: False)
 
     vector_runtime.setup_vector_layer(first)
 
@@ -701,13 +724,13 @@ def test_active_sqlite_fallback_generation_reopens_without_implicit_backend_swit
     conn.commit()
 
     monkeypatch.setattr(
-        vector_runtime.LanceVectorStore,
+        lance_store_factory,
         "is_available",
         lambda self: lancedb_recovers,
     )
     if lancedb_recovers:
         monkeypatch.setattr(
-            vector_runtime.LanceVectorStore,
+            lance_store_factory,
             "open",
             lambda self: (_ for _ in ()).throw(AssertionError("active fallback must not switch backend implicitly")),
         )
@@ -751,11 +774,11 @@ def test_active_fallback_generation_requires_explicit_fallback_configuration(tmp
     assert not (tmp_path / "vector.sqlite3").exists()
 
 
-def test_existing_lancedb_manifest_rejects_sqlite_fallback(tmp_path, monkeypatch):
+def test_existing_lancedb_manifest_rejects_sqlite_fallback(tmp_path, monkeypatch, lance_store_factory):
     conn = _conn(tmp_path / "memory.sqlite3")
     _register_generation(conn, backend="lancedb")
     provider = _VectorProvider(conn, tmp_path)
-    monkeypatch.setattr(vector_runtime.LanceVectorStore, "is_available", lambda self: False)
+    monkeypatch.setattr(lance_store_factory, "is_available", lambda self: False)
 
     vector_runtime.setup_vector_layer(provider)
 

@@ -14,6 +14,7 @@ from ..application.memory_commands import (
     GovernMemoriesRequest,
     MergeMemoriesRequest,
     PrivacyPurgeRequest,
+    ReviewMemoryCandidateRequest,
     StoreMemoryRequest,
     UpdateMemoryRequest,
 )
@@ -201,6 +202,11 @@ class _LegacyPersistCommandPort:
             ),
         )
 
+    def review_candidate(self, request: ReviewMemoryCandidateRequest) -> dict[str, object]:
+        from .command_adapter import ProviderCommandAdapter
+
+        return ProviderCommandAdapter(self._host).review_candidate(request)
+
     def update(self, request: UpdateMemoryRequest) -> tuple[bool, str, str]:
         fn = getattr(self._host, "_update_memory", None)
         if not callable(fn):
@@ -345,6 +351,14 @@ def bind_memory_command_port(obj: Any) -> MemoryCommandPort:
 
 class CommandKernel:
     """Build typed requests and invoke provider-neutral application commands."""
+
+    def review_candidate(
+        self, port: MemoryCommandPort, *, memory_id: str, action: str,
+        dry_run: bool = True, expected_updated_at: str = "", expected_lifecycle: str = "",
+    ) -> dict[str, object]:
+        return port.review_candidate(ReviewMemoryCandidateRequest(
+            memory_id, action, dry_run, expected_updated_at, expected_lifecycle,
+        ))
 
     def store(
         self,

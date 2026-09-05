@@ -236,6 +236,7 @@ def test_lancedb_availability_probe_does_not_import_unsafe_native_modules_in_pro
 
 def test_active_vector_generation_does_not_fallback_when_lancedb_probe_sigills(monkeypatch, tmp_path):
     import scope_recall.vector_store as vector_store
+    import scope_recall.vector_runtime as vector_runtime
     from scope_recall.vector_runtime import _open_vector_store
 
     class Result:
@@ -253,6 +254,9 @@ def test_active_vector_generation_does_not_fallback_when_lancedb_probe_sigills(m
 
     monkeypatch.setattr(vector_store, "_NATIVE_VECTOR_PROBE", None, raising=False)
     monkeypatch.setattr(vector_store, "subprocess", type("SubprocessStub", (), {"run": staticmethod(lambda *args, **kwargs: Result())}), raising=False)
+    monkeypatch.setattr(vector_runtime, "build_vector_store", lambda _backend, **kwargs: vector_store.LanceVectorStore(
+        Path(kwargs["storage_dir"]) / "lancedb", table_name=kwargs["table_name"], dimensions=kwargs["dimensions"]
+    ))
     provider = Provider()
 
     with pytest.raises(RuntimeError, match="returncode=132"):
@@ -265,6 +269,7 @@ def test_active_vector_generation_does_not_fallback_when_lancedb_probe_sigills(m
 
 def test_default_config_does_not_override_an_active_lancedb_generation_when_probe_sigills(monkeypatch, tmp_path):
     import scope_recall.vector_store as vector_store
+    import scope_recall.vector_runtime as vector_runtime
     from scope_recall.config import DEFAULT_CONFIG
     from scope_recall.vector_runtime import _open_vector_store
 
@@ -283,6 +288,9 @@ def test_default_config_does_not_override_an_active_lancedb_generation_when_prob
 
     monkeypatch.setattr(vector_store, "_NATIVE_VECTOR_PROBE", None, raising=False)
     monkeypatch.setattr(vector_store, "subprocess", type("SubprocessStub", (), {"run": staticmethod(lambda *args, **kwargs: Result())}), raising=False)
+    monkeypatch.setattr(vector_runtime, "build_vector_store", lambda _backend, **kwargs: vector_store.LanceVectorStore(
+        Path(kwargs["storage_dir"]) / "lancedb", table_name=kwargs["table_name"], dimensions=kwargs["dimensions"]
+    ))
     provider = Provider()
 
     with pytest.raises(RuntimeError, match="returncode=132"):

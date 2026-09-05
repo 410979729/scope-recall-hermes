@@ -113,6 +113,30 @@ def _make_idle(*providers) -> None:
             provider._writer_handoff_last_truth_activity = observed
 
 
+def test_preflight_activity_veto_never_restarts_or_fences_healthy_writer(tmp_path, monkeypatch, caplog):
+    _write_config(tmp_path)
+    provider = _provider()
+    try:
+        _initialize(provider, tmp_path, "preflight-veto")
+        original_writer = provider._writer_thread
+
+        def unexpected_resume(_providers):
+            raise AssertionError("preflight never quiesced the writer")
+
+        monkeypatch.setattr(writer_handoff_module, "_abort_quiesced_handoff", unexpected_resume)
+        monkeypatch.setattr(writer_handoff_module, "_idle_veto", lambda *_a, **_k: "recent_truth_activity")
+        _perform_idle_handoff(provider, process_writer_handoff_state(tmp_path / "scope-recall"))
+
+        assert provider._truth_writer_role == "owner"
+        assert not provider._truth_writes_blocked()
+        assert provider._writer_thread is original_writer
+        assert original_writer.is_alive()
+        assert not writer_handoff_status(provider)["operator_action_required"]
+        assert "idle writer handoff did not complete" not in caplog.text
+    finally:
+        provider.shutdown()
+
+
 def _write_handoff_details(
     *,
     idle_seconds: float,

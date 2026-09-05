@@ -28,10 +28,10 @@ CORE_TOOL_SCHEMA_POLICY = {
     "decision": "D-013",
     "profile": "core",
     "expected_tool_count": 6,
-    "expected_schema_chars": 9531,
+    "expected_schema_chars": 9588,
     "maximum_schema_chars": 9600,
     "maximum_estimated_schema_tokens": 2400,
-    "canonical_schema_sha256": "7380485b5ee769b60383e7f6eabb836dd1637553bbbf17883bb6e564def8f5d6",
+    "canonical_schema_sha256": "d19b08d445c17c265ee216acfe06060714ac1848917d5e7d70aa0dc05edd615d",
 }
 
 

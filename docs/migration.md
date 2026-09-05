@@ -4,6 +4,14 @@ This document describes how to move into `scope-recall` from earlier local exper
 
 ## Supported migration paths
 
+### Runtime reliability fixes after 2.0.1
+
+These fixes require no schema migration or vector-generation rebuild. Existing Windows LanceDB generations retain their backend/model identity and are opened through an isolated helper process after restart. Local embedding models are loaded only when selected. A failed helper leaves SQLite truth and durable vector intent available for recovery; it never silently adopts another backend for an active generation.
+
+Background relation-frequency maintenance can recreate missing work for orphaned failure records from the current truth, keeping supersession evidence and the existing retry limit. No age-based failure deletion or full foreground scope rebuild is performed. Online candidate review is available through the running gateway; CLI maintenance still obeys the exclusive writer lease. See [candidate review](governance-ui.md#online-review-through-the-running-gateway).
+
+Store receipts may report lifecycle `unknown` if a post-commit lookup fails. The committed id and store outcome remain valid; use that id for later inspection rather than repeating the write.
+
 ### Schema migration status
 
 Before mutating older profile data, inspect the SQLite schema ledger without repairing it implicitly:

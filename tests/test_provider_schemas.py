@@ -77,10 +77,10 @@ def test_core_tool_schema_budget_and_digest_are_release_gated():
     assert result["ok"] is True, result
     assert result["measured"] == {
         "tool_count": 6,
-        "schema_chars": 9531,
-        "estimated_schema_tokens": 2383,
+        "schema_chars": 9588,
+        "estimated_schema_tokens": 2397,
         "canonical_schema_sha256": (
-            "7380485b5ee769b60383e7f6eabb836dd1637553bbbf17883bb6e564def8f5d6"
+            "d19b08d445c17c265ee216acfe06060714ac1848917d5e7d70aa0dc05edd615d"
         ),
     }
     assert CORE_TOOL_SCHEMA_POLICY["maximum_schema_chars"] == 9600

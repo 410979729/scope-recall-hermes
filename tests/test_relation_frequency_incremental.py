@@ -14,6 +14,7 @@ import scope_recall.relation_frequency_maintenance as frequency_maintenance
 from scope_recall.relation_extraction import sync_extracted_relations_for_memory
 from scope_recall.relation_frequency_index import (
     ensure_relation_frequency_index_schema,
+    relation_frequency_snapshot,
     sync_relation_frequency_memory,
 )
 from scope_recall.sql_store import delete_rows, ensure_schema, store_row
@@ -70,6 +71,102 @@ def _visible_count(conn: sqlite3.Connection, scope_id: str) -> int:
         (scope_id,),
     ).fetchone()
     return int(row[0]) if row is not None else 0
+
+
+@pytest.mark.parametrize("operation", ["deleted", "moved"])
+def test_orphan_recovery_uses_current_truth_and_refreshes_both_scopes(operation):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    try:
+        _store(conn, memory_id="orphan", scope_id="scope-a", entity="Alpha Service",
+               timestamp="2026-08-30", commit=True)
+        if operation == "deleted":
+            conn.execute("DELETE FROM memories WHERE id='orphan'")
+        else:
+            conn.execute("UPDATE memories SET scope_id='scope-b', updated_at='2026-09-01' WHERE id='orphan'")
+        conn.execute("DELETE FROM relation_frequency_changes WHERE memory_id='orphan'")
+        conn.execute("DELETE FROM relation_focus_work")
+        conn.execute("""INSERT INTO relation_frequency_failures(
+            memory_id, old_scope_id, new_scope_id, work_generation,
+            attempts, status, last_error, last_failed_at)
+            VALUES('orphan','scope-a','scope-a',999,3,'dead_letter','stale failure','2026-08-30')""")
+        conn.commit()
+
+        first = frequency_maintenance.drain_relation_frequency_work(conn, wall_clock_seconds=5)
+        second = frequency_maintenance.drain_relation_frequency_work(conn, wall_clock_seconds=5)
+        assert first["requeued_orphan_failures"] == 1
+        assert second["requeued_orphan_failures"] == 0
+        assert _frequency(conn, "scope-a", "alpha service") == 0
+        assert _visible_count(conn, "scope-a") == 0
+        assert relation_frequency_snapshot(conn, "scope-a") is not None
+        assert conn.execute("SELECT COUNT(*) FROM relation_frequency_failures").fetchone()[0] == 0
+        assert conn.execute("SELECT last_generation FROM relation_frequency_generations WHERE memory_id='orphan'").fetchone()[0] > 999
+        if operation == "moved":
+            assert _frequency(conn, "scope-b", "alpha service") == 1
+            assert _visible_count(conn, "scope-b") == 1
+            assert relation_frequency_snapshot(conn, "scope-b") is not None
+        else:
+            assert conn.execute("SELECT COUNT(*) FROM relation_indexed_memories WHERE memory_id='orphan'").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def _orphan_frequency_failure(conn, memory_id="orphan", status="retry"):
+    conn.execute(
+        "INSERT INTO relation_frequency_failures(memory_id, old_scope_id, "
+        "new_scope_id, attempts, status, last_error, last_failed_at) "
+        "VALUES(?, 'scope-a', 'scope-a', 3, ?, 'OperationalError: database is locked', '2026-08-30')",
+        (memory_id, status),
+    )
+    conn.commit()
+
+
+@pytest.mark.parametrize("status", ["retry", "dead_letter"])
+def test_orphan_failure_rebuilds_current_truth_and_unblocks_scope(status):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    _store(conn, memory_id="orphan", scope_id="scope-a", entity="Alpha Service",
+           timestamp="2026-08-30", commit=True)
+    conn.execute("DELETE FROM relation_focus_work")
+    conn.commit()
+    _orphan_frequency_failure(conn, status=status)
+    assert relation_frequency_snapshot(conn, "scope-a") is None
+    assert frequency_maintenance.relation_frequency_debt_exists(conn)
+
+    result = frequency_maintenance.drain_relation_frequency_work(conn, wall_clock_seconds=5)
+
+    assert result["changed_memories"] == 1
+    assert conn.execute("SELECT COUNT(*) FROM relation_frequency_failures").fetchone()[0] == 0
+    assert relation_frequency_snapshot(conn, "scope-a") is not None
+    assert _frequency(conn, "scope-a", "alpha service") == 1
+    assert conn.execute(
+        "SELECT terminal_state FROM relation_work_dispositions "
+        "WHERE work_kind='frequency_change' AND work_key='orphan'"
+    ).fetchone()[0] == "superseded"
+    conn.close()
+
+
+def test_orphan_retry_becomes_bounded_durable_failure_if_rebuild_still_fails(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    _store(conn, memory_id="orphan", scope_id="scope-a", entity="Alpha Service",
+           timestamp="2026-08-30", commit=True)
+    _orphan_frequency_failure(conn)
+
+    def fail_sync(*_args, **_kwargs):
+        raise ValueError("invalid companion")
+
+    monkeypatch.setattr(frequency_maintenance, "sync_relation_frequency_memory", fail_sync)
+    for _ in range(5):
+        frequency_maintenance.drain_relation_frequency_work(conn, wall_clock_seconds=5)
+    failure = conn.execute("SELECT attempts, status FROM relation_frequency_failures").fetchone()
+    assert tuple(failure) == (3, "dead_letter")
+    assert conn.execute("SELECT COUNT(*) FROM relation_frequency_changes").fetchone()[0] == 1
+    assert relation_frequency_snapshot(conn, "scope-a") is None
+    conn.close()
 
 
 def test_frequency_schema_ensure_does_not_rewrite_current_generation_receipts() -> None:

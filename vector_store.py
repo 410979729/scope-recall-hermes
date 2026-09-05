@@ -7,6 +7,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import logging
+import os
 import subprocess
 import sys
 from collections import Counter
@@ -245,6 +246,25 @@ def _trim_probe_output(value: str, *, limit: int = 500) -> str:
     return text[: limit - 3] + "..."
 
 
+def _python_subprocess_options() -> dict[str, Any]:
+    """Keep Windows venv identity without launching its redirector process.
+
+    Windows venv executables (including uv's) may create a second Python
+    process. Terminating the outer redirector does not kill that interpreter,
+    which can keep anonymous pipes open forever during timeout cleanup.
+    CPython's launcher environment preserves the venv with the base executable.
+    """
+    if sys.platform != "win32":
+        return {}
+    env = dict(os.environ)
+    env["__PYVENV_LAUNCHER__"] = sys.executable
+    return {
+        "executable": getattr(sys, "_base_executable", None) or sys.executable,
+        "env": env,
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    }
+
+
 def _probe_native_vector_dependencies() -> dict[str, Any]:
     """Probe LanceDB/PyArrow in a child process before importing in-process.
 
@@ -266,6 +286,7 @@ def _probe_native_vector_dependencies() -> dict[str, Any]:
             capture_output=True,
             timeout=_NATIVE_VECTOR_PROBE_TIMEOUT,
             check=False,
+            **_python_subprocess_options(),
         )
         status = {
             "safe": result.returncode == 0,
@@ -961,6 +982,10 @@ def build_vector_store(
         return SQLiteBruteForceVectorStore(db_path, table_name=table_name, dimensions=dimensions, metric=metric)
     if normalized == "lancedb":
         vector_dir = Path(storage_dir) / "lancedb"
+        if sys.platform == "win32":
+            from .lance_process_store import ProcessLanceVectorStore
+
+            return ProcessLanceVectorStore(vector_dir, table_name=table_name, dimensions=dimensions, metric=metric)
         return LanceVectorStore(vector_dir, table_name=table_name, dimensions=dimensions, metric=metric)
     if normalized == "pgvector":
         from .pgvector_store import PGVectorStore

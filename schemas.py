@@ -403,22 +403,25 @@ SCOPE_RECALL_INSPECTOR_SCHEMA = {
 
 SCOPE_RECALL_MEMORY_SCHEMA = {
     "name": "scope_recall_memory",
-    "description": "Compact memory operations: inspect, feedback, update, merge, or forget by exact id.",
+    "description": "Memory operations by exact id. Candidate promote/archive: preview by default; dry_run=false applies the plan.",
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["inspect", "feedback", "update", "merge", "forget"], "description": "Operation."},
-            "id": {"type": "string", "maxLength": MAX_MEMORY_ID_LENGTH, "description": "Memory id."},
+            "action": {"type": "string", "enum": ["inspect", "feedback", "update", "merge", "forget", "promote", "archive"]},
+            "dry_run": {"type": "boolean", "default": True},
+            "expected_updated_at": {"type": "string", "description": "Review revision; rejects stale plans."},
+            "expected_lifecycle": {"type": "string"},
+            "id": {"type": "string", "maxLength": MAX_MEMORY_ID_LENGTH},
             "ids": {
                 "type": "array",
                 "maxItems": MAX_MEMORY_IDS_PER_REQUEST,
                 "items": {"type": "string", "maxLength": MAX_MEMORY_ID_LENGTH},
                 "description": "Memory ids for forget.",
             },
-            "rating": {"type": "string", "description": "Feedback rating."},
-            "note": {"type": "string", "description": "Feedback note."},
+            "rating": {"type": "string"},
+            "note": {"type": "string"},
             "content": {"type": "string", "description": "Replacement or merged content."},
-            "target": {"type": "string", "enum": ["user", "memory", "project", "ops", "general"], "description": "Optional target."},
+            "target": {"type": "string", "enum": ["user", "memory", "project", "ops", "general"]},
             "target_id": {"type": "string", "maxLength": MAX_MEMORY_ID_LENGTH, "description": "Merge target id."},
             "source_ids": {
                 "type": "array",
@@ -429,7 +432,7 @@ SCOPE_RECALL_MEMORY_SCHEMA = {
             "source_candidate_id": {"type": "string", "description": "Optional merge audit candidate id."},
             "memory_type": {
                 "type": "string",
-                "description": "Optional semantic type for a structured update.",
+                "description": "Structured update semantic type.",
             },
             "claim": FACT_CLAIM_HINT_SCHEMA,
             "evolution": FACT_EVOLUTION_HINT_SCHEMA,
