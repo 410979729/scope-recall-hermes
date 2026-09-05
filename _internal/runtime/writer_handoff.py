@@ -25,7 +25,7 @@ from ...writer_lease import (
     publish_writer_handoff_telemetry,
     truth_writer_process_snapshot,
 )
-from .peer_recovery import live_providers_for_database
+from .peer_recovery import live_providers_for_database, try_acquire_nonblocking
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,7 @@ _CONTENT_FREE_FAILURE_CODES = frozenset(
         "background_lock_busy",
         "background_lock_missing",
         "busy_capture_submission_lock",
+        "busy_provider_lock",
         "busy_writer_handoff_activity_lock",
         "busy_writer_lifecycle_lock",
         "capture_processing",
@@ -156,14 +157,43 @@ def note_truth_activity(provider: Any) -> None:
     _publish_runtime_telemetry(provider, event_kind="truth_activity")
 
 
-def _connection_total_changes(provider: Any) -> int | None:
-    conn = getattr(provider, "_conn", None)
-    if conn is None:
+def _hold_provider_lock_nonblocking(provider: Any) -> Any | None:
+    """Acquire ``provider._lock`` without waiting.
+
+    Only the published provider lock serializes the live connection.  A
+    missing or busy lock means the caller must not touch SQLite getters,
+    and a dummy lock must not be invented to pretend otherwise.
+    """
+
+    lock = getattr(provider, "_lock", None)
+    if not callable(getattr(lock, "release", None)):
+        return None
+    if not try_acquire_nonblocking(lock):
+        return None
+    return lock
+
+
+def _connection_total_changes(provider: Any) -> tuple[Any, int] | None:
+    """Return ``(published connection, total_changes)``, or unknown.
+
+    The current ``_conn`` is resolved only after the provider lock is
+    held, then released in ``finally``.  Contention or a missing lock
+    must not touch SQLite at all.  Callers compare connection identity
+    with ``is`` as well as the count; a replacement is not a no-op.
+    """
+
+    lock = _hold_provider_lock_nonblocking(provider)
+    if lock is None:
         return None
     try:
-        return int(conn.total_changes)
+        conn = getattr(provider, "_conn", None)
+        if conn is None:
+            return None
+        return (conn, int(conn.total_changes))
     except Exception:
         return None
+    finally:
+        lock.release()
 
 
 def _thread_work_state(provider: Any) -> threading.local:
@@ -208,7 +238,11 @@ def active_truth_work(provider: Any, *, user_initiated: bool = False) -> Iterato
     """Fence one potential truth unit and record activity only when appropriate.
 
     The active counter is the handoff veto.  Background no-op probes do not
-    perpetually renew the idle clock; an actual SQLite change does.  Explicit
+    perpetually renew the idle clock when both ``total_changes`` samples are
+    reliable and unchanged.  An actual SQLite change, or a conservatively
+    unknown sample (busy or missing provider lock, closed or replaced
+    connection), renews the truth clock so a possible mutation cannot be
+    treated as a no-op that would release the writer lease early.  Explicit
     user work renews the user clock even when the operation is a safe no-op.
     """
 
@@ -245,7 +279,12 @@ def active_truth_work(provider: Any, *, user_initiated: bool = False) -> Iterato
                     - 1,
                 ),
             )
-        if before is not None and after is not None and after != before:
+        if (
+            before is None
+            or after is None
+            or before[0] is not after[0]
+            or before[1] != after[1]
+        ):
             note_truth_activity(provider)
 
 
@@ -315,15 +354,24 @@ def _idle_veto(provider: Any, *, now: float, writer_may_be_stopped: bool) -> str
     writer_alive = _thread_alive(getattr(provider, "_writer_thread", None))
     if not writer_may_be_stopped and not writer_alive:
         return "writer_unavailable"
-    conn = getattr(provider, "_conn", None)
-    if conn is None:
-        return "connection_missing"
-    try:
-        if bool(conn.in_transaction):
-            return "transaction_open"
-    except Exception:
+    lock = getattr(provider, "_lock", None)
+    release = getattr(lock, "release", None)
+    if not callable(getattr(lock, "acquire", None)) or not callable(release):
         return "transaction_unknown"
-    return ""
+    if not try_acquire_nonblocking(lock):
+        return "busy_provider_lock"
+    try:
+        conn = getattr(provider, "_conn", None)
+        if conn is None:
+            return "connection_missing"
+        try:
+            if bool(conn.in_transaction):
+                return "transaction_open"
+        except Exception:
+            return "transaction_unknown"
+        return ""
+    finally:
+        release()
 
 
 def writer_handoff_status(provider: Any) -> dict[str, Any]:
@@ -1059,6 +1107,7 @@ def _perform_idle_handoff(provider: Any, state: Any) -> None:
             "recent_user_activity", "recent_truth_activity", "truth_work_active",
             "foreground_busy", "capture_queue_pending", "capture_processing",
             "digest_active", "activity_generation_changed",
+            "busy_provider_lock",
         }
         log = logger.debug if benign_veto else logger.warning
         log(
