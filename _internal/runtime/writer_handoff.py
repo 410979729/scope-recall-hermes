@@ -158,7 +158,7 @@ def note_truth_activity(provider: Any) -> None:
 
 
 def _hold_provider_lock_nonblocking(provider: Any) -> Any | None:
-    """Acquire ``provider._lock`` without waiting.
+    """Acquire the published provider lock without waiting.
 
     Only the published provider lock serializes the live connection.  A
     missing or busy lock means the caller must not touch SQLite getters,
