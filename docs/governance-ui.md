@@ -45,6 +45,27 @@ Apply behavior:
 - `supersede` marks the row superseded, records the replacement id, and removes graph companion entities/relations for that row.
 - every applied review writes a `memory_candidate_review` governance audit event.
 
+## Online review through the running gateway
+
+When the gateway owns the writer lease, use the existing `scope_recall_memory` tool to review one candidate without stopping Hermes. The CLI remains subject to the exclusive maintenance lease.
+
+First request a plan (omitting `dry_run` is equivalent to `true`):
+
+```json
+{"action": "promote", "id": "<candidate-id>"}
+```
+
+The result includes `before`, `after`, `expected_updated_at`, and `expected_lifecycle`. Apply the reviewed plan with its returned revision values:
+
+```json
+{"action": "promote", "id": "<candidate-id>", "dry_run": false,
+ "expected_updated_at": "<value-from-plan>", "expected_lifecycle": "candidate"}
+```
+
+Use `action="archive"` for the corresponding archive plan/apply flow. Each call handles one ID and requires an existing `candidate` in the current writable scope. Already processed event-digest rows are rejected; Fact-owned projections must use Fact actions. A stale revision returns a conflict. An applied review uses the live writer and commits the lifecycle, governance audit and vector outbox intent atomically. The outbox performs physical vector work after truth commits. Ordinary recall continues to exclude unreviewed candidates.
+
+Store receipts expose the actual persisted `lifecycle`, `origin_kind`, and review/admission identity. A temporary-marker admission downgrade therefore reports `candidate`, even when a store call succeeds.
+
 ## Safety boundaries
 
 - Candidate review does not delete SQLite truth rows.

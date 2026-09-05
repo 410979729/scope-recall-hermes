@@ -24,11 +24,19 @@ That split is deliberate. SQLite is the durable source of truth; the configured 
 
 ### Bounded companion maintenance
 
+An orphan relation-frequency failure is durable repair evidence. Maintenance recreates missing dirty work from the current truth revision in a bounded transaction and records the superseded failure. Normal drain retries remain capped; an unrebuildable row stays visible as dead-letter debt. Writer-handoff preflight is side-effect free until quiescing begins, so an activity veto cannot fence a healthy running writer through a spurious resume failure.
+
 Relation statistics are a transactionally maintained SQLite companion rather than a foreground scope scan. Each truth mutation updates one indexed-memory row, the changed entity postings, and per-scope/entity document counts in the caller's transaction. Existing databases enter a paged, durable backfill state; foreground relation sync defers instead of silently scanning the scope while that state is incomplete. A blocked-entity threshold change creates resumable scope reclassification debt.
 
 Relation rebuild work is organized as monotonic passes. A peer or focus revision arriving during a leased pass records a next-pass revision without changing the active cursor, lease, lifetime processed count, attempts, or lifetime failures. New and changed peers carry their own rebuild events, and the active pass atomically promotes the latest pending revision only after reaching its current end.
 
 Vector startup uses the durable outbox before reconciliation. Once replayable debt is empty, one short SQLite transaction reads at most one `(updated_at, id)` truth page, writes deterministic outbox events, and advances the generation-bound watermark. Embedding and physical-store I/O happen only after that commit. Interrupted cycles resume from the persisted cursor and upper bound; ordinary startup never calls full vector enumeration or a stale-row sweep. Full duplicate/stale-vector audits remain explicit doctor/repair operations.
+
+### Process and command boundaries
+
+On Windows, the vector factory opens LanceDB through a persistent private subprocess over anonymous pipes. Only vector protocol operations cross this boundary; truth transactions, generation selection, write authority and outbox replay stay in Hermes. EOF, malformed protocol and timeout terminate the helper and surface a companion error. Operations are not implicitly retried; explicit reopen and the causal outbox govern recovery. Local sentence-transformers imports are lazy, preventing hosted/hash embedding configurations and the helper from loading PyTorch incidentally. Linux and macOS retain the existing native path.
+
+Online candidate review is a typed memory command on the existing tool/application/kernel/adapter path. Dry-runs use query access. Apply acquires the admitted writer and a clean `BEGIN IMMEDIATE` boundary before scope, lifecycle and Fact-ownership checks; the shared lifecycle service joins that transaction for truth, companions, audit and vector intent. A failed result rolls back the whole command. Revision tokens let an operator reject a plan that changed after review.
 
 ## Goals
 

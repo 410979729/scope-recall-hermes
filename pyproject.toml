@@ -87,6 +87,7 @@ package-dir = {"scope_recall" = "."}
   "DESIGN.md",
   "CHANGELOG.md",
   "CONTRIBUTING.md",
+  "CONTRIBUTORS.md",
   "LICENSE",
   "SECURITY.md",
   "MANIFEST.in",
