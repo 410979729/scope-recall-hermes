@@ -440,11 +440,79 @@ def test_slow_embedding_is_vector_unavailable_and_keeps_lexical() -> None:
     )
 
 
+def test_remaining_does_not_exceed_budget_when_monotonic_does_not_advance() -> None:
+    from scope_recall._internal.recall.deadline import (
+        EXPERIENCE_MIN_REMAINING_SECONDS,
+        RequestDeadline,
+    )
+
+    for origin in (1.0, 65536.0):
+        deadline = RequestDeadline.from_budget(
+            EXPERIENCE_MIN_REMAINING_SECONDS,
+            now=origin,
+        )
+        leftover = deadline.remaining(now=origin)
+        assert leftover <= deadline.budget_seconds
+        assert leftover <= EXPERIENCE_MIN_REMAINING_SECONDS
+        assert leftover > 0.0
+        assert deadline.exhausted(now=origin) is False
+
+
+def test_remaining_keeps_negative_expiry_and_absolute_factory() -> None:
+    from scope_recall._internal.recall.deadline import RequestDeadline
+
+    expired = RequestDeadline.from_budget(0.05, now=65536.0)
+    leftover = expired.remaining(now=65536.0 + 1.0)
+    assert leftover < 0.0
+    assert expired.exhausted(now=65536.0 + 1.0) is True
+
+    absolute = RequestDeadline.from_absolute(100.0, now=90.0)
+    assert absolute.budget_seconds == 10.0
+    assert absolute.deadline_monotonic == 100.0
+    assert absolute.remaining(now=90.0) == 10.0
+    assert absolute.remaining(now=110.0) == -10.0
+    assert absolute.exhausted(now=110.0) is True
+
+    already_past = RequestDeadline.from_absolute(50.0, now=60.0)
+    assert already_past.budget_seconds == 0.0
+    assert already_past.remaining(now=60.0) < 0.0
+    assert already_past.exhausted(now=60.0) is True
+
+
+def test_request_deadline_context_stays_isolated() -> None:
+    from scope_recall._internal.recall.deadline import (
+        RequestDeadline,
+        current_request_deadline,
+        remaining_seconds,
+        using_request_deadline,
+    )
+
+    outer = RequestDeadline.from_budget(0.05, now=65536.0)
+    inner = RequestDeadline.from_absolute(100.0, now=90.0)
+    assert current_request_deadline() is None
+    assert remaining_seconds(now=65536.0) is None
+    with using_request_deadline(outer):
+        assert current_request_deadline() is outer
+        assert remaining_seconds(now=65536.0) <= outer.budget_seconds
+        with using_request_deadline(inner):
+            assert current_request_deadline() is inner
+            assert remaining_seconds(now=90.0) == inner.budget_seconds
+        assert current_request_deadline() is outer
+    assert current_request_deadline() is None
+    assert remaining_seconds() is None
+
+
 def test_prefetch_skips_slow_experience_and_does_not_rollback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from scope_recall._internal.recall import deadline as deadline_module
     from scope_recall._internal.recall import prefetch as prefetch_module
 
+    monkeypatch.setattr(
+        deadline_module,
+        "time",
+        SimpleNamespace(monotonic=lambda: 65536.0),
+    )
     provider = _SearchProvider(
         [_item("memory-lex", content="Project Atlas deploy command is uv run app.")]
     )
@@ -474,6 +542,44 @@ def test_prefetch_skips_slow_experience_and_does_not_rollback(
     assert elapsed < 1.5
     assert provider.rollback_contexts == []
     assert called["preflight"] == 0
+
+
+def test_prefetch_runs_experience_when_remaining_is_above_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scope_recall._internal.recall import deadline as deadline_module
+    from scope_recall._internal.recall import prefetch as prefetch_module
+
+    monkeypatch.setattr(
+        deadline_module,
+        "time",
+        SimpleNamespace(monotonic=lambda: 65536.0),
+    )
+    provider = _SearchProvider(
+        [_item("memory-lex", content="Project Atlas deploy command is uv run app.")]
+    )
+    provider._config["experience"] = {"enabled": True, "prefetch_enabled": True}
+    called = {"preflight": 0}
+
+    def fake_render(_provider, query: str) -> str:
+        del _provider, query
+        return "## Scope Recall Packet\nlocal recall"
+
+    def instant_preflight(_provider, query: str = "") -> dict[str, str]:
+        del _provider, query
+        called["preflight"] += 1
+        return {"packet": "experience-ok"}
+
+    monkeypatch.setattr(provider_module, "render_current_turn_recall", fake_render)
+    monkeypatch.setattr(provider_module, "run_experience_preflight", instant_preflight)
+    provider._config["vector"] = {"embedder": {"query_timeout_seconds": 8.0}}
+
+    rendered = prefetch_module.prefetch_prompt(provider, "Project Atlas deploy command")
+
+    assert "local recall" in rendered
+    assert "experience-ok" in rendered
+    assert called["preflight"] == 1
+    assert provider.rollback_contexts == []
 
 
 def test_prefetch_budget_exhaustion_does_not_rollback_shared_connection(
