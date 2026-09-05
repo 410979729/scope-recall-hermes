@@ -22,6 +22,9 @@ except ImportError:  # pragma: no cover - direct script import style
     from capture_filters import redact_secret_like_text
 
 logger = logging.getLogger(__name__)
+DEFAULT_USER_AGENT = (
+    "ScopeRecall/2.0 (+https://github.com/410979729/scope-recall-hermes)"
+)
 
 _PUBLIC_ENDPOINT_PATH_SUFFIXES = (
     "/v1/chat/completions",
@@ -419,6 +422,10 @@ def prepare_safe_request(
         dict(request.header_items()),
         allow_insecure=allow_insecure,
     )
+    # Set this at the shared transport boundary so nightly, capture, and
+    # embedding calls all identify the client. Preserve provider-specific UAs.
+    if not any(name.casefold() == "user-agent" for name in headers):
+        headers["User-Agent"] = DEFAULT_USER_AGENT
     return urllib.request.Request(
         policy.url,
         data=request.data,
