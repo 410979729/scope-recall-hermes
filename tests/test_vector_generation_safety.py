@@ -458,7 +458,7 @@ def test_active_backend_failure_redacts_internal_stats_and_warning_surfaces(monk
         def _memory_isolated_for_scope():
             return False
 
-    monkeypatch.setattr(vector_runtime_module, "LanceVectorStore", UnavailableLanceStore)
+    monkeypatch.setattr(vector_runtime_module, "build_vector_store", UnavailableLanceStore)
     monkeypatch.setattr(
         vector_runtime_module,
         "native_vector_dependency_status",

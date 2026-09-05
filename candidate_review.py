@@ -275,6 +275,7 @@ def review_candidate(
     actor: str = "scope-recall:candidate-review",
     expected_updated_at: str = "",
     expected_lifecycle: str = "",
+    commit: bool = True,
 ) -> dict[str, Any]:
     """Review one candidate using the shared lifecycle CAS transition."""
 
@@ -317,7 +318,10 @@ def review_candidate(
     if dry_run:
         return result
 
-    ensure_schema(conn)
+    if commit:
+        ensure_schema(conn)
+    elif not conn.in_transaction:
+        raise RuntimeError("candidate review requires an owned outer transaction")
     try:
         transition = transition_memory_lifecycle(
             conn,
@@ -335,9 +339,11 @@ def review_candidate(
             }[action],
             batch_id=str(after_metadata.get("candidate_promotion_batch_id") or ""),
         )
-        conn.commit()
+        if commit:
+            conn.commit()
     except LifecycleConflictError as exc:
-        conn.rollback()
+        if commit:
+            conn.rollback()
         return {
             "ok": False,
             "status": "conflict",
@@ -349,7 +355,8 @@ def review_candidate(
             "error": str(exc),
         }
     except Exception:
-        conn.rollback()
+        if commit:
+            conn.rollback()
         raise
     result["status"] = "applied"
     result["applied"] = True

@@ -452,7 +452,7 @@ When optional per-turn `capture_llm` extraction is enabled, Scope Recall redacts
 
 Vector backend choices:
 
-- `lancedb` — default ANN companion, best for normal hosts; install with `python -m pip install -e ".[lancedb]"`. Scope Recall probes LanceDB/PyArrow in a child process before importing them in the Hermes process, so SIGILL/illegal-instruction wheels are treated as unavailable instead of crashing the agent.
+- `lancedb` — default ANN companion, best for normal hosts; install with `python -m pip install -e ".[lancedb]"`. Scope Recall probes native wheels in a child process. On Windows, gateway/desktop vector operations also run in a private persistent helper so a later native crash cannot terminate Hermes. See [vector backends](docs/vector-backends.md).
 - `sqlite-bruteforce` — pure-Python/SQLite companion for non-AVX CPUs or hosts where importing LanceDB/PyArrow is unsafe; install with `python -m pip install -e .` and set `vector.backend` accordingly, or keep the default `vector.fallback_backend: sqlite-bruteforce` so a provably fresh bootstrap can select it when LanceDB is absent or unsafe. An active generation never switches backend during startup.
 - `pgvector` — optional PostgreSQL/pgvector companion for deployments that already operate PostgreSQL; install with `python -m pip install "hermes-scope-recall[pgvector]"` and configure `vector.pgvector.dsn_env` / `vector.pgvector.table_name`. See [`docs/vector-backends.md`](docs/vector-backends.md).
 
@@ -821,6 +821,10 @@ python scripts/promote.memory_candidates.py --hermes-home "$HERMES_HOME" --apply
 ```
 
 Rows classified as low-value noise are only archived when the operator also passes `--archive-noise`; otherwise they remain candidate/needs-review. Applied promotions and archives write `governance_audit_events` with before/after metadata and a batch id. `scripts/doctor.py` reports `runtime.memory_candidate_debt` so candidate backlog count, age, promotable rows, and archive candidates are visible before relying on promoted-only profile behavior.
+
+While the gateway is running, use `scope_recall_memory` with `action="promote"` or `action="archive"` and a candidate `id`. The default dry-run returns a plan and revision token; send `dry_run=false` with the returned `expected_updated_at` and `expected_lifecycle` to apply it through the gateway writer. Only candidates in the current writable scope are eligible; Fact-owned rows require Fact actions. See [online candidate review](docs/governance-ui.md#online-review-through-the-running-gateway). `scope_recall_store` reports the row's actual lifecycle, including a candidate downgrade made by admission policy.
+
+If the post-commit lifecycle lookup is temporarily unavailable, a successful store still returns its committed id with lifecycle `unknown`. This does not trigger a second write; inspect the id later to confirm its lifecycle.
 
 ### Write-time governance
 

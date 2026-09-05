@@ -162,6 +162,65 @@ def _record_frequency_failure(
     return status
 
 
+def _requeue_orphaned_frequency_failures(
+    conn: sqlite3.Connection,
+    limit: int,
+    *,
+    deadline_monotonic: float,
+    clock: Callable[[], float],
+) -> int:
+    """Reconstruct lost dirty work before superseding its durable failure.
+
+    A failure without a change row can never reach the normal retry consumer.
+    Rebuild from current truth under a new generation instead of deleting the
+    failure on age alone. A failed rebuild retains its change row and therefore
+    exhausts the ordinary retry budget rather than being resurrected forever.
+    """
+
+    rows = conn.execute(
+        """
+        SELECT f.memory_id, f.work_generation, f.old_scope_id, f.new_scope_id
+        FROM relation_frequency_failures f
+        WHERE NOT EXISTS (
+            SELECT 1 FROM relation_frequency_changes c WHERE c.memory_id=f.memory_id
+        )
+        ORDER BY f.last_failed_at, f.memory_id LIMIT ?
+        """,
+        (max(0, int(limit)),),
+    ).fetchall()
+    recovered = 0
+    for row in rows:
+        if clock() >= deadline_monotonic:
+            break
+        memory_id = str(row[0])
+        requested_at = _now_iso()
+        # BEGIN held by the caller serializes this with competing truth writers.
+        conn.execute(
+            """
+            INSERT INTO relation_frequency_generations(memory_id, last_generation, updated_at)
+            VALUES(?, ?, ?)
+            ON CONFLICT(memory_id) DO UPDATE SET
+                last_generation=MAX(relation_frequency_generations.last_generation+1,
+                                    excluded.last_generation),
+                updated_at=excluded.updated_at
+            """,
+            (memory_id, int(row[1] or 0) + 1, requested_at),
+        )
+        conn.execute(
+            """
+            INSERT INTO relation_frequency_changes(
+                memory_id, old_scope_id, new_scope_id, work_generation, requested_at
+            )
+            SELECT ?, ?, ?, last_generation, ?
+            FROM relation_frequency_generations WHERE memory_id=?
+            """,
+            (memory_id, str(row[2] or ""), str(row[3] or ""), requested_at, memory_id),
+        )
+        supersede_relation_frequency_failure(conn, memory_id, requested_at=requested_at)
+        recovered += 1
+    return recovered
+
+
 def _drain_change_rows(
     conn: sqlite3.Connection,
     limit: int,
@@ -212,7 +271,7 @@ def _drain_change_rows(
         savepoint = f"relation_frequency_{uuid.uuid4().hex}"
         conn.execute(f"SAVEPOINT {savepoint}")
         try:
-            sync_relation_frequency_memory(
+            sync_result = sync_relation_frequency_memory(
                 conn,
                 memory_id,
                 refresh_receipts=False,
@@ -241,6 +300,9 @@ def _drain_change_rows(
             )
             continue
         affected.update(scopes)
+        affected.update(
+            str(sync_result.get(key) or "") for key in ("old_scope_id", "new_scope_id")
+        )
         processed += 1
     for scope in sorted(scope for scope in affected if scope):
         refresh_relation_scope_frequency_receipt(conn, scope)
@@ -528,6 +590,12 @@ def drain_relation_frequency_work(
         else clock() + max(0.01, float(wall_clock_seconds))
     )
     try:
+        recovered = _requeue_orphaned_frequency_failures(
+            conn,
+            max(0, min(int(change_limit), 5000)),
+            deadline_monotonic=deadline,
+            clock=clock,
+        )
         changed = _drain_change_rows(
             conn,
             max(0, min(int(change_limit), 5000)),
@@ -611,6 +679,7 @@ def drain_relation_frequency_work(
             ).fetchone()[0]
         )
     return {
+        "requeued_orphan_failures": recovered,
         "changed_memories": changed,
         "focused_memories": focused,
         "backfilled_memories": backfilled,
@@ -638,6 +707,9 @@ def relation_frequency_debt_exists(conn: sqlite3.Connection) -> bool:
     if not _table_exists(conn, "relation_frequency_changes"):
         return False
     checks = [
+        "SELECT 1 FROM relation_frequency_failures f "
+        "WHERE NOT EXISTS (SELECT 1 FROM relation_frequency_changes c "
+        "WHERE c.memory_id=f.memory_id) LIMIT 1",
         "SELECT 1 FROM relation_frequency_changes c "
         "LEFT JOIN relation_frequency_failures f "
         "ON f.memory_id=c.memory_id AND f.work_generation=c.work_generation "

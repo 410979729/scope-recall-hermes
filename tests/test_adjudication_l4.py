@@ -67,6 +67,63 @@ def test_explicit_schema_valid_uncertain_is_semantic_uncertainty():
     assert parsed.error == ""
 
 
+@pytest.mark.parametrize("field,first,second", [
+    ("verdict", "unsupported", "supported"),
+    ("verdict", "supported", "unsupported"),
+    ("reason", "first", "second"),
+    ("schema_version", "old.v0", L4_SCHEMA_VERSION),
+])
+def test_duplicate_fields_cannot_override_an_l4_verdict(field, first, second):
+    fields = {"schema_version": L4_SCHEMA_VERSION, "verdict": "supported", "reason": "valid"}
+    fields[field] = second
+    raw = "{" + json.dumps(field) + ":" + json.dumps(first) + "," + json.dumps(fields)[1:]
+    parsed = parse_l4_response(raw)
+    assert not parsed.ok and parsed.error == "invalid_json"
+    assert parsed.verdict is None
+
+
+@pytest.mark.parametrize("length", [120, 121, 316, 4000])
+@pytest.mark.parametrize("verdict", ["supported", "unsupported", "uncertain"])
+def test_verbose_reason_preserves_valid_verdict_with_bounded_audit(length, verdict):
+    reason = "Evidence supports this claim. " + "additional detail " * length
+    reason = reason[:length]
+    parsed = parse_l4_response(json.dumps({
+        "schema_version": L4_SCHEMA_VERSION,
+        "verdict": verdict,
+        "reason": reason,
+    }))
+
+    assert parsed.ok
+    assert parsed.verdict == verdict
+    assert 0 < len(parsed.reason) <= 120
+    if length == 120:
+        assert parsed.reason == reason.strip()
+    else:
+        assert parsed.reason.startswith("Evidence supports this claim.")
+        assert parsed.reason.endswith("...")
+
+
+@pytest.mark.parametrize("reason", [None, 123, {}, [], "", " \n\t"])
+def test_reason_normalization_does_not_accept_invalid_reason_types(reason):
+    parsed = parse_l4_response(json.dumps({
+        "schema_version": L4_SCHEMA_VERSION,
+        "verdict": "supported",
+        "reason": reason,
+    }))
+    assert not parsed.ok
+    assert parsed.error == "invalid_reason"
+    assert parsed.verdict is None
+
+
+def test_review_prompt_exposes_reason_budget_and_complete_sentence_guidance():
+    request = build_review_request(
+        target="ops", memory_type="workflow", content="claim",
+        evidence_text="evidence", evidence_truncated=False,
+    )
+    assert "120 characters" in request.system_prompt
+    assert "complete sentence" in request.system_prompt
+
+
 def _evidence_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row

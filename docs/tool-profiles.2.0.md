@@ -7,25 +7,33 @@ independent local feature gates and handler checks.
 
 | Profile | Intended use | Measured tools | Schema chars | Estimated tokens |
 |---|---|---:|---:|---:|
-| `core` | Default Primary Agent store, recall, context, and compact dispatch | 6 | 9,531 | 2,383 |
+| `core` | Default Primary Agent store, recall, context, and compact dispatch | 6 | 9,588 | 2,397 |
 | `compatibility` | Historical individual V1 schemas | 20 | 15,830 | 3,958 |
-| `maintenance` | Core plus explicitly authorized maintenance | 17 | 17,346 | 4,337 |
-| `developer` | Core plus read-only inspection and diagnostics | 12 | 12,267 | 3,067 |
-| `extension` | Core plus separately enabled extension tools | 11 | 11,903 | 2,976 |
+| `maintenance` | Core plus explicitly authorized maintenance | 17 | 17,403 | 4,351 |
+| `developer` | Core plus read-only inspection and diagnostics | 13 | 13,058 | 3,265 |
+| `extension` | Core plus separately enabled extension tools | 11 | 11,960 | 2,990 |
 
 The measurements use compact, sorted JSON from the exact source schemas in this
 candidate and the conservative four-characters-per-token estimate. Maintenance
 was measured with `maintenance_tools_enabled=true`; extension was measured with
-Experience enabled. The core bytes are exactly the same surface as the previous
-`compact` baseline, so the default profile introduces no schema-budget growth.
+Experience enabled. The online candidate-review amendment adds 57 core schema
+characters over the 2.0.1 baseline after removing redundant parameter descriptions.
 
 The release gate freezes the current core snapshot under Decision D-013: 6
-tools, 9,531 schema characters, at most 9,600 characters, at most 2,400
+tools, 9,588 schema characters, at most 9,600 characters, at most 2,400
 conservatively estimated tokens, and canonical schema SHA-256
-`7380485b5ee769b60383e7f6eabb836dd1637553bbbf17883bb6e564def8f5d6`.
+`d19b08d445c17c265ee216acfe06060714ac1848917d5e7d70aa0dc05edd615d`.
 The count is a reviewed snapshot, not a permanent product-wide tool-count rule.
 Any schema or digest change requires an explicit policy/Decision Log update;
 moving a tool to another profile remains preferable to silent core growth.
+
+### D-013 amendment: online candidate review (2026-09-05)
+
+Issue #68 requires the live writer to review one candidate without stopping the
+gateway. Add `promote`/`archive`, dry-run, and revision parameters to the existing
+memory dispatcher. Preserve the six-tool core surface and both existing cost
+ceilings. Consolidate redundant descriptions while retaining plan/apply guidance;
+update the exact digest and regression snapshot alongside this decision.
 
 `compact` remains an accepted alias for `core`. `standard`, `legacy`, and
 `compat` remain accepted aliases for `compatibility`. No public tool name or

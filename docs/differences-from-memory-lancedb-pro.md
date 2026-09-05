@@ -23,6 +23,10 @@ OpenClaw `memory-lancedb-pro` is fundamentally organized around its own LanceDB-
 
 This is deliberate so local auditing, backup, migration, and debugging remain simple.
 
+On Windows, LanceDB runs behind a private process boundary to contain native crashes independently of the Hermes model runtime. SQLite transactions and the durable vector outbox remain in the host. Candidate review runs as a scoped command through the active gateway writer, sharing the same atomic lifecycle/audit boundary as offline review.
+
+Post-commit receipt lookup is separate from mutation success: an unavailable lifecycle read returns `unknown` with the committed id, without retrying the write.
+
 ### 2. Curated memory authority boundary
 
 In Hermes, built-in curated memory files are already authoritative:

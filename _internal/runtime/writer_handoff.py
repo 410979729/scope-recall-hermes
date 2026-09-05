@@ -892,6 +892,7 @@ def _perform_idle_handoff(provider: Any, state: Any) -> None:
     providers: tuple[Any, ...] = ()
     generations: dict[int, int] = {}
     teardown_started = False
+    quiesce_started = False
     release_started = False
     authority_released = False
     phase = "preflight"
@@ -936,6 +937,7 @@ def _perform_idle_handoff(provider: Any, state: Any) -> None:
         # released for the writer consumers to drain.
         _release_provider_locks(lifecycles)
         phase = "quiesce"
+        quiesce_started = True
         for peer in providers:
             quiesce_writer_for_handoff(peer, timeout=HANDOFF_LOCK_TIMEOUT_SECONDS)
         phase = "final_recheck"
@@ -1001,7 +1003,7 @@ def _perform_idle_handoff(provider: Any, state: Any) -> None:
         failure_code = _content_free_failure_code(exc, phase=phase)
         if not teardown_started:
             resume_failed = False
-            if not lifecycles and providers:
+            if quiesce_started and not lifecycles and providers:
                 try:
                     lifecycles = _acquire_provider_locks(
                         providers, "_writer_lifecycle_lock"
@@ -1009,7 +1011,7 @@ def _perform_idle_handoff(provider: Any, state: Any) -> None:
                 except Exception:
                     lifecycles = []
                     resume_failed = True
-            if providers and lifecycles:
+            if quiesce_started and providers and lifecycles:
                 try:
                     _abort_quiesced_handoff(providers)
                 except Exception:
@@ -1017,6 +1019,11 @@ def _perform_idle_handoff(provider: Any, state: Any) -> None:
                         "Scope Recall fenced writer handoff resume failed"
                     )
                     resume_failed = True
+            if not quiesce_started:
+                # A preflight veto has not stopped any writer. Resuming it can
+                # itself fail and incorrectly fence a healthy owner (#66).
+                for peer in providers:
+                    peer._writer_handoff_fenced = False
             if resume_failed:
                 failure_code = "writer_resume_failed"
                 for peer in providers:
@@ -1048,7 +1055,13 @@ def _perform_idle_handoff(provider: Any, state: Any) -> None:
             _set_process_failure(state, failure_code, uncertain=True)
         telemetry_event = "handoff_failed"
         telemetry_deactivate_owner = authority_released
-        logger.warning(
+        benign_veto = not teardown_started and failure_code in {
+            "recent_user_activity", "recent_truth_activity", "truth_work_active",
+            "foreground_busy", "capture_queue_pending", "capture_processing",
+            "digest_active", "activity_generation_changed",
+        }
+        log = logger.debug if benign_veto else logger.warning
+        log(
             "Scope Recall idle writer handoff did not complete (reason=%s)",
             failure_code,
         )

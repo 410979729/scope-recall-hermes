@@ -123,7 +123,7 @@ class ScopeRecallToolService:
         }
     )
     _MEMORY_DISPATCH_WRITE_ACTIONS = frozenset(
-        {"feedback", "update", "merge", "forget"}
+        {"feedback", "update", "merge", "forget", "promote", "archive"}
     )
 
     def _truth_write_blocked_error(self, tool_name: str) -> str:
@@ -147,6 +147,8 @@ class ScopeRecallToolService:
                 "remove": "forget",
                 "get": "inspect",
             }
+            if action in {"promote", "archive"}:
+                return self._bool_arg(args, "dry_run", True)
             return aliases.get(action, action) == "inspect"
         if tool_name == "scope_recall_reflect":
             return not self._bool_arg(args or {}, "propose_memory", False)
@@ -175,6 +177,8 @@ class ScopeRecallToolService:
             return False
         action = str((args or {}).get("action") or "").strip().lower()
         action = action.replace("-", "_")
+        if action in {"promote", "archive"}:
+            return not self._bool_arg(args, "dry_run", True)
         return action in {"merge", "forget", "delete", "remove"}
 
     def handle(self, tool_name: str, args: dict[str, Any]) -> str:
@@ -496,13 +500,28 @@ class ScopeRecallToolService:
             relation_sync_status = "completed"
         else:
             relation_sync_status = "not_run"
-        receipt = self._receipt(
-            "promoted" if inserted else outcome,
-            target=target,
-            id=memory_id,
-            scope_mode=scope_mode,
-        )
-        receipt["relation_sync_status"] = relation_sync_status
+        try:
+            identity = self._port.stored_memory_identity(memory_id)
+        except Exception as exc:
+            # The write has already committed. Receipt enrichment must not
+            # turn success into a retryable error or invent a lifecycle.
+            logger.warning(
+                "Scope Recall stored identity unavailable (%s)", type(exc).__name__
+            )
+            identity = {}
+        lifecycle = str(identity.get("lifecycle") or "unknown")
+        receipt_action = ("promoted" if lifecycle in {"active", "promoted"} else lifecycle) if inserted else outcome
+        receipt = {
+            **self._receipt(
+                receipt_action,
+                target=target,
+                id=memory_id,
+                scope_mode=scope_mode,
+            ),
+            "relation_sync_status": relation_sync_status,
+            **identity,
+            "lifecycle": lifecycle,
+        }
         if recovered:
             receipt["recovered"] = True
             receipt["retry_count"] = retry_count
@@ -518,6 +537,8 @@ class ScopeRecallToolService:
                 "relation_sync_status": relation_sync_status,
                 "recovered": recovered,
                 "retry_count": retry_count,
+                **identity,
+                "lifecycle": lifecycle,
                 "receipt": receipt,
             }
         )
@@ -703,8 +724,18 @@ class ScopeRecallToolService:
             return self._handle_merge(args)
         if action == "forget":
             return self._handle_forget(args)
+        if action in {"promote", "archive"}:
+            memory_id = str(args.get("id") or "").strip()
+            if not memory_id:
+                return tool_error("id is required for candidate review")
+            return self._json(self._port.review_candidate(
+                memory_id=memory_id, action=action,
+                dry_run=self._bool_arg(args, "dry_run", True),
+                expected_updated_at=str(args.get("expected_updated_at") or ""),
+                expected_lifecycle=str(args.get("expected_lifecycle") or ""),
+            ))
         return tool_error(
-            "action must be one of: inspect, feedback, update, merge, forget"
+            "action must be one of: inspect, feedback, update, merge, forget, promote, archive"
         )
 
     def _handle_entity(self, args: dict[str, Any]) -> str:

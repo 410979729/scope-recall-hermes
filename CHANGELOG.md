@@ -4,6 +4,15 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- Preserve valid L4 verdicts when a model exceeds the 120-character reason budget; sanitize and bound the explanation after strict verdict/schema validation (#65).
+- Reject duplicate JSON response fields instead of accepting the last of contradictory L4 verdicts, found during the accompanying protocol audit.
+- Requeue orphaned relation-frequency failures from current SQLite truth with bounded retries and supersession evidence. Writer-handoff preflight vetoes no longer resume a writer that was never quiesced (#66).
+- Supply an identifiable Scope Recall User-Agent for shared HTTP transports, including OpenAI-compatible and Anthropic nightly requests, while preserving provider-specific headers (#67).
+- Add live `scope_recall_memory` candidate `promote` and `archive` actions through the gateway's admitted writer. Plans default to dry-run, apply supports revision checks, scope and Fact authority remain enforced, and lifecycle/audit/vector intent commit atomically. Store receipts now report the persisted candidate lifecycle (#68).
+- Preserve a successful store result if its post-commit lifecycle receipt cannot be read. Return the committed id with lifecycle `unknown`, emit a content-free diagnostic, and never retry that successful write.
+- Keep Windows LanceDB/PyArrow operations in a private persistent helper process and load local sentence-transformers only when selected. Native helper failure or timeout becomes a recoverable companion error while SQLite truth and pending outbox work stay in the Hermes process (#69).
+
 ## [2.0.1] - 2026-08-30
 
 This patch is cumulative since the last public release, `2.0.0`. It completes the production managed upgrade path for ordinary users and hardens the 2.0 memory runtime: one fixed official stable source, an external resumable idempotent operation journal, strict state transitions, exact-Hermes-home restart control, zero-signal recall admission, candidate isolation, and explicit observability ownership.
