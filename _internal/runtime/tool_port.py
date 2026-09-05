@@ -367,6 +367,29 @@ class ProviderToolRuntimeAdapter:
     def store_now(self, *args: Any, **kwargs: Any) -> Any:
         return self._command_kernel().store(self._resolve_command_port(), *args, **kwargs)
 
+    def review_candidate(self, **kwargs: Any) -> dict[str, Any]:
+        return self._command_kernel().review_candidate(self._resolve_command_port(), **kwargs)
+
+    def stored_memory_identity(self, memory_id: str) -> dict[str, Any]:
+        """Read a bounded, content-free receipt after a durable store."""
+        from ...candidate_review import candidate_identity_fields
+        from ...graph import load_metadata
+
+        if not memory_id:
+            return {}
+        if not any(callable(getattr(self._host, name, None)) for name in ("query_connection", "_require_conn")):
+            # Isolated legacy hosts may expose only a store hook. Do not claim
+            # promotion when that host cannot provide a persisted receipt.
+            return {}
+        with self.query_lock():
+            scopes = self.writable_scope_ids()
+            placeholders = ",".join("?" for _ in scopes) or "NULL"
+            row = self.query_connection().execute(
+                f"SELECT source, metadata FROM memories WHERE id=? AND scope_id IN ({placeholders})",
+                [memory_id, *scopes],
+            ).fetchone()
+        return candidate_identity_fields(source=str(row[0]), metadata=load_metadata(row[1])) if row else {}
+
     def update_memory(self, *args: Any, **kwargs: Any) -> Any:
         return self._command_kernel().update(self._resolve_command_port(), *args, **kwargs)
 

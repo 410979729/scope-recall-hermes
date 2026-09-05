@@ -15,6 +15,7 @@ from ..application.memory_commands import (
     MemoryCommandGateway,
     MergeMemoriesRequest,
     PrivacyPurgeRequest,
+    ReviewMemoryCandidateRequest,
     StoreMemoryRequest,
     UpdateMemoryRequest,
 )
@@ -61,6 +62,19 @@ class ProviderCommandAdapter:
             except Exception:
                 _rollback_after_error(self._host, "store_now")
                 raise
+
+    def review_candidate(self, request: ReviewMemoryCandidateRequest) -> dict[str, object]:
+        from contextlib import nullcontext
+
+        access = nullcontext() if request.dry_run else write_kernel.command_write_access(
+            self._host, capture_barrier=True, user_initiated=True,
+        )
+        with access:
+            return memory_ops.review_memory_candidate(
+                self._host, memory_id=request.memory_id, action=request.action,
+                dry_run=request.dry_run, expected_updated_at=request.expected_updated_at,
+                expected_lifecycle=request.expected_lifecycle,
+            )
 
     def update(self, request: UpdateMemoryRequest) -> tuple[bool, str, str]:
         with write_kernel.command_write_access(self._host, user_initiated=True):

@@ -29,6 +29,7 @@ from scope_recall._internal.application.memory_commands import (
     GovernMemoriesRequest,
     MergeMemoriesRequest,
     PrivacyPurgeRequest,
+    ReviewMemoryCandidateRequest,
 )
 from scope_recall._internal.runtime.command_adapter import ProviderCommandAdapter
 from scope_recall._internal.runtime.tool_port import ProviderToolRuntimeAdapter
@@ -545,6 +546,34 @@ def test_direct_command_read_only_modes_do_not_require_write_authority(
         "read_only": True
     }
     assert observed == ["govern", "dedupe", "fact_owned", "purge", "purge"]
+
+
+def test_candidate_apply_uses_existing_writer_and_capture_barrier(monkeypatch):
+    _assert_admitted_call(
+        monkeypatch, patch_target=memory_ops, patch_name="review_memory_candidate",
+        invoke=lambda adapter: adapter.review_candidate(ReviewMemoryCandidateRequest(
+            memory_id="candidate", action="promote", dry_run=False,
+        )), result={"applied": True}, capture_barrier=True,
+    )
+
+
+def test_candidate_plan_is_read_only_but_apply_requires_writer(monkeypatch):
+    adapter = ProviderCommandAdapter(_CommandHost(writer=False))
+    seen = []
+
+    def review(*args, **kwargs):
+        seen.append(kwargs["dry_run"])
+        return {"dry_run": True}
+
+    monkeypatch.setattr(memory_ops, "review_memory_candidate", review)
+    assert adapter.review_candidate(ReviewMemoryCandidateRequest(
+        memory_id="candidate", action="archive",
+    )) == {"dry_run": True}
+    with pytest.raises(RuntimeError, match=WRITE_AUTHORITY_BUSY):
+        adapter.review_candidate(ReviewMemoryCandidateRequest(
+            memory_id="candidate", action="archive", dry_run=False,
+        ))
+    assert seen == [True]
 
 
 def test_memory_mutation_service_rejects_fenced_unadmitted_mutation() -> None:
