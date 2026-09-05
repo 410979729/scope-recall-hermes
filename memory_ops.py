@@ -578,6 +578,42 @@ def _target_scope_mode_for_existing(provider: Any, row: Any, target: str) -> str
     return default_mode
 
 
+def review_memory_candidate(
+    provider: Any, *, memory_id: str, action: str, dry_run: bool = True,
+    expected_updated_at: str = "", expected_lifecycle: str = "",
+) -> dict[str, Any]:
+    """Review a candidate using the live writer and the existing lifecycle CAS."""
+    from .candidate_review import review_candidate
+
+    def review(conn: Any) -> dict[str, Any]:
+        row = conn.execute(
+            f"SELECT metadata FROM memories WHERE id=? AND scope_id IN ({_domain_writable_placeholders(provider)})",
+            [memory_id, *_domain_writable_scope_ids(provider)],
+        ).fetchone()
+        if row is None:
+            return {"ok": False, "status": "not_found", "error": "candidate not found in writable scope", "applied": False}
+        if load_metadata(row[0]).get("lifecycle") != "candidate":
+            return {"ok": False, "status": "invalid_state", "error": "memory is not a candidate", "applied": False}
+        fact_error = _fact_mutation_error_payload(conn, [memory_id], operation="candidate review")
+        if fact_error is not None:
+            return {"ok": False, "status": "invalid_state", "applied": False, **fact_error}
+        return review_candidate(
+            conn, memory_id=memory_id, action=action, dry_run=dry_run,
+            actor="scope_recall_memory", expected_updated_at=expected_updated_at,
+            expected_lifecycle=expected_lifecycle, commit=False,
+        )
+
+    if dry_run:
+        with _command_lock(provider):
+            return review(_command_conn(provider))
+    mutation = MemoryMutationService(provider)
+    with mutation.transaction() as conn:
+        result = review(conn)
+        if not result.get("ok"):
+            mutation.abort(conn)
+    return result
+
+
 def update_memory(
     provider: Any, memory_id: str, content: str, target: str | None = None
 ) -> tuple[bool, str, str]:

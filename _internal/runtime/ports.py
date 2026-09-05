@@ -20,6 +20,7 @@ from ..application.memory_commands import (
     GovernMemoriesRequest,
     MergeMemoriesRequest,
     PrivacyPurgeRequest,
+    ReviewMemoryCandidateRequest,
     StoreMemoryRequest,
     UpdateMemoryRequest,
 )
@@ -93,6 +94,8 @@ class MemoryCommandPort(Protocol):
     """Provider-neutral application command surface."""
 
     def store(self, request: StoreMemoryRequest) -> tuple[str, bool, str]: ...
+
+    def review_candidate(self, request: ReviewMemoryCandidateRequest) -> dict[str, object]: ...
 
     def update(self, request: UpdateMemoryRequest) -> tuple[bool, str, str]: ...
 

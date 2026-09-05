@@ -19,6 +19,15 @@ class StoreMemoryRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class ReviewMemoryCandidateRequest:
+    memory_id: str
+    action: str
+    dry_run: bool = True
+    expected_updated_at: str = ""
+    expected_lifecycle: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class UpdateMemoryRequest:
     memory_id: str
     content: str
@@ -115,6 +124,8 @@ class PrivacyPurgeRequest:
 
 @runtime_checkable
 class MemoryCommandGateway(Protocol):
+    def review_candidate(self, request: ReviewMemoryCandidateRequest) -> dict[str, object]: ...
+
     def store(self, request: StoreMemoryRequest) -> tuple[str, bool, str]: ...
 
     def update(self, request: UpdateMemoryRequest) -> tuple[bool, str, str]: ...
@@ -146,6 +157,9 @@ class MemoryCommandApplication:
 
     def store(self, request: StoreMemoryRequest) -> tuple[str, bool, str]:
         return self._gateway.store(request)
+
+    def review_candidate(self, request: ReviewMemoryCandidateRequest) -> dict[str, object]:
+        return self._gateway.review_candidate(request)
 
     def update(self, request: UpdateMemoryRequest) -> tuple[bool, str, str]:
         return self._gateway.update(request)
