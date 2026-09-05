@@ -63,6 +63,7 @@ class _RecordingHandler(BaseHTTPRequestHandler):
                 "path": self.path,
                 "authorization": self.headers.get("Authorization"),
                 "api_key": self.headers.get("x-api-key"),
+                "user_agent": self.headers.get("User-Agent"),
                 "body": body,
             }
         )
@@ -706,6 +707,20 @@ def test_chat_endpoint_builder_applies_policy_to_explicit_endpoint() -> None:
         )
         == "http://model.internal:1234/v1/chat/completions"
     )
+
+
+@pytest.mark.parametrize("header", [None, "ScopeRecallCustom/1.0"])
+def test_safe_http_transport_sends_identifiable_user_agent(header) -> None:
+    with _recording_server() as server:
+        request = urllib.request.Request(
+            _server_url(server, "/final"), data=b"{}",
+            headers={} if header is None else {"uSeR-aGeNt": header},
+            method="POST",
+        )
+        with safe_urlopen(request, timeout=5) as response:
+            response.read()
+    expected = header or "ScopeRecall/2.0 (+https://github.com/410979729/scope-recall-hermes)"
+    assert server.records[0]["user_agent"] == expected
 
 
 @pytest.mark.parametrize(
