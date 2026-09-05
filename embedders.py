@@ -6,10 +6,14 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import json as _json_lib
 import math
 import os
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from concurrent.futures import Future
 from dataclasses import dataclass
 from functools import partial
@@ -48,16 +52,9 @@ try:
 except Exception:  # pragma: no cover - optional dependency of OpenAI adapters
     _httpx = None
 
-try:
-    from sentence_transformers import SentenceTransformer  # type: ignore[reportMissingImports]
-except Exception:  # pragma: no cover - optional dependency
-    SentenceTransformer = None
-
-import urllib.error
-import urllib.parse
-import urllib.request
-import json as _json_lib
-
+# Resolve only when the local embedder is selected. Importing this module for a
+# hosted/hash embedder must not load torch or other optional native runtimes.
+SentenceTransformer: Any = None
 
 _KNOWN_EMBEDDING_DIMS = {
     "hash-v1": 256,

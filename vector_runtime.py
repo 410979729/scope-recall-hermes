@@ -51,8 +51,6 @@ from .truth_connection import probe_truth_database_connection
 from .sqlite_recovery import is_sqlite_lock_contention, rollback_if_active
 from .sqlite_params import chunked_sql_parameters
 from .vector_store import (
-    LanceVectorStore,
-    VectorStoreCompatibilityError,
     build_vector_store,
     native_vector_dependency_status,
     normalize_vector_backend,
@@ -703,17 +701,18 @@ def _open_vector_store(provider: Any, *, dimensions: int) -> None:
     if backend != "lancedb":
         raise RuntimeError(f"unsupported backend {backend}")
 
-    vector_dir = storage_root / "lancedb"
-    temp_store = LanceVectorStore(
-        vector_dir, table_name=table_name, dimensions=dimensions, metric=metric
+    temp_store = build_vector_store(
+        "lancedb", storage_dir=storage_root, table_name=table_name, dimensions=dimensions, metric=metric
     )
-    if not temp_store.is_available():
-        status = native_vector_dependency_status()
-        detail = _native_dependency_detail(status)
-        raise RuntimeError(f"lancedb/pyarrow is not installed or unsafe ({detail})")
     try:
+        if not temp_store.is_available():
+            status = native_vector_dependency_status()
+            detail = _native_dependency_detail(status)
+            raise RuntimeError(f"lancedb/pyarrow is not installed or unsafe ({detail})")
         temp_store.open_existing_for_update()
-    except VectorStoreCompatibilityError:
+    except BaseException:
+        # Availability and ordinary open errors also leave a live native
+        # helper behind. Release it before propagating any failed startup.
         temp_store.close()
         raise
     bind_provider_vector_runtime(provider).vector_backend = "lancedb"
@@ -1934,9 +1933,31 @@ def _replay_vector_outbox_guarded(
     ):
         return {"claimed": 0, "completed": 0, "failed": 0}
 
+    store = bind_provider_vector_runtime(provider).vector_store
+
+    def require_native_reopen(error: str) -> bool:
+        if getattr(store, "requires_reopen", False) is not True:
+            return False
+        mark_vector_needs_repair(
+            provider, error, reason_code="native_worker_reopen_required",
+        )
+        return True
+
+    # A transport failure already consumed one real attempt. Claiming again
+    # against the same dead helper cannot succeed and would turn recoverable
+    # outbox work into dead letters before an operator can reopen the runtime.
+    if require_native_reopen("native vector worker stopped; run repair_vector or restart to reopen it"):
+        _refresh_vector_debt_counts(provider)
+        return {"claimed": 0, "completed": 0, "failed": 0}
+
     def on_failure(error: str) -> None:
-        _mark_vector_replay_degraded(provider, error)
+        if not require_native_reopen(error):
+            _mark_vector_replay_degraded(provider, error)
         logger.warning("Scope Recall vector replay failed: %s", error)
+
+    def audit_live_store() -> None:
+        if getattr(store, "requires_reopen", False) is not True:
+            refresh_vector_audit(provider)
 
     result = replay_committed_vector_events(
         bind_provider_vector_runtime(provider).require_conn(),
@@ -1960,7 +1981,7 @@ def _replay_vector_outbox_guarded(
         event_ids=event_ids,
         on_failure=on_failure,
         after_replay=(
-            (lambda: refresh_vector_audit(provider)) if refresh_audit_after else None
+            audit_live_store if refresh_audit_after else None
         ),
         on_physical_mutation=(
             lambda operation, memory_id, existed: _apply_incremental_vector_counts(
