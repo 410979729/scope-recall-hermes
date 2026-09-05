@@ -10,6 +10,8 @@ These fixes require no schema migration or vector-generation rebuild. Existing W
 
 Background relation-frequency maintenance can recreate missing work for orphaned failure records from the current truth, keeping supersession evidence and the existing retry limit. No age-based failure deletion or full foreground scope rebuild is performed. Online candidate review is available through the running gateway; CLI maintenance still obeys the exclusive writer lease. See [candidate review](governance-ui.md#online-review-through-the-running-gateway).
 
+Store receipts may report lifecycle `unknown` if a post-commit lookup fails. The committed id and store outcome remain valid; use that id for later inspection rather than repeating the write.
+
 ### Schema migration status
 
 Before mutating older profile data, inspect the SQLite schema ledger without repairing it implicitly:

@@ -824,6 +824,8 @@ Rows classified as low-value noise are only archived when the operator also pass
 
 While the gateway is running, use `scope_recall_memory` with `action="promote"` or `action="archive"` and a candidate `id`. The default dry-run returns a plan and revision token; send `dry_run=false` with the returned `expected_updated_at` and `expected_lifecycle` to apply it through the gateway writer. Only candidates in the current writable scope are eligible; Fact-owned rows require Fact actions. See [online candidate review](docs/governance-ui.md#online-review-through-the-running-gateway). `scope_recall_store` reports the row's actual lifecycle, including a candidate downgrade made by admission policy.
 
+If the post-commit lifecycle lookup is temporarily unavailable, a successful store still returns its committed id with lifecycle `unknown`. This does not trigger a second write; inspect the id later to confirm its lifecycle.
+
 ### Write-time governance
 
 Provider-owned captures apply a deterministic first line of governance before SQLite writes:

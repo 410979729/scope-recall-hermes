@@ -15,6 +15,7 @@ maintenance, candidate lifecycle authority, and Windows vector failure isolation
 | HTTP requests (#67) | Main LLM paths inherited urllib's default client identity. | Add a truthful Scope Recall User-Agent at the shared safe transport boundary; retain explicit provider headers and redirect policy. |
 | Online review (#68) | CLI required a writer lease held by the running gateway; the gateway lacked candidate actions. | Add typed promote/archive commands to its existing memory dispatcher, default to dry-run, and reuse lifecycle/audit/outbox transactions. |
 | Store receipt (#68) | Successful writes were described as promoted even after policy routed them to candidate. | Project the persisted lifecycle and admission identity into the receipt. |
+| Post-commit receipt audit | A failed lifecycle lookup could turn an already committed store into a tool error and invite duplicate submissions. | Preserve the committed outcome and id, mark lifecycle unknown, and log only the error type without retrying the write. |
 | Windows native runtime (#69) | Runtime native operations shared a process with model libraries; a hard Arrow crash could terminate Hermes. | Use a private persistent vector helper, lazy local-model imports, bounded framed transport and explicit recovery. |
 | Helper recovery audit | A dead helper could consume repeated outbox attempts; native stdout could corrupt the protocol. | Mark it as requiring reopen before further claims, preserve retry work, and isolate protocol output from native stdout. |
 
@@ -40,6 +41,14 @@ maintenance, candidate lifecycle authority, and Windows vector failure isolation
   dependencies in their own CLI processes. The new isolation covers gateway and
   desktop vector runtime paths. These standalone tools could later share one
   isolated backend interface.
+- The Windows native Lance dependency can fail when generated data-file paths
+  exceed the platform's long-path boundary. Both the existing in-process store
+  and the helper reproduced this with 261/265-character data paths; unchanged
+  migration tests passed with a shorter storage root. Use short storage paths
+  on affected Windows installations.
+- Worker frames are limited to 64 MiB and requests to 60 seconds. Bulk APIs such
+  as `list_records` still return a complete result, so very large migrations
+  need a future paginated or chunked interface rather than an unbounded frame.
 - A failed helper requires explicit repair or provider restart. It stays marked
   `needs_repair` and cannot serve vector queries or consume further replay
   attempts until reopened. Lexical recall and durable SQLite state remain usable.

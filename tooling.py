@@ -500,7 +500,15 @@ class ScopeRecallToolService:
             relation_sync_status = "completed"
         else:
             relation_sync_status = "not_run"
-        identity = self._port.stored_memory_identity(memory_id)
+        try:
+            identity = self._port.stored_memory_identity(memory_id)
+        except Exception as exc:
+            # The write has already committed. Receipt enrichment must not
+            # turn success into a retryable error or invent a lifecycle.
+            logger.warning(
+                "Scope Recall stored identity unavailable (%s)", type(exc).__name__
+            )
+            identity = {}
         lifecycle = str(identity.get("lifecycle") or "unknown")
         receipt_action = ("promoted" if lifecycle in {"active", "promoted"} else lifecycle) if inserted else outcome
         receipt = {
