@@ -1126,6 +1126,7 @@ def test_every_busy_surface_vetoes_idle_handoff(condition, expected):
         _capture_queue_processing=0,
         _journal_digest_thread=None,
         _writer_thread=_AliveThread(),
+        _lock=threading.RLock(),
         _conn=_VetoConnection(),
     )
     if condition == "foreground":
