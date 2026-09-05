@@ -706,6 +706,9 @@ class ScopeRecallMemoryProvider(MemoryProvider):
 
     def retrieval_status_view(self) -> dict[str, Any]:
         config = dict(getattr(self, "_retrieval_config", None) or {})
+        from ._internal.recall.weights import effective_retrieval_weights
+
+        config.update(effective_retrieval_weights(config))
         return {
             "config": config,
             "mode": str(config.get("mode") or "lexical"),

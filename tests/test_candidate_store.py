@@ -200,6 +200,484 @@ def test_store_event_candidates_caller_cannot_override_admission_invariants(tmp_
     assert "promoted_by" not in metadata
 
 
+def test_event_candidate_duplicate_of_promoted_is_zero_write(tmp_path):
+    conn = sqlite3.connect(tmp_path / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    scope = RuntimeScope(
+        platform="telegram",
+        user_id="user-a",
+        chat_id="chat-a",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    content = "User prefers concise Chinese release reports with exact evidence."
+    memory_id, _summary, _updated_at, inserted = store_row(
+        conn,
+        memory_id="promoted-memory",
+        scope_id="scope-a",
+        platform=scope.platform,
+        user_id=scope.user_id,
+        chat_id=scope.chat_id,
+        thread_id=scope.thread_id,
+        gateway_session_key=scope.gateway_session_key,
+        agent_identity=scope.agent_identity,
+        agent_workspace=scope.agent_workspace,
+        session_id="original",
+        source="user",
+        target="user",
+        content=content,
+        metadata=json.dumps({"lifecycle": "promoted"}),
+    )
+    assert inserted is True
+    before_row = dict(conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone())
+    before_changes = conn.total_changes
+    before_vector = conn.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0]
+    before_relation = conn.execute("SELECT COUNT(*) FROM relation_focus_work").fetchone()[0]
+
+    report = store_event_candidates(
+        conn,
+        candidates=[
+            ExtractedCandidate(
+                target="user",
+                content=content,
+                memory_type="preference",
+                confidence=0.95,
+                evidence_refs=["session:duplicate:turn:1"],
+            )
+        ],
+        scope=scope,
+        scope_id="scope-a",
+        session_id="duplicate",
+        dry_run=False,
+    )
+
+    after_row = dict(conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone())
+    assert report["inserted"] == 0
+    assert report["updated_existing"] == 0
+    assert report["duplicates_no_touch"] == 1
+    assert report["mutation_applied"] is False
+    assert conn.total_changes == before_changes
+    assert after_row == before_row
+    assert conn.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0] == before_vector
+    assert conn.execute("SELECT COUNT(*) FROM relation_focus_work").fetchone()[0] == before_relation
+    assert conn.execute("SELECT COUNT(*) FROM governance_audit_events").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("lifecycle", ["candidate", "superseded"])
+def test_event_candidate_duplicate_nonvisible_lifecycle_is_idempotent_no_touch(
+    tmp_path,
+    lifecycle,
+):
+    conn = sqlite3.connect(tmp_path / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    scope = RuntimeScope(
+        platform="telegram",
+        user_id="user-a",
+        chat_id="chat-a",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    content = f"Lifecycle {lifecycle} duplicate remains observation only."
+    stored_id, *_ = store_row(
+        conn,
+        memory_id=f"existing-{lifecycle}",
+        scope_id="scope-a",
+        platform=scope.platform,
+        user_id=scope.user_id,
+        chat_id=scope.chat_id,
+        thread_id=scope.thread_id,
+        gateway_session_key=scope.gateway_session_key,
+        agent_identity=scope.agent_identity,
+        agent_workspace=scope.agent_workspace,
+        session_id="original",
+        source="event-digest",
+        target="user",
+        content=content,
+        metadata=json.dumps({"lifecycle": lifecycle}),
+    )
+    before = dict(
+        conn.execute("SELECT * FROM memories WHERE id=?", (stored_id,)).fetchone()
+    )
+    changes = conn.total_changes
+
+    report = store_event_candidates(
+        conn,
+        candidates=[
+            ExtractedCandidate(
+                target="user",
+                content=content,
+                memory_type="preference",
+                confidence=0.95,
+                evidence_refs=["session:duplicate:turn:2"],
+            )
+        ],
+        scope=scope,
+        scope_id="scope-a",
+        session_id="duplicate",
+        dry_run=False,
+    )
+
+    assert report["duplicates_no_touch"] == 1
+    assert report["mutation_applied"] is False
+    assert conn.total_changes == changes
+    assert dict(
+        conn.execute("SELECT * FROM memories WHERE id=?", (stored_id,)).fetchone()
+    ) == before
+
+
+def test_event_candidate_archived_equivalent_inserts_new_without_touching_old_row(
+    tmp_path,
+):
+    """Archived history is not a live duplicate.
+
+    Journal/nightly already require a distinct new candidate and a frozen
+    archived row. The F02 no-touch parametrize treated archived like
+    candidate/superseded, which contradicted that contract.
+    """
+
+    conn = sqlite3.connect(tmp_path / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    scope = RuntimeScope(
+        platform="telegram",
+        user_id="user-a",
+        chat_id="chat-a",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    content = "Archived workflow text must not suppress a later equivalent candidate."
+    stored_id, *_ = store_row(
+        conn,
+        memory_id="existing-archived",
+        scope_id="scope-a",
+        platform=scope.platform,
+        user_id=scope.user_id,
+        chat_id=scope.chat_id,
+        thread_id=scope.thread_id,
+        gateway_session_key=scope.gateway_session_key,
+        agent_identity=scope.agent_identity,
+        agent_workspace=scope.agent_workspace,
+        session_id="original",
+        source="event-digest",
+        target="user",
+        content=content,
+        metadata=json.dumps({"memory_type": "preference"}),
+    )
+    conn.execute(
+        "UPDATE memories SET metadata = json_set(metadata, '$.lifecycle', 'archived') WHERE id = ?",
+        (stored_id,),
+    )
+    conn.commit()
+    assert (
+        json.loads(
+            conn.execute(
+                "SELECT metadata FROM memories WHERE id=?", (stored_id,)
+            ).fetchone()[0]
+        )["lifecycle"]
+        == "archived"
+    )
+    before_old = dict(
+        conn.execute("SELECT * FROM memories WHERE id=?", (stored_id,)).fetchone()
+    )
+    before_old_vector = [
+        dict(row)
+        for row in conn.execute(
+            "SELECT * FROM vector_outbox WHERE memory_id=? ORDER BY id",
+            (stored_id,),
+        ).fetchall()
+    ]
+    before_old_relation = [
+        dict(row)
+        for row in conn.execute(
+            "SELECT * FROM relation_focus_work WHERE memory_id=? ORDER BY memory_id",
+            (stored_id,),
+        ).fetchall()
+    ]
+    before_old_audit = conn.execute(
+        "SELECT COUNT(*) FROM governance_audit_events WHERE target_id=?",
+        (stored_id,),
+    ).fetchone()[0]
+
+    report = store_event_candidates(
+        conn,
+        candidates=[
+            ExtractedCandidate(
+                target="user",
+                content=content,
+                memory_type="preference",
+                confidence=0.95,
+                evidence_refs=["session:archived-replay:turn:1"],
+            )
+        ],
+        scope=scope,
+        scope_id="scope-a",
+        session_id="archived-replay",
+        dry_run=False,
+    )
+
+    after_old = dict(
+        conn.execute("SELECT * FROM memories WHERE id=?", (stored_id,)).fetchone()
+    )
+    after_old_vector = [
+        dict(row)
+        for row in conn.execute(
+            "SELECT * FROM vector_outbox WHERE memory_id=? ORDER BY id",
+            (stored_id,),
+        ).fetchall()
+    ]
+    after_old_relation = [
+        dict(row)
+        for row in conn.execute(
+            "SELECT * FROM relation_focus_work WHERE memory_id=? ORDER BY memory_id",
+            (stored_id,),
+        ).fetchall()
+    ]
+    new_id = report["ids"][0]
+    new_row = conn.execute(
+        "SELECT id, scope_id, target, content, metadata FROM memories WHERE id=?",
+        (new_id,),
+    ).fetchone()
+
+    assert report["inserted"] == 1
+    assert report["duplicates_no_touch"] == 0
+    assert report["mutation_applied"] is True
+    assert new_id != stored_id
+    assert after_old == before_old
+    assert json.loads(after_old["metadata"])["lifecycle"] == "archived"
+    assert after_old_vector == before_old_vector
+    assert after_old_relation == before_old_relation
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM governance_audit_events WHERE target_id=?",
+            (stored_id,),
+        ).fetchone()[0]
+        == before_old_audit
+    )
+    assert new_row["scope_id"] == "scope-a"
+    assert new_row["target"] == "user"
+    assert new_row["content"] == content
+    assert json.loads(new_row["metadata"])["lifecycle"] == "candidate"
+    assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 2
+    assert conn.execute(
+        "SELECT COUNT(*) FROM governance_audit_events WHERE target_id=?",
+        (new_id,),
+    ).fetchone()[0] == 1
+    extra_vector = [
+        dict(row)
+        for row in conn.execute(
+            "SELECT * FROM vector_outbox WHERE memory_id != ? ORDER BY id",
+            (stored_id,),
+        ).fetchall()
+    ]
+    extra_relation = [
+        dict(row)
+        for row in conn.execute(
+            "SELECT * FROM relation_focus_work WHERE memory_id != ? ORDER BY memory_id",
+            (stored_id,),
+        ).fetchall()
+    ]
+    assert all(row["memory_id"] == new_id for row in extra_vector)
+    assert all(row["memory_id"] == new_id for row in extra_relation)
+
+
+def test_event_candidate_cross_scope_collision_inserts_without_touching_other_scope(
+    tmp_path,
+):
+    conn = sqlite3.connect(tmp_path / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    scope = RuntimeScope(
+        platform="telegram",
+        user_id="user-a",
+        chat_id="chat-a",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    content = "Cross-scope collision must insert a new candidate in the caller scope."
+    stored_id, *_ = store_row(
+        conn,
+        memory_id="scope-b-promoted",
+        scope_id="scope-b",
+        platform=scope.platform,
+        user_id=scope.user_id,
+        chat_id=scope.chat_id,
+        thread_id=scope.thread_id,
+        gateway_session_key=scope.gateway_session_key,
+        agent_identity=scope.agent_identity,
+        agent_workspace=scope.agent_workspace,
+        session_id="original",
+        source="user",
+        target="user",
+        content=content,
+        metadata=json.dumps({"lifecycle": "promoted"}),
+    )
+    before = dict(
+        conn.execute("SELECT * FROM memories WHERE id=?", (stored_id,)).fetchone()
+    )
+
+    report = store_event_candidates(
+        conn,
+        candidates=[
+            ExtractedCandidate(
+                target="user",
+                content=content,
+                memory_type="preference",
+                confidence=0.95,
+                evidence_refs=["session:cross-scope:turn:1"],
+            )
+        ],
+        scope=scope,
+        scope_id="scope-a",
+        session_id="cross-scope",
+        dry_run=False,
+    )
+
+    assert report["inserted"] == 1
+    assert report["duplicates_no_touch"] == 0
+    assert report["mutation_applied"] is True
+    assert dict(
+        conn.execute("SELECT * FROM memories WHERE id=?", (stored_id,)).fetchone()
+    ) == before
+    new_row = conn.execute(
+        "SELECT scope_id, metadata FROM memories WHERE id=?",
+        (report["ids"][0],),
+    ).fetchone()
+    assert new_row["scope_id"] == "scope-a"
+    assert json.loads(new_row["metadata"])["lifecycle"] == "candidate"
+
+
+def test_event_candidate_duplicate_of_fact_owned_projection_is_zero_write(tmp_path):
+    conn = sqlite3.connect(tmp_path / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    scope = RuntimeScope(
+        platform="telegram",
+        user_id="user-a",
+        chat_id="chat-a",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+    )
+    content = "Asha prefers source-backed factual answers with claim identity."
+    stored_id, *_ = store_row(
+        conn,
+        memory_id="fact-owned-projection",
+        scope_id="scope-a",
+        platform=scope.platform,
+        user_id=scope.user_id,
+        chat_id=scope.chat_id,
+        thread_id=scope.thread_id,
+        gateway_session_key=scope.gateway_session_key,
+        agent_identity=scope.agent_identity,
+        agent_workspace=scope.agent_workspace,
+        session_id="original",
+        source="fact-executor",
+        target="user",
+        content=content,
+        metadata=json.dumps(
+            {
+                "lifecycle": "promoted",
+                "fact_claim_id": "claim-owned",
+                "fact_claim_key": "fact:owned",
+            }
+        ),
+    )
+    before = dict(
+        conn.execute("SELECT * FROM memories WHERE id=?", (stored_id,)).fetchone()
+    )
+    changes = conn.total_changes
+
+    report = store_event_candidates(
+        conn,
+        candidates=[
+            ExtractedCandidate(
+                target="user",
+                content=content,
+                memory_type="preference",
+                confidence=0.94,
+                evidence_refs=["session:fact-owned:turn:1"],
+            )
+        ],
+        scope=scope,
+        scope_id="scope-a",
+        session_id="fact-owned",
+        dry_run=False,
+    )
+
+    assert report["inserted"] == 0
+    assert report["updated_existing"] == 0
+    assert report["duplicates_no_touch"] == 1
+    assert report["mutation_applied"] is False
+    assert conn.total_changes == changes
+    after = dict(
+        conn.execute("SELECT * FROM memories WHERE id=?", (stored_id,)).fetchone()
+    )
+    assert after == before
+    assert json.loads(after["metadata"])["fact_claim_id"] == "claim-owned"
+    assert conn.execute("SELECT COUNT(*) FROM governance_audit_events").fetchone()[0] == 0
+
+
+def test_explicit_user_store_duplicate_still_refreshes_visible_row(tmp_path):
+    conn = sqlite3.connect(tmp_path / "memory.sqlite3")
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    content = "Explicit user-store duplicates keep their established refresh contract."
+    first_id, _summary, first_updated, inserted = store_row(
+        conn,
+        memory_id="user-store-original",
+        scope_id="scope-a",
+        platform="telegram",
+        user_id="user-a",
+        chat_id="chat-a",
+        thread_id="",
+        gateway_session_key="",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+        session_id="original",
+        source="user",
+        target="user",
+        content=content,
+        metadata=json.dumps({"lifecycle": "promoted"}),
+        timestamp="2026-01-01T00:00:00+00:00",
+    )
+    assert inserted is True
+    before_vector = conn.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0]
+
+    reused_id, _summary, reused_updated, reused_inserted = store_row(
+        conn,
+        memory_id="user-store-duplicate",
+        scope_id="scope-a",
+        platform="telegram",
+        user_id="user-a",
+        chat_id="chat-a",
+        thread_id="",
+        gateway_session_key="",
+        agent_identity="yuheng",
+        agent_workspace="hermes",
+        session_id="duplicate",
+        source="user",
+        target="user",
+        content=content,
+        metadata=json.dumps({"lifecycle": "promoted"}),
+        allow_duplicate=False,
+        timestamp="2026-01-02T00:00:00+00:00",
+    )
+
+    assert reused_inserted is False
+    assert reused_id == first_id
+    assert reused_updated != first_updated
+    row = conn.execute(
+        "SELECT updated_at, metadata FROM memories WHERE id=?", (first_id,)
+    ).fetchone()
+    assert row["updated_at"] == "2026-01-02T00:00:00+00:00"
+    assert json.loads(row["metadata"])["lifecycle"] == "promoted"
+    assert (
+        conn.execute("SELECT COUNT(*) FROM vector_outbox").fetchone()[0]
+        >= before_vector
+    )
+
+
 def test_generic_candidate_store_boundary_rejects_transport_noise_before_dedup(tmp_path):
     conn = sqlite3.connect(tmp_path / "memory.sqlite3")
     conn.row_factory = sqlite3.Row

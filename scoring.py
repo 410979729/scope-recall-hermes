@@ -8,7 +8,13 @@ from functools import lru_cache
 from typing import Any
 
 from .aliases import canonicalize_alias
-from .gating import matched_query_intent_terms, normalized_token_set, query_tokens, semantic_query_tokens
+from .gating import (
+    document_supports_mixed_letter_digit_identifiers,
+    matched_query_intent_terms,
+    normalized_token_set,
+    query_tokens,
+    semantic_query_tokens,
+)
 
 
 _QUERY_STOPWORDS = {
@@ -89,6 +95,11 @@ def lexical_score(*, query: str, content: str, summary: str, source: str, target
     doc_token_set = _canonical_tokens(haystack)
 
     overlap = 0.0
+    if not document_supports_mixed_letter_digit_identifiers(query, haystack):
+        # A shared personal name is not topic support for an unmatched
+        # mixed letter-and-digit identifier such as WSL2 or CUDA12.
+        # Ordinary category nouns keep the baseline overlap scorer.
+        return 0.0
     informative_query = {token for token in query_token_set if token not in _QUERY_STOPWORDS}
     if informative_query:
         overlap = len(informative_query & doc_token_set) / max(len(informative_query), 1)
