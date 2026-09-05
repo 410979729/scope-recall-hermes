@@ -9,6 +9,11 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any, List, Set
 
+if __package__:
+    from .aliases import canonicalize_alias
+else:
+    from aliases import canonicalize_alias
+
 TRIVIAL_RE = re.compile(
     r"^(?:"
     r"ok|okay|kk|k|yes|no|yep|nope|sure|thanks|thank you|thx|ty|got it|roger|"
@@ -19,6 +24,7 @@ TRIVIAL_RE = re.compile(
 )
 WORD_RE = re.compile(r"[a-zA-Z0-9]{2,}|[\u4e00-\u9fff]{2,}")
 _CJK_TOKEN_RE = re.compile(r"^[\u4e00-\u9fff]+$")
+_MIXED_LETTER_DIGIT_RE = re.compile(r"^(?=.*[a-z])(?=.*\d)[a-z0-9]{4,}$")
 _DIRECT_CJK_LOCATION_QUERY_RE = re.compile(
     r"^(?:请问)?(?P<subject>[\u4e00-\u9fff]{2,12}?)(?:现在|目前|当前)?"
     r"(?P<predicate>住|居住|位于|运行|部署|工作|生活|存放)?"
@@ -256,6 +262,13 @@ def _cjk_query_segments(token: str) -> List[str]:
     existing optional dependency of Scope Recall's entity extractor, so use
     its search segmentation here while preserving the original token and the
     previous no-jieba fallback behavior.
+
+    Two-character content units must survive even when a window n-gram
+    contains them.  Interrogative and light-verb characters glue stored
+    subjects onto question words (``写短片``, ``项目叫``) that never appear
+    in the memory; dropping ``短片`` / ``项目`` then makes lexical overlap
+    zero.  The 11-term cap therefore prefers length-2 units over longer
+    interrogative-span n-grams.
     """
 
     if len(token) < 4 or not _CJK_TOKEN_RE.fullmatch(token):
@@ -281,13 +294,15 @@ def _cjk_query_segments(token: str) -> List[str]:
         ):
             continue
         positioned.setdefault(term, token.find(term))
-    terms = [
-        term
-        for term in positioned
-        if len(term) > 2
-        or not any(len(other) > len(term) and term in other for other in positioned)
-    ]
-    return sorted(terms, key=lambda term: (-len(term), positioned[term], term))[:11]
+    return sorted(
+        positioned,
+        key=lambda term: (
+            0 if len(term) == 2 else 1,
+            -len(term),
+            positioned[term],
+            term,
+        ),
+    )[:11]
 
 
 def query_tokens(text: str) -> List[str]:
@@ -424,6 +439,57 @@ def retrieval_query_tokens(text: str) -> List[str]:
     """Return semantic query tokens plus bounded optional intent expansions."""
 
     return list(dict.fromkeys([*semantic_query_tokens(text), *query_intent_terms(text)]))
+
+
+def mixed_letter_digit_identifiers(text: str) -> List[str]:
+    """Return explicit mixed letter-and-digit technical identifiers.
+
+    Category nouns such as ``database`` are not identifiers. Tokens must
+    already survive the shared semantic tokenizer so stopword and alias
+    boundaries stay consistent with scoring.
+    """
+
+    output: list[str] = []
+    seen: set[str] = set()
+    for token in semantic_query_tokens(text):
+        if not _MIXED_LETTER_DIGIT_RE.fullmatch(token):
+            continue
+        if token in seen:
+            continue
+        seen.add(token)
+        output.append(token)
+    return output
+
+
+def document_supports_mixed_letter_digit_identifiers(
+    query: str, *documents: str
+) -> bool:
+    """Return whether the candidate supports the query's mixed identifiers.
+
+    A query with no mixed letter-and-digit tokens keeps baseline behavior.
+    If such tokens exist, at least one must appear as a complete
+    normalized/canonical token under the same tokenizer, alias, and stem
+    boundaries used by lexical scoring. Named prefixes and other
+    substrings are not support.
+    """
+
+    identifiers = mixed_letter_digit_identifiers(query)
+    if not identifiers:
+        return True
+    haystack = "\n".join(clean_text(document) for document in documents).casefold()
+    if not haystack:
+        return False
+    document_tokens: set[str] = set()
+    for token in normalized_token_set(query_tokens(haystack)):
+        canonical = canonicalize_alias(token)
+        if canonical:
+            document_tokens.add(canonical)
+    for token in identifiers:
+        for raw in dict.fromkeys((token, stem_token(token))):
+            canonical = canonicalize_alias(raw)
+            if canonical and canonical in document_tokens:
+                return True
+    return False
 
 
 def stem_token(token: str) -> str:

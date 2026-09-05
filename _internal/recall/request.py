@@ -18,3 +18,4 @@ class RecallSearchRequest:
     recall_mode: str = "advisory"
     query_vector: list[float] | None = None
     sanitize_output: bool = True
+    deadline_monotonic: float | None = None

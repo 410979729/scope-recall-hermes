@@ -18,6 +18,7 @@ from .candidate_extraction import ExtractedCandidate
 from .capture_filters import classify_transport_noise
 from .models import RuntimeScope
 from .sql_store import record_governance_audit_event, store_row
+from .sqlite_recovery import rollback_if_active
 
 
 def _candidate_metadata(candidate: ExtractedCandidate) -> dict[str, Any]:
@@ -60,6 +61,42 @@ def _candidate_metadata(candidate: ExtractedCandidate) -> dict[str, Any]:
     return metadata
 
 
+def _cleanup_event_candidate_unit(
+    conn: sqlite3.Connection,
+    *,
+    savepoint: str,
+    savepoint_active: bool,
+    owns_transaction: bool,
+    original: BaseException,
+) -> None:
+    """Abandon this unit without hiding the original failure or caller writes.
+
+    Admission, commit, and the returned receipt stay in ``store_event_candidates``.
+    This helper only distinguishes owned outer rollback from a still-active
+    local savepoint. Borrowed connections must not roll back the caller's
+    earlier writes. A cleanup failure is attached as the cause so the
+    connection remains fail-closed for the existing rollback/quarantine path.
+    """
+
+    cleanup_error: BaseException | None = None
+    if savepoint_active:
+        try:
+            if bool(getattr(conn, "in_transaction", False)):
+                conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        except BaseException as exc:
+            cleanup_error = exc
+    if owns_transaction:
+        try:
+            rollback_if_active(conn)
+        except BaseException as exc:
+            if cleanup_error is not None and exc.__cause__ is None:
+                exc.__cause__ = cleanup_error
+            cleanup_error = exc
+    if cleanup_error is not None:
+        raise original from cleanup_error
+
+
 def store_event_candidates(
     conn: sqlite3.Connection,
     *,
@@ -69,7 +106,16 @@ def store_event_candidates(
     session_id: str,
     dry_run: bool = True,
 ) -> dict[str, Any]:
-    """Store one event-candidate batch atomically when explicitly enabled."""
+    """Store one event-candidate batch atomically when explicitly enabled.
+
+    This function owns admission (transport reject, dry-run, candidate
+    metadata rewrite) and the write unit. It begins ``BEGIN IMMEDIATE`` only
+    when the connection is idle; ``store_row`` and audit remain
+    transaction-neutral. Companion audit rows are written in the same unit as
+    inserted truth and are omitted on no-touch observation. Retry is not
+    owned here. The returned report is the receipt; callers recover an
+    unusable connection through the existing rollback/quarantine path.
+    """
 
     received_candidates = list(candidates)
     rejection_reasons: Counter[str] = Counter()
@@ -90,17 +136,22 @@ def store_event_candidates(
         "rejection_reasons": dict(sorted(rejection_reasons.items())),
         "inserted": 0,
         "updated_existing": 0,
+        "duplicates_no_touch": 0,
+        "mutation_applied": False,
         "ids": [],
     }
     if dry_run or not candidate_list:
         return report
 
-    started_outer_transaction = not conn.in_transaction
-    if started_outer_transaction:
-        conn.execute("BEGIN IMMEDIATE")
+    owns_transaction = False
+    savepoint_active = False
     savepoint = f"event_candidates_{uuid.uuid4().hex}"
-    conn.execute(f"SAVEPOINT {savepoint}")
     try:
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+            owns_transaction = True
+        conn.execute(f"SAVEPOINT {savepoint}")
+        savepoint_active = True
         for candidate in candidate_list:
             memory_id = f"event-candidate-{uuid.uuid4().hex}"
             metadata = _candidate_metadata(candidate)
@@ -126,10 +177,15 @@ def store_event_candidates(
             if inserted:
                 report["inserted"] += 1
                 action = "insert_candidate"
+                report["mutation_applied"] = True
             else:
-                report["updated_existing"] += 1
-                action = "dedupe_existing_candidate"
+                # ``store_row`` guarantees candidate duplicate admission is a
+                # zero-write observation.  Do not add an audit row here: the
+                # audit itself would violate the zero-write/idempotence contract.
+                report["duplicates_no_touch"] += 1
             report["ids"].append(stored_id)
+            if not inserted:
+                continue
             record_governance_audit_event(
                 conn,
                 event_id=f"event-candidate-audit-{uuid.uuid4().hex}",
@@ -149,12 +205,16 @@ def store_event_candidates(
                 dry_run=False,
             )
         conn.execute(f"RELEASE SAVEPOINT {savepoint}")
-        if started_outer_transaction:
+        savepoint_active = False
+        if owns_transaction:
             conn.commit()
-    except BaseException:
-        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
-        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
-        if started_outer_transaction and conn.in_transaction:
-            conn.rollback()
+    except BaseException as exc:
+        _cleanup_event_candidate_unit(
+            conn,
+            savepoint=savepoint,
+            savepoint_active=savepoint_active,
+            owns_transaction=owns_transaction,
+            original=exc,
+        )
         raise
     return report

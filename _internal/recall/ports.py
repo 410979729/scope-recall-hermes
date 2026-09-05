@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from ...models import RecallItem
+from .sources import SourceCapabilities
 
 
 class RecallSearchHost(Protocol):
@@ -15,6 +16,8 @@ class RecallSearchHost(Protocol):
     """
 
     provider: Any
+
+    def source_capabilities(self) -> SourceCapabilities: ...
 
     @property
     def last_rejected_candidates(self) -> list[RecallItem]: ...

@@ -230,6 +230,8 @@ include = [
   "prompting.py",
   "provider.py",
   "recall.py",
+  "recall_source_adapters.py",
+  "recall_sqlite_budget.py",
   "recall_pipeline.py",
   "recovery_commands.py",
   "retention_profiles.py",

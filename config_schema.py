@@ -81,7 +81,7 @@ _DESCRIPTION_OVERRIDES = {
     "vector.embedder.read_timeout_seconds": "Maximum seconds allowed to read one hosted embedding response. Each attempt is also capped by the remaining query/writer/maintenance budget.",
     "vector.embedder.write_timeout_seconds": "Maximum seconds allowed to write one hosted embedding request body. Each attempt is also capped by the remaining operation budget.",
     "vector.embedder.pool_timeout_seconds": "Maximum seconds a hosted embedding request may wait for a free HTTP connection from the pool.",
-    "vector.embedder.query_timeout_seconds": "Total wall-clock budget for one retrieval-query embedding operation, including plugin retries. Exhaustion fails closed so recall can fall back lexically.",
+    "vector.embedder.query_timeout_seconds": "Total wall-clock budget for one retrieval-query embedding operation, including plugin retries. The same value is the foreground recall request budget (0.05–300 seconds; default 8.0). Remaining time caps provider/helper lock waits, request-scoped SQLite busy waits for locked reads, helper RPC waits, and whether Experience preflight may start. This is not hard real-time: an already-started SQLite statement or helper send can overshoot, and helper cleanup after a request-budget failure may finish on an owned reaper after the caller returns. Bulk workers without a bound request deadline keep their own timers; the native helper default stays 60s. Exhaustion fails closed so recall can fall back lexically.",
     "vector.embedder.writer_timeout_seconds": "Total wall-clock budget for one ordinary writer/outbox embedding operation, including plugin retries.",
     "vector.embedder.maintenance_timeout_seconds": "Total wall-clock budget for one maintenance or full-sync embedding operation, including plugin retries.",
     "vector.pgvector.connect_timeout_seconds": "Maximum time allowed to establish a PGVector connection. Values are clamped to 1–300 seconds.",
@@ -114,6 +114,9 @@ _DESCRIPTION_OVERRIDES = {
     "purge.enabled": "Enable the explicit deny-first privacy purge maintenance surface. maintenance_tools_enabled and exact two-phase confirmations remain required.",
     "tool_schema_profile": "Select the Primary Agent schema profile. Profiles never grant maintenance or extension authority; compact and standard remain 2.0.x aliases.",
     "retrieval.relation_contradiction_mode": "Contradiction handling: surface keeps and warns; suppress excludes exactly one deterministic loser when both sides reach the bounded candidate set and preserves a one-sided candidate; penalize applies relation_contradicts_penalty.",
+    "retrieval.metadata_weight": "Unitless quality-bonus weight in 0.0–1.0 applied after the base score. 0 disables the bonus. Missing or null uses 0.08. Bool, NaN, Inf, negatives, non-numeric values, and values outside 0–1 are rejected.",
+    "retrieval.entity_weight": "Unitless entity-overlap bonus weight in 0.0–1.0. 0 disables the bonus. Missing or null uses 0.06. Bool, NaN, Inf, negatives, non-numeric values, and values outside 0–1 are rejected.",
+    "retrieval.entity_distance_weight": "Unitless graph-distance bonus weight in 0.0–1.0. 0 disables the bonus. Missing or null uses 0.04. Bool, NaN, Inf, negatives, non-numeric values, and values outside 0–1 are rejected.",
 }
 
 _GROUP_NOTES = {
