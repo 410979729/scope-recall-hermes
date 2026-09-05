@@ -8,6 +8,7 @@ import sys
 import time
 import threading
 from types import SimpleNamespace
+from concurrent.futures import ThreadPoolExecutor
 import weakref
 
 import pytest
@@ -297,3 +298,31 @@ native.LanceVectorStore.upsert_records = crash_after_commit
         if provider._vector_store is not None:
             provider._vector_store.close()
         conn.close()
+
+
+@pytest.mark.skipif(importlib.util.find_spec("lancedb") is None, reason="optional LanceDB runtime missing")
+def test_concurrent_native_calls_preserve_rows_scope_and_reopen(tmp_path):
+    store = _store(tmp_path)
+    rows = [{"id": f"parallel-{index}", "scope_id": f"scope-{index % 2}",
+             "source": "audit", "target": "memory", "content": f"Audited fact {index}",
+             "summary": "fact", "updated_at": "2026-09-05", "vector": [1.0, 0.0, 0.0]}
+            for index in range(12)]
+    try:
+        store.open()
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(store.upsert, row) for row in rows]
+            for future in futures:
+                future.result(timeout=30)
+        assert set(store.list_ids()) == {row["id"] for row in rows}
+        for scope_id in ("scope-0", "scope-1"):
+            hits = store.search([1.0, 0.0, 0.0], scope_id=scope_id, limit=20)
+            assert {hit["id"] for hit in hits} == {row["id"] for row in rows if row["scope_id"] == scope_id}
+        assert store.search([1.0, 0.0, 0.0], scope_id="foreign-scope", limit=20) == []
+        with pytest.raises(VectorStoreCompatibilityError):
+            store.repair_records({})
+        assert store.count_rows() == len(rows)
+        store.close()
+        store.open_existing_for_update()
+        assert set(store.list_records()) == {row["id"] for row in rows}
+    finally:
+        store.close()

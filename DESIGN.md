@@ -38,6 +38,8 @@ On Windows, the vector factory opens LanceDB through a persistent private subpro
 
 Online candidate review is a typed memory command on the existing tool/application/kernel/adapter path. Dry-runs use query access. Apply acquires the admitted writer and a clean `BEGIN IMMEDIATE` boundary before scope, lifecycle and Fact-ownership checks; the shared lifecycle service joins that transaction for truth, companions, audit and vector intent. A failed result rolls back the whole command. Revision tokens let an operator reject a plan that changed after review.
 
+Store receipt enrichment follows the durable commit and has no write authority. An unavailable lifecycle read preserves the committed outcome and id, marks lifecycle unknown, and logs only the error type. It cannot reclassify a successful mutation as a failed write or trigger replay.
+
 ## Goals
 
 1. Fix cross-turn topic bleed caused by queued previous-turn recall.

@@ -1,6 +1,9 @@
 """Online candidate review keeps the gateway writer, scope, and lifecycle authority."""
 
 import json
+import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -126,6 +129,55 @@ def test_online_review_does_not_reprocess_event_digest_rows(provider, lifecycle)
         result = _call(provider, action="promote", id=memory_id, dry_run=dry_run)
         assert result["status"] == "invalid_state" and not result["applied"]
     assert json.loads(conn.execute("SELECT metadata FROM memories WHERE id=?", (memory_id,)).fetchone()[0]) == metadata
+
+
+def test_concurrent_review_has_exactly_one_audited_transition(provider):
+    memory_id = _candidate(provider)
+    plan = _call(provider, action="promote", id=memory_id)
+    conn = provider._require_conn()
+    audit_count = conn.execute("SELECT COUNT(*) FROM governance_audit_events").fetchone()[0]
+    barrier = threading.Barrier(2)
+
+    def apply(action):
+        barrier.wait(timeout=10)
+        return _call(provider, action=action, id=memory_id, dry_run=False,
+                     expected_updated_at=plan["expected_updated_at"],
+                     expected_lifecycle=plan["expected_lifecycle"])
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(apply, action) for action in ("promote", "archive")]
+        results = [future.result(timeout=20) for future in futures]
+    assert sum(bool(result.get("applied")) for result in results) == 1
+    rejected = next(result for result in results if not result.get("applied"))
+    assert rejected["status"] in {"invalid_state", "conflict"}
+    assert conn.execute("SELECT COUNT(*) FROM governance_audit_events").fetchone()[0] == audit_count + 1
+    assert not conn.in_transaction
+    assert provider._truth_writer_role == "owner"
+
+
+def test_store_receipt_read_failure_preserves_committed_success(provider, monkeypatch, caplog):
+    private_error = "database is locked: private receipt diagnostic"
+
+    def unavailable(_memory_id):
+        raise sqlite3.OperationalError(private_error)
+
+    monkeypatch.setattr(provider._tool_service._port, "stored_memory_identity", unavailable)
+    conn = provider._require_conn()
+    before_count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+    result = json.loads(provider.handle_tool_call("scope_recall_store", {
+        "content": "Deployments retain a verified rollback image for service recovery.",
+        "target": "ops",
+    }))
+    assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == before_count + 1
+    assert not conn.in_transaction
+    assert result.get("stored") is True
+    assert result["id"]
+    assert result["lifecycle"] == result["receipt"]["lifecycle"] == "unknown"
+    assert result["receipt"]["action"] == "unknown"
+    assert result["retry_count"] == 0
+    assert conn.execute("SELECT id FROM memories WHERE id=?", (result["id"],)).fetchone()
+    assert private_error not in json.dumps(result)
+    assert private_error not in caplog.text
 
 
 def test_online_review_rolls_back_truth_when_audit_write_fails(provider):
