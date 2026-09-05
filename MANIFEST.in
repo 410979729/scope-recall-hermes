@@ -6,6 +6,7 @@ include CHANGELOG.md
 include LICENSE
 include SECURITY.md
 include CONTRIBUTING.md
+include CONTRIBUTORS.md
 include .env.example
 include py.typed
 recursive-include docs *.md

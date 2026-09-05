@@ -10,7 +10,15 @@ Scope Recall keeps SQLite memory rows as the source of truth. Vector stores are 
 
 The alias `sqlite` is normalized to `sqlite-bruteforce`.
 
+## Windows native isolation
+
+Windows gateway/desktop LanceDB operations run in a persistent private helper process over anonymous pipes. The Hermes process retains the embedder, authoritative SQLite connection, generation manifest and causal outbox. Sentence-transformers/PyTorch is loaded lazily only when a local embedding model is selected. This contains the class of native Arrow crashes reported after local-model startup; it does not claim to diagnose or repair every incompatible native wheel.
+
+A native helper exit, invalid response or operation timeout closes the helper and returns a companion failure. The protocol bounds individual frames to 64 MiB and requests to 60 seconds. Mutations are not automatically resent because a timed-out operation may have completed; normal outbox replay and explicit store reopen govern recovery. SQLite truth is preserved and ordinary recall can degrade to lexical retrieval. The existing dependency constraints, generation identity checks and explicit repair workflow still apply. Linux and macOS retain their existing in-process backend.
+
 ## Public health contract
+
+After a helper failure, use the online `scope_recall_repair` tool (with `maintenance_tools_enabled=true`) or restart the provider to reopen it before retrying companion work. Background retries do not silently reopen a failed helper. Explicit offline Doctor, migration, and repair scripts may still load native libraries inside their own CLI process; they are separate from the live gateway process and remain subject to native-wheel compatibility.
 
 Runtime stats and the combined Doctor vector report expose one four-state contract: `ready`, `degraded`, `needs_repair`, or `disabled`. Detailed conditions are carried by `reason_code`, never by extra state values. The same payload includes `auto_recoverable`, `repair_required`, `usable_for_query`, `message`, and aggregate `debt_counts`.
 
