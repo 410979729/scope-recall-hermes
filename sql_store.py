@@ -27,7 +27,12 @@ from .fact_repository import (
     require_fact_mutation_authority,
 )
 from .freshness import upsert_memory_freshness
-from .lifecycle_policy import ordinary_recall_lifecycle_visible, ordinary_recall_lifecycle_visible_sql
+from .lifecycle_policy import (
+    _metadata_lifecycle_expr,
+    _normalized_sql_token,
+    ordinary_recall_lifecycle_visible,
+    ordinary_recall_lifecycle_visible_sql,
+)
 from .lexical_generation import (
     LEXICAL_MIGRATION_DESCRIPTION,
     LEXICAL_MIGRATION_ID,
@@ -1064,7 +1069,22 @@ def store_row(
             raise ValueError(
                 "initial canonical fact Projection requires Claim identity"
             )
+    candidate_ingress = (
+        str(preflight_metadata.get("lifecycle") or "").strip().lower()
+        == "candidate"
+    )
     if not allow_duplicate:
+        # Candidate ingress is observation-only against live/provisional
+        # truth: an unreviewed Event Digest must not refresh a promoted or
+        # still-open row, enqueue companion work, or alter ranking. Archived
+        # history is not a live duplicate. Reusing ``1=1`` would let an
+        # archived row suppress a distinct new candidate and contradict the
+        # journal/nightly contract that never mutates or reactivates it.
+        lifecycle_clause = (
+            f"{_normalized_sql_token(_metadata_lifecycle_expr('m'))} != 'archived'"
+            if candidate_ingress
+            else ordinary_recall_lifecycle_visible_sql("m")
+        )
         existing = conn.execute(
             f"""
             SELECT m.id, m.summary, m.updated_at, m.metadata
@@ -1072,13 +1092,20 @@ def store_row(
             WHERE m.scope_id = ?
               AND m.target = ?
               AND m.dedup_key = ?
-              AND {ordinary_recall_lifecycle_visible_sql('m')}
+              AND {lifecycle_clause}
             ORDER BY m.updated_at DESC
             LIMIT 1
             """,
             (scope_id, target, key),
         ).fetchone()
         if existing is not None:
+            if candidate_ingress:
+                return (
+                    str(existing["id"]),
+                    str(existing["summary"]),
+                    str(existing["updated_at"]),
+                    False,
+                )
             try:
                 tracked = conn.execute(
                     "SELECT 1 FROM fact_freshness WHERE subject_type='memory' AND subject_id=?",

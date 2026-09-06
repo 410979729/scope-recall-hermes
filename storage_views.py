@@ -4,10 +4,15 @@ These views apply lifecycle and visibility filters before recall merges candidat
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import sqlite3
 import time
-from typing import Any
+from typing import Any, Iterator
 
+from ._internal.recall.deadline import acquire_until, current_request_deadline
+from .recall_sqlite_budget import using_request_busy_timeout
+from ._internal.recall.sources import SourceUnavailable
+from .sqlite_recovery import is_sqlite_lock_contention
 from .gating import build_fts_query, compact_text, like_terms, normalized_token_set, retrieval_query_tokens
 from .governance import classify_memory
 from .graph import load_metadata
@@ -37,6 +42,40 @@ def _recall_lifecycle_visible_sql(alias: str) -> str:
 
 _ACTIVE_MEMORY_SQL = _recall_lifecycle_visible_sql("memories")
 _ACTIVE_MEMORY_SQL_M = _recall_lifecycle_visible_sql("m")
+
+
+@contextmanager
+def _scoped_provider_lock(provider: Any, *, source: str) -> Iterator[None]:
+    """Acquire the provider lock with the remaining request budget when bound."""
+
+    lock = getattr(provider, "_lock", None)
+    if lock is None:
+        yield
+        return
+    deadline = current_request_deadline()
+    if deadline is None:
+        with lock:
+            yield
+        return
+    if not acquire_until(lock, deadline):
+        raise SourceUnavailable(source, "provider_lock_timeout")
+    try:
+        yield
+    finally:
+        lock.release()
+
+
+@contextmanager
+def _request_bound_sqlite_read(conn: sqlite3.Connection, *, source: str) -> Iterator[None]:
+    """Bound one locked authority read to the remaining request budget."""
+
+    try:
+        with using_request_busy_timeout(conn):
+            yield
+    except sqlite3.Error as exc:
+        if is_sqlite_lock_contention(exc):
+            raise SourceUnavailable(source, "sqlite_lock_timeout") from exc
+        raise
 
 
 def _scope_placeholders(provider: Any) -> str:
@@ -226,7 +265,9 @@ def search_db_memories(
     except (TypeError, ValueError):
         configured_pool = 0
     candidate_pool = max(limit * 2, limit, configured_pool)
-    with provider._lock:
+    with _scoped_provider_lock(provider, source="lexical"), _request_bound_sqlite_read(
+        conn, source="lexical"
+    ):
         # Exact memory identifiers are a separate, bounded lexical authority.
         # This lets opaque identifiers (UUID/SHA/project-style IDs) find the
         # row they literally name without granting those queries vector-only
@@ -485,12 +526,17 @@ def search_vector_memories_with_vector(
 
     if not provider._vector_ready or not provider._vector_store:
         return []
+    provider._vector_query_last_error = ""
     try:
         top_k = max(limit, int((provider._vector_config or {}).get("top_k") or limit))
         rows = []
         for scope_id in provider._accessible_scope_ids:
             rows.extend(provider._vector_store.search(query_vector, scope_id=scope_id, limit=top_k))
+    except SourceUnavailable:
+        provider._vector_query_last_error = "SourceUnavailable"
+        return []
     except Exception as exc:
+        provider._vector_query_last_error = type(exc).__name__
         mark_vector_needs_repair(provider, exc)
         return []
     threshold = float((provider._retrieval_config or {}).get("vector_min_score") or 0.12)
@@ -505,8 +551,10 @@ def search_vector_memories_with_vector(
     if unique_ids:
         try:
             scope_params = _accessible_scope_params(provider)
-            with provider._lock:
-                conn = provider._require_conn()
+            conn = provider._require_conn()
+            with _scoped_provider_lock(provider, source="vector"), _request_bound_sqlite_read(
+                conn, source="vector"
+            ):
                 for id_chunk in chunked_sql_parameters(
                     conn,
                     unique_ids,
@@ -527,10 +575,9 @@ def search_vector_memories_with_vector(
                     truth_by_id.update(
                         {str(truth_row["id"]): truth_row for truth_row in truth_rows}
                     )
-        except Exception:
-            # SQLite is the authority.  If it cannot be read and checked, no
-            # companion row is safe to surface.
-            truth_by_id = {}
+        except SourceUnavailable:
+            provider._vector_query_last_error = "SourceUnavailable"
+            return []
     results: list[RecallItem] = []
     companion_mismatch_count = 0
     for row in rows:

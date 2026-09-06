@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import math
 import re
+import sqlite3
 import time
+from contextlib import nullcontext
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any
@@ -36,6 +38,17 @@ from .temporal_query import (
 )
 from ._internal.recall import orchestrator as _recall_orchestrator
 from ._internal.recall import prefetch as _recall_prefetch
+from ._internal.recall.deadline import (
+    RequestDeadline,
+    acquire_until,
+    current_request_deadline,
+    resolve_foreground_budget_seconds,
+    using_request_deadline,
+)
+from ._internal.recall.sources import SourceCapabilities
+from .recall_source_adapters import bind_source_capabilities
+from .recall_sqlite_budget import using_request_busy_timeout
+from .sqlite_recovery import is_sqlite_lock_contention
 from ._internal.recall.request import RecallSearchRequest
 from ._internal.recall.tuning import (
     CJK_SCOPE_PRONOUNS as _CJK_SCOPE_PRONOUNS,
@@ -50,7 +63,10 @@ from ._internal.recall.tuning import (
     TEMPORAL_DURABLE_TYPES as _TEMPORAL_DURABLE_TYPES,
     TEMPORAL_EPISODIC_TYPES as _TEMPORAL_EPISODIC_TYPES,
     TEMPORAL_TEMPORARY_TYPES as _TEMPORAL_TEMPORARY_TYPES,
+    cjk_named_actor_from_referential_identity_clause as _cjk_named_actor_from_referential_identity_clause,
+    explicit_cjk_query_entities_corroborated_in_item as _explicit_cjk_query_entities_corroborated_in_item,
     is_short_cjk_name as _is_short_cjk_name,
+    is_unquoted_cjk_referential_identity_clause as _is_unquoted_cjk_referential_identity_clause,
     normalize_cjk_scope_subject as _normalize_cjk_scope_subject,
 )
 
@@ -61,6 +77,9 @@ _TRACE_SAFE_TEXT_FIELDS = frozenset(
         "id",
         "query_signal_state",
         "recall_mode",
+        "reason_code",
+        "source",
+        "state",
         "status",
         "strategy",
         "warning",
@@ -141,6 +160,11 @@ class RecallService:
         self._last_temporal_query_diagnostics: ContextVar[
             dict[str, Any] | None
         ] = ContextVar(f"{prefix}.temporal_diagnostics", default=None)
+
+    def source_capabilities(self) -> SourceCapabilities:
+        """Bind Provider/search hooks for this host. Orchestrator sees only the port."""
+
+        return bind_source_capabilities(self)
 
     @property
     def last_rejected_candidates(self) -> list[RecallItem]:
@@ -360,16 +384,26 @@ class RecallService:
         counters run only inside ``run_search``.
         """
 
-        return _recall_orchestrator.run_search(
-            self,
-            RecallSearchRequest(
-                query=query,
-                limit=limit,
-                recall_mode=recall_mode,
-                query_vector=query_vector,
-                sanitize_output=sanitize_output,
-            ),
+        request = RecallSearchRequest(
+            query=query,
+            limit=limit,
+            recall_mode=recall_mode,
+            query_vector=query_vector,
+            sanitize_output=sanitize_output,
         )
+        deadline_cm = nullcontext()
+        if current_request_deadline() is None:
+            if request.deadline_monotonic is not None:
+                deadline = RequestDeadline.from_absolute(request.deadline_monotonic)
+            else:
+                deadline = RequestDeadline.from_budget(
+                    resolve_foreground_budget_seconds(
+                        getattr(self.provider, "_config", {})
+                    )
+                )
+            deadline_cm = using_request_deadline(deadline)
+        with deadline_cm:
+            return _recall_orchestrator.run_search(self, request)
 
     def _temporal_current_candidates(
         self,
@@ -403,22 +437,23 @@ class RecallService:
         timezone_name = str(temporal_config.get("timezone") or "UTC")
         with self.provider._lock:
             conn = self.provider._require_conn()
-            precedence = query_temporal_memory_precedence(
-                conn,
-                scope_ids=scopes,
-                memory_ids=candidate_memory_ids[:MAX_PRECEDENCE_MEMORY_IDS],
-                timezone_name=timezone_name,
-            )
-            query_diagnostics: dict[str, Any] = {}
-            views = query_current_fact_views(
-                conn,
-                scope_ids=scopes,
-                query=query,
-                valid_at=precedence.semantic_at,
-                timezone_name=timezone_name,
-                limit=bounded_limit,
-                diagnostics=query_diagnostics,
-            )
+            with using_request_busy_timeout(conn):
+                precedence = query_temporal_memory_precedence(
+                    conn,
+                    scope_ids=scopes,
+                    memory_ids=candidate_memory_ids[:MAX_PRECEDENCE_MEMORY_IDS],
+                    timezone_name=timezone_name,
+                )
+                query_diagnostics: dict[str, Any] = {}
+                views = query_current_fact_views(
+                    conn,
+                    scope_ids=scopes,
+                    query=query,
+                    valid_at=precedence.semantic_at,
+                    timezone_name=timezone_name,
+                    limit=bounded_limit,
+                    diagnostics=query_diagnostics,
+                )
         self.last_temporal_query_diagnostics = dict(query_diagnostics)
         candidates: list[RecallItem] = []
         for view in views:
@@ -524,12 +559,18 @@ class RecallService:
             match.group(1)
             for match in re.finditer(r"`([\u4e00-\u9fff]{2,12})`", raw)
         )
-        values.extend(
-            normalized_subject
-            for subject in _CJK_SCOPE_QUERY_SUBJECT_RE.findall(raw)
-            if (normalized_subject := _normalize_cjk_scope_subject(subject))
-            not in _CJK_SCOPE_PRONOUNS
-        )
+        for subject in _CJK_SCOPE_QUERY_SUBJECT_RE.findall(raw):
+            normalized_subject = _normalize_cjk_scope_subject(subject)
+            if normalized_subject in _CJK_SCOPE_PRONOUNS:
+                continue
+            if _is_unquoted_cjk_referential_identity_clause(normalized_subject, raw):
+                actor = _cjk_named_actor_from_referential_identity_clause(
+                    normalized_subject, raw
+                )
+                if actor and actor not in _CJK_SCOPE_PRONOUNS:
+                    values.append(actor)
+                continue
+            values.append(normalized_subject)
         return self._scope_entities(values)
 
     def _explicit_item_scope_entities(
@@ -630,7 +671,18 @@ class RecallService:
                 for entity in conflicting_prose_entities
             ):
                 return True
-            return bool(self._explicit_query_scope_entities(query))
+            explicit_query_entities = self._explicit_query_scope_entities(query)
+            if (
+                not claim_entities
+                and not declared_projects
+                and len(declared_entities) > 3
+                and _explicit_cjk_query_entities_corroborated_in_item(
+                    explicit_query_entities,
+                    f"{item.content}\n{item.summary}",
+                )
+            ):
+                return False
+            return bool(explicit_query_entities)
 
         # Without a structured subject, Project-prefixed entities remain a hard
         # isolation signal and prose proper names are a conservative fallback.
@@ -776,23 +828,28 @@ class RecallService:
         """
         try:
             lock = getattr(self.provider, "_lock", None)
+            deadline = current_request_deadline()
+            held = False
             if lock is not None:
-                with lock:
-                    conn = self.provider._require_conn()
+                if not acquire_until(lock, deadline):
+                    return {}
+                held = True
+            try:
+                conn = self.provider._require_conn()
+                with using_request_busy_timeout(conn):
                     memory_scope_rows = conn.execute(memory_scope_sql, ids).fetchall()
                     endpoint_scopes = {
                         str(row[1]) for row in memory_scope_rows if str(row[1] or "")
                     }
                     policy = generated_relation_scope_policy(conn, endpoint_scopes)
                     rows = conn.execute(relation_sql, relation_params).fetchall()
-            else:
-                conn = self.provider._require_conn()
-                memory_scope_rows = conn.execute(memory_scope_sql, ids).fetchall()
-                endpoint_scopes = {
-                    str(row[1]) for row in memory_scope_rows if str(row[1] or "")
-                }
-                policy = generated_relation_scope_policy(conn, endpoint_scopes)
-                rows = conn.execute(relation_sql, relation_params).fetchall()
+            finally:
+                if held and lock is not None:
+                    lock.release()
+        except sqlite3.Error as exc:
+            if is_sqlite_lock_contention(exc):
+                return {}
+            raise
         except Exception:
             return {}
 
@@ -866,10 +923,23 @@ class RecallService:
             return {}
         try:
             lock = getattr(self.provider, "_lock", None)
-            if lock is None:
-                return memory_freshness_map(self.provider._require_conn(), memory_ids)
-            with lock:
-                return memory_freshness_map(self.provider._require_conn(), memory_ids)
+            deadline = current_request_deadline()
+            held = False
+            if lock is not None:
+                if not acquire_until(lock, deadline):
+                    return {}
+                held = True
+            try:
+                conn = self.provider._require_conn()
+                with using_request_busy_timeout(conn):
+                    return memory_freshness_map(conn, memory_ids)
+            finally:
+                if held and lock is not None:
+                    lock.release()
+        except sqlite3.Error as exc:
+            if is_sqlite_lock_contention(exc):
+                return {}
+            raise
         except Exception:
             return {}
 
