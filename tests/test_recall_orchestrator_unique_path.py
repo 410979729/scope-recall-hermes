@@ -31,8 +31,7 @@ from scope_recall.tooling import ScopeRecallToolService
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 ORCH_MARKERS = (
-    "_search_db_memories",
-    "_search_vector_memories",
+    "collect_sources",
     "merge_recall_candidates",
     "temporal_stale_removed",
 )
@@ -682,9 +681,9 @@ def test_required_diagnostics_remain_in_orchestrator_source() -> None:
         assert stage in source
     for token in (
         "bm25_score",
-        "_search_vector_memories",
+        "collect_sources",
+        "source_capabilities",
         "_entity_graph_scores",
-        "_temporal_current_candidates",
         "_fact_freshness_evidence",
         "build_reflection" not in source and "fact_freshness",
         "_explicit_query_scope_entities" not in source and "entity_scope_mismatch",

@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, Iterable, Mapping
 
+from ._internal.recall.deadline import remaining_seconds
 from .aliases import canonicalize_alias
 from .capture_filters import sanitize_report_text
 from .embedding_request_runner import (
@@ -903,6 +904,9 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
         if not items:
             return []
         deadline = time.monotonic() + self._operation_budget(resolved_operation)
+        remaining = remaining_seconds()
+        if remaining is not None:
+            deadline = min(deadline, time.monotonic() + remaining)
         vectors: list[list[float]] = []
         batch_size = 100
         for start in range(0, len(items), batch_size):
@@ -1355,6 +1359,11 @@ class MiniMaxEmbedder(BaseEmbedder):
         resolved_deadline = deadline if deadline is not None else (
             time.monotonic() + self._operation_budget(resolved_operation)
         )
+        remaining_request = remaining_seconds()
+        if remaining_request is not None:
+            resolved_deadline = min(
+                resolved_deadline, time.monotonic() + remaining_request
+            )
         remaining = resolved_deadline - time.monotonic()
         if remaining <= 0.0:
             raise TimeoutError(
@@ -1427,6 +1436,9 @@ class MiniMaxEmbedder(BaseEmbedder):
         if not items:
             return []
         deadline = time.monotonic() + self._operation_budget(operation)
+        remaining = remaining_seconds()
+        if remaining is not None:
+            deadline = min(deadline, time.monotonic() + remaining)
         vectors: list[list[float]] = []
         # MiniMax endpoint accepts batches comfortably up to a few hundred
         # items; keep chunks conservative to stay well under request limits.

@@ -5,6 +5,13 @@ All notable changes to `scope-recall` will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Keep two-character Chinese content units in interrogative queries so a natural “who wrote which project” question can admit the same row as an exact title lookup. Window n-grams that glue light verbs onto question words no longer erase those units. A shared personal name or high vector score cannot admit a row when the query’s mixed letter-and-digit identifier (such as WSL2) is absent from that candidate; ordinary English category nouns stay on the baseline lexical scorer.
+- Keep `_internal/recall` free of sqlite3 and Provider host binding: request SQLite busy-timeout and source collectors live on outer adapter modules, while the orchestrator receives a typed capability port from RecallService.
+- Keep duplicate Event Digest candidates observation-only: do not refresh existing memories or enqueue companion work, and report no-touch duplicates without a misleading candidate audit.
+- Preserve the original candidate-batch failure when savepoint startup or a post-release commit fails; roll back only the transaction owned by the batch.
+- Apply the same lifecycle whitespace and case normalization in Python and SQLite, including historical padded metadata, while retaining existing missing/unknown-token visibility.
+- Honor explicitly configured zero metadata, entity-overlap, and entity-distance ranking weights; share effective weight validation with diagnostics.
+- Carry the remaining foreground recall budget through source collection, provider and helper locks, SQLite busy waits, embedding requests, and helper responses. Recoverable source failures remain distinguishable from missing evidence; integrity failures are not converted into successful recall.
 - Preserve valid L4 verdicts when a model exceeds the 120-character reason budget; sanitize and bound the explanation after strict verdict/schema validation (#65).
 - Reject duplicate JSON response fields instead of accepting the last of contradictory L4 verdicts, found during the accompanying protocol audit.
 - Requeue orphaned relation-frequency failures from current SQLite truth with bounded retries and supersession evidence. Writer-handoff preflight vetoes no longer resume a writer that was never quiesced (#66).

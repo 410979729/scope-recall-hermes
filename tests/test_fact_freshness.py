@@ -58,7 +58,11 @@ class DummyProvider:
         self._conn = sqlite3.connect(":memory:")
         self._conn.row_factory = sqlite3.Row
         self._conn.execute(
-            "CREATE TABLE memories(id TEXT PRIMARY KEY, scope_id TEXT NOT NULL DEFAULT '', metadata TEXT NOT NULL DEFAULT '{}')"
+            "CREATE TABLE memories("
+            "id TEXT PRIMARY KEY, "
+            "scope_id TEXT NOT NULL DEFAULT '', "
+            "target TEXT NOT NULL DEFAULT '', "
+            "metadata TEXT NOT NULL DEFAULT '{}')"
         )
         ensure_graph_schema(self._conn)
         self._conn.execute(
@@ -84,8 +88,13 @@ class DummyProvider:
         )
         for item in self._items:
             self._conn.execute(
-                "INSERT INTO memories(id, scope_id, metadata) VALUES (?, ?, ?)",
-                (item.id, str((item.metadata or {}).get("scope_id") or self._shared_scope_id), json.dumps(item.metadata or {}, ensure_ascii=False)),
+                "INSERT INTO memories(id, scope_id, target, metadata) VALUES (?, ?, ?, ?)",
+                (
+                    item.id,
+                    str((item.metadata or {}).get("scope_id") or self._shared_scope_id),
+                    str(item.target or ""),
+                    json.dumps(item.metadata or {}, ensure_ascii=False),
+                ),
             )
         self._conn.commit()
 
