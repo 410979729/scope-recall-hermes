@@ -17,7 +17,7 @@ venv/
 *.sqlite3
 *.sqlite3-*
 lancedb/
-scope-recall/
+/scope-recall/
 lancepro/
 backups/
 review-report.*.md
