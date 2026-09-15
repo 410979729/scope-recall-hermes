@@ -10,6 +10,18 @@ commands to re-judge claims and to clear failures a shipped fix has cured.
 SQLite remains the only fact authority; host adapters share the same contracts.
 This is a local candidate, not a published release or a claim of live deployment.
 
+**Why it is a candidate and not a release.** `scripts/check.py --tier release`
+runs 900 tests with none failing, but exits 2 and reports
+`missing_gates: ["model"]`. That gate does not clear by making model calls: it
+wants a P18 formal acceptance receipt, which requires denominators of 120
+independent core items and 240 paired variants, evidence marked `real`, a method
+adjudication accepted by a party independent of whoever wrote the code, and an
+independent semantic scorer. The P18 machinery is in this tree; the evaluation
+corpus is not -- `tests/eval/public_fixture.jsonl` holds two rows, both flagged
+`"simulation": true`. Read a green test count here as exactly that, and never as
+a passing release gate: reporting the count without the exit code is how that
+mistake was made before. Integration is 1223/0 and packaging 114/0, both exit 0.
+
 ## For agents: install or upgrade on the user's behalf
 
 Users only need to ask "install Scope Recall" or "帮我升级一下 scoperecall".
