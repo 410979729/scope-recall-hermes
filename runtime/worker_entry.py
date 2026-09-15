@@ -178,7 +178,8 @@ def _persist_worker_status_unlocked(config: RuntimeInstanceConfig, payload: dict
     # Accept only the closed worker protocol, excluding arbitrary stderr/text.
     safe = {key: payload[key] for key in ("status", "processed", "completed", "failed", "retried",
             "skipped", "stale", "obsolete", "deferred", "recovered", "daily_queue_used",
-            "pending_work", "failed_work", "oldest_pending_at") if key in payload}
+            "pending_work", "failed_work", "terminal_failed_work",
+            "oldest_pending_at") if key in payload}
     safe["capability_gaps"] = [str(value)[:120] for value in payload.get("capability_gaps", ())][:16]
     safe["unavailable_work_types"] = [str(value)[:32] for value in payload.get("unavailable_work_types", ())][:4]
     for key in ("ingress_replayed", "ingress_cancelled", "source_only"):
@@ -347,10 +348,33 @@ def run_worker(config_path: str | Path, *, output: TextIO | None = None) -> int:
                 payload["source_only"] = sum(item.disposition == "source_only" for item in receipt.items)
                 payload["daily_queue_used"] = budget_state["used"]
                 queue = instance.status()
+                # The same classification the pass-level status above uses, and
+                # the one the doctor uses. Raw failed_work was still deciding
+                # here long after rc15 fixed it forty lines up: with 33 items
+                # failed by design and none actionable, the doctor said
+                # "attention" and this line said "degraded" with an empty gap
+                # list, so the one place a watcher polls disagreed with the one
+                # place an operator looks -- and gave no reason either way.
+                terminal_failed = sum(count for code, count in queue.work_error_counts
+                                      if not _is_actionable(code))
+                actionable_failed = max(0, queue.failed_work - terminal_failed)
                 payload.update(pending_work=queue.pending_work, failed_work=queue.failed_work,
+                               terminal_failed_work=terminal_failed,
                                oldest_pending_at=queue.oldest_pending_at)
-                if queue.failed_work or background_gaps or payload["source_only"]:
+                if actionable_failed or background_gaps or payload["source_only"]:
                     payload["status"] = "degraded"
+                    # Never degraded without saying why: an empty gap list is
+                    # what sent a watcher hunting through two-day-old logs. All
+                    # three reasons name themselves -- background_gaps are
+                    # already in the list above, and the other two were not.
+                    if actionable_failed:
+                        gaps.append(f"work_failed:{actionable_failed}")
+                    if payload["source_only"]:
+                        gaps.append(f"source_only:{payload['source_only']}")
+                    payload["capability_gaps"] = sorted(set(gaps))
+                elif terminal_failed:
+                    gaps.append("work_failed_terminal_only")
+                    payload["capability_gaps"] = sorted(set(gaps))
                 elif receipt.idle and queue.pending_work:
                     payload["status"] = "waiting"
                 persist_worker_status(config, payload, started_at=started_at, exit_code=0)

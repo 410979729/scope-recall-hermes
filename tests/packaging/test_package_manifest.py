@@ -115,3 +115,37 @@ def test_the_changelog_has_an_entry_for_this_version() -> None:
     assert version in _read("CHANGELOG.md"), (
         f"CHANGELOG.md has no entry for {version}; a shipped version with no "
         "notes is a version nobody can review")
+
+
+# --- one version string, one tree --------------------------------------------
+
+def _git(*args):
+    import subprocess
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    done = subprocess.run(["git", *args], cwd=root, capture_output=True, text=True)
+    return done.returncode, done.stdout.strip()
+
+
+def test_a_tagged_version_is_not_reused_for_a_different_tree():
+    """rc23 was tagged and installed, then a behaviour change was committed under
+    the same version. For about an hour the repository and the live instance ran
+    different code behind the identical string `3.1.0rc23`, and nothing on the
+    instance could tell them apart -- the divergence was found by hashing a file.
+    A version that already names a tree may not name a second one."""
+    from scope_recall._version import __version__
+
+    code, _ = _git("rev-parse", "--git-dir")
+    if code != 0:
+        import pytest
+
+        pytest.skip("not a git checkout")
+    tag = "v" + __version__
+    code, tagged = _git("rev-parse", "--verify", "--quiet", tag + "^{tree}")
+    if code != 0:
+        return  # This version has never been tagged; nothing to contradict.
+    _, head_tree = _git("rev-parse", "HEAD^{tree}")
+    assert tagged == head_tree, (
+        "%s already names a different tree. Bump the version, or move the tag if "
+        "it was never published." % tag)

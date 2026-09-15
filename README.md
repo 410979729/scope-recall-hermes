@@ -2,7 +2,7 @@
 
 Scope Recall v3 is a bounded local memory core with SQLite as the authority and rebuildable vector companions. It provides host adapters for Hermes and Codex, including Codex MCP tools when the optional `codex` extra is installed. The public package is `hermes-scope-recall`; the Python import is `scope_recall`; the host wrapper identity remains `scope-recall`.
 
-This checkout is release candidate `3.1.0rc22`. It bounds the reads that were
+This checkout is release candidate `3.1.0rc25`. It bounds the reads that were
 silently truncating -- embedding input, evidence budget, packet slots -- and
 reports what each one cut; it collapses byte-identical retrieved content so a
 packet slot is never spent saying the same thing twice; and it adds operator
@@ -45,7 +45,7 @@ python -m pip install "<absolute-path-to-wheel>"
 python -m pip install "<absolute-path-to-wheel>[codex]"
 ```
 
-The current release candidate is `3.1.0rc22`; these commands are local
+The current release candidate is `3.1.0rc25`; these commands are local
 placeholders until a reviewed wheel is built. They do not claim that full host
 runtime wiring or production registration has been accepted.
 
