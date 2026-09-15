@@ -14,8 +14,13 @@ AUTOMATIC_DIGEST_LIFECYCLES = frozenset({"candidate", "promoted"})
 _EXPERIENCE_TYPES = frozenset({"procedure", "workflow", "pitfall"})
 
 _CURRENT_MARKER_RE = re.compile(
+    # NOTE: the bare adverb 持续 ("keeps/continuously") is deliberately NOT a marker.
+    # It appears in ordinary engineering prose ("持续N秒抗抖", "能持续转成候选") and,
+    # combined with the broad _VOLATILE_VALUE_RE nouns (状态/候选), mislabelled real
+    # durable memories as time-sensitive snapshots. Persisted-state phrasing is still
+    # caught by _EXPLICIT_SNAPSHOT_RE ("持续处于 NO-GO").
     r"(?:\bcurrent(?:ly)?\b|\bonline\b|\blive\b|\brunning\b|\bnow\b|"
-    r"当前|目前|现状|在线|运行中|已切换|现已|仍为|持续)",
+    r"当前|目前|现状|在线|运行中|已切换|现已|仍为)",
     re.IGNORECASE,
 )
 _VOLATILE_VALUE_RE = re.compile(

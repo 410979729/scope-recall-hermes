@@ -71,6 +71,24 @@ def test_concrete_current_values_remain_time_sensitive_even_with_followup_rules(
     assert is_time_sensitive_snapshot("当前模型是Ultra，发布前应该核对。") is True
 
 
+def test_adverb_continuation_is_not_a_current_state_marker() -> None:
+    """Bare 持续 ("keeps/continuously") must not count as "currently is".
+
+    Two real production rows were mislabelled as time-sensitive snapshots purely
+    because an engineering description contained 持续 next to a domain noun that
+    _VOLATILE_VALUE_RE treats as a volatile value (状态 / 候选).
+    """
+
+    assert is_time_sensitive_snapshot(
+        '示教时畅通状态位置①按3秒、位置②按1秒固化护栏工作点，触摸屏设"护栏回波丢失+持续N秒（如3秒）"抗抖再触发停轨。'
+    ) is False
+    assert is_time_sensitive_snapshot(
+        "journal-digest 能持续把 journal 转成记忆候选，但候选默认落在 needs_review 待审区。"
+    ) is False
+    # persisted-state phrasing must keep being detected
+    assert is_time_sensitive_snapshot("该模型持续处于 NO-GO 状态，需先复核。") is True
+
+
 def test_reusable_workflow_is_routed_to_experience_review_not_directly_promoted() -> None:
     content = "遇到journal积压时，先做doctor，再分批digest并验证backlog下降。"
     metadata = automatic_admission_metadata(
