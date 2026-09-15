@@ -8,3 +8,7 @@ verification/P08/** -text
 
 # Normalize line endings: the repository stores LF; Windows agents committed CRLF once (rc21-rc26 standalone tree).
 * text=auto eol=lf
+
+# Evidence under verification/ is byte-exact: digests of these files are pinned in scripts/model_receipt_evidence.py
+# and inside other evidence files. Never convert their line endings.
+verification/** -text
