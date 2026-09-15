@@ -5,3 +5,6 @@ verification/P07/** -text
 verification/G0/evaluation-dataset-audit-v[3-6].json -text
 verification/G1/** -text
 verification/P08/** -text
+
+# Normalize line endings: the repository stores LF; Windows agents committed CRLF once (rc21-rc26 standalone tree).
+* text=auto eol=lf
