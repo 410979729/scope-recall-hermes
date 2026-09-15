@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import xml.etree.ElementTree as ET
 
@@ -111,20 +112,33 @@ def disable(config_path, *, remove=False):
     return dict(status="removed" if remove else "paused", task_name=control["task_name"])
 
 
+def _current_user() -> str | None:
+    """The interactive account the operator is running as, or None when unknown."""
+    return os.environ.get("USERNAME") or os.environ.get("USER") or None
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=("plan", "enable", "pause", "remove"))
     parser.add_argument("--config", required=True)
-    parser.add_argument("--python")
-    parser.add_argument("--user-id")
+    parser.add_argument("--python", default=sys.executable,
+                        help="interpreter the task runs; defaults to the one running this command")
+    parser.add_argument("--user-id", default=_current_user(),
+                        help="task principal; defaults to the current account")
     parser.add_argument("--env-file")
     args = parser.parse_args(argv)
-    if args.command in {"pause", "remove"}:
-        result = disable(args.config, remove=args.command == "remove")
-    else:
-        result = plan(args.config, args.python, user_id=args.user_id, env_file=args.env_file)
-        if args.command == "enable":
-            result = apply(result)
+    try:
+        if args.command in {"pause", "remove"}:
+            result = disable(args.config, remove=args.command == "remove")
+        else:
+            result = plan(args.config, args.python, user_id=args.user_id, env_file=args.env_file)
+            if args.command == "enable":
+                result = apply(result)
+    except ValueError as exc:
+        # Contract failures are reported like the rest of the maintenance CLI: one JSON
+        # object with the failure code, exit 2, no traceback for a missing argument.
+        print(json.dumps({"status": "error", "code": str(exc)}, ensure_ascii=True, indent=2))
+        return 2
     print(json.dumps(result, ensure_ascii=True, indent=2))
     return 0
 

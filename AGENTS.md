@@ -10,3 +10,12 @@ Maintainability is a product requirement. Prefer a small, explicit change to a n
 - Long work needs bounded stages, durable progress, idempotent retry and visible failure. Never turn unknown data into a successful migration or retry forever.
 - A new public capability needs a shared contract, both applicable host surfaces, concise operator documentation and focused boundary tests. Avoid full-suite repetition without a specific reason.
 - Do not add a dependency or an extensibility layer solely for hypothetical future use. Document the reason when a new durable state or abstraction is necessary.
+
+## Release and deployment
+
+- The canonical repository is `github.com/410979729/scope-recall-hermes`; deployable wheels are built only from its release branch, at a tagged commit (`v3.1.0rcN`), one wheel and one sha256 per tag. Never `git init` a second history or copy the tree; use `git worktree add` and remove the worktree when the task is merged.
+- Production is upgraded only by `pip install --no-index --no-deps --force-reinstall <wheel>` followed by a planned stop (`gateway.status.write_planned_stop_marker`). Never edit files under `site-packages`; a hot patch that was unavoidable becomes a tagged release the same day.
+- After every upgrade run `maintenance.cli plan-install` / `apply-install` so the receipt and host wrapper carry the installed version, then `doctor`; receipt, `pip show` and `running-code` records disagreeing on the version is a defect.
+- Operator CLIs run as `python -I -X utf8 -m scope_recall.maintenance.cli ...` from outside the source tree, so the installed package and not a checkout answers.
+- One writer at a time on the release branch; other contributors deliver branches or patches. Run the tiers that own the changed files before committing, `unit` + `contract` + `packaging` before merging, `integration` + `native` before tagging.
+- Every new `.py` is either in `packaging/v11-module-allowlist.json` or in `tests/` and selected by a tier in `scripts/check.py`. Files that are neither do not enter the tree.
