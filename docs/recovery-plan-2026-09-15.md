@@ -16,6 +16,32 @@
 | 散落 | `F:\t` 174 个目录（15 个仓库、16 个 venv）；规范仓库注册 18 个 worktree，多数 detached。 |
 | 已知缺陷 | 见第 4 节缺陷清单（D-01 … D-12）。 |
 
+## 0.1 执行记录（2026-09-15 19:30Z 更新）
+
+阶段 0 已完成的步骤与结果；证据在 `F:\t\SR-TIANSHU-RECALL-FIX-20260915\deploy-rc27-20260915\`。
+
+| 步 | 结果 |
+|---|---|
+| 0.1 谱系 | `release/3.1.0` = `b8b408b`：`6d37525` 规范化换行（512 个索引对象 CRLF→LF）、`0313bfe`/`6fa48d9`/`dd8a6c0` 回放 rc23–rc26、`15ffea7` 补交 Codex 清单与文档整理、`b8b408b` `verification/** -text` 并按独立树字节存回 279 个证据文件。回放后按内容比对独立树：只剩 `.gitattributes` 与 3 个脚本的可执行位。 |
+| 0.2 顺手修 | `102d79e` autostart 默认参数 + JSON 契约错误 + 删 shim + AGENTS.md 规则；`590a270` manifest 工具写 LF。新增 `tests/contract/test_autostart_cli.py` 进 `contract`。 |
+| 0.3 rc27 | `37b75e8` 盖章；门禁 unit 29 / contract 96 / native 48 / packaging 118 / integration 1684，0 failed；wheel sha256 `B342D692…A4832`，158 个文件，0 个 CRLF。 |
+| 0.4 推送 | 远端 `release/3.1.0` = `b8b408b`，tag `v3.1.0rc27`。 |
+| 0.5 天枢 | rc27 装入，`apply-install` 后 receipt = wrapper = pip = rc27（原 rc5/rc5/rc26）；planned-stop 3 s 退出，新 gateway pid 31260；doctor `attention`（仅 68 条终态 `derivation_invalid`）。 |
+| 0.6 退役 | 两个独立仓库写入 `RETIRED.md`；hub 删除临时远端；目录保留待用户确认删除（1.3）。 |
+| 0.7 → 1.7 天玑 | 评估后直接执行：schema 同为 1108，纯代码替换。rc10 → rc27 装入，三方版本 rc27，planned-stop 6 s，新 gateway pid 30872。doctor 仍 `degraded`，但原因不是代码：`worker_capability_unavailable`（外部整合未获批准，20,644 条 consolidate 待处理）、`source_processing_deferred` 940、`capture_ingress_blocked`（D-13）。 |
+
+执行中发现并补进清单的事实：
+
+- **第三套安装**：Codex 宿主 `F:\ScopeRecall\codex`（venv `F:\ScopeRecall\codex-venv`，包 3.1.0rc5，项目根 `F:\SCOPERECALL更新项目`，worker 任务 `ScopeRecall-a432855c…` 每 5 分钟运行）。统一到 rc27 列为 1.8。
+- **D-13** 天玑 `capture_inbox` 4 条采集卡在 `VERSION_CONFLICT`（2026-09-14 两条、09-15 两条），worker `ingress_replayed=0`，doctor 因此永远 `degraded`。需查重放路径为何不处理该错误码。
+- **D-14** 原地 `pip install --force-reinstall` 在 gateway 运行时可能因目录句柄失败（天玑：WinError 32，pip 已把旧包挪到 `~cope_recall` 暂存后停下，包处于半拆状态）。恢复办法：立刻再执行一次不带 `--force-reinstall` 的 `pip install`，然后删除 `site-packages` 下 `~*` 暂存目录。写进 0.5 的操作步骤，并在阶段 1 把部署脚本化。
+- 证据摘要依赖检出换行：`scripts/model_receipt_evidence.py` 钉住的 sha256 是 CRLF 字节，而仓库一直存 LF，只在 Windows 检出上恰好通过；已用 `verification/** -text` 修正。
+- 天玑机器上还挂着 9 个历史计划任务（`Tianji Scope Recall Closeout 20260828`、`Exclusive Maintenance`、`Upgrade Controller`、`Yuheng ScopeRecall Deploy 20260823` 等）和一份失败的旧 supervisor 文件（`runtime-supervisor-1314a4fc…`，exit 124）。列入 1.3 清理清单。
+
+### 1.8 Codex 安装升级 rc5 → rc27（阶段 1 新增）
+- 操作：确认 Codex 插件目录（`~/.codex/config.toml` 中 `scope-recall-codex@personal`）与 `codex-installation.json` 的绑定；`pip install` 到 `F:\ScopeRecall\codex-venv`；`plan-install --host codex` 无 conflicts 后 `apply-install`；worker 任务 pause/enable；MCP 服务进程随下一次 Codex 会话自然换代。
+- 验收：`doctor --host codex` 三方版本 rc27；一次 Codex 会话内 recall 有结果。
+
 ## 1. 从今天起生效的规则（写进 AGENTS.md「Release and deployment」）
 
 1. 只有规范仓库的 `release/3.1.0`（以及将来的 `main`）能产出可部署 wheel；每个部署版本对应一个 tag `v3.1.0rcN`，一个 wheel，一个 sha256。
@@ -59,7 +85,7 @@
 - 操作（与 rc26 相同，全部输出存 `F:\t\SR-TIANSHU-RECALL-FIX-20260915\deploy-rc27-20260915\`）：
   1. 备份 `site-packages\scope_recall` + dist-info、receipt、wrapper；
   2. `autostart pause`；
-  3. `pip install --no-index --no-deps --force-reinstall <rc27.whl>`；
+  3. `pip install --no-index --no-deps --force-reinstall <rc27.whl>`；若报 `WinError 32`（gateway 持有包目录句柄，pip 已把旧包挪进 `~cope_recall`），立刻再执行一次不带 `--force-reinstall` 的 `pip install`，再删除 `site-packages\~*`（D-14）；
   4. 校验：`pip show`=rc27、安装文件哈希 == 树、`-I` 导入；
   5. `plan-install --host hermes --instance-root <天枢> --target-plugin-dir F:\Agents\shared\scope-recall\tianshu-installed-wrapper --project-root F:\t\SR-310-INTEGRATION-20260915 --python <天枢 venv python> --agent-id default`，无 conflicts 后 `apply-install`；
   6. `write_planned_stop_marker(<gateway pid>)`，等监督任务 15 秒内拉起新 gateway；
@@ -141,8 +167,12 @@
 | D-09 | `autostart` 缺参 Traceback | 阶段 0.2 |
 | D-10 | 根目录 shim 遮蔽安装包 | 阶段 0.2 |
 | D-11 | flaky supervisor 测试 | 阶段 1.6 |
-| D-12 | 天玑停留在 rc10 | 阶段 0.7 评估，1.7 执行 |
+| D-12 | 天玑停留在 rc10 | 已修：2026-09-15 升到 rc27 |
+| D-13 | 天玑 4 条采集卡在 `VERSION_CONFLICT`，从不重放 | 阶段 1（新） |
+| D-14 | 原地 pip 升级在 gateway 运行时可能半途失败（目录句柄） | 阶段 1：部署脚本化（新） |
+| D-15 | Codex 宿主安装停留在 rc5 | 阶段 1.8（新） |
 | 已修 | recall 有候选返回 0 条；lance helper 超时中毒；五个热补文件未入库；两个回归测试不在 tier；8 个可重试失败 | rc26 |
+| 已修 | D-08 天枢/天玑三方版本不一致；D-09 autostart 缺参；D-10 shim 遮蔽；Codex 清单未入库；manifest 工具 CRLF；证据摘要依赖检出换行 | rc27 |
 
 ## 7. 需要用户拍板的决策
 
@@ -150,8 +180,9 @@
 - D2 树瘦身：`attic/` 还是直接删除？（推荐删除；历史在 git）
 - D3 嵌入传输：是否接受一个常驻 helper 进程持有嵌入凭据？（需安全评审）
 - D4 `derivation_invalid`：重试一次还是保持终态只加 review 桶？
-- D5 天玑：升级到 rc27，还是卸载？（天玑是否还在用记忆）
-- D6 清理清单：哪些目录可以删除。
+- D5 天玑：已升级到 rc27。仍需拍板：是否批准天玑的外部整合（`external_consolidation_not_approved`，20,644 条 consolidate 待处理，每日队列 4800 已用满）；不批准则应把这批 work 标记为不适用而不是永远挂着。
+- D6 清理清单：哪些目录可以删除（`F:\t` 174 个目录、hub 18 个 worktree、天玑 9 个历史计划任务、两个已退役独立仓库）。
+- D7 Codex 宿主安装：升级到 rc27 还是卸载（`F:\ScopeRecall\codex`，最近一次 worker 运行 2026-09-15 15:11）。
 
 ## 8. 禁止事项
 
