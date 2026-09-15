@@ -104,6 +104,8 @@ SUITES = {
         "tests/integration/test_v11_lance_retrieval.py",
         "tests/storage_native/test_runtime_instance_seam.py",
         "tests/storage_native/test_vector_compaction.py",
+        "tests/test_cold_open_overlap.py",
+        "tests/test_lance_fanout_deadline.py",
     ],
     "host": [
         "tests/host/hermes/test_attachments_shutdown.py",

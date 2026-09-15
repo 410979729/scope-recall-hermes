@@ -266,6 +266,84 @@ def test_oversized_first_hit_does_not_consume_only_slot(app):
     assert len(canonical_render_json(packet).encode("utf-8")) <= 1200
 
 
+def test_prior_budget_rejection_diagnostics_do_not_block_later_evidence(app):
+    core, ctx = app
+    oversized = RetrievedObject(
+        ref="event-oversized",
+        revision=1,
+        kind="event",
+        content="lower-value oversized candidate " + ("X" * 1000),
+        origin="human_direct",
+        temporal_status="current",
+        applicability="trusted scope",
+        evidence_refs=("event-oversized@1",),
+        basis="direct_report",
+        expandable=True,
+        source_kinds=("event",),
+    )
+    useful = RetrievedObject(
+        ref="event-useful",
+        revision=1,
+        kind="event",
+        content="DECISIVE " + ("Y" * 710),
+        origin="human_direct",
+        temporal_status="current",
+        applicability="trusted scope",
+        evidence_refs=("event-useful@1",),
+        basis="direct_report",
+        expandable=True,
+        source_kinds=("event",),
+    )
+    candidates = (
+        CandidateRef("event", oversized.ref, 1, "lexical", fusion_score=0.99),
+        CandidateRef("event", useful.ref, 1, "lexical", fusion_score=0.98),
+    )
+
+    class FixedBudgetStorage(RetrievalStorage):
+        objects = {oversized.ref: oversized, useful.ref: useful}
+
+        def hydrate(self, tx, candidate, context):
+            return self.objects.get(candidate.ref)
+
+    request_id = "TEST-p09-budget-rejection-isolated"
+    search = SearchContext.from_request(
+        recall_request(
+            query="decisive budget evidence",
+            mode="history",
+            max_items=1,
+            budget_tokens=1200,
+            request_id=request_id,
+        ),
+        ctx,
+        now=FixedClock.now,
+        deadline=200.0,
+    )
+    result = RetrievalResult(
+        candidates,
+        (oversized, useful),
+        core.status(ctx).memory_epoch,
+        (),
+        "unknown",
+        "supported",
+        2,
+        2,
+        request_id=request_id,
+    )
+    packet = compile_recall_packet(
+        search,
+        result,
+        core.storage,
+        storage_reader=FixedBudgetStorage(clock=FixedClock()),
+        diagnostics=core.recall_diagnostics,
+        clock=FixedClock(),
+    )
+
+    assert [item["ref"] for item in packet["items"]] == [useful.ref]
+    assert len(canonical_render_json(packet).encode("utf-8")) <= 1200
+    assert "budget_token_cap" in packet["gaps"]
+    assert "expandable" in packet["unmet_needs"]
+
+
 def test_vector_timeout_leaves_time_for_all_fresh_release_checks(app):
     core, ctx = app
     source = capture(core, ctx, "H100 lexical evidence remains usable.", key="TEST-slow-vector")

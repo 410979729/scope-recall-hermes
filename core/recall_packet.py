@@ -33,6 +33,9 @@ _MAX_EVIDENCE_REFS = 32
 _MAX_RENDER_PREPARED = 64
 _RENDER_CONTEXT_SCHEMA = "scope-recall.recall_context/1.1"
 _RESUME_QUERY_MARKERS = ("继续", "接着", "恢复", "resume", "continue")
+# Same width as ``RecallDiagnostics.record`` refs (``recall-diag:`` + 16 hex),
+# so a packet measured before recording has the bytes of the packet returned.
+_DIAGNOSTIC_REF_PLACEHOLDER = "recall-diag:" + ("0" * 16)
 
 
 class RecallClock(Protocol):
@@ -181,32 +184,19 @@ class RecallPacketCompiler:
 
         return len(canonical_render_json(cls._to_item(obj)).encode("utf-8"))
 
-    @classmethod
-    def _packet_budget_bytes(
-        cls,
-        context: SearchContext,
-        result: RetrievalResult,
-        items: tuple[RecallItem, ...],
-        gaps: tuple[str, ...],
-        unmet_needs: tuple[str, ...],
-        memory_epoch: int | None,
-    ) -> int:
-        """Count the complete compact packet envelope, including diagnostics."""
+    @staticmethod
+    def _envelope_bytes(packet: RecallPacket, *, include_diagnostic_ref: bool = True) -> int:
+        """Count the canonical compact bytes of one assembled packet.
 
-        envelope = {
-            "protocol_version": "1.1",
-            "request_id": (result.request_id or context.request_id)[:100],
-            "status": "partial",
-            "memory_epoch": memory_epoch,
-            "items": list(items),
-            "gaps": list(cls._public_gaps(gaps)),
-            # Reserve the fixed diagnostic reference shape before recording it.
-            "diagnostic_ref": "recall-diag:" + ("0" * 16),
-            "answerability": "partial",
-            "coverage": "partial",
-            "unmet_needs": list(cls._public_needs(unmet_needs)),
-        }
-        return len(canonical_render_json(envelope).encode("utf-8"))
+        The canonical compact JSON byte count is a fixed, explainable upper
+        bound: a byte-level tokenizer can consume at most one token per UTF-8
+        byte.  ``include_diagnostic_ref=False`` measures the same packet with
+        the optional lookup ref withheld.
+        """
+
+        if include_diagnostic_ref:
+            return len(canonical_render_json(packet).encode("utf-8"))
+        return len(canonical_render_json(dict(packet, diagnostic_ref=None)).encode("utf-8"))
 
     @staticmethod
     def _public_marker(value: str) -> str:
@@ -222,6 +212,7 @@ class RecallPacketCompiler:
             "expandable",
             "stale_candidate",
             "revision_changed",
+            "resume_state_unverified",
         }:
             return prefix
         return value[:160]
@@ -708,6 +699,11 @@ class RecallPacketCompiler:
         limits = self._effective_limits(context)
         compile_gaps: list[str] = list(result.gaps)
         retrieval_gaps = tuple(result.gaps)
+        # Per-candidate rejection diagnostics are deferred until selection
+        # ends: a rejected candidate must not charge its markers to the
+        # admission of every lower-ranked candidate.
+        rejection_gaps: list[str] = []
+        rejection_needs: list[str] = []
         stale_drops = 0
         budget_drops = 0
         delivered: list[RecallItem] = []
@@ -821,15 +817,35 @@ class RecallPacketCompiler:
         # Ambient preferences/task state cannot displace answer evidence.
         verified.sort(key=lambda pair: pair[0].source == "background")
 
+        def admits(
+            prospective_items: list[RecallItem],
+            prospective_objects: list[RetrievedObject],
+            prospective_needs: list[str],
+        ) -> bool:
+            """Measure the exact packet that would be returned if admitted now."""
+
+            packet, _ = self._assemble(
+                context,
+                result,
+                memory_epoch,
+                tuple(prospective_items),
+                tuple(prospective_objects),
+                compile_gaps,
+                [*unmet_needs, *prospective_needs],
+                stale_drops,
+                budget_drops,
+            )
+            return self._envelope_bytes(packet) <= limits.budget_tokens
+
         for _candidate, obj in verified:
             if len(delivered) >= limits.max_items:
                 budget_drops += 1
-                compile_gaps.append(f"budget_item_cap:{obj.ref}@{obj.revision}")
+                rejection_gaps.append(f"budget_item_cap:{obj.ref}@{obj.revision}")
                 continue
             if not self._fits_packet_schema(obj):
                 budget_drops += 1
-                compile_gaps.append(f"budget_oversized:{obj.ref}@{obj.revision}")
-                unmet_needs.append(f"expandable:{obj.ref}@{obj.revision}")
+                rejection_gaps.append(f"budget_oversized:{obj.ref}@{obj.revision}")
+                rejection_needs.append(f"expandable:{obj.ref}@{obj.revision}")
                 continue
             provenance_content = None
             provenance_gap = False
@@ -837,49 +853,30 @@ class RecallPacketCompiler:
                 compact_contents = self._compact_episode_variants(obj)
                 if not compact_contents:
                     budget_drops += 1
-                    compile_gaps.append(f"resume_state_unverified:{obj.ref}@{obj.revision}")
-                    unmet_needs.append("resume_state")
+                    rejection_gaps.append(f"resume_state_unverified:{obj.ref}@{obj.revision}")
+                    rejection_needs.append("resume_state")
                     continue
                 provenance_content = compact_contents[0]
                 provenance_gap = True
             item = self._to_item(obj, content=provenance_content)
-            if provenance_gap:
-                unmet_needs.append("resume_state")
-            prospective_items = tuple([*delivered, item])
-            # The canonical compact JSON byte count is a fixed, explainable
-            # upper bound: a byte-level tokenizer can consume at most one
-            # token per UTF-8 byte.  Test the actual current envelope first;
-            # adding a hypothetical rejection marker here used to make every
-            # candidate fail before it had a chance to be selected.
-            rendered_bytes = self._packet_budget_bytes(
-                context,
-                result,
-                prospective_items,
-                tuple(compile_gaps),
-                tuple(unmet_needs),
-                memory_epoch,
-            )
-            if rendered_bytes > limits.budget_tokens:
+            admitted_needs: list[str] = ["resume_state"] if provenance_gap else []
+            # Test the actual envelope this candidate would ship in.  Deferred
+            # rejection markers are excluded on purpose; the final re-check
+            # below enforces them against the selected set.
+            if not admits([*delivered, item], [*delivered_objects, obj], admitted_needs):
                 compact_contents = self._compact_episode_variants(obj)
                 compact_item = None
                 compact_content = None
                 for candidate_content in compact_contents:
                     candidate_item = self._to_item(obj, content=candidate_content)
-                    compact_bytes = self._packet_budget_bytes(
-                        context,
-                        result,
-                        tuple([*delivered, candidate_item]),
-                        tuple(compile_gaps),
-                        tuple(unmet_needs),
-                        memory_epoch,
-                    )
-                    if compact_bytes <= limits.budget_tokens:
+                    if admits([*delivered, candidate_item], [*delivered_objects, obj], admitted_needs):
                         compact_item = candidate_item
                         compact_content = candidate_content
                         break
                 if compact_item is not None and compact_content is not None:
                     delivered.append(compact_item)
                     delivered_objects.append(obj)
+                    unmet_needs.extend(admitted_needs)
                     try:
                         compact_payload = json.loads(compact_content)
                     except (TypeError, ValueError, json.JSONDecodeError):
@@ -893,30 +890,39 @@ class RecallPacketCompiler:
                         unmet_needs.append("resume_state")
                     continue
                 budget_drops += 1
-                compile_gaps.append(f"budget_token_cap:{obj.ref}@{obj.revision}")
-                unmet_needs.append(f"expandable:{obj.ref}@{obj.revision}")
+                rejection_gaps.append(f"budget_token_cap:{obj.ref}@{obj.revision}")
+                rejection_needs.append(f"expandable:{obj.ref}@{obj.revision}")
+                rejection_needs.extend(admitted_needs)
                 continue
             delivered.append(item)
             delivered_objects.append(obj)
+            unmet_needs.extend(admitted_needs)
 
-        # Re-check the actual final envelope after rejected candidates have
-        # added their gap/expandable diagnostics.  Drop only the lowest-ranked
-        # complete units until the same canonical packet representation fits;
-        # content, qualifiers and evidence are never sliced.
-        while delivered:
-            pipeline_unmet = RetrievalPipeline._unmet_needs(context.query, tuple(delivered_objects))
-            merged_unmet = tuple(dict.fromkeys([*unmet_needs, *pipeline_unmet, *result.unmet_needs]))[:8]
-            packet_gaps = tuple(dict.fromkeys(gap for gap in compile_gaps if gap))[:16]
-            current_packet_bytes = self._packet_budget_bytes(
-                context, result, tuple(delivered), packet_gaps, merged_unmet, memory_epoch
+        # Selection is over: merge the deferred rejection diagnostics and
+        # enforce them against the packet that will actually be returned.
+        compile_gaps.extend(rejection_gaps)
+        unmet_needs.extend(rejection_needs)
+
+        # Re-check the exact final envelope.  Preference order at the cap:
+        # keep everything; withhold only the optional diagnostic lookup ref
+        # (the process-local record itself stays); repack one retained episode
+        # into fewer complete fields; finally drop the lowest-ranked complete
+        # unit.  Content, qualifiers and evidence are never sliced.
+        include_diagnostic_ref = True
+        while True:
+            packet, _ = self._assemble(
+                context, result, memory_epoch, tuple(delivered), tuple(delivered_objects),
+                compile_gaps, unmet_needs, stale_drops, budget_drops,
             )
-            if current_packet_bytes <= limits.budget_tokens:
+            if self._envelope_bytes(packet) <= limits.budget_tokens:
                 break
-            # Repack one retained episode into a smaller set of complete
-            # fields before dropping it.  This matters after rejected
-            # candidates add public diagnostics: all evidence for a retained
-            # field stays with that field, while lower-priority complete fields
-            # may be omitted to keep the corrected path deliverable.
+            if self._envelope_bytes(packet, include_diagnostic_ref=False) <= limits.budget_tokens:
+                include_diagnostic_ref = False
+                break
+            if not delivered:
+                # Nothing left to trade; ``_bounded_packet`` applies the
+                # minimal envelope below.
+                break
             repacked = False
             for index in range(len(delivered) - 1, -1, -1):
                 candidate_obj = delivered_objects[index]
@@ -929,9 +935,11 @@ class RecallPacketCompiler:
                     replacement = self._to_item(candidate_obj, content=compact_content)
                     trial = list(delivered)
                     trial[index] = replacement
-                    if self._packet_budget_bytes(
-                        context, result, tuple(trial), packet_gaps, merged_unmet, memory_epoch
-                    ) <= limits.budget_tokens:
+                    trial_packet, _ = self._assemble(
+                        context, result, memory_epoch, tuple(trial), tuple(delivered_objects),
+                        compile_gaps, unmet_needs, stale_drops, budget_drops,
+                    )
+                    if self._envelope_bytes(trial_packet, include_diagnostic_ref=False) <= limits.budget_tokens:
                         delivered[index] = replacement
                         if "goal" not in json.loads(compact_content) or "next_step" not in json.loads(compact_content):
                             unmet_needs.append("resume_state")
@@ -961,19 +969,23 @@ class RecallPacketCompiler:
             tuple(delivered),
             tuple(delivered_objects),
             compile_gaps,
-            unmet_needs[:8],
+            unmet_needs,
             stale_drops,
             budget_drops,
             retrieval_gaps,
             started,
+            include_diagnostic_ref=include_diagnostic_ref,
         )
         return self._bounded_packet(packet, limits.budget_tokens)
 
     @staticmethod
     def _bounded_packet(packet: RecallPacket, budget: int) -> RecallPacket:
-        """The empty diagnostic envelope must honor the budget too."""
+        """Keep answer evidence and public budget diagnostics under the cap."""
         if len(canonical_render_json(packet).encode("utf-8")) <= budget:
             return isolate_recall_packet(packet)
+        without_diagnostic_ref = dict(packet, diagnostic_ref=None)
+        if len(canonical_render_json(without_diagnostic_ref).encode("utf-8")) <= budget:
+            return isolate_recall_packet(cast(RecallPacket, without_diagnostic_ref))
         minimal = dict(packet, status="unavailable", memory_epoch=None, items=[],
                        gaps=["budget_packet_cap"], diagnostic_ref=None,
                        answerability="unknown", coverage="unknown", unmet_needs=[])
@@ -995,7 +1007,55 @@ class RecallPacketCompiler:
         budget_drops: int,
         retrieval_gaps: tuple[str, ...],
         started: float,
+        *,
+        include_diagnostic_ref: bool = True,
     ) -> RecallPacket:
+        packet, raw_gaps = self._assemble(
+            context, result, memory_epoch, items, delivered_objects,
+            compile_gaps, unmet_needs, stale_drops, budget_drops,
+        )
+        diagnostic_ref = None
+        if self.diagnostics is not None:
+            # The process-local record is always written; only the public
+            # lookup ref is optional when it would displace answer evidence.
+            diagnostic_ref = self.diagnostics.record(
+                installation_id=context.trusted_context.binding.installation_id,
+                session_id=context.trusted_context.session_id,
+                request_id=result.request_id or context.request_id,
+                memory_epoch=memory_epoch,
+                phase="compile",
+                status=packet["status"],
+                retrieval_gaps=retrieval_gaps,
+                compile_gaps=raw_gaps,
+                items_delivered=len(items),
+                items_dropped_stale=stale_drops,
+                items_dropped_budget=budget_drops,
+                elapsed_ms=int((self._clock().monotonic() - started) * 1000),
+                deadline_remaining_ms=self._remaining_ms(context),
+            )
+        packet["diagnostic_ref"] = diagnostic_ref if include_diagnostic_ref else None
+        return packet
+
+    def _assemble(
+        self,
+        context: SearchContext,
+        result: RetrievalResult,
+        memory_epoch: int | None,
+        items: tuple[RecallItem, ...],
+        delivered_objects: tuple[RetrievedObject, ...],
+        compile_gaps: list[str] | tuple[str, ...],
+        unmet_needs: list[str] | tuple[str, ...],
+        stale_drops: int,
+        budget_drops: int,
+    ) -> tuple[RecallPacket, tuple[str, ...]]:
+        """Build the exact public packet shape without side effects.
+
+        ``diagnostic_ref`` carries a fixed-width placeholder of the real ref
+        so the budget can be measured on the packet that will be returned,
+        before the diagnostics record exists.  Returns the packet and the raw
+        (pre-collapse) gap tuple the diagnostics record needs.
+        """
+
         raw_gaps = tuple(dict.fromkeys(gap for gap in compile_gaps if gap))
         gaps = self._public_gaps(raw_gaps)
         authority_failed = self._authority_unavailable(raw_gaps)
@@ -1003,9 +1063,10 @@ class RecallPacketCompiler:
         had_candidates = bool(result.items)
         answer_objects = tuple(obj for obj in delivered_objects if not is_background(obj))
         pipeline_unmet = RetrievalPipeline._unmet_needs(context.query, answer_objects)
+        raw_unmet = list(unmet_needs)
         if items and not answer_objects:
-            unmet_needs.append("query_evidence_missing")
-        raw_unmet = list(dict.fromkeys([*unmet_needs, *pipeline_unmet, *result.unmet_needs]))
+            raw_unmet.append("query_evidence_missing")
+        raw_unmet = list(dict.fromkeys([*raw_unmet, *pipeline_unmet, *result.unmet_needs]))
         merged_unmet = list(self._public_needs(raw_unmet))
         if (authority_failed or critical_read_incomplete) and not items:
             status = "unavailable"
@@ -1043,36 +1104,19 @@ class RecallPacketCompiler:
         else:
             packet_epoch = memory_epoch
 
-        diagnostic_ref = None
-        if self.diagnostics is not None:
-            diagnostic_ref = self.diagnostics.record(
-                installation_id=context.trusted_context.binding.installation_id,
-                session_id=context.trusted_context.session_id,
-                request_id=result.request_id or context.request_id,
-                memory_epoch=memory_epoch,
-                phase="compile",
-                status=status,
-                retrieval_gaps=retrieval_gaps,
-                compile_gaps=raw_gaps,
-                items_delivered=len(items),
-                items_dropped_stale=stale_drops,
-                items_dropped_budget=budget_drops,
-                elapsed_ms=int((self._clock().monotonic() - started) * 1000),
-                deadline_remaining_ms=self._remaining_ms(context),
-            )
-
-        return {
+        packet: RecallPacket = {
             "protocol_version": "1.1",
             "request_id": (result.request_id or context.request_id)[:100],
             "status": status,
             "memory_epoch": packet_epoch,
             "items": list(items),
             "gaps": list(gaps),
-            "diagnostic_ref": diagnostic_ref,
+            "diagnostic_ref": _DIAGNOSTIC_REF_PLACEHOLDER,
             "answerability": answerability,
             "coverage": coverage,
             "unmet_needs": merged_unmet,
         }
+        return packet, raw_gaps
 
 
 def compile_recall_packet(
