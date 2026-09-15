@@ -19,6 +19,7 @@ All notable changes to `scope-recall` will be documented in this file.
 - Add live `scope_recall_memory` candidate `promote` and `archive` actions through the gateway's admitted writer. Plans default to dry-run, apply supports revision checks, scope and Fact authority remain enforced, and lifecycle/audit/vector intent commit atomically. Store receipts now report the persisted candidate lifecycle (#68).
 - Preserve a successful store result if its post-commit lifecycle receipt cannot be read. Return the committed id with lifecycle `unknown`, emit a content-free diagnostic, and never retry that successful write.
 - Keep Windows LanceDB/PyArrow operations in a private persistent helper process and load local sentence-transformers only when selected. Native helper failure or timeout becomes a recoverable companion error while SQLite truth and pending outbox work stay in the Hermes process (#69).
+- Do not lint the `Artifact anchors:` block that `sql_store` itself appends to every stored memory whose text mentions a URL. The anchor rule now applies only when `metadata.artifacts` is absent, so writer-generated anchors stop making URL-bearing memories permanently unclean while foreign anchor text is still reported.
 
 ## [2.0.1] - 2026-08-30
 
