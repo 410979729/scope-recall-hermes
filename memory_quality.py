@@ -463,7 +463,12 @@ def lint_memory_row(row: sqlite3.Row) -> list[str]:
         rules.append("template_prefix")
     if _has_any(text, ATTACHMENT_MARKERS):
         rules.append("raw_attachment_marker")
-    if _has_any(text, ARTIFACT_ANCHOR_MARKERS):
+    if _has_any(text, ARTIFACT_ANCHOR_MARKERS) and not metadata.get("artifacts"):
+        # sql_store.enrich_content_with_artifact_anchors() appends the anchor block to
+        # every stored memory whose text mentions a URL, and records the same artifacts
+        # in metadata. Flagging that self-generated block made every URL-bearing memory
+        # permanently unclean to its own linter. Anchor text WITHOUT recorded artifacts
+        # is still foreign pollution.
         rules.append("artifact_anchor_marker")
     if _has_any(text, REDACTED_PATH_MARKERS):
         rules.append("redacted_path_marker")

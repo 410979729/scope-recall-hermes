@@ -115,6 +115,41 @@ def test_memory_quality_report_flags_active_lint_rules_and_ignores_archived_rows
     assert {"template", "attachment", "stale", "missing-type", "stale-status"} <= sample_ids
 
 
+def test_writer_generated_artifact_anchors_are_not_pollution():
+    """A row must not be flagged for the anchor block its own writer produced.
+
+    sql_store.enrich_content_with_artifact_anchors() appends
+    "Artifact anchors: URL …" to any stored memory whose text mentions a URL and
+    records the same artifacts in metadata. Three real active memories were
+    permanently unclean that way, with no way to fix them by editing content.
+    """
+
+    conn = _conn()
+    anchored = (
+        "SearXNG 搜索质量降级修复：把 bing 引擎 base_url 改为 cn.bing.com 主机。"
+        "\n\nArtifact anchors: URL https://cn.bing.com"
+    )
+    _insert_memory(
+        conn,
+        memory_id="writer-anchor",
+        content=anchored,
+        metadata={"memory_type": "procedure", "artifacts": [{"kind": "url", "url": "https://cn.bing.com"}]},
+    )
+    _insert_memory(
+        conn,
+        memory_id="foreign-anchor",
+        content=anchored,
+        metadata={"memory_type": "procedure"},
+    )
+
+    report = memory_quality_report(conn, sample_limit=10)
+    flagged = {sample["id"]: sample["rules"] for sample in report["samples"]}
+
+    assert "writer-anchor" not in flagged
+    assert "artifact_anchor_marker" in flagged["foreign-anchor"]
+    assert report["by_rule"]["artifact_anchor_marker"] == 1
+
+
 def test_memory_quality_ignores_hidden_lifecycle_rows_in_active_report():
     conn = _conn()
     hidden_lifecycles = ["archived", "candidate", "scratch", "superseded", "obsolete", "rejected"]
