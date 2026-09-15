@@ -1,0 +1,64 @@
+{
+  "task_id": "P00",
+  "status": "completed",
+  "base_sha": "578b955802df753f2e2208e26eab6f71971285a0",
+  "head_sha_or_diff_sha256": "ce44328fea0311b6587e71d63612019cbb39c43a2425f07ceb2b80099062667a",
+  "changed_responsibilities": [
+    "Baseline documentation and verification receipts only; no business source modified.",
+    "Hash is SHA256 of canonical sorted artifact manifest before the receipt itself.",
+    "Static checks and historical tests are separate."
+  ],
+  "checks": [
+    {
+      "command": "git ls-remote https://github.com/410979729/scope-recall-hermes.git HEAD refs/heads/main",
+      "exit_code": 0,
+      "duration_seconds": 1.7379998,
+      "passed": 0,
+      "failed": 0,
+      "skipped": 0,
+      "evidence_ref": "verification/P00/git-readback.json"
+    },
+    {
+      "command": "Python stdin: verify specification SHA256SUMS.txt",
+      "exit_code": 0,
+      "duration_seconds": 0.007447299954947084,
+      "passed": 77,
+      "failed": 0,
+      "skipped": 0,
+      "evidence_ref": "verification/P00/spec-package.json"
+    },
+    {
+      "command": "Python stdin: AST census over git ls-files; compare installed runtime fingerprints",
+      "exit_code": 0,
+      "duration_seconds": 2.1816766,
+      "passed": 0,
+      "failed": 0,
+      "skipped": 0,
+      "evidence_ref": "verification/P00/census.json"
+    }
+  ],
+  "not_run": [
+    "P00 plugin pytest not run; historical same-tree 343 passed, 1 skipped, 79.10s.",
+    "No production DB connection/rows, memory copy or model calls.",
+    "No host runtime probe, migration, installation, build or independent Gate audit.",
+    "Live database schema of two locked files and process byte identity unverified."
+  ],
+  "blockers": [],
+  "artifacts": [
+    "docs/baseline.md",
+    "verification/functional_traceability.json",
+    "verification/P00/census.json",
+    "verification/P00/fleet-inventory.json",
+    "verification/P00/git-readback.json",
+    "verification/P00/historical-cleanup-final.json",
+    "verification/P00/historical-combined-tests.json",
+    "verification/P00/historical-main-git-readback.json",
+    "verification/P00/imports.json",
+    "verification/P00/installed-code-comparison.json",
+    "verification/P00/source-files.sha256.json",
+    "verification/P00/spec-package.json",
+    "verification/task_manifest.json",
+    "verification/P00/artifact-manifest.json"
+  ],
+  "next_task_ready": true
+}

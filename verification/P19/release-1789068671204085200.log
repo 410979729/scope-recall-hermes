@@ -1,0 +1,26 @@
+........................................................................ [  9%]
+........................................................................ [ 18%]
+..........................................................s............. [ 27%]
+.s...................................................................... [ 36%]
+........................................................................ [ 45%]
+........................................................................ [ 54%]
+........................................................................ [ 63%]
+........................................................................ [ 72%]
+........................................................................ [ 81%]
+........................................................................ [ 91%]
+.......................................................................  [100%]
+--------- generated xml file: C:\Temp\sr\TEST-v11-rqri1il3\junit.xml ----------
+============================ slowest 10 durations =============================
+24.87s setup    tests/packaging/test_clean_v11_wheel.py::test_clean_v11_wheel_entrypoint_and_register_delegate
+8.51s call     tests/contract/test_v11_episodes.py::test_long_episode_uses_bounded_segments_and_preserves_final_source
+8.09s call     tests/contract/test_v11_consolidation_input.py::test_utf8_input_budget_is_enforced
+7.69s setup    tests/packaging/test_clean_v11_wheel.py::test_clean_v11_wheel_exact_allowlist
+5.11s call     tests/host/codex/test_mcp.py::test_mcp_inspect_resolves_old_episode_by_explicit_ref
+5.08s call     tests/contract/test_v11_lance_embed_fence.py::test_actual_purge_port_empty_inventory_waits_behind_native_grant
+4.17s call     tests/contract/test_v11_lance_embed_fence.py::test_actual_purge_port_native_lock_wait_consumes_request_deadline
+3.65s call     tests/contract/test_v11_lance_embed_fence.py::test_shared_id_lease_reuse_old_owner_cannot_delete_new_owner_vector
+2.81s call     tests/contract/test_v11_lance_embed_fence.py::test_actual_purge_port_covers_old_revisions_and_spaces_without_other_identity
+2.76s call     tests/contract/test_v11_lance_embed_fence.py::test_actual_purge_port_unknown_metadata_cannot_ack_empty[revision]
+789 passed, 2 skipped in 189.44s (0:03:09)
+
+{"cleanup_exit_code": 0, "overall_exit_code": 2, "pytest_exit_code": 0, "transition_history": ["prepared", "pytest_started", "pytest_completed_waiting_cleanup", "cleanup_succeeded", "required_gates_missing", "receipt_written"], "wrapper_exit_code": 0}

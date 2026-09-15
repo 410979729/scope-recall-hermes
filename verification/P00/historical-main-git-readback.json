@@ -1,0 +1,14 @@
+{
+  "classification": "historical_not_executed_this_turn",
+  "source_path": "F:\\Agents\\runtime\\windows\\hermes-yuheng\\workspace\\tasks\\scope-merge-72-73-20260905\\main-git-readback.json",
+  "record": {
+    "head": "578b955802df753f2e2208e26eab6f71971285a0",
+    "tree": "be913d45073d0948acad7d11317cad43db65307b",
+    "contains_pr_heads": {
+      "72": "5944060abfd866fb9d2ea2176ee70a57bb259580",
+      "73": "509ce4799a85e0d0286df2a2fe0e23556513dfa6"
+    },
+    "clean": true,
+    "git_fetch_verified": true
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "command": [
+    "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\.venv\\Scripts\\python.exe",
+    "-B",
+    "-m",
+    "pytest",
+    "tests/contract/test_v11_protocol.py",
+    "tests/contract/test_v11_inputs.py",
+    "-q",
+    "-p",
+    "v11_guard",
+    "-p",
+    "no:cacheprovider",
+    "--durations=10",
+    "--junitxml=F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-jbhg37nw\\junit.xml"
+  ],
+  "exit_code": 0,
+  "duration_seconds": 2.2463837999966927,
+  "passed": 73,
+  "failed": 0,
+  "skipped": 0,
+  "selected": [
+    "tests/contract/test_v11_protocol.py",
+    "tests/contract/test_v11_inputs.py"
+  ],
+  "log": "verification/P07/contract-1788682686783939400.log",
+  "model_calls": false,
+  "test_data": "synthetic_only",
+  "source_base": "0b65bf620ceecef8984e6894bee264ddd06b5565",
+  "source_inputs_sha256": "fed35e3ce21a72a72e377e15e9cc13c1c4f11090346545061b4c960f319083c3",
+  "source_manifest": "verification/P07/contract-1788682686783939400-inputs.json",
+  "evidence_scope": "P07 selected local contracts only; no M/J semantic or host behavior execution"
+}

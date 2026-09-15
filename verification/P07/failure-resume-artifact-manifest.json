@@ -1,0 +1,489 @@
+{
+  "created_at": "2026-09-06T09:44:00.102254+00:00",
+  "data": "synthetic development TEST, not holdout",
+  "artifacts": [
+    {
+      "source": ".execution/TEST-P07-failure-resume/fixture/input/alpha.json",
+      "archived": "verification/P07/failure-resume-v1/fixture/input/alpha.json",
+      "bytes": 10,
+      "sha256": "2392e6687d386a6864043fdadc7f8849f411ac921846ced11bacd6573b601a44",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume/fixture/input/middle.json",
+      "archived": "verification/P07/failure-resume-v1/fixture/input/middle.json",
+      "bytes": 11,
+      "sha256": "c09a11049552b4dac1daeb0b92c91ee5a6b55191410d4cbc25778ebf0e160780",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume/fixture/input/zeta.json",
+      "archived": "verification/P07/failure-resume-v1/fixture/input/zeta.json",
+      "bytes": 9,
+      "sha256": "2fee0b7a964cc1dbcb4c0f3c8950f2bb2e18693771bf456506527093b319fdb3",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume/prepare-command.json",
+      "archived": "verification/P07/failure-resume-v1/prepare-command.json",
+      "bytes": 1178,
+      "sha256": "7aa7abbeef9980bcb21665ce8ef0304d477683d8c53e0889b04b84114277a54d",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume/prepared.json",
+      "archived": "verification/P07/failure-resume-v1/prepared.json",
+      "bytes": 368,
+      "sha256": "f282ab76c72f8e448ad5e23b1c5de6d0b26b54105e49b88f8fc22262bf963cae",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume/raw-manifest.json",
+      "archived": "verification/P07/failure-resume-v1/raw-manifest.json",
+      "bytes": 2368,
+      "sha256": "53256f22268457d7255f639c84d308e6cab487737b045ddcb6cb92f3b26a3d3d",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume/truth/memory.sqlite3",
+      "archived": "verification/P07/failure-resume-v1/truth/memory.sqlite3",
+      "bytes": 225280,
+      "sha256": "73dfd5c822f8c167375c2725cbad7c99172e55d53435212e39828e477c7d69d2",
+      "method": "SQLite consistent TEST snapshot"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v2/environment-fingerprints.json",
+      "archived": "verification/P07/failure-resume-v2/environment-fingerprints.json",
+      "bytes": 604,
+      "sha256": "9d554b35283be80f86bb1bc35ea7af3769c44baeb48cdd8b7ed7db9b39388f08",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v2/prepare-command.json",
+      "archived": "verification/P07/failure-resume-v2/prepare-command.json",
+      "bytes": 2071,
+      "sha256": "5dc04c372cb727df892b47b1d66ec11fd730646d0dc9e77eb445fd2439b45dde",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v2/prepared.json",
+      "archived": "verification/P07/failure-resume-v2/prepared.json",
+      "bytes": 448,
+      "sha256": "57414885298cfa59821831234041dd50b8ded012bf04c745504524a1ffdb3c97",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v2/raw-manifest.json",
+      "archived": "verification/P07/failure-resume-v2/raw-manifest.json",
+      "bytes": 5971,
+      "sha256": "1e6c622212ca5cc34d3c2db4ac7adb9a3138a9e020a90ddfc8bd2ddac59b3797",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v2/worktree-1/input/alpha.json",
+      "archived": "verification/P07/failure-resume-v2/worktree-1/input/alpha.json",
+      "bytes": 10,
+      "sha256": "2392e6687d386a6864043fdadc7f8849f411ac921846ced11bacd6573b601a44",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v2/worktree-1/input/middle.json",
+      "archived": "verification/P07/failure-resume-v2/worktree-1/input/middle.json",
+      "bytes": 11,
+      "sha256": "c09a11049552b4dac1daeb0b92c91ee5a6b55191410d4cbc25778ebf0e160780",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v2/worktree-1/input/zeta.json",
+      "archived": "verification/P07/failure-resume-v2/worktree-1/input/zeta.json",
+      "bytes": 9,
+      "sha256": "2fee0b7a964cc1dbcb4c0f3c8950f2bb2e18693771bf456506527093b319fdb3",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v2/worktree-2/input/alpha.json",
+      "archived": "verification/P07/failure-resume-v2/worktree-2/input/alpha.json",
+      "bytes": 10,
+      "sha256": "2392e6687d386a6864043fdadc7f8849f411ac921846ced11bacd6573b601a44",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v2/worktree-2/input/middle.json",
+      "archived": "verification/P07/failure-resume-v2/worktree-2/input/middle.json",
+      "bytes": 11,
+      "sha256": "c09a11049552b4dac1daeb0b92c91ee5a6b55191410d4cbc25778ebf0e160780",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v2/worktree-2/input/zeta.json",
+      "archived": "verification/P07/failure-resume-v2/worktree-2/input/zeta.json",
+      "bytes": 9,
+      "sha256": "2fee0b7a964cc1dbcb4c0f3c8950f2bb2e18693771bf456506527093b319fdb3",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v2/truth/memory.sqlite3",
+      "archived": "verification/P07/failure-resume-v2/truth/memory.sqlite3",
+      "bytes": 249856,
+      "sha256": "04e164966284007645bf061ded75857174a64b0654bbf857d91b7764391cb3b4",
+      "method": "SQLite consistent TEST snapshot"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v3/environment-fingerprints.json",
+      "archived": "verification/P07/failure-resume-v3/environment-fingerprints.json",
+      "bytes": 986,
+      "sha256": "41d4a74f062d3f5bc924ee511ab47aa8ed6ef068583da60d8f9f7fc21059564e",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v3/extract-17.json",
+      "archived": "verification/P07/failure-resume-v3/extract-17.json",
+      "bytes": 5440,
+      "sha256": "2d8b5b154929901401213550cc1cc632e49a00776bbaf3f3068957aa8063eb41",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v3/extract-18.json",
+      "archived": "verification/P07/failure-resume-v3/extract-18.json",
+      "bytes": 5440,
+      "sha256": "3de1161c57becd62a2148a877c9c141ac9c74115f31eba05cbfe5b5dae7ee6d2",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v3/extract-rejected-17.json",
+      "archived": "verification/P07/failure-resume-v3/extract-rejected-17.json",
+      "bytes": 5522,
+      "sha256": "8a2299c66579b807b8acda681ff083626898fdbbabbb3da35817b2a866000710",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v3/extract-rejected-18.json",
+      "archived": "verification/P07/failure-resume-v3/extract-rejected-18.json",
+      "bytes": 5522,
+      "sha256": "f955f1a12617db170d31f530f9e9e0e0b4ec98005926b768f0048a76ea85e1fa",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v3/model-audit/request-17.json",
+      "archived": "verification/P07/failure-resume-v3/model-audit/request-17.json",
+      "bytes": 16102,
+      "sha256": "c67d7d02f9a32a56b5101b890ef81666ba292d953df0fb74ab6562d5bb03bb17",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v3/model-audit/request-18.json",
+      "archived": "verification/P07/failure-resume-v3/model-audit/request-18.json",
+      "bytes": 16340,
+      "sha256": "07e359a2072ea9d4ec431035d6a4ca8bded5352cd51293d3f80023fbd1953efa",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v3/model-audit/response-17.json",
+      "archived": "verification/P07/failure-resume-v3/model-audit/response-17.json",
+      "bytes": 2729,
+      "sha256": "169a78e10c20feae842a68aa0b84c5202228de0c5b539ad925f2f14ee743bf65",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v3/model-audit/response-18.json",
+      "archived": "verification/P07/failure-resume-v3/model-audit/response-18.json",
+      "bytes": 2773,
+      "sha256": "f2fb08358bcdddcc73bd82abfa55bf6c95ee488b71e7d9034f621b832dea6496",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v3/prepare-command.json",
+      "archived": "verification/P07/failure-resume-v3/prepare-command.json",
+      "bytes": 2895,
+      "sha256": "d3edb59add50d1ca287dc470942c4e89505a37f33b207632b51a79a9c3059041",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v3/prepared.json",
+      "archived": "verification/P07/failure-resume-v3/prepared.json",
+      "bytes": 510,
+      "sha256": "c2b3a08cf21cdfd749d83efa395d98bfd2791d27edeff9d1f7424795a1faf96a",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v3/raw-manifest.json",
+      "archived": "verification/P07/failure-resume-v3/raw-manifest.json",
+      "bytes": 7653,
+      "sha256": "605597f7e84f5da0152757bc15440fcbae6141337ee04a162a66e5ab8f9abe7f",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v3/worktree-1/export_manifest.py",
+      "archived": "verification/P07/failure-resume-v3/worktree-1/export_manifest.py",
+      "bytes": 338,
+      "sha256": "b2bbfd60414c06271c6c33ee8b5e6f964bb53eb3f252cbde08f929e48de13556",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v3/worktree-1/fixture-settings.json",
+      "archived": "verification/P07/failure-resume-v3/worktree-1/fixture-settings.json",
+      "bytes": 65,
+      "sha256": "4bf7138264f95d485d21cf69e2995482a33d64a7be599522472f0446adec4bf9",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v3/worktree-1/input/alpha.json",
+      "archived": "verification/P07/failure-resume-v3/worktree-1/input/alpha.json",
+      "bytes": 10,
+      "sha256": "2392e6687d386a6864043fdadc7f8849f411ac921846ced11bacd6573b601a44",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v3/worktree-1/input/middle.json",
+      "archived": "verification/P07/failure-resume-v3/worktree-1/input/middle.json",
+      "bytes": 11,
+      "sha256": "c09a11049552b4dac1daeb0b92c91ee5a6b55191410d4cbc25778ebf0e160780",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v3/worktree-1/input/zeta.json",
+      "archived": "verification/P07/failure-resume-v3/worktree-1/input/zeta.json",
+      "bytes": 9,
+      "sha256": "2fee0b7a964cc1dbcb4c0f3c8950f2bb2e18693771bf456506527093b319fdb3",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v3/worktree-2/export_manifest.py",
+      "archived": "verification/P07/failure-resume-v3/worktree-2/export_manifest.py",
+      "bytes": 338,
+      "sha256": "b2bbfd60414c06271c6c33ee8b5e6f964bb53eb3f252cbde08f929e48de13556",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v3/worktree-2/fixture-settings.json",
+      "archived": "verification/P07/failure-resume-v3/worktree-2/fixture-settings.json",
+      "bytes": 65,
+      "sha256": "4f170751e2dfcceee6e6e1fa11fadc3a61813d28859c55f209f58733548c89b1",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v3/worktree-2/input/alpha.json",
+      "archived": "verification/P07/failure-resume-v3/worktree-2/input/alpha.json",
+      "bytes": 10,
+      "sha256": "2392e6687d386a6864043fdadc7f8849f411ac921846ced11bacd6573b601a44",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v3/worktree-2/input/middle.json",
+      "archived": "verification/P07/failure-resume-v3/worktree-2/input/middle.json",
+      "bytes": 11,
+      "sha256": "c09a11049552b4dac1daeb0b92c91ee5a6b55191410d4cbc25778ebf0e160780",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v3/worktree-2/input/zeta.json",
+      "archived": "verification/P07/failure-resume-v3/worktree-2/input/zeta.json",
+      "bytes": 9,
+      "sha256": "2fee0b7a964cc1dbcb4c0f3c8950f2bb2e18693771bf456506527093b319fdb3",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v3/truth/memory.sqlite3",
+      "archived": "verification/P07/failure-resume-v3/truth/memory.sqlite3",
+      "bytes": 266240,
+      "sha256": "f3751dbbfb7f51552528e80b639d0c684ecc5d1a1b6475685a6e7965c64b04a7",
+      "method": "SQLite consistent TEST snapshot"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/answer-21.json",
+      "archived": "verification/P07/failure-resume-v4/answer-21.json",
+      "bytes": 2070,
+      "sha256": "97367037201bbaf2f7f43c2cc3098b9088d25079bdcaab00ca814955e7600a54",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/environment-fingerprints.json",
+      "archived": "verification/P07/failure-resume-v4/environment-fingerprints.json",
+      "bytes": 986,
+      "sha256": "41d4a74f062d3f5bc924ee511ab47aa8ed6ef068583da60d8f9f7fc21059564e",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/extract-19.json",
+      "archived": "verification/P07/failure-resume-v4/extract-19.json",
+      "bytes": 5440,
+      "sha256": "6e737177b85937bd736171f1f4b5b090f966ddd6206fda32d6832c83c11fb4b1",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/extract-20.json",
+      "archived": "verification/P07/failure-resume-v4/extract-20.json",
+      "bytes": 5472,
+      "sha256": "c54dbc9f60de3f6802da4d41e16524922e2d8a0a62503e0cea6dd89d94102689",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/extract-rejected-19.json",
+      "archived": "verification/P07/failure-resume-v4/extract-rejected-19.json",
+      "bytes": 5519,
+      "sha256": "c9180c35c30e455af89cde9fb91bfd388a1938d2b074f51c246c2e4c3af72c31",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/extract-result-20.json",
+      "archived": "verification/P07/failure-resume-v4/extract-result-20.json",
+      "bytes": 6712,
+      "sha256": "8c936d23424d4a0aa913a535d120252ec35e27cfbbf32fe8e29e0afc25019325",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/model-audit/request-19.json",
+      "archived": "verification/P07/failure-resume-v4/model-audit/request-19.json",
+      "bytes": 14764,
+      "sha256": "ec5963ba7de4f2073f7ea7e85b8679873befdcacf0f8ccdeaab627a23655de2d",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/model-audit/request-20.json",
+      "archived": "verification/P07/failure-resume-v4/model-audit/request-20.json",
+      "bytes": 14761,
+      "sha256": "3d7b280ae1a97572e101fbaf02d1331b4dd7b77bef5c5328339972436f49d220",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/model-audit/request-21.json",
+      "archived": "verification/P07/failure-resume-v4/model-audit/request-21.json",
+      "bytes": 9285,
+      "sha256": "2ab4aea1766825f0faac70ccfc024f7fda6802bf2bbd4ceb91a924ae34f6853f",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/model-audit/response-19.json",
+      "archived": "verification/P07/failure-resume-v4/model-audit/response-19.json",
+      "bytes": 3886,
+      "sha256": "cbca13b8dfdbabc38bd55afc356fa4a266dcf18d64948e39e4be1a931797e766",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/model-audit/response-20.json",
+      "archived": "verification/P07/failure-resume-v4/model-audit/response-20.json",
+      "bytes": 5799,
+      "sha256": "335c27fc8e030e9c443f5631599929394654dd92e04de68408f6ddc5dbe613d4",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/model-audit/response-21.json",
+      "archived": "verification/P07/failure-resume-v4/model-audit/response-21.json",
+      "bytes": 1752,
+      "sha256": "69f950ef3461d58ba612805a8aa9755603760f596e907dd48d3342078d4dba2f",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/prepare-command.json",
+      "archived": "verification/P07/failure-resume-v4/prepare-command.json",
+      "bytes": 2895,
+      "sha256": "ebf2f4e3b4dfdf2b49285680696ba2e0c75c2a030a2d8eb6955e594a3f44d487",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/prepared.json",
+      "archived": "verification/P07/failure-resume-v4/prepared.json",
+      "bytes": 510,
+      "sha256": "3c6fe230ff9510a8cd8fffffe3bc47a5191d8edec5d268f8c94819265a809213",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/raw-manifest.json",
+      "archived": "verification/P07/failure-resume-v4/raw-manifest.json",
+      "bytes": 6385,
+      "sha256": "f5f5aae7f76c8a509672053ea45a64a78946dfa3420959b53ff2e58ad26f1c25",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/reopen-command.json",
+      "archived": "verification/P07/failure-resume-v4/reopen-command.json",
+      "bytes": 2895,
+      "sha256": "7cb48a54dc4484e64d819a446a86287a44a15bfff28b331bdd685ed44ea3cee0",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/reopened.json",
+      "archived": "verification/P07/failure-resume-v4/reopened.json",
+      "bytes": 6955,
+      "sha256": "00efc0aab4093e51e7602cd25714f731973457edd4f32e8446cb43c10ae12d06",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/worktree-1/export_manifest.py",
+      "archived": "verification/P07/failure-resume-v4/worktree-1/export_manifest.py",
+      "bytes": 338,
+      "sha256": "b2bbfd60414c06271c6c33ee8b5e6f964bb53eb3f252cbde08f929e48de13556",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/worktree-1/fixture-settings.json",
+      "archived": "verification/P07/failure-resume-v4/worktree-1/fixture-settings.json",
+      "bytes": 65,
+      "sha256": "4bf7138264f95d485d21cf69e2995482a33d64a7be599522472f0446adec4bf9",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/worktree-1/input/alpha.json",
+      "archived": "verification/P07/failure-resume-v4/worktree-1/input/alpha.json",
+      "bytes": 10,
+      "sha256": "2392e6687d386a6864043fdadc7f8849f411ac921846ced11bacd6573b601a44",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/worktree-1/input/middle.json",
+      "archived": "verification/P07/failure-resume-v4/worktree-1/input/middle.json",
+      "bytes": 11,
+      "sha256": "c09a11049552b4dac1daeb0b92c91ee5a6b55191410d4cbc25778ebf0e160780",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/worktree-1/input/zeta.json",
+      "archived": "verification/P07/failure-resume-v4/worktree-1/input/zeta.json",
+      "bytes": 9,
+      "sha256": "2fee0b7a964cc1dbcb4c0f3c8950f2bb2e18693771bf456506527093b319fdb3",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/worktree-2/export_manifest.py",
+      "archived": "verification/P07/failure-resume-v4/worktree-2/export_manifest.py",
+      "bytes": 338,
+      "sha256": "b2bbfd60414c06271c6c33ee8b5e6f964bb53eb3f252cbde08f929e48de13556",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/worktree-2/fixture-settings.json",
+      "archived": "verification/P07/failure-resume-v4/worktree-2/fixture-settings.json",
+      "bytes": 65,
+      "sha256": "4f170751e2dfcceee6e6e1fa11fadc3a61813d28859c55f209f58733548c89b1",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/worktree-2/input/alpha.json",
+      "archived": "verification/P07/failure-resume-v4/worktree-2/input/alpha.json",
+      "bytes": 10,
+      "sha256": "2392e6687d386a6864043fdadc7f8849f411ac921846ced11bacd6573b601a44",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/worktree-2/input/middle.json",
+      "archived": "verification/P07/failure-resume-v4/worktree-2/input/middle.json",
+      "bytes": 11,
+      "sha256": "c09a11049552b4dac1daeb0b92c91ee5a6b55191410d4cbc25778ebf0e160780",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/worktree-2/input/zeta.json",
+      "archived": "verification/P07/failure-resume-v4/worktree-2/input/zeta.json",
+      "bytes": 9,
+      "sha256": "2fee0b7a964cc1dbcb4c0f3c8950f2bb2e18693771bf456506527093b319fdb3",
+      "method": "byte-identical copy"
+    },
+    {
+      "source": ".execution/TEST-P07-failure-resume-v4/truth/memory.sqlite3",
+      "archived": "verification/P07/failure-resume-v4/truth/memory.sqlite3",
+      "bytes": 262144,
+      "sha256": "b3b0b00578d5e64e4c1b4a99b7705705e91655bd19ddb8d9906b5c78c08d9edd",
+      "method": "SQLite consistent TEST snapshot"
+    }
+  ]
+}

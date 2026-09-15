@@ -1,4 +1,4 @@
-# Lowest supported plugin + pinned Hermes integration dependency set exercised by CI.
+# Lowest supported v3 Core + LanceDB dependency set exercised by CI.
 PyYAML==6.0.3
 jsonschema==4.22.0
 tzdata==2025.3 ; sys_platform == 'win32'

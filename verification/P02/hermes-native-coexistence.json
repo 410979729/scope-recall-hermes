@@ -1,0 +1,18 @@
+{
+  "schema": "P02-hermes-native-coexistence-v1",
+  "status": "blocked_at_official_AIAgent_init",
+  "scope": "single isolated attempt; no model/network/formal session/database access",
+  "home": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-registration-runtime",
+  "memory_path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-registration-runtime\\MEMORY.md",
+  "memory_sentinel": "§ P02_NATIVE_MEMORY_SENTINEL_7c1e",
+  "memory_unchanged": true,
+  "network_connect_attempts": 0,
+  "entry": "run_agent.AIAgent",
+  "source_lines": "run_agent.py:233-280; agent/agent_init.py:1224-1274",
+  "config": "test config.yaml memory.memory_enabled=true, user_profile_enabled=false, provider=scope-recall-p02",
+  "attempt_command": "PYTHONPATH=F:\\Agents\\runtime\\windows\\hermes-tianxuan\\hermes-agent venv\\Scripts\\python.exe .execution\\TEST-P02-registration-runtime\\run_native.py",
+  "failure_type": "RuntimeError",
+  "failure": "Provider openai is set in config.yaml but no API key was found",
+  "reason": "AIAgent initialization resolved openai from the active Hermes config before completing memory initialization; no credential was read or supplied, and no dummy credential retry was made.",
+  "static_contract": "agent_init.py:1243-1261 constructs and loads built-in MemoryStore when memory flags enabled; agent_init.py:1263-1274 loads configured external memory provider alongside it. This is source evidence only, not a successful native coexistence run."
+}

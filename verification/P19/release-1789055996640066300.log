@@ -1,0 +1,18 @@
+ImportError while loading conftest 'F:\t\sr-closeout-20260910\tests\host\hermes\conftest.py'.
+tests\host\hermes\conftest.py:8: in <module>
+    from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_hermes_scope_recall
+adapters\hermes\__init__.py:5: in <module>
+    from .provider import ScopeRecallHermesAdapter, register_adapter
+adapters\hermes\provider.py:310: in <module>
+    _MemoryProviderBase = _memory_provider_base()
+                          ^^^^^^^^^^^^^^^^^^^^^^^
+adapters\hermes\provider.py:304: in _memory_provider_base
+    from agent.memory_provider import MemoryProvider  # pyright: ignore[reportMissingImports]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\v11_guard.py:225: in _audit
+    _check_path(args[0], writing)
+tests\v11_guard.py:203: in _check_path
+    raise PermissionError("TEST_BOUNDARY: protected data access")
+E   PermissionError: TEST_BOUNDARY: protected data access
+
+{"cleanup_exit_code": 0, "overall_exit_code": 4, "pytest_exit_code": 4, "transition_history": ["prepared", "pytest_started", "pytest_completed_waiting_cleanup", "cleanup_succeeded", "receipt_written"], "wrapper_exit_code": 0}

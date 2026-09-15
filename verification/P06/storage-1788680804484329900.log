@@ -1,0 +1,13 @@
+............................                                             [100%]
+============================ slowest 10 durations =============================
+0.07s call     tests/contract/test_v11_storage.py::test_independent_initialize_and_exact_restricted_roundtrip
+0.02s call     tests/contract/test_v11_storage.py::test_rollback_failure_keeps_primary_error_and_close_discards_transaction
+0.02s call     tests/contract/test_v11_storage.py::test_scopes_filtered_and_foreign_binding_refused
+0.02s call     tests/contract/test_v11_storage.py::test_savepoint_cleanup_failure_poisoned_owner_cannot_commit
+0.02s call     tests/contract/test_v11_storage.py::test_source_replay_and_versions_preserve_occurrences
+0.02s call     tests/contract/test_v11_storage.py::test_owned_transaction_failures_discard_connection_and_allow_next_write[COMMIT]
+0.02s call     tests/contract/test_v11_storage.py::test_owned_transaction_failures_discard_connection_and_allow_next_write[INSERT INTO work_items]
+0.02s call     tests/contract/test_v11_storage.py::test_owned_failure_rolls_back_source_work_and_epoch
+0.02s call     tests/contract/test_v11_storage.py::test_unknown_schema_and_old_store_never_auto_upgrade
+0.02s call     tests/contract/test_v11_storage.py::test_owned_transaction_failures_discard_connection_and_allow_next_write[INSERT INTO source_events]
+28 passed in 1.00s

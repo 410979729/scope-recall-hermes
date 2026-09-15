@@ -1,246 +1,179 @@
-# Install Scope Recall
+# 安装与使用 Scope Recall（3.0.0 本地候选）
 
-This guide covers three supported installation paths for `scope-recall`, the Hermes memory provider distributed as the Python package `hermes-scope-recall`.
+> **当前状态：** 版本 `3.0.0` 为本地开发候选，**未发布到 PyPI**，**P18 正式宿主验收尚未通过**。本文只描述仓库内已实现的安装与诊断路径，不表示可公开发布或全部测试已通过。
 
-## 1. Standard Hermes installation
+包名 `hermes-scope-recall`（导入 `scope_recall`），维护 CLI 别名 `scope-recall` 与 `hermes-scope-recall` 相同。v3 **不提供**旧版 `update` / `upgrade` / `rollback` 等自动升级命令；从旧库迁数据见 [`upgrade-guide.zh-CN.md`](upgrade-guide.zh-CN.md)。
 
-Install the package into the same Python environment that runs Hermes, then install and activate the provider in one command:
+## 1. 安装 wheel
 
-```bash
-python -m pip install "hermes-scope-recall[lancedb]"
-hermes-scope-recall install --activate --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --json
-hermes-scope-recall verify --runtime --hermes-home "${HERMES_HOME:-$HOME/.hermes}"
+在源码目录构建 wheel，并装入**与宿主相同的隔离 Python 环境**（Python 3.11 或 3.12）：
+
+```powershell
+cd F:\你的路径\scope-recall-runtime-integration
+py -m pip install build
+py -m build --wheel
+py -m pip install "F:\你的路径\scope-recall-runtime-integration\dist\hermes_scope_recall-3.0.0-py3-none-any.whl[lancedb]"
+# Codex MCP 可选：在同一 wheel 后加 [codex]
 ```
 
-`install --activate` performs these operations:
+路径含中文或空格时，PowerShell 请用双引号包住整个参数。`lancedb` extra 用于 LanceDB 向量伴生目录；`codex` extra 安装 MCP SDK，供 Codex MCP 适配器使用。
 
-- copies the plugin into `$HERMES_HOME/plugins/scope-recall`;
-- sets `memory.provider: scope-recall` in `$HERMES_HOME/config.yaml`;
-- bootstraps `$HERMES_HOME/scope-recall/memory.sqlite3` with the SQLite truth and journal schema;
-- creates sqlite-bruteforce vector metadata only for a provably fresh, empty bootstrap when that companion is configured directly or as the fallback;
-- returns JSON with install, config, schema, verification, backup, and rollback evidence.
+wheel 向 Hermes 0.21+ 声明正式 entry point：组 `hermes_agent.memory_providers`、名称 `scope-recall`、目标 `scope_recall.distribution.hermes:register`（现有绝对导入包装，`register(ctx)` 再调用 `register_adapter(ctx)`）。宿主发现走已安装包的 pip entry point，不依赖把包装目录放进 `$HERMES_HOME/plugins`，也不要用手工 copy/symlink 冒充发现。
 
-Before creating a backup or replacing any target, install/upgrade runs a read-only N-1 compatibility preflight. It validates the existing runtime config against the candidate schema and physically checks every existing READY vector generation with a bound preflight receipt. Unknown legacy keys, malformed config, missing receipts, identity drift, physical vector mismatch, or manifestless non-empty vector state fail before the target or backup tree is changed. The command reports a rebuild/migration next step; it never fabricates a receipt for an unverified legacy generation.
+安装后可用下列命令确认 CLI 可用（两条等价）：
 
-The command captures activation pre-state **before** replacing the plugin or applying schema work:
-
-- an existing plugin copy is copied into the installer backup tree;
-- `config.yaml` and the provider `config.json` are captured with their prior existence state; when either path is a symlink, both link identity and dereferenced target bytes/mode are snapshotted and independently verified during rollback;
-- an existing SQLite truth DB is captured with SQLite's online backup API and verified with `PRAGMA quick_check`;
-- LanceDB and sqlite-bruteforce companion generations are fingerprinted as rebuildable state.
-
-Activation against an existing `memory.sqlite3` is refused unless the operator passes `--maintenance-mode`. This flag confirms that the gateway and every Scope Recall writer have already been stopped. Before the online backup starts, the installer atomically creates `$HERMES_HOME/scope-recall/.activation-maintenance.json`, acquires a SQLite writer lock, invalidates cached write statements, and installs temporary INSERT/UPDATE/DELETE guard triggers on every ordinary truth table. The matching token is passed explicitly only to the installer-owned bootstrap connection; sibling threads, same-context ordinary connections, ordinary provider connections, raw connections, and older SQLite writers fail at the guard. The offline backup copy is stripped of those temporary triggers before it becomes rollback material. The live lease and guards remain active through commit or compensation. A successful commit removes the guards before releasing the lease; a failed drift preflight retains both for manual recovery.
-
-The copy stage normalizes directory owner permissions in the staging tree before atomic replacement. This allows installation from immutable or read-only package/source directories without making copied source files more permissive.
-
-`config.yaml` is parsed as a single, duplicate-free YAML mapping. Block and inline `memory` mappings, quoted keys, comments, and unrelated settings are preserved. Malformed YAML and constructs that cannot be rewritten losslessly (including duplicate keys, multi-document input, anchors, and aliases) fail closed. The updated config is written to a same-directory temporary file, flushed with `fsync`, and atomically replaced. Parent-directory `fsync` remains a durability barrier where the platform supports it; on Windows or filesystems that reject directory `fsync`, a completed replacement is reported as success rather than as a contradictory failure.
-
-If config writing, schema bootstrap/migration, provider loading, or runtime verification fails after confirmed maintenance entry, the installer first runs a no-write compensation preflight. It compares the live logical SQLite fingerprint with the latest explicitly registered activation-owned write epoch. With no drift, it restores the plugin, both config files, and SQLite state. Any unregistered post-snapshot write stops compensation before vector, plugin, config, or database state is changed, returns `rollback_failed` with `manual_recovery_required=true`, preserves the current cross-surface generation, and retains the maintenance lease. When compensation is allowed, a vector companion changed during the failed activation is discarded rather than presented as the same generation; the `activation_transaction.vector_companions` receipt marks `rebuild_required` and emits a repair command. The command returns `ok=false` rather than claiming activation, and `activation_transaction` records the failure, snapshot paths, per-surface restoration result, and manual recovery commands. A failure while creating the pre-state snapshot aborts before plugin replacement.
-
-The standalone `rollback --backup-dir ...` command restores a plugin copy only. For activation-state recovery, use the `activation_transaction` receipt. Automatic SQLite compensation is permitted only for snapshots captured after confirmed writer quiescence; an unconfirmed snapshot never overwrites post-snapshot truth. Manual SQLite restore commands are offline recovery evidence and must not be run against an active writer.
-
-## 2. Verify, upgrade, and rollback
-
-### Recommended automatic upgrade (1.10.3 and later)
-
-Ordinary users and agents should not run the manual compatibility/repair flow
-below. Upgrade the package in the same Python environment that runs Hermes and
-invoke the fixed stable updater:
-
-```bash
-python -m pip install --upgrade hermes-scope-recall
-hermes-scope-recall update --json
+```powershell
+scope-recall --help
+hermes-scope-recall --help
 ```
 
-The active plugin proves its exact home from its own location. The standalone
-command uses an inherited `HERMES_HOME`; without either authority it refuses
-to run rather than guessing a platform-default or stale home. Only an external
-maintainer shell for a non-default install needs `--hermes-home`; ordinary
-agents never choose among profiles.
+## 2. 三个状态（不要混为一谈）
 
-Agents must claim success only when the response contains
-`"upgrade_complete": true`. A detached launch returns
-`"outcome": "upgrade_in_progress"` and
-`"next_action_code": "wait_for_automatic_restart"`; that means the updater is
-still working. Transient release-network failures receive three automatic
-attempts before the only permitted user action becomes rerunning this same
-command. Users never select a repair, embedding identity, or rollback policy.
-If support is genuinely required, the response includes a content-free
-`support_receipt` object to forward unchanged. Do not inspect or attach the
-memory database.
+| 状态 | CLI 负责 | 完成后标志 |
+|------|----------|------------|
+| **已安装** | `plan-install` → `apply-install` | 插件包装文件与安装回执已写入 |
+| **宿主已启用** | 由 Hermes / Codex 正常配置完成 | 宿主实际加载插件并可使用记忆能力 |
+| **钩子已信任**（仅 Codex） | 在 Codex 中批准插件原生钩子 | Codex 允许 `hooks/hooks.json` 中的命令执行 |
 
-There are no repository, URL, archive, candidate, checksum, memory-adjudication,
-embedding, vector-repair, or rollback choices. The command binds to the exact
-Hermes home, fetches only the official stable GitHub Release, verifies the
-release manifest and canonical candidate tree, freezes an external worker,
-stops that home's gateway, and either starts the verified candidate or the
-provably restored previous version. It never sends memory content to an
-embedding API. Unsafe vector companion state is preserved and disabled as
-rebuildable debt while SQLite truth and lexical recall remain usable.
+`apply-install` **不会**修改 Hermes 的 `config.yaml`，也不会替你在宿主里注册插件或信任钩子。安装回执（`<instance-root>\.scope-recall-install-receipt.json`）记录的是**安装时刻**的状态，其中 `host_registration_pending: true`（Codex 另含 `hook_trust_pending: true`）描述当时宿主尚未完成注册/信任；宿主后续启用或信任**不会改写**这份历史回执。当前是否已注册、钩子是否已信任，请以 `doctor` 输出和宿主实际行为为准。
 
-The operation is crash-resumable. After a power loss, reboot, killed process,
-or transient download failure, run the same command again: it resumes the sole
-incomplete operation before making a new network request. It never guesses when
-the durable activation evidence is ambiguous; in that exceptional case it
-keeps the writer stopped and returns a content-free recovery reason.
+安装模式是显式边界：`plan-install` 和 `apply-install` 默认以生产模式创建绑定（`test_mode=false`）。只有隔离的 TEST 根目录才应在**两个命令**上同时追加 `--test-mode`；`apply-install` 会把计划中的模式重新校验后再初始化实例，不会隐式改变部署模式。测试模式不是生产安装的默认值，也不会自动探测用户目录。
 
-After `2.0.1` is active, `hermes scope-recall update` provides the same
-zero-choice path and derives the exact Hermes home from the active plugin.
+## 3. Hermes
 
-The manual commands below remain maintainer/operator diagnostics, not a normal
-upgrade requirement.
+路径须为**绝对路径**。`instance-root` 可以是**已有** Hermes 主目录（如 `C:\Users\你\.hermes`）：安装器只管理其中的 `scope-recall\` 命名空间与回执文件，不会把 `config.yaml`、`SOUL.md`、会话或其他插件当成 foreign。已有未知/未绑定/冲突的 `scope-recall\` 目录仍会拒绝，也不会收养陌生托管目录。
 
-Run structural verification:
+`target-plugin-dir` **不能**落在 `instance-root` 内部（根重叠守卫未放宽）。因此不要使用 `$HERMES_HOME\plugins\scope-recall` 作为包装目标；把包装写到 HOME 外的目录。发现由已安装 wheel 的 `hermes_agent.memory_providers` entry point 完成。`project-root` 为当前工作区根目录。
 
-```bash
-hermes-scope-recall verify --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --json
+`--agent-id` 必须等于宿主 `initialize` 发送的 `agent_identity`（`get_active_profile_name()`）。隔离 HOME 下该函数通常返回 `default`，**不是** `main`。默认 `--agent-workspace` 为 `hermes`，与 Hermes 0.21+ `_memory_provider_init_kwargs` 硬编码值一致；只有宿主实际发送其他值时才应显式覆盖。绑定不一致时安装仍会成功，但捕获会因 audience 无法映射而拒绝（不会放宽 workspace/`scope_mismatch` 守卫）。
+
+```powershell
+$Hermes  = "C:\Users\你\.hermes"
+$Plugin  = "D:\scope-recall-wrapper\scope-recall"
+$Project = "D:\我的项目\repo"
+$Python  = "C:\Python312\python.exe"
+
+scope-recall plan-install --host hermes `
+  --target-plugin-dir $Plugin --instance-root $Hermes `
+  --project-root $Project --agent-id default --python $Python
+
+scope-recall apply-install --host hermes `
+  --target-plugin-dir $Plugin --instance-root $Hermes `
+  --project-root $Project --agent-id default --python $Python
 ```
 
-Run runtime verification:
+显式选择工作区（plan 与 apply 必须一致）：
 
-```bash
-hermes-scope-recall verify --runtime --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --json
+```powershell
+scope-recall plan-install --host hermes `
+  --target-plugin-dir $Plugin --instance-root $Hermes `
+  --project-root $Project --agent-id default --agent-workspace hermes --python $Python
 ```
 
-Runtime verification reports layered diagnostics:
+- `plan-install` 输出 JSON；有 `conflicts` 时**退出码为 1**，须先解决冲突再 `apply-install`。
+- `apply-install` 成功时退出码为 0，并写出 `files_written`、`installation_id`、`backups`（覆盖前会把旧包装文件备份到 `<instance-root>\.scope-recall-backups\` 下）。
+- 计划与回执含 `agent_workspace`。Codex **不接受** `--agent-workspace`。
 
-- `plugin_files` — required plugin files, manifest, discovery marker;
-- `provider_load` — provider import and schema loading;
-- `config_load_errors` — candidate-schema compatibility diagnostics for the existing runtime config;
-- `hermes_config` — whether `memory.provider` is set to `scope-recall`;
-- `sqlite_truth` — SQLite DB path and schema migration status;
-- `tool_schemas` — compact public tool schema coverage;
-- `vector_companion` — configured vector backend and initialization status.
+安装完成后，在**该实例的** Hermes 配置中把记忆提供者设为 `scope-recall`（例如 `memory.provider: scope-recall`）。不要改生产/兄弟 HOME。然后运行诊断：
 
-Upgrade with a dry-run first:
-
-```bash
-hermes-scope-recall upgrade --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --dry-run --json
-# Stop the gateway and all Scope Recall writers before the next command.
-hermes-scope-recall upgrade --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --activate --maintenance-mode --json
+```powershell
+scope-recall doctor --host hermes --instance-root $Hermes --python $Python
 ```
 
-If the dry-run reports a missing active vector manifest while SQLite truth or a companion already contains state, keep the existing companion untouched and use the candidate's migration script to build and validate a shadow generation before retrying the upgrade:
+- `doctor` 仅接受 `--host`、`--instance-root`、`--python`；不接受安装时的 `target-plugin-dir` / `project-root` / `agent-id`。
+- `status` 为 `ok` 时退出码 0；存在 `capability_gaps` 时为 `degraded`，退出码 1。
+- `host_registration_status` 在只读诊断中通常仍为 `pending`；是否真正接入请以 Hermes 能否加载插件并调用记忆工具为准。
 
-```bash
-python scripts/migrate.vector_generation.py --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --dry-run --json
-python scripts/migrate.vector_generation.py --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --apply --activate --json
+Core 数据目录默认为 `<instance-root>\scope-recall\`（含 `memory.sqlite3` 与可选 `vectors\` 伴生目录）。
+
+## 4. Codex
+
+参数含义相同；`--host codex`。`instance-root` 存放 `codex-installation.json` 与 `data\`；`target-plugin-dir` 为 Codex 插件目录；`project-root` 为工作区根。
+
+```powershell
+$Instance = "C:\Users\你\.codex\scope-recall"
+$Plugin   = "C:\Users\你\.codex\plugins\scope-recall"
+$Project  = "D:\我的项目\repo"
+$Python   = "C:\Python312\python.exe"
+
+scope-recall plan-install --host codex `
+  --target-plugin-dir $Plugin --instance-root $Instance `
+  --project-root $Project --agent-id main --python $Python
+
+scope-recall apply-install --host codex `
+  --target-plugin-dir $Plugin --instance-root $Instance `
+  --project-root $Project --agent-id main --python $Python
 ```
 
-The apply step must run under the operator's maintenance boundary. It CAS-activates the new generation from an empty current pointer and retains any manifestless legacy companion for audit instead of adopting or deleting it.
+`apply-install` 会在插件目录写入：
 
-If the upgrade replaced an existing plugin copy, use the emitted rollback command after a dry-run check:
+- `.codex-plugin\plugin.json`
+- `hooks\hooks.json`（六个原生钩子事件，见下）
+- `.mcp.json`（MCP 服务定义；需安装 `[codex]` extra 才能实际启动 MCP）
 
-```bash
-hermes-scope-recall rollback --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --backup-dir /path/to/backup/scope-recall --dry-run --json
-hermes-scope-recall rollback --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --backup-dir /path/to/backup/scope-recall --json
+六个钩子事件（与 `maintenance/install.py` 中 `CODEX_HOOK_EVENTS` 一致）：`SessionStart`、`UserPromptSubmit`、`PostToolUse`、`Stop`、`Interrupt`、`SessionEnd`。每条钩子通过隔离 Python 调用 `scope_recall.adapters.codex.hook_entry`。
+
+**接入步骤：**
+
+1. 在 Codex 的宿主配置中启用已写入的 `hooks\hooks.json`；安装器只生成文件，不替宿主完成信任或批准。
+2. 若使用 MCP 工具，确认 wheel 带 `[codex]` extra，并按 Codex 实际支持的 MCP 配置流程允许服务 `scope-recall`。
+3. 运行诊断：
+
+```powershell
+scope-recall doctor --host codex --instance-root $Instance --python $Python
 ```
 
-## 3. Multi-profile rollout
+Codex 的 `hook_trust_status` 在只读诊断中通常仍为 `pending`；本项目不提供桌面 GUI 或独立信任命令，是否真正接入请以 Codex 实际是否执行 hooks 文件中的命令为准。
 
-For Hermes profile homes under `~/.hermes/profiles/*`, use rollout planning first:
+Core 数据目录为 `<instance-root>\data\`（含 `memory.sqlite3`）。
 
-```bash
-hermes-scope-recall rollout profiles \
-  --profiles-root "$HOME/.hermes/profiles" \
-  --plan \
-  --json
+## 5. 向量与平台边界
+
+- **LanceDB**：安装时带 `[lancedb]` extra；数据目录路径宜短（如 `C:\ScopeRecall\my-agent`）。LanceDB 会在该路径下追加表名与临时文件；过长可能触发 `native_vector_path_too_long`。
+- **PostgreSQL / pgvector**：**不在** v3 发行物内；若配置 pgvector 会报错，请保留旧安装并参阅迁移指南。
+- **runtime-config**：不会从当前目录自动生成；需要时在 Core 数据目录下自行提供 `runtime-config.json`。缺失时 Core 以基础能力运行，并在诊断中报告能力缺口。省略的自动召回时限默认为 `auto_recall_seconds=5.0`、钩子兜底 `hook_processing_seconds=6.0`（均为现有上限）；超时后词法降级，显式更短时限仍生效。
+
+## 6. 从旧版迁移
+
+自旧 Hermes Scope Recall（官方 578b SQLite 基线）迁数据为**离线、显式**操作，与日常 `apply-install` 分离：
+
+1. 停止旧插件写入，备份旧 `memory.sqlite3`（及可选 `vectors\` 目录）。
+2. 在新实例目录完成本节第 3 或第 4 步的空实例安装。
+3. 按 [`upgrade-guide.zh-CN.md`](upgrade-guide.zh-CN.md) 执行 `python -m scope_recall.maintenance.migrate`。
+4. 核对迁移报告与抽样记忆后，再切换宿主到新插件；**旧库与旧安装保留**，确认无误后再手动清理。
+
+v3 不承诺一键自动升级，也不保留旧版长期兼容层。
+
+## 7. 卸载（默认保留记忆）
+
+卸载依据安装回执，**默认只移除插件包装文件，保留 Core 数据库**。先检查计划，无冲突后再应用：
+
+```powershell
+scope-recall plan-uninstall --instance-root $Hermes
+scope-recall apply-uninstall --instance-root $Hermes
 ```
 
-Apply to a canary profile:
+- `plan-uninstall` 有 `conflicts` 时退出码为 1。
+- `--target-plugin-dir` 可省略（从回执读取）。
+- 普通 `plan-uninstall` **不会**评估 purge，输出中 `purge_allowed` 恒为 `false`。
 
-```bash
-hermes-scope-recall rollout profiles \
-  --profiles-root "$HOME/.hermes/profiles" \
-  --profile default \
-  --apply \
-  --receipt /tmp/scope-recall-rollout-default.json
+若要删除经回执校验的、安装器拥有的 Core 数据，须**单独**用 `--purge` 做显式检查与应用（两步都带 `--purge`）：
+
+```powershell
+scope-recall plan-uninstall --instance-root $Hermes --purge
+# 仅当上一步 purge_allowed 为 true 且无 conflicts 时：
+scope-recall apply-uninstall --instance-root $Hermes --purge
 ```
 
-Rollback from the receipt:
+purge 会校验安装身份、数据目录归属、是否存在活跃写入方、`restore-required.json` 等；不满足则 `purge_refused:*` 并拒绝删除。**不要把 purge 当作常规卸载步骤**；日常卸载无需 `--purge`。
 
-```bash
-hermes-scope-recall rollout profiles \
-  --profiles-root "$HOME/.hermes/profiles" \
-  --rollback \
-  --receipt /tmp/scope-recall-rollout-default.json \
-  --apply
-```
+## 命名对照
 
-See [`cross-profile-rollout.md`](cross-profile-rollout.md) for the full safety model.
-
-## 4. Native-free vector fallback
-
-If LanceDB or PyArrow native wheels are not suitable for the host, install without the LanceDB extra and configure the SQLite brute-force companion:
-
-```bash
-python -m pip install hermes-scope-recall
-hermes-scope-recall install --activate --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --json
-```
-
-Then set the runtime config in `$HERMES_HOME/scope-recall/config.json`:
-
-```json
-{
-  "vector": {
-    "backend": "sqlite-bruteforce"
-  }
-}
-```
-
-Run verification again:
-
-```bash
-hermes-scope-recall verify --runtime --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --json
-```
-
-## 5. Optional PGVector companion
-
-Use PGVector only when the deployment already operates PostgreSQL with the pgvector extension. SQLite remains the source of truth; PGVector is a rebuildable semantic-search companion.
-
-```bash
-python -m pip install "hermes-scope-recall[pgvector]"
-# Authenticate with .pgpass, a PostgreSQL service, or your secret manager.
-export SCOPE_RECALL_PGVECTOR_DSN='postgresql://user@host:5432/database'
-hermes-scope-recall install --activate --hermes-home "${HERMES_HOME:-$HOME/.hermes}" --json
-```
-
-Runtime config:
-
-```json
-{
-  "vector": {
-    "backend": "pgvector",
-    "fallback_backend": "sqlite-bruteforce",
-    "pgvector": {
-      "dsn_env": "SCOPE_RECALL_PGVECTOR_DSN",
-      "table_name": "scope_recall_vectors"
-    }
-  }
-}
-```
-
-See [`vector-backends.md`](vector-backends.md) for backend behavior and repair notes.
-
-## 6. Development checkout
-
-For local development, install editable mode and then copy/activate the plugin into a throwaway Hermes home:
-
-```bash
-git clone https://github.com/410979729/scope-recall-hermes.git
-cd scope-recall-hermes
-python -m pip install -e ".[dev,lancedb]"
-hermes-scope-recall install --activate --hermes-home /tmp/scope-recall-hermes-home --json
-hermes-scope-recall verify --runtime --hermes-home /tmp/scope-recall-hermes-home --json
-python -m pytest -q tests/test_installer.py tests/test_rollout_profiles.py
-```
-
-Do not use a production Hermes home for development smoke tests unless you have a backup and an explicit rollback plan.
-
-## Naming reference
-
-- Python distribution: `hermes-scope-recall`
-- Python import/package: `scope_recall`
-- Hermes plugin/provider ID: `scope-recall`
-- Runtime storage: `$HERMES_HOME/scope-recall/`
-- Installed plugin copy: `$HERMES_HOME/plugins/scope-recall/`
+| 概念 | 值 |
+|------|-----|
+| PyPI 包名 | `hermes-scope-recall` |
+| Python 导入 | `scope_recall` |
+| 宿主插件 ID | `scope-recall` |
+| 安装回执 | `<instance-root>\.scope-recall-install-receipt.json` |
+| Hermes 安装清单 | `<instance-root>\scope-recall\installation.json` |
+| Codex 安装清单 | `<instance-root>\codex-installation.json` |

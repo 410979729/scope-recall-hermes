@@ -1,6 +1,5 @@
-# Bounded direct inputs for release jobs. The Hermes core requirements below
-# mirror HERMES_AGENT_COMMIT in the workflows so its later --no-deps source
-# install cannot resolve or replace packages outside the hash-locked closure.
+# Bounded v3 release inputs. Host-specific Hermes source validation is an external gate;
+# this lock contains only the current Core plus optional Codex/Lance test surface.
 build>=1.2,<2
 setuptools>=69,<82
 wheel>=0.45,<1
@@ -12,42 +11,5 @@ pyarrow>=24,<25
 pytest>=8,<10
 ruff>=0.12,<1
 pyright>=1.1,<2
-
-# Hermes Agent v0.19.1 / cc4cab2f592e60a197e796506de9168f74baf3ea core.
-openai==2.24.0
-certifi==2026.5.20
-python-dotenv==1.2.2
-fire==0.7.1
-httpx==0.28.1
-socksio==1.0.0
-rich==14.3.3
-tenacity==9.1.4
-PyYAML==6.0.3
-ruamel.yaml==0.18.17
-requests==2.33.0
-jinja2==3.1.6
-pydantic==2.13.4
-prompt-toolkit==3.0.52
-croniter==6.0.0
-packaging==26.0
-Markdown==3.10.2
-PyJWT==2.13.0
-urllib3>=2.7.0,<3
-cryptography==48.0.1
-tzdata==2025.3 ; sys_platform == 'win32'
-psutil==7.2.2
-websockets==15.0.1
-pathspec==1.1.1
-fastapi>=0.104.0,<1
-uvicorn>=0.24.0,<1
-colorama==0.4.6 ; sys_platform == 'win32'
-httptools==0.8.0
-uvloop==0.22.1 ; platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'
-watchfiles==1.2.0
-python-multipart>=0.0.9,<1
-ptyprocess>=0.7.0,<1 ; sys_platform != 'win32'
-pywinpty>=2.0.0,<3 ; sys_platform == 'win32'
-pywin32>=306,<312 ; sys_platform == 'win32'
-Pillow==12.2.0
-concurrent-log-handler==0.9.29 ; sys_platform == 'win32'
-nemo-relay>=0.6.0,<0.7 ; (sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64') or (sys_platform == 'linux' and platform_machine == 'aarch64') or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')
+mcp==2.1.0
+pydantic>=2,<3

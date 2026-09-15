@@ -1,0 +1,15 @@
+.............................................                            [100%]
+============================ slowest 10 durations =============================
+0.07s call     tests/contract/test_v11_claims.py::test_C04_M26_capture_explicit_attribute_correction_is_immediate_without_vectors
+0.06s call     tests/contract/test_v11_claims.py::test_retraction_blocks_current_but_keeps_history_and_past
+0.06s call     tests/contract/test_v11_claims.py::test_two_real_writers_with_same_expected_revision_have_exactly_one_winner
+0.06s call     tests/contract/test_v11_claims.py::test_C36_ambiguous_correction_preserves_both_currents_and_raw_update
+0.05s call     tests/contract/test_v11_claims.py::test_C13_derived_echoes_have_one_root_without_new_authority_or_literal_laundering[memory_reinjection]
+0.05s call     tests/contract/test_v11_claims.py::test_C13_derived_echoes_have_one_root_without_new_authority_or_literal_laundering[host_generated]
+0.05s call     tests/contract/test_v11_claims.py::test_failure_after_head_evidence_epoch_and_work_updates_rolls_back_everything
+0.05s call     tests/contract/test_v11_claims.py::test_old_human_quote_and_agent_echo_cannot_authorize_new_revision
+0.05s call     tests/contract/test_v11_claims.py::test_explicit_revision_compare_and_swap_and_no_silent_retries
+0.05s call     tests/contract/test_v11_claims.py::test_C05_late_import_cannot_replace_current_and_recorded_time_does_not_become_valid_time
+45 passed in 2.80s
+
+{"cleanup_exit_code": 0, "overall_exit_code": 0, "pytest_exit_code": 0, "transition_history": ["prepared", "pytest_started", "pytest_completed_waiting_cleanup", "cleanup_succeeded", "receipt_written"], "wrapper_exit_code": 0}

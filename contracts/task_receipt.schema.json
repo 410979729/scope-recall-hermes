@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "task_receipt",
+  "description": "Design specification v1.1. Not an installed API. Trusted identity is supplied separately by the adapter.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "pattern": "^P(0[0-9]|1[0-9])$"
+    },
+    "status": {
+      "enum": [
+        "blocked",
+        "completed"
+      ]
+    },
+    "base_sha": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "head_sha_or_diff_sha256": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "changed_responsibilities": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1000
+      },
+      "maxItems": 30
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "duration_seconds": {
+            "type": "number",
+            "minimum": 0
+          },
+          "passed": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "failed": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "skipped": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "evidence_ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": [
+          "command",
+          "exit_code",
+          "duration_seconds",
+          "passed",
+          "failed",
+          "skipped",
+          "evidence_ref"
+        ]
+      },
+      "maxItems": 100
+    },
+    "not_run": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1000
+      },
+      "maxItems": 30
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      },
+      "maxItems": 30
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      },
+      "maxItems": 100
+    },
+    "next_task_ready": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "task_id",
+    "status",
+    "base_sha",
+    "head_sha_or_diff_sha256",
+    "changed_responsibilities",
+    "checks",
+    "not_run",
+    "blockers",
+    "artifacts",
+    "next_task_ready"
+  ]
+}

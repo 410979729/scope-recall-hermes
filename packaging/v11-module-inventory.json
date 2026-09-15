@@ -1,0 +1,167 @@
+{
+  "schema_version": "scope-recall.v11-module-inventory.v1",
+  "package_version": "3.0.0.dev0",
+  "allowlist_sha256": "ea9da3e1a6f67545a2da29d58a489f32bb3bd80592aa017eb0b7c7597a7ba021",
+  "release_file_counts": {
+    "python_modules": 94,
+    "package_data": 15,
+    "release_files": 109
+  },
+  "python_modules_by_area": {
+    "root": [
+      "__init__.py",
+      "_version.py",
+      "aliases.py",
+      "capture_filters.py",
+      "contracts.py",
+      "fact_actions.py",
+      "fact_evidence.py",
+      "fact_identity.py",
+      "fact_temporal_semantics.py",
+      "file_lock.py",
+      "gating.py",
+      "lance_process_store.py",
+      "secret_patterns.py",
+      "sqlite_vector_store.py",
+      "truth_connection.py",
+      "vector_mutation_guard.py",
+      "vector_store.py",
+      "writer_lease.py"
+    ],
+    "_internal": [
+      "_internal/__init__.py",
+      "_internal/recall/__init__.py",
+      "_internal/recall/deadline.py"
+    ],
+    "adapters": [
+      "adapters/__init__.py",
+      "adapters/codex/__init__.py",
+      "adapters/codex/boundary.py",
+      "adapters/codex/config.py",
+      "adapters/codex/handler.py",
+      "adapters/codex/hook_entry.py",
+      "adapters/codex/identity.py",
+      "adapters/codex/mcp_entry.py",
+      "adapters/codex/mcp_server.py",
+      "adapters/runtime_wiring.py",
+      "adapters/hermes/__init__.py",
+      "adapters/hermes/attachments.py",
+      "adapters/hermes/boundary.py",
+      "adapters/hermes/gating.py",
+      "adapters/hermes/hooks.py",
+      "adapters/hermes/identity.py",
+      "adapters/hermes/installation.py",
+      "adapters/hermes/outcomes.py",
+      "adapters/hermes/protocol.py",
+      "adapters/hermes/provider.py",
+      "adapters/hermes/register.py",
+      "adapters/hermes/runtime_wiring.py",
+      "adapters/hermes/worker.py",
+      "adapters/lance.py",
+      "adapters/models.py",
+      "adapters/codex/runtime_wiring.py"
+    ],
+    "core": [
+      "core/__init__.py",
+      "core/aliases.py",
+      "core/artifact_storage.py",
+      "core/capture.py",
+      "core/claim_storage.py",
+      "core/claims.py",
+      "core/composition.py",
+      "core/consolidate.py",
+      "core/delete_storage.py",
+      "core/deletion.py",
+      "core/episode_storage.py",
+      "core/episodes.py",
+      "core/events.py",
+      "core/inspect_service.py",
+      "core/mutate.py",
+      "core/recall.py",
+      "core/recall_diagnostics.py",
+      "core/recall_packet.py",
+      "core/recall_policy.py",
+      "core/reference_storage.py",
+      "core/restore.py",
+      "core/retained_artifacts.py",
+      "core/retrieval.py",
+      "core/retrieval_storage.py",
+      "core/schema.py",
+      "core/source_qualification.py",
+      "core/storage.py",
+      "core/visibility.py",
+      "core/work_storage.py",
+      "core/worker.py"
+    ],
+    "maintenance": [
+      "maintenance/__init__.py",
+      "maintenance/cli.py",
+      "maintenance/doctor.py",
+      "maintenance/install.py",
+      "maintenance/backup.py",
+      "maintenance/migrate.py",
+      "maintenance/migrate_v2.py",
+      "maintenance/rollback.py"
+    ],
+    "runtime": [
+      "runtime/_http_worker.py",
+      "runtime/_worker_bootstrap.py",
+      "runtime/__init__.py",
+      "runtime/auxiliary.py",
+      "runtime/instance.py",
+      "runtime/model_budget.py",
+      "runtime/worker_entry.py",
+      "runtime/worker_launch.py",
+      "runtime/worker_watchdog.py"
+    ]
+  },
+  "package_data": [
+    "py.typed",
+    "_lance_worker.py",
+    "adapters/hermes/plugin.yaml",
+    "contracts/consolidation_result.schema.json",
+    "contracts/forget_request.schema.json",
+    "contracts/recall_packet.schema.json",
+    "contracts/recall_request.schema.json",
+    "contracts/revise_request.schema.json",
+    "contracts/source_event.schema.json",
+    "contracts/task_receipt.schema.json",
+    "maintenance/migration_mapping.json",
+    "distribution/codex/scope-recall/.codex-plugin/plugin.json",
+    "distribution/codex/scope-recall/.mcp.json",
+    "distribution/hermes/__init__.py",
+    "distribution/hermes/plugin.yaml"
+  ],
+  "console_scripts": {
+    "hermes-scope-recall": "scope_recall.maintenance.cli:main",
+    "scope-recall": "scope_recall.maintenance.cli:main"
+  },
+  "host_wrappers": {
+    "hermes": "distribution/hermes",
+    "codex": "distribution/codex/scope-recall"
+  },
+  "optional_dependencies": {
+    "lancedb": "scope_recall.adapters.lance",
+    "codex": "mcp==2.1.0 plus pydantic",
+    "hermes_host": "agent.memory_provider and hermes_cli.plugins supplied by host"
+  },
+  "legacy_capability_exit": {
+    "pgvector": {
+      "status": "explicitly_rejected_in_v3_distribution",
+      "proof": "vector_store.py raises ValueError before importing legacy PG modules; old source modules remain outside allowlist"
+    },
+    "legacy_provider_cli_upgrade": {
+      "status": "outside_clean_allowlist",
+      "proof": "provider.py, cli.py, installer.py, stable_update.py, managed_upgrade.py are not in python_modules; source files are retained for migration/history"
+    },
+    "migration": {
+      "status": "bounded_wrapper_included",
+      "proof": "maintenance/migrate.py delegates to maintenance/migrate_v2.py; migration_mapping.json is package data"
+    },
+    "external_bridge": {
+      "status": "outside_clean_allowlist_unverified_for_external_callers",
+      "proof": "legacy source remains; no deletion claim"
+    }
+  },
+  "notes": "Generated from the current v3 allowlist; 94 Python modules plus 15 package-data files. This is an inventory/exit-boundary record, not proof of absence of external callers or host integration."
+}

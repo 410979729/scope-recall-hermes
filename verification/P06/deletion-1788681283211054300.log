@@ -1,0 +1,13 @@
+........................                                                 [100%]
+============================ slowest 10 durations =============================
+0.14s call     tests/contract/test_v11_deletion.py::test_restore_epoch_never_reuses_any_pre_restore_packet_epoch
+0.09s call     tests/contract/test_v11_deletion.py::test_C10_restored_backup_stays_closed_until_latest_ledger_replayed
+0.09s call     tests/contract/test_v11_deletion.py::test_deleted_absent_snapshot_member_cannot_be_reimported_later
+0.08s call     tests/contract/test_v11_deletion.py::test_withdrawn_object_missing_from_backup_cannot_be_late_reconstructed
+0.08s call     tests/contract/test_v11_deletion.py::test_C08_delete_blocks_every_existing_content_exit_before_physical_purge
+0.08s call     tests/contract/test_v11_deletion.py::test_restore_replays_withdrawal_without_inventing_missing_human_source
+0.08s call     tests/contract/test_v11_deletion.py::test_expected_revision_and_explicit_batch_authorization_are_required
+0.07s call     tests/contract/test_v11_deletion.py::test_cancelled_intention_does_not_return_to_pending_after_restore
+0.07s call     tests/contract/test_v11_deletion.py::test_purge_removes_source_claim_quote_and_lexical_payloads_and_reports_remaining_layers
+0.06s call     tests/contract/test_v11_deletion.py::test_intention_dependency_and_duplicate_quote_edges_are_erased_together
+24 passed in 2.28s

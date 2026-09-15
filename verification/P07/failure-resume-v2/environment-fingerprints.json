@@ -1,0 +1,12 @@
+{
+  "worktree_1": {
+    "input\\alpha.json": "2392e6687d386a6864043fdadc7f8849f411ac921846ced11bacd6573b601a44",
+    "input\\middle.json": "c09a11049552b4dac1daeb0b92c91ee5a6b55191410d4cbc25778ebf0e160780",
+    "input\\zeta.json": "2fee0b7a964cc1dbcb4c0f3c8950f2bb2e18693771bf456506527093b319fdb3"
+  },
+  "worktree_2": {
+    "input\\alpha.json": "2392e6687d386a6864043fdadc7f8849f411ac921846ced11bacd6573b601a44",
+    "input\\middle.json": "c09a11049552b4dac1daeb0b92c91ee5a6b55191410d4cbc25778ebf0e160780",
+    "input\\zeta.json": "2fee0b7a964cc1dbcb4c0f3c8950f2bb2e18693771bf456506527093b319fdb3"
+  }
+}

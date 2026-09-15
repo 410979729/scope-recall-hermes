@@ -1,0 +1,15 @@
+...............................                                          [100%]
+============================ slowest 10 durations =============================
+0.08s call     tests/contract/test_v11_storage.py::test_independent_initialize_and_exact_restricted_roundtrip
+0.02s call     tests/contract/test_v11_storage.py::test_scopes_filtered_and_foreign_binding_refused
+0.02s call     tests/contract/test_v11_storage.py::test_context_filter_precedes_source_search_limit_and_status[branch_id]
+0.02s call     tests/contract/test_v11_storage.py::test_context_filter_precedes_source_search_limit_and_status[project_id]
+0.02s call     tests/contract/test_v11_storage.py::test_owned_failure_rolls_back_source_work_and_epoch
+0.02s call     tests/contract/test_v11_storage.py::test_owned_transaction_failures_discard_connection_and_allow_next_write[COMMIT]
+0.02s call     tests/contract/test_v11_storage.py::test_savepoint_cleanup_failure_poisoned_owner_cannot_commit
+0.02s call     tests/contract/test_v11_storage.py::test_source_replay_and_versions_preserve_occurrences
+0.02s call     tests/contract/test_v11_storage.py::test_owned_transaction_failures_discard_connection_and_allow_next_write[INSERT INTO source_events]
+0.02s setup    tests/contract/test_v11_storage.py::test_independent_initialize_and_exact_restricted_roundtrip
+31 passed in 1.10s
+
+{"cleanup_exit_code": 0, "overall_exit_code": 0, "pytest_exit_code": 0, "transition_history": ["prepared", "pytest_started", "pytest_completed_waiting_cleanup", "cleanup_succeeded", "receipt_written"], "wrapper_exit_code": 0}

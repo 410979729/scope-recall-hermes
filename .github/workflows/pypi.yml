@@ -11,6 +11,10 @@ on:
         description: "Existing v<package-version> tag to publish"
         required: true
         type: string
+      model_evidence_tag:
+        description: "Existing evidence release/draft tag for the formal receipt"
+        required: true
+        type: string
 
 concurrency:
   group: pypi-publish-${{ github.event.client_payload.tag || inputs.release_tag }}
@@ -20,8 +24,6 @@ permissions:
   contents: read
 
 env:
-  # Hermes Agent v0.19.1 / v2026.7.30. Compatibility upgrades are reviewed explicitly.
-  HERMES_AGENT_COMMIT: cc4cab2f592e60a197e796506de9168f74baf3ea
   PYTHONUTF8: "1"
   PYTHONIOENCODING: "utf-8"
   PIP_CONSTRAINT: constraints/release.txt
@@ -38,6 +40,7 @@ jobs:
       release_run_id: ${{ steps.release_origin.outputs.release_run_id }}
       workflow_run_status: ${{ steps.release_origin.outputs.workflow_run_status }}
       workflow_run_conclusion: ${{ steps.release_origin.outputs.workflow_run_conclusion }}
+      model_evidence_tag: ${{ steps.release_origin.outputs.model_evidence_tag }}
     steps:
       - name: Verify originating release workflow run
         id: release_origin
@@ -47,6 +50,9 @@ jobs:
           INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
           DISPATCH_SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
           DISPATCH_RUN_ID: ${{ github.event.client_payload.release_run_id }}
+          DISPATCH_MODEL_EVIDENCE_TAG: ${{ github.event.client_payload.model_evidence_tag }}
+          INPUT_MODEL_EVIDENCE_TAG: ${{ inputs.model_evidence_tag }}
+          DEFAULT_MODEL_EVIDENCE_TAG: ${{ vars.SCOPE_RECALL_MODEL_EVIDENCE_TAG }}
         run: |
           RELEASE_TAG="${DISPATCH_TAG:-${INPUT_RELEASE_TAG}}"
           if ! [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -66,6 +72,8 @@ jobs:
             test "${DISPATCH_SOURCE_SHA}" = "${SOURCE_SHA}"
             test "${DISPATCH_RUN_ID}" = "${RELEASE_RUN_ID}"
           fi
+          MODEL_EVIDENCE_TAG="${DISPATCH_MODEL_EVIDENCE_TAG:-${INPUT_MODEL_EVIDENCE_TAG:-${DEFAULT_MODEL_EVIDENCE_TAG}}}"
+          test -n "${MODEL_EVIDENCE_TAG}"
           RELEASE_RUN_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RELEASE_RUN_ID}")"
           test "$(jq -er '.path' <<<"${RELEASE_RUN_JSON}")" = ".github/workflows/release.yml"
           test "$(jq -er '.head_sha' <<<"${RELEASE_RUN_JSON}")" = "${SOURCE_SHA}"
@@ -79,6 +87,7 @@ jobs:
             echo "release_run_id=${RELEASE_RUN_ID}"
             echo "workflow_run_status=${WORKFLOW_RUN_STATUS}"
             echo "workflow_run_conclusion=${WORKFLOW_RUN_CONCLUSION}"
+            echo "model_evidence_tag=${MODEL_EVIDENCE_TAG}"
           } >> "${GITHUB_OUTPUT}"
 
   prepare:
@@ -89,6 +98,7 @@ jobs:
       contents: read
     outputs:
       release_tag: ${{ steps.release_tag.outputs.release_tag }}
+      model_evidence_tag: ${{ needs.verify_release_origin.outputs.model_evidence_tag }}
     steps:
       - name: Resolve release tag
         id: release_tag
@@ -118,7 +128,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ steps.release_tag.outputs.release_tag }}
         run: |
-          expected="v$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          expected="v$(python -c 'import runpy; print(runpy.run_path("_version.py")["__version__"])')"
           test "${RELEASE_TAG}" = "${expected}"
           test "$(git tag --points-at HEAD | grep -Fx "${expected}")" = "${expected}"
       - name: Verify checked-out tag matches release source
@@ -128,13 +138,28 @@ jobs:
       - name: Install release dependencies
         run: |
           python -m pip install --require-hashes -r constraints/release-hashed.txt
-          python -m pip install --no-deps ".[lancedb,dev]"
-          python .github/scripts/checkout_pinned_hermes.py
-          python -m pip install --no-deps -e .hermes-agent-src
-      - name: Run tagged release gate
+          python -m pip install --no-deps ".[lancedb,codex,dev]"
+      - name: Download and verify model evidence bundle
         env:
-          PYTHONPATH: .hermes-agent-src
-        run: python scripts/check.release.py --tagged-release
+          GH_TOKEN: ${{ github.token }}
+          MODEL_EVIDENCE_TAG: ${{ needs.verify_release_origin.outputs.model_evidence_tag }}
+        run: |
+          set -euo pipefail
+          test -n "${MODEL_EVIDENCE_TAG}"
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          ARCHIVE_NAME="scope-recall-model-evidence-${SOURCE_SHA}.zip"
+          rm -rf .execution/model-evidence
+          mkdir -p .execution/model-evidence/incoming
+          gh release download "${MODEL_EVIDENCE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern "${ARCHIVE_NAME}" \
+            --dir .execution/model-evidence/incoming
+          test "$(find .execution/model-evidence/incoming -maxdepth 1 -type f -name "${ARCHIVE_NAME}" | wc -l)" -eq 1
+          python scripts/extract_model_evidence.py \
+            --archive ".execution/model-evidence/incoming/${ARCHIVE_NAME}" \
+            --bundle .execution/model-evidence/bundle \
+            --source-sha "${SOURCE_SHA}"
+          python scripts/check.py --tier release --task P17 --model-receipt ".execution/model-evidence/bundle/formal-receipt.json"
       - name: Download GitHub Release artifacts
         env:
           GH_TOKEN: ${{ github.token }}

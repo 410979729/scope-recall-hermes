@@ -1,0 +1,382 @@
+{
+  "audit_type": "bounded_independent_G0_desktop_admission",
+  "auditor": "/root/g0_desktop_audit",
+  "candidate_sha": "17943a0beccf46d5e6616cb6638e5dc3d5a6b552",
+  "comparison_base_sha": "f292eba31a153961f981bb745a5e8f65b29c01c3",
+  "overall_G0": "PASS",
+  "next_task_P03_ready": true,
+  "scope": "Close the sole G0-DESKTOP prerequisite on the fixed candidate. This accepts P02 public-interface feasibility and carries forward the prior accepted P00/P01, Hermes SVG, model/budget/evaluation freeze, and Go allowance guard. It does not accept P03-P19 implementation, B01-B12 semantic quality, or release readiness.",
+  "prior_decisions_reopened": [],
+  "prior_decisions_carried_forward": [
+    {
+      "component": "P01 contracts",
+      "decision": "Previously independently accepted; unchanged by this candidate"
+    },
+    {
+      "component": "Hermes SVG public interface",
+      "candidate": "f98b066",
+      "evidence_ref": "verification/G0/svg-review-f98b066.json",
+      "decision": "ACCEPTED"
+    },
+    {
+      "component": "Budget, models and evaluation freeze",
+      "candidate": "ed302077ee5d46e57acc731ad976db3df92a49ff",
+      "evidence_ref": "verification/G0/g0-review-ed302077.json",
+      "decision": "ACCEPT_FREEZE"
+    },
+    {
+      "component": "Shared Go allowance guard",
+      "candidate": "1a05b74f0bd89d6c5db18396257be94a7eb4e315",
+      "evidence_ref": "verification/G0/narrow-review-1a05b74.json",
+      "decision": "PASS"
+    }
+  ],
+  "reviewed_contracts": [
+    "Original tasks/P02.md: implementation steps 1-7, pass conditions 1-4, stop conditions",
+    "Original docs/03_Luna实施手册.md: section 3 G0 scope and P02/P03 transition",
+    "Original docs/07_人类式记忆功能定稿与验收.md: 13.1 retained_artifact and two-host image-or-SVG minimum; 13.2 source/version/details boundaries",
+    "Original contracts/task_receipt.schema.json, additionalProperties=false"
+  ],
+  "current_evidence_refs": [
+    "docs/compatibility.md",
+    "probes/codex/hook_probe.py",
+    "probes/codex/check_desktop_evidence.py",
+    "tests/host/test_codex_probe.py",
+    "verification/P02/codex-desktop-first-ui.json",
+    "verification/P02/codex-desktop-interface.json",
+    "verification/P02/host-summary.json",
+    "verification/P02/artifact-manifest.json",
+    "verification/P02/task_receipt.json",
+    "verification/task_manifest.json"
+  ],
+  "reproducible_P0_P1_findings": [],
+  "closed_gate_blocker": {
+    "id": "G0-DESKTOP",
+    "previous_id": "actual_codex_desktop_entry",
+    "previous_severity": "P1_gate_prerequisite_unproved",
+    "decision": "CLOSED",
+    "basis": "The actual Windows desktop route now has UserPromptSubmit -> additionalContext -> current-turn marker in Stop, supported Bash/MCP callbacks, an authorized two-version SVG capture and independent-context public readback, and a real Interrupt followed by a new completed desktop turn. These were the missing interface facts; no private transcript scan or substitute client is needed.",
+    "tested_desktop": "Codex Windows package 26.901.5280.0, Luna, actual native UI input and Send",
+    "task_ids": [
+      "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "01a07526-2007-7762-aae9-bea0566677d5"
+    ],
+    "origin": "synthetic_agent_relay",
+    "no_new_user_approval_required": true
+  },
+  "component_decisions": {
+    "automatic_frontstage_and_visible_capture": {
+      "decision": "PASS_FOR_P02",
+      "sequence_pairs": [
+        [
+          17,
+          24
+        ],
+        [
+          25,
+          27
+        ],
+        [
+          32,
+          33
+        ],
+        [
+          35,
+          38
+        ],
+        [
+          41,
+          42
+        ]
+      ],
+      "finding": "Each pair shares session/turn identity. The deterministic per-turn nonce is absent from the current submitted prompt, present in emitted additionalContext, and detected in that turn's final text at Stop. The five contexts are distinct; the latest three pairs use the current fixed probe SHA.",
+      "source_boundary": "The first three actual UI marker failures are retained. Two intermediate failed probe source hashes are unknown and remain null; this is not retroactively represented as reproducible source identity."
+    },
+    "public_tool_callbacks": {
+      "decision": "PASS_WITH_DECLARED_PARTIAL_FIELDS",
+      "sequences": [
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        26,
+        36,
+        37
+      ],
+      "finding": "Real Bash failures are preserved; known exit-0 and exit-7 fixtures both reach PostToolUse with distinct command/tool IDs and full stdout. The new-context MCP preview callback carries structured content/isError. The tested Bash callback response is a string and contains no structured exit_code.",
+      "restriction": "Neither PostToolUse presence nor normal final Stop proves shell success. Preserve raw tool output and represent missing structured exit status as unknown/partial."
+    },
+    "SVG_source_retention_and_new_context": {
+      "decision": "PASS_FOR_P02_INTERFACE_FEASIBILITY",
+      "capture_sequence": 32,
+      "reopen_sequence": 37,
+      "preview_sequence": 36,
+      "source_sha256": [
+        "64c3d4cfbe24bd096ac63a64cad4099b019101e0c0471085ed29e4b7f7c53eaa",
+        "33422e89191741035274c42f22f87ce5f6503532cbfc5ca9623738668e64cd0a"
+      ],
+      "finding": "One actual attachment prompt preserves two same-name files in order, distinct full paths, and the evaluation binding v1 structure versus v2 color. The hook records two immutable, content-addressed copies beside that prompt. Current local retained bytes, archived bytes and hashes agree. An independent session later reads both retained versions through the public Bash tool, with exact SVG and matching hashes; the public preview tool queued v1, and the implementation's actual UI observation records the blue-circle preview.",
+      "context_attribution": "The second task was initialized once through official CLI with TEST_CONTEXT_READY and without earlier SVG conversation. Initialization is not counted as desktop interaction. Its subsequent SVG reopen and interrupt/recovery turns use actual desktop UI; the independent audit confirmed separate task/turn status via read_thread.",
+      "restriction": "Only the two authorized TEST fixture paths are captured by this probe. A general product attachment parser, permissions/retention policy, immutable source revisions, deletion and semantic comparison remain required implementation work."
+    },
+    "interrupt_and_resume": {
+      "decision": "PASS_WITH_DECLARED_PARTIAL_CAPTURE",
+      "interrupt_sequence": 40,
+      "resume_sequences": [
+        41,
+        42
+      ],
+      "finding": "The real desktop stop produced Interrupt for turn 01a0752b-be94-7bd0-95fb-7bbcf9f8a351. Public app readback independently reports interrupted. The started fixture later wrote finished after its 45-second wait; its current local state exactly matches the report. No Stop or PostToolUse completion for that interrupted turn is present in the audited observation window. The following desktop turn has a new turn ID, UserPromptSubmit and a Stop carrying its new nonce.",
+      "restriction": "Do not promise cancellation of tool side effects or invent interrupted final text. Preserve interrupted/partial state and treat the missing completion as a capture gap. Normal desktop app-exit SessionEnd timing remains partial, as explicitly disclosed."
+    },
+    "receipt_and_fixed_candidate": {
+      "decision": "PASS",
+      "manifest_files": 98,
+      "receipt_artifacts": 99,
+      "canonical_manifest_digest": "a5b5a6439ccc6c6eec8c231e55990b00992074096cd554bc24fc8405b0ac18a5",
+      "finding": "All raw working-tree hashes match. All 98 normalized contents equal fixed-candidate Git blobs; 62 raw/Git differences are line-ending conversion only. P00/P01/P02 receipts validate against the original strict schema. The P02 receipt remains blocked pending this audit, which was correct before the independent verdict."
+    }
+  },
+  "verification": [
+    {
+      "command": "F:\\SCOPERECALL更新项目\\.venv\\Scripts\\python.exe -B -m pytest -q -o addopts= --noconftest tests/host/test_codex_probe.py --basetemp .execution/TEST-G0-DESKTOP-AUDIT/pytest-temp --junitxml .execution/TEST-G0-DESKTOP-AUDIT/codex-probe-unit.xml",
+      "exit_code": 0,
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0,
+      "duration_seconds": 1.162,
+      "stdout": ".......                                                                  [100%]\r\n7 passed in 1.20s",
+      "evidence_ref": ".execution/TEST-G0-DESKTOP-AUDIT/codex-probe-unit.xml",
+      "type": "Independent local probe unit rerun; no model calls"
+    },
+    {
+      "command": "F:\\SCOPERECALL更新项目\\.venv\\Scripts\\python.exe -I -B probes/codex/check_desktop_evidence.py",
+      "exit_code": 0,
+      "result": {
+        "scope": "Recompute assertions over actual saved public callback evidence; no host/model rerun",
+        "checks": {
+          "current_probe_identity": true,
+          "historical_failures_preserved": true,
+          "current_nonce_delivery": true,
+          "nonce_absent_from_current_prompt": true,
+          "distinct_per_turn_context": true,
+          "success_and_nonzero_fixture_callbacks": true,
+          "shell_exit_status_gap_explicit": true,
+          "same_name_distinct_paths_and_evaluation": true,
+          "immutable_source_capture": true,
+          "fixture_source_identity": true,
+          "new_session_reopens_exact_bytes": true,
+          "fresh_context_has_no_prior_SVG": true,
+          "public_preview_tool_observed": true,
+          "interrupt_and_actual_side_effect_boundary": true,
+          "missing_interrupted_completion_is_explicit": true,
+          "resume_after_interrupt": true,
+          "no_transcript_or_hidden_reasoning": true
+        },
+        "passed": 17,
+        "failed": 0,
+        "skipped": 0,
+        "duration_seconds": 0
+      },
+      "type": "Recompute assertions over saved actual evidence; not a host/model rerun"
+    },
+    {
+      "command": "F:\\SCOPERECALL更新项目\\.venv\\Scripts\\python.exe -X utf8 -B - (read-only audit program supplied via stdin)",
+      "exit_code": 0,
+      "operations": [
+        "SHA256 every artifact-manifest path using raw read_bytes; recompute canonical sorted JSON digest",
+        "Draft202012Validator against original task_receipt.schema.json for P00/P01/P02; check receipt artifact set and all evidence refs",
+        "sqlite3.connect(Path(probe.sqlite3).as_uri() + '?mode=ro', uri=True); PRAGMA quick_check; compare every report row by sequence and exact decoded metadata",
+        "Compare all five current fixture files and both retained files byte-for-byte with archived UTF-8 content; recompute SHA256",
+        "Compare live TEST-interrupt-state.json with recorded finished state",
+        "Independently reconstruct each current-turn marker as SHA256(session_id + ':' + turn_id)[:12] and check pairing, prompt absence and emitted context",
+        "Verify nine UI scenarios and exclude CLI initialization from their sequence sets",
+        "Read independent JUnit counts and duration"
+      ],
+      "result": {
+        "scope": "Independent read-only receipt/hash/live synthetic callback/fixture cross-check",
+        "checks": {
+          "all_98_manifest_raw_hashes_match": true,
+          "manifest_canonical_digest_matches_candidate": true,
+          "receipt_99_artifacts_exactly_manifest_plus_manifest_file": true,
+          "receipt_digest_matches_manifest": true,
+          "P00_strict_receipt_valid": true,
+          "P00_strict_receipt_error_count": true,
+          "P01_strict_receipt_valid": true,
+          "P01_strict_receipt_error_count": true,
+          "P02_strict_receipt_valid": true,
+          "P02_strict_receipt_error_count": true,
+          "receipt_check_evidence_refs_exist": true,
+          "read_only_callback_db_integrity": true,
+          "all_34_saved_rows_exactly_match_live_TEST_db": true,
+          "all_rows_9_to_42_preserved_in_order": true,
+          "fixtures_match_actual_local_bytes": true,
+          "retained_files_match_actual_immutable_bytes": true,
+          "interrupt_finished_state_matches_live_fixture": true,
+          "current_turn_nonce_17_24": true,
+          "current_turn_nonce_25_27": true,
+          "current_turn_nonce_32_33": true,
+          "current_turn_nonce_35_38": true,
+          "current_turn_nonce_41_42": true,
+          "ui_scenarios_count_and_unique_turns": true,
+          "CLI_initialization_not_presented_as_UI_scenario": true,
+          "independent_unit_xml_7_passed": true
+        },
+        "passed": 25,
+        "failed": 0,
+        "skipped": 0,
+        "manifest_count": 98,
+        "manifest_digest": "a5b5a6439ccc6c6eec8c231e55990b00992074096cd554bc24fc8405b0ac18a5",
+        "manifest_mismatches": [],
+        "live_db_rows": 42,
+        "verified_report_db_rows": 34,
+        "unit_xml_seconds": 1.162,
+        "duration_seconds": 0.02492940000956878
+      },
+      "type": "Read-only cross-check, not 25 separate product tests"
+    },
+    {
+      "command": "git rev-parse HEAD; git status --short; git diff --name-only f292eba31a153961f981bb745a5e8f65b29c01c3 17943a0beccf46d5e6616cb6638e5dc3d5a6b552; git show 17943a0beccf46d5e6616cb6638e5dc3d5a6b552:<each manifest path> (issued as separate subprocess calls)",
+      "exit_code": 0,
+      "result": {
+        "candidate_sha": "17943a0beccf46d5e6616cb6638e5dc3d5a6b552",
+        "head_sha": "17943a0beccf46d5e6616cb6638e5dc3d5a6b552",
+        "clean_worktree": true,
+        "changed_files": [
+          "docs/compatibility.md",
+          "probes/codex/check_desktop_evidence.py",
+          "probes/codex/hook_probe.py",
+          "tests/host/test_codex_probe.py",
+          "verification/P02/artifact-manifest.json",
+          "verification/P02/codex-desktop-first-ui.json",
+          "verification/P02/codex-desktop-interface.json",
+          "verification/P02/codex-probe-unit-v2.xml",
+          "verification/P02/codex-probe-unit-v3.xml",
+          "verification/P02/codex-probe-unit-v4.xml",
+          "verification/P02/codex-probe-unit-v5.xml",
+          "verification/P02/codex-probe-unit.xml",
+          "verification/P02/host-summary.json",
+          "verification/P02/task_receipt.json",
+          "verification/task_manifest.json"
+        ],
+        "manifest_files_compared": 98,
+        "normalized_content_mismatches": [],
+        "raw_vs_git_crlf_differences": 62,
+        "all_normalized_contents_equal_fixed_candidate": true,
+        "duration_seconds": 3.2646146999904886
+      }
+    },
+    {
+      "tool": "mcp__codex_app__read_thread",
+      "arguments": {
+        "threadId": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+        "turnLimit": 10,
+        "includeOutputs": true,
+        "maxOutputCharsPerItem": 3000
+      },
+      "task_status": {
+        "type": "idle"
+      },
+      "turns": [
+        {
+          "turn_id": "01a07527-832b-75f3-8f95-c1c88c189bb3",
+          "status": "completed",
+          "duration_ms": 4405
+        },
+        {
+          "turn_id": "01a07522-c615-7691-9935-b349fdf8b514",
+          "status": "completed",
+          "duration_ms": 17128
+        },
+        {
+          "turn_id": "01a0751e-01e5-78f1-b404-de356467c843",
+          "status": "completed",
+          "duration_ms": 113148
+        },
+        {
+          "turn_id": "01a07517-ad7a-7221-ae0a-9fbc6f544c28",
+          "status": "completed",
+          "duration_ms": 2408
+        },
+        {
+          "turn_id": "01a07513-5bfb-7191-87c6-68defade8a6b",
+          "status": "completed",
+          "duration_ms": 4890
+        },
+        {
+          "turn_id": "01a07507-e98a-7391-832a-e5ebfa0f5458",
+          "status": "completed",
+          "duration_ms": 4311
+        },
+        {
+          "turn_id": "01a07493-dc99-74a1-aac9-09030e0f4573",
+          "status": "completed",
+          "duration_ms": 4643
+        },
+        {
+          "turn_id": "01a07492-a69e-7a40-b059-bc7941f814eb",
+          "status": "completed",
+          "duration_ms": 3650
+        }
+      ],
+      "result": "All reported first-task UI turn statuses/durations agree. First UI NO_MARKER is visible in the public readback; later items are absent from this API result and were not inferred from it."
+    },
+    {
+      "tool": "mcp__codex_app__read_thread",
+      "arguments": {
+        "threadId": "01a07526-2007-7762-aae9-bea0566677d5",
+        "turnLimit": 5,
+        "includeOutputs": true,
+        "maxOutputCharsPerItem": 5000
+      },
+      "turns": [
+        {
+          "turn_id": "01a0752d-dca1-7041-98c7-fdd2408919d3",
+          "status": "completed",
+          "duration_ms": 3271
+        },
+        {
+          "turn_id": "01a0752b-be94-7bd0-95fb-7bbcf9f8a351",
+          "status": "interrupted",
+          "duration_ms": 24711
+        },
+        {
+          "turn_id": "01a07528-f1ef-7d50-9626-ce17068cc37b",
+          "status": "completed",
+          "duration_ms": 19318
+        },
+        {
+          "turn_id": "01a07526-20ac-7ed0-b13d-381668816b50",
+          "status": "completed",
+          "duration_ms": 6525,
+          "public_final": "TEST_CONTEXT_READY"
+        }
+      ],
+      "result": "Public status confirms CLI-only initialization, later independent-context completion, actual interruption, and subsequent recovery. Later message items are absent from this API result; callback evidence remains separately attributed."
+    }
+  ],
+  "product_obligations_unchanged": [
+    "Implement P03-P19 and retain all original B01-B12, M01-M60, J01-J08 and I01-I15 obligations; this gate does not certify semantic quality.",
+    "P04 onward must preserve trusted installation/session/original-turn/event/tool occurrence identity, exact source text and revisions, and source gaps. TEST relay role or prompt wording must not establish human_direct authority.",
+    "General attachment support must use declared authorization/retention policy and versioned immutable copies, bind comments/order to the correct artifact, detect missing sources and cover same-path overwrites, deletion and exports. The two-path probe is not a product parser.",
+    "Bash missing exit status, unsupported tool coverage, interruption without completion/final text, and unverified normal SessionEnd timing must remain explicit partial/unknown capability states; do not infer tool success or no side effects.",
+    "Implement and test the selected shared native worker lifecycle and foreground limits in the assigned later tasks; do not move native library loading into per-turn command hooks.",
+    "Run the frozen early two-host slices and final independent holdout/host journeys using the approved model routes, aggregate budget, fairness and scoring rules. Interface markers, fixture SVG reads, and saved-evidence replay do not count as those semantic passes.",
+    "Refresh gate/task metadata to record this independent P02/G0 decision before commencing P03; no further approval is needed for that authorized transition."
+  ],
+  "audit_side_effects": {
+    "paid_model_calls": 0,
+    "credential_reads": 0,
+    "production_database_or_memory_rows_read": 0,
+    "active_instance_mutations": 0,
+    "candidate_code_or_receipt_mutations": 0,
+    "transcript_files_read": 0,
+    "hidden_reasoning_retained": false,
+    "subagents_spawned": 0,
+    "output_directory": ".execution/TEST-G0-DESKTOP-AUDIT",
+    "candidate_worktree_clean_at_last_check": true
+  },
+  "conclusion": "G0 PASS for the fixed candidate. The unique actual-desktop prerequisite is closed, and P03 may begin within the user's existing autonomous authorization. Declared partial interface coverage and all later product/semantic obligations remain in force."
+}

@@ -1,0 +1,211 @@
+import argparse
+from contextlib import closing
+from decimal import Decimal, ROUND_CEILING
+import hashlib
+import http.client
+import importlib.util
+import json
+from pathlib import Path
+import sqlite3
+import time
+
+
+ROOT = Path(__file__).resolve().parents[1]
+STATE = ROOT / ".execution/TEST-MODEL-BUDGET-V1"
+RATES = {"deepseek-v4-flash": ("0.44", "1.32"), "mimo-v2.5": ("0.14", "0.28"), "glm-5.3-flash": ("0.15", "0.50")}
+GO_MODELS = tuple(RATES)
+RATES["gemini-embedding-001"] = ("0.15", "0")
+TOKEN_CAPS = {"deepseek-v4-flash": (8000000, 1000000), "mimo-v2.5": (52000000, 6500000), "glm-5.3-flash": (4000000, 500000)}
+PROBE_MODELS = ("deepseek-v4-flash", "mimo-v2.5")
+BATCH_CAPS = {"P02_CHEAP_ROUTE": 4, "P02_MIMO_COMPAT": 3, "P02_EMBEDDING_ROUTE": 1, "P02_EMBEDDING_PROXY_ROUTE": 1}
+MAX_CALLS = 4
+RESERVE_INPUT = 32768
+MAX_OUTPUT = 1024
+CAP_MICRO_USD = 20000000
+
+
+def cost(model, input_tokens, output_tokens):
+    if model not in RATES or any(type(x) is not int or x < 0 for x in (input_tokens, output_tokens)):
+        raise ValueError("invalid_meter")
+    a, b = map(Decimal, RATES[model])
+    return int((a * input_tokens + b * output_tokens).to_integral_value(rounding=ROUND_CEILING))
+
+
+def check_go_allowance(key):
+    connection = http.client.HTTPSConnection("opencode.ai", timeout=20)
+    try:
+        connection.request("GET", "/zen/go/v1/usage", headers={"Authorization": "Bearer " + key, "User-Agent": "ScopeRecall-P02-UsageCheck/1.1"})
+        response = connection.getresponse()
+        raw = response.read(32769)
+        if response.status != 200 or len(raw) > 32768:
+            raise ValueError("account_usage_unavailable")
+        usage = json.loads(raw).get("usage", {})
+        for name in ("rolling", "weekly", "monthly"):
+            value = usage.get(name, {})
+            if value.get("status") != "ok" or type(value.get("percent")) not in (int, float) or not 0 <= value["percent"] < 80:
+                raise ValueError("account_allowance_guard")
+        return {name: {k: usage[name].get(k) for k in ("status", "percent", "resetsAt")} for name in ("rolling", "weekly", "monthly")}
+    finally:
+        connection.close()
+
+
+class Ledger:
+    def __init__(self, path, batch="P02_CHEAP_ROUTE"):
+        if batch not in BATCH_CAPS:
+            raise ValueError("unapproved_batch")
+        self.path = path
+        self.batch = batch
+        with closing(sqlite3.connect(path)) as db, db:
+            db.execute("CREATE TABLE IF NOT EXISTS requests (id INTEGER PRIMARY KEY, batch TEXT, model TEXT, body_sha256 TEXT, request_bytes INTEGER, reserved_input INTEGER, reserved_output INTEGER, actual_input INTEGER, actual_output INTEGER, charge_micro_usd INTEGER, status TEXT, started_ns INTEGER)")
+
+    def reserve(self, model, raw):
+        if model not in GO_MODELS or self.batch.startswith("P02_EMBEDDING") or not 0 < len(raw) <= 4096:
+            raise ValueError("unsupported_model_or_size")
+        body = json.loads(raw)
+        limit_field = "max_completion_tokens" if self.batch == "P02_MIMO_COMPAT" else "max_tokens"
+        if body.get("model") != model or type(body.get(limit_field)) is not int or not 1 <= body[limit_field] <= MAX_OUTPUT or type(body.get("n", 1)) is not int or body.get("n", 1) != 1 or body.get("stream") is not False:
+            raise ValueError("request_limit")
+        other_field = "max_tokens" if limit_field == "max_completion_tokens" else "max_completion_tokens"
+        if other_field in body or self.batch == "P02_CHEAP_ROUTE" and body[limit_field] != MAX_OUTPUT:
+            raise ValueError("request_limit")
+        if self.batch == "P02_MIMO_COMPAT" and (model != "mimo-v2.5" or body.get("thinking") != {"type": "disabled"} or body.get("tool_choice", "auto") != "auto"):
+            raise ValueError("request_limit")
+        allowed = {"model", "messages", limit_field, "n", "stream", "response_format", "tools", "tool_choice"}
+        if self.batch == "P02_MIMO_COMPAT":
+            allowed.add("thinking")
+        if set(body) - allowed:
+            raise ValueError("unsupported_request_parameter")
+        messages = body.get("messages")
+        if not isinstance(messages, list) or len(messages) != 2 or messages[1].get("role") != "user" or not str(messages[1].get("content", "")).startswith("TEST_SCOPE_RECALL "):
+            raise ValueError("synthetic_input_required")
+        reserve_output = 131072 if model == "mimo-v2.5" else MAX_OUTPUT
+        amount = cost(model, RESERVE_INPUT, reserve_output)
+        with closing(sqlite3.connect(self.path, timeout=2)) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            count = db.execute("SELECT COUNT(*) FROM requests WHERE batch=?", (self.batch,)).fetchone()[0]
+            used = db.execute("SELECT COALESCE(SUM(charge_micro_usd),0) FROM requests").fetchone()[0]
+            calls, inputs, outputs = db.execute("SELECT COUNT(*),COALESCE(SUM(COALESCE(actual_input,reserved_input)),0),COALESCE(SUM(COALESCE(actual_output,reserved_output)),0) FROM requests WHERE model IN (?,?,?)", GO_MODELS).fetchone()
+            model_inputs, model_outputs = db.execute("SELECT COALESCE(SUM(COALESCE(actual_input,reserved_input)),0),COALESCE(SUM(COALESCE(actual_output,reserved_output)),0) FROM requests WHERE model=?", (model,)).fetchone()
+            input_cap, output_cap = TOKEN_CAPS[model]
+            if count >= BATCH_CAPS[self.batch] or calls >= 8000 or inputs + RESERVE_INPUT > 64000000 or outputs + reserve_output > 8000000 or model_inputs + RESERVE_INPUT > input_cap or model_outputs + reserve_output > output_cap or used + amount > CAP_MICRO_USD or db.execute("SELECT 1 FROM requests WHERE status='meter_breach'").fetchone():
+                raise ValueError("budget_exhausted_or_meter_breach")
+            return db.execute("INSERT INTO requests(batch,model,body_sha256,request_bytes,reserved_input,reserved_output,charge_micro_usd,status,started_ns) VALUES (?,?,?,?,?,?,?,?,?)", (self.batch, model, hashlib.sha256(raw).hexdigest(), len(raw), RESERVE_INPUT, reserve_output, amount, "reserved_before_network", time.time_ns())).lastrowid
+
+    def reserve_embedding(self, raw):
+        if self.batch not in {"P02_EMBEDDING_ROUTE", "P02_EMBEDDING_PROXY_ROUTE"} or not 0 < len(raw) <= 4096:
+            raise ValueError("embedding_probe_scope")
+        body = json.loads(raw)
+        if set(body) != {"model", "input", "dimensions", "encoding_format"} or body["model"] != "gemini-embedding-001" or body["dimensions"] != 3072 or body["encoding_format"] != "float" or not isinstance(body["input"], str) or not body["input"].startswith("TEST_SCOPE_RECALL "):
+            raise ValueError("embedding_probe_scope")
+        amount = cost("gemini-embedding-001", 8192, 0)
+        with closing(sqlite3.connect(self.path, timeout=2)) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            count = db.execute("SELECT COUNT(*) FROM requests WHERE batch=?", (self.batch,)).fetchone()[0]
+            used = db.execute("SELECT COALESCE(SUM(charge_micro_usd),0) FROM requests").fetchone()[0]
+            calls, tokens = db.execute("SELECT COUNT(*),COALESCE(SUM(COALESCE(actual_input,reserved_input)),0) FROM requests WHERE model='gemini-embedding-001'").fetchone()
+            if count >= 1 or calls >= 4096 or tokens + 8192 > 32000000 or used + amount > CAP_MICRO_USD or db.execute("SELECT 1 FROM requests WHERE status='meter_breach'").fetchone():
+                raise ValueError("budget_exhausted_or_meter_breach")
+            return db.execute("INSERT INTO requests(batch,model,body_sha256,request_bytes,reserved_input,reserved_output,charge_micro_usd,status,started_ns) VALUES (?,?,?,?,?,?,?,?,?)", (self.batch, "gemini-embedding-001", hashlib.sha256(raw).hexdigest(), len(raw), 8192, 0, amount, "reserved_before_network", time.time_ns())).lastrowid
+
+    def finish(self, request_id, status, usage=None):
+        with closing(sqlite3.connect(self.path, timeout=2)) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT model,status,reserved_input,reserved_output FROM requests WHERE id=?", (request_id,)).fetchone()
+            if row is None or row[1] != "reserved_before_network":
+                raise ValueError("reservation_state")
+            input_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
+            output_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
+            if type(input_tokens) is int and type(output_tokens) is int and min(input_tokens, output_tokens) >= 0:
+                if input_tokens > row[2] or output_tokens > row[3]:
+                    status = "meter_breach"
+                db.execute("UPDATE requests SET status=?,actual_input=?,actual_output=?,charge_micro_usd=? WHERE id=?", (status, input_tokens, output_tokens, cost(row[0], input_tokens, output_tokens), request_id))
+            else:
+                db.execute("UPDATE requests SET status=? WHERE id=?", (status + "_usage_unknown_reserved_charge_retained", request_id))
+
+    def snapshot(self):
+        with closing(sqlite3.connect(self.path)) as db:
+            db.row_factory = sqlite3.Row
+            rows = [dict(r) for r in db.execute("SELECT * FROM requests ORDER BY id")]
+        return {"requests": rows, "charge_micro_usd": sum(r["charge_micro_usd"] for r in rows), "project_cap_micro_usd": CAP_MICRO_USD, "batch": self.batch, "small_probe_request_cap": BATCH_CAPS[self.batch]}
+
+
+def payload(model, case):
+    user = "TEST_SCOPE_RECALL 用户把 TEST-ORBIT 项目的颜色从红色改成蓝色，只适用这个项目。助手声称测试通过，实际终端退出码为7。返回 JSON，字段为 project、current_color、tool_status、assistant_claim_is_tool_evidence、scope；颜色用中文，tool_status 为 passed 或 failed，scope 为 project 或 global。"
+    body = {"model": model, "messages": [{"role": "system", "content": "Synthetic software memory interface check. Preserve evidence and scope. Output only the requested machine-readable result."}, {"role": "user", "content": user}], "max_tokens": MAX_OUTPUT, "stream": False}
+    if case == "json":
+        body["response_format"] = {"type": "json_object"}
+    else:
+        body["messages"][1]["content"] = "TEST_SCOPE_RECALL 使用 inspect_artifact 读取引用 TEST-ARTIFACT-v1，不要自行补写产物内容。"
+        body["tools"] = [{"type": "function", "function": {"name": "inspect_artifact", "description": "Open a synthetic immutable artifact reference", "parameters": {"type": "object", "properties": {"reference": {"type": "string"}}, "required": ["reference"], "additionalProperties": False}}}]
+        body["tool_choice"] = {"type": "function", "function": {"name": "inspect_artifact"}}
+    return body
+
+
+def main():
+    approval = json.loads((ROOT / "verification/G0/model-route-selection.json").read_text(encoding="utf-8"))
+    if not approval.get("numeric_api_budget_approved") or approval["proposed_aggregate"]["api_value_hard_cap_usd"] != 20:
+        raise SystemExit("Incremental route budget is not approved")
+    STATE.mkdir(parents=True, exist_ok=True)
+    ledger = Ledger(STATE / "call-budget.sqlite3")
+    if ledger.snapshot()["requests"]:
+        raise SystemExit("This four-call batch already has reservations; no automatic replay")
+    spec = importlib.util.spec_from_file_location("p02_approved_credential_loader", ROOT / "probes/hermes/run_gateway_probe.py")
+    loader = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(loader)
+    key = loader.credential()
+    results = []
+    for model in PROBE_MODELS:
+        for case in ("json", "tool"):
+            check_go_allowance(key)
+            raw = json.dumps(payload(model, case), ensure_ascii=False).encode()
+            request_id = ledger.reserve(model, raw)
+            connection = http.client.HTTPSConnection("opencode.ai", timeout=25)
+            status = "network_error"
+            usage = None
+            record = {"model": model, "case": case, "request_id": request_id, "request_bytes": len(raw), "passed": False}
+            started = time.perf_counter()
+            try:
+                connection.request("POST", "/zen/go/v1/chat/completions", body=raw, headers={"Authorization": "Bearer " + key, "Content-Type": "application/json", "User-Agent": "ScopeRecall-P02-SoftwareMemoryProbe/1.1", "x-opencode-session": "scope-recall-TEST-P02-cheap-route-" + model})
+                response = connection.getresponse()
+                status = "http_" + str(response.status)
+                encoded = response.read(131073)
+                record["http_status"] = response.status
+                if len(encoded) > 131072:
+                    raise ValueError("response_limit")
+                answer = json.loads(encoded)
+                usage = answer.get("usage")
+                if response.status != 200:
+                    record["error_type"] = str(answer.get("error", {}).get("type", "provider_error"))[:80]
+                else:
+                    choice = answer["choices"][0]
+                    message = choice["message"]
+                    record.update(finish_reason=choice.get("finish_reason"), reasoning_present=bool(message.get("reasoning_content")), usage={k: usage.get(k) for k in ("prompt_tokens", "completion_tokens", "total_tokens")} if isinstance(usage, dict) else None)
+                    if case == "json":
+                        content = message.get("content", "")
+                        record["visible_content"] = content[:8192] if isinstance(content, str) else None
+                        parsed = json.loads(content)
+                        record["passed"] = parsed == {"project": "TEST-ORBIT", "current_color": "蓝色", "tool_status": "failed", "assistant_claim_is_tool_evidence": False, "scope": "project"}
+                    else:
+                        calls = message.get("tool_calls", [])
+                        record["tool_calls"] = [{"id": c.get("id"), "type": c.get("type"), "function": c.get("function")} for c in calls]
+                        record["passed"] = len(calls) == 1 and calls[0]["function"]["name"] == "inspect_artifact" and json.loads(calls[0]["function"]["arguments"]) == {"reference": "TEST-ARTIFACT-v1"}
+            except (OSError, http.client.HTTPException, ValueError, KeyError, TypeError, IndexError) as exc:
+                record["error_type"] = type(exc).__name__
+            finally:
+                connection.close()
+                ledger.finish(request_id, status, usage)
+                record["duration_seconds"] = time.perf_counter() - started
+                results.append(record)
+                print(json.dumps({k: record.get(k) for k in ("model", "case", "passed", "http_status", "error_type", "duration_seconds")}), flush=True)
+    key = ""
+    result = {"scope": "Four-call synthetic API format and tool-schema probe, not final semantic acceptance", "credential_persisted": False, "hidden_reasoning_saved": False, "production_data_sent": False, "automatic_retry": False, "results": results, "budget": ledger.snapshot(), "old_twelve_call_budget_modified": False, "source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+    destination = ROOT / "verification/P02/cheap-model-actual.json"
+    destination.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps({"evidence": str(destination), "passed": sum(r["passed"] for r in results), "failed": sum(not r["passed"] for r in results), "budget_micro_usd": result["budget"]["charge_micro_usd"]}), flush=True)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--run-authorized-model-probe", action="store_true", required=True)
+    parser.parse_args()
+    main()

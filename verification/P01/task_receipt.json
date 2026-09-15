@@ -1,0 +1,77 @@
+{
+  "task_id": "P01",
+  "status": "completed",
+  "base_sha": "1ea1642e6253211cf0ccb9d02afa93a1e6f9d9c2",
+  "head_sha_or_diff_sha256": "05df641d2e22afab536bf69affbd1d6fda631bc9",
+  "changed_responsibilities": [
+    "Typed v1.1 boundaries, trusted installation/context separate from model requests; no storage/adapter integration.",
+    "SourceEvent segment/display snapshot amendments conditionally accepted by independent contract adjudicator and implemented for review.",
+    "Test runner strips credentials, isolates home, blocks network/child processes/protected reads and writes; unimplemented tiers return exit 2.",
+    "F01-F09/I01-I15/B01-B12 map to synthetic public cases; 36 raw text routes ready, 24 setup routes and 8 journeys require real fixtures in dependent tasks.",
+    "Implementation identity is fixed Git commit 05df641; source byte hashes live in the exact test manifest. schema-sync records CRLF/LF versus Git blob identity."
+  ],
+  "checks": [
+    {
+      "command": "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\.venv\\Scripts\\python.exe -B -m pytest tests/unit/test_v11_context.py tests/contract/test_v11_protocol.py tests/contract/test_v11_inputs.py -q -p v11_guard -p no:cacheprovider --durations=10",
+      "exit_code": 0,
+      "duration_seconds": 1.5423488999949768,
+      "passed": 77,
+      "failed": 0,
+      "skipped": 0,
+      "evidence_ref": "verification/P01/contract-1788659626369158800.json"
+    },
+    {
+      "command": "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\.venv\\Scripts\\python.exe -B -m pytest tests/unit/test_v11_context.py tests/contract/test_v11_protocol.py tests/contract/test_v11_inputs.py -q -p v11_guard -p no:cacheprovider --durations=10",
+      "exit_code": 0,
+      "duration_seconds": 1.4292255000327714,
+      "passed": 94,
+      "failed": 0,
+      "skipped": 0,
+      "evidence_ref": "verification/P01/contract-1788659716688349700.json"
+    },
+    {
+      "command": "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\.venv\\Scripts\\python.exe -B -m pytest tests/unit/test_v11_context.py tests/contract/test_v11_protocol.py tests/contract/test_v11_inputs.py -q -p v11_guard -p no:cacheprovider --durations=10",
+      "exit_code": 0,
+      "duration_seconds": 1.4345839000307024,
+      "passed": 96,
+      "failed": 0,
+      "skipped": 0,
+      "evidence_ref": "verification/P01/contract-1788659784051952400.json"
+    },
+    {
+      "command": "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\.venv\\Scripts\\python.exe -B -m pytest tests/unit/test_v11_context.py tests/contract/test_v11_protocol.py tests/contract/test_v11_inputs.py -q -p v11_guard -p no:cacheprovider --durations=10",
+      "exit_code": 0,
+      "duration_seconds": 1.4530344000086188,
+      "passed": 96,
+      "failed": 0,
+      "skipped": 0,
+      "evidence_ref": "verification/P01/contract-1788659962806239300.json"
+    }
+  ],
+  "not_run": [
+    "No C/M/J functional, semantic extraction or actual host behavior execution; all L1-L4 remain not_run.",
+    "integration/release/eval tiers explicitly not_implemented with exit 2, not skipped or passed.",
+    "Group storage consistency, deletion/fencing, vector retrieval, adapters and packaging are later task responsibilities.",
+    "G0 release thresholds, holdout size and model budget remain unapproved pending P02 measurements."
+  ],
+  "blockers": [],
+  "artifacts": [
+    "contracts.py",
+    "contracts/source_event.schema.json",
+    "scripts/check.py",
+    "tests/v11_guard.py",
+    "tests/v11_support.py",
+    "tests/unit/test_v11_context.py",
+    "tests/contract/test_v11_protocol.py",
+    "tests/contract/test_v11_inputs.py",
+    "fixtures/input_routes.json",
+    "verification/functional_traceability.json",
+    "verification/P01/contract-decision-proposal.md",
+    "verification/P01/contract-decision.md",
+    "verification/P01/compatibility.json",
+    "verification/P01/schema-sync.json",
+    "verification/P01/selector-checks.json",
+    "verification/P01/independent-review.json"
+  ],
+  "next_task_ready": true
+}

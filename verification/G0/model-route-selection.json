@@ -1,0 +1,154 @@
+{
+  "status": "independently_frozen_G0_pending_actual_Codex_desktop",
+  "user_request": "Prefer cheap models in OpenCode Go, including DeepSeek Flash; create goal mode and report after whole-project closure",
+  "goal_created": true,
+  "goal_status": "active",
+  "numeric_api_budget_approved": true,
+  "existing_p02_budget": {
+    "requests": 12,
+    "used": 12,
+    "reset": false
+  },
+  "catalog_check": {
+    "url": "https://opencode.ai/zen/go/v1/models",
+    "http_method": "GET",
+    "credentials_used": false,
+    "paid_model_calls": 0,
+    "verified_model_ids": [
+      "deepseek-v4-flash",
+      "mimo-v2.5",
+      "glm-5.3-flash"
+    ],
+    "account_availability_proved": false,
+    "scope": "Anonymous catalog visibility only; authenticated probe results are recorded separately"
+  },
+  "pricing_source": "https://opencode.ai/docs/go/",
+  "pricing_checked_date_utc": "2026-09-06",
+  "models": [
+    {
+      "model": "deepseek-v4-flash",
+      "role": "Hermes main candidate",
+      "input_usd_per_million_worst_case": 0.44,
+      "output_usd_per_million_worst_case": 1.32,
+      "cached_input_usd_per_million_worst_case": 0.014,
+      "input_token_cap": 8000000,
+      "output_token_cap": 1000000,
+      "real_project_probe_run": true,
+      "probe_result": {
+        "passed": 2,
+        "failed": 0,
+        "scope": "Synthetic JSON and forced tool schema API calls; not yet this model in real Hermes",
+        "evidence": "verification/P02/cheap-model-actual.json"
+      },
+      "frozen_role": "Hermes main model"
+    },
+    {
+      "model": "mimo-v2.5",
+      "role": "auxiliary extraction candidate",
+      "input_usd_per_million_worst_case": 0.14,
+      "output_usd_per_million_worst_case": 0.28,
+      "cached_input_usd_per_million_worst_case": 0.0028,
+      "input_token_cap": 52000000,
+      "output_token_cap": 6500000,
+      "real_project_probe_run": true,
+      "probe_result": {
+        "initial_passed": 0,
+        "initial_failed": 2,
+        "diagnostic_passed": 3,
+        "diagnostic_failed": 0,
+        "scope": "Same public correction sample, auto tool selection, explicit output limit; diagnostic is not independent semantic sampling",
+        "evidence": [
+          "verification/P02/cheap-model-actual.json",
+          "verification/P02/mimo-compat-actual.json"
+        ]
+      },
+      "request_parameters": {
+        "thinking": {
+          "type": "disabled"
+        },
+        "output_limit_parameter": "max_completion_tokens",
+        "tools_if_needed": "tool_choice=auto; no forced function-object guarantee"
+      },
+      "frozen_role": "Auxiliary extraction model"
+    },
+    {
+      "model": "glm-5.3-flash",
+      "role": "previously verified interface fallback candidate",
+      "input_usd_per_million_worst_case": 0.15,
+      "output_usd_per_million_worst_case": 0.5,
+      "cached_input_usd_per_million_worst_case": 0.03,
+      "input_token_cap": 4000000,
+      "output_token_cap": 500000,
+      "real_project_probe_run": true,
+      "frozen_role": "Unused fallback candidate; never silently substituted in frozen final evaluation"
+    }
+  ],
+  "remaining_prerequisites": [
+    "Actual Codex desktop input and required callback/artifact evidence"
+  ],
+  "production_mutations": false,
+  "automatic_expensive_fallback": false,
+  "subscription_or_credit_purchase": false,
+  "authorization": {
+    "user_reply": "批准，按此预算自主推进",
+    "question_scope": "DeepSeek V4 Flash main, MiMo V2.5 extraction, GLM Flash fallback; complete project validation; aggregate API value cap USD20; no extra purchase",
+    "approved_date_utc": "2026-09-06",
+    "new_budget_ledger": ".execution/TEST-MODEL-BUDGET-V1/call-budget.sqlite3",
+    "old_p02_twelve_call_ledger_retained": true
+  },
+  "embedding": {
+    "model": "gemini-embedding-001",
+    "dimensions": 3072,
+    "endpoint": "https://generativelanguage.googleapis.com/v1beta/openai/embeddings",
+    "input_usd_per_million": 0.15,
+    "direct_attempt": "interrupted_after_transport_timeout; usage unknown and reserved",
+    "proxy_probe_passed": true,
+    "proxy_route": "existing local HTTPS proxy; no system proxy mutation",
+    "response_usage": "not returned; conservative 8192 input tokens retained",
+    "evidence": [
+      "verification/P02/embedding-route-direct-attempt.json",
+      "verification/P02/embedding-route-actual.json"
+    ]
+  },
+  "account_check": {
+    "evidence": "verification/P02/go-account-usage.json",
+    "all_windows_ok": true,
+    "use_balance_setting": "not observed; unchanged",
+    "initial_check_order_limitation": "The first four-call probe ran before account usage was read. This is retained as a preflight omission, not retroactively marked checked.",
+    "new_go_preflight": "Every new Go attempt requires the shared fresh GET allowance check: all three windows status ok and numeric percentage below 80; missing/failed data stops the attempt. A snapshot is not a global atomic reservation or a billing-setting observation.",
+    "cash_billing_claim": "No claim of free use or zero card charges. No purchase or account setting change was performed; cap is API usage value as approved."
+  },
+  "meter_policy": {
+    "new_ledger": ".execution/TEST-MODEL-BUDGET-V1/call-budget.sqlite3",
+    "old_12_call_ledger_reset": false,
+    "cost_rounding": "ceil to micro USD, conservative non-cached peak price",
+    "missing_usage": "Retain full reservation; interrupted or failed attempts count",
+    "mimo_unknown_output_reserve": 131072,
+    "approved_output_request_caps_unchanged": true,
+    "first_timeout_correction": "verification/P02/cheap-model-meter-adjustment.json",
+    "note": "The original max_tokens field did not establish the MiMo upstream limit. Explicit max_completion_tokens=16 produced finish_reason=length and 16 output tokens; future unknown usage still retains the larger reservation."
+  },
+  "current_incremental_usage": {
+    "model_attempts": 9,
+    "go_attempts": 7,
+    "embedding_attempts": 2,
+    "charged_or_reserved_micro_usd": 44603,
+    "cap_micro_usd": 20000000,
+    "account_metadata_gets_not_model_generations": 4
+  },
+  "independent_freeze": {
+    "candidate_sha": "ed302077ee5d46e57acc731ad976db3df92a49ff",
+    "evidence_ref": "verification/G0/g0-review-ed302077.json",
+    "overall_G0": "NO_GO"
+  },
+  "proposed_aggregate": {
+    "go_requests": 8000,
+    "go_input_tokens": 64000000,
+    "go_output_tokens": 8000000,
+    "embedding_batches": 4096,
+    "embedding_input_tokens": 32000000,
+    "worst_case_api_value_usd": 19.59,
+    "api_value_hard_cap_usd": 20
+  },
+  "aggregate_field_note": "The legacy proposed_aggregate field name is retained for the probe input contract; its values are now approved and independently frozen."
+}

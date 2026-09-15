@@ -1,0 +1,2 @@
+{"simulation":true,"history":[{"source_type":"human_direct","speaker_role":"user","text":"TEST source event","occurred_at":"2026-01-01T00:00:00Z"}],"query":{"text":"TEST source event"}}
+{"simulation":true,"history":[{"source_type":"human_direct","speaker_role":"user","text":"TEST second source event","occurred_at":"2026-01-02T00:00:00Z"}],"query":{"text":"TEST second source event"}}

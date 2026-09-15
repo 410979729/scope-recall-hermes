@@ -1,0 +1,72 @@
+........................FF                                               [100%]
+================================== FAILURES ===================================
+________________ test_cleanup_failure_is_recorded_and_nonzero _________________
+
+tmp_path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-g3ancstc/scope.recall.test-boundary.ocsqkmix/temp/pytest-of-unknown/pytest-0/test_cleanup_failure_is_record0')
+
+    def test_cleanup_failure_is_recorded_and_nonzero(tmp_path: Path) -> None:
+>       result, receipt, log = _run_check(tmp_path, fail_cleanup=True)
+                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\unit\test_check_runner.py:81: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\unit\test_check_runner.py:60: in _run_check
+    result = subprocess.run(
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\subprocess.py:548: in run
+    with Popen(*popenargs, **kwargs) as process:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\subprocess.py:1026: in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\subprocess.py:1534: in _execute_child
+    sys.audit("subprocess.Popen", executable, args, cwd, env)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+event = 'subprocess.Popen'
+args = (None, 'F:\\SCOPERECALL更新项目\\.venv\\Scripts\\python.exe -c "\nimport os\nfrom pathlib import Path\nimport shutil\nimpo...ll-v1.1\\.execution\\TEST-v11-g3ancstc\\scope.recall.test-boundary.ocsqkmix\\hermes-home', 'HF_HUB_OFFLINE': '1', ...})
+
+    def _audit(event, args):
+        if event.startswith("socket.") or event in {"subprocess.Popen", "os.system", "os.startfile", "os.startfile/2"}:
+>           raise PermissionError("TEST_BOUNDARY: network and child processes disabled")
+E           PermissionError: TEST_BOUNDARY: network and child processes disabled
+
+tests\v11_guard.py:40: PermissionError
+___________________ test_pytest_and_cleanup_success_is_zero ___________________
+
+tmp_path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-g3ancstc/scope.recall.test-boundary.ocsqkmix/temp/pytest-of-unknown/pytest-0/test_pytest_and_cleanup_succes0')
+
+    def test_pytest_and_cleanup_success_is_zero(tmp_path: Path) -> None:
+>       result, receipt, log = _run_check(tmp_path, fail_cleanup=False)
+                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\unit\test_check_runner.py:101: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\unit\test_check_runner.py:60: in _run_check
+    result = subprocess.run(
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\subprocess.py:548: in run
+    with Popen(*popenargs, **kwargs) as process:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\subprocess.py:1026: in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\subprocess.py:1534: in _execute_child
+    sys.audit("subprocess.Popen", executable, args, cwd, env)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+event = 'subprocess.Popen'
+args = (None, 'F:\\SCOPERECALL更新项目\\.venv\\Scripts\\python.exe -c "\nimport os\nfrom pathlib import Path\nimport shutil\nimpo...ll-v1.1\\.execution\\TEST-v11-g3ancstc\\scope.recall.test-boundary.ocsqkmix\\hermes-home', 'HF_HUB_OFFLINE': '1', ...})
+
+    def _audit(event, args):
+        if event.startswith("socket.") or event in {"subprocess.Popen", "os.system", "os.startfile", "os.startfile/2"}:
+>           raise PermissionError("TEST_BOUNDARY: network and child processes disabled")
+E           PermissionError: TEST_BOUNDARY: network and child processes disabled
+
+tests\v11_guard.py:40: PermissionError
+============================ slowest 10 durations =============================
+0.01s setup    tests/unit/test_v11_context.py::test_model_cannot_supply_trusted_identity[database_path]
+
+(9 durations < 0.005s hidden.  Use -vv to show these durations.)
+=========================== short test summary info ===========================
+FAILED tests/unit/test_check_runner.py::test_cleanup_failure_is_recorded_and_nonzero
+FAILED tests/unit/test_check_runner.py::test_pytest_and_cleanup_success_is_zero
+2 failed, 24 passed in 0.48s
+
+{"cleanup_exit_code": 0, "overall_exit_code": 1, "pytest_exit_code": 1, "transition_history": ["prepared", "pytest_started", "pytest_completed_waiting_cleanup", "cleanup_succeeded", "receipt_written"], "wrapper_exit_code": 0}

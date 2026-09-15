@@ -1,0 +1,31 @@
+..........................ss...                                          [100%]
+============================ slowest 10 durations =============================
+4.67s call     tests/contract/test_v11_episodes.py::test_long_episode_uses_bounded_segments_and_preserves_final_source
+0.10s call     tests/contract/test_v11_episodes.py::test_M13_M14_display_order_binds_version_only_when_actually_observed
+0.09s call     tests/contract/test_v11_episodes.py::test_M15_explicit_clarification_updates_binding_and_preserves_old_version
+0.07s call     tests/contract/test_v11_episodes.py::test_M50_deleted_artifact_blocks_descriptions_references_resume_and_cached_release
+0.07s call     tests/contract/test_v11_episodes.py::test_C16_M47_same_path_overwrite_preserves_exact_prior_artifact
+0.04s call     tests/contract/test_v11_episodes.py::test_C26_M06_same_trusted_task_continues_across_sessions_and_branches_do_not
+0.04s call     tests/contract/test_v11_episodes.py::test_resume_keeps_unprocessed_tail_and_source_paging_is_not_a_false_complete_count
+0.04s call     tests/contract/test_v11_episodes.py::test_bad_watermark_or_old_source_revision_cannot_mark_processing_complete
+0.04s call     tests/contract/test_v11_episodes.py::test_resume_cannot_merge_two_topics_or_invent_local_artifact_access
+0.04s call     tests/contract/test_v11_episodes.py::test_resume_is_extractive_versioned_and_stale_environment_is_labelled
+29 passed, 2 skipped in 6.36s
+Traceback (most recent call last):
+  File "C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\weakref.py", line 666, in _exitfunc
+    f()
+  File "C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\weakref.py", line 590, in __call__
+    return info.func(*info.args, **(info.kwargs or {}))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\tempfile.py", line 939, in _cleanup
+    cls._rmtree(name, ignore_errors=ignore_errors)
+  File "C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\tempfile.py", line 934, in _rmtree
+    _shutil.rmtree(name, onexc=onexc)
+  File "C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\shutil.py", line 781, in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\shutil.py", line 629, in _rmtree_unsafe
+    onexc(os.rmdir, fullname, err)
+  File "C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\shutil.py", line 627, in _rmtree_unsafe
+    os.rmdir(fullname)
+OSError: [WinError 145] 目录不是空的。: 'F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-tnk7heiw\\scope.recall.test-boundary.jz9jc_uw\\temp\\pytest-of-unknown\\pytest-0\\test_blob_identity_is_bound_to0\\TEST-instance\\retained'

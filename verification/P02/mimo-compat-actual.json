@@ -1,0 +1,315 @@
+{
+  "scope": "Three-call public diagnostic; parameter compatibility only, no hidden evaluation or final semantic acceptance",
+  "original_failure_retained": "verification/P02/cheap-model-actual.json",
+  "hidden_reasoning_saved": false,
+  "credentials_saved": false,
+  "production_data_sent": false,
+  "automatic_retry": false,
+  "budget_ledger_reset": false,
+  "source_sha256": "2ad2ebb829b8fc07837490162c0d7307c4f74e9852ce345849906e73428bace5",
+  "meter_source_sha256": "a682b1f25489e2031d99880da87f4c46aac05f29c93667e0c495a65ff0dd503e",
+  "results": [
+    {
+      "case": "json",
+      "model": "mimo-v2.5",
+      "passed": true,
+      "account_usage_before_call": {
+        "rolling": {
+          "status": "ok",
+          "percent": 0,
+          "resetsAt": "2026-09-06T07:40:25.527Z"
+        },
+        "weekly": {
+          "status": "ok",
+          "percent": 53,
+          "resetsAt": "2026-09-07T00:00:00.527Z"
+        },
+        "monthly": {
+          "status": "ok",
+          "percent": 30,
+          "resetsAt": "2026-09-28T07:45:04.527Z"
+        }
+      },
+      "request_id": 5,
+      "request_sha256": "1e0aaf61ea9cd94a86442114bc4ee98e76a10646769a172106c4cce8be5f383a",
+      "request": {
+        "model": "mimo-v2.5",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Synthetic software memory interface check. Preserve evidence and scope. Output only the requested machine-readable result."
+          },
+          {
+            "role": "user",
+            "content": "TEST_SCOPE_RECALL 用户把 TEST-ORBIT 项目的颜色从红色改成蓝色，只适用这个项目。助手声称测试通过，实际终端退出码为7。返回 JSON，字段为 project、current_color、tool_status、assistant_claim_is_tool_evidence、scope；颜色用中文，tool_status 为 passed 或 failed，scope 为 project 或 global。"
+          }
+        ],
+        "stream": false,
+        "response_format": {
+          "type": "json_object"
+        },
+        "max_completion_tokens": 1024,
+        "thinking": {
+          "type": "disabled"
+        }
+      },
+      "http_status": 200,
+      "response_model": "mimo-v2.5",
+      "finish_reason": "stop",
+      "reasoning_present": false,
+      "usage": {
+        "prompt_tokens": 109,
+        "completion_tokens": 47,
+        "total_tokens": 156
+      },
+      "visible_content": "{\n  \"project\": \"TEST-ORBIT\",\n  \"current_color\": \"蓝色\",\n  \"tool_status\": \"failed\",\n  \"assistant_claim_is_tool_evidence\": false,\n  \"scope\": \"project\"\n}",
+      "tool_calls": [],
+      "duration_seconds": 5.917151300003752
+    },
+    {
+      "case": "tool",
+      "model": "mimo-v2.5",
+      "passed": true,
+      "account_usage_before_call": {
+        "rolling": {
+          "status": "ok",
+          "percent": 0,
+          "resetsAt": "2026-09-06T07:40:25.536Z"
+        },
+        "weekly": {
+          "status": "ok",
+          "percent": 53,
+          "resetsAt": "2026-09-07T00:00:00.536Z"
+        },
+        "monthly": {
+          "status": "ok",
+          "percent": 30,
+          "resetsAt": "2026-09-28T07:45:04.536Z"
+        }
+      },
+      "request_id": 6,
+      "request_sha256": "481ca7cc857edf97bcc6528ef6c767df180498af55dbba3c712999c51d0f82f5",
+      "request": {
+        "model": "mimo-v2.5",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Synthetic software memory interface check. Preserve evidence and scope. Output only the requested machine-readable result."
+          },
+          {
+            "role": "user",
+            "content": "TEST_SCOPE_RECALL 使用 inspect_artifact 读取引用 TEST-ARTIFACT-v1，不要自行补写产物内容。"
+          }
+        ],
+        "stream": false,
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect_artifact",
+              "description": "Open a synthetic immutable artifact reference",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "reference": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reference"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "max_completion_tokens": 1024,
+        "thinking": {
+          "type": "disabled"
+        }
+      },
+      "http_status": 200,
+      "response_model": "mimo-v2.5",
+      "finish_reason": "tool_calls",
+      "reasoning_present": false,
+      "usage": {
+        "prompt_tokens": 304,
+        "completion_tokens": 29,
+        "total_tokens": 333
+      },
+      "visible_content": null,
+      "tool_calls": [
+        {
+          "id": "call_093b5e63ba564bf081f7087e",
+          "type": "function",
+          "function": {
+            "name": "inspect_artifact",
+            "arguments": "{\"reference\": \"TEST-ARTIFACT-v1\"}"
+          }
+        }
+      ],
+      "duration_seconds": 5.494788099953439
+    },
+    {
+      "case": "output_limit",
+      "model": "mimo-v2.5",
+      "passed": true,
+      "account_usage_before_call": {
+        "rolling": {
+          "status": "ok",
+          "percent": 0,
+          "resetsAt": "2026-09-06T07:40:25.093Z"
+        },
+        "weekly": {
+          "status": "ok",
+          "percent": 53,
+          "resetsAt": "2026-09-07T00:00:00.093Z"
+        },
+        "monthly": {
+          "status": "ok",
+          "percent": 30,
+          "resetsAt": "2026-09-28T07:45:04.093Z"
+        }
+      },
+      "request_id": 7,
+      "request_sha256": "609fc2e56c53231c1ddec038ce482e2d9d56ce5cc36b75b8d0d584ddf8596e61",
+      "request": {
+        "model": "mimo-v2.5",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Follow the synthetic output-length request. Do not summarize."
+          },
+          {
+            "role": "user",
+            "content": "TEST_SCOPE_RECALL Print the integers 1 through 400, in order, one integer per line. Print the full sequence."
+          }
+        ],
+        "stream": false,
+        "max_completion_tokens": 16,
+        "thinking": {
+          "type": "disabled"
+        }
+      },
+      "http_status": 200,
+      "response_model": "mimo-v2.5",
+      "finish_reason": "length",
+      "reasoning_present": false,
+      "usage": {
+        "prompt_tokens": 52,
+        "completion_tokens": 16,
+        "total_tokens": 68
+      },
+      "visible_content": "1\n2\n3\n4\n5\n6\n7\n8\n",
+      "tool_calls": [],
+      "duration_seconds": 1.945973799971398
+    }
+  ],
+  "budget": {
+    "requests": [
+      {
+        "id": 1,
+        "batch": "P02_CHEAP_ROUTE",
+        "model": "deepseek-v4-flash",
+        "body_sha256": "8656471378be4116ebb07c710a88faa79de8d92ec41f8e16d5c4af5b6db9044b",
+        "request_bytes": 664,
+        "reserved_input": 32768,
+        "reserved_output": 1024,
+        "actual_input": 189,
+        "actual_output": 251,
+        "charge_micro_usd": 415,
+        "status": "http_200",
+        "started_ns": 1788667374432201500
+      },
+      {
+        "id": 2,
+        "batch": "P02_CHEAP_ROUTE",
+        "model": "deepseek-v4-flash",
+        "body_sha256": "ddda915642b8d285782a98f428d1d67a4d105d3820ecee1194fd8e9b77d4fe38",
+        "request_bytes": 737,
+        "reserved_input": 32768,
+        "reserved_output": 1024,
+        "actual_input": 414,
+        "actual_output": 105,
+        "charge_micro_usd": 321,
+        "status": "http_200",
+        "started_ns": 1788667378282072400
+      },
+      {
+        "id": 3,
+        "batch": "P02_CHEAP_ROUTE",
+        "model": "mimo-v2.5",
+        "body_sha256": "1f3f2c7b7b344a746e8ccd6cafa7df330d98dbb72987169565e241895e66c1cd",
+        "request_bytes": 656,
+        "reserved_input": 32768,
+        "reserved_output": 1024,
+        "actual_input": 107,
+        "actual_output": 47,
+        "charge_micro_usd": 29,
+        "status": "http_200",
+        "started_ns": 1788667381404876000
+      },
+      {
+        "id": 4,
+        "batch": "P02_CHEAP_ROUTE",
+        "model": "mimo-v2.5",
+        "body_sha256": "6046bfaaebcffa45db9b5de2dc5025275efcb0344fc4c080e5130405ce301253",
+        "request_bytes": 729,
+        "reserved_input": 32768,
+        "reserved_output": 131072,
+        "actual_input": null,
+        "actual_output": null,
+        "charge_micro_usd": 41288,
+        "status": "network_error_usage_unknown_conservative_cap_corrected",
+        "started_ns": 1788667385537443900
+      },
+      {
+        "id": 5,
+        "batch": "P02_MIMO_COMPAT",
+        "model": "mimo-v2.5",
+        "body_sha256": "1e0aaf61ea9cd94a86442114bc4ee98e76a10646769a172106c4cce8be5f383a",
+        "request_bytes": 701,
+        "reserved_input": 32768,
+        "reserved_output": 131072,
+        "actual_input": 109,
+        "actual_output": 47,
+        "charge_micro_usd": 29,
+        "status": "http_200",
+        "started_ns": 1788667971312313400
+      },
+      {
+        "id": 6,
+        "batch": "P02_MIMO_COMPAT",
+        "model": "mimo-v2.5",
+        "body_sha256": "481ca7cc857edf97bcc6528ef6c767df180498af55dbba3c712999c51d0f82f5",
+        "request_bytes": 718,
+        "reserved_input": 32768,
+        "reserved_output": 131072,
+        "actual_input": 304,
+        "actual_output": 29,
+        "charge_micro_usd": 51,
+        "status": "http_200",
+        "started_ns": 1788667978324866200
+      },
+      {
+        "id": 7,
+        "batch": "P02_MIMO_COMPAT",
+        "model": "mimo-v2.5",
+        "body_sha256": "609fc2e56c53231c1ddec038ce482e2d9d56ce5cc36b75b8d0d584ddf8596e61",
+        "request_bytes": 353,
+        "reserved_input": 32768,
+        "reserved_output": 131072,
+        "actual_input": 52,
+        "actual_output": 16,
+        "charge_micro_usd": 12,
+        "status": "http_200",
+        "started_ns": 1788667984876257900
+      }
+    ],
+    "charge_micro_usd": 42145,
+    "project_cap_micro_usd": 20000000,
+    "batch": "P02_MIMO_COMPAT",
+    "small_probe_request_cap": 3
+  }
+}

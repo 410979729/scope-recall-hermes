@@ -1,0 +1,643 @@
+"""R1 candidate lifecycle, bounded scheduling and migration contracts."""
+from __future__ import annotations
+
+import json
+import sqlite3
+from dataclasses import replace
+
+import pytest
+
+from scope_recall.contracts import TrustedSourcePrincipal
+from scope_recall.core.candidate_lifecycle import (
+    candidate_evaluation_messages,
+    candidate_subject_matches,
+)
+from scope_recall.core.claims import Qualification
+from scope_recall.core.schema import SCHEMA_VERSION
+from scope_recall.maintenance import doctor
+from scope_recall.runtime.scheduling import next_wake
+from test_finite_supervisor import NOW, fixture as supervisor_fixture, queue as queue_work
+from test_v11_claims import app, capture, draft
+from test_v11_deletion import authorize, request
+
+
+def _settle_evidence(core, *, seconds=None):
+    """Back-date evidence arrival so the quiet window has elapsed.
+
+    The test clock does not advance on its own and waiting fifteen real minutes
+    is not a test.  Only the timestamps the debounce policy reads are moved;
+    nothing else about the candidate changes.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from scope_recall.core.candidate_debounce import QUIET_SECONDS
+
+    elapsed = QUIET_SECONDS + 60 if seconds is None else seconds
+    # Relative to the fixture clock, which is frozen: wall-clock time is days
+    # away from it and would read as evidence arriving in the future.
+    frozen = datetime.fromisoformat(core.clock.utc_now().replace("Z", "+00:00"))
+    moment = (frozen - timedelta(seconds=elapsed)).isoformat()
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE candidate_lifecycle SET last_evidence_at=?", (moment,))
+        conn.commit()
+
+
+def _sweep(core, ctx, *, limit=16):
+    with core.storage.write(ctx) as tx:
+        return tx.candidates.schedule_settled_candidates(now=core.clock.utc_now(), limit=limit)
+
+
+def _snapshot(core, ref, revision):
+    """Rebuild the snapshot the repair routes pass to ``_schedule``.
+
+    Read straight from the two tables production reads, so the test exercises
+    the real path rather than a convenience accessor that only tests use.
+    """
+    from scope_recall.core.candidate_lifecycle import CandidateSnapshot
+
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """SELECT l.scope_id,l.project_id,l.branch_id,l.processing_state,l.reason,l.rule_version,
+                      v.state AS fact_state,v.payload_json
+               FROM candidate_lifecycle l
+               JOIN claim_versions v ON v.claim_id=l.candidate_ref AND v.revision=l.candidate_revision
+               WHERE l.candidate_ref=? AND l.candidate_revision=?""",
+            (ref, revision),
+        ).fetchone()
+    return CandidateSnapshot(ref, revision, row["scope_id"], row["project_id"], row["branch_id"],
+                             row["fact_state"], json.loads(row["payload_json"]),
+                             row["processing_state"], row["reason"], row["rule_version"])
+
+
+def _candidate(core, ctx, *, value="蓝色", key=None):
+    slug = key.rsplit("/", 1)[-1] if key else "blue"
+    subject = f"entity-{slug}"
+    predicate = f"property-{slug}"
+    source = capture(core, ctx, f"{subject} {predicate} {value}。", key=key)
+    proposal = draft(source, value, subject=subject, predicate=predicate)
+    with core.storage.write(ctx) as tx:
+        saved = tx.claims.append(
+            "TEST-scope",
+            proposal,
+            Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
+            recorded_at=core.clock.utc_now(),
+        )
+        registration = tx.candidates.register(
+            saved.ref, saved.revision, observed_at=core.clock.utc_now(),
+        )
+    return saved, source, proposal, registration
+
+
+def _finish_source_work(core):
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE work_items SET state='done' WHERE work_type IN ('consolidate','embed')")
+        conn.commit()
+
+
+def _candidate_rows(core):
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.row_factory = sqlite3.Row
+        lifecycle = [dict(row) for row in conn.execute(
+            "SELECT * FROM candidate_lifecycle ORDER BY candidate_ref,candidate_revision"
+        )]
+        evaluations = [dict(row) for row in conn.execute(
+            "SELECT * FROM candidate_evaluations ORDER BY evaluation_id"
+        )]
+        work = [dict(row) for row in conn.execute(
+            "SELECT * FROM work_items WHERE work_type='evaluate_candidate' ORDER BY work_id"
+        )]
+    return lifecycle, evaluations, work
+
+
+class Evaluator:
+    def __init__(self, proposal=None, callback=None):
+        self.proposal = proposal
+        self.callback = callback
+        self.calls = 0
+
+    def evaluate_candidate(self, candidate, sources, *, remaining_seconds):
+        self.calls += 1
+        if self.callback is not None:
+            self.callback()
+        return json.dumps({
+            "protocol_version": "1.1",
+            "source_refs": [f"{source.ref}@{source.revision}" for source in sources],
+            "claim_proposals": [] if self.proposal is None else [self.proposal],
+            "resume_proposals": [],
+            "reference_proposals": [],
+        }, ensure_ascii=False)
+
+
+class ModelRefusal(Exception):
+    def __init__(self, error_type):
+        super().__init__(error_type)
+        self.error_type = error_type
+
+
+def test_r1_candidate_registration_separates_fact_state_and_dedupes(app):
+    core, ctx = app
+    saved, _source, _proposal, registration = _candidate(core, ctx)
+    assert saved.state == "proposed"
+    assert registration.processing_state == "pending_evaluation"
+    assert registration.work_queued is True
+    with core.storage.write(ctx) as tx:
+        repeated = tx.candidates.register(saved.ref, saved.revision, observed_at=core.clock.utc_now())
+        summary = tx.candidates.summary()
+    lifecycle, evaluations, work = _candidate_rows(core)
+    assert repeated.work_queued is False
+    assert summary.pending_evaluation == 1
+    assert lifecycle[0]["processing_state"] == "pending_evaluation"
+    assert len(evaluations) == len(work) == 1
+    assert evaluations[0]["work_id"] == work[0]["work_id"]
+    assert work[0]["subject_ref"] == "candidate:" + saved.ref
+    assert work[0]["subject_revision"] == evaluations[0]["evaluation_id"]
+
+
+def test_r1_candidate_new_evidence_wakes_once_and_duplicate_capture_does_not_expand_work(app):
+    """Arriving evidence is recorded; it no longer mints an evaluation each time.
+
+    Scheduling per arrival is what produced 7,802 retired-before-judged
+    evaluations on tianshu.  The evidence is still collected the moment it
+    arrives -- nothing is lost by waiting -- and one evaluation is scheduled
+    once the candidate settles.
+    """
+    core, ctx = app
+    _candidate(core, ctx)
+    first = capture(core, ctx, "又发现 entity-blue property-blue 的相关证据。", key="TEST-r1/new-evidence")
+    replay = capture(core, ctx, "又发现 entity-blue property-blue 的相关证据。", key="TEST-r1/new-evidence")
+    assert replay.ref == first.ref
+    lifecycle, evaluations, work = _candidate_rows(core)
+    assert len(evaluations) == len(work) == 1, "the arriving source did not queue a second evaluation"
+    assert lifecycle[0]["reason"] == "new_evidence"
+    with sqlite3.connect(core.storage.path) as conn:
+        recorded = conn.execute("SELECT count(*) FROM candidate_evidence").fetchone()[0]
+    assert recorded == 2, "but the evidence itself was recorded"
+
+    # The evidence that arrived while the first evaluation was queued is judged
+    # in the next round, not by displacing the one already waiting.
+    _finish_source_work(core)
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=Evaluator())
+    _settle_evidence(core)
+    assert _sweep(core, ctx) == 1
+    _lifecycle, evaluations, work = _candidate_rows(core)
+    assert len(evaluations) == len(work) == 2
+    assert evaluations[0]["evidence_fingerprint"] != evaluations[1]["evidence_fingerprint"]
+    assert len(json.loads(evaluations[1]["evidence_refs_json"])) == 2
+    assert _sweep(core, ctx) == 0, "and an unchanged evidence set schedules nothing further"
+
+
+def test_r1_candidate_worker_applies_through_fact_path_without_manual_approval(app):
+    core, ctx = app
+    saved, _source, proposal, _registration = _candidate(core, ctx)
+    _finish_source_work(core)
+    evaluator = Evaluator(proposal)
+    receipt = core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    current = core.current_claim(ctx, saved.ref)
+    lifecycle, evaluations, work = _candidate_rows(core)
+    assert evaluator.calls == 1
+    candidate_items = [item for item in receipt.items if item.work_type == "evaluate_candidate"]
+    assert len(candidate_items) == 1 and candidate_items[0].disposition == "completed"
+    assert current.state == "active" and current.revision == 2
+    assert evaluations[0]["state"] == "resolved"
+    assert work[0]["state"] == "done"
+    assert any(row["candidate_revision"] == 2 and row["processing_state"] == "resolved" for row in lifecycle)
+
+
+def test_candidate_queued_before_unrelated_write_uses_current_attempt_epoch(app):
+    core, ctx = app
+    saved, _source, proposal, _registration = _candidate(core, ctx)
+    capture(core, ctx, "无关项目今天开会。", key="TEST-r1/unrelated")
+    _finish_source_work(core)
+    with core.storage.read(ctx) as tx:
+        epoch = tx.status().memory_epoch
+    evaluator = Evaluator(proposal)
+    result = core.drain_worker(ctx, max_items=1, remaining_seconds=10, consolidation=evaluator)
+    assert evaluator.calls == 1
+    assert result.completed == 1
+    assert core.current_claim(ctx, saved.ref).state == "active"
+    _, evaluations, _ = _candidate_rows(core)
+    assert evaluations[0]["memory_epoch"] == epoch
+
+
+def test_candidate_epoch_change_during_attempt_still_blocks_publication(app):
+    core, ctx = app
+    saved, _source, proposal, _registration = _candidate(core, ctx)
+    _finish_source_work(core)
+    evaluator = Evaluator(proposal, callback=lambda: capture(
+        core, ctx, "另一个项目刚更新。", key="TEST-r1/during-model"))
+    result = core.drain_worker(ctx, max_items=1, remaining_seconds=10, consolidation=evaluator)
+    assert evaluator.calls == 1
+    assert result.completed == 0 and result.obsolete == 1
+    assert result.items[0].error_code == "memory_epoch_changed"
+    assert core.current_claim(ctx, saved.ref) is None
+    with core.storage.read(ctx) as tx:
+        assert tx.claims.versions(saved.ref)[-1].state == "proposed"
+
+
+def test_r1_candidate_hides_c1_principal_from_model_and_rebinds_via_c2(app):
+    core, ctx = app
+    principal_ref = "principal:TEST-private-alice"
+    actor = replace(
+        ctx,
+        source_principal=TrustedSourcePrincipal(
+            "human", "verified", principal_ref=principal_ref, display_name="Alice",
+        ),
+    )
+    source = capture(core, actor, "我喜欢蓝色。", key="TEST-r1/private-principal")
+    stored = {
+        "kind": "preference",
+        "subject": principal_ref,
+        "predicate": "喜欢",
+        "value_text": "蓝色",
+        "conditions": [],
+        "statement_kind": "assertion",
+        "valid_from": source.event["occurred_at"],
+        "valid_to": None,
+        "evidence_spans": [{
+            "source_ref": source.ref,
+            "source_revision": source.revision,
+            "quote": source.event["content"],
+        }],
+    }
+    with core.storage.write(actor) as tx:
+        candidate = tx.claims.append(
+            "TEST-scope", stored,
+            Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
+            recorded_at=core.clock.utc_now(),
+        )
+        registration = tx.candidates.register(
+            candidate.ref, candidate.revision, observed_at=core.clock.utc_now(),
+        )
+        evaluation = tx.candidates.evaluation(registration.evaluation_id)
+    assert evaluation is not None
+    messages = candidate_evaluation_messages(evaluation.candidate, (source,))
+    model_input = json.dumps(messages, ensure_ascii=False)
+    assert principal_ref not in model_input
+    assert json.loads(messages[-1]["content"].removeprefix("candidate="))["subject"] == "current_user"
+    assert candidate_subject_matches(evaluation.candidate, (source,), "current_user")
+    assert not candidate_subject_matches(evaluation.candidate, (source,), principal_ref)
+
+    proposal = dict(stored, subject="current_user")
+    _finish_source_work(core)
+    evaluator = Evaluator(proposal)
+    receipt = core.drain_worker(
+        actor, max_items=8, remaining_seconds=10, consolidation=evaluator,
+    )
+    current = core.current_claim(ctx, candidate.ref)
+    candidate_items = [item for item in receipt.items if item.work_type == "evaluate_candidate"]
+    assert len(candidate_items) == 1 and candidate_items[0].disposition == "completed"
+    assert evaluator.calls == 1
+    assert current is not None and current.state == "active"
+    assert current.payload["subject"] == principal_ref
+
+
+def test_r1_candidate_no_new_evidence_means_no_second_model_attempt(app):
+    core, ctx = app
+    saved, _source, _proposal, _registration = _candidate(core, ctx)
+    _finish_source_work(core)
+    evaluator = Evaluator()
+    first = core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    second = core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    summary = None
+    with core.storage.write(ctx) as tx:
+        replay = tx.candidates.register(saved.ref, saved.revision, observed_at=core.clock.utc_now())
+        summary = tx.candidates.summary()
+    assert first.completed == 1 and second.processed == 0
+    assert evaluator.calls == 1
+    assert summary.waiting_evidence == 1
+    assert replay.disposition == "unchanged" and replay.work_queued is False
+
+
+def test_r1_candidate_batch_is_capped_at_eight_and_persists_remainder(app):
+    core, ctx = app
+    for index in range(10):
+        _candidate(core, ctx, value=f"value{index}", key=f"TEST-r1/batch/{index}")
+    _finish_source_work(core)
+    evaluator = Evaluator()
+    receipt = core.drain_worker(ctx, max_items=32, remaining_seconds=20, consolidation=evaluator)
+    _lifecycle, _evaluations, work = _candidate_rows(core)
+    assert evaluator.calls == receipt.processed == 8
+    assert sum(row["state"] == "pending" for row in work) == 2
+
+
+def test_r1_candidate_source_matching_is_capped_at_sixteen(app):
+    core, ctx = app
+    sources = [
+        capture(core, ctx, f"entity{i} property{i} sharedtoken value{i}。", key=f"TEST-r1/match/{i}")
+        for i in range(20)
+    ]
+    with core.storage.write(ctx) as tx:
+        for index, source in enumerate(sources):
+            proposal = draft(
+                source, f"sharedtoken value{index}", subject=f"entity{index}", predicate=f"property{index}",
+            )
+            saved = tx.claims.append(
+                "TEST-scope", proposal,
+                Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
+                recorded_at=core.clock.utc_now(),
+            )
+            tx.candidates.register(saved.ref, saved.revision, observed_at=core.clock.utc_now())
+    trigger = capture(core, ctx, "sharedtoken 提供了统一的新证据。", key="TEST-r1/match-trigger")
+    with sqlite3.connect(core.storage.path) as conn:
+        row = conn.execute(
+            """SELECT matched_count,scheduled_count,truncated FROM candidate_source_triggers
+               WHERE source_ref=? AND source_revision=1""", (trigger.ref,),
+        ).fetchone()
+    # matched and truncated are the cap under test.  scheduled is now zero for
+    # two independent reasons -- the evidence has only just arrived, and each of
+    # these candidates already carries the evaluation it was registered with --
+    # and either one alone is enough to keep the queue from multiplying.
+    assert row == (16, 0, 1)
+    _settle_evidence(core)
+    assert _sweep(core, ctx, limit=16) == 0, "a live evaluation is never displaced"
+
+
+def test_r1_candidate_budget_pause_is_explicit_and_does_not_spend_attempt(app):
+    core, ctx = app
+    _candidate(core, ctx)
+    _finish_source_work(core)
+
+    class Refusing:
+        calls = 0
+
+        def evaluate_candidate(self, candidate, sources, *, remaining_seconds):
+            self.calls += 1
+            raise ModelRefusal("budget_exhausted")
+
+    evaluator = Refusing()
+    receipt = core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    lifecycle, evaluations, work = _candidate_rows(core)
+    with core.storage.read(ctx) as tx:
+        summary = tx.candidates.summary()
+    assert receipt.deferred == 1 and evaluator.calls == 1
+    assert lifecycle[0]["reason"] == "budget_paused"
+    assert evaluations[0]["model_attempted_at"] is None
+    assert work[0]["state"] == "pending" and work[0]["attempt"] == 0
+    assert summary.budget_paused == 1
+
+
+def test_r1_candidate_failed_combination_rejects_operator_retry_and_needs_new_evidence(app):
+    core, ctx = app
+    _candidate(core, ctx)
+    _finish_source_work(core)
+
+    class Failing:
+        def evaluate_candidate(self, candidate, sources, *, remaining_seconds):
+            raise ModelRefusal("network_error")
+
+    receipt = core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=Failing())
+    _lifecycle, _evaluations, work = _candidate_rows(core)
+    assert receipt.failed == 1 and work[0]["state"] == "failed"
+    with core.storage.write(ctx) as tx:
+        retried = tx.work.operator_retry_failed(
+            [work[0]["work_id"]], now=core.clock.utc_now(), operation_id="TEST-r1-retry",
+        )
+    assert retried[0].disposition == "rejected"
+    assert retried[0].reason == "new_evidence_required"
+    capture(core, ctx, "entity-blue property-blue 带来真正的新证据。", key="TEST-r1/recover-evidence")
+    _settle_evidence(core)
+    assert _sweep(core, ctx) == 1
+    _lifecycle, evaluations, work = _candidate_rows(core)
+    assert len(evaluations) == len(work) == 2
+    assert work[0]["state"] == "failed" and work[1]["state"] == "pending"
+
+
+def test_r1_candidate_interrupted_attempt_never_calls_model_again(app):
+    core, ctx = app
+    _candidate(core, ctx)
+    _finish_source_work(core)
+    with core.storage.write(ctx) as tx:
+        item = tx.work.claim_next(
+            "TEST-crashed", core.clock.utc_now(), lease_seconds=60, limit=1,
+            allowed_work_types=frozenset({"evaluate_candidate"}),
+        )[0]
+        assert tx.candidates.begin_model_attempt(
+            item.subject_revision, item.work_id, item.lease_token, item.lease_owner,
+            now=core.clock.utc_now(),
+        )
+        tx._check(write=True).execute(
+            "UPDATE work_items SET lease_until='2026-09-06T11:00:00Z' WHERE work_id=?", (item.work_id,),
+        )
+    evaluator = Evaluator()
+    receipt = core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    _lifecycle, evaluations, work = _candidate_rows(core)
+    assert evaluator.calls == 0
+    assert receipt.failed == 1
+    assert evaluations[0]["failure_code"] == "candidate_attempt_interrupted"
+    assert work[0]["state"] == "failed"
+
+
+def test_r1_candidate_dormancy_is_recoverable_but_active_fact_is_untouched(app):
+    core, ctx = app
+    candidate, _source, _proposal, _registration = _candidate(core, ctx)
+    _finish_source_work(core)
+    evaluator = Evaluator()
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    core.clock.now = "2026-10-07T12:00:00Z"
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10)
+    lifecycle, _evaluations, _work = _candidate_rows(core)
+    dormant = next(row for row in lifecycle if row["candidate_ref"] == candidate.ref)
+    assert dormant["processing_state"] == "archived"
+    assert dormant["reason"] == "dormant_no_evidence"
+    capture(core, ctx, "entity-blue property-blue 有一条新的相关证据。", key="TEST-r1/wake")
+    with core.storage.read(ctx) as tx:
+        assert tx.candidates.summary().pending_evaluation == 1
+
+
+def test_r1_candidate_delete_during_model_call_blocks_publish(app):
+    core, ctx = app
+    candidate, source, proposal, _registration = _candidate(core, ctx)
+    _finish_source_work(core)
+
+    def delete_source():
+        authorize(core, ctx, source)
+        core.forget(ctx, request(source), remaining_seconds=10)
+
+    evaluator = Evaluator(proposal, callback=delete_source)
+    receipt = core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    lifecycle, evaluations, work = _candidate_rows(core)
+    assert evaluator.calls == 1
+    assert receipt.completed == 0
+    assert core.current_claim(ctx, candidate.ref) is None
+    assert lifecycle[0]["processing_state"] == "blocked"
+    assert all(row["state"] == "obsolete" for row in evaluations)
+    assert all(row["state"] == "obsolete" for row in work)
+
+
+def test_r1_candidate_doctor_reports_waiting_capability_and_failures(app, monkeypatch):
+    core, ctx = app
+    _candidate(core, ctx)
+    _finish_source_work(core)
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10)
+    (ctx.binding.data_directory / "installation.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(doctor, "_load_binding", lambda *args: (ctx.binding, ctx.binding.data_directory))
+    monkeypatch.setattr(doctor, "_hermes_data_dir", lambda root: ctx.binding.data_directory)
+    result = doctor.run_doctor(host="hermes", instance_root=ctx.binding.data_directory)
+    assert result.candidate_pending_evaluation == 1
+    assert result.candidate_capability_unavailable == 1
+    assert result.candidate_oldest_waiting_at is not None
+    assert "candidate_capability_unavailable" in result.capability_gaps
+    payload = result.to_dict()
+    assert payload["candidate_pending_evaluation"] == 1
+
+
+def test_r1_candidate_scheduler_distinguishes_missing_capability_and_daily_budget(tmp_path):
+    core, config, _path = supervisor_fixture(tmp_path)
+    queue_work(core, config, ref="candidate:TEST", kind="evaluate_candidate", due=NOW)
+    blocked = next_wake(config, now=NOW)
+    assert blocked.due_at is None and blocked.reason == "capability_unavailable" and blocked.blocked == 1
+    capable = replace(
+        config,
+        # daily_work_limit defaults to 0, meaning uncapped; a daily pause can only
+        # be observed against a cap that was actually asked for.
+        daily_work_limit=256,
+        auxiliary=replace(config.auxiliary, external_consolidation=True, consolidation=object()),
+    )
+    ready = next_wake(capable, now=NOW)
+    assert ready.due_at == "2026-09-12T00:00:00Z" and ready.reason == "work_available"
+    budget = capable.binding.data_directory / "runtime-worker-day.json"
+    budget.write_text(json.dumps({
+        "installation_id": capable.binding.installation_id,
+        "day": "2026-09-12",
+        "used": capable.daily_work_limit,
+    }), encoding="utf-8")
+    paused = next_wake(capable, now=NOW)
+    assert paused.due_at == "2026-09-13T00:00:00Z" and paused.reason == "daily_queue_budget"
+    # The same spent counter, uncapped: candidate work stays due instead of
+    # being pushed to tomorrow.
+    uncapped = next_wake(replace(capable, daily_work_limit=0), now=NOW)
+    assert uncapped.reason != "daily_queue_budget"
+
+
+def test_r1_candidate_1107_migration_preserves_work_ids_leases_and_error_history(app, monkeypatch):
+    core, ctx = app
+    source = capture(core, ctx, "TEST migration durable work。", key="TEST-r1/migration")
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.row_factory = sqlite3.Row
+        work_id = conn.execute(
+            "SELECT work_id FROM work_items WHERE subject_ref=? AND work_type='consolidate'", (source.ref,)
+        ).fetchone()[0]
+        conn.execute(
+            """UPDATE work_items SET state='leased',attempt=2,lease_token=7,lease_owner='TEST-owner',
+               lease_until='2099-01-01T00:00:00Z',last_error_code='held' WHERE work_id=?""", (work_id,)
+        )
+        conn.execute(
+            """INSERT INTO work_error_details(work_id,lease_token,stage,error_code,error_field,recorded_at)
+               VALUES (?,7,'TEST','held','field','2026-09-06T12:00:00Z')""", (work_id,)
+        )
+        conn.execute(
+            """INSERT INTO capture_inbox(token,scope_id,project_id,branch_id,created_at,payload_json,last_error_code)
+               VALUES ('TEST-inbox','TEST-scope','TEST-project','TEST-main','2026-09-06T12:00:00Z','{}','held')"""
+        )
+        for table in (
+            "candidate_source_triggers", "candidate_evaluations", "candidate_trigger_terms",
+            "candidate_evidence", "candidate_lifecycle", "candidate_scan_cursors",
+        ):
+            conn.execute(f"DROP TABLE {table}")
+        conn.execute("UPDATE instance_meta SET schema_version=1107 WHERE singleton=1")
+        conn.execute("PRAGMA user_version=1107")
+        conn.commit()
+
+    import scope_recall.core.schema as schema_module
+    import scope_recall.core.storage as storage_module
+    original = schema_module.upgrade_1107
+
+    def fail_after_upgrade(connection):
+        original(connection)
+        raise RuntimeError("TEST migration rollback")
+
+    monkeypatch.setattr(storage_module, "upgrade_1107", fail_after_upgrade)
+    with pytest.raises(RuntimeError, match="migration rollback"):
+        core.initialize()
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1107
+        assert conn.execute("SELECT state,attempt,lease_token,lease_owner,last_error_code FROM work_items WHERE work_id=?", (work_id,)).fetchone() == (
+            "leased", 2, 7, "TEST-owner", "held",
+        )
+    monkeypatch.setattr(storage_module, "upgrade_1107", original)
+    status = core.initialize()
+    with sqlite3.connect(core.storage.path) as conn:
+        assert status.schema_version == SCHEMA_VERSION == 1108
+        assert conn.execute("SELECT state,attempt,lease_token,lease_owner,last_error_code FROM work_items WHERE work_id=?", (work_id,)).fetchone() == (
+            "leased", 2, 7, "TEST-owner", "held",
+        )
+        assert conn.execute("SELECT lease_token,stage,error_code,error_field FROM work_error_details WHERE work_id=?", (work_id,)).fetchone() == (
+            7, "TEST", "held", "field",
+        )
+        assert conn.execute("SELECT payload_json,last_error_code FROM capture_inbox WHERE token='TEST-inbox'").fetchone() == (
+            "{}", "held",
+        )
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        ddl = conn.execute("SELECT sql FROM sqlite_master WHERE name='work_items'").fetchone()[0]
+        assert "evaluate_candidate" in ddl
+
+
+
+def test_r1_one_candidate_never_accumulates_a_queue_of_stale_evaluations(app):
+    """The invariant is unchanged; the way it is kept is stronger.
+
+    The dedup key is (candidate, revision, evidence_fingerprint, rule_version)
+    and the fingerprint covers the evidence set, so scheduling on every arrival
+    minted a fresh evaluation and retired the ones still waiting -- on tianshu
+    7,802 of 11,158 were retired before anyone judged them, and exactly two ever
+    reached a verdict.
+
+    Now a second one is never created while the first is queued, so there is
+    nothing to retire.  The supersede path stays for the repair routes that
+    schedule a candidate directly; the next test covers those.
+    """
+    core, ctx = app
+    _candidate(core, ctx)
+    capture(core, ctx, "又发现 entity-blue property-blue 的相关证据。", key="TEST-r1/supersede")
+    _settle_evidence(core)
+    assert _sweep(core, ctx) == 0, "a candidate that already has a queued evaluation is left alone"
+
+    _lifecycle, evaluations, work = _candidate_rows(core)
+    queued = [row for row in evaluations if row["state"] == "queued"]
+    assert len(queued) == 1, "exactly one evaluation stays live per candidate"
+    assert [row for row in evaluations if row["state"] == "obsolete"] == [], "and none had to be retired"
+    assert {row["work_id"]: row["state"] for row in work}[queued[0]["work_id"]] == "pending"
+
+
+def test_r1_a_directly_scheduled_candidate_still_retires_what_it_replaces(app):
+    """The supersede path is the safety net for the repair routes.
+
+    Those schedule without the debounce, because a rule change or a revision
+    change has to take effect now rather than after the next quiet window.  When
+    they do, an unstarted evaluation must still step aside.
+    """
+    core, ctx = app
+    saved, _source, _proposal, _registration = _candidate(core, ctx)
+    capture(core, ctx, "又发现 entity-blue property-blue 的相关证据。", key="TEST-r1/direct")
+    snapshot = _snapshot(core, saved.ref, saved.revision)
+    with core.storage.write(ctx) as tx:
+        tx.candidates._schedule(snapshot, now=core.clock.utc_now(), rule_version=snapshot.rule_version)
+
+    _lifecycle, evaluations, work = _candidate_rows(core)
+    queued = [row for row in evaluations if row["state"] == "queued"]
+    retired = [row for row in evaluations if row["state"] == "obsolete"]
+    assert len(queued) == 1 and len(retired) == 1
+    assert retired[0]["reason"] == "superseded_by_new_evidence"
+    assert retired[0]["evaluation_id"] < queued[0]["evaluation_id"], "the newest evidence wins"
+    assert len(json.loads(queued[0]["evidence_refs_json"])) == 2, "and it carries the larger set"
+    states = {row["work_id"]: row["state"] for row in work}
+    assert states[retired[0]["work_id"]] == "obsolete", "its work item is retired with it"
+    assert states[queued[0]["work_id"]] == "pending"
+
+
+def test_r1_a_started_evaluation_is_never_retired_by_new_evidence(app):
+    """The at-most-once fence outranks the tidy-up."""
+    core, ctx = app
+    _candidate(core, ctx)
+    _lifecycle, evaluations, _work = _candidate_rows(core)
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute(
+            "UPDATE candidate_evaluations SET model_attempted_at=? WHERE evaluation_id=?",
+            (core.clock.utc_now(), evaluations[0]["evaluation_id"]),
+        )
+        conn.commit()
+    capture(core, ctx, "又发现 entity-blue property-blue 的相关证据。", key="TEST-r1/started")
+    _lifecycle, after, _work = _candidate_rows(core)
+    started = next(row for row in after if row["evaluation_id"] == evaluations[0]["evaluation_id"])
+    assert started["state"] == "queued", "a started evaluation keeps its fence"

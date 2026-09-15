@@ -57,6 +57,10 @@ except Exception:  # pragma: no cover - optional dependency of OpenAI adapters
 # hosted/hash embedder must not load torch or other optional native runtimes.
 SentenceTransformer: Any = None
 
+class _IncompatibleMixedEmbeddingIndexError(RuntimeError):
+    """Mixed indexes that are not a uniquely determined compatibility shape."""
+
+
 _KNOWN_EMBEDDING_DIMS = {
     "hash-v1": 256,
     "debug-hash-v1": 16,
@@ -796,18 +800,53 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
         """Restore input order when a compatible API supplies row indices.
 
         Some OpenAI-compatible servers omit ``index`` entirely; those retain
-        their historical response-order behavior. Partially indexed or invalid
-        responses fail closed because silent query/vector misalignment corrupts
-        multi-query retrieval.
+        their historical response-order behavior. A Gemini-shaped partial
+        index is accepted only when exactly one index is missing, every
+        present index already matches its list position, and that missing
+        position is the unused index. Ambiguous multiple-missing mixed
+        shapes raise ``_IncompatibleMixedEmbeddingIndexError`` so the
+        caller can retry one input at a time. Duplicates, out-of-range
+        values, bools, and invalid types still fail closed.
         """
 
         indices = [getattr(row, "index", None) for row in rows]
         if all(index is None for index in indices):
             return rows
         if any(index is None for index in indices):
-            raise RuntimeError(
-                f"{self.provider} embedding response mixes indexed and unindexed rows"
-            )
+            seen: dict[int, int] = {}
+            position_consistent = True
+            missing_positions: list[int] = []
+            for position, raw_index in enumerate(indices):
+                if raw_index is None:
+                    missing_positions.append(position)
+                    continue
+                if isinstance(raw_index, bool) or not isinstance(raw_index, int):
+                    raise RuntimeError(
+                        f"{self.provider} embedding response contains a non-integer index"
+                    )
+                if raw_index < 0 or raw_index >= expected_count or raw_index in seen:
+                    raise RuntimeError(
+                        f"{self.provider} embedding response contains an invalid or duplicate index"
+                    )
+                seen[raw_index] = position
+                if raw_index != position:
+                    position_consistent = False
+            if not position_consistent or len(missing_positions) != 1:
+                raise _IncompatibleMixedEmbeddingIndexError(
+                    f"{self.provider} embedding response mixes indexed and unindexed rows"
+                )
+            filled: list[int] = []
+            for position, raw_index in enumerate(indices):
+                if raw_index is None:
+                    if position >= expected_count or position in seen:
+                        raise _IncompatibleMixedEmbeddingIndexError(
+                            f"{self.provider} embedding response mixes indexed and unindexed rows"
+                        )
+                    seen[position] = position
+                    filled.append(position)
+                else:
+                    filled.append(raw_index)
+            indices = filled
         by_index: dict[int, Any] = {}
         for row, raw_index in zip(rows, indices, strict=True):
             if isinstance(raw_index, bool) or not isinstance(raw_index, int):
@@ -892,6 +931,109 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
                 f"{self._operation_budget(operation):g}s operation budget"
             ) from None
 
+    def _request_embedding_response(
+        self,
+        batch: list[str],
+        *,
+        deadline: float,
+        operation: str,
+    ) -> Any:
+        response = None
+        key_count = max(1, len(self._api_keys))
+        max_attempts = len(self._connection_retry_delays) + 1
+        for retry_index in range(max_attempts):
+            remaining = self._raise_if_budget_exhausted(
+                deadline, operation=operation
+            )
+            connection_error: Exception | None = None
+            for key_attempt in range(key_count):
+                try:
+                    client = self._client_or_raise()
+                    attempt_timeout = self._transport_timeout(remaining)
+                    response = self._call_with_deadline(
+                        partial(
+                            self._create_embeddings,
+                            client,
+                            batch,
+                            timeout=attempt_timeout,
+                        ),
+                        deadline=deadline,
+                        operation=operation,
+                    )
+                    break
+                except UnsupportedEmbedderSdkError:
+                    raise
+                except UnsafeEndpointError:
+                    raise
+                except TimeoutError:
+                    raise
+                except Exception as exc:
+                    if self._is_connection_error(exc):
+                        # Transport failures are endpoint-wide, not key-specific.
+                        # Recreate the client before the next bounded retry so an
+                        # on-demand local server can finish starting cleanly.
+                        connection_error = exc
+                        self.reset_transport()
+                        break
+                    if key_attempt + 1 >= key_count:
+                        raise
+                    self._rotate_client_after_failure()
+            if response is not None:
+                break
+            assert connection_error is not None
+            if retry_index + 1 >= max_attempts:
+                raise connection_error
+            delay = self._connection_retry_delays[retry_index]
+            remaining = self._remaining_budget(deadline)
+            if remaining <= delay:
+                raise TimeoutError(
+                    f"{self.provider} {operation} embedding exceeded the "
+                    f"{self._operation_budget(operation):g}s operation budget"
+                ) from connection_error
+            time.sleep(delay)
+        if response is None:
+            raise RuntimeError(
+                f"{self.provider} embedding request produced no response"
+            )
+        return response
+
+    def _ordered_rows_or_serial_fallback(
+        self,
+        response: Any,
+        batch: list[str],
+        *,
+        deadline: float,
+        operation: str,
+    ) -> list[Any]:
+        try:
+            return self._ordered_embedding_response_rows(
+                list(response.data),
+                expected_count=len(batch),
+            )
+        except _IncompatibleMixedEmbeddingIndexError:
+            if len(batch) <= 1:
+                raise
+            ordered: list[Any] = []
+            for text in batch:
+                single = self._request_embedding_response(
+                    [text],
+                    deadline=deadline,
+                    operation=operation,
+                )
+                single_rows = list(single.data)
+                if len(single_rows) != 1:
+                    raise RuntimeError(
+                        f"{self.provider} embedding response count {len(single_rows)} "
+                        "does not match input count 1"
+                    )
+                ordered.extend(
+                    self._ordered_embedding_response_rows(
+                        single_rows,
+                        expected_count=1,
+                    )
+                )
+            return ordered
+
     def _embed_with_prefix(
         self,
         texts: Iterable[str],
@@ -914,66 +1056,16 @@ class OpenAICompatibleEmbedder(BaseEmbedder):
                 deadline, operation=resolved_operation
             )
             batch = items[start : start + batch_size]
-            response = None
-            key_count = max(1, len(self._api_keys))
-            max_attempts = len(self._connection_retry_delays) + 1
-            for retry_index in range(max_attempts):
-                remaining = self._raise_if_budget_exhausted(
-                    deadline, operation=resolved_operation
-                )
-                connection_error: Exception | None = None
-                for key_attempt in range(key_count):
-                    try:
-                        client = self._client_or_raise()
-                        attempt_timeout = self._transport_timeout(remaining)
-                        response = self._call_with_deadline(
-                            partial(
-                                self._create_embeddings,
-                                client,
-                                batch,
-                                timeout=attempt_timeout,
-                            ),
-                            deadline=deadline,
-                            operation=resolved_operation,
-                        )
-                        break
-                    except UnsupportedEmbedderSdkError:
-                        raise
-                    except UnsafeEndpointError:
-                        raise
-                    except TimeoutError:
-                        raise
-                    except Exception as exc:
-                        if self._is_connection_error(exc):
-                            # Transport failures are endpoint-wide, not key-specific.
-                            # Recreate the client before the next bounded retry so an
-                            # on-demand local server can finish starting cleanly.
-                            connection_error = exc
-                            self.reset_transport()
-                            break
-                        if key_attempt + 1 >= key_count:
-                            raise
-                        self._rotate_client_after_failure()
-                if response is not None:
-                    break
-                assert connection_error is not None
-                if retry_index + 1 >= max_attempts:
-                    raise connection_error
-                delay = self._connection_retry_delays[retry_index]
-                remaining = self._remaining_budget(deadline)
-                if remaining <= delay:
-                    raise TimeoutError(
-                        f"{self.provider} {resolved_operation} embedding exceeded the "
-                        f"{self._operation_budget(resolved_operation):g}s operation budget"
-                    ) from connection_error
-                time.sleep(delay)
-            if response is None:
-                raise RuntimeError(
-                    f"{self.provider} embedding request produced no response"
-                )
-            response_rows = self._ordered_embedding_response_rows(
-                list(response.data),
-                expected_count=len(batch),
+            response = self._request_embedding_response(
+                batch,
+                deadline=deadline,
+                operation=resolved_operation,
+            )
+            response_rows = self._ordered_rows_or_serial_fallback(
+                response,
+                batch,
+                deadline=deadline,
+                operation=resolved_operation,
             )
             vectors.extend(
                 validate_embedding_batch(

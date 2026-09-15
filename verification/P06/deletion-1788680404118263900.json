@@ -1,0 +1,31 @@
+{
+  "command": [
+    "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\.venv\\Scripts\\python.exe",
+    "-B",
+    "-m",
+    "pytest",
+    "tests/contract/test_v11_deletion.py",
+    "-q",
+    "-p",
+    "v11_guard",
+    "-p",
+    "no:cacheprovider",
+    "--durations=10",
+    "--junitxml=F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-oge16zjg\\junit.xml"
+  ],
+  "exit_code": 0,
+  "duration_seconds": 2.6513030999922194,
+  "passed": 18,
+  "failed": 0,
+  "skipped": 0,
+  "selected": [
+    "tests/contract/test_v11_deletion.py"
+  ],
+  "log": "verification/P06/deletion-1788680404118263900.log",
+  "model_calls": false,
+  "test_data": "synthetic_only",
+  "source_base": "a513aa3b101f89c8898e435482d614bd4cc99842",
+  "source_inputs_sha256": "4ed5f1d1bb59b7ba9d7293a631567cd58e846bc82bfe58115626e0f660aa2983",
+  "source_manifest": "verification/P06/deletion-1788680404118263900-inputs.json",
+  "evidence_scope": "P06 selected local contracts only; no M/J semantic or host behavior execution"
+}

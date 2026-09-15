@@ -1,0 +1,819 @@
+...............F.FF...FFFFsF.FF                                          [100%]
+================================== FAILURES ===================================
+_______ test_C16_M47_same_path_overwrite_preserves_exact_prior_artifact _______
+
+path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_C16_M47_same_path_overwri0/TEST-design.svg')
+limit = 4096, field = 'artifact_path'
+
+    def _read_bounded(path: Path, limit: int, field: str) -> bytes:
+        try:
+            io_path = _io_path(path)
+            before = io_path.stat()
+>           with io_path.open("rb") as stream:
+                 ^^^^^^^^^^^^^^^^^^
+
+core\retained_artifacts.py:129: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\pathlib.py:1013: in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\v11_guard.py:32: in _audit
+    _check_path(args[0], writing)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+value = '\\\\?\\F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-pdimp8fc\\scope.recall.test-boundary.h3ym5p4c\\temp\\pytest-of-unknown\\pytest-0\\test_C16_M47_same_path_overwri0\\TEST-design.svg'
+writing = False
+
+    def _check_path(value, writing=False):
+        if not isinstance(value, (str, bytes, os.PathLike)):
+            return
+        path = Path(os.fsdecode(value)).resolve(strict=False)
+        if path == Path(os.devnull).resolve():
+            return
+        if writing and not path.is_relative_to(_ISOLATED):
+            raise PermissionError("TEST_BOUNDARY: write outside isolated test directory")
+        if any(path.is_relative_to(root) for root in (_ROOT, _ISOLATED, *_RUNTIME, _SYSTEM)):
+            return
+>       raise PermissionError("TEST_BOUNDARY: protected data access")
+E       PermissionError: TEST_BOUNDARY: protected data access
+
+tests\v11_guard.py:22: PermissionError
+
+The above exception was the direct cause of the following exception:
+
+app = (<scope_recall.core.composition.MemoryCore object at 0x0000024197771700>, TrustedContext(binding=InstanceBinding(agent...main', recent_messages=(), display_snapshot=None, import_provenance=None, task_anchor=None, environment_revision=None))
+tmp_path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_C16_M47_same_path_overwri0')
+
+    def test_C16_M47_same_path_overwrite_preserves_exact_prior_artifact(app,tmp_path):
+        core,ctx=app
+>       one,source,path=artifact(core,ctx,tmp_path)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\contract\test_v11_episodes.py:152: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\contract\test_v11_episodes.py:44: in artifact
+    item=core.register_artifact(ctx,key=key,revision=version,scope_id='TEST-scope',source_ref=ref(source),label=label,
+core\composition.py:156: in register_artifact
+    return tx.artifacts.register(**registration,now=self.clock.utc_now())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+core\artifact_storage.py:82: in register
+    blob=retain(ctx.binding,grant) if grant else None
+         ^^^^^^^^^^^^^^^^^^^^^^^^^
+core\retained_artifacts.py:209: in retain
+    data = _read_grant(grant)
+           ^^^^^^^^^^^^^^^^^^
+core\retained_artifacts.py:159: in _read_grant
+    data = _read_bounded(grant.path, grant.max_bytes, "artifact_path")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_C16_M47_same_path_overwri0/TEST-design.svg')
+limit = 4096, field = 'artifact_path'
+
+    def _read_bounded(path: Path, limit: int, field: str) -> bytes:
+        try:
+            io_path = _io_path(path)
+            before = io_path.stat()
+            with io_path.open("rb") as stream:
+                data = stream.read(limit + 1)
+            after = io_path.stat()
+        except OSError as exc:
+>           raise ContractError("SOURCE_MISSING", field) from exc
+E           scope_recall.contracts.ContractError: SOURCE_MISSING: invalid artifact_path
+
+core\retained_artifacts.py:133: ContractError
+____ test_M13_M14_display_order_binds_version_only_when_actually_observed _____
+
+path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_M13_M14_display_order_bin0/TEST-design.svg')
+limit = 4096, field = 'artifact_path'
+
+    def _read_bounded(path: Path, limit: int, field: str) -> bytes:
+        try:
+            io_path = _io_path(path)
+            before = io_path.stat()
+>           with io_path.open("rb") as stream:
+                 ^^^^^^^^^^^^^^^^^^
+
+core\retained_artifacts.py:129: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\pathlib.py:1013: in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\v11_guard.py:32: in _audit
+    _check_path(args[0], writing)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+value = '\\\\?\\F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-pdimp8fc\\scope.recall.test-boundary.h3ym5p4c\\temp\\pytest-of-unknown\\pytest-0\\test_M13_M14_display_order_bin0\\TEST-design.svg'
+writing = False
+
+    def _check_path(value, writing=False):
+        if not isinstance(value, (str, bytes, os.PathLike)):
+            return
+        path = Path(os.fsdecode(value)).resolve(strict=False)
+        if path == Path(os.devnull).resolve():
+            return
+        if writing and not path.is_relative_to(_ISOLATED):
+            raise PermissionError("TEST_BOUNDARY: write outside isolated test directory")
+        if any(path.is_relative_to(root) for root in (_ROOT, _ISOLATED, *_RUNTIME, _SYSTEM)):
+            return
+>       raise PermissionError("TEST_BOUNDARY: protected data access")
+E       PermissionError: TEST_BOUNDARY: protected data access
+
+tests\v11_guard.py:22: PermissionError
+
+The above exception was the direct cause of the following exception:
+
+app = (<scope_recall.core.composition.MemoryCore object at 0x00000241977A7770>, TrustedContext(binding=InstanceBinding(agent...main', recent_messages=(), display_snapshot=None, import_provenance=None, task_anchor=None, environment_revision=None))
+tmp_path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_M13_M14_display_order_bin0')
+
+    def test_M13_M14_display_order_binds_version_only_when_actually_observed(app,tmp_path):
+        core,ctx=app
+>       one,_,_=artifact(core,ctx,tmp_path,key='TEST-one',label='TEST-one')
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\contract\test_v11_episodes.py:174: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\contract\test_v11_episodes.py:44: in artifact
+    item=core.register_artifact(ctx,key=key,revision=version,scope_id='TEST-scope',source_ref=ref(source),label=label,
+core\composition.py:156: in register_artifact
+    return tx.artifacts.register(**registration,now=self.clock.utc_now())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+core\artifact_storage.py:82: in register
+    blob=retain(ctx.binding,grant) if grant else None
+         ^^^^^^^^^^^^^^^^^^^^^^^^^
+core\retained_artifacts.py:209: in retain
+    data = _read_grant(grant)
+           ^^^^^^^^^^^^^^^^^^
+core\retained_artifacts.py:159: in _read_grant
+    data = _read_bounded(grant.path, grant.max_bytes, "artifact_path")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_M13_M14_display_order_bin0/TEST-design.svg')
+limit = 4096, field = 'artifact_path'
+
+    def _read_bounded(path: Path, limit: int, field: str) -> bytes:
+        try:
+            io_path = _io_path(path)
+            before = io_path.stat()
+            with io_path.open("rb") as stream:
+                data = stream.read(limit + 1)
+            after = io_path.stat()
+        except OSError as exc:
+>           raise ContractError("SOURCE_MISSING", field) from exc
+E           scope_recall.contracts.ContractError: SOURCE_MISSING: invalid artifact_path
+
+core\retained_artifacts.py:133: ContractError
+_ test_M50_deleted_artifact_blocks_descriptions_references_resume_and_cached_release _
+
+path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_M50_deleted_artifact_bloc0/TEST-design.svg')
+limit = 4096, field = 'artifact_path'
+
+    def _read_bounded(path: Path, limit: int, field: str) -> bytes:
+        try:
+            io_path = _io_path(path)
+            before = io_path.stat()
+>           with io_path.open("rb") as stream:
+                 ^^^^^^^^^^^^^^^^^^
+
+core\retained_artifacts.py:129: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\pathlib.py:1013: in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\v11_guard.py:32: in _audit
+    _check_path(args[0], writing)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+value = '\\\\?\\F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-pdimp8fc\\scope.recall.test-boundary.h3ym5p4c\\temp\\pytest-of-unknown\\pytest-0\\test_M50_deleted_artifact_bloc0\\TEST-design.svg'
+writing = False
+
+    def _check_path(value, writing=False):
+        if not isinstance(value, (str, bytes, os.PathLike)):
+            return
+        path = Path(os.fsdecode(value)).resolve(strict=False)
+        if path == Path(os.devnull).resolve():
+            return
+        if writing and not path.is_relative_to(_ISOLATED):
+            raise PermissionError("TEST_BOUNDARY: write outside isolated test directory")
+        if any(path.is_relative_to(root) for root in (_ROOT, _ISOLATED, *_RUNTIME, _SYSTEM)):
+            return
+>       raise PermissionError("TEST_BOUNDARY: protected data access")
+E       PermissionError: TEST_BOUNDARY: protected data access
+
+tests\v11_guard.py:22: PermissionError
+
+The above exception was the direct cause of the following exception:
+
+app = (<scope_recall.core.composition.MemoryCore object at 0x00000241977BEB40>, TrustedContext(binding=InstanceBinding(agent...main', recent_messages=(), display_snapshot=None, import_provenance=None, task_anchor=None, environment_revision=None))
+tmp_path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_M50_deleted_artifact_bloc0')
+
+    def test_M50_deleted_artifact_blocks_descriptions_references_resume_and_cached_release(app,tmp_path):
+        core,ctx=app
+>       item,source,_=artifact(core,ctx,tmp_path)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\contract\test_v11_episodes.py:188: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\contract\test_v11_episodes.py:44: in artifact
+    item=core.register_artifact(ctx,key=key,revision=version,scope_id='TEST-scope',source_ref=ref(source),label=label,
+core\composition.py:156: in register_artifact
+    return tx.artifacts.register(**registration,now=self.clock.utc_now())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+core\artifact_storage.py:82: in register
+    blob=retain(ctx.binding,grant) if grant else None
+         ^^^^^^^^^^^^^^^^^^^^^^^^^
+core\retained_artifacts.py:209: in retain
+    data = _read_grant(grant)
+           ^^^^^^^^^^^^^^^^^^
+core\retained_artifacts.py:159: in _read_grant
+    data = _read_bounded(grant.path, grant.max_bytes, "artifact_path")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_M50_deleted_artifact_bloc0/TEST-design.svg')
+limit = 4096, field = 'artifact_path'
+
+    def _read_bounded(path: Path, limit: int, field: str) -> bytes:
+        try:
+            io_path = _io_path(path)
+            before = io_path.stat()
+            with io_path.open("rb") as stream:
+                data = stream.read(limit + 1)
+            after = io_path.stat()
+        except OSError as exc:
+>           raise ContractError("SOURCE_MISSING", field) from exc
+E           scope_recall.contracts.ContractError: SOURCE_MISSING: invalid artifact_path
+
+core\retained_artifacts.py:133: ContractError
+__ test_M15_explicit_clarification_updates_binding_and_preserves_old_version __
+
+path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_M15_explicit_clarificatio0/TEST-design.svg')
+limit = 4096, field = 'artifact_path'
+
+    def _read_bounded(path: Path, limit: int, field: str) -> bytes:
+        try:
+            io_path = _io_path(path)
+            before = io_path.stat()
+>           with io_path.open("rb") as stream:
+                 ^^^^^^^^^^^^^^^^^^
+
+core\retained_artifacts.py:129: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\pathlib.py:1013: in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\v11_guard.py:32: in _audit
+    _check_path(args[0], writing)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+value = '\\\\?\\F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-pdimp8fc\\scope.recall.test-boundary.h3ym5p4c\\temp\\pytest-of-unknown\\pytest-0\\test_M15_explicit_clarificatio0\\TEST-design.svg'
+writing = False
+
+    def _check_path(value, writing=False):
+        if not isinstance(value, (str, bytes, os.PathLike)):
+            return
+        path = Path(os.fsdecode(value)).resolve(strict=False)
+        if path == Path(os.devnull).resolve():
+            return
+        if writing and not path.is_relative_to(_ISOLATED):
+            raise PermissionError("TEST_BOUNDARY: write outside isolated test directory")
+        if any(path.is_relative_to(root) for root in (_ROOT, _ISOLATED, *_RUNTIME, _SYSTEM)):
+            return
+>       raise PermissionError("TEST_BOUNDARY: protected data access")
+E       PermissionError: TEST_BOUNDARY: protected data access
+
+tests\v11_guard.py:22: PermissionError
+
+The above exception was the direct cause of the following exception:
+
+app = (<scope_recall.core.composition.MemoryCore object at 0x0000024197651B20>, TrustedContext(binding=InstanceBinding(agent...main', recent_messages=(), display_snapshot=None, import_provenance=None, task_anchor=None, environment_revision=None))
+tmp_path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_M15_explicit_clarificatio0')
+
+    def test_M15_explicit_clarification_updates_binding_and_preserves_old_version(app,tmp_path):
+        core,ctx=app
+        ctx=replace(ctx,task_anchor='TEST-one-work')
+>       one,_,_=artifact(core,ctx,tmp_path,label='TEST-v1')
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\contract\test_v11_episodes.py:245: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\contract\test_v11_episodes.py:44: in artifact
+    item=core.register_artifact(ctx,key=key,revision=version,scope_id='TEST-scope',source_ref=ref(source),label=label,
+core\composition.py:156: in register_artifact
+    return tx.artifacts.register(**registration,now=self.clock.utc_now())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+core\artifact_storage.py:82: in register
+    blob=retain(ctx.binding,grant) if grant else None
+         ^^^^^^^^^^^^^^^^^^^^^^^^^
+core\retained_artifacts.py:209: in retain
+    data = _read_grant(grant)
+           ^^^^^^^^^^^^^^^^^^
+core\retained_artifacts.py:159: in _read_grant
+    data = _read_bounded(grant.path, grant.max_bytes, "artifact_path")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_M15_explicit_clarificatio0/TEST-design.svg')
+limit = 4096, field = 'artifact_path'
+
+    def _read_bounded(path: Path, limit: int, field: str) -> bytes:
+        try:
+            io_path = _io_path(path)
+            before = io_path.stat()
+            with io_path.open("rb") as stream:
+                data = stream.read(limit + 1)
+            after = io_path.stat()
+        except OSError as exc:
+>           raise ContractError("SOURCE_MISSING", field) from exc
+E           scope_recall.contracts.ContractError: SOURCE_MISSING: invalid artifact_path
+
+core\retained_artifacts.py:133: ContractError
+_________ test_same_name_versions_are_content_addressed_and_immutable _________
+
+path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_same_name_versions_are_co0/design.png')
+limit = 15, field = 'artifact_path'
+
+    def _read_bounded(path: Path, limit: int, field: str) -> bytes:
+        try:
+            io_path = _io_path(path)
+            before = io_path.stat()
+>           with io_path.open("rb") as stream:
+                 ^^^^^^^^^^^^^^^^^^
+
+core\retained_artifacts.py:129: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\pathlib.py:1013: in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\v11_guard.py:32: in _audit
+    _check_path(args[0], writing)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+value = '\\\\?\\F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-pdimp8fc\\scope.recall.test-boundary.h3ym5p4c\\temp\\pytest-of-unknown\\pytest-0\\test_same_name_versions_are_co0\\design.png'
+writing = False
+
+    def _check_path(value, writing=False):
+        if not isinstance(value, (str, bytes, os.PathLike)):
+            return
+        path = Path(os.fsdecode(value)).resolve(strict=False)
+        if path == Path(os.devnull).resolve():
+            return
+        if writing and not path.is_relative_to(_ISOLATED):
+            raise PermissionError("TEST_BOUNDARY: write outside isolated test directory")
+        if any(path.is_relative_to(root) for root in (_ROOT, _ISOLATED, *_RUNTIME, _SYSTEM)):
+            return
+>       raise PermissionError("TEST_BOUNDARY: protected data access")
+E       PermissionError: TEST_BOUNDARY: protected data access
+
+tests\v11_guard.py:22: PermissionError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_same_name_versions_are_co0')
+
+    def test_same_name_versions_are_content_addressed_and_immutable(tmp_path):
+        ctx = context(tmp_path / "TEST-instance")
+        source = tmp_path / "design.png"
+        source.write_bytes(PNG_V1)
+>       first = retain(ctx.binding, _grant(source))
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\contract\test_v11_retained_artifacts.py:39: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+core\retained_artifacts.py:209: in retain
+    data = _read_grant(grant)
+           ^^^^^^^^^^^^^^^^^^
+core\retained_artifacts.py:159: in _read_grant
+    data = _read_bounded(grant.path, grant.max_bytes, "artifact_path")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_same_name_versions_are_co0/design.png')
+limit = 15, field = 'artifact_path'
+
+    def _read_bounded(path: Path, limit: int, field: str) -> bytes:
+        try:
+            io_path = _io_path(path)
+            before = io_path.stat()
+            with io_path.open("rb") as stream:
+                data = stream.read(limit + 1)
+            after = io_path.stat()
+        except OSError as exc:
+>           raise ContractError("SOURCE_MISSING", field) from exc
+E           scope_recall.contracts.ContractError: SOURCE_MISSING: invalid artifact_path
+
+core\retained_artifacts.py:133: ContractError
+_____________________ test_mime_size_hash_and_svg_policy ______________________
+
+path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_mime_size_hash_and_svg_po0/bad.svg')
+limit = 86, field = 'artifact_path'
+
+    def _read_bounded(path: Path, limit: int, field: str) -> bytes:
+        try:
+            io_path = _io_path(path)
+            before = io_path.stat()
+>           with io_path.open("rb") as stream:
+                 ^^^^^^^^^^^^^^^^^^
+
+core\retained_artifacts.py:129: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\pathlib.py:1013: in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\v11_guard.py:32: in _audit
+    _check_path(args[0], writing)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+value = '\\\\?\\F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-pdimp8fc\\scope.recall.test-boundary.h3ym5p4c\\temp\\pytest-of-unknown\\pytest-0\\test_mime_size_hash_and_svg_po0\\bad.svg'
+writing = False
+
+    def _check_path(value, writing=False):
+        if not isinstance(value, (str, bytes, os.PathLike)):
+            return
+        path = Path(os.fsdecode(value)).resolve(strict=False)
+        if path == Path(os.devnull).resolve():
+            return
+        if writing and not path.is_relative_to(_ISOLATED):
+            raise PermissionError("TEST_BOUNDARY: write outside isolated test directory")
+        if any(path.is_relative_to(root) for root in (_ROOT, _ISOLATED, *_RUNTIME, _SYSTEM)):
+            return
+>       raise PermissionError("TEST_BOUNDARY: protected data access")
+E       PermissionError: TEST_BOUNDARY: protected data access
+
+tests\v11_guard.py:22: PermissionError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_mime_size_hash_and_svg_po0')
+
+    def test_mime_size_hash_and_svg_policy(tmp_path):
+        ctx = context(tmp_path / "TEST-instance")
+        source = tmp_path / "a.txt"
+        source.write_bytes(b"x")
+        with pytest.raises(ContractError):
+            retain(ctx.binding, ArtifactGrant(source, hashlib.sha256(b"x").hexdigest(), "application/pdf", 1))
+        with pytest.raises(ContractError):
+            retain(ctx.binding, ArtifactGrant(source, "0" * 64, "text/plain", 1))
+        with pytest.raises(ContractError):
+            retain(ctx.binding, ArtifactGrant(source, hashlib.sha256(b"x").hexdigest(), "text/plain", 0))
+        source.write_bytes(b"xx")
+        with pytest.raises(ContractError):
+            retain(ctx.binding, _grant(source, "text/plain", limit=1))
+        svg = tmp_path / "bad.svg"
+        svg.write_text('<svg><script>alert(1)</script></svg>', encoding="utf-8")
+        with pytest.raises(ContractError):
+            retain(ctx.binding, _grant(svg, "image/svg+xml"))
+        svg.write_text('<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1" fill="#fff"/></svg>', encoding="utf-8")
+>       valid = retain(ctx.binding, _grant(svg, "image/svg+xml"))
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\contract\test_v11_retained_artifacts.py:67: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+core\retained_artifacts.py:209: in retain
+    data = _read_grant(grant)
+           ^^^^^^^^^^^^^^^^^^
+core\retained_artifacts.py:159: in _read_grant
+    data = _read_bounded(grant.path, grant.max_bytes, "artifact_path")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_mime_size_hash_and_svg_po0/bad.svg')
+limit = 86, field = 'artifact_path'
+
+    def _read_bounded(path: Path, limit: int, field: str) -> bytes:
+        try:
+            io_path = _io_path(path)
+            before = io_path.stat()
+            with io_path.open("rb") as stream:
+                data = stream.read(limit + 1)
+            after = io_path.stat()
+        except OSError as exc:
+>           raise ContractError("SOURCE_MISSING", field) from exc
+E           scope_recall.contracts.ContractError: SOURCE_MISSING: invalid artifact_path
+
+core\retained_artifacts.py:133: ContractError
+_____________ test_read_detects_tamper_missing_and_erase_is_exact _____________
+
+path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_read_detects_tamper_missi0/a.webp')
+limit = 12, field = 'artifact_path'
+
+    def _read_bounded(path: Path, limit: int, field: str) -> bytes:
+        try:
+            io_path = _io_path(path)
+            before = io_path.stat()
+>           with io_path.open("rb") as stream:
+                 ^^^^^^^^^^^^^^^^^^
+
+core\retained_artifacts.py:129: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\pathlib.py:1013: in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\v11_guard.py:32: in _audit
+    _check_path(args[0], writing)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+value = '\\\\?\\F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-pdimp8fc\\scope.recall.test-boundary.h3ym5p4c\\temp\\pytest-of-unknown\\pytest-0\\test_read_detects_tamper_missi0\\a.webp'
+writing = False
+
+    def _check_path(value, writing=False):
+        if not isinstance(value, (str, bytes, os.PathLike)):
+            return
+        path = Path(os.fsdecode(value)).resolve(strict=False)
+        if path == Path(os.devnull).resolve():
+            return
+        if writing and not path.is_relative_to(_ISOLATED):
+            raise PermissionError("TEST_BOUNDARY: write outside isolated test directory")
+        if any(path.is_relative_to(root) for root in (_ROOT, _ISOLATED, *_RUNTIME, _SYSTEM)):
+            return
+>       raise PermissionError("TEST_BOUNDARY: protected data access")
+E       PermissionError: TEST_BOUNDARY: protected data access
+
+tests\v11_guard.py:22: PermissionError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_read_detects_tamper_missi0')
+
+    def test_read_detects_tamper_missing_and_erase_is_exact(tmp_path):
+        ctx = context(tmp_path / "TEST-instance")
+        source = tmp_path / "a.webp"
+        source.write_bytes(WEBP)
+>       blob = retain(ctx.binding, _grant(source, "image/webp"))
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\contract\test_v11_retained_artifacts.py:81: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+core\retained_artifacts.py:209: in retain
+    data = _read_grant(grant)
+           ^^^^^^^^^^^^^^^^^^
+core\retained_artifacts.py:159: in _read_grant
+    data = _read_bounded(grant.path, grant.max_bytes, "artifact_path")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_read_detects_tamper_missi0/a.webp')
+limit = 12, field = 'artifact_path'
+
+    def _read_bounded(path: Path, limit: int, field: str) -> bytes:
+        try:
+            io_path = _io_path(path)
+            before = io_path.stat()
+            with io_path.open("rb") as stream:
+                data = stream.read(limit + 1)
+            after = io_path.stat()
+        except OSError as exc:
+>           raise ContractError("SOURCE_MISSING", field) from exc
+E           scope_recall.contracts.ContractError: SOURCE_MISSING: invalid artifact_path
+
+core\retained_artifacts.py:133: ContractError
+___ test_hardlink_mutation_is_detected_and_fsync_failure_leaves_no_partial ____
+
+path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_hardlink_mutation_is_dete0/a.png')
+limit = 15, field = 'artifact_path'
+
+    def _read_bounded(path: Path, limit: int, field: str) -> bytes:
+        try:
+            io_path = _io_path(path)
+            before = io_path.stat()
+>           with io_path.open("rb") as stream:
+                 ^^^^^^^^^^^^^^^^^^
+
+core\retained_artifacts.py:129: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\pathlib.py:1013: in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\v11_guard.py:32: in _audit
+    _check_path(args[0], writing)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+value = '\\\\?\\F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-pdimp8fc\\scope.recall.test-boundary.h3ym5p4c\\temp\\pytest-of-unknown\\pytest-0\\test_hardlink_mutation_is_dete0\\a.png'
+writing = False
+
+    def _check_path(value, writing=False):
+        if not isinstance(value, (str, bytes, os.PathLike)):
+            return
+        path = Path(os.fsdecode(value)).resolve(strict=False)
+        if path == Path(os.devnull).resolve():
+            return
+        if writing and not path.is_relative_to(_ISOLATED):
+            raise PermissionError("TEST_BOUNDARY: write outside isolated test directory")
+        if any(path.is_relative_to(root) for root in (_ROOT, _ISOLATED, *_RUNTIME, _SYSTEM)):
+            return
+>       raise PermissionError("TEST_BOUNDARY: protected data access")
+E       PermissionError: TEST_BOUNDARY: protected data access
+
+tests\v11_guard.py:22: PermissionError
+
+The above exception was the direct cause of the following exception:
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002419777F8F0>
+tmp_path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_hardlink_mutation_is_dete0')
+
+    def test_hardlink_mutation_is_detected_and_fsync_failure_leaves_no_partial(monkeypatch, tmp_path):
+        ctx = context(tmp_path / "TEST-instance")
+        source = tmp_path / "a.png"
+        source.write_bytes(PNG_V1)
+>       blob = retain(ctx.binding, _grant(source))
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\contract\test_v11_retained_artifacts.py:116: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+core\retained_artifacts.py:209: in retain
+    data = _read_grant(grant)
+           ^^^^^^^^^^^^^^^^^^
+core\retained_artifacts.py:159: in _read_grant
+    data = _read_bounded(grant.path, grant.max_bytes, "artifact_path")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_hardlink_mutation_is_dete0/a.png')
+limit = 15, field = 'artifact_path'
+
+    def _read_bounded(path: Path, limit: int, field: str) -> bytes:
+        try:
+            io_path = _io_path(path)
+            before = io_path.stat()
+            with io_path.open("rb") as stream:
+                data = stream.read(limit + 1)
+            after = io_path.stat()
+        except OSError as exc:
+>           raise ContractError("SOURCE_MISSING", field) from exc
+E           scope_recall.contracts.ContractError: SOURCE_MISSING: invalid artifact_path
+
+core\retained_artifacts.py:133: ContractError
+_______________ test_blob_metadata_does_not_echo_text_contents ________________
+
+path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_blob_metadata_does_not_ec0/notes.txt')
+limit = 19, field = 'artifact_path'
+
+    def _read_bounded(path: Path, limit: int, field: str) -> bytes:
+        try:
+            io_path = _io_path(path)
+            before = io_path.stat()
+>           with io_path.open("rb") as stream:
+                 ^^^^^^^^^^^^^^^^^^
+
+core\retained_artifacts.py:129: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\pathlib.py:1013: in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\v11_guard.py:32: in _audit
+    _check_path(args[0], writing)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+value = '\\\\?\\F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-pdimp8fc\\scope.recall.test-boundary.h3ym5p4c\\temp\\pytest-of-unknown\\pytest-0\\test_blob_metadata_does_not_ec0\\notes.txt'
+writing = False
+
+    def _check_path(value, writing=False):
+        if not isinstance(value, (str, bytes, os.PathLike)):
+            return
+        path = Path(os.fsdecode(value)).resolve(strict=False)
+        if path == Path(os.devnull).resolve():
+            return
+        if writing and not path.is_relative_to(_ISOLATED):
+            raise PermissionError("TEST_BOUNDARY: write outside isolated test directory")
+        if any(path.is_relative_to(root) for root in (_ROOT, _ISOLATED, *_RUNTIME, _SYSTEM)):
+            return
+>       raise PermissionError("TEST_BOUNDARY: protected data access")
+E       PermissionError: TEST_BOUNDARY: protected data access
+
+tests\v11_guard.py:22: PermissionError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_blob_metadata_does_not_ec0')
+
+    def test_blob_metadata_does_not_echo_text_contents(tmp_path):
+        ctx = context(tmp_path / "TEST-instance")
+        source = tmp_path / "notes.txt"
+        source.write_text("TEST-secret-content", encoding="utf-8")
+>       blob = retain(ctx.binding, _grant(source, "text/plain"))
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\contract\test_v11_retained_artifacts.py:161: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+core\retained_artifacts.py:209: in retain
+    data = _read_grant(grant)
+           ^^^^^^^^^^^^^^^^^^
+core\retained_artifacts.py:159: in _read_grant
+    data = _read_bounded(grant.path, grant.max_bytes, "artifact_path")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_blob_metadata_does_not_ec0/notes.txt')
+limit = 19, field = 'artifact_path'
+
+    def _read_bounded(path: Path, limit: int, field: str) -> bytes:
+        try:
+            io_path = _io_path(path)
+            before = io_path.stat()
+            with io_path.open("rb") as stream:
+                data = stream.read(limit + 1)
+            after = io_path.stat()
+        except OSError as exc:
+>           raise ContractError("SOURCE_MISSING", field) from exc
+E           scope_recall.contracts.ContractError: SOURCE_MISSING: invalid artifact_path
+
+core\retained_artifacts.py:133: ContractError
+____________ test_blob_identity_is_bound_to_installation_and_agent ____________
+
+path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_blob_identity_is_bound_to0/a.png')
+limit = 15, field = 'artifact_path'
+
+    def _read_bounded(path: Path, limit: int, field: str) -> bytes:
+        try:
+            io_path = _io_path(path)
+            before = io_path.stat()
+>           with io_path.open("rb") as stream:
+                 ^^^^^^^^^^^^^^^^^^
+
+core\retained_artifacts.py:129: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\pathlib.py:1013: in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\v11_guard.py:32: in _audit
+    _check_path(args[0], writing)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+value = '\\\\?\\F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-pdimp8fc\\scope.recall.test-boundary.h3ym5p4c\\temp\\pytest-of-unknown\\pytest-0\\test_blob_identity_is_bound_to0\\a.png'
+writing = False
+
+    def _check_path(value, writing=False):
+        if not isinstance(value, (str, bytes, os.PathLike)):
+            return
+        path = Path(os.fsdecode(value)).resolve(strict=False)
+        if path == Path(os.devnull).resolve():
+            return
+        if writing and not path.is_relative_to(_ISOLATED):
+            raise PermissionError("TEST_BOUNDARY: write outside isolated test directory")
+        if any(path.is_relative_to(root) for root in (_ROOT, _ISOLATED, *_RUNTIME, _SYSTEM)):
+            return
+>       raise PermissionError("TEST_BOUNDARY: protected data access")
+E       PermissionError: TEST_BOUNDARY: protected data access
+
+tests\v11_guard.py:22: PermissionError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_blob_identity_is_bound_to0')
+
+    def test_blob_identity_is_bound_to_installation_and_agent(tmp_path):
+        ctx = context(tmp_path / "TEST-instance")
+        source = tmp_path / "a.png"
+        source.write_bytes(PNG_V1)
+>       blob = retain(ctx.binding, _grant(source))
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\contract\test_v11_retained_artifacts.py:173: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+core\retained_artifacts.py:209: in retain
+    data = _read_grant(grant)
+           ^^^^^^^^^^^^^^^^^^
+core\retained_artifacts.py:159: in _read_grant
+    data = _read_bounded(grant.path, grant.max_bytes, "artifact_path")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-pdimp8fc/scope.recall.test-boundary.h3ym5p4c/temp/pytest-of-unknown/pytest-0/test_blob_identity_is_bound_to0/a.png')
+limit = 15, field = 'artifact_path'
+
+    def _read_bounded(path: Path, limit: int, field: str) -> bytes:
+        try:
+            io_path = _io_path(path)
+            before = io_path.stat()
+            with io_path.open("rb") as stream:
+                data = stream.read(limit + 1)
+            after = io_path.stat()
+        except OSError as exc:
+>           raise ContractError("SOURCE_MISSING", field) from exc
+E           scope_recall.contracts.ContractError: SOURCE_MISSING: invalid artifact_path
+
+core\retained_artifacts.py:133: ContractError
+============================ slowest 10 durations =============================
+4.58s call     tests/contract/test_v11_episodes.py::test_long_episode_uses_bounded_segments_and_preserves_final_source
+0.04s call     tests/contract/test_v11_episodes.py::test_C26_M06_same_trusted_task_continues_across_sessions_and_branches_do_not
+0.04s call     tests/contract/test_v11_episodes.py::test_resume_cannot_merge_two_topics_or_invent_local_artifact_access
+0.04s call     tests/contract/test_v11_episodes.py::test_bad_watermark_or_old_source_revision_cannot_mark_processing_complete
+0.04s call     tests/contract/test_v11_episodes.py::test_resume_keeps_unprocessed_tail_and_source_paging_is_not_a_false_complete_count
+0.03s call     tests/contract/test_v11_episodes.py::test_resume_is_extractive_versioned_and_stale_environment_is_labelled
+0.03s call     tests/contract/test_v11_episodes.py::test_C25_one_session_changes_topic_without_cancelling_previous
+0.03s call     tests/contract/test_v11_episodes.py::test_same_title_in_new_session_without_anchor_does_not_merge
+0.02s call     tests/contract/test_v11_episodes.py::test_C37_plain_chat_has_provisional_episode_without_manufactured_goal
+0.02s call     tests/contract/test_v11_episodes.py::test_old_arriving_failure_does_not_replace_newer_episode_completion
+=========================== short test summary info ===========================
+FAILED tests/contract/test_v11_episodes.py::test_C16_M47_same_path_overwrite_preserves_exact_prior_artifact
+FAILED tests/contract/test_v11_episodes.py::test_M13_M14_display_order_binds_version_only_when_actually_observed
+FAILED tests/contract/test_v11_episodes.py::test_M50_deleted_artifact_blocks_descriptions_references_resume_and_cached_release
+FAILED tests/contract/test_v11_episodes.py::test_M15_explicit_clarification_updates_binding_and_preserves_old_version
+FAILED tests/contract/test_v11_retained_artifacts.py::test_same_name_versions_are_content_addressed_and_immutable
+FAILED tests/contract/test_v11_retained_artifacts.py::test_mime_size_hash_and_svg_policy
+FAILED tests/contract/test_v11_retained_artifacts.py::test_read_detects_tamper_missing_and_erase_is_exact
+FAILED tests/contract/test_v11_retained_artifacts.py::test_hardlink_mutation_is_detected_and_fsync_failure_leaves_no_partial
+FAILED tests/contract/test_v11_retained_artifacts.py::test_blob_metadata_does_not_echo_text_contents
+FAILED tests/contract/test_v11_retained_artifacts.py::test_blob_identity_is_bound_to_installation_and_agent
+10 failed, 20 passed, 1 skipped in 6.20s

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-scope-recall"
-version = "2.0.1"
-description = "Hermes scoped memory provider with journal-first capture, SQLite truth, vector companions, and hybrid RRF retrieval."
+dynamic = ["version"]
+description = "Bounded local memory core with Hermes and Codex adapters, SQLite truth, and rebuildable vector companions."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 license = "MIT"
@@ -13,7 +13,7 @@ license-files = ["LICENSE"]
 authors = [
   { name = "scope-recall contributors" }
 ]
-keywords = ["hermes", "memory", "sqlite", "lancedb", "plugin", "vector"]
+keywords = ["hermes", "codex", "mcp", "memory", "sqlite", "lancedb", "vector"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Programming Language :: Python :: 3",
@@ -28,22 +28,20 @@ dependencies = [
 ]
 
 [project.scripts]
-hermes-scope-recall = "scope_recall.cli:main"
+hermes-scope-recall = "scope_recall.maintenance.cli:main"
+scope-recall = "scope_recall.maintenance.cli:main"
+
+[project.entry-points."hermes_agent.memory_providers"]
+scope-recall = "scope_recall.distribution.hermes:register"
 
 [project.optional-dependencies]
 lancedb = [
   "lancedb>=0.30.2,<0.31",
   "pyarrow>=24,<25",
 ]
-pgvector = [
-  "psycopg[binary]>=3,<4",
-  "pgvector>=0.3,<1",
-]
-all = [
-  "lancedb>=0.30.2,<0.31",
-  "pyarrow>=24,<25",
-  "psycopg[binary]>=3,<4",
-  "pgvector>=0.3,<1",
+codex = [
+  "mcp==2.1.0",
+  "pydantic>=2,<3",
 ]
 dev = [
   "build>=1.2,<2",
@@ -60,45 +58,39 @@ Homepage = "https://github.com/410979729/scope-recall-hermes"
 Documentation = "https://github.com/410979729/scope-recall-hermes#readme"
 Issues = "https://github.com/410979729/scope-recall-hermes/issues"
 
+[tool.setuptools.dynamic]
+version = { attr = "scope_recall._version.__version__" }
+
 [tool.setuptools]
 include-package-data = true
 packages = [
   "scope_recall",
   "scope_recall._internal",
-  "scope_recall._internal.application",
-  "scope_recall._internal.compatibility",
-  "scope_recall._internal.runtime",
-  "scope_recall._internal.contracts",
-  "scope_recall._internal.journal",
-  "scope_recall._internal.experience",
-  "scope_recall._internal.nightly",
-  "scope_recall._internal.memory",
   "scope_recall._internal.recall",
+  "scope_recall.adapters",
+  "scope_recall.adapters.codex",
+  "scope_recall.adapters.hermes",
+  "scope_recall.core",
+  "scope_recall.distribution",
+  "scope_recall.distribution.hermes",
+  "scope_recall.maintenance",
+  "scope_recall.runtime",
 ]
-package-dir = {"scope_recall" = "."}
+package-dir = { "scope_recall" = "." }
+
+[tool.setuptools.cmdclass]
+build_py = "packaging_hooks.v11_build.AllowlistedBuildPy"
 
 [tool.setuptools.package-data]
 "scope_recall" = [
-  "py.typed",
-  "pyproject.toml",
-  "plugin.yaml",
-  "config.json",
-  "README.md",
-  "DESIGN.md",
-  "CHANGELOG.md",
-  "CONTRIBUTING.md",
-  "CONTRIBUTORS.md",
-  "LICENSE",
-  "SECURITY.md",
-  "MANIFEST.in",
-  ".env.example",
-  "docs/*.md",
-  "docs/benchmarks/*.md",
-  "scripts/*.py",
-  "scripts/*.json",
-  "benchmarks/*.json",
-  "examples/external_bridge/*.jsonl",
-  "examples/external_bridge/*.sql",
+  "_lance_worker.py",
+  "maintenance/migration_mapping.json",
+  "adapters/hermes/plugin.yaml",
+  "contracts/*.schema.json",
+  "distribution/codex/scope-recall/.codex-plugin/plugin.json",
+  "distribution/codex/scope-recall/.mcp.json",
+  "distribution/hermes/__init__.py",
+  "distribution/hermes/plugin.yaml",
 ]
 
 [tool.ruff]

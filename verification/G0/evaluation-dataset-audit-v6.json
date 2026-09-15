@@ -1,0 +1,600 @@
+{
+  "schema_version": "scope-recall.evaluation-dataset-audit.v6",
+  "auditor": "independent /root/g0_desktop_audit",
+  "completed_at_utc": "2026-09-06T09:45:15.211588+00:00",
+  "dataset_id": "TEST-EVAL-SEALED-120-v6",
+  "dataset_directory": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-EVAL-SEALED-120-v6",
+  "verdict": "QUALIFIED_FOR_FROZEN_HOLDOUT_EXECUTION",
+  "eligible_for_holdout_execution": true,
+  "product_acceptance_or_runtime_pass_claimed": false,
+  "G0_status_changed": false,
+  "G1_verdict": "NOT_ADJUDICATED_BY_THIS_DATASET_REVIEW",
+  "scope": {
+    "nominal_independent_cases": 120,
+    "query_variants": 240,
+    "full_population_raw_gold_field_comparison": true,
+    "only_comparison_exclusion": "dataset_id; independently checked to match the v6 package on all 480 raw and gold rows",
+    "unchanged_prior_reviewed_history_objects": 240,
+    "unchanged_prior_reviewed_raw_rows_excluding_dataset_id": 239,
+    "unchanged_prior_reviewed_gold_rows_excluding_dataset_id": 239,
+    "changed_query_gold_units_read_in_full_with_current_history": 1,
+    "changed_case_paired_unrelated_variant_also_read_in_full": true,
+    "review_method": "All fields of all 240 raw and all 240 gold records were compared against the immutable v5 audit snapshot. Every unchanged semantic field was incorporated from the preceding complete v4 review and v5 full-population recheck. The one changed query/gold unit, its complete history, its paired unrelated variant, the changed control rationale, and every manifest/fixture difference were reviewed directly. This is a full-population qualification review, not a random sample; unchanged text was not claimed to have been reread from scratch.",
+    "main_thread_kept_blind": true,
+    "questions_answers_case_ids_source_spans_in_report": false,
+    "models_called": 0,
+    "production_or_secret_access": false,
+    "product_code_changes": false,
+    "desktop_operations": 0
+  },
+  "inspected_files": [
+    {
+      "path": "raw.jsonl",
+      "bytes": 205903,
+      "sha256": "75c9e0178dd0126ca33d44fcb84039a8ea9c09e4db62a4aaa3e4cd4e0924464c"
+    },
+    {
+      "path": "gold.jsonl",
+      "bytes": 362064,
+      "sha256": "4ae850de48d11cb9ecc997f5aee51a175ab4e9561552934da3c2169d084229cc"
+    },
+    {
+      "path": "manifest.json",
+      "bytes": 91126,
+      "sha256": "94e5388c8bb83807969d5bb596f59124ca2b02e765d690c42fe40d88ef898357"
+    },
+    {
+      "path": "fixture-manifest.json",
+      "bytes": 3067,
+      "sha256": "57ac235ed50fe086b15b5da712e4045c5f99e955ffb0424b16131d84b13e6044"
+    }
+  ],
+  "audit_snapshot": {
+    "snapshot_at_utc": "2026-09-06T09:16:42.005840+00:00",
+    "source_path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-EVAL-SEALED-120-v6",
+    "snapshot_path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-G0-EVALV6-AUDIT\\snapshot",
+    "files": [
+      {
+        "file": "raw.jsonl",
+        "bytes": 205903,
+        "sha256": "75c9e0178dd0126ca33d44fcb84039a8ea9c09e4db62a4aaa3e4cd4e0924464c"
+      },
+      {
+        "file": "gold.jsonl",
+        "bytes": 362064,
+        "sha256": "4ae850de48d11cb9ecc997f5aee51a175ab4e9561552934da3c2169d084229cc"
+      },
+      {
+        "file": "manifest.json",
+        "bytes": 91126,
+        "sha256": "94e5388c8bb83807969d5bb596f59124ca2b02e765d690c42fe40d88ef898357"
+      },
+      {
+        "file": "fixture-manifest.json",
+        "bytes": 3067,
+        "sha256": "57ac235ed50fe086b15b5da712e4045c5f99e955ffb0424b16131d84b13e6044"
+      }
+    ]
+  },
+  "input_seal_integrity": {
+    "parent_declared_sealed_before_first_read": true,
+    "observed_v6_identity_count": 1,
+    "source_and_snapshot_match_after_review": true,
+    "in_place_drift_observed": false,
+    "row_and_package_identifiers_consistent": true,
+    "future_repairs_require_new_version": true
+  },
+  "frozen_requirements_unchanged": {
+    "nominal_independent_cases": 120,
+    "groups": 12,
+    "per_group": {
+      "positive": 4,
+      "negative": 3,
+      "ambiguous": 3
+    },
+    "paired_variants_do_not_increase_n": true,
+    "no_gold_or_prebuilt_correct_claims_in_model_input": true,
+    "host_queries_journeys_controls_budgets_thresholds": "Unchanged; refer to the frozen evaluation proposal. This audit supplies no execution score."
+  },
+  "structural_results": {
+    "schema_version": "scope-recall.evaluation-dataset-structural-profile.v1",
+    "completed_at_utc": "2026-09-06T09:43:19.456380+00:00",
+    "files": [
+      {
+        "file": "raw.jsonl",
+        "bytes": 205903,
+        "sha256": "75c9e0178dd0126ca33d44fcb84039a8ea9c09e4db62a4aaa3e4cd4e0924464c",
+        "live_source_matches_snapshot": true
+      },
+      {
+        "file": "gold.jsonl",
+        "bytes": 362064,
+        "sha256": "4ae850de48d11cb9ecc997f5aee51a175ab4e9561552934da3c2169d084229cc",
+        "live_source_matches_snapshot": true
+      },
+      {
+        "file": "manifest.json",
+        "bytes": 91126,
+        "sha256": "94e5388c8bb83807969d5bb596f59124ca2b02e765d690c42fe40d88ef898357",
+        "live_source_matches_snapshot": true
+      },
+      {
+        "file": "fixture-manifest.json",
+        "bytes": 3067,
+        "sha256": "57ac235ed50fe086b15b5da712e4045c5f99e955ffb0424b16131d84b13e6044",
+        "live_source_matches_snapshot": true
+      }
+    ],
+    "raw_records": 240,
+    "gold_records": 240,
+    "raw_key_count": 240,
+    "gold_key_count": 240,
+    "query_id_count": 240,
+    "declared_case_count": 120,
+    "pair_count": 120,
+    "paired_variants_are_not_independent_n": true,
+    "raw_dataset_ids": {
+      "TEST-EVAL-SEALED-120-v6": 240
+    },
+    "gold_dataset_ids": {
+      "TEST-EVAL-SEALED-120-v6": 240
+    },
+    "manifest_dataset_id": "TEST-EVAL-SEALED-120-v6",
+    "fixture_dataset_id": "TEST-EVAL-SEALED-120-v6",
+    "row_dataset_id_differs_from_manifest": 0,
+    "groups": {
+      "B01": {
+        "ambiguous": 3,
+        "negative": 3,
+        "positive": 4
+      },
+      "B02": {
+        "ambiguous": 3,
+        "negative": 3,
+        "positive": 4
+      },
+      "B03": {
+        "ambiguous": 3,
+        "negative": 3,
+        "positive": 4
+      },
+      "B04": {
+        "ambiguous": 3,
+        "negative": 3,
+        "positive": 4
+      },
+      "B05": {
+        "ambiguous": 3,
+        "negative": 3,
+        "positive": 4
+      },
+      "B06": {
+        "ambiguous": 3,
+        "negative": 3,
+        "positive": 4
+      },
+      "B07": {
+        "ambiguous": 3,
+        "negative": 3,
+        "positive": 4
+      },
+      "B08": {
+        "ambiguous": 3,
+        "negative": 3,
+        "positive": 4
+      },
+      "B09": {
+        "ambiguous": 3,
+        "negative": 3,
+        "positive": 4
+      },
+      "B10": {
+        "ambiguous": 3,
+        "negative": 3,
+        "positive": 4
+      },
+      "B11": {
+        "ambiguous": 3,
+        "negative": 3,
+        "positive": 4
+      },
+      "B12": {
+        "ambiguous": 3,
+        "negative": 3,
+        "positive": 4
+      }
+    },
+    "pair_cardinality_or_condition_errors": 0,
+    "paired_history_mismatches_ignoring_event_ids": 0,
+    "paired_query_text_equal": 0,
+    "raw_gold_key_join_errors": 0,
+    "orphan_source_event_references": 0,
+    "related_facts_without_source_event_references": 0,
+    "source_role_mismatches": 0,
+    "event_sequence_errors": 0,
+    "event_time_order_errors": 0,
+    "future_timestamp_events": 0,
+    "event_timestamp_min": "2026-01-06T10:00:00+00:00",
+    "event_timestamp_max": "2026-05-21T18:12:00+00:00",
+    "all_rows_declared_simulation": true,
+    "source_types_all_paired_events": {
+      "assistant_visible": 234,
+      "human_direct": 476,
+      "tool_observation": 10
+    },
+    "total_paired_events": 720,
+    "events_per_history": {
+      "3": 240
+    },
+    "exact_unique_related_histories_ignoring_event_ids": 120,
+    "exact_unique_related_history_texts": 120,
+    "related_history_text_characters": {
+      "total": 8267,
+      "minimum": 45,
+      "maximum": 101,
+      "mean": 68.89166666666667
+    },
+    "control_only_fields_found_in_raw": {},
+    "explicit_grading_marker_occurrences_in_raw": {
+      "answerability=": 0,
+      "required_facts": 0,
+      "must_explain_ambiguity": 0,
+      "core_class": 0,
+      "gold.jsonl": 0,
+      "must_state": 0,
+      "预期答案": 0,
+      "金标答案": 0
+    },
+    "answerability_related": {
+      "ambiguous": 38,
+      "supported": 75,
+      "unknown": 7
+    },
+    "answerability_unrelated": {
+      "unknown": 120
+    },
+    "answerability_within_declared_strata": {
+      "positive": {
+        "supported": 48
+      },
+      "negative": {
+        "ambiguous": 3,
+        "supported": 27,
+        "unknown": 6
+      },
+      "ambiguous": {
+        "ambiguous": 35,
+        "unknown": 1
+      }
+    },
+    "unrelated_l4_modes": {
+      "honest_current_evidence": 103,
+      "normal_or_clarify": 1,
+      "normal_task": 16
+    },
+    "unrelated_l4_task_answerability": {
+      "supported": 16,
+      "supported_or_clarify": 1,
+      "unknown": 103
+    },
+    "required_fact_slots_related": 269,
+    "required_fact_slots_unrelated": 105,
+    "required_fact_acceptance": {
+      "must_apply": 16,
+      "must_explain_ambiguity": 37,
+      "must_list_both_candidates_and_not_choose_one": 1,
+      "must_not_inject_history": 105,
+      "must_state": 215
+    },
+    "unrelated_task_rules_unique": 18,
+    "unrelated_generic_gap_rules_allow_normal_capability": 103,
+    "unrelated_requires_stating_memory_gap": 0,
+    "v5_to_v6_changes": {
+      "related": {
+        "history_changed": 0,
+        "query_text_changed": 1,
+        "required_facts_changed": 1
+      },
+      "unrelated": {
+        "history_changed": 0,
+        "query_text_changed": 0,
+        "required_facts_changed": 0
+      }
+    },
+    "full_population_comparison_excluding_only_dataset_id": {
+      "raw_rows_unchanged": 239,
+      "gold_rows_unchanged": 239,
+      "query_or_gold_units_changed": 1,
+      "history_objects_byte_equivalent_as_json": 240,
+      "changed_gold_fields": {
+        "allowed_unknown_or_ambiguity": 1,
+        "required_facts": 1
+      },
+      "comparison_scope": "Every raw and gold field was compared; only dataset_id was excluded."
+    },
+    "fixture_controls": 12,
+    "fixture_statuses": {
+      "PENDING_ISOLATED_EXECUTION": 12
+    },
+    "runtime_behavior_proof_claimed": false,
+    "manifest_rationales_containing_unrelated_query_text": 117,
+    "interpretation": "Structural checks and unique strings do not prove semantic validity, independence, extraction quality, model quality or runtime capability."
+  },
+  "full_review_statistics": {
+    "blocking_semantic_categories": 0,
+    "unique_affected_query_variants": 0,
+    "unique_affected_nominal_cases": 0,
+    "qualified_independent_n": 120,
+    "paired_variants_not_counted_as_independent_n": true,
+    "per_group_semantic_allocation": "All 12 groups retain 4 positive, 3 negative and 3 ambiguous cases; allocation was judged by current-question semantics, not labels alone.",
+    "raw_history_groups_independent_of_query_variants": 120,
+    "required_fact_slots_reviewed_via_full_population_comparison": 374,
+    "no_new_gold_entailment_or_source_link_blocker_found": true
+  },
+  "prior_blocker_recheck": [
+    {
+      "prior_category": "V5-D01 ANSWERABLE_CONDITIONAL_COMPARISON_COUNTED_AS_AMBIGUOUS",
+      "status": "REPAIRED",
+      "previous_cases": 1,
+      "remaining_cases": 0,
+      "note": "The revised current question now requires the unresolved unique actual interpretation. Both candidate statements remain supported by the original source; the original source does not select one. Gold retains the competing alternatives and requires stating the binding gap. The question-level ambiguity and the frozen semantic stratum now agree."
+    },
+    {
+      "prior_category": "Previously closed v4 semantic and package identity findings",
+      "status": "REMAIN_CLOSED",
+      "reopened_findings": 0,
+      "note": "All fields of the other 239 query/gold units are unchanged except package identity; the v5 accepted repairs therefore remain intact."
+    }
+  ],
+  "blocking_dataset_findings": [],
+  "nonblocking_methodology_limits": [
+    {
+      "category": "INDEPENDENCE_RATIONALE_IS_NOT_AN_INDEPENDENCE_PROOF",
+      "control_rationales_embedding_unrelated_query_text": 117,
+      "note": "Direct semantic review of the raw histories and public specification supplies the construction judgment; a distinct rationale string or hash is not evidence of independence."
+    },
+    {
+      "category": "SHORT_SYNTHETIC_HISTORY_NOT_RUNTIME_OR_SCALE_PROOF",
+      "histories": 120,
+      "events_per_history": 3,
+      "maximum_history_characters": 101,
+      "note": "These raw-source cases qualify as the frozen semantic inventory. They do not by themselves establish long-input, retention under interference, live capture, side-effecting operations, artifact availability or fresh-host behavior."
+    }
+  ],
+  "accepted_repairs_boundary": {
+    "no_reopening_of_repaired_v1_v2_v3_v4_findings": true,
+    "generic_unrelated_rules_may_use_ordinary_capabilities": 103,
+    "open_tasks_are_no_longer_exclusively_forced_to_clarify": true,
+    "service_no_match_and_l3_l4_answerability_are_separate": true,
+    "source_role_and_necessary_time_qualifier_repairs_accepted": true,
+    "missing_runtime_execution_is_not_by_itself_a_dataset_rejection_reason": true
+  },
+  "independence_review": {
+    "qualified_nominal_cases": 120,
+    "histories_unchanged_from_full_v4_review": true,
+    "public_specification_reference_counts": {
+      "C": 40,
+      "M": 60,
+      "J": 8
+    },
+    "pair_variants_not_independent": true,
+    "unique_hashes_not_semantic_independence_proof": true,
+    "all_120_qualified": true,
+    "basis": "The complete prior direct history/public-case comparison is incorporated because all 240 history objects are identical. The only remaining current-query semantic defect has now been repaired. No claim of independent N is derived solely from string uniqueness, entity substitutions or the author rationale."
+  },
+  "runtime_and_fixture_boundary": {
+    "dataset_ready_is_not_runtime_pass": true,
+    "fixture_manifest_supplied": true,
+    "fixture_control_groups": 12,
+    "fixture_status": "PENDING_ISOLATED_EXECUTION",
+    "actual_runtime_proof_claimed_by_fixture_manifest": false,
+    "missing_execution_is_not_by_itself_a_dataset_rejection_reason": true,
+    "dataset_contains_actual_runtime_receipts": false,
+    "dataset_files_contain_reopenable_artifact_bytes": false,
+    "synthetic_original_tool_events_per_independent_history_set": 5,
+    "synthetic_tool_events_are_not_actual_tool_capture": true,
+    "semantic_history_maximum_characters": 101,
+    "three_event_histories_do_not_prove_long_input_or_scale_behavior": true,
+    "remaining_unchanged_product_obligations": [
+      "Actual raw-source model extraction through normal validation, followed by fresh-session host behavior.",
+      "Separate L1 actual capture evidence from TEST imported semantic source assumptions.",
+      "Real isolated interruption/resume and current-environment revalidation.",
+      "Stable artifact and display identity, immutable retained versions and actual public-tool reopen in fresh contexts.",
+      "Existing isolated targets before suppress/delete operations, receipts and all managed output paths checked after mutation.",
+      "Controlled unavailable/partial faults, multi-batch tail processing, long-input and interference/scale fixtures.",
+      "The frozen per-host unseen queries, complete unseen journeys and controls, retaining first attempts and every rerun."
+    ],
+    "unseen_journeys_not_created_or_proved_by_public_journey_mapping": true
+  },
+  "source_provenance_boundary": {
+    "actual_transport": "synthetic_agent_relay",
+    "trusted_test_import_origin": "imported",
+    "simulated_original_roles_are_declared_input_conditions": true,
+    "human_direct_is_only_a_fictional_test_semantic_assumption": true,
+    "source_role_must_not_be_inferred_as_authorization_from_model_output_or_dataset_id": true,
+    "actual_ui_a2a_capture_not_relabelled_as_human_direct": true,
+    "import_time_not_historical_event_time": true,
+    "duplicate_transport_copies_not_independent_roots": true,
+    "model_projection_must_exclude_gold_control_fields_and_future_steps": true
+  },
+  "public_reference_fingerprints": [
+    {
+      "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\fixtures\\acceptance_cases.jsonl",
+      "bytes": 17310,
+      "sha256": "93c5e3cbfb1379dc5a7ca03819bcac4b4db0522c83f5ca5938efede257932b19"
+    },
+    {
+      "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\fixtures\\cognitive_cases.jsonl",
+      "bytes": 60610,
+      "sha256": "c1fbfa4dfd515d2e2bb1c7ba2f802c5d4796d0615b38d432b2e6e66ed8cce85a"
+    },
+    {
+      "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\fixtures\\longitudinal_journeys.jsonl",
+      "bytes": 9553,
+      "sha256": "78b1465904a8cc3b121c9e297d2628ca031158e6c26c8b5598d28ccad3d3e243"
+    }
+  ],
+  "contract_reference_fingerprints": [
+    {
+      "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\docs\\07_人类式记忆功能定稿与验收.md",
+      "sha256": "8f94274682a46ea51588edfb16d2b4714bb23ecb9e1480a6d08f9ff71d72b5f4"
+    },
+    {
+      "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\docs\\05_验收测试与独立审计.md",
+      "sha256": "0c678e8b8b89145238c075e7dae8613d4779689ba83a0430156d503127caf64d"
+    },
+    {
+      "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\verification\\G0\\evaluation-proposal.md",
+      "sha256": "cc3d036920e2d22c915a4b67a1be4c406924c5326d60aba9adfca9a0c61acb04"
+    },
+    {
+      "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\verification\\G0\\evaluation-source-boundary.md",
+      "sha256": "4daafb16134fbddbc191518bc3acf55562516d7320c3f4ef49afe78292ae9377"
+    }
+  ],
+  "frozen_reference_hashes_rechecked_current": true,
+  "verification": {
+    "runtime": "F:\\SCOPERECALL更新项目\\.venv\\Scripts\\python.exe",
+    "command": "& 'F:\\SCOPERECALL更新项目\\.venv\\Scripts\\python.exe' -X utf8 -B 'F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-G0-EVALV6-AUDIT\\structural_profile.py'",
+    "exit_code": 0,
+    "structural_profile_script": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-G0-EVALV6-AUDIT\\structural_profile.py",
+    "structural_profile_script_sha256": "105becd3950069ea338ba71db337fac47b1795aa35e3caaf7a230e0afed67176",
+    "structural_profile_path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-G0-EVALV6-AUDIT\\structural-profile.json",
+    "structural_profile_sha256": "111408f268e4df84520486e7cdfe42fe933e326869ef43e07ca22506505111c1",
+    "programmatic_result": "PASS for all parsing, cardinality, joins, source-ID existence, chronology, declared simulated source roles, control-field separation, package identity, full-population field comparison and current seal integrity checks.",
+    "semantic_result": "PASS for the complete frozen dataset qualification; the one v5 blocker is repaired and every other prior accepted semantic repair is preserved.",
+    "checks_are_not_extraction_host_or_product_scores": true
+  },
+  "preserved_prior_artifacts": [
+    {
+      "path": "verification\\G0\\evaluation-dataset-audit.json",
+      "sha256": "6a29938fe01f7fc2e24227db6d135826141720e1a8191dda1ff0115211827e05",
+      "unchanged": true
+    },
+    {
+      "path": "verification\\G0\\evaluation-dataset-audit-v2.json",
+      "sha256": "fd732c740c78b6ef266efa57e0b4a9f4f7f80031c2aac9b48bf32debd87fe0b9",
+      "unchanged": true
+    },
+    {
+      "path": "verification\\G0\\evaluation-dataset-audit-v3.json",
+      "sha256": "0b5d94333d2213e92013bf4e28be2e314eb5b4c02242f085637250e67ee315c6",
+      "unchanged": true
+    },
+    {
+      "path": "verification\\G0\\evaluation-source-boundary.md",
+      "sha256": "4daafb16134fbddbc191518bc3acf55562516d7320c3f4ef49afe78292ae9377",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v1\\raw.jsonl",
+      "sha256": "9dcb7c98436165782f1c259260202cc421c4b16318c5e25f3da3dc3c33fd029e",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v1\\gold.jsonl",
+      "sha256": "62f5afba6a7124794c4444e610749e93fbb55141759f0f355b1c02d58e5fd344",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v1\\manifest.json",
+      "sha256": "f1ecbf5353b90a3d1ec729e220dac9f9a6a547f117ad4552d3ffbc028af8c141",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v2\\raw.jsonl",
+      "sha256": "6810889f47541aa348535e06ad4275365821edfe1a5af647d667caff1030fcfc",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v2\\gold.jsonl",
+      "sha256": "70e0e748ece1c5343852a1b1f1d706105c8438d8b050a63b180bce2be9aab5c3",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v2\\manifest.json",
+      "sha256": "7d6acdc5ff684e373442924f0c52764a225ead130b7e48771bacda25bb3befb6",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v3\\raw.jsonl",
+      "sha256": "723e2f245d84efa14636fb8fd78e52bb6ec78e9518c8da9fdf17044510c53059",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v3\\gold.jsonl",
+      "sha256": "f822a237101d62b5b22a18ce51fc0f89465895c5bfbaadeec9af52db6d9b2b8a",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v3\\manifest.json",
+      "sha256": "9edd45f5198a81aacf77b38a924fdeb4f22945b0829a5acfd8691dfb8cd80306",
+      "unchanged": true
+    },
+    {
+      "path": "verification\\G0\\evaluation-dataset-audit-v4.json",
+      "sha256": "77bdd094643b986c9b2ad3dfb7281366f687afff37d9b6b3a17628b5301c69de",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v4\\raw.jsonl",
+      "sha256": "40e9343ca4fde970884b7b346000a41b358b579b8a69db7acba54e2cc13c7900",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v4\\gold.jsonl",
+      "sha256": "f8c4b3d226e95079c94b37df9de2f06b04eb3761de52f58776b7677aaee76c10",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v4\\manifest.json",
+      "sha256": "be467034cb6c6ce6fc2a81db317005d75831835b1d2411c87c53672e59a81313",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v4\\fixture-manifest.json",
+      "sha256": "c467af3f8ad970f34777794da6f713f01b86320bd7613088d6975f8034993710",
+      "unchanged": true
+    },
+    {
+      "path": "verification/G0/evaluation-dataset-audit-v5.json",
+      "sha256": "67f8a42ee4b3a3ec25241ffa80b5a960505eb9550dbba1b78d4185520e872c07",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v5\\raw.jsonl",
+      "sha256": "a03601b26163f047c518b3d31fbea0c83586952b57cbc83b331ee92f37c52b7a",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v5\\gold.jsonl",
+      "sha256": "2703162f41da27bed3371fd2388ddafaeb0714233aeb42d695328558de6e2579",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v5\\manifest.json",
+      "sha256": "d7e40a19ba07c792ba35acf40170724b7593ecaab79b316b031bdab3a92fbced",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v5\\fixture-manifest.json",
+      "sha256": "8a752d7f6a6481e77a99aa0c404f76b4857798ace874958618ef318961d2e9a9",
+      "unchanged": true
+    }
+  ],
+  "handoff": {
+    "root_receives_only_categories_counts_and_metadata": true,
+    "no_new_data_repair_requested": true,
+    "execution_must_bind_this_exact_four_file_seal": true,
+    "gold_and_control_metadata_excluded_from_model_input": true,
+    "raw_input_projection_and_step_order_remain_subject_to_execution_audit": true,
+    "all_first_attempts_reruns_costs_and_faults_must_be_retained": true
+  },
+  "audit_boundaries": [
+    "No sealed example, answer, quote, case ID or selected source span is disclosed in this report.",
+    "Only this report and auditor-owned execution artifacts were written. Sealed v1-v6 datasets and previous audit reports remain unchanged.",
+    "No frozen threshold, budget, model route, authorization requirement or product acceptance gate was changed.",
+    "The 12 fixture control groups remain pending actual isolated execution; their absence is not reclassified as a semantic dataset defect or a runtime success."
+  ],
+  "conclusion": "v6 qualifies as the 120-case frozen raw-source holdout inventory. Execute against this exact seal using the approved TEST provenance boundary and a projection that excludes gold/control/future steps. Qualification supplies no extraction, host, journey, L1-L4 or G1 product score; every existing runtime and final-evaluation obligation remains."
+}

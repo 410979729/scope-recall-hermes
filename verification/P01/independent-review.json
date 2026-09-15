@@ -1,0 +1,22 @@
+{
+  "auditor": "/root/contract_adjudicator",
+  "independent_of_implementation": true,
+  "candidate_sha": "05df641d2e22afab536bf69affbd1d6fda631bc9",
+  "base_sha": "1ea1642e6253211cf0ccb9d02afa93a1e6f9d9c2",
+  "verdict": "pass",
+  "blocking_p0_p1": [],
+  "scope": "P01 protocol implementation and prior amendment conditions only; not overall G0",
+  "test_evidence": "verification/P01/contract-1788659962806239300.json",
+  "passed": 96,
+  "failed": 0,
+  "skipped": 0,
+  "source_inputs_sha256": "a6a3b7d03a8b387c55d14ce13936153b8655fb808cc6e14e36b6c4da7638be53",
+  "nonblocking_notes": [
+    "source_event.schema.json raw working-tree hash 33d17c95514002114f6d018eb991ded7bcf0318c820af40604e590c660fbdaaa differs from Git blob hash 73394ac421ff1471ae293f6e1d26c85011ca29b7e0d19ebb02330af1a9355249 only by CRLF/LF; other six schemas and audited Python files agree."
+  ],
+  "deferred_obligations": [
+    "P04/P10 durable group uniqueness, revision immutability, coverage and processing watermark.",
+    "P02 actual host entry points; G0 model budget and holdout/threshold adjudication.",
+    "No M/J semantic, L1-L4 host or G0-G3 acceptance granted."
+  ]
+}

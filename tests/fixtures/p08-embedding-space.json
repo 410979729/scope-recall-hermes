@@ -1,0 +1,26 @@
+{
+  "space_id": "93ba90c7d52b3574462d6751e2e077a411f1095727862abb4cc80d3780d2e30c",
+  "embedding_space": {
+    "model": "gemini-embedding-2",
+    "dimensions": 3072,
+    "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2:batchEmbedContents",
+    "task_type": null,
+    "prompt_encoding": {
+      "document": "title: none | text: {NFKC source}",
+      "query": "task: question answering | query: {NFKC query}"
+    },
+    "input_preprocessing": {
+      "id": "nfkc-v1",
+      "unicode_version": "15.0.0"
+    },
+    "metric": "cosine",
+    "vector_normalization": "l2_at_scoring",
+    "request_encoding": {
+      "id": "gemini002-native-batch-v1",
+      "task_type_field": null,
+      "task_type_location": null,
+      "prompt_encoding": "official-question-answering-v1"
+    }
+  },
+  "canonical_json_sha256": "93ba90c7d52b3574462d6751e2e077a411f1095727862abb4cc80d3780d2e30c"
+}

@@ -1,0 +1,1 @@
+import json,sys; from pathlib import Path; p=Path(sys.argv[1]); names=sorted(x.name for x in p.iterdir()); assert names==['alpha.json','middle.json','zeta.json']; print('排序断言已通过。'+json.dumps({'sorted':names},ensure_ascii=False),flush=True); Path(sys.argv[2], 'manifest.json').write_text(json.dumps(names),encoding='utf-8')

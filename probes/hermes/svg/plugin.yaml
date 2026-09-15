@@ -1,0 +1,7 @@
+name: scope-recall-p02-svg
+version: 0.0.0
+description: Isolated synthetic SVG interface probe, not a product memory provider
+hooks:
+  - pre_gateway_dispatch
+  - pre_llm_call
+  - post_tool_call

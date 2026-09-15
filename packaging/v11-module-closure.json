@@ -1,0 +1,637 @@
+{
+  "schema": "scope-recall.v11-module-closure.v1",
+  "worktree": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-runtime-integration",
+  "analysis_kind": "allowlist_snapshot_with_entrypoint_and_dynamic_boundary_review",
+  "source_version": "3.0.0.dev0",
+  "allowlist_sha256": "ea9da3e1a6f67545a2da29d58a489f32bb3bd80592aa017eb0b7c7597a7ba021",
+  "counts": {
+    "python_modules": 94,
+    "package_data": 15,
+    "release_files": 109
+  },
+  "formal_root_allowlist": [
+    "__init__.py",
+    "_internal/__init__.py",
+    "_internal/recall/__init__.py",
+    "_internal/recall/deadline.py",
+    "_version.py",
+    "adapters/__init__.py",
+    "adapters/codex/__init__.py",
+    "adapters/codex/boundary.py",
+    "adapters/codex/config.py",
+    "adapters/codex/handler.py",
+    "adapters/codex/hook_entry.py",
+    "adapters/codex/identity.py",
+    "adapters/codex/mcp_entry.py",
+    "adapters/codex/mcp_server.py",
+    "adapters/runtime_wiring.py",
+    "adapters/hermes/__init__.py",
+    "adapters/hermes/attachments.py",
+    "adapters/hermes/boundary.py",
+    "adapters/hermes/gating.py",
+    "adapters/hermes/hooks.py",
+    "adapters/hermes/identity.py",
+    "adapters/hermes/installation.py",
+    "adapters/hermes/outcomes.py",
+    "adapters/hermes/protocol.py",
+    "adapters/hermes/provider.py",
+    "adapters/hermes/register.py",
+    "adapters/hermes/runtime_wiring.py",
+    "adapters/hermes/worker.py",
+    "adapters/lance.py",
+    "adapters/models.py",
+    "aliases.py",
+    "capture_filters.py",
+    "contracts.py",
+    "core/__init__.py",
+    "core/aliases.py",
+    "core/artifact_storage.py",
+    "core/capture.py",
+    "core/claim_storage.py",
+    "core/claims.py",
+    "core/composition.py",
+    "core/consolidate.py",
+    "core/delete_storage.py",
+    "core/deletion.py",
+    "core/episode_storage.py",
+    "core/episodes.py",
+    "core/events.py",
+    "core/inspect_service.py",
+    "core/mutate.py",
+    "core/recall.py",
+    "core/recall_diagnostics.py",
+    "core/recall_packet.py",
+    "core/recall_policy.py",
+    "core/reference_storage.py",
+    "core/restore.py",
+    "core/retained_artifacts.py",
+    "core/retrieval.py",
+    "core/retrieval_storage.py",
+    "core/schema.py",
+    "core/source_qualification.py",
+    "core/storage.py",
+    "core/visibility.py",
+    "core/work_storage.py",
+    "core/worker.py",
+    "fact_actions.py",
+    "fact_evidence.py",
+    "fact_identity.py",
+    "fact_temporal_semantics.py",
+    "file_lock.py",
+    "gating.py",
+    "lance_process_store.py",
+    "maintenance/__init__.py",
+    "maintenance/cli.py",
+    "maintenance/doctor.py",
+    "maintenance/install.py",
+    "maintenance/backup.py",
+    "maintenance/migrate.py",
+    "maintenance/migrate_v2.py",
+    "maintenance/rollback.py",
+    "runtime/_http_worker.py",
+    "runtime/_worker_bootstrap.py",
+    "runtime/__init__.py",
+    "runtime/auxiliary.py",
+    "runtime/instance.py",
+    "runtime/model_budget.py",
+    "runtime/worker_entry.py",
+    "runtime/worker_launch.py",
+    "runtime/worker_watchdog.py",
+    "adapters/codex/runtime_wiring.py",
+    "secret_patterns.py",
+    "sqlite_vector_store.py",
+    "truth_connection.py",
+    "vector_mutation_guard.py",
+    "vector_store.py",
+    "writer_lease.py"
+  ],
+  "dependency_closure": {
+    "__init__.py": {
+      "bytes": 757,
+      "sha256": "3e8c3bcbb7d9aa2b5c5d4ccfd17227517825fc82080a3e21c74ae07a70369b1c"
+    },
+    "_internal/__init__.py": {
+      "bytes": 53,
+      "sha256": "40f94cde4d0004880b7919b82ffde20346dea4dbc9962c277e6b18d364b4d10f"
+    },
+    "_internal/recall/__init__.py": {
+      "bytes": 60,
+      "sha256": "437f421003a816a0ac81cbfd59b488e409cce5c69ccb676c04f69a018b93b4f0"
+    },
+    "_internal/recall/deadline.py": {
+      "bytes": 5843,
+      "sha256": "5b49af2d6682100df4dcf136a553d8b5951820f740e7d37897c8652353f424ea"
+    },
+    "_version.py": {
+      "bytes": 94,
+      "sha256": "142212e05c0b12bbebc4e82f8cf5a9025956bc1bf553310a6bf3c32ff7e91167"
+    },
+    "adapters/__init__.py": {
+      "bytes": 231,
+      "sha256": "73900ce3436f5ee8926d682514503f63eae34fa7dc5ab8d5d563132bac855d92"
+    },
+    "adapters/codex/__init__.py": {
+      "bytes": 703,
+      "sha256": "b322b1a8150d6a719cf9f543c014e9126c50c0bc8e2bb15e44a0e73169a8b030"
+    },
+    "adapters/codex/boundary.py": {
+      "bytes": 6210,
+      "sha256": "94c8164b5f68543d0630301461a8c08f3585cf454d9cb7a9a298c44fa1344c6a"
+    },
+    "adapters/codex/config.py": {
+      "bytes": 8421,
+      "sha256": "320d39dc3bc6f18e5e5de76c1967c5f54290c5f730adec4ed433175d83fd30c4"
+    },
+    "adapters/codex/handler.py": {
+      "bytes": 17324,
+      "sha256": "9f468a474ac87e2ee0a7e7d832ceef010542631070c2fa0ff61e5d39ad3793d4"
+    },
+    "adapters/codex/hook_entry.py": {
+      "bytes": 1844,
+      "sha256": "f9d61b7f050a4a16771ce3e99bc8c42f2b56be40144fa4a7cb1ad36f26842c95"
+    },
+    "adapters/codex/identity.py": {
+      "bytes": 2546,
+      "sha256": "ead0c12d10789e850a64ca5ca811f30b4bb2d8bc2a0af405f981dbd7010cb0c9"
+    },
+    "adapters/codex/mcp_entry.py": {
+      "bytes": 1590,
+      "sha256": "00241542d766a0be9deb0527aeeb4c1956c935dd44c0febb659b6d3025cf87d4"
+    },
+    "adapters/codex/mcp_server.py": {
+      "bytes": 23024,
+      "sha256": "4db414032bfb57f07479f29e1b45b3de49bdb23976d13b12ca289881ae22ee37"
+    },
+    "adapters/runtime_wiring.py": {
+      "bytes": 9622,
+      "sha256": "3c1d35cbeb844e750ed5f7c80bf51b833753d4d1772ea4ec9c4b64058701bb5e"
+    },
+    "adapters/hermes/__init__.py": {
+      "bytes": 497,
+      "sha256": "2687efc29e9402d4a40ee111e93d6612e73c8e39912af611a8814b2f95a2a304"
+    },
+    "adapters/hermes/attachments.py": {
+      "bytes": 3765,
+      "sha256": "f405feea7e991ee03f105eabe44d2a7c1dd7209f43ee7d24e376cbf2728ea4bb"
+    },
+    "adapters/hermes/boundary.py": {
+      "bytes": 8243,
+      "sha256": "058925441a4491fa46c7f1bc25d690dda7f7335e52e5c8755bbd4ab6a200bd71"
+    },
+    "adapters/hermes/gating.py": {
+      "bytes": 295,
+      "sha256": "198e9695ee507639c7b069d4af933bb82362a17d016024525b8d8636bce0785c"
+    },
+    "adapters/hermes/hooks.py": {
+      "bytes": 4329,
+      "sha256": "86ea7d2f0bd44162b177835a517480b0f1fcbd3f0d9b37bd433af36b1f754d4a"
+    },
+    "adapters/hermes/identity.py": {
+      "bytes": 10254,
+      "sha256": "0a3ba44c0554d9b37c81d1b8a70c04e390acc4138e191ff3e0660bcca5f4fcc5"
+    },
+    "adapters/hermes/installation.py": {
+      "bytes": 17324,
+      "sha256": "c18b7f14c26d0295b2bdc11bbbbeb64fb40481d70e978922415d787480dbce58"
+    },
+    "adapters/hermes/outcomes.py": {
+      "bytes": 2661,
+      "sha256": "ed5711c2b081ff9309e691261e558a0724874e0f49a33d8516533a24ac360e8c"
+    },
+    "adapters/hermes/protocol.py": {
+      "bytes": 1555,
+      "sha256": "715ca0cc46afd987fffb80524f2dc11be3192906ad758094f52c810b57b7c50d"
+    },
+    "adapters/hermes/provider.py": {
+      "bytes": 25407,
+      "sha256": "c5573ac34742d245acc885017c0f5f67c016744575fa1cb758a9835cd1e56903"
+    },
+    "adapters/hermes/register.py": {
+      "bytes": 241,
+      "sha256": "9e06ae80073f48237de446d6b9d2ec8f318f2b31f99e7e871676509c53d0a1f9"
+    },
+    "adapters/hermes/runtime_wiring.py": {
+      "bytes": 496,
+      "sha256": "a7e32163a79ef868fe0b4c7ee1a31551e06c4dc5dfa0bc21a78aaf91dfb4c69a"
+    },
+    "adapters/hermes/worker.py": {
+      "bytes": 4221,
+      "sha256": "440315813acb4b779ba5eb6c267f6b7bd879a7fd821fea4bd7231126a56d2e0b"
+    },
+    "adapters/lance.py": {
+      "bytes": 27174,
+      "sha256": "bec3fda051167f3c49bd5e8de2e75451b5a2301f0f75009671f8e055e0365fc4"
+    },
+    "adapters/models.py": {
+      "bytes": 26079,
+      "sha256": "2fdca88e825771987a432ba648b9e7ed63cd1f320324bdf6a0fced06acdc18d8"
+    },
+    "aliases.py": {
+      "bytes": 1462,
+      "sha256": "4265aec01710cf54cde1076e733cc1bac8980af1a88b0948bfce1b35ca8786ba"
+    },
+    "capture_filters.py": {
+      "bytes": 23477,
+      "sha256": "8bdf8cc6070889def5940947859f5339eedc0432f3c4c882e9af7e4bdd2fcbe6"
+    },
+    "contracts.py": {
+      "bytes": 21344,
+      "sha256": "b67b0a3abdfa8ca89e443467832a786f21a51ff36120310cf2a2b35a3027be5d"
+    },
+    "core/__init__.py": {
+      "bytes": 172,
+      "sha256": "34f161985f0112b7906c8b7e1a4e48b900980e3abbf4673a261f3a3789c53696"
+    },
+    "core/aliases.py": {
+      "bytes": 4356,
+      "sha256": "47a14833d86438a9cbdd8757e1354af5458692a2a2212cb323d352cf8c7ad0b0"
+    },
+    "core/artifact_storage.py": {
+      "bytes": 6681,
+      "sha256": "1a3b6180ea9b636b496a69016e0ca354aa61ad22be19a9e4f333b5aeff6ac0c4"
+    },
+    "core/capture.py": {
+      "bytes": 4096,
+      "sha256": "948ec25d1990414eaf97439c87bfbc58b7bb30b5a55d9adf0120367113e21afc"
+    },
+    "core/claim_storage.py": {
+      "bytes": 17725,
+      "sha256": "58e566c336402c46d66581ed2649982a0d176f0de90283be61c4d79c4e5e4f2a"
+    },
+    "core/claims.py": {
+      "bytes": 16866,
+      "sha256": "97c0abd1d57eb9d5e3b59e1582f562af62976908ed87019eda7db33669d07c21"
+    },
+    "core/composition.py": {
+      "bytes": 16105,
+      "sha256": "993a1977081cfc7be57df3eef005ed1907c72adcaf3b51353926214c947bad35"
+    },
+    "core/consolidate.py": {
+      "bytes": 7670,
+      "sha256": "527adf65622f49cea1990587341096a7d03f362b20fd877ad534c84876e70313"
+    },
+    "core/delete_storage.py": {
+      "bytes": 20748,
+      "sha256": "bbff276da67bb3ded3f307b5840371be89c5829b77fd24ab72d5e5557bebe5b2"
+    },
+    "core/deletion.py": {
+      "bytes": 4286,
+      "sha256": "5d740828302c0e15bd2be47773c67682e74d61d42543e455e15b64e9c8dee060"
+    },
+    "core/episode_storage.py": {
+      "bytes": 15218,
+      "sha256": "efcb68795a6a1f4102c823a0cedbecaa0e3c5ffe51f770b3b16a237f296c5598"
+    },
+    "core/episodes.py": {
+      "bytes": 8137,
+      "sha256": "785fe5582937998cabaaafc0e69d33e658133fbc57d65fc2f17451cb847a98d5"
+    },
+    "core/events.py": {
+      "bytes": 4404,
+      "sha256": "df66a0dd5a50ae2180d3637cdc17bdaf6c8776ff5e0e7d08b3db8e22ad32f026"
+    },
+    "core/inspect_service.py": {
+      "bytes": 2758,
+      "sha256": "6698717b339a709eada670b5e97e8544e8c8d2e6a34d86e2cd0e3c97f2f7645c"
+    },
+    "core/mutate.py": {
+      "bytes": 16177,
+      "sha256": "613a1942a487f47d7bde7096fe68d3439c7d84dc1ec8fa16617c7da0979b28b2"
+    },
+    "core/recall.py": {
+      "bytes": 29521,
+      "sha256": "f00de4783e186a985adf4211243a1a6043befdc3ef50cd36ac3405419d8d0b85"
+    },
+    "core/recall_diagnostics.py": {
+      "bytes": 4441,
+      "sha256": "33aeb6f6080caec65fd7b6345e9a1ae1f541daa2cb6a9d3da1f00433e768c277"
+    },
+    "core/recall_packet.py": {
+      "bytes": 41932,
+      "sha256": "48a1e277437d6837b017a9c28666ba1e64443eaa236cc995287cf8aa5d4e1f24"
+    },
+    "core/recall_policy.py": {
+      "bytes": 11636,
+      "sha256": "319edda358a8e8fb74a5330e79bf178cb45883e9c560682c913d7edaf3cbb644"
+    },
+    "core/reference_storage.py": {
+      "bytes": 11358,
+      "sha256": "c2f9dc611d1b9755a8bc810987599c8ea08ab08ee75c3b86696507dcf8d6715f"
+    },
+    "core/restore.py": {
+      "bytes": 13634,
+      "sha256": "d1902bd8465c79b1988b8dae52dbd8ef4774dccc615ac415a86c4bcef9f6ee3b"
+    },
+    "core/retained_artifacts.py": {
+      "bytes": 11145,
+      "sha256": "594c0a49dedc771a84844a93e4cfb2fa21f2dff0ce00c370419048df15be7072"
+    },
+    "core/retrieval.py": {
+      "bytes": 13635,
+      "sha256": "10ecc5417940c32c86f88d4c22b5702cdd0b71bf1a7e21575055b2677021e9a8"
+    },
+    "core/retrieval_storage.py": {
+      "bytes": 29498,
+      "sha256": "8580a06afd0072fb2fa13da82b524441bca0bd9b0f9867e89a8294856ab610dd"
+    },
+    "core/schema.py": {
+      "bytes": 14424,
+      "sha256": "137e3009dbc0d2a8d1e72c3abcc75ea57f6c73eadd0d3e79477c8a47de381495"
+    },
+    "core/source_qualification.py": {
+      "bytes": 1663,
+      "sha256": "9b2ee1fc23ced68d27d4652016310d53253d60c609091e300803a61c72b91804"
+    },
+    "core/storage.py": {
+      "bytes": 25583,
+      "sha256": "b3066f640420b1d99bfcb6478b4bf60f64e730b3c635a60f0433d559e824537f"
+    },
+    "core/visibility.py": {
+      "bytes": 3638,
+      "sha256": "6cb80d692d5938981c8e1398a4ea09554c35b302abb3a6278a0258c849b23bc4"
+    },
+    "core/work_storage.py": {
+      "bytes": 12315,
+      "sha256": "c095a3f21aea8f7369fd7bfebfaa78cbe81f861c436b05a96f8e7e70c740df20"
+    },
+    "core/worker.py": {
+      "bytes": 28641,
+      "sha256": "52a26448c9ef4b5db70f8f976d568b41a66fdb7aa8c3e63a179a9eb7c9fb3209"
+    },
+    "fact_actions.py": {
+      "bytes": 17828,
+      "sha256": "5757fc00a1e690b852b109ef812ab0ae5457576ee5e5e81f6ad279dda68ac26f"
+    },
+    "fact_evidence.py": {
+      "bytes": 20311,
+      "sha256": "3c08159d77e6ec0c4aaab5b8ddb32ad57cdd6c4ab480500451693fd340f11043"
+    },
+    "fact_identity.py": {
+      "bytes": 4953,
+      "sha256": "d91779f9036c7427797f1c0156d30fbbbb536421d4c3811493e587c9aaeb1d7f"
+    },
+    "fact_temporal_semantics.py": {
+      "bytes": 11627,
+      "sha256": "4cfc8a157100e63358e8cf94ef11ef933f84f72caa2f26aac11eaecc2df3cc44"
+    },
+    "file_lock.py": {
+      "bytes": 4577,
+      "sha256": "ad0f6700020d7f05a3df7fa538b4e73c15acafb95f68dae72412aff840c5443c"
+    },
+    "gating.py": {
+      "bytes": 21736,
+      "sha256": "d791d15d8a3331577e03aa1a0179e5ad223672325f2751d801364966c3834b79"
+    },
+    "lance_process_store.py": {
+      "bytes": 27592,
+      "sha256": "09524f4110bbc28e31aff10ece39a6632b505128ab90785ee7f8ac3454195eb6"
+    },
+    "maintenance/__init__.py": {
+      "bytes": 434,
+      "sha256": "8477adf4c3f10f69857acc6d353de9ca583b842e01a9ec4f34a6984c1792a1b4"
+    },
+    "maintenance/cli.py": {
+      "bytes": 5248,
+      "sha256": "c926c98a73ccc8f30bfa722879797a727da81c0c4f46220b4abd14382ad569b7"
+    },
+    "maintenance/doctor.py": {
+      "bytes": 8836,
+      "sha256": "45dd851aa73842e61d289344b54b8e65e6ec36c6ac5587e4bb435d8c4a82f927"
+    },
+    "maintenance/install.py": {
+      "bytes": 45138,
+      "sha256": "e0249d0163df57f72cac9e2b7d7b2a44279c4e3a70f28edf70e8977efcb2dabb"
+    },
+    "maintenance/backup.py": {
+      "bytes": 2936,
+      "sha256": "94446b1d92a0bdbcbeddb1d018676eb3481947cd35285c1a29ebdd97421f03f6"
+    },
+    "maintenance/migrate.py": {
+      "bytes": 580,
+      "sha256": "9c209ed9306f2652e238099c9b9758996c8db0930906d73c2a6a33455a2cccaf"
+    },
+    "maintenance/migrate_v2.py": {
+      "bytes": 66953,
+      "sha256": "f14f0fb3757cea2605e5ca25c007fefb18d6b65bc8019b1260225f5bbc2d00e4"
+    },
+    "maintenance/rollback.py": {
+      "bytes": 6711,
+      "sha256": "8e690e744ebf3bf4a1ab75747ebfb1cc17606061ba1cc5078ea95ef5de7b7f7f"
+    },
+    "runtime/_http_worker.py": {
+      "bytes": 8024,
+      "sha256": "37bc34ce9e5728a19f1bad8e9dfd47110cc06930c625e18da57f383cc86beb20"
+    },
+    "runtime/_worker_bootstrap.py": {
+      "bytes": 639,
+      "sha256": "c47a0440ee61d5f13b261e231e71ddfab8043766d8211b0f8f08ae102ff35fee"
+    },
+    "runtime/__init__.py": {
+      "bytes": 1692,
+      "sha256": "b88213b9cefdbf9ede74e92a422cfd3c0d6bb2944d27dab6ab8b5faa06ff6ab5"
+    },
+    "runtime/auxiliary.py": {
+      "bytes": 12462,
+      "sha256": "a1508465a21b6f4a86392034d2434f040e36b439a73c3e0d66504e308501db60"
+    },
+    "runtime/instance.py": {
+      "bytes": 19366,
+      "sha256": "500a42a3ce6a3a54b168bbc07048e9a68017adf3f707fb4569bd57929952f342"
+    },
+    "runtime/model_budget.py": {
+      "bytes": 16561,
+      "sha256": "9eced302079f65320d3fea46b2b5e42549631e3fb45ba4ff2bcca67bb2cacaa8"
+    },
+    "runtime/worker_entry.py": {
+      "bytes": 5767,
+      "sha256": "5d49322394fa528fc6c358023a889a14c320add625bd9770479b1ec69d88a7f2"
+    },
+    "runtime/worker_launch.py": {
+      "bytes": 5009,
+      "sha256": "b4ccf18d10713e92220cf9845c7072acef22c3cc3140397f485a8283dd6d0d2b"
+    },
+    "runtime/worker_watchdog.py": {
+      "bytes": 9292,
+      "sha256": "fc93ca563ba3c9963b83008b6904d436f28e1c171989fe262c35ff950613442b"
+    },
+    "adapters/codex/runtime_wiring.py": {
+      "bytes": 3487,
+      "sha256": "99dca5a187e2f37dc3c4859694123fab232adcfcff77e01598bced407d091461"
+    },
+    "secret_patterns.py": {
+      "bytes": 7919,
+      "sha256": "515489b952863513574d92c87e11c4448207a9386abae8952b5349837120d2fb"
+    },
+    "sqlite_vector_store.py": {
+      "bytes": 25161,
+      "sha256": "80a7b816e26ecc777705e3c9f143750be89476b368b9999bee620f33cd368da5"
+    },
+    "truth_connection.py": {
+      "bytes": 28452,
+      "sha256": "0defc7c0974aea947cde6c75d801e321a7d2da5d68cddad945a13be09531bc67"
+    },
+    "vector_mutation_guard.py": {
+      "bytes": 1246,
+      "sha256": "2d0de680431db7117311150b241b26f1417353f034443ea323d1c65238d6971d"
+    },
+    "vector_store.py": {
+      "bytes": 39868,
+      "sha256": "99afbe2b4cdf9fa28ff149994f80d239997892d42ff480d5191b527a3d79d6bf"
+    },
+    "writer_lease.py": {
+      "bytes": 43382,
+      "sha256": "a704488539e04460b52f3c108d13bf57bccf9cf78071b2ebb65c44598adf947c"
+    }
+  },
+  "package_data": {
+    "py.typed": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "_lance_worker.py": {
+      "bytes": 6951,
+      "sha256": "b81064357e576181e75293ff0c3d17387bc7cc927e1072340d1e675e2d7f33fe"
+    },
+    "adapters/hermes/plugin.yaml": {
+      "bytes": 267,
+      "sha256": "b88d1a11462cf8070cda0229a6db991a47d5aa8caace6aa24a1b6a46a6eea5dd"
+    },
+    "contracts/consolidation_result.schema.json": {
+      "bytes": 17285,
+      "sha256": "62b53b385f3c785d97695adddcb15ae9656684ab7c4bde9b663fcfda324979d0"
+    },
+    "contracts/forget_request.schema.json": {
+      "bytes": 1045,
+      "sha256": "fc9d4a6f0399f75b562a11b5c13be4212d7e8a418419e7e2344830bd3d5e42bd"
+    },
+    "contracts/recall_packet.schema.json": {
+      "bytes": 4755,
+      "sha256": "24453b88a095d20f9a371738dab06094074d84c36e1081ab1819865d5ff3ae7d"
+    },
+    "contracts/recall_request.schema.json": {
+      "bytes": 1661,
+      "sha256": "ca11362253641aabe674f06932772a04c810cd5f83c1e5966ae7f45394e80c8c"
+    },
+    "contracts/revise_request.schema.json": {
+      "bytes": 1427,
+      "sha256": "23fbb4eb4d32f3d5d4c33fdbe4c1b90a546656053da71468fa3cc867f71aa8e2"
+    },
+    "contracts/source_event.schema.json": {
+      "bytes": 4234,
+      "sha256": "33d17c95514002114f6d018eb991ded7bcf0318c820af40604e590c660fbdaaa"
+    },
+    "contracts/task_receipt.schema.json": {
+      "bytes": 2842,
+      "sha256": "231c07d24862d858cba9fdabef43458af48455259a98f202c61adf72a9281cfc"
+    },
+    "maintenance/migration_mapping.json": {
+      "bytes": 5747,
+      "sha256": "0a1bbf39d35b63a462f2cb1da2fd487d2e38854c0750a7336b47bd4e58133a79"
+    },
+    "distribution/codex/scope-recall/.codex-plugin/plugin.json": {
+      "bytes": 541,
+      "sha256": "603f861df2438be6154de23c38904a3f750a37e74be76973c89f32219a57c5e7"
+    },
+    "distribution/codex/scope-recall/.mcp.json": {
+      "bytes": 26,
+      "sha256": "e5b29621496d551a5b93b06367d793e13ec5c2c2fb4f4acd8579390bdcba2872"
+    },
+    "distribution/hermes/__init__.py": {
+      "bytes": 289,
+      "sha256": "ed3aaa261a28a79c0bb6124f48129429287420b90189bf270c708c5c50d49e51"
+    },
+    "distribution/hermes/plugin.yaml": {
+      "bytes": 225,
+      "sha256": "1ab7703e967f1e25781fb8006470528776247f95488a6dc40170789f3bcbdddd"
+    }
+  },
+  "formal_entrypoints": [
+    "maintenance/cli.py",
+    "adapters/hermes/register.py",
+    "adapters/codex/hook_entry.py",
+    "adapters/codex/mcp_entry.py",
+    "runtime/worker_entry.py",
+    "runtime/worker_launch.py",
+    "adapters/lance.py",
+    "lance_process_store.py"
+  ],
+  "console_scripts": {
+    "hermes-scope-recall": "scope_recall.maintenance.cli:main",
+    "scope-recall": "scope_recall.maintenance.cli:main"
+  },
+  "dynamic_resolution": {
+    "bounded_internal": [
+      {
+        "path": "runtime/__init__.py",
+        "values": [
+          ".auxiliary",
+          ".model_budget"
+        ],
+        "status": "finite_lazy_exports"
+      }
+    ],
+    "optional_backend": [
+      {
+        "path": "vector_store.py",
+        "values": [
+          "lancedb",
+          "pyarrow"
+        ],
+        "status": "optional_lance_backend"
+      },
+      {
+        "path": "vector_store.py",
+        "values": [
+          "pgvector"
+        ],
+        "status": "explicitly_rejected_v3",
+        "evidence": "vector_store.py:1086-1090"
+      }
+    ],
+    "host_adapter": [
+      {
+        "path": "adapters/hermes/provider.py",
+        "value": "agent.memory_provider",
+        "status": "host_supplied_import"
+      },
+      {
+        "path": "adapters/hermes/hooks.py",
+        "value": "hermes_cli.plugins",
+        "status": "host_supplied_import"
+      },
+      {
+        "path": "adapters/codex/mcp_entry.py",
+        "value": "mcp",
+        "status": "optional_codex_extra"
+      }
+    ],
+    "unresolved_internal": {
+      "status": "not_exhaustively_resolved",
+      "method": "allowlist file existence/hash plus selected entrypoint and dynamic-branch review",
+      "note": "This record does not claim complete resolution of every dynamic import or external caller; retained AST evidence remains the bounded reference."
+    }
+  },
+  "legacy_capability_exit": {
+    "pgvector": {
+      "status": "explicitly_rejected_in_v3_distribution",
+      "proof": "vector_store.py raises ValueError before importing legacy PG modules; old source modules remain outside allowlist"
+    },
+    "legacy_provider_cli_upgrade": {
+      "status": "outside_clean_allowlist",
+      "proof": "provider.py, cli.py, installer.py, stable_update.py, managed_upgrade.py are not in python_modules; source files are retained for migration/history"
+    },
+    "migration": {
+      "status": "bounded_wrapper_included",
+      "proof": "maintenance/migrate.py delegates to maintenance/migrate_v2.py; migration_mapping.json is package data"
+    },
+    "external_bridge": {
+      "status": "outside_clean_allowlist_unverified_for_external_callers",
+      "proof": "legacy source remains; no deletion claim"
+    }
+  },
+  "limitations": [
+    "Allowlist and static import review prove the clean release contents and explicit PG refusal, not absence of external callers of retained source files.",
+    "Host imports require the host installation; no Gateway/A2A or production host validation is claimed.",
+    "Existing wheel evidence is a prior installation snapshot and is not this source snapshot."
+  ]
+}

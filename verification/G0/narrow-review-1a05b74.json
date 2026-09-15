@@ -1,0 +1,66 @@
+{
+  "audit_type": "narrow_followup",
+  "auditor": "/root/contract_adjudicator",
+  "candidate_sha": "1a05b74f0bd89d6c5db18396257be94a7eb4e315",
+  "base_sha": "ed302077ee5d46e57acc731ad976db3df92a49ff",
+  "narrow_verdict": "PASS",
+  "reviewed_scope": "Shared Go allowance admission guard and associated evidence identity only.",
+  "findings": [],
+  "guard": {
+    "shared_function": "probes/cheap_model_probe.py:check_go_allowance",
+    "call_sites": [
+      "probes/cheap_model_probe.py:157",
+      "probes/mimo_compat_probe.py:33"
+    ],
+    "fresh_GET_per_attempt": true,
+    "all_three_windows_required": true,
+    "accepted_window": "status ok, numeric non-bool percent in [0,80)",
+    "unavailable_malformed_unknown_or_insufficient": "Abort before project reservation and model POST.",
+    "response_size_bound_bytes": 32768,
+    "connection_closed_in_finally": true,
+    "admission_order": "Fresh account GET, then persistent project budget reservation, then model POST.",
+    "unchanged_limit": "Account snapshot is not an atomic reservation against other instances or proof of balance settings."
+  },
+  "verification": {
+    "independent_fixed_source_local_tests": {
+      "passed": 31,
+      "failed": 0,
+      "skipped": 0,
+      "seconds": 0.45,
+      "network_and_subprocess_guard": true,
+      "junit": ".execution/TEST-P02-G0-audit/1a05b74-local-tests/budget-unit.xml"
+    },
+    "original_failed_run": {
+      "unique_cases": 31,
+      "passed_cases": 30,
+      "errored_cases": 1,
+      "error_events": 2,
+      "assertion_failure_events": 0,
+      "receipt_failed_1_is_unique_case_count": true,
+      "original_XML_preserved": true
+    },
+    "final_saved_run": {
+      "passed": 31,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0
+    },
+    "strict_P02_receipt_valid": true,
+    "correct_receipt_base": true,
+    "artifact_hashes_and_fixed_contents_matched": 88,
+    "canonical_manifest_digest": "b10726e8dae42fbd23acd9c6e1ef39683544383165689375a9355053e75df1af",
+    "receipt_manifest_digest_matches": true,
+    "copied_ed302077_independent_audit_matches_original_after_newline_normalization": true,
+    "historical_API_runs_not_relabelled_as_guarded_reruns": true,
+    "details": ".execution/TEST-P02-G0-audit/1a05b74-identity-checks.json"
+  },
+  "overall_G0": "NO_GO",
+  "remaining_condition": "Actual Codex desktop input and necessary public callback/artifact-path evidence.",
+  "prior_budget_models_and_semantic_standards": "Remain frozen; not reopened by this audit.",
+  "P03_ready": false,
+  "audit_API_requests": 0,
+  "audit_credential_reads": 0,
+  "production_access": 0,
+  "implementation_or_receipt_edits": 0,
+  "conclusion": "The specific shared allowance-guard tightening is closed. No expansion of audit scope or additional approval requirement."
+}

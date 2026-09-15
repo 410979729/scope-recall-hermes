@@ -1,0 +1,186 @@
+{
+  "gate": "G0",
+  "verdict": "pass",
+  "candidate_sha": "17943a0beccf46d5e6616cb6638e5dc3d5a6b552",
+  "review_base_sha": "f292eba31a153961f981bb745a5e8f65b29c01c3",
+  "auditor": "/root/g0_desktop_audit",
+  "independent_of_implementation": true,
+  "recorded_by": "/root: byte-for-byte independent audit archival",
+  "scope": "Close the sole G0-DESKTOP prerequisite on the fixed candidate. This accepts P02 public-interface feasibility and carries forward the prior accepted P00/P01, Hermes SVG, model/budget/evaluation freeze, and Go allowance guard. It does not accept P03-P19 implementation, B01-B12 semantic quality, or release readiness.",
+  "blocking_findings": [],
+  "next_task_ready": true,
+  "audit_evidence": [
+    "verification/G0/g0-review-17943a0.json"
+  ],
+  "audit_sha256": "5b48aa3357119c528e021cc3e2da40cea71ca67b8a70a15bcd9c12cbb86ee22e",
+  "accepted_partial_boundaries": {
+    "automatic_frontstage_and_visible_capture": {
+      "decision": "PASS_FOR_P02",
+      "sequence_pairs": [
+        [
+          17,
+          24
+        ],
+        [
+          25,
+          27
+        ],
+        [
+          32,
+          33
+        ],
+        [
+          35,
+          38
+        ],
+        [
+          41,
+          42
+        ]
+      ],
+      "finding": "Each pair shares session/turn identity. The deterministic per-turn nonce is absent from the current submitted prompt, present in emitted additionalContext, and detected in that turn's final text at Stop. The five contexts are distinct; the latest three pairs use the current fixed probe SHA.",
+      "source_boundary": "The first three actual UI marker failures are retained. Two intermediate failed probe source hashes are unknown and remain null; this is not retroactively represented as reproducible source identity."
+    },
+    "public_tool_callbacks": {
+      "decision": "PASS_WITH_DECLARED_PARTIAL_FIELDS",
+      "sequences": [
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        26,
+        36,
+        37
+      ],
+      "finding": "Real Bash failures are preserved; known exit-0 and exit-7 fixtures both reach PostToolUse with distinct command/tool IDs and full stdout. The new-context MCP preview callback carries structured content/isError. The tested Bash callback response is a string and contains no structured exit_code.",
+      "restriction": "Neither PostToolUse presence nor normal final Stop proves shell success. Preserve raw tool output and represent missing structured exit status as unknown/partial."
+    },
+    "SVG_source_retention_and_new_context": {
+      "decision": "PASS_FOR_P02_INTERFACE_FEASIBILITY",
+      "capture_sequence": 32,
+      "reopen_sequence": 37,
+      "preview_sequence": 36,
+      "source_sha256": [
+        "64c3d4cfbe24bd096ac63a64cad4099b019101e0c0471085ed29e4b7f7c53eaa",
+        "33422e89191741035274c42f22f87ce5f6503532cbfc5ca9623738668e64cd0a"
+      ],
+      "finding": "One actual attachment prompt preserves two same-name files in order, distinct full paths, and the evaluation binding v1 structure versus v2 color. The hook records two immutable, content-addressed copies beside that prompt. Current local retained bytes, archived bytes and hashes agree. An independent session later reads both retained versions through the public Bash tool, with exact SVG and matching hashes; the public preview tool queued v1, and the implementation's actual UI observation records the blue-circle preview.",
+      "context_attribution": "The second task was initialized once through official CLI with TEST_CONTEXT_READY and without earlier SVG conversation. Initialization is not counted as desktop interaction. Its subsequent SVG reopen and interrupt/recovery turns use actual desktop UI; the independent audit confirmed separate task/turn status via read_thread.",
+      "restriction": "Only the two authorized TEST fixture paths are captured by this probe. A general product attachment parser, permissions/retention policy, immutable source revisions, deletion and semantic comparison remain required implementation work."
+    },
+    "interrupt_and_resume": {
+      "decision": "PASS_WITH_DECLARED_PARTIAL_CAPTURE",
+      "interrupt_sequence": 40,
+      "resume_sequences": [
+        41,
+        42
+      ],
+      "finding": "The real desktop stop produced Interrupt for turn 01a0752b-be94-7bd0-95fb-7bbcf9f8a351. Public app readback independently reports interrupted. The started fixture later wrote finished after its 45-second wait; its current local state exactly matches the report. No Stop or PostToolUse completion for that interrupted turn is present in the audited observation window. The following desktop turn has a new turn ID, UserPromptSubmit and a Stop carrying its new nonce.",
+      "restriction": "Do not promise cancellation of tool side effects or invent interrupted final text. Preserve interrupted/partial state and treat the missing completion as a capture gap. Normal desktop app-exit SessionEnd timing remains partial, as explicitly disclosed."
+    },
+    "receipt_and_fixed_candidate": {
+      "decision": "PASS",
+      "manifest_files": 98,
+      "receipt_artifacts": 99,
+      "canonical_manifest_digest": "a5b5a6439ccc6c6eec8c231e55990b00992074096cd554bc24fc8405b0ac18a5",
+      "finding": "All raw working-tree hashes match. All 98 normalized contents equal fixed-candidate Git blobs; 62 raw/Git differences are line-ending conversion only. P00/P01/P02 receipts validate against the original strict schema. The P02 receipt remains blocked pending this audit, which was correct before the independent verdict."
+    }
+  },
+  "product_obligations_unchanged": [
+    "Implement P03-P19 and retain all original B01-B12, M01-M60, J01-J08 and I01-I15 obligations; this gate does not certify semantic quality.",
+    "P04 onward must preserve trusted installation/session/original-turn/event/tool occurrence identity, exact source text and revisions, and source gaps. TEST relay role or prompt wording must not establish human_direct authority.",
+    "General attachment support must use declared authorization/retention policy and versioned immutable copies, bind comments/order to the correct artifact, detect missing sources and cover same-path overwrites, deletion and exports. The two-path probe is not a product parser.",
+    "Bash missing exit status, unsupported tool coverage, interruption without completion/final text, and unverified normal SessionEnd timing must remain explicit partial/unknown capability states; do not infer tool success or no side effects.",
+    "Implement and test the selected shared native worker lifecycle and foreground limits in the assigned later tasks; do not move native library loading into per-turn command hooks.",
+    "Run the frozen early two-host slices and final independent holdout/host journeys using the approved model routes, aggregate budget, fairness and scoring rules. Interface markers, fixture SVG reads, and saved-evidence replay do not count as those semantic passes.",
+    "Refresh gate/task metadata to record this independent P02/G0 decision before commencing P03; no further approval is needed for that authorized transition."
+  ],
+  "prior_review": {
+    "gate": "G0",
+    "verdict": "no_go",
+    "candidate_sha": "ed302077ee5d46e57acc731ad976db3df92a49ff",
+    "review_base_sha": "f98b0667f010c9763740391a3cec7ed5d79a4553",
+    "auditor": "/root/contract_adjudicator",
+    "independent_of_implementation": true,
+    "recorded_by": "/root from independent auditor messages; not a self-issued gate approval",
+    "scope": "Model-route and evaluation-freeze delta only. P00/P01 and accepted Hermes SVG interface are not reopened. No full semantic acceptance.",
+    "blocking_findings": [
+      {
+        "id": "G0-DESKTOP",
+        "priority": "P1",
+        "finding": "Actual Codex desktop UserPromptSubmit injection is unproved; CLI and app-tool dispatch are not a substitute",
+        "required_action": "Observe the already requested manual desktop TEST input and remaining necessary public callbacks"
+      }
+    ],
+    "accepted_evidence_boundaries": [
+      "Actual A2A normal/resume/new-session injection and tool exit 0/7 observations are evidence of interface delivery only",
+      "Public hook registration identity fix is bounded and demonstrated; no host core change",
+      "A2A tasks/cancel does not interrupt the underlying turn; partial coverage must remain explicit",
+      "api_request_error observed in a real AIAgent run against local HTTP 400; five actual callbacks and no post_llm/on_session_end/sync_turn",
+      "Two local HTTP POSTs in the API-error fixture comprise one metadata request and one model request, external model calls zero",
+      "Native-memory coexistence is initialization-only; complete model behavior and P06/P13 lifecycle remain unproved",
+      "Sixteen preflight and twelve budget tests were reviewed, not independently rerun"
+    ],
+    "identity_checks": {
+      "manifest_files": 85,
+      "manifest_digest": "685c215d530e6d7137d5415e7d4a46a6aa54bcfc2519d3b04cf85325caef17af",
+      "line_ending_conversions_accounted_for": true,
+      "independent_local_budget_tests_passed": 19,
+      "ledger_attempts": 9,
+      "charged_or_reserved_micro_usd": 44603
+    },
+    "audit_evidence": [
+      "verification/G0/read-only-checks-13b141b.json",
+      "verification/G0/svg-review-f98b066.json",
+      "verification/G0/g0-review-ed302077.json",
+      "verification/G0/narrow-review-1a05b74.json"
+    ],
+    "scope_clarification": {
+      "authority": "Independent follow-up reading original 07 sections 13.1/13.2 and P02 task card",
+      "decision": "Complete SVG source via existing A2A text/data is already within scope; choosing it requires no additional scope approval",
+      "png_raw": "unsupported on this A2A source; not mandatory if the specified SVG route succeeds",
+      "necessary_evidence": "Two same-name different-content versions with source/evaluation binding, exact hashes, public tool reopening in a new session; synthetic relay must not be labeled human_direct",
+      "remaining_product_obligations": "B10/M46-M50, permission-aware reopening, immutable history, loss handling and derived deletion remain for product implementation",
+      "verdict_change": "Hermes SVG public interface accepted at f98b066; budget, models and evaluation frozen at ed302077; G0 remains no-go for actual Codex desktop input and required public callbacks/artifact path"
+    },
+    "next_task_ready": false,
+    "prior_review": {
+      "candidate_sha": "f98b0667f010c9763740391a3cec7ed5d79a4553",
+      "verdict": "no_go",
+      "evidence_ref": "verification/G0/svg-review-f98b066.json"
+    },
+    "resolved_findings": [
+      {
+        "id": "G0-ARTIFACT",
+        "status": "accepted_Hermes_public_SVG_interface_only",
+        "evidence_ref": "verification/G0/svg-review-f98b066.json",
+        "further_paid_probe_needed": false,
+        "not_granted": "Actual Codex desktop, human provenance, full B10/M46-M50, deletion/authorization/visual/semantic acceptance"
+      },
+      {
+        "id": "G0-EVAL",
+        "status": "accepted_budget_model_routes_evaluation_freeze",
+        "evidence_ref": "verification/G0/g0-review-ed302077.json",
+        "not_granted": "Semantic acceptance, actual desktop interface, G0 pass or P03 admission"
+      }
+    ],
+    "evaluation_proposal": "Independently frozen at ed302077; criteria remain unchanged by this metadata update",
+    "operational_requirement_before_further_Go_calls": {
+      "new_G0_P0_P1_defect": false,
+      "finding": "Account preflight is currently in mimo_compat_probe.py:20 and called at :51; cheap_model_probe.py:126 main lacks it. Its original four-call batch is already exhausted and refuses replay.",
+      "required_action": "Share a fresh GET usage fail-closed gate across every new Go runner attempt and retry: all three windows status ok with finite percentage below 80, alongside the persistent project reservation. Missing/failed/unavailable preflight must stop that attempt.",
+      "authority": "Routine implementation tightening within existing authorization; test with local fixtures and no additional upstream calls.",
+      "bounded_guarantee": "GET usage exists and was observed. Its snapshot is not an atomic reservation against other active instances. Do not claim plan-only billing or zero balance debit. Do not change the five active instances or account settings to manufacture a global lock.",
+      "existing_balance_setting": "Unknown and unchanged. Source permits balance fallback when configured; existing account reload behavior is not ruled out. The approved bound is this project's API usage equivalent, not all-account cash spending.",
+      "historical_gap": "The first four model calls preceded the first account read. Retain that omission; do not rewrite history as if preflight had occurred."
+    },
+    "operational_requirement_closure": {
+      "candidate_sha": "1a05b74f0bd89d6c5db18396257be94a7eb4e315",
+      "verdict": "PASS",
+      "evidence_ref": "verification/G0/narrow-review-1a05b74.json",
+      "scope": "Common Go allowance guard only; G0 still NO_GO for actual desktop prerequisite"
+    }
+  }
+}

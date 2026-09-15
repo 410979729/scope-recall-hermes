@@ -1,0 +1,273 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "trace_view",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "protocol_version": {
+      "const": "1.1"
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "status": {
+      "enum": [
+        "ok",
+        "partial",
+        "unavailable"
+      ]
+    },
+    "memory_epoch": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "as_of": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "paths": {
+      "type": "array",
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "nodes": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 4,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 8192
+                }
+              },
+              "required": [
+                "id",
+                "label"
+              ]
+            }
+          },
+          "edges": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "direction",
+                "subject",
+                "predicate",
+                "value_text",
+                "ref",
+                "revision",
+                "kind",
+                "conditions",
+                "temporal_status",
+                "claim_state",
+                "valid_from",
+                "valid_to",
+                "evidence_refs",
+                "basis"
+              ],
+              "properties": {
+                "direction": {
+                  "enum": [
+                    "outgoing",
+                    "incoming"
+                  ]
+                },
+                "subject": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240
+                },
+                "predicate": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240
+                },
+                "value_text": {
+                  "type": "string",
+                  "maxLength": 8192
+                },
+                "ref": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "kind": {
+                  "enum": [
+                    "fact",
+                    "preference",
+                    "constraint",
+                    "decision",
+                    "intention"
+                  ]
+                },
+                "conditions": {
+                  "type": "array",
+                  "maxItems": 32,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 8192
+                  }
+                },
+                "temporal_status": {
+                  "enum": [
+                    "current",
+                    "historical",
+                    "disputed",
+                    "unknown"
+                  ]
+                },
+                "claim_state": {
+                  "enum": [
+                    "active",
+                    "disputed"
+                  ]
+                },
+                "valid_from": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "valid_to": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "evidence_refs": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 32,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  }
+                },
+                "basis": {
+                  "enum": [
+                    "direct_report",
+                    "observed",
+                    "derived_summary",
+                    "inferred_suggestion",
+                    "unknown"
+                  ]
+                },
+                "source_contexts": {
+                  "type": "array",
+                  "maxItems": 8,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "platform",
+                      "chat_type"
+                    ],
+                    "properties": {
+                      "platform": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64
+                      },
+                      "chat_type": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "hops": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          },
+          "basis": {
+            "const": "recorded_relations"
+          }
+        },
+        "required": [
+          "nodes",
+          "edges",
+          "hops",
+          "basis"
+        ]
+      }
+    },
+    "gaps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 16
+    },
+    "coverage": {
+      "enum": [
+        "bounded",
+        "unknown"
+      ]
+    },
+    "answerability": {
+      "enum": [
+        "unknown",
+        "supported_paths_only"
+      ]
+    },
+    "visited_nodes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 64
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "budget_unit": {
+      "const": "utf8_bytes"
+    },
+    "facts_written": {
+      "const": 0
+    }
+  },
+  "required": [
+    "protocol_version",
+    "request_id",
+    "status",
+    "memory_epoch",
+    "as_of",
+    "paths",
+    "gaps",
+    "coverage",
+    "answerability",
+    "visited_nodes",
+    "truncated",
+    "budget_unit",
+    "facts_written"
+  ],
+  "$defs": {}
+}

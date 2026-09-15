@@ -1,0 +1,285 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "source_event",
+  "description": "Scope Recall v1.1 working-tree contract with P01 independent-adjudication amendments. See verification/P01/contract-decision.md. Not a deployed API.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "protocol_version": {
+      "const": "1.1"
+    },
+    "source_event_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "source_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "origin": {
+      "enum": [
+        "human_direct",
+        "assistant_visible",
+        "tool_observation",
+        "external_document",
+        "host_generated",
+        "memory_reinjection",
+        "imported",
+        "origin_unknown"
+      ]
+    },
+    "role": {
+      "enum": [
+        "user",
+        "assistant",
+        "tool",
+        "system",
+        "document",
+        "unknown"
+      ]
+    },
+    "content": {
+      "type": "string",
+      "maxLength": 65536
+    },
+    "occurred_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "time_precision": {
+      "enum": [
+        "instant",
+        "day",
+        "approximate",
+        "unknown"
+      ]
+    },
+    "capture_state": {
+      "enum": [
+        "complete",
+        "partial",
+        "gap"
+      ]
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      },
+      "maxItems": 128,
+      "uniqueItems": true
+    },
+    "artifact_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      },
+      "maxItems": 32,
+      "uniqueItems": true
+    },
+    "source_original_origin": {
+      "enum": [
+        "human_direct",
+        "assistant_visible",
+        "tool_observation",
+        "external_document",
+        "host_generated",
+        "memory_reinjection",
+        "origin_unknown"
+      ]
+    },
+    "dataset_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "segment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "group_key",
+        "index",
+        "total",
+        "truncated"
+      ],
+      "properties": {
+        "group_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      }
+    },
+    "source_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platform",
+        "chat_type"
+      ],
+      "properties": {
+        "platform": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "chat_type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "source_principal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "resolution"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "human",
+            "assistant",
+            "tool",
+            "host",
+            "document",
+            "unknown"
+          ]
+        },
+        "resolution": {
+          "enum": [
+            "verified",
+            "unresolved"
+          ]
+        },
+        "principal_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "display_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "resolution": {
+                "const": "verified"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "principal_ref"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "resolution": {
+                "const": "unresolved"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "principal_ref"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "display_snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "order",
+        "items"
+      ],
+      "properties": {
+        "order": {
+          "enum": [
+            "observed",
+            "unknown"
+          ]
+        },
+        "items": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "artifact_ref",
+              "revision"
+            ],
+            "properties": {
+              "artifact_ref": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "required": [
+    "protocol_version",
+    "source_event_key",
+    "source_revision",
+    "origin",
+    "role",
+    "content",
+    "occurred_at",
+    "recorded_at",
+    "time_precision",
+    "capture_state",
+    "evidence_refs"
+  ],
+  "dependentRequired": {
+    "display_snapshot": [
+      "artifact_refs"
+    ]
+  }
+}

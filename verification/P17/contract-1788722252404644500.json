@@ -1,0 +1,109 @@
+{
+  "command": [
+    "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\.venv\\Scripts\\python.exe",
+    "-B",
+    "-m",
+    "pytest",
+    "tests/unit/test_v11_context.py",
+    "tests/contract/test_v11_inputs.py",
+    "tests/contract/test_v11_protocol.py",
+    "tests/contract/test_v11_capture.py",
+    "tests/contract/test_v11_claims.py",
+    "tests/contract/test_v11_episodes.py",
+    "tests/contract/test_v11_episode_authority.py",
+    "tests/contract/test_v11_deletion.py",
+    "tests/contract/test_v11_storage.py",
+    "tests/contract/test_p08_retrieval.py",
+    "tests/contract/test_p08_evidence_followup.py",
+    "tests/contract/test_v11_recall_admission.py",
+    "tests/contract/test_v11_worker.py",
+    "-q",
+    "-p",
+    "v11_guard",
+    "-p",
+    "no:cacheprovider",
+    "--durations=10",
+    "--junitxml=F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-runtime-integration\\.execution\\TEST-v11-d3vjqt_t\\junit.xml"
+  ],
+  "exit_code": 0,
+  "overall_exit_code": 0,
+  "pytest_exit_code": 0,
+  "wrapper_exit_code": 0,
+  "cleanup_exit_code": 0,
+  "pytest": {
+    "state": "completed",
+    "exit_code": 0,
+    "error": null
+  },
+  "wrapper": {
+    "state": "succeeded",
+    "exit_code": 0,
+    "error": null
+  },
+  "cleanup": {
+    "state": "succeeded",
+    "exit_code": 0,
+    "error": null
+  },
+  "transition_history": [
+    "prepared",
+    "pytest_started",
+    "pytest_completed_waiting_cleanup",
+    "cleanup_succeeded",
+    "receipt_written"
+  ],
+  "duration_seconds": 29.447224500006996,
+  "passed": 390,
+  "failed": 0,
+  "skipped": 0,
+  "selected": [
+    "tests/unit/test_v11_context.py",
+    "tests/contract/test_v11_inputs.py",
+    "tests/contract/test_v11_protocol.py",
+    "tests/contract/test_v11_capture.py",
+    "tests/contract/test_v11_claims.py",
+    "tests/contract/test_v11_episodes.py",
+    "tests/contract/test_v11_episode_authority.py",
+    "tests/contract/test_v11_deletion.py",
+    "tests/contract/test_v11_storage.py",
+    "tests/contract/test_p08_retrieval.py",
+    "tests/contract/test_p08_evidence_followup.py",
+    "tests/contract/test_v11_recall_admission.py",
+    "tests/contract/test_v11_worker.py"
+  ],
+  "selection": {
+    "changed_files": [
+      "core/delete_storage.py",
+      "core/retrieval_storage.py",
+      "core/worker.py"
+    ],
+    "impacts": [
+      "delete",
+      "read",
+      "write"
+    ],
+    "unknown_files": [],
+    "required_tiers": [
+      "contract"
+    ],
+    "reasons": [
+      "I01_I03_I04_I06_I07_I08_I09_I10_I14_safety_baseline",
+      "retrieval_for_read_path_change"
+    ],
+    "metadata": {
+      "level": "T1",
+      "requires": [],
+      "model_calls": false
+    },
+    "diagnostics": []
+  },
+  "required_gates": [],
+  "missing_gates": [],
+  "log": "verification/P17/contract-1788722252404644500.log",
+  "model_calls": false,
+  "test_data": "synthetic_only",
+  "source_base": "5180af0ab41b6579121c4ffc0db69bb548bbd52f",
+  "source_inputs_sha256": "3f5bf6d6fc87f25d9a7343d20b2723600f845568ac05529a5b18b5c43756d55c",
+  "source_manifest": "verification/P17/contract-1788722252404644500-inputs.json",
+  "evidence_scope": "P17 selected local contracts only; no M/J semantic or host behavior execution"
+}

@@ -1,0 +1,20 @@
+........................................................................ [ 18%]
+........................................................................ [ 36%]
+........................................................................ [ 55%]
+........................................................................ [ 73%]
+........................................................................ [ 92%]
+..............................                                           [100%]
+============================ slowest 10 durations =============================
+5.93s call     tests/contract/test_v11_episodes.py::test_long_episode_uses_bounded_segments_and_preserves_final_source
+0.97s call     tests/contract/test_v11_recall_admission.py::test_P08_relation_budget_counts_rejected_candidates_and_checks_original_deadline
+0.92s call     tests/contract/test_v11_recall_admission.py::test_P08_relation_expansion_stays_within_two_hops_and_24_objects
+0.51s call     tests/contract/test_p08_evidence_followup.py::test_collection_page_size_31_uses_collection_budget
+0.45s call     tests/contract/test_v11_capture.py::test_chunking_preserves_every_character_and_replays_all_or_nothing
+0.18s call     tests/contract/test_v11_recall_admission.py::test_P08_claim_state_reuses_current_history_and_as_of_semantics
+0.18s call     tests/contract/test_v11_deletion.py::test_restore_epoch_never_reuses_any_pre_restore_packet_epoch
+0.17s call     tests/contract/test_v11_capture.py::test_revised_shorter_source_hides_obsolete_segment_tails
+0.14s call     tests/contract/test_p08_evidence_followup.py::test_collection_deadline_returns_bounded_cursor_with_injected_clock
+0.14s call     tests/contract/test_v11_episode_authority.py::test_stale_reference_head_can_be_clarified_as_new_version
+390 passed in 27.57s
+
+{"cleanup_exit_code": 0, "overall_exit_code": 0, "pytest_exit_code": 0, "transition_history": ["prepared", "pytest_started", "pytest_completed_waiting_cleanup", "cleanup_succeeded", "receipt_written"], "wrapper_exit_code": 0}

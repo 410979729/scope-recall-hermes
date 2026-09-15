@@ -4,18 +4,23 @@ The store owns vector-table mechanics only; record identity, dimensions, and rep
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import importlib
 import inspect
+import json
 import logging
+import math
 import os
 import subprocess
 import sys
+import time
 from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Protocol, cast, runtime_checkable
 
 from .capture_filters import sanitize_report_text
+from .vector_compaction import physical_vector_footprint
 from .vector_mutation_guard import advisory_file_lock
 
 logger = logging.getLogger(__name__)
@@ -791,25 +796,37 @@ class LanceVectorStore:
             "build and activate a new vector generation explicitly"
         )
 
-    def upsert_records(self, rows: Iterable[dict[str, Any]]) -> None:
+    @contextmanager
+    def physical_write_lock(self):
+        """Hold the established cross-process Lance mutation lock."""
+
+        with _lance_write_guard(self._write_lock_path):
+            yield
+
+    def upsert_records_locked(self, rows: Iterable[dict[str, Any]]) -> None:
+        """Commit rows while ``physical_write_lock`` is already held."""
+
         self._ensure_schema_compatible()
         table = self._require_table()
         payload = list(rows)
         if not payload:
             return
+        checkout_latest = getattr(table, "checkout_latest", None)
+        if callable(checkout_latest):
+            checkout_latest()
+        (
+            table.merge_insert("id")
+            .when_matched_update_all()
+            .when_not_matched_insert_all()
+            .execute(payload)
+        )
+
+    def upsert_records(self, rows: Iterable[dict[str, Any]]) -> None:
         # A replay can repeat after the physical commit but before the SQLite
         # outbox completion CAS.  Lance merge_insert makes that retry one
         # idempotent transaction instead of exposing a delete/add crash window.
-        with _lance_write_guard(self._write_lock_path):
-            checkout_latest = getattr(table, "checkout_latest", None)
-            if callable(checkout_latest):
-                checkout_latest()
-            (
-                table.merge_insert("id")
-                .when_matched_update_all()
-                .when_not_matched_insert_all()
-                .execute(payload)
-            )
+        with self.physical_write_lock():
+            self.upsert_records_locked(rows)
 
     def upsert(self, record: VectorRecord | Mapping[str, Any]) -> None:
         self.upsert_records([vector_record_to_dict(record)])
@@ -825,6 +842,86 @@ class LanceVectorStore:
                 checkout_latest()
             table.delete(f"id IN ({quoted})")
 
+    def purge_governed_members(self, *, members, agent_id, installation_id,
+                               partitions, project_id, branch_id, budget_seconds) -> bool:
+        """Acknowledge active removal only under the publication lock.
+
+        Inputs are opaque identities authorized by the host. No truth database
+        or model is accessed here. Revision is deliberately not a delete filter.
+        """
+        if type(budget_seconds) not in (int, float) or not math.isfinite(budget_seconds) or budget_seconds <= 0:
+            raise ValueError("positive finite purge budget required")
+        deadline = time.monotonic() + float(budget_seconds)
+
+        def check_budget():
+            if time.monotonic() >= deadline:
+                raise RuntimeError("native vector purge deadline exhausted")
+
+        if not isinstance(agent_id, str) or not agent_id or not isinstance(installation_id, str) or not installation_id:
+            raise ValueError("trusted purge identity required")
+        if not members or not partitions:
+            return False
+        targets = {(entry["kind"], entry["ref"]) for entry in members}
+        governed = {(entry["scope_id"], entry["embedding_space"]): entry["physical_scope_id"] for entry in partitions}
+        scopes = {scope for scope, _ in governed}
+        kinds = {"event", "claim", "episode", "artifact", "reference"}
+        if any(kind not in kinds or not isinstance(ref, str) or not ref for kind, ref in targets):
+            raise ValueError("invalid purge members")
+
+        def inventory():
+            check_budget()
+            table = self._require_table()
+            table.checkout_latest()
+            check_budget()
+            rows = self._table_rows(columns=["id", "scope_id", "source", "target"])
+            matched = []
+            seen_ids = set()
+            for row in rows:
+                check_budget()
+                try:
+                    if type(row["id"]) is not str or not row["id"] or row["id"] in seen_ids:
+                        return None
+                    seen_ids.add(row["id"])
+                    metadata = json.loads(row["target"])
+                    required = ("object_kind", "object_ref", "vector_id", "embedding_space",
+                                "agent_id", "installation_id", "logical_scope_id")
+                    if any(type(metadata.get(key)) is not str or not metadata[key] for key in required):
+                        return None
+                    if metadata["object_kind"] not in kinds or type(metadata.get("object_revision")) is not int or metadata["object_revision"] < 1:
+                        return None
+                    if any(key not in metadata or (metadata[key] is not None and (type(metadata[key]) is not str or not metadata[key])) for key in ("project_id", "branch_id")):
+                        return None
+                    if row["id"] != metadata["vector_id"] or row["source"] != metadata["object_ref"]:
+                        return None
+                    if (metadata["agent_id"], metadata["installation_id"]) != (agent_id, installation_id):
+                        continue
+                    if (metadata["object_kind"], metadata["object_ref"]) not in targets:
+                        continue
+                    if metadata["logical_scope_id"] not in scopes or (metadata["project_id"], metadata["branch_id"]) != (project_id, branch_id):
+                        continue
+                    partition = governed.get((metadata["logical_scope_id"], metadata["embedding_space"]))
+                    if partition is None or row["scope_id"] != partition:
+                        return None
+                    matched.append(row["id"])
+                except (KeyError, TypeError, ValueError, AttributeError):
+                    # Unknown rows cannot establish an empty governed inventory.
+                    return None
+            return matched
+
+        check_budget()
+        with self.physical_write_lock():
+            # Empty inventories also wait behind every already-granted writer.
+            ids = inventory()
+            if ids is None:
+                return False
+            if ids:
+                check_budget()
+                quoted = ", ".join(_sql_quote(item) for item in sorted(set(ids)))
+                self._require_table().delete(f"id IN ({quoted})")
+            remaining_ids = inventory()
+            check_budget()
+            return remaining_ids == []
+
     def contains_id(self, memory_id: str) -> bool:
         """Return whether one id exists only when a scalar ``id`` index is listed.
 
@@ -832,7 +929,7 @@ class LanceVectorStore:
         SQLite membership ledger is the supported incremental path.
         """
 
-        found = lance_table_contains_id(self._require_table(), str(memory_id or ""))
+        found = lance_table_contains_id(self._fresh_table(), str(memory_id or ""))
         if found is None:
             raise RuntimeError("LanceDB cannot prove an indexed id lookup")
         return found
@@ -845,7 +942,7 @@ class LanceVectorStore:
         return len(existing)
 
     def _table_rows(self, columns: list[str] | None = None) -> list[dict[str, Any]]:
-        table = self._require_table()
+        table = self._fresh_table()
         if hasattr(table, "to_list"):
             try:
                 if columns:
@@ -935,13 +1032,60 @@ class LanceVectorStore:
     def search(self, vector: list[float], *, scope_id: str, limit: int) -> list[dict[str, Any]]:
         if not vector:
             return []
-        table = self._require_table()
+        table = self._fresh_table()
         query = table.search(vector).metric(self._metric).where(f"scope_id = {_sql_quote(scope_id)}")
         return query.limit(int(limit)).to_list()
 
     def count_rows(self) -> int:
-        table = self._require_table()
+        table = self._fresh_table()
         return int(table.count_rows())
+
+    def compact(self) -> dict[str, int]:
+        """Merge fragments and drop superseded versions.  Idempotent.
+
+        Every publication is its own commit, so the store accumulates one data
+        fragment and one manifest per vector.  Measured on the TianShu store at
+        2,243 vectors: 2,243 fragments, 2,245 manifests, 272.3 MB -- of which
+        237.6 MB was the manifest history alone, because each manifest lists
+        every fragment and so the history grows quadratically.  One compaction
+        took 3.5 s and left 1 fragment, 2 manifests and 28.6 MB, and cut search
+        latency on identical data from 142 ms to 29 ms.
+
+        ``cleanup_older_than`` is zero and ``delete_unverified`` is set because
+        nothing here is worth retaining and a longer window does not merely
+        delay reclamation, it prevents it: with a ten-minute or one-hour window
+        the superseded fragments were still orphaned on disk after three later
+        passes, because the version created by the compaction itself was too
+        young to retire its predecessors.  Zero is the only value that closes
+        the loop.  That is safe here for reasons this store already
+        establishes: the vector store is a rebuildable cache whose source of
+        truth is SQLite, no recovery path reads Lance version history, every
+        writer takes the cross-process lock held below, and every reader now
+        follows the table forward (see ``_fresh_table``).
+
+        Returns the footprint before and after so a caller can report what the
+        pass actually reclaimed rather than merely that it ran.
+        """
+        from datetime import timedelta
+
+        before = self._physical_footprint()
+        table = self._require_table()
+        with self.physical_write_lock():
+            checkout_latest = getattr(table, "checkout_latest", None)
+            if callable(checkout_latest):
+                checkout_latest()
+            table.optimize(cleanup_older_than=timedelta(seconds=0), delete_unverified=True)
+        after = self._physical_footprint()
+        return {f"{key}_before": value for key, value in before.items()} | after
+
+    def _physical_footprint(self) -> dict[str, int]:
+        """Fragment, manifest and byte counts read straight off the filesystem.
+
+        Deliberately not asked of LanceDB: this must also work from a doctor
+        that never opens the table, and the numbers an operator sees should be
+        the ones they can verify with a file listing.
+        """
+        return physical_vector_footprint(self._db_path, self._table_name)
 
     def close(self) -> None:
         self._table = None
@@ -951,6 +1095,30 @@ class LanceVectorStore:
         if self._table is None:
             raise RuntimeError("vector table is not open")
         return self._table
+
+    def _fresh_table(self):
+        """The table at its newest committed version, for every read.
+
+        An open Lance table pins the version it was opened at.  Writes already
+        call ``checkout_latest`` before committing, but reads did not, so a
+        long-running host that opened the store once never saw a vector the
+        worker published afterwards -- measured on a copy of the TianShu store:
+        a reader kept reporting 2,243 rows while a second process had written
+        2,244, and only ``checkout_latest`` moved it.  A restart was the only
+        thing that fixed it, which is precisely the failure mode that hides
+        itself.
+
+        It also makes compaction safe for readers.  Compaction drops superseded
+        versions; a reader that pinned one would fail instead of following the
+        table forward.
+
+        Measured cost: 0.75-1.55 ms against a 29-142 ms search.
+        """
+        table = self._require_table()
+        checkout_latest = getattr(table, "checkout_latest", None)
+        if callable(checkout_latest):
+            checkout_latest()
+        return table
 
 
 def normalize_vector_backend(value: Any) -> str:
@@ -988,20 +1156,8 @@ def build_vector_store(
             return ProcessLanceVectorStore(vector_dir, table_name=table_name, dimensions=dimensions, metric=metric)
         return LanceVectorStore(vector_dir, table_name=table_name, dimensions=dimensions, metric=metric)
     if normalized == "pgvector":
-        from .pgvector_store import PGVectorStore
-
-        pg_config = dict((config or {}).get("pgvector") or {}) if isinstance(config, Mapping) else {}
-        return PGVectorStore(
-            dsn_env=str(pg_config.get("dsn_env") or "SCOPE_RECALL_PGVECTOR_DSN"),
-            table_name=str(pg_config.get("table_name") or table_name or "scope_recall_vectors"),
-            dimensions=dimensions,
-            metric=metric,
-            connect_timeout_seconds=int(
-                pg_config.get("connect_timeout_seconds") or 10
-            ),
-            statement_timeout_ms=int(
-                pg_config.get("statement_timeout_ms") or 30_000
-            ),
-            lock_timeout_ms=int(pg_config.get("lock_timeout_ms") or 5_000),
+        raise ValueError(
+            "pgvector is not supported in this v3 distribution; retain the old "
+            "installation and use the migration guide"
         )
     raise ValueError(f"unsupported vector backend: {backend}")

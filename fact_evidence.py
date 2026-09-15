@@ -116,6 +116,11 @@ _POST_RELATION_COPULA_RE = re.compile(r"^\s*(?:is|are)\b", re.IGNORECASE)
 _FIRST_PERSON_SUBJECT_RE = re.compile(r"^(?:i|we)$", re.IGNORECASE)
 _CJK_CURRENT_MODIFIER_RE = re.compile(r"(?:现在|目前|如今|当前|现时|仍然|一直)")
 _CJK_PRE_RELATION_ASSERTIVE_MODIFIER_RE = re.compile(r"(?:还|确实|主要|就)")
+_CJK_COPULA_RE = re.compile(r"(?:是|为)")
+_CJK_TRANSITION_GAP_RE = re.compile(
+    r"\s*(?:由|从)\s*[^。！？!?;；，,\n]{1,120}?\s*"
+    r"(?:更正|修正|调整|变更|修改|更新|改)(?:为|成)\s*"
+)
 _CJK_FINAL_ASSERTIVE_PARTICLE_RE = re.compile(r"(?:呀|啊)")
 _CJK_GAP_IGNORABLE_RE = re.compile(
     r"[\s,，:：、()（）\[\]【】《》〈〉「」『』“”‘’]*"
@@ -186,10 +191,17 @@ def _phrase_spans(text: str, phrase: str) -> tuple[_Span, ...]:
             spans.append(_Span(index, index + len(normalized_phrase)))
             offset = index + 1
         return tuple(spans)
-    pattern = re.compile(
-        rf"(?<![\w]){re.escape(normalized_phrase)}(?![\w])",
-        re.UNICODE,
+    # CJK characters delimit Latin identifiers; ``\w`` would incorrectly
+    # merge ``2026年TEST-project`` into one token. Keep dots/hyphens inside
+    # identifier boundaries so ``blue`` still cannot match ``blue.txt``.
+    identifier = r"[a-z0-9_.-]"
+    left = rf"(?<!{identifier})" if re.match(identifier, normalized_phrase[0]) else ""
+    right = (
+        r"(?![a-z0-9_-]|\.(?=[a-z0-9_.-]))"
+        if re.match(identifier, normalized_phrase[-1])
+        else ""
     )
+    pattern = re.compile(left + re.escape(normalized_phrase) + right, re.UNICODE)
     return tuple(_Span(match.start(), match.end()) for match in pattern.finditer(normalized_text))
 
 
@@ -393,7 +405,10 @@ def _cjk_subject_relation_gap_is_ignorable(gap: str) -> bool:
 
 
 def _cjk_relation_value_gap_is_ignorable(gap: str) -> bool:
-    return _cjk_gap_is_ignorable(gap, _CJK_CURRENT_MODIFIER_RE)
+    # The old value belongs to the transition, not to the new assertion.
+    # Subject/relation ordering and sentence polarity are still checked.
+    return (_cjk_gap_is_ignorable(gap, _CJK_CURRENT_MODIFIER_RE, _CJK_COPULA_RE)
+            or _CJK_TRANSITION_GAP_RE.fullmatch(_normalized(gap)) is not None)
 
 
 def _cjk_suffix_gap_is_ignorable(gap: str) -> bool:
@@ -509,6 +524,7 @@ def evidence_supports_claim(
     The check intentionally does not inspect sibling evidence or surrounding
     batch text.  That prevents a valid but unrelated user quote from laundering
     an assistant inference into direct authority.
+
     """
 
     source_type = _normalized(evidence.source_type)
@@ -521,6 +537,35 @@ def evidence_supports_claim(
     return any(
         proposition.polarity == "positive"
         and proposition.current_state_supported
+        and proposition.subject_supported
+        and proposition.relation_supported
+        and proposition.arguments_aligned
+        for proposition in _claim_aligned_propositions(evidence, claim)
+    )
+
+
+def evidence_supports_relation(
+    evidence: EvidenceReference,
+    claim: ClaimDraft,
+) -> bool:
+    """Return whether one quote proves the complete positive claim frame.
+
+    Unlike :func:`evidence_supports_claim`, this helper does not require an
+    unbounded current-state reading. Callers must separately validate any
+    condition and valid-time bounds. It supports dated observations without
+    falling back to unordered lexical co-occurrence.
+    """
+
+    source_type = _normalized(evidence.source_type)
+    if source_type not in AUTHORITATIVE_EVIDENCE_SOURCE_TYPES:
+        return False
+    quote = str(evidence.quote or "").strip()
+    if not quote:
+        return False
+    return any(
+        _LATIN_NEGATION_RE.search(_claim_frame_context(proposition.clause, claim)) is None
+        and _CJK_NEGATION_RE.search(_claim_frame_context(proposition.clause, claim)) is None
+        and _UNCERTAINTY_RE.search(_claim_frame_context(proposition.clause, claim)) is None
         and proposition.subject_supported
         and proposition.relation_supported
         and proposition.arguments_aligned
@@ -560,5 +605,6 @@ __all__ = [
     "INFERRED_EVIDENCE_SOURCE_TYPES",
     "TRUSTED_EVIDENCE_SOURCE_TYPES",
     "evidence_supports_claim",
+    "evidence_supports_relation",
     "evidence_supports_retraction",
 ]

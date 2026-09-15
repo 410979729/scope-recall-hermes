@@ -1,0 +1,313 @@
+{
+  "schema_version": "scope-recall.independent-evaluation-dataset-audit.v1",
+  "auditor": "/root/g0_desktop_audit",
+  "dataset_id": "TEST-EVAL-SEALED-120-v1",
+  "dataset_directory": ".execution/TEST-EVAL-SEALED-120-v1",
+  "verdict": "REJECTED_FOR_FINAL_EVALUATION",
+  "eligible_for_holdout_execution_or_acceptance": false,
+  "G0_status_changed": false,
+  "current_product_work_may_continue": true,
+  "scope": "Independent review of sealed synthetic raw/gold quality and consistency with the already frozen evaluation contract. This record contains statistics and repair categories only; no source conversation, question, expected answer, or gold span is included.",
+  "inspected_files": [
+    {
+      "path": "raw.jsonl",
+      "bytes": 461160,
+      "sha256": "9dcb7c98436165782f1c259260202cc421c4b16318c5e25f3da3dc3c33fd029e"
+    },
+    {
+      "path": "gold.jsonl",
+      "bytes": 192592,
+      "sha256": "62f5afba6a7124794c4444e610749e93fbb55141759f0f355b1c02d58e5fd344"
+    },
+    {
+      "path": "manifest.json",
+      "bytes": 877,
+      "sha256": "f1ecbf5353b90a3d1ec729e220dac9f9a6a547f117ad4552d3ffbc028af8c141"
+    }
+  ],
+  "frozen_requirements_unchanged": {
+    "independent_core_questions": 120,
+    "groups": 12,
+    "per_group": {
+      "positive": 4,
+      "negative": 3,
+      "ambiguous": 3
+    },
+    "paired_conditions": [
+      "related",
+      "unrelated"
+    ],
+    "pairs_do_not_increase_independent_N": true,
+    "four_arms_unchanged": true,
+    "source_only_model_input_no_gold_or_prewritten_claims": true,
+    "all_existing_scoring_budget_and_host_requirements_unchanged": true
+  },
+  "structural_results": {
+    "jsonl_parse": "PASS",
+    "manifest_hashes": "PASS",
+    "raw_rows": 240,
+    "gold_rows": 240,
+    "unique_case_ids": 120,
+    "unique_pair_ids": 120,
+    "relatedness_counts": {
+      "related": 120,
+      "unrelated": 120
+    },
+    "per_group": {
+      "B01": {
+        "case_ids": 10,
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3,
+        "normalized_history_patterns": 2,
+        "distinct_related_query_texts": 3
+      },
+      "B02": {
+        "case_ids": 10,
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3,
+        "normalized_history_patterns": 2,
+        "distinct_related_query_texts": 3
+      },
+      "B03": {
+        "case_ids": 10,
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3,
+        "normalized_history_patterns": 2,
+        "distinct_related_query_texts": 3
+      },
+      "B04": {
+        "case_ids": 10,
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3,
+        "normalized_history_patterns": 2,
+        "distinct_related_query_texts": 3
+      },
+      "B05": {
+        "case_ids": 10,
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3,
+        "normalized_history_patterns": 2,
+        "distinct_related_query_texts": 3
+      },
+      "B06": {
+        "case_ids": 10,
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3,
+        "normalized_history_patterns": 2,
+        "distinct_related_query_texts": 3
+      },
+      "B07": {
+        "case_ids": 10,
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3,
+        "normalized_history_patterns": 2,
+        "distinct_related_query_texts": 3
+      },
+      "B08": {
+        "case_ids": 10,
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3,
+        "normalized_history_patterns": 2,
+        "distinct_related_query_texts": 3
+      },
+      "B09": {
+        "case_ids": 10,
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3,
+        "normalized_history_patterns": 2,
+        "distinct_related_query_texts": 3
+      },
+      "B10": {
+        "case_ids": 10,
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3,
+        "normalized_history_patterns": 2,
+        "distinct_related_query_texts": 3
+      },
+      "B11": {
+        "case_ids": 10,
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3,
+        "normalized_history_patterns": 2,
+        "distinct_related_query_texts": 3
+      },
+      "B12": {
+        "case_ids": 10,
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3,
+        "normalized_history_patterns": 2,
+        "distinct_related_query_texts": 3
+      }
+    },
+    "raw_gold_positional_identity_mismatches": 0,
+    "invalid_gold_source_event_references": 0,
+    "pairs_with_identical_history": 120,
+    "synthetic_test_label_cases": 120,
+    "conclusion": "The declared counts and strata pass. These are identifiers and labels, not evidence of 120 independent semantic questions."
+  },
+  "semantic_statistics": {
+    "raw_rows_with_answer_contract": 240,
+    "raw_rows_with_class_label": 240,
+    "raw_rows_with_explicit_scoring_boundary_instruction_in_history": 240,
+    "ambiguous_cases_with_explicit_ambiguity_conclusion_in_source": 36,
+    "normalized_history_pattern_count_across_120_case_ids": 24,
+    "normalized_history_pattern_frequency_distribution": {
+      "7_cases_per_pattern": 12,
+      "3_cases_per_pattern": 12
+    },
+    "distinct_related_query_text_patterns": 36,
+    "negative_cases_whose_related_query_explicitly_describes_unrelatedness": 36,
+    "gold_rows_without_query_id": 240,
+    "gold_rows_without_relatedness": 240,
+    "unique_gold_case_pair_keys": 120,
+    "gold_pairs_with_identical_record": 120,
+    "pairs_inheriting_the_same_answerability_between_conditions": 120,
+    "distinct_gold_requirement_texts": 4,
+    "gold_rows_without_concrete_atomic_expected_value_or_source_span_fields": 240,
+    "unique_case_history_event_count": 396,
+    "history_length_distribution": {
+      "3_events": 84,
+      "4_events": 36
+    },
+    "cases_with_nonempty_attachment_metadata": 10,
+    "raw_rows_with_dataset_id": 0,
+    "history_events_with_explicit_origin": 0,
+    "history_events_with_explicit_import_batch_id": 0
+  },
+  "normalization_method": {
+    "scope": "Within-set duplication diagnostic only; not an independent-N estimator or a plagiarism detector.",
+    "input": "Related-condition history text and query text",
+    "removed": "Case identifiers and the varying numeric detail ordinal",
+    "retained": "All other natural-language wording, scenario subjects, relations, and query text",
+    "implication": "Each group collapses to two history patterns and three related-query patterns. Role/date/ordinal substitutions do not establish ten independent semantic cases."
+  },
+  "blocking_dataset_findings": [
+    {
+      "id": "EVAL-V1-01",
+      "severity": "dataset_acceptance_blocker",
+      "category": "answer_and_scoring_cues_in_execution_source",
+      "affected_case_ids": "B01-01 through B12-10",
+      "evidence_counts": {
+        "raw_rows_with_answer_contract": 240,
+        "source_rows_with_scoring_instruction": 240,
+        "explicit_ambiguity_conclusion_cases": 36
+      },
+      "finding": "Raw records include answerability/class control labels, and the actual dialogue text directly instructs the tested semantic boundary or conclusion. A manifest statement that gold is separate does not remove these cues. No model call was made, so this is source contamination rather than a claim that leakage already occurred in a run.",
+      "repair": "Move classification, answerability, grading expectations and harness setup instructions to gold/control-only material. Define an explicit model-input projection that emits only natural raw dialogue, factual role/source context and the actual query. Synthetic-safety declarations may remain general; they must not reveal a per-case answer or expected failure state."
+    },
+    {
+      "id": "EVAL-V1-02",
+      "severity": "dataset_acceptance_blocker",
+      "category": "independent_case_count_not_established",
+      "affected_case_ids": "All groups, especially each within-group 01-07 and 08-10 cluster",
+      "evidence_counts": {
+        "declared_case_ids": 120,
+        "normalized_history_patterns": 24,
+        "related_query_patterns": 36
+      },
+      "finding": "Within each group, multiple IDs reuse the same substantive history and query design, changing sequence numbers, timestamps or persona labels. The corpus does not substantiate the frozen count of 120 independent semantic cases.",
+      "repair": "Author distinct factual configurations, event relations, evidence requirements and failure mechanisms per case. Renaming an entity or timestamp is not sufficient. Preserve the 4/3/3 class allocation; do not count paired conditions as new questions. Keep a sealed per-case independence rationale for the next auditor."
+    },
+    {
+      "id": "EVAL-V1-03",
+      "severity": "dataset_acceptance_blocker",
+      "category": "capability_descriptions_replace_raw_events",
+      "affected_case_ids": "B01-01 through B12-10",
+      "finding": "The common history scaffold mainly names a capability to be checked rather than supplying the concrete decisions, corrections, outcomes, conditions, versions or source gaps from which that capability must be inferred. Generic source-boundary compliance cannot demonstrate the twelve frozen B contracts.",
+      "repair": "Supply original natural conversation and concrete evidence that instantiate each target behavior. Cases involving outcomes need outcome observations; version cases need actual bounded artifact fixtures and identity; long-source or ordering cases need the corresponding raw structure. Do not put target semantic classifications into the source. Keep tool simulation and real tool execution separately declared."
+    },
+    {
+      "id": "EVAL-V1-04",
+      "severity": "dataset_acceptance_blocker",
+      "category": "gold_not_specific_enough_to_grade_frozen_evidence_coverage",
+      "affected_case_ids": "B01-01 through B12-10",
+      "evidence_counts": {
+        "gold_rows": 240,
+        "distinct_requirement_texts": 4,
+        "rows_without_concrete_atomic_expected_fields": 240
+      },
+      "finding": "Gold mostly repeats broad source-identity and boundary requirements. References resolve syntactically, but their existence does not provide a case-specific, independently decidable set of necessary answer slots.",
+      "repair": "For each condition, provide atomically gradable expected facts or required behavior, exact supporting source identities and bounded spans, admissible alternatives, and prohibited unsupported conclusions. Unknown/ambiguous cases need a concrete missing-evidence or competing-reference rationale grounded in the raw data. Field names alone are not a fix; the expected content must be specific and justified."
+    },
+    {
+      "id": "EVAL-V1-05",
+      "severity": "dataset_acceptance_blocker",
+      "category": "paired_condition_and_gold_association_inconsistent",
+      "affected_case_ids": "All paired cases; related-condition mismatch also affects each group's 05-07",
+      "evidence_counts": {
+        "negative_related_query_mismatches": 36,
+        "identical_gold_pairs": 120,
+        "gold_rows_without_query_id": 240
+      },
+      "finding": "Some records labeled related actually pose an unrelated task. Every pair repeats the same gold record, and gold lacks a condition/query identifier, so the per-condition expected result is not independently and unambiguously specified.",
+      "repair": "Assign a unique query_id/condition key to every raw/gold condition. Relatedness must match the actual task relationship. Write and audit each condition's gold separately, including when silence or exclusion is required. Preserve the shared case_id/pair_id and N=120."
+    },
+    {
+      "id": "EVAL-V1-06",
+      "severity": "dataset_acceptance_blocker",
+      "category": "source_replay_mapping_not_frozen",
+      "affected_case_ids": "B01-01 through B12-10",
+      "finding": "The manifest marks the corpus synthetic, but there is no frozen execution mapping from manifest/record identity and simulated speaker roles into actual transport capture, imported source events and TEST-only semantic source assumptions. Role labels must not silently become human authority.",
+      "repair": "Define a bounded trusted TEST importer/replay manifest, bind dataset_id and stable original record keys, and preserve actual transport provenance separately from simulated source assumptions. Neither role=user nor dataset_id may be an authorization switch. Keep control-only metadata outside the closed public SourceEvent DTO unless already supported. Follow evaluation-source-boundary.md."
+    }
+  ],
+  "public_C_M_J_comparison": {
+    "catalogs": [
+      {
+        "path": "fixtures/acceptance_cases.jsonl",
+        "records": 40,
+        "sha256": "93c5e3cbfb1379dc5a7ca03819bcac4b4db0522c83f5ca5938efede257932b19"
+      },
+      {
+        "path": "fixtures/cognitive_cases.jsonl",
+        "records": 60,
+        "sha256": "c1fbfa4dfd515d2e2bb1c7ba2f802c5d4796d0615b38d432b2e6e66ed8cce85a"
+      },
+      {
+        "path": "fixtures/longitudinal_journeys.jsonl",
+        "records": 8,
+        "sha256": "78b1465904a8cc3b121c9e297d2628ca031158e6c26c8b5598d28ccad3d3e243"
+      }
+    ],
+    "verdict": "NOT_QUALIFIED",
+    "rationale": "No claim of literal copying is made. The generic capability scaffold and within-set replication prevent qualification as 120 substantively independent cases beyond the public specifications. A clean independence comparison must be performed on the rewritten concrete v2 data; changing public-case names alone will not qualify."
+  },
+  "repair_handoff": {
+    "original_author": "/root/eval_inventory",
+    "direct_followup_attempt": "Rejected by collaboration tool: agent thread limit reached",
+    "direct_message_attempt": "Rejected by collaboration tool: agent thread limit reached",
+    "parent_instruction": "Preserve v1. Finish only the statistics/repair audit. Parent will assign a new independent Luna author after this task completes; that author produces v2, followed by independent re-audit.",
+    "revised_version_required": "TEST-EVAL-SEALED-120-v2",
+    "overwrite_v1_allowed": false,
+    "next_review_status": "PENDING_NEW_AUTHOR_AND_V2",
+    "recommendations": [
+      "Validate a small representative draft for factual substance, independent mechanisms, raw/gold separation and condition-specific grading before generating all 120 cases.",
+      "Do not expose raw/gold or expected answers to the implementation thread.",
+      "Freeze new raw/gold/control projection hashes together and keep v1 rejection history.",
+      "Do not execute or score v1 as final holdout evidence."
+    ]
+  },
+  "audit_boundaries": {
+    "raw_gold_modified": false,
+    "product_implementation_modified": false,
+    "frozen_thresholds_modified": false,
+    "external_model_calls": 0,
+    "production_or_secret_access": false,
+    "holdout_question_or_answer_in_this_report": false,
+    "final_source_boundary_document": "verification/G0/evaluation-source-boundary.md",
+    "semantic_deduplication_counts_are_diagnostics_not_new_sample_denominators": true
+  },
+  "conclusion": "v1 passes parsing, fingerprints and nominal stratification, but fails substantive independence, uncontaminated raw-source design, concrete gold grading and paired-condition mapping. It is not eligible for holdout execution or acceptance. This dataset rejection does not reopen G0 or block independent P05 implementation."
+}

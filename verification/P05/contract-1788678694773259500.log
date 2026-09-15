@@ -1,0 +1,10 @@
+........................................................................ [ 98%]
+.                                                                        [100%]
+============================ slowest 10 durations =============================
+0.12s call     tests/contract/test_v11_inputs.py::test_raw_text_routes_all_validate_without_claim_preseeding
+0.02s setup    tests/contract/test_v11_protocol.py::test_non_protocol_json_has_stable_sanitized_error[\xff]
+0.01s call     tests/contract/test_v11_protocol.py::test_oversize_and_deep_payloads_are_rejected
+0.01s setup    tests/contract/test_v11_protocol.py::test_evidence_must_quote_exact_accessible_source_revision
+
+(6 durations < 0.005s hidden.  Use -vv to show these durations.)
+73 passed in 0.53s

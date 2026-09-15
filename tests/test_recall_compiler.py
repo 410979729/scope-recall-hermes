@@ -450,6 +450,33 @@ def test_dedupe_evidence_order_and_diversity_are_deterministic() -> None:
     assert ids.index("duplicate-weak") < ids.index("second-project")
 
 
+def test_hitchhiker_lexical_channel_cannot_outrank_stronger_vector_only() -> None:
+    vector_only = _item(
+        "vector-only-strong",
+        score=0.6212,
+        metadata={"lexical_score": 0.0, "vector_score": 0.7469},
+    )
+    weak_lexical_plus_vector = _item(
+        "weak-lexical-plus-vector",
+        score=0.4654,
+        metadata={
+            "lexical_score": 0.2055,
+            "vector_score": 0.6675,
+            "rrf_score": 1.0,
+        },
+    )
+
+    packet = compile_recall_packet(
+        CandidateSet.from_items([weak_lexical_plus_vector, vector_only]),
+        _policy(diversity_enabled=False),
+    )
+
+    assert [item.item.id for item in packet.items] == [
+        "vector-only-strong",
+        "weak-lexical-plus-vector",
+    ]
+
+
 def test_nonretrieval_evidence_cannot_override_upstream_score_authority() -> None:
     strong = _item("strong", score=0.90, metadata={"lexical_score": 0.90})
     weak_annotated = _item(

@@ -1,0 +1,15 @@
+{
+  "ledger_id": 10,
+  "status": "http_200",
+  "error_type": "ContractError",
+  "usage": {
+    "prompt_tokens": 3727,
+    "completion_tokens": 2148,
+    "total_tokens": 5875
+  },
+  "raw_manifest_sha256": "29df1fa5daeb49b057d025307bccbe1abdc00c6aa66aa8fe687b84d20468608e",
+  "completed_at": "2026-09-06T08:40:25.678989+00:00",
+  "accepted": false,
+  "error_code": "DERIVATION_INVALID",
+  "detail": null
+}

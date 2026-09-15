@@ -1,0 +1,191 @@
+{
+  "actual_model_budget": {
+    "authorized_requests": 12,
+    "used_requests": 12,
+    "request_json_bytes": 231147,
+    "max_request_json_bytes": 786432,
+    "max_output_tokens": 1024,
+    "upstream_http_200": 12,
+    "route": "opencode-go / glm-5.3-flash",
+    "automatic_gateway_recovery_counted": true,
+    "local_over_budget_attempt_forwarded": false,
+    "credential_persisted": false,
+    "ledger_reset": false
+  },
+  "host_evidence": [
+    "verification/P02/hermes-live-readback-before-registration-fix.json",
+    "verification/P02/hermes-live-readback-after-registration-fix.json",
+    "verification/P02/hermes-registration-runtime.json",
+    "verification/P02/hermes-native-coexistence-checked.json",
+    "verification/P02/codex-actual-entry-readback.json",
+    "verification/P02/hermes-api-error-runtime.json",
+    "verification/P02/hermes-svg-interface-1788665256441150300.json",
+    "verification/P02/codex-desktop-interface.json"
+  ],
+  "historical_receipts_note": "Earlier preparation/static/preflight files are preserved snapshots. Current fields in this receipt and live-readback evidence supersede their not-yet-run statements.",
+  "post_live_hardening": {
+    "model_rerun": false,
+    "reason": "Authorized 12 upstream calls exhausted",
+    "changes": [
+      "Credential parse errors suppress secret-bearing exception context",
+      "Standalone proxy shares the canonical batch ledger across output directories",
+      "Reject n greater than 1 or boolean to keep one completion per request",
+      "Observe existing public api_request_error using allowlisted identity/status metadata",
+      "Use explicit agent.api_max_retries=1 (host minimum, one attempt)"
+    ],
+    "validation": "16 preflight and 12 budget tests; actual official AIAgent local HTTP 400 failure emitted one api_request_error, no external model calls; readback contains all five observed callbacks"
+  },
+  "artifact_identity": "Raw worktree byte hashes; canonical sorted manifest SHA256 excludes self and task_receipt to avoid a hash cycle",
+  "check_scope_notes": [
+    {
+      "evidence_ref": "verification/P02/preflight-1788664031971891600.json",
+      "scope": "synthetic callback / registration recorder, not actual host conversation"
+    },
+    {
+      "evidence_ref": "verification/P02/cheap-model-actual.json",
+      "scope": "Four API cases: 2 pass and 2 fail despite process exit 0; original source is efbe8a56f293266a07952fc0debc33027d35b685:probes/cheap_model_probe.py; durations sum timed HTTP spans only, not process wall time"
+    },
+    {
+      "evidence_ref": "verification/P02/mimo-compat-actual.json",
+      "scope": "Three public diagnostic cases after documented parameter changes. Earlier semantic error remains a failure; no claim that parameter change caused the later correct color. Duration sums HTTP spans and excludes account GET/startup. Exact meter snapshot retained as cheap-model-meter-v2.py.txt"
+    },
+    {
+      "evidence_ref": "verification/P02/embedding-route-direct-attempt.json",
+      "scope": "Supervisor-generated failure record after terminating only the identified TEST Python processes. Duration is elapsed until supervisor readback, not embedding latency; usage unknown. Exact runner/meter source snapshots retained."
+    },
+    {
+      "evidence_ref": "verification/P02/embedding-route-actual.json",
+      "scope": "Single 3072-dimension API check over existing local proxy, no retrieval/scale/semantic acceptance. No usage returned; maximum reservation retained."
+    },
+    {
+      "evidence_ref": "verification/P02/mimo-compat-actual.json",
+      "scope": "Runtime runner source is preserved at ed302077:probes/mimo_compat_probe.py. New common allowance guard was added afterward; no rerun was performed. Historical meter source is the referenced v2 snapshot, not the newly edited current file."
+    },
+    {
+      "evidence_ref": "verification/P02/embedding-route-actual.json",
+      "scope": "Exact runner and meter source for proxy embedding are preserved at ed302077. Current meter common Go guard was added afterward and was not part of that API run."
+    }
+  ],
+  "scope": "Supplemental P02 evidence metadata; task_receipt stays within the unchanged v1.1 schema",
+  "svg_interface": {
+    "evidence_ref": "verification/P02/hermes-svg-interface-1788665256441150300.json",
+    "passed": 10,
+    "failed": 0,
+    "skipped": 0,
+    "local_model_requests": 6,
+    "request_bytes": 77640,
+    "external_model_requests": 0,
+    "production_host_source_fingerprints_unchanged": {
+      "agent/memory_provider.py": true,
+      "agent/memory_manager.py": true,
+      "agent/turn_context.py": true,
+      "agent/turn_finalizer.py": true,
+      "agent/agent_init.py": true,
+      "agent/tool_executor.py": true,
+      "agent/inline_tool_executors.py": true,
+      "run_agent.py": true,
+      "hermes_cli/plugins.py": true,
+      "hermes_cli/plugins_loader.py": true,
+      "hermes_cli/plugins_ledger.py": true,
+      "plugins/memory/__init__.py": true,
+      "plugins/platforms/a2a/__init__.py": true,
+      "plugins/platforms/a2a/adapter.py": true,
+      "plugins/platforms/a2a/protocol.py": true,
+      "plugins/platforms/a2a/security.py": true,
+      "gateway/platforms/base.py": true
+    },
+    "original_paid_request_ledger_count": 12,
+    "original_paid_request_limit": 12,
+    "interpretation": "Public-interface feasibility; no semantic or visual acceptance; actual Codex desktop pending"
+  },
+  "incremental_budget": {
+    "model_attempts": 9,
+    "go_attempts": 7,
+    "embedding_attempts": 2,
+    "charged_or_reserved_micro_usd": 44603,
+    "cap_micro_usd": 20000000,
+    "account_metadata_gets_not_model_generations": 4,
+    "approved": true,
+    "approved_reply": "批准，按此预算自主推进",
+    "scope": "API usage equivalent, including existing subscription usage; no purchase or new subscription",
+    "ledger": ".execution/TEST-MODEL-BUDGET-V1/call-budget.sqlite3"
+  },
+  "cheap_route_evidence": [
+    "verification/P02/cheap-model-actual.json",
+    "verification/P02/cheap-model-meter-adjustment.json",
+    "verification/P02/mimo-compat-actual.json",
+    "verification/P02/embedding-route-direct-attempt.json",
+    "verification/P02/embedding-route-actual.json",
+    "verification/P02/go-account-usage.json",
+    "verification/P02/go-route-source-readback.json"
+  ],
+  "post_ed302077_allowance_guard": {
+    "code_base_sha": "ed302077ee5d46e57acc731ad976db3df92a49ff",
+    "shared_function": "probes/cheap_model_probe.py:check_go_allowance",
+    "runners": [
+      "probes/cheap_model_probe.py",
+      "probes/mimo_compat_probe.py"
+    ],
+    "network_rerun": false,
+    "fresh_per_attempt": true,
+    "local_final_passed": 31,
+    "local_final_failed": 0,
+    "local_final_skipped": 0,
+    "initial_test_failure": {
+      "evidence_ref": "verification/P02/cheap-budget-guard-unit.xml",
+      "passed_test_cases": 30,
+      "errored_test_cases": 1,
+      "error_events": 2,
+      "cause": "Oversized parametrized test identifier exceeded the Windows 32767-character environment-variable limit in pytest setup and teardown; this case assertion did not run.",
+      "fix": "Explicit short case IDs only; inputs and assertions unchanged.",
+      "receipt_counting": "failed=1 counts the single errored test case; two setup/teardown error events remain in XML."
+    },
+    "fixed_evidence_ref": "verification/P02/cheap-budget-guard-unit-fixed.xml",
+    "independent_guard_review": {
+      "candidate_sha": "1a05b74f0bd89d6c5db18396257be94a7eb4e315",
+      "verdict": "PASS",
+      "evidence_ref": "verification/G0/narrow-review-1a05b74.json",
+      "independent_tests_passed": 31
+    }
+  },
+  "desktop_before_actual_UI": {
+    "observed_at_ns": 1788669593432108800,
+    "observations_total": 8,
+    "last_observation": {
+      "sequence": 8,
+      "event": "SessionEnd",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "",
+      "observed_ns": 1788667658714781900
+    },
+    "last_completed_app_turn": "01a07493-dc99-74a1-aac9-09030e0f4573",
+    "interpretation": "One later SessionEnd is present; it is not a new manual input or automatic-context evidence. Manual TEST action remains pending.",
+    "transcripts_read": false,
+    "session_UserPromptSubmit_count": 1,
+    "UserPromptSubmit_attribution": {
+      "01a07492-a69e-7a40-b059-bc7941f814eb": "Previously verified CLI turn, not manual desktop input"
+    },
+    "desktop_tool_dispatch_UserPromptSubmit_count": 0,
+    "manual_desktop_input": "not_observed; pending user action"
+  },
+  "latest_desktop_readback": {
+    "evidence_ref": "verification/P02/codex-desktop-interface.json",
+    "observations_total": 42,
+    "actual_ui_scenarios": 9,
+    "last_completed_app_turn": "01a0752d-dca1-7041-98c7-fdd2408919d3",
+    "automatic_UserPromptSubmit_and_Stop_verified": true,
+    "last_turn_marker_verified": true,
+    "svg_public_path_and_reopening_verified": true,
+    "Interrupt_observed": true,
+    "underlying_tool_cancellation": false,
+    "session_end_desktop_exit_timing": "partial",
+    "transcripts_read": false,
+    "independent_G0_review": "pending fixed candidate"
+  },
+  "independent_G0_closure": {
+    "verdict": "PASS",
+    "candidate_sha": "17943a0beccf46d5e6616cb6638e5dc3d5a6b552",
+    "audit_ref": "verification/G0/g0-review-17943a0.json",
+    "next_task_P03_ready": true
+  }
+}

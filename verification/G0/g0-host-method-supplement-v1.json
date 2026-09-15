@@ -1,0 +1,85 @@
+{
+  "artifact": "g0-host-method-supplement-v1",
+  "status": "PREDECLARED_PENDING_EQUIVALENCE",
+  "equivalence_passed": false,
+  "formal_evaluation_authorized_by_this_artifact": false,
+  "source_head_at_read": "dda646d50f5c416812c029c209c916bf007459a6",
+  "original_protocol": {
+    "path": "F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/verification/P18/p18-evaluation-protocol-v1.json",
+    "sha256_at_read": "45b70192857b5b8645dd2bf409db55f320f1cf31f297e89910f9f340e76d32d4",
+    "modified": false
+  },
+  "authorization_basis": {
+    "latest_user_instruction_as_relayed_by_root": "Proceed autonomously without repeated approval and use substantial parallel work within the authorized task.",
+    "specification": "START_HERE.md:34",
+    "exact_quote": "用户是否授权阶段内自动推进，以实际启动指令为准。",
+    "scope": "Isolated TEST and local candidate; no expansion of budget, data access, production or trust permissions."
+  },
+  "old_method": {
+    "hermes": "Actual Hermes 0.21.0 A2A gateway",
+    "codex": "Actual Windows desktop UI input/send path; CLI substitution forbidden",
+    "limitations": [
+      "Frozen Hermes A2A treats remote peer content as untrusted external input and rejects operator slash commands.",
+      "Root reports Escape stopped mouse/window UI control; that control is not presumed available."
+    ]
+  },
+  "predeclared_method": {
+    "hermes": "Add the same official 0.21.0 CLI operator entry for explicitly authorized live corrections/deletions; retain A2A origin_unknown capture, new-session queries and authorization rejection tests.",
+    "codex": "Evaluate official mcp__codex_app.send_message_to_thread on existing isolated actual desktop tasks as a possible equivalent app-server entry; no CUA, no mouse/window control, no CLI substitution, no trust bypass.",
+    "no_origin_or_privilege_expansion": true,
+    "codex_tool_hook_behavior_known": false,
+    "codex_diagnostic_plan_as_reported_by_root": "At most two official appsend probes assigned elsewhere; results pending and execution/success not asserted here."
+  },
+  "required_equivalence_evidence": {
+    "hermes": [
+      "Pinned host/source/package/model identity and per-arm CLI/A2A mapping to the same isolated TEST installation, principal, project/scope and authority database.",
+      "Live CLI operation, current authorization provenance, mutation revision/receipt and deletion fence, followed by actual A2A clean-session verification.",
+      "A2A negative tests preserve nonhuman origin and refuse equivalent operator commands; role=user alone never establishes human_direct.",
+      "Report CLI and A2A stage evidence separately; do not claim A2A operator capability."
+    ],
+    "codex": [
+      "Actual desktop process/package and task/session/turn linkage, TEST directory, installation identity, scope, database, fixed model/tools and existing plugin trust.",
+      "Actual UserPromptSubmit, Stop and applicable Session lifecycle callbacks tied to the target turn.",
+      "Correlate prompt, captured source, read-only recall, actual additionalContext delivery exactly once, and final visible output; sent acknowledgment is insufficient.",
+      "Compare against available actual UI receipts and retain required attachment version/access behavior; missing callback or delivery evidence blocks equivalence."
+    ],
+    "fairness": [
+      "Freeze entry and step mapping before formal evaluation; apply identical arrangements, raw histories, models, tools and budgets across all four arms.",
+      "Separate TEST homes/databases per arm and host; no cross-arm or cross-host database, recall packet or generated answer handoff.",
+      "Separate L1 capture paths and L2-L4 stage attribution without reducing end-to-end denominators or journey steps."
+    ]
+  },
+  "unchanged": {
+    "independent_core_holdout_questions": 120,
+    "paired_variants": 240,
+    "paired_variants_are_independent_samples": false,
+    "queries_per_host": 40,
+    "query_conditions": 2,
+    "journeys_per_host": 8,
+    "rounds_per_journey": 8,
+    "arms": ["A_host_native", "B_baseline_578b", "C_final_candidate", "D_archive_simple_search"],
+    "host_count": 2,
+    "models_and_routes_unchanged": true,
+    "l3_evidence_coverage_minimum": 0.9,
+    "l3_each_B_group_minimum": 0.8,
+    "l4_evidence_support_and_task_suitability_minimum": 0.9,
+    "l4_query_gate_per_host": "36/40 minimum; paired related/unrelated conditions both count",
+    "l4_journey_gate_per_host": "8/8 complete journeys",
+    "safety": "All determinate source/current-history/authorization/deletion/isolation assertions correct; any safety violation blocks.",
+    "total_api_folded_cap_usd": 20,
+    "existing_shared_ledger_count_token_submission_caps_and_maximum_reserves_preserved": true,
+    "parallel_diagnostic_auxiliary_failed_and_rerun_calls_count_in_existing_ledger": true,
+    "original_failures_and_receipts_preserved": true,
+    "real_automatic_extraction_required": true,
+    "prewritten_claims_answers_or_gold_guided_selection_allowed": false
+  },
+  "independent_review": {
+    "decision": "Method correction is admissible under the relayed current authorization only if equivalence is demonstrated and no frozen behavior is removed. This is a pending decision, not PASS.",
+    "basis": ["START_HERE.md:34", "docs/05_验收测试与独立审计.md:146", "docs/07_人类式记忆功能定稿与验收.md:387-409"],
+    "remaining_formal_prerequisites_waived": false,
+    "host_model_or_ui_started_by_this_audit": false,
+    "sealed_raw_or_gold_read": false,
+    "product_tests_or_fixture_modified": false
+  },
+  "human_readable_companion": "g0-host-method-supplement-v1.md"
+}

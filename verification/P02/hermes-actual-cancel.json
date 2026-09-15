@@ -1,0 +1,90 @@
+{
+  "scenario": "cancel",
+  "scope": "actual isolated Hermes A2A",
+  "budget_before": 9,
+  "started_ns": 1788663076912663500,
+  "send": {
+    "sent": {
+      "jsonrpc": "2.0",
+      "id": "TEST-P02-cancel",
+      "method": "message/send",
+      "params": {
+        "message": {
+          "messageId": "TEST-P02-cancel",
+          "role": "ROLE_USER",
+          "parts": [
+            {
+              "text": "TEST_SCOPE_RECALL Run exactly one harmless terminal command: sleep 12 . Then answer TEST_P02_WAIT_FINISHED. Do not read or modify files or run any other tool. The caller may cancel this synthetic test."
+            }
+          ],
+          "contextId": "TEST-P02-cancel"
+        },
+        "configuration": {
+          "returnImmediately": true
+        }
+      }
+    },
+    "received": {
+      "jsonrpc": "2.0",
+      "id": "TEST-P02-cancel",
+      "result": {
+        "id": "task-8285fd7764a74bdc",
+        "contextId": "TEST-P02-cancel",
+        "status": {
+          "state": "TASK_STATE_WORKING",
+          "timestamp": "2026-09-06T02:51:16.932Z"
+        }
+      }
+    },
+    "duration_seconds": 0.020005200000014156
+  },
+  "upstream_reserved_before_cancel": true,
+  "cancel": {
+    "sent": {
+      "jsonrpc": "2.0",
+      "id": "TEST-P02-cancel-cancel",
+      "method": "tasks/cancel",
+      "params": {
+        "id": "task-8285fd7764a74bdc"
+      }
+    },
+    "received": {
+      "jsonrpc": "2.0",
+      "id": "TEST-P02-cancel-cancel",
+      "result": {
+        "id": "task-8285fd7764a74bdc",
+        "contextId": "TEST-P02-cancel",
+        "status": {
+          "state": "TASK_STATE_CANCELED",
+          "timestamp": "2026-09-06T02:51:17.135Z"
+        }
+      }
+    },
+    "duration_seconds": 0.001260999997612089
+  },
+  "readback": {
+    "sent": {
+      "jsonrpc": "2.0",
+      "id": "TEST-P02-cancel-readback",
+      "method": "tasks/get",
+      "params": {
+        "id": "task-8285fd7764a74bdc"
+      }
+    },
+    "received": {
+      "jsonrpc": "2.0",
+      "id": "TEST-P02-cancel-readback",
+      "result": {
+        "id": "task-8285fd7764a74bdc",
+        "contextId": "TEST-P02-cancel",
+        "status": {
+          "state": "TASK_STATE_CANCELED",
+          "timestamp": "2026-09-06T02:51:42.138Z"
+        }
+      }
+    },
+    "duration_seconds": 0.0027036999817937613
+  },
+  "budget_after": 11,
+  "completed_ns": 1788663102142204200
+}

@@ -1,0 +1,22 @@
+{
+  "host_source": "F:\\Agents\\runtime\\windows\\hermes-tianxuan\\hermes-agent",
+  "host_pid": 34820,
+  "controller_pid": 35652,
+  "gateway_url": "http://127.0.0.1:19921",
+  "model_proxy_url": "http://127.0.0.1:58134/v1",
+  "log_path": "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-hermes-registration-fixed\\gateway-1788663274171379700.log",
+  "credential_loaded": true,
+  "credential_persisted": false,
+  "upstream": "https://opencode.ai/zen/go/v1",
+  "model": "glm-5.3-flash",
+  "stop_file": "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-hermes-registration-fixed\\STOP-P02",
+  "budget_ledger": "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-hermes\\call-budget.sqlite3",
+  "exit_code": 1,
+  "budget": {
+    "reserved_requests_including_failures": 12,
+    "request_json_bytes": 231147,
+    "max_requests": 12,
+    "max_request_json_bytes": 786432
+  },
+  "completed_ns": 1788663375682673600
+}

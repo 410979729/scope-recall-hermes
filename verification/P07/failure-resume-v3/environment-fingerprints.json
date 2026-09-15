@@ -1,0 +1,16 @@
+{
+  "worktree_1": {
+    "export_manifest.py": "b2bbfd60414c06271c6c33ee8b5e6f964bb53eb3f252cbde08f929e48de13556",
+    "fixture-settings.json": "4bf7138264f95d485d21cf69e2995482a33d64a7be599522472f0446adec4bf9",
+    "input\\alpha.json": "2392e6687d386a6864043fdadc7f8849f411ac921846ced11bacd6573b601a44",
+    "input\\middle.json": "c09a11049552b4dac1daeb0b92c91ee5a6b55191410d4cbc25778ebf0e160780",
+    "input\\zeta.json": "2fee0b7a964cc1dbcb4c0f3c8950f2bb2e18693771bf456506527093b319fdb3"
+  },
+  "worktree_2": {
+    "export_manifest.py": "b2bbfd60414c06271c6c33ee8b5e6f964bb53eb3f252cbde08f929e48de13556",
+    "fixture-settings.json": "4f170751e2dfcceee6e6e1fa11fadc3a61813d28859c55f209f58733548c89b1",
+    "input\\alpha.json": "2392e6687d386a6864043fdadc7f8849f411ac921846ced11bacd6573b601a44",
+    "input\\middle.json": "c09a11049552b4dac1daeb0b92c91ee5a6b55191410d4cbc25778ebf0e160780",
+    "input\\zeta.json": "2fee0b7a964cc1dbcb4c0f3c8950f2bb2e18693771bf456506527093b319fdb3"
+  }
+}

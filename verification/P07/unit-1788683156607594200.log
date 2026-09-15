@@ -1,0 +1,33 @@
+INTERNALERROR> Traceback (most recent call last):
+INTERNALERROR>   File "F:\SCOPERECALL更新项目\.venv\Lib\site-packages\_pytest\main.py", line 326, in wrap_session
+INTERNALERROR>     config._do_configure()
+INTERNALERROR>   File "F:\SCOPERECALL更新项目\.venv\Lib\site-packages\_pytest\config\__init__.py", line 1205, in _do_configure
+INTERNALERROR>     self.hook.pytest_configure.call_historic(kwargs=dict(config=self))
+INTERNALERROR>   File "F:\SCOPERECALL更新项目\.venv\Lib\site-packages\pluggy\_hooks.py", line 534, in call_historic
+INTERNALERROR>     res = self._hookexec(self.name, self._hookimpls.copy(), kwargs, False)
+INTERNALERROR>           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+INTERNALERROR>   File "F:\SCOPERECALL更新项目\.venv\Lib\site-packages\pluggy\_manager.py", line 120, in _hookexec
+INTERNALERROR>     return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+INTERNALERROR>            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+INTERNALERROR>   File "F:\SCOPERECALL更新项目\.venv\Lib\site-packages\pluggy\_callers.py", line 167, in _multicall
+INTERNALERROR>     raise exception
+INTERNALERROR>   File "F:\SCOPERECALL更新项目\.venv\Lib\site-packages\pluggy\_callers.py", line 121, in _multicall
+INTERNALERROR>     res = hook_impl.function(*args)
+INTERNALERROR>           ^^^^^^^^^^^^^^^^^^^^^^^^^
+INTERNALERROR>   File "F:\SCOPERECALL更新项目\.venv\Lib\site-packages\_pytest\logging.py", line 653, in pytest_configure
+INTERNALERROR>     config.pluginmanager.register(LoggingPlugin(config), "logging-plugin")
+INTERNALERROR>                                   ^^^^^^^^^^^^^^^^^^^^^
+INTERNALERROR>   File "F:\SCOPERECALL更新项目\.venv\Lib\site-packages\_pytest\logging.py", line 690, in __init__
+INTERNALERROR>     self.log_file_handler = _FileHandler(
+INTERNALERROR>                             ^^^^^^^^^^^^^
+INTERNALERROR>   File "C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\logging\__init__.py", line 1231, in __init__
+INTERNALERROR>     StreamHandler.__init__(self, self._open())
+INTERNALERROR>                                  ^^^^^^^^^^^^
+INTERNALERROR>   File "C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\logging\__init__.py", line 1263, in _open
+INTERNALERROR>     return open_func(self.baseFilename, self.mode,
+INTERNALERROR>            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+INTERNALERROR>   File "F:\SCOPERECALL更新项目\worktrees\scope-recall-v1.1\tests\v11_guard.py", line 43, in _audit
+INTERNALERROR>     _check_path(args[0], writing)
+INTERNALERROR>   File "F:\SCOPERECALL更新项目\worktrees\scope-recall-v1.1\tests\v11_guard.py", line 25, in _check_path
+INTERNALERROR>     raise PermissionError('TEST_BOUNDARY: device namespace denied')
+INTERNALERROR> PermissionError: TEST_BOUNDARY: device namespace denied

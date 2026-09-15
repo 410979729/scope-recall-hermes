@@ -1,0 +1,63 @@
+{
+  "command": [
+    "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\.venv\\Scripts\\python.exe",
+    "-B",
+    "-m",
+    "pytest",
+    "tests/contract/test_v11_episodes.py",
+    "tests/contract/test_v11_retained_artifacts.py",
+    "tests/contract/test_v11_episode_authority.py",
+    "tests/contract/test_v11_consolidation_input.py",
+    "-q",
+    "-p",
+    "v11_guard",
+    "-p",
+    "no:cacheprovider",
+    "--durations=10",
+    "--junitxml=F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-c7cfdnnf\\junit.xml"
+  ],
+  "exit_code": 0,
+  "overall_exit_code": 0,
+  "pytest_exit_code": 0,
+  "wrapper_exit_code": 0,
+  "cleanup_exit_code": 0,
+  "pytest": {
+    "state": "completed",
+    "exit_code": 0,
+    "error": null
+  },
+  "wrapper": {
+    "state": "succeeded",
+    "exit_code": 0,
+    "error": null
+  },
+  "cleanup": {
+    "state": "succeeded",
+    "exit_code": 0,
+    "error": null
+  },
+  "transition_history": [
+    "prepared",
+    "pytest_started",
+    "pytest_completed_waiting_cleanup",
+    "cleanup_succeeded",
+    "receipt_written"
+  ],
+  "duration_seconds": 14.43185390002327,
+  "passed": 67,
+  "failed": 0,
+  "skipped": 1,
+  "selected": [
+    "tests/contract/test_v11_episodes.py",
+    "tests/contract/test_v11_retained_artifacts.py",
+    "tests/contract/test_v11_episode_authority.py",
+    "tests/contract/test_v11_consolidation_input.py"
+  ],
+  "log": "verification/P07/episodes-1788688159991214300.log",
+  "model_calls": false,
+  "test_data": "synthetic_only",
+  "source_base": "0b65bf620ceecef8984e6894bee264ddd06b5565",
+  "source_inputs_sha256": "097316cedc14456a2473578bd8fab419eb964a7516ca09d8e4f68b76633967bf",
+  "source_manifest": "verification/P07/episodes-1788688159991214300-inputs.json",
+  "evidence_scope": "P07 selected local contracts only; no M/J semantic or host behavior execution"
+}

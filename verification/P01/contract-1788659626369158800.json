@@ -1,0 +1,35 @@
+{
+  "command": [
+    "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\.venv\\Scripts\\python.exe",
+    "-B",
+    "-m",
+    "pytest",
+    "tests/unit/test_v11_context.py",
+    "tests/contract/test_v11_protocol.py",
+    "tests/contract/test_v11_inputs.py",
+    "-q",
+    "-p",
+    "v11_guard",
+    "-p",
+    "no:cacheprovider",
+    "--durations=10",
+    "--junitxml=F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-dznivhml\\junit.xml"
+  ],
+  "exit_code": 0,
+  "duration_seconds": 1.5423488999949768,
+  "passed": 77,
+  "failed": 0,
+  "skipped": 0,
+  "selected": [
+    "tests/unit/test_v11_context.py",
+    "tests/contract/test_v11_protocol.py",
+    "tests/contract/test_v11_inputs.py"
+  ],
+  "log": "verification/P01/contract-1788659626369158800.log",
+  "model_calls": false,
+  "test_data": "synthetic_only",
+  "source_base": "1ea1642e6253211cf0ccb9d02afa93a1e6f9d9c2",
+  "source_inputs_sha256": "5ed1723a12fb07edd36fd9cf841bb9038abf04bc4fd8ca547d29895eb015d037",
+  "source_manifest": "verification/P01/contract-1788659626369158800-inputs.json",
+  "evidence_scope": "P01 boundaries only; no M/J semantic or host behavior execution"
+}

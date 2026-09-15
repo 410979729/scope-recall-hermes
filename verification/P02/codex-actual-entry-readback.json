@@ -1,0 +1,206 @@
+{
+  "captured_ns": 1788663331849900900,
+  "thread_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+  "thread_title": "Return interface probe marker",
+  "project_path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-codex-desktop",
+  "observations": [
+    {
+      "sequence": 1,
+      "event": "SessionEnd",
+      "session_id": "01a07490-ab16-7522-a9dc-e21f003d96f5",
+      "turn_id": "",
+      "observed_ns": 1788662120968472700,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "reason": "str"
+        },
+        "payload_sha256": "6820fb65bacd2c5cd32bea9f2b7b5aa5ff154e3ed93e1ea8c4ca58f3232ddd23",
+        "payload_bytes": 344,
+        "test_probe_only": true,
+        "transcript_read": false
+      }
+    },
+    {
+      "sequence": 2,
+      "event": "SessionStart",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "",
+      "observed_ns": 1788662164641582100,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "source": "str"
+        },
+        "payload_sha256": "223fec90dea091433a08bf5e06da7c9597ffdcf7c5e0e7b1c30704584ab23525",
+        "payload_bytes": 399,
+        "test_probe_only": true,
+        "transcript_read": false
+      }
+    },
+    {
+      "sequence": 3,
+      "event": "UserPromptSubmit",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "01a07492-a69e-7a40-b059-bc7941f814eb",
+      "observed_ns": 1788662164947964500,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "prompt": "str"
+        },
+        "payload_sha256": "69205b167a4cd94e1c436579c23240aa3a22f45490a8df02b8644ca5eb02ffce",
+        "payload_bytes": 629,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "prompt_characters": 184,
+        "prompt_contains_marker": false
+      }
+    },
+    {
+      "sequence": 4,
+      "event": "Stop",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "01a07492-a69e-7a40-b059-bc7941f814eb",
+      "observed_ns": 1788662166722097100,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "stop_hook_active": "bool",
+          "last_assistant_message": "str"
+        },
+        "payload_sha256": "f7139718c3472bb4e4c22ad8235333fb0dd1beadf351e14ccd139497a73cab07",
+        "payload_bytes": 508,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "last_assistant_message_characters": 34,
+        "last_assistant_message_contains_marker": true
+      }
+    },
+    {
+      "sequence": 5,
+      "event": "SessionEnd",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "",
+      "observed_ns": 1788662217516307400,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "reason": "str"
+        },
+        "payload_sha256": "1d7c875431aa58a2290e67376a6d342b4727abe51f0e446d445a95546ecfda75",
+        "payload_bytes": 344,
+        "test_probe_only": true,
+        "transcript_read": false
+      }
+    },
+    {
+      "sequence": 6,
+      "event": "SessionStart",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "",
+      "observed_ns": 1788662243824986200,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "source": "str"
+        },
+        "payload_sha256": "8fb156a2e58abbe8910966e76e0774e020ad5d67c2b2f201ab4932c49914bf6e",
+        "payload_bytes": 405,
+        "test_probe_only": true,
+        "transcript_read": false
+      }
+    },
+    {
+      "sequence": 7,
+      "event": "Stop",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "01a07493-dc99-74a1-aac9-09030e0f4573",
+      "observed_ns": 1788662247072328700,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "stop_hook_active": "bool",
+          "last_assistant_message": "str"
+        },
+        "payload_sha256": "d1ca4cdcac786dd323ec461ca8e2bc5e9ceae83b8916252252cfbf36576ecc74",
+        "payload_bytes": 490,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "last_assistant_message_characters": 9,
+        "last_assistant_message_contains_marker": false
+      }
+    }
+  ],
+  "transcript_read": false,
+  "trust": {
+    "method": "Official interactive Codex CLI /hooks review",
+    "hook_definitions": 6,
+    "active": 6,
+    "review_required": 0,
+    "bypass_used": false
+  },
+  "cli": {
+    "version": "0.153.4",
+    "model": "gpt-5.6-luna",
+    "turn_id": "01a07492-a69e-7a40-b059-bc7941f814eb",
+    "duration_ms": 3650,
+    "answer": "TEST_SCOPE_RECALL_P02_CONTEXT_91c7",
+    "automatic_UserPromptSubmit": true,
+    "automatic_Stop": true,
+    "scope": "Actual CLI conversation only, not proof of desktop UI entry"
+  },
+  "desktop_tool_dispatch": {
+    "turn_id": "01a07493-dc99-74a1-aac9-09030e0f4573",
+    "duration_ms": 4643,
+    "UserPromptSubmit_observed": false,
+    "Stop_observed": true,
+    "Stop_answer_characters": 9,
+    "Stop_contains_marker": false,
+    "scope": "send_message_to_thread app tool, not manual desktop UI input"
+  },
+  "desktop_manual_ui": {
+    "status": "pending_user_action",
+    "question_already_sent": true,
+    "not_claimed_supported": true
+  },
+  "file_hashes": {
+    ".execution\\TEST-P02-codex-desktop\\.codex\\hooks.json": "db7e207e7f5330d28f14f28a0ff746460878b5b60f55d943e62456d4b75df34e",
+    ".execution\\TEST-P02-codex-desktop\\.codex\\config.toml": "2a5e12e10e5124976de4f9b875b0ce96b28a5ccfab4ce4b53b4d7e4f32de3c2b",
+    "probes\\codex\\hook_probe.py": "72ad4ae323800f690753af75a30df4f395043d5b80c8ff3804611cb154256346"
+  }
+}

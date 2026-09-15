@@ -1,0 +1,143 @@
+{
+  "scope": "Four-call synthetic API format and tool-schema probe, not final semantic acceptance",
+  "credential_persisted": false,
+  "hidden_reasoning_saved": false,
+  "production_data_sent": false,
+  "automatic_retry": false,
+  "results": [
+    {
+      "model": "deepseek-v4-flash",
+      "case": "json",
+      "request_id": 1,
+      "request_bytes": 664,
+      "passed": true,
+      "http_status": 200,
+      "finish_reason": "stop",
+      "reasoning_present": true,
+      "usage": {
+        "prompt_tokens": 189,
+        "completion_tokens": 251,
+        "total_tokens": 440
+      },
+      "visible_content": "{\"project\":\"TEST-ORBIT\",\"current_color\":\"蓝色\",\"tool_status\":\"failed\",\"assistant_claim_is_tool_evidence\":false,\"scope\":\"project\"}",
+      "duration_seconds": 3.8311449000029825
+    },
+    {
+      "model": "deepseek-v4-flash",
+      "case": "tool",
+      "request_id": 2,
+      "request_bytes": 737,
+      "passed": true,
+      "http_status": 200,
+      "finish_reason": "tool_calls",
+      "reasoning_present": true,
+      "usage": {
+        "prompt_tokens": 414,
+        "completion_tokens": 105,
+        "total_tokens": 519
+      },
+      "tool_calls": [
+        {
+          "id": "call_9d2d6bdf0c924449a5ea56f6",
+          "type": "function",
+          "function": {
+            "name": "inspect_artifact",
+            "arguments": "{\"reference\": \"TEST-ARTIFACT-v1\"}"
+          }
+        }
+      ],
+      "duration_seconds": 3.1068318000179715
+    },
+    {
+      "model": "mimo-v2.5",
+      "case": "json",
+      "request_id": 3,
+      "request_bytes": 656,
+      "passed": false,
+      "http_status": 200,
+      "finish_reason": "stop",
+      "reasoning_present": false,
+      "usage": {
+        "prompt_tokens": 107,
+        "completion_tokens": 47,
+        "total_tokens": 154
+      },
+      "visible_content": "{\n  \"project\": \"TEST-ORBIT\",\n  \"current_color\": \"红色\",\n  \"tool_status\": \"failed\",\n  \"assistant_claim_is_tool_evidence\": false,\n  \"scope\": \"project\"\n}",
+      "duration_seconds": 4.120359399996232
+    },
+    {
+      "model": "mimo-v2.5",
+      "case": "tool",
+      "request_id": 4,
+      "request_bytes": 729,
+      "passed": false,
+      "error_type": "TimeoutError",
+      "duration_seconds": 30.604483699949924
+    }
+  ],
+  "budget": {
+    "requests": [
+      {
+        "id": 1,
+        "batch": "P02_CHEAP_ROUTE",
+        "model": "deepseek-v4-flash",
+        "body_sha256": "8656471378be4116ebb07c710a88faa79de8d92ec41f8e16d5c4af5b6db9044b",
+        "request_bytes": 664,
+        "reserved_input": 32768,
+        "reserved_output": 1024,
+        "actual_input": 189,
+        "actual_output": 251,
+        "charge_micro_usd": 415,
+        "status": "http_200",
+        "started_ns": 1788667374432201500
+      },
+      {
+        "id": 2,
+        "batch": "P02_CHEAP_ROUTE",
+        "model": "deepseek-v4-flash",
+        "body_sha256": "ddda915642b8d285782a98f428d1d67a4d105d3820ecee1194fd8e9b77d4fe38",
+        "request_bytes": 737,
+        "reserved_input": 32768,
+        "reserved_output": 1024,
+        "actual_input": 414,
+        "actual_output": 105,
+        "charge_micro_usd": 321,
+        "status": "http_200",
+        "started_ns": 1788667378282072400
+      },
+      {
+        "id": 3,
+        "batch": "P02_CHEAP_ROUTE",
+        "model": "mimo-v2.5",
+        "body_sha256": "1f3f2c7b7b344a746e8ccd6cafa7df330d98dbb72987169565e241895e66c1cd",
+        "request_bytes": 656,
+        "reserved_input": 32768,
+        "reserved_output": 1024,
+        "actual_input": 107,
+        "actual_output": 47,
+        "charge_micro_usd": 29,
+        "status": "http_200",
+        "started_ns": 1788667381404876000
+      },
+      {
+        "id": 4,
+        "batch": "P02_CHEAP_ROUTE",
+        "model": "mimo-v2.5",
+        "body_sha256": "6046bfaaebcffa45db9b5de2dc5025275efcb0344fc4c080e5130405ce301253",
+        "request_bytes": 729,
+        "reserved_input": 32768,
+        "reserved_output": 1024,
+        "actual_input": null,
+        "actual_output": null,
+        "charge_micro_usd": 4875,
+        "status": "network_error_usage_unknown_reserved_charge_retained",
+        "started_ns": 1788667385537443900
+      }
+    ],
+    "charge_micro_usd": 5640,
+    "project_cap_micro_usd": 20000000,
+    "small_probe_request_cap": 4
+  },
+  "old_twelve_call_budget_modified": false,
+  "source_sha256": "2ded246d2f4e17cd21da03c815a73bf5ee7969e441994e5d60d8c78506368af6"
+}

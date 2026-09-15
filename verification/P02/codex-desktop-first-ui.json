@@ -1,0 +1,95 @@
+{
+  "scenario": "first_actual_Windows_desktop_UI_input",
+  "task_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+  "turn_id": "01a07507-e98a-7391-832a-e5ebfa0f5458",
+  "source_revision": "f292eba",
+  "runtime_hook_sha256": "72ad4ae323800f690753af75a30df4f395043d5b80c8ff3804611cb154256346",
+  "input_method": "Installed Computer Use node_repl @oai/sky, observed Codex task input, type_text and click Send; not app send_message_to_thread",
+  "origin": "synthetic_agent_relay",
+  "user_input": "TEST_SCOPE_RECALL 只报告本轮额外上下文中的接口探针标记；没有则回答 NO_MARKER，不要调用工具或读取文件。",
+  "observations": [
+    {
+      "sequence": 9,
+      "event": "SessionStart",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "",
+      "observed_ns": 1788669849400295700,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "source": "str"
+        },
+        "payload_sha256": "c611f360e9217db314eabf2644cec2011146decb07595bf58cfc5fe3c0791ee6",
+        "payload_bytes": 415,
+        "test_probe_only": true,
+        "transcript_read": false
+      }
+    },
+    {
+      "sequence": 10,
+      "event": "UserPromptSubmit",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "01a07507-e98a-7391-832a-e5ebfa0f5458",
+      "observed_ns": 1788669849716880900,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "prompt": "str"
+        },
+        "payload_sha256": "efbe8551c208198ce60e166a01e2bfee58e533c6bba9b217c14dcbd4df0ce804",
+        "payload_bytes": 609,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "prompt_characters": 69,
+        "prompt_contains_marker": false
+      }
+    },
+    {
+      "sequence": 11,
+      "event": "Stop",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "01a07507-e98a-7391-832a-e5ebfa0f5458",
+      "observed_ns": 1788669852226131900,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "stop_hook_active": "bool",
+          "last_assistant_message": "str"
+        },
+        "payload_sha256": "44ae1aa6633fbe88107d3da4a76e311a8706ddf587a9f1edf1f385cb511263b2",
+        "payload_bytes": 500,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "last_assistant_message_characters": 9,
+        "last_assistant_message_contains_marker": false
+      }
+    }
+  ],
+  "duration_ms": 4311,
+  "UserPromptSubmit_observed": true,
+  "Stop_observed": true,
+  "reported_answer": "NO_MARKER",
+  "context_delivery_proved": false,
+  "interpretation": "Actual desktop callback is now proved, but this first visible reply does not prove use of injected context. Retained as a failed marker test; next diagnostic uses a unique per-turn nonce.",
+  "transcripts_read": false,
+  "model": "gpt-5.6-luna",
+  "codex_submitted_turns_this_scenario": 1,
+  "go_or_embedding_attempts": 0
+}

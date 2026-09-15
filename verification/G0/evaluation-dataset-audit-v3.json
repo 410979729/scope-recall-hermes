@@ -1,0 +1,490 @@
+{
+  "schema_version": "scope-recall.independent-evaluation-dataset-audit.v3",
+  "auditor": "/root/g0_desktop_audit",
+  "completed_at_utc": "2026-09-06T08:22:22.375279+00:00",
+  "dataset_id": "TEST-EVAL-SEALED-120-v3",
+  "dataset_directory": ".execution/TEST-EVAL-SEALED-120-v3",
+  "verdict": "REJECTED_FOR_FINAL_EVALUATION",
+  "eligible_for_holdout_execution_or_acceptance": false,
+  "G0_status_changed": false,
+  "current_product_work_may_continue": true,
+  "scope": "Independent qualification review of the final sealed v3 snapshot. This report contains categories, counts, file identities and record fingerprints only. It contains no held-out case IDs, source histories, questions, expected answers or gold spans.",
+  "inspected_files": [
+    {
+      "path": "raw.jsonl",
+      "bytes": 205238,
+      "sha256": "723e2f245d84efa14636fb8fd78e52bb6ec78e9518c8da9fdf17044510c53059"
+    },
+    {
+      "path": "gold.jsonl",
+      "bytes": 300606,
+      "sha256": "f822a237101d62b5b22a18ce51fc0f89465895c5bfbaadeec9af52db6d9b2b8a"
+    },
+    {
+      "path": "manifest.json",
+      "bytes": 80287,
+      "sha256": "9edd45f5198a81aacf77b38a924fdeb4f22945b0829a5acfd8691dfb8cd80306"
+    }
+  ],
+  "audit_snapshot": {
+    "directory": ".execution/TEST-G0-EVALV3-AUDIT/snapshot",
+    "copied_at_utc": "2026-09-06T08:06:43.566564+00:00",
+    "source_bytes_verified_before_and_after_each_copy": true,
+    "snapshot_files_marked_read_only": true,
+    "all_substantive_case_review_uses_final_snapshot_only": true,
+    "source_still_matches_snapshot_at_report_creation": true,
+    "snapshot_is_blind_material_not_for_implementation_thread_reading": true
+  },
+  "input_seal_integrity": {
+    "category": "IN_PLACE_MUTATION_DURING_V3_HANDOFF",
+    "process_defect": true,
+    "announced_gold_identities": [
+      {
+        "sequence": 1,
+        "bytes": 300663,
+        "sha256": "2049d9feb3c7f57641492a1e4a190dbedf9f534d993ac1f217e0a82584b6e757",
+        "auditor_read_this_version": false,
+        "manifest_bytes_reported": 80076,
+        "manifest_sha256": null
+      },
+      {
+        "sequence": 2,
+        "bytes": 300240,
+        "sha256": "510f7310ee3232e001e7a93a000dc3f1998697fdc2f2fef8b8d2eed098e8121f",
+        "auditor_read_this_version": true,
+        "read_scope": "Preliminary schema, declared counts, generic policy and source-diff inventory; not the final 120-case semantic adjudication.",
+        "manifest_bytes": 80188,
+        "manifest_sha256": "6fc441068abecb49db461827e0c0055556e51547fb3ab6753648b4d1c9f3d34e"
+      },
+      {
+        "sequence": 3,
+        "bytes": 300606,
+        "sha256": "f822a237101d62b5b22a18ce51fc0f89465895c5bfbaadeec9af52db6d9b2b8a",
+        "auditor_read_this_version": true,
+        "read_scope": "Final immutable audit snapshot, all semantic and reported statistical results.",
+        "manifest_bytes": 80287,
+        "manifest_sha256": "9edd45f5198a81aacf77b38a924fdeb4f22945b0829a5acfd8691dfb8cd80306"
+      }
+    ],
+    "announced_gold_identity_count": 3,
+    "actually_read_gold_identity_count": 2,
+    "directly_observed_in_place_transition_count": 1,
+    "superseded_content_snapshot_not_claimed": true,
+    "mixed_version_results": false,
+    "resolution": "Parent confirmed the final identity. The auditor copied and byte-verified all three final files into a private read-only snapshot before substantive review. Author was instructed to stop in-place edits. Later repairs must use v4 or another new version; no repair may alter this v3 identity."
+  },
+  "frozen_requirements_unchanged": {
+    "independent_core_questions": 120,
+    "groups": 12,
+    "per_group": {
+      "positive": 4,
+      "negative": 3,
+      "ambiguous": 3
+    },
+    "paired_variants_count_as_new_N": false,
+    "overall_necessary_evidence_coverage_minimum": 0.9,
+    "per_group_necessary_evidence_coverage_minimum": 0.8,
+    "deterministic_source_time_authorization_deletion_isolation_assertions_all_required": true,
+    "per_host_queries": 40,
+    "both_conditions_must_pass_per_query": true,
+    "per_host_minimum_queries_passed": 36,
+    "per_host_journeys": 8,
+    "per_host_minimum_journeys_passed": 8,
+    "four_comparison_arms_unchanged": true,
+    "model_routes_context_limits_and_budget_unchanged": true,
+    "first_runs_and_all_reruns_retained": true,
+    "no_preseeded_correct_claims": true
+  },
+  "structural_results": {
+    "json_and_jsonl_parse": "PASS",
+    "manifest_raw_gold_fingerprints": "PASS",
+    "raw_records": 240,
+    "gold_records": 240,
+    "declared_case_count": 120,
+    "pair_count": 120,
+    "unique_raw_record_keys": 240,
+    "unique_query_ids": 240,
+    "condition_counts": {
+      "related": 120,
+      "unrelated": 120
+    },
+    "per_group_declared_strata": {
+      "B01": {
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      },
+      "B02": {
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      },
+      "B03": {
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      },
+      "B04": {
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      },
+      "B05": {
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      },
+      "B06": {
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      },
+      "B07": {
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      },
+      "B08": {
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      },
+      "B09": {
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      },
+      "B10": {
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      },
+      "B11": {
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      },
+      "B12": {
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      }
+    },
+    "pairs_with_two_records": 120,
+    "pairs_same_history_excluding_only_event_id": 120,
+    "pairs_with_identical_query_text": 0,
+    "raw_gold_record_query_pair_join_errors": 0,
+    "dangling_gold_source_event_references": 0,
+    "raw_records_with_gold_or_scoring_fields": 0,
+    "all_query_sessions_declared_clean": true,
+    "scope": "Identifier existence, declared class counts and field separation pass. They do not establish semantic source entailment, correct grading, genuine ambiguity or holdout independence."
+  },
+  "full_review_statistics": {
+    "related_case_histories_and_queries_manually_reviewed": 120,
+    "related_gold_rows_manually_reviewed": 120,
+    "unrelated_queries_and_gold_manually_reviewed": 120,
+    "history_event_count_distribution_related": {
+      "3": 120
+    },
+    "related_history_text_character_count": {
+      "minimum": 45,
+      "maximum": 94,
+      "mean": 68.4,
+      "total": 8208
+    },
+    "related_required_fact_slots": 268,
+    "unrelated_required_fact_slots": 105,
+    "answerability_by_condition_and_stratum": {
+      "related|positive|supported": 48,
+      "unrelated|positive|no_match": 48,
+      "related|negative|supported": 26,
+      "unrelated|negative|no_match": 36,
+      "related|ambiguous|ambiguous": 35,
+      "unrelated|ambiguous|no_match": 36,
+      "related|negative|ambiguous": 3,
+      "related|negative|unknown": 5,
+      "related|ambiguous|unknown": 1,
+      "related|negative|partial": 2
+    },
+    "acceptance_by_condition": {
+      "related|must_state": 214,
+      "unrelated|must_not_inject_history": 105,
+      "related|must_explain_ambiguity": 38,
+      "related|must_apply": 16
+    },
+    "l4_mode_counts_by_condition": {
+      "related|history_grounded_answer": 120,
+      "unrelated|honest_current_evidence": 105,
+      "unrelated|normal_task": 12,
+      "unrelated|clarify_current_task": 3
+    },
+    "changed_related_histories_from_v2": 4,
+    "changed_related_queries_from_v2": 1,
+    "unique_related_history_text_hashes": 120,
+    "unique_independence_rationale_strings": 120,
+    "rationale_templates_after_removing_case_query_roles_and_slot_names": 1,
+    "normalization_is_not_a_semantic_N_estimate": true
+  },
+  "prior_blocker_recheck": [
+    {
+      "category": "CASE_POLARITY_VERSUS_ANSWERABILITY",
+      "result": "PARTIALLY_REPAIRED",
+      "verified_change_count": 26,
+      "count_definition": "Related negative-stratum rows now marked supported instead of the former blanket unknown category.",
+      "remaining": "Residual question-level labels and the service-status/answerability vocabulary remain inconsistent."
+    },
+    {
+      "category": "UNRELATED_HISTORY_GAP_NARRATION",
+      "result": "ORIGINAL_BLANKET_REQUIREMENT_REMOVED",
+      "honest_current_evidence_rows": 105,
+      "ordinary_task_rows": 12,
+      "current_task_clarification_rows": 3,
+      "blanket_must_state_no_matching_history_acceptance_rows": 0,
+      "finding": "The 105 generic rules permit ordinary task capability or sufficient current evidence to support an answer, and permit silent memory noninjection. They do not themselves force normal tasks to narrate a historical gap. Separate task-specific gold defects are reported below."
+    },
+    {
+      "category": "PLAN_COMPLETION_AUTHORIZATION_AND_RETRIEVABILITY_PROMOTIONS",
+      "result": "MATERIALLY_REPAIRED_WITH_SEPARATE_RESIDUAL_SOURCE_CHECKS",
+      "finding": "Previously identified promises are generally qualified as statements or intentions, the reviewed selection premise now has an explicit source statement, and the reviewed saved-source question is limited to a reported state. These are source-content repairs, not runtime verification."
+    },
+    {
+      "category": "GOLD_SOURCE_ROOT_LINKS",
+      "result": "PARTIALLY_REPAIRED",
+      "previous_wrong_event_links_corrected": 2,
+      "previous_arithmetic_root_now_included": 1,
+      "remaining": "Two concrete necessary slots still exceed what their listed supporting events establish after repair."
+    },
+    {
+      "category": "PUBLIC_CASE_INDEPENDENCE",
+      "result": "NOT_QUALIFIED_FOR_ALL_120",
+      "targeted_history_rewrites_reviewed": 3,
+      "targeted_rewrites_with_unsynchronized_current_questions": 2,
+      "targeted_rewrites_with_new_multisource_dependency_and_synchronized_question": 1,
+      "additional_reproduced_near_public_skeleton_cases": 1,
+      "finding": "A unique rationale string that repeats case-specific field names and the query is not an independent construction argument."
+    }
+  ],
+  "blocking_dataset_findings": [
+    {
+      "category": "REWRITTEN_HISTORY_AND_CURRENT_QUERY_TARGET_MISMATCH",
+      "priority": "P1_DATASET",
+      "condition": "related",
+      "affected_record_count": 2,
+      "affected_records": [
+        {
+          "raw_record_sha256": "428a9c75b1e1f67e8050cf90c73bad6b6ec8a7ad9f112593a276cbcb0e3a52d2",
+          "gold_record_sha256": "7335521c7dcccb701cffd9711658442f8fe63ffc6ce2b99f43fad3ef8ebb9e63"
+        },
+        {
+          "raw_record_sha256": "7d221aee293ef9b200a3230793e70106bbc2272b6c5e6a4beb360a59d781d1e9",
+          "gold_record_sha256": "d87ed48172ee3cd2e732da017f95fcdcd809bb65a9940b195eacc1f4638dcaea"
+        }
+      ],
+      "finding": "The history and gold were replaced, but the current question still asks about the superseded scenario. Following the actual question and following the gold are incompatible.",
+      "repair": "Review raw history, current question and every necessary gold slot as one unit. Reconstruct the question and evidence together without preserving a stale target merely to keep its identifier."
+    },
+    {
+      "category": "UNRELATED_GOLD_REQUIRES_A_DIFFERENT_TASK",
+      "priority": "P1_DATASET",
+      "condition": "unrelated",
+      "affected_record_count": 2,
+      "affected_records": [
+        {
+          "raw_record_sha256": "597457968403a8439dbd00e8b716340e908fb6fd5c812e2117fa39e0ee61c4d4",
+          "gold_record_sha256": "6fd9c7089187cc50fbef9d8344833415b8f667f5197567c93ed8cd8c81b5f99d"
+        },
+        {
+          "raw_record_sha256": "9d4ce9030671d2bcc0511238594422af601e0ed3b8d1421291c790e3d0bf783f",
+          "gold_record_sha256": "7b57f2baacb7ef0b2cdfa370c8e12297042edc04122c357d764112c91e08d71d"
+        }
+      ],
+      "finding": "The task-specific L4 expected behavior was copied from the related task rather than the actual unrelated question. Correct current-task completion can therefore fail while a response to a different task can pass.",
+      "repair": "Derive each unrelated L4 expectation from its own actual current question. Preserve quiet noninjection and allow the ordinary capability needed by that task."
+    },
+    {
+      "category": "ANSWERABILITY_VOCABULARY_AND_QUESTION_SUFFICIENCY",
+      "priority": "P1_DATASET",
+      "out_of_contract_answerability_rows": 120,
+      "out_of_contract_value_category": "Service no-match value stored in an evidence-answerability field.",
+      "related_semantic_label_error_count": 3,
+      "related_examples": [
+        {
+          "raw_record_sha256": "50a168ed642b73da5c59f9bdde58ff001b26df820b3e66f8d5e90138a24b3f8b",
+          "gold_record_sha256": "15ccfed5c9f14fe695ba633f90c107f77580658a3d1a368b633ea33cd06de5d9"
+        },
+        {
+          "raw_record_sha256": "f3c22edc32fa1c05a85d495af8405c385074db22a55258de21bf7667b110eeb0",
+          "gold_record_sha256": "e708d66a792a272fe77ad8a295cde924f0ba78308d44d8c0954002202856c2a3"
+        },
+        {
+          "raw_record_sha256": "1d1bd8faa9a8129acd228610a9fe28e669c8c7b32ba165c4f412bb2942d6c6b3",
+          "gold_record_sha256": "2534ff6a4446bcca1408ef3cb13d9ad1d7f5c0695f23f59416b69de3faea68cf"
+        }
+      ],
+      "finding": "Service availability, missing collection coverage, actual competing interpretations and sufficient evidence for the requested answer remain mixed. One target-value question has no current value evidence yet is marked supported. The contract keeps status, answerability and coverage distinct.",
+      "repair": "Represent no-match as service status and answerability using supported/partial/ambiguous/unknown, or provide an explicit lossless evaluator mapping without changing product enums. Adjudicate sufficiency for the actual question independently of class polarity; missing information alone does not create competing interpretations, and an unconfirmed local exception does not suspend an established ordinary-scope rule."
+    },
+    {
+      "category": "NECESSARY_GOLD_SLOT_EXCEEDS_LISTED_SOURCE_SUPPORT",
+      "priority": "P1_DATASET",
+      "condition": "related",
+      "affected_slot_count": 2,
+      "affected_record_count": 2,
+      "affected_records": [
+        {
+          "raw_record_sha256": "48eb32c400b9b157cced7af5a0fe93c776bf94a7d9bcf5fcf46731731b55f315",
+          "gold_record_sha256": "1db2101220d5395083e041440ab36e31bf8c103e9852f114f174600671a9ef5a"
+        },
+        {
+          "raw_record_sha256": "891cb029eac5f47c1401fd5312a761a36a04348623e0c8692b9ea2f581714544",
+          "gold_record_sha256": "6dfcae918485367ec0cb253aaccb314c82470b1c5715e8e696ddc625e18a7124"
+        }
+      ],
+      "finding": "A repaired slot contains an additional qualifier whose supporting event is absent from that slot. Another retains a broader version-wide assertion after the cited source narrowed. The IDs exist, but per-slot support is incomplete.",
+      "repair": "Verify every atomic component of each necessary slot against its listed original event roots. Add the actual supporting root or narrow the assertion. A reference that exists elsewhere in a case does not automatically validate every asserted component of a different required slot."
+    },
+    {
+      "category": "FULL_SEMANTIC_HOLDOUT_INDEPENDENCE_NOT_ESTABLISHED",
+      "priority": "P1_DATASET",
+      "additional_near_public_skeleton_case_count": 1,
+      "affected_records": [
+        {
+          "raw_record_sha256": "02b1f56e647f2a38f280e51a3871ad003164a82b29736e0ac88afd6496e34a33",
+          "gold_record_sha256": "7568e90c200026973810981d610ad317226c7012f45a02e705ec1e70229c494d"
+        }
+      ],
+      "finding": "The reviewed case retains an exposed entity-disambiguation evidence and query skeleton with renamed subjects and explanatory repetition. Two earlier targeted replacements are also unusable until their current questions are synchronized. The declared full 120 therefore cannot yet be qualified as independent valid holdout questions.",
+      "repair": "Build genuinely different evidential dependencies or task requirements and compare the full case to public specifications. Recheck all 120 rather than changing only names, identifiers or rationale wording. Shared capability alone is not a defect, and no numerical semantic-N estimate or claim about author intent is made."
+    }
+  ],
+  "additional_grading_caveat": {
+    "category": "UNNECESSARILY_EXCLUSIVE_CLARIFICATION_BEHAVIOR",
+    "priority": "P2_DATASET",
+    "condition": "unrelated",
+    "affected_record_count": 1,
+    "affected_records": [
+      {
+        "raw_record_sha256": "be4fec10b72450860af4a8dd3fc4fbc55c833eef4dff4add3335eeea6eece72a",
+        "gold_record_sha256": "c6220a6316d39d09abda5cdcfd0edf57839e73e8f6eabee75ed8b54048f4392e"
+      }
+    ],
+    "finding": "One task permits selecting a fresh example, but gold makes asking for a named target the exclusive successful behavior. A reasonable direct response can be unfairly rejected.",
+    "repair": "Allow legitimate direct completion when the current request permits selecting an example, while allowing clarification when needed. Do not convert memory noninterference into a mandatory interruption."
+  },
+  "runtime_and_fixture_boundary": {
+    "declared_core_cases_textual_only": true,
+    "manifest_claims_runtime_behavior_proof": false,
+    "case_index_rows_explicitly_not_claiming_runtime_proof": 120,
+    "files_beyond_raw_gold_manifest_in_sealed_directory": 0,
+    "events_with_asset_or_attachment_metadata": 0,
+    "events_with_tool_payload_or_call_identity": 0,
+    "declared_tool_observation_events_in_related_histories": 3,
+    "actual_runtime_tool_or_state_receipts_in_this_dataset": 0,
+    "executed_host_journeys_proved_by_this_dataset": 0,
+    "declaration_assessment": "The explicit textual-core/runtime separation is an improvement and is respected. The absence of a full runtime journey in every core question is not itself a new threshold failure.",
+    "evidence_assessment": "No actual fixture establishment or runtime proof is supplied. Simulated tool-observation labels are not observed execution receipts. Public journey identifiers are specification mappings, not execution results or newly sealed unseen journeys.",
+    "remaining_existing_product_obligations": [
+      "Actual interruption and new-session resumption with current environment checks.",
+      "Observed future cue delivery, false-cue silence and cancellation behavior.",
+      "Immutable attachment identity, retention, independent reopening and deletion.",
+      "Preexisting targets, real mutation receipts and all required post-deletion exits.",
+      "Controlled service faults, multi-batch consolidation, source-root preservation and the bounded scale checks.",
+      "Two actual hosts with the frozen unseen queries and journeys, source-only real extraction, first-run retention and unchanged scoring."
+    ]
+  },
+  "source_provenance_boundary": {
+    "source_type_counts_across_paired_records": {
+      "human_direct": 478,
+      "assistant_visible": 236,
+      "tool_observation": 6
+    },
+    "simulation_true_records": 240,
+    "actual_transport_label_preserved": "synthetic_agent_relay",
+    "import_origin_preserved": "imported",
+    "fictional_original_role_assumption_does_not_prove_human_capture": true,
+    "assistant_events_must_keep_assistant_role": true,
+    "simulated_tool_events_do_not_grant_verified_observation_status": true,
+    "dataset_or_model_fields_do_not_grant_authority": true,
+    "paired_clones_and_query_ids_do_not_create_independent_source_roots": true,
+    "trusted_importer_or_product_execution_not_verified_by_this_review": true
+  },
+  "public_reference_fingerprints": [
+    {
+      "path": "fixtures/acceptance_cases.jsonl",
+      "records": 40,
+      "sha256": "93c5e3cbfb1379dc5a7ca03819bcac4b4db0522c83f5ca5938efede257932b19"
+    },
+    {
+      "path": "fixtures/cognitive_cases.jsonl",
+      "records": 60,
+      "sha256": "c1fbfa4dfd515d2e2bb1c7ba2f802c5d4796d0615b38d432b2e6e66ed8cce85a"
+    },
+    {
+      "path": "fixtures/longitudinal_journeys.jsonl",
+      "records": 8,
+      "sha256": "78b1465904a8cc3b121c9e297d2628ca031158e6c26c8b5598d28ccad3d3e243"
+    }
+  ],
+  "contract_reference_fingerprints": [
+    {
+      "path": "docs/07_人类式记忆功能定稿与验收.md",
+      "sha256": "8f94274682a46ea51588edfb16d2b4714bb23ecb9e1480a6d08f9ff71d72b5f4"
+    },
+    {
+      "path": "verification/G0/evaluation-proposal.md",
+      "sha256": "cc3d036920e2d22c915a4b67a1be4c406924c5326d60aba9adfca9a0c61acb04"
+    },
+    {
+      "path": "verification/G0/evaluation-source-boundary.md",
+      "sha256": "4daafb16134fbddbc191518bc3acf55562516d7320c3f4ef49afe78292ae9377"
+    }
+  ],
+  "repair_handoff": {
+    "target_author": "/root/eval_dataset_v2",
+    "required_new_directory": ".execution/TEST-EVAL-SEALED-120-v4",
+    "private_case_identifiers_and_per_item_repairs_sent_directly_to_author": true,
+    "questions_or_answers_sent_to_root": false,
+    "required_final_author_review_count": 120,
+    "required_review_unit": "Raw history, both queries, each source reference and each gold task/label must be checked together for every case.",
+    "single_final_submission_of_all_file_fingerprints_required": true,
+    "in_place_edits_after_submission_forbidden": true,
+    "v1_v2_v3_preserved": true,
+    "independent_review_of_v4_still_required": true,
+    "do_not_reintroduce_resolved_v2_defects_or_preseed_correct_claims": true
+  },
+  "verification": {
+    "runtime": "F:\\SCOPERECALL更新项目\\.venv\\Scripts\\python.exe",
+    "invocation": "PowerShell literal here-strings piped to Python with -X utf8 -B -; json/hashlib/collections/statistics and read-only file inspection.",
+    "programmatic_result": "PASS for parsing, counts, joins, source-ID existence, hashes, pair history identity, input separation and preserved artifact fingerprints.",
+    "semantic_result": "FAIL for the five reproducible dataset categories listed above. All 120 related histories/questions/gold and all 120 unrelated questions/gold were reviewed on the final snapshot; shared grading rules were checked by actual value distributions.",
+    "truncated_intermediate_output_handling": "Affected read sections were repeated with compact projections before concluding complete review. No missing output was treated as inspected.",
+    "canonical_record_fingerprint_algorithm": "SHA-256 of UTF-8 JSON serialized with ensure_ascii=False, sort_keys=True and separators=(comma,colon), with no trailing newline.",
+    "checks_do_not_prove": "Unique identifiers and strings are not semantic independence, source entailment or actual host execution."
+  },
+  "preserved_prior_artifacts": [
+    {
+      "path": "verification/G0/evaluation-dataset-audit.json",
+      "sha256": "6a29938fe01f7fc2e24227db6d135826141720e1a8191dda1ff0115211827e05"
+    },
+    {
+      "path": "verification/G0/evaluation-dataset-audit-v2.json",
+      "sha256": "fd732c740c78b6ef266efa57e0b4a9f4f7f80031c2aac9b48bf32debd87fe0b9"
+    },
+    {
+      "path": "verification/G0/evaluation-source-boundary.md",
+      "sha256": "4daafb16134fbddbc191518bc3acf55562516d7320c3f4ef49afe78292ae9377"
+    }
+  ],
+  "audit_boundaries": {
+    "source_v1_v2_v3_data_modified_by_auditor": false,
+    "product_implementation_modified": false,
+    "frozen_thresholds_changed": false,
+    "external_model_calls": 0,
+    "production_or_secret_access": false,
+    "G0_reopened": false,
+    "only_writes": "Final input snapshot copies in the auditor-owned execution directory and verification/G0/evaluation-dataset-audit-v3.json.",
+    "public_report_contains_case_ids": false,
+    "public_report_contains_questions_answers_or_source_spans": false
+  },
+  "conclusion": "The final v3 identity is auditable and its generic unrelated-task policy has improved. It still fails qualification because related and unrelated tasks are not consistently paired with their gold, evidence sufficiency and source support remain inconsistent, and full independent holdout construction is not established. Runtime fixtures are not supplied and are correctly not claimed as proved. Preserve v3, repair all cases coherently in v4, and submit that version once after the full author check. G0 and independent product work remain unchanged."
+}

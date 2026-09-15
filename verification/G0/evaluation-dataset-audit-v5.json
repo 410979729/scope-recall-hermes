@@ -1,0 +1,619 @@
+{
+  "schema_version": "scope-recall.evaluation-dataset-audit.v5",
+  "auditor": "independent /root/g0_desktop_audit",
+  "completed_at_utc": "2026-09-06T09:06:45.400660+00:00",
+  "dataset_id": "TEST-EVAL-SEALED-120-v5",
+  "dataset_directory": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-EVAL-SEALED-120-v5",
+  "verdict": "REJECTED_FOR_FINAL_EVALUATION",
+  "eligible_for_holdout_execution_or_acceptance": false,
+  "G0_status_changed": false,
+  "G1_verdict": "NOT_ADJUDICATED_BY_THIS_DATASET_REVIEW",
+  "current_product_work_may_continue": true,
+  "scope": {
+    "nominal_cases": 120,
+    "query_variants": 240,
+    "full_population_raw_gold_field_comparison": true,
+    "only_comparison_exclusion": "dataset_id; independently checked to match the v5 manifest on every row",
+    "unchanged_prior_reviewed_history_objects": 240,
+    "unchanged_prior_reviewed_raw_rows_excluding_dataset_id": 237,
+    "unchanged_prior_reviewed_gold_rows_excluding_dataset_id": 231,
+    "changed_units_read_in_full_with_current_history_query_and_gold": 9,
+    "review_method": "Every field of every raw and gold record was compared to the fixed v4 snapshot. All unchanged semantic content was incorporated from the prior full 120-case review; every changed unit was read in full on the v5 snapshot. Manifest and fixture control changes were separately reviewed. This is a full-population qualification review, not a random sample and not a claim that all unchanged text was reread from scratch.",
+    "main_thread_kept_blind": true,
+    "questions_answers_case_ids_source_spans_in_report": false,
+    "models_called": 0,
+    "production_or_secret_access": false,
+    "product_code_changes": false
+  },
+  "inspected_files": [
+    {
+      "path": "raw.jsonl",
+      "bytes": 205897,
+      "sha256": "a03601b26163f047c518b3d31fbea0c83586952b57cbc83b331ee92f37c52b7a"
+    },
+    {
+      "path": "gold.jsonl",
+      "bytes": 361992,
+      "sha256": "2703162f41da27bed3371fd2388ddafaeb0714233aeb42d695328558de6e2579"
+    },
+    {
+      "path": "manifest.json",
+      "bytes": 90952,
+      "sha256": "d7e40a19ba07c792ba35acf40170724b7593ecaab79b316b031bdab3a92fbced"
+    },
+    {
+      "path": "fixture-manifest.json",
+      "bytes": 3067,
+      "sha256": "8a752d7f6a6481e77a99aa0c404f76b4857798ace874958618ef318961d2e9a9"
+    }
+  ],
+  "audit_snapshot": {
+    "snapshot_at_utc": "2026-09-06T09:01:57.507296+00:00",
+    "source_path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-EVAL-SEALED-120-v5",
+    "snapshot_path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-G0-EVALV5-AUDIT\\snapshot",
+    "files": [
+      {
+        "file": "raw.jsonl",
+        "bytes": 205897,
+        "sha256": "a03601b26163f047c518b3d31fbea0c83586952b57cbc83b331ee92f37c52b7a"
+      },
+      {
+        "file": "gold.jsonl",
+        "bytes": 361992,
+        "sha256": "2703162f41da27bed3371fd2388ddafaeb0714233aeb42d695328558de6e2579"
+      },
+      {
+        "file": "manifest.json",
+        "bytes": 90952,
+        "sha256": "d7e40a19ba07c792ba35acf40170724b7593ecaab79b316b031bdab3a92fbced"
+      },
+      {
+        "file": "fixture-manifest.json",
+        "bytes": 3067,
+        "sha256": "8a752d7f6a6481e77a99aa0c404f76b4857798ace874958618ef318961d2e9a9"
+      }
+    ]
+  },
+  "input_seal_integrity": {
+    "parent_declared_sealed_before_first_read": true,
+    "observed_v5_identity_count": 1,
+    "source_and_snapshot_match_after_review": true,
+    "in_place_drift_observed": false,
+    "row_and_package_identifiers_consistent": true,
+    "future_repairs_require_new_version": true
+  },
+  "frozen_requirements_unchanged": {
+    "nominal_independent_cases": 120,
+    "groups": 12,
+    "per_group": {
+      "positive": 4,
+      "negative": 3,
+      "ambiguous": 3
+    },
+    "paired_variants_do_not_increase_n": true,
+    "no_gold_or_prebuilt_correct_claims_in_model_input": true,
+    "host_queries_journeys_controls_budgets_thresholds": "Unchanged; refer to the frozen evaluation proposal. This audit supplies no execution score."
+  },
+  "structural_results": {
+    "schema_version": "scope-recall.evaluation-dataset-structural-profile.v1",
+    "completed_at_utc": "2026-09-06T09:04:51.495916+00:00",
+    "files": [
+      {
+        "file": "raw.jsonl",
+        "bytes": 205897,
+        "sha256": "a03601b26163f047c518b3d31fbea0c83586952b57cbc83b331ee92f37c52b7a",
+        "live_source_matches_snapshot": true
+      },
+      {
+        "file": "gold.jsonl",
+        "bytes": 361992,
+        "sha256": "2703162f41da27bed3371fd2388ddafaeb0714233aeb42d695328558de6e2579",
+        "live_source_matches_snapshot": true
+      },
+      {
+        "file": "manifest.json",
+        "bytes": 90952,
+        "sha256": "d7e40a19ba07c792ba35acf40170724b7593ecaab79b316b031bdab3a92fbced",
+        "live_source_matches_snapshot": true
+      },
+      {
+        "file": "fixture-manifest.json",
+        "bytes": 3067,
+        "sha256": "8a752d7f6a6481e77a99aa0c404f76b4857798ace874958618ef318961d2e9a9",
+        "live_source_matches_snapshot": true
+      }
+    ],
+    "raw_records": 240,
+    "gold_records": 240,
+    "raw_key_count": 240,
+    "gold_key_count": 240,
+    "query_id_count": 240,
+    "declared_case_count": 120,
+    "pair_count": 120,
+    "paired_variants_are_not_independent_n": true,
+    "raw_dataset_ids": {
+      "TEST-EVAL-SEALED-120-v5": 240
+    },
+    "gold_dataset_ids": {
+      "TEST-EVAL-SEALED-120-v5": 240
+    },
+    "manifest_dataset_id": "TEST-EVAL-SEALED-120-v5",
+    "fixture_dataset_id": "TEST-EVAL-SEALED-120-v5",
+    "row_dataset_id_differs_from_manifest": 0,
+    "groups": {
+      "B01": {
+        "ambiguous": 3,
+        "negative": 3,
+        "positive": 4
+      },
+      "B02": {
+        "ambiguous": 3,
+        "negative": 3,
+        "positive": 4
+      },
+      "B03": {
+        "ambiguous": 3,
+        "negative": 3,
+        "positive": 4
+      },
+      "B04": {
+        "ambiguous": 3,
+        "negative": 3,
+        "positive": 4
+      },
+      "B05": {
+        "ambiguous": 3,
+        "negative": 3,
+        "positive": 4
+      },
+      "B06": {
+        "ambiguous": 3,
+        "negative": 3,
+        "positive": 4
+      },
+      "B07": {
+        "ambiguous": 3,
+        "negative": 3,
+        "positive": 4
+      },
+      "B08": {
+        "ambiguous": 3,
+        "negative": 3,
+        "positive": 4
+      },
+      "B09": {
+        "ambiguous": 3,
+        "negative": 3,
+        "positive": 4
+      },
+      "B10": {
+        "ambiguous": 3,
+        "negative": 3,
+        "positive": 4
+      },
+      "B11": {
+        "ambiguous": 3,
+        "negative": 3,
+        "positive": 4
+      },
+      "B12": {
+        "ambiguous": 3,
+        "negative": 3,
+        "positive": 4
+      }
+    },
+    "pair_cardinality_or_condition_errors": 0,
+    "paired_history_mismatches_ignoring_event_ids": 0,
+    "paired_query_text_equal": 0,
+    "raw_gold_key_join_errors": 0,
+    "orphan_source_event_references": 0,
+    "related_facts_without_source_event_references": 0,
+    "source_role_mismatches": 0,
+    "event_sequence_errors": 0,
+    "event_time_order_errors": 0,
+    "future_timestamp_events": 0,
+    "event_timestamp_min": "2026-01-06T10:00:00+00:00",
+    "event_timestamp_max": "2026-05-21T18:12:00+00:00",
+    "all_rows_declared_simulation": true,
+    "source_types_all_paired_events": {
+      "assistant_visible": 234,
+      "human_direct": 476,
+      "tool_observation": 10
+    },
+    "total_paired_events": 720,
+    "events_per_history": {
+      "3": 240
+    },
+    "exact_unique_related_histories_ignoring_event_ids": 120,
+    "exact_unique_related_history_texts": 120,
+    "related_history_text_characters": {
+      "total": 8267,
+      "minimum": 45,
+      "maximum": 101,
+      "mean": 68.89166666666667
+    },
+    "control_only_fields_found_in_raw": {},
+    "explicit_grading_marker_occurrences_in_raw": {
+      "answerability=": 0,
+      "required_facts": 0,
+      "must_explain_ambiguity": 0,
+      "core_class": 0,
+      "gold.jsonl": 0,
+      "must_state": 0,
+      "预期答案": 0,
+      "金标答案": 0
+    },
+    "answerability_related": {
+      "ambiguous": 38,
+      "supported": 75,
+      "unknown": 7
+    },
+    "answerability_unrelated": {
+      "unknown": 120
+    },
+    "answerability_within_declared_strata": {
+      "positive": {
+        "supported": 48
+      },
+      "negative": {
+        "ambiguous": 3,
+        "supported": 27,
+        "unknown": 6
+      },
+      "ambiguous": {
+        "ambiguous": 35,
+        "unknown": 1
+      }
+    },
+    "unrelated_l4_modes": {
+      "honest_current_evidence": 103,
+      "normal_or_clarify": 1,
+      "normal_task": 16
+    },
+    "unrelated_l4_task_answerability": {
+      "supported": 16,
+      "supported_or_clarify": 1,
+      "unknown": 103
+    },
+    "required_fact_slots_related": 269,
+    "required_fact_slots_unrelated": 105,
+    "required_fact_acceptance": {
+      "must_apply": 16,
+      "must_explain_ambiguity": 37,
+      "must_list_both_ordered_candidates": 1,
+      "must_not_inject_history": 105,
+      "must_state": 215
+    },
+    "unrelated_task_rules_unique": 18,
+    "unrelated_generic_gap_rules_allow_normal_capability": 103,
+    "unrelated_requires_stating_memory_gap": 0,
+    "v4_to_v5_changes": {
+      "related": {
+        "history_changed": 0,
+        "query_text_changed": 2,
+        "required_facts_changed": 3
+      },
+      "unrelated": {
+        "history_changed": 0,
+        "query_text_changed": 1,
+        "required_facts_changed": 0
+      }
+    },
+    "full_population_comparison_excluding_only_dataset_id": {
+      "raw_rows_unchanged": 237,
+      "gold_rows_unchanged": 231,
+      "query_or_gold_units_changed": 9,
+      "history_objects_byte_equivalent_as_json": 240,
+      "changed_gold_fields": {
+        "allowed_unknown_or_ambiguity": 3,
+        "answerability": 3,
+        "answerability_layers": 7,
+        "l4_task_expectation": 4,
+        "prohibited_errors": 1,
+        "required_facts": 3
+      },
+      "comparison_scope": "Every raw and gold field was compared; only dataset_id was excluded."
+    },
+    "fixture_controls": 12,
+    "fixture_statuses": {
+      "PENDING_ISOLATED_EXECUTION": 12
+    },
+    "runtime_behavior_proof_claimed": false,
+    "manifest_rationales_containing_unrelated_query_text": 117,
+    "interpretation": "Structural checks and unique strings do not prove semantic validity, independence, extraction quality, model quality or runtime capability."
+  },
+  "full_review_statistics": {
+    "blocking_semantic_categories": 1,
+    "unique_affected_query_variants": 1,
+    "unique_affected_nominal_cases": 1,
+    "related_variants": 1,
+    "unrelated_variants": 0,
+    "qualified_independent_n": null,
+    "paired_variants_not_counted_as_independent_n": true,
+    "qualified_n_not_inferred_by_subtracting_one_defect": true
+  },
+  "prior_blocker_recheck": [
+    {
+      "prior_category": "V4-D01 INVALID_AMBIGUITY_OR_STRATUM_MEMBERSHIP",
+      "status": "PARTIALLY_REPAIRED",
+      "previous_cases": 2,
+      "remaining_cases": 1,
+      "note": "One current question is now directed at the unresolved applicability issue. The other is a fully answerable conditional comparison but retains an ambiguity label and quota."
+    },
+    {
+      "prior_category": "V4-D02 UNRELATED_CONTROL_FORBIDS_APPLICABLE_HISTORY",
+      "status": "REPAIRED",
+      "cases": 1
+    },
+    {
+      "prior_category": "V4-D03 OPEN_TASK_FORCED_TO_CLARIFY",
+      "status": "REPAIRED",
+      "cases": 2
+    },
+    {
+      "prior_category": "V4-D04 NECESSARY_TEMPORAL_QUALIFIER_MISSING_FROM_GOLD",
+      "status": "REPAIRED",
+      "required_slots_added": 1
+    },
+    {
+      "prior_category": "V4-D05 SOURCE_SLOT_ENTAILMENT_AND_ROLE_MISMATCH",
+      "status": "REPAIRED",
+      "required_slots": 2
+    },
+    {
+      "prior_category": "V4-D06 QUESTION_LEVEL_ANSWERABILITY_GRANULARITY",
+      "status": "REPAIRED",
+      "cases": 3
+    },
+    {
+      "prior_category": "V4-M01 UNDECLARED_DATASET_IDENTITY_MAPPING",
+      "status": "REPAIRED",
+      "raw_rows": 240,
+      "gold_rows": 240
+    },
+    {
+      "prior_category": "V4-M02 INDEPENDENCE_RATIONALE_IS_NOT_AN_INDEPENDENCE_PROOF",
+      "status": "NONBLOCKING_METHODOLOGY_LIMIT_RETAINED",
+      "control_rationales_still_embedding_unrelated_query_text": 117,
+      "note": "Direct substantive review remains the evidence of construction; a unique rationale string does not establish independence."
+    }
+  ],
+  "blocking_dataset_findings": [
+    {
+      "id": "V5-D01",
+      "category": "ANSWERABLE_CONDITIONAL_COMPARISON_COUNTED_AS_AMBIGUOUS",
+      "severity": "P1",
+      "confidence": "high",
+      "affected_nominal_cases": 1,
+      "affected_query_variants": 1,
+      "affected_groups": 1,
+      "continuation_of_existing_blocker": true,
+      "evidence": "The revised question explicitly asks for each of two conditional alternatives. Both requested alternatives are established in the original source. It no longer requires choosing one unresolved actual interpretation, yet all answerability layers and the declared stratum remain ambiguous. An ambiguity elsewhere in the history does not make this particular conditional question unanswerable.",
+      "contract_basis": "Original 07 section 15.1 defines answerability by whether the evidence suffices to answer the current question; the frozen per-group allocation requires actual semantic strata, not labels alone.",
+      "impact": "The question-level label and semantic allocation remain inconsistent even though the candidate statements themselves are now source-supported.",
+      "minimal_repair": "In a new version, make the question require the unresolved unique interpretation, or keep the fully answerable comparison and supply a genuinely ambiguous case elsewhere in the same frozen allocation. Do not alter the threshold, erase previous attempts, or rewrite the other valid cases merely for this repair.",
+      "records": [
+        {
+          "file": "raw.jsonl",
+          "canonical_record_sha256": "ac84516841895eb35afa4bb9d12dcbcb5b09f1373e732a94d464df52a2e15fd8"
+        },
+        {
+          "file": "gold.jsonl",
+          "canonical_record_sha256": "26d8ed5c3aaa57dc26e1482d94c4e2c19dbb8f611ec69692ece04f8ee686f39b"
+        }
+      ]
+    }
+  ],
+  "accepted_repairs_boundary": {
+    "no_reopening_of_repaired_v1_v2_v3_v4_findings": true,
+    "generic_unrelated_rules_may_use_ordinary_capabilities": 103,
+    "open_tasks_are_no_longer_exclusively_forced_to_clarify": true,
+    "service_no_match_and_l3_l4_answerability_are_separate": true,
+    "source_role_and_necessary_time_qualifier_repairs_accepted": true,
+    "missing_runtime_execution_is_not_by_itself_a_dataset_rejection_reason": true
+  },
+  "independence_review": {
+    "nominal_unique_history_texts": 120,
+    "histories_unchanged_from_full_v4_review": true,
+    "public_specification_reference_counts": {
+      "C": 40,
+      "M": 60,
+      "J": 8
+    },
+    "pair_variants_not_independent": true,
+    "unique_hashes_not_semantic_independence_proof": true,
+    "new_blocker_based_only_on_similarity_or_shared_behavior": false,
+    "all_120_qualified": false,
+    "reason": "The single current-query/stratum inconsistency prevents qualification of the complete frozen set."
+  },
+  "runtime_and_fixture_boundary": {
+    "dataset_ready_is_not_runtime_pass": true,
+    "fixture_manifest_supplied": true,
+    "fixture_control_groups": 12,
+    "fixture_status": "PENDING_ISOLATED_EXECUTION",
+    "actual_runtime_proof_claimed_by_fixture_manifest": false,
+    "missing_execution_is_not_by_itself_a_dataset_rejection_reason": true,
+    "dataset_contains_actual_runtime_receipts": false,
+    "dataset_files_contain_reopenable_artifact_bytes": false,
+    "synthetic_original_tool_events_per_independent_history_set": 5,
+    "synthetic_tool_events_are_not_actual_tool_capture": true,
+    "semantic_history_maximum_characters": 101,
+    "three_event_histories_do_not_prove_long_input_or_scale_behavior": true,
+    "remaining_unchanged_product_obligations": [
+      "Actual raw-source model extraction through normal validation, followed by fresh-session host behavior.",
+      "Separate L1 actual capture evidence from TEST imported semantic source assumptions.",
+      "Real isolated interruption/resume and current-environment revalidation.",
+      "Stable artifact and display identity, immutable retained versions and actual public-tool reopen in fresh contexts.",
+      "Existing isolated targets before suppress/delete operations, receipts and all managed output paths checked after mutation.",
+      "Controlled unavailable/partial faults, multi-batch tail processing, long-input and interference/scale fixtures.",
+      "The frozen per-host unseen queries, complete unseen journeys and controls, retaining first attempts and every rerun."
+    ],
+    "unseen_journeys_not_created_or_proved_by_public_journey_mapping": true
+  },
+  "source_provenance_boundary": {
+    "actual_transport": "synthetic_agent_relay",
+    "trusted_test_import_origin": "imported",
+    "simulated_original_roles_are_declared_input_conditions": true,
+    "human_direct_is_only_a_fictional_test_semantic_assumption": true,
+    "source_role_must_not_be_inferred_as_authorization_from_model_output_or_dataset_id": true,
+    "actual_ui_a2a_capture_not_relabelled_as_human_direct": true,
+    "import_time_not_historical_event_time": true,
+    "duplicate_transport_copies_not_independent_roots": true,
+    "model_projection_must_exclude_gold_control_fields_and_future_steps": true
+  },
+  "public_reference_fingerprints": [
+    {
+      "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\fixtures\\acceptance_cases.jsonl",
+      "bytes": 17310,
+      "sha256": "93c5e3cbfb1379dc5a7ca03819bcac4b4db0522c83f5ca5938efede257932b19"
+    },
+    {
+      "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\fixtures\\cognitive_cases.jsonl",
+      "bytes": 60610,
+      "sha256": "c1fbfa4dfd515d2e2bb1c7ba2f802c5d4796d0615b38d432b2e6e66ed8cce85a"
+    },
+    {
+      "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\fixtures\\longitudinal_journeys.jsonl",
+      "bytes": 9553,
+      "sha256": "78b1465904a8cc3b121c9e297d2628ca031158e6c26c8b5598d28ccad3d3e243"
+    }
+  ],
+  "contract_reference_fingerprints": [
+    {
+      "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\docs\\07_人类式记忆功能定稿与验收.md",
+      "sha256": "8f94274682a46ea51588edfb16d2b4714bb23ecb9e1480a6d08f9ff71d72b5f4"
+    },
+    {
+      "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\docs\\05_验收测试与独立审计.md",
+      "sha256": "0c678e8b8b89145238c075e7dae8613d4779689ba83a0430156d503127caf64d"
+    },
+    {
+      "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\verification\\G0\\evaluation-proposal.md",
+      "sha256": "cc3d036920e2d22c915a4b67a1be4c406924c5326d60aba9adfca9a0c61acb04"
+    },
+    {
+      "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\verification\\G0\\evaluation-source-boundary.md",
+      "sha256": "4daafb16134fbddbc191518bc3acf55562516d7320c3f4ef49afe78292ae9377"
+    }
+  ],
+  "repair_handoff": {
+    "recipient": "/root/eval_dataset_v2",
+    "specific_case_identifier_and_minimal_repair_sent_only_to_author": true,
+    "root_received_only_categories_counts_and_metadata": true,
+    "next_version_requires_new_directory": true,
+    "next_version": "v6_or_later",
+    "v5_must_not_change_in_place": true,
+    "process": "Reconcile the complete current question, original history, gold slots, source links and semantic allocation; verify all 120 units once and submit all four final file fingerprints in one sealed handoff."
+  },
+  "verification": {
+    "runtime": "F:\\SCOPERECALL更新项目\\.venv\\Scripts\\python.exe",
+    "command": "& 'F:\\SCOPERECALL更新项目\\.venv\\Scripts\\python.exe' -X utf8 -B 'F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-G0-EVALV5-AUDIT\\structural_profile.py'",
+    "exit_code": 0,
+    "structural_profile_script": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-G0-EVALV5-AUDIT\\structural_profile.py",
+    "structural_profile_script_sha256": "3aa032599f2ff34b7b2be4ec6749f125fca0e8bfc6b30724c0bac1f458ebc098",
+    "structural_profile_path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-G0-EVALV5-AUDIT\\structural-profile.json",
+    "structural_profile_sha256": "7cc3acec4ab637a85135c91fbf30e48f02bc1fbf81e9110cdc67b940d8d414e0",
+    "programmatic_result": "PASS for parsing, declared cardinality, joins, source-ID existence, timestamp order, simulated source-role consistency, model/control field separation, package identity and snapshot integrity. Full field comparison completed across all rows.",
+    "semantic_result": "FAIL for one continuing query/stratum inconsistency; all other v4 reported semantic repairs were accepted.",
+    "canonical_record_fingerprint_algorithm": "SHA-256 of UTF-8 JSON serialized with ensure_ascii=False, sort_keys=True and separators=(comma,colon), no trailing newline.",
+    "checks_are_not_extraction_host_or_product_scores": true
+  },
+  "preserved_prior_artifacts": [
+    {
+      "path": "verification\\G0\\evaluation-dataset-audit.json",
+      "sha256": "6a29938fe01f7fc2e24227db6d135826141720e1a8191dda1ff0115211827e05",
+      "unchanged": true
+    },
+    {
+      "path": "verification\\G0\\evaluation-dataset-audit-v2.json",
+      "sha256": "fd732c740c78b6ef266efa57e0b4a9f4f7f80031c2aac9b48bf32debd87fe0b9",
+      "unchanged": true
+    },
+    {
+      "path": "verification\\G0\\evaluation-dataset-audit-v3.json",
+      "sha256": "0b5d94333d2213e92013bf4e28be2e314eb5b4c02242f085637250e67ee315c6",
+      "unchanged": true
+    },
+    {
+      "path": "verification\\G0\\evaluation-source-boundary.md",
+      "sha256": "4daafb16134fbddbc191518bc3acf55562516d7320c3f4ef49afe78292ae9377",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v1\\raw.jsonl",
+      "sha256": "9dcb7c98436165782f1c259260202cc421c4b16318c5e25f3da3dc3c33fd029e",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v1\\gold.jsonl",
+      "sha256": "62f5afba6a7124794c4444e610749e93fbb55141759f0f355b1c02d58e5fd344",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v1\\manifest.json",
+      "sha256": "f1ecbf5353b90a3d1ec729e220dac9f9a6a547f117ad4552d3ffbc028af8c141",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v2\\raw.jsonl",
+      "sha256": "6810889f47541aa348535e06ad4275365821edfe1a5af647d667caff1030fcfc",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v2\\gold.jsonl",
+      "sha256": "70e0e748ece1c5343852a1b1f1d706105c8438d8b050a63b180bce2be9aab5c3",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v2\\manifest.json",
+      "sha256": "7d6acdc5ff684e373442924f0c52764a225ead130b7e48771bacda25bb3befb6",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v3\\raw.jsonl",
+      "sha256": "723e2f245d84efa14636fb8fd78e52bb6ec78e9518c8da9fdf17044510c53059",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v3\\gold.jsonl",
+      "sha256": "f822a237101d62b5b22a18ce51fc0f89465895c5bfbaadeec9af52db6d9b2b8a",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v3\\manifest.json",
+      "sha256": "9edd45f5198a81aacf77b38a924fdeb4f22945b0829a5acfd8691dfb8cd80306",
+      "unchanged": true
+    },
+    {
+      "path": "verification\\G0\\evaluation-dataset-audit-v4.json",
+      "sha256": "77bdd094643b986c9b2ad3dfb7281366f687afff37d9b6b3a17628b5301c69de",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v4\\raw.jsonl",
+      "sha256": "40e9343ca4fde970884b7b346000a41b358b579b8a69db7acba54e2cc13c7900",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v4\\gold.jsonl",
+      "sha256": "f8c4b3d226e95079c94b37df9de2f06b04eb3761de52f58776b7677aaee76c10",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v4\\manifest.json",
+      "sha256": "be467034cb6c6ce6fc2a81db317005d75831835b1d2411c87c53672e59a81313",
+      "unchanged": true
+    },
+    {
+      "path": ".execution\\TEST-EVAL-SEALED-120-v4\\fixture-manifest.json",
+      "sha256": "c467af3f8ad970f34777794da6f713f01b86320bd7613088d6975f8034993710",
+      "unchanged": true
+    }
+  ],
+  "audit_boundaries": [
+    "No sealed example, answer, quote, case ID or selected source span is disclosed in this report.",
+    "Only this audit report and auditor-owned execution artifacts were written; all sealed dataset versions and previous reports remain byte-identical.",
+    "No new threshold, user approval requirement, model route or product acceptance gate was introduced."
+  ],
+  "conclusion": "v5 remains ineligible for final holdout scoring because one current-question label and frozen semantic allocation remain inconsistent. Make the single bounded repair in a new sealed version and re-audit. All previously repaired findings remain closed. G0 is unchanged; G1 and actual host capability are not adjudicated by this dataset report."
+}

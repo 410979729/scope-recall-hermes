@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "entity_request",
+  "description": "Design specification v1.1. Not an installed API. Trusted identity is supplied separately by the adapter. Incoming matches full scalar value_text only. predicate is an exact filter when present.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "protocol_version": {
+      "const": "1.1"
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "subject": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "action": {
+      "enum": [
+        "probe",
+        "related"
+      ]
+    },
+    "direction": {
+      "enum": [
+        "outgoing",
+        "incoming",
+        "both"
+      ]
+    },
+    "predicate": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "max_items": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 30
+    },
+    "budget_tokens": {
+      "type": "integer",
+      "minimum": 64,
+      "maximum": 8000
+    }
+  },
+  "required": [
+    "protocol_version",
+    "request_id",
+    "subject",
+    "action",
+    "direction",
+    "max_items",
+    "budget_tokens"
+  ]
+}

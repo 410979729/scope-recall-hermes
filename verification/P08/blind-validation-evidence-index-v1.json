@@ -1,0 +1,47 @@
+{
+  "artifact": "P08-blind-validation-evidence-index-v1",
+  "hash_algorithm": "SHA-256",
+  "content_policy": "Hash-only index; no validation text, questions, answers, per-query decisions, or raw response bodies are included.",
+  "private_run_dir": ".execution/TEST-P08-VALIDATION-THREAD1-PRIVATE/validation-20260906T125158Z-24105b4e",
+  "public_summary": {
+    "path": "verification/P08/blind-validation-summary-v1.json",
+    "bytes": 4540,
+    "sha256": "4a11d5e834baaeb7e167d76ace653e467bd50fa9762f03ae6e14336fe345abde"
+  },
+  "external_frozen_inputs_and_receipts": [
+    {"path":"verification/P08/policy-blind-v1.json","sha256":"fa499d922e8d28fb303dcf12a5f2ffd840c6079c40c6556385afabfd0ce56413"},
+    {"path":"verification/P08/blind-candidate-v1.json","sha256":"48b925e5c747146de6a7cadc781e2f64e6f16d2c8a5172081ed267d57eaa943d"},
+    {"path":".execution/TEST-P08-VALIDATION-AUDIT-v1/validation.jsonl","sha256":"797ee17b28f20a1d1e087706e510c54ecaf35d9a2b4cb66ea3c00a16ebe7f0b0"},
+    {"path":".execution/TEST-P08-plan/blind_validation_entry.py","sha256":"fc7faa4b05e8361e38eab29c0e77f8991abc964751b1265b04194930dc70195f"},
+    {"path":".execution/TEST-P08-plan/blind_validation_native_bridge.py","sha256":"271a2ae5e6521d1118dea4615b5c2a4d63d8ad9876a2e823876e453f672cbd2c"},
+    {"path":"probes/p08_native_semantic_slice.py","sha256":"d10ebc62b15610d976ac55be022b620cd009a971cd05bdff72c4f1a148bc10a7"},
+    {"path":".execution/TEST-P08-plan/watchdogs/blind-validation-20260906T125158Z-20284-00/watchdog-receipt.json","sha256":"490f0f536d39b737bcc8aa20abaa31334aca99dadbd806403b6bf46f87f95076"}
+  ],
+  "private_run_files": [
+    {"path":"acquisition-receipt.json","bytes":68246,"sha256":"9f6a8e117b517a4b0320642bddefac049a4c366ec6e721fb32bcdbfa931c0a8b"},
+    {"path":"batch-01/receipt.json","bytes":499,"sha256":"ec2f15ade35e0e9f0dc8def05565413354e4c5a3a5957980396fb3826492d652"},
+    {"path":"batch-01/request-37.json","bytes":5896,"sha256":"0e7b388fea8b1d0e4687de53e1c13cd9823b6b5b347743877331ea08070ca75d"},
+    {"path":"batch-01/response-37.raw","bytes":1404722,"sha256":"bf706245fe3d01bd6bb49d24b8671f652d30e83b3bee8b80d2c7f2bb746e2e7b"},
+    {"path":"batch-02/receipt.json","bytes":499,"sha256":"77b1173359942c3e11371486567cf41b3d4c69863ca2ffe245687ea93a9b23db"},
+    {"path":"batch-02/request-38.json","bytes":4232,"sha256":"8c67d9acdc11d8a8ed3a46a1b03b9ec4a370168de9c18b7381358d178855e66e"},
+    {"path":"batch-02/response-38.raw","bytes":1003332,"sha256":"bb13c0d1c68ac1237d28d27b98bde1912f38b804316485529b5e671445a99d1b"},
+    {"path":"lineage.json","bytes":12917,"sha256":"3d37344042a8ec818dcb03f22094f3d7491bdd66738f227ced1eb360f6a8a576"},
+    {"path":"native/.lance.scope-recall-write.lock","bytes":1,"sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"},
+    {"path":"native/lance/TEST_vectors.lance/_transactions/0-eb1c9354-0058-430d-868a-2c61478fb274.txn","bytes":420,"sha256":"22fb10eea0b092cf61bd29e69c5df02290747104fcad08f12822728f86a0041a"},
+    {"path":"native/lance/TEST_vectors.lance/_transactions/1-b9bff619-77ce-4e9d-b1f0-3953427b297f.txn","bytes":143,"sha256":"0608ad58e911e01596cd8ce5de821851958183e02f6fc24720f65700fee1af41"},
+    {"path":"native/lance/TEST_vectors.lance/_versions/18446744073709551613.manifest","bytes":733,"sha256":"3b71b343cc2e75a70b8e79e791d4ba50c737c36da975f0f6d493e2466e5e3d39"},
+    {"path":"native/lance/TEST_vectors.lance/_versions/18446744073709551614.manifest","bytes":919,"sha256":"407fa8c6780851a23712c1daf6cfb23cec525e37d83c5a1edb703effee3b3b8f"},
+    {"path":"native/lance/TEST_vectors.lance/data/000000011001000000100100faaa294ed9b5589b289ceeff54.lance","bytes":157080,"sha256":"4936fec176b7587cc56a87b645fbe2671dbbfa778635f88942f0811cbf7695e1"},
+    {"path":"native/native-summary.json","bytes":722,"sha256":"068ce2a568c7fd624bdc27cbe427add6254a521c324d5ab5b90916f3e55979c5"},
+    {"path":"native/semantic-report.json","bytes":140268,"sha256":"920a1c015ae6fdfa52cf286e62c973e2f62b243bd9c9300c28f0e86a7f24644d"},
+    {"path":"native/sqlite/.truth-writer.lease","bytes":1,"sha256":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"},
+    {"path":"native/sqlite/memory.sqlite3","bytes":389120,"sha256":"064c89905b9dbca806787ffcde84827b3025a725a6f22de87fd74497887e0654"},
+    {"path":"native-stderr.raw","bytes":0,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+    {"path":"native-stdout.raw","bytes":327,"sha256":"ea5337561c281aec753f1bf1875d45215fbe153a078a5097712ba92550efa0b7"},
+    {"path":"run-manifest.json","bytes":61449,"sha256":"81bed5bcbb77e56b0d49201aa148a2f28a337f83ba9c36d9848077b4c731dc59"},
+    {"path":"summary.json","bytes":1898,"sha256":"bf2d65ada4303d2a65786acf0ed92f92384929aada290daf2f727bf9d1bdf849"},
+    {"path":"validation-rows.private.json","bytes":5206,"sha256":"2f7e56cf27bcf77a047198172d5c4d991b29fabc3ece2984ea8f15ad3d9c52cb"},
+    {"path":"vectors.json","bytes":1411442,"sha256":"d7ef34f8d5f55c3eda2e079e450b88e65dd4a6dde3e792809950f0b57903133c"}
+  ],
+  "private_run_file_count": 24
+}

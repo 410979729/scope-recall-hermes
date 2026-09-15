@@ -1,0 +1,366 @@
+...............F.FF.FFFsF.FF                                             [100%]
+================================== FAILURES ===================================
+_______ test_C16_M47_same_path_overwrite_preserves_exact_prior_artifact _______
+
+app = (<scope_recall.core.composition.MemoryCore object at 0x0000020F17B92300>, TrustedContext(binding=InstanceBinding(agent...main', recent_messages=(), display_snapshot=None, import_provenance=None, task_anchor=None, environment_revision=None))
+tmp_path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-c50ahzv8/scope.recall.test-boundary.3l1wf3za/temp/pytest-of-unknown/pytest-0/test_C16_M47_same_path_overwri0')
+
+    def test_C16_M47_same_path_overwrite_preserves_exact_prior_artifact(app,tmp_path):
+        core,ctx=app
+>       one,source,path=artifact(core,ctx,tmp_path)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\contract\test_v11_episodes.py:152: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\contract\test_v11_episodes.py:44: in artifact
+    item=core.register_artifact(ctx,key=key,revision=version,scope_id='TEST-scope',source_ref=ref(source),label=label,
+core\composition.py:156: in register_artifact
+    return tx.artifacts.register(**registration,now=self.clock.utc_now())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+core\artifact_storage.py:82: in register
+    blob=retain(ctx.binding,grant) if grant else None
+         ^^^^^^^^^^^^^^^^^^^^^^^^^
+core\retained_artifacts.py:208: in retain
+    with destination.open("xb") as stream:
+         ^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-c50ahzv8/scope.recall.test-boundary.3l...test_C16_M47_same_path_overwri0/TEST-claims/retained/6f40190e264875d8416cc38ad1beff05b42f90df65b444fafba1ea0c170fd753')
+mode = 'xb', buffering = -1, encoding = None, errors = None, newline = None
+
+    def open(self, mode='r', buffering=-1, encoding=None,
+             errors=None, newline=None):
+        """
+        Open the file pointed to by this path and return a file object, as
+        the built-in open() function does.
+        """
+        if "b" not in mode:
+            encoding = io.text_encoding(encoding)
+>       return io.open(self, mode, buffering, encoding, errors, newline)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: 'F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-c50ahzv8\\scope.recall.test-boundary.3l1wf3za\\temp\\pytest-of-unknown\\pytest-0\\test_C16_M47_same_path_overwri0\\TEST-claims\\retained\\6f40190e264875d8416cc38ad1beff05b42f90df65b444fafba1ea0c170fd753'
+
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\pathlib.py:1013: FileNotFoundError
+____ test_M13_M14_display_order_binds_version_only_when_actually_observed _____
+
+app = (<scope_recall.core.composition.MemoryCore object at 0x0000020F17BC51F0>, TrustedContext(binding=InstanceBinding(agent...main', recent_messages=(), display_snapshot=None, import_provenance=None, task_anchor=None, environment_revision=None))
+tmp_path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-c50ahzv8/scope.recall.test-boundary.3l1wf3za/temp/pytest-of-unknown/pytest-0/test_M13_M14_display_order_bin0')
+
+    def test_M13_M14_display_order_binds_version_only_when_actually_observed(app,tmp_path):
+        core,ctx=app
+>       one,_,_=artifact(core,ctx,tmp_path,key='TEST-one',label='TEST-one')
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\contract\test_v11_episodes.py:174: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\contract\test_v11_episodes.py:44: in artifact
+    item=core.register_artifact(ctx,key=key,revision=version,scope_id='TEST-scope',source_ref=ref(source),label=label,
+core\composition.py:156: in register_artifact
+    return tx.artifacts.register(**registration,now=self.clock.utc_now())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+core\artifact_storage.py:82: in register
+    blob=retain(ctx.binding,grant) if grant else None
+         ^^^^^^^^^^^^^^^^^^^^^^^^^
+core\retained_artifacts.py:208: in retain
+    with destination.open("xb") as stream:
+         ^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-c50ahzv8/scope.recall.test-boundary.3l...test_M13_M14_display_order_bin0/TEST-claims/retained/6f40190e264875d8416cc38ad1beff05b42f90df65b444fafba1ea0c170fd753')
+mode = 'xb', buffering = -1, encoding = None, errors = None, newline = None
+
+    def open(self, mode='r', buffering=-1, encoding=None,
+             errors=None, newline=None):
+        """
+        Open the file pointed to by this path and return a file object, as
+        the built-in open() function does.
+        """
+        if "b" not in mode:
+            encoding = io.text_encoding(encoding)
+>       return io.open(self, mode, buffering, encoding, errors, newline)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: 'F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-c50ahzv8\\scope.recall.test-boundary.3l1wf3za\\temp\\pytest-of-unknown\\pytest-0\\test_M13_M14_display_order_bin0\\TEST-claims\\retained\\6f40190e264875d8416cc38ad1beff05b42f90df65b444fafba1ea0c170fd753'
+
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\pathlib.py:1013: FileNotFoundError
+_ test_M50_deleted_artifact_blocks_descriptions_references_resume_and_cached_release _
+
+app = (<scope_recall.core.composition.MemoryCore object at 0x0000020F17B944A0>, TrustedContext(binding=InstanceBinding(agent...main', recent_messages=(), display_snapshot=None, import_provenance=None, task_anchor=None, environment_revision=None))
+tmp_path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-c50ahzv8/scope.recall.test-boundary.3l1wf3za/temp/pytest-of-unknown/pytest-0/test_M50_deleted_artifact_bloc0')
+
+    def test_M50_deleted_artifact_blocks_descriptions_references_resume_and_cached_release(app,tmp_path):
+        core,ctx=app
+>       item,source,_=artifact(core,ctx,tmp_path)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\contract\test_v11_episodes.py:188: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\contract\test_v11_episodes.py:44: in artifact
+    item=core.register_artifact(ctx,key=key,revision=version,scope_id='TEST-scope',source_ref=ref(source),label=label,
+core\composition.py:156: in register_artifact
+    return tx.artifacts.register(**registration,now=self.clock.utc_now())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+core\artifact_storage.py:82: in register
+    blob=retain(ctx.binding,grant) if grant else None
+         ^^^^^^^^^^^^^^^^^^^^^^^^^
+core\retained_artifacts.py:208: in retain
+    with destination.open("xb") as stream:
+         ^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-c50ahzv8/scope.recall.test-boundary.3l...test_M50_deleted_artifact_bloc0/TEST-claims/retained/6f40190e264875d8416cc38ad1beff05b42f90df65b444fafba1ea0c170fd753')
+mode = 'xb', buffering = -1, encoding = None, errors = None, newline = None
+
+    def open(self, mode='r', buffering=-1, encoding=None,
+             errors=None, newline=None):
+        """
+        Open the file pointed to by this path and return a file object, as
+        the built-in open() function does.
+        """
+        if "b" not in mode:
+            encoding = io.text_encoding(encoding)
+>       return io.open(self, mode, buffering, encoding, errors, newline)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: 'F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-c50ahzv8\\scope.recall.test-boundary.3l1wf3za\\temp\\pytest-of-unknown\\pytest-0\\test_M50_deleted_artifact_bloc0\\TEST-claims\\retained\\6f40190e264875d8416cc38ad1beff05b42f90df65b444fafba1ea0c170fd753'
+
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\pathlib.py:1013: FileNotFoundError
+_________ test_same_name_versions_are_content_addressed_and_immutable _________
+
+tmp_path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-c50ahzv8/scope.recall.test-boundary.3l1wf3za/temp/pytest-of-unknown/pytest-0/test_same_name_versions_are_co0')
+
+    def test_same_name_versions_are_content_addressed_and_immutable(tmp_path):
+        ctx = context(tmp_path / "TEST-instance")
+        source = tmp_path / "design.png"
+        source.write_bytes(PNG_V1)
+>       first = retain(ctx.binding, _grant(source))
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\contract\test_v11_retained_artifacts.py:30: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+core\retained_artifacts.py:208: in retain
+    with destination.open("xb") as stream:
+         ^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-c50ahzv8/scope.recall.test-boundary.3l...st_same_name_versions_are_co0/TEST-instance/retained/0cd8b99d2f8403627d74f900f85923cbf70e202fbeaefe7c58d937f7e559f870')
+mode = 'xb', buffering = -1, encoding = None, errors = None, newline = None
+
+    def open(self, mode='r', buffering=-1, encoding=None,
+             errors=None, newline=None):
+        """
+        Open the file pointed to by this path and return a file object, as
+        the built-in open() function does.
+        """
+        if "b" not in mode:
+            encoding = io.text_encoding(encoding)
+>       return io.open(self, mode, buffering, encoding, errors, newline)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: 'F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-c50ahzv8\\scope.recall.test-boundary.3l1wf3za\\temp\\pytest-of-unknown\\pytest-0\\test_same_name_versions_are_co0\\TEST-instance\\retained\\0cd8b99d2f8403627d74f900f85923cbf70e202fbeaefe7c58d937f7e559f870'
+
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\pathlib.py:1013: FileNotFoundError
+_____________________ test_mime_size_hash_and_svg_policy ______________________
+
+tmp_path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-c50ahzv8/scope.recall.test-boundary.3l1wf3za/temp/pytest-of-unknown/pytest-0/test_mime_size_hash_and_svg_po0')
+
+    def test_mime_size_hash_and_svg_policy(tmp_path):
+        ctx = context(tmp_path / "TEST-instance")
+        source = tmp_path / "a.txt"
+        source.write_bytes(b"x")
+        with pytest.raises(ContractError):
+            retain(ctx.binding, ArtifactGrant(source, hashlib.sha256(b"x").hexdigest(), "application/pdf", 1))
+        with pytest.raises(ContractError):
+            retain(ctx.binding, ArtifactGrant(source, "0" * 64, "text/plain", 1))
+        with pytest.raises(ContractError):
+            retain(ctx.binding, ArtifactGrant(source, hashlib.sha256(b"x").hexdigest(), "text/plain", 0))
+        source.write_bytes(b"xx")
+        with pytest.raises(ContractError):
+            retain(ctx.binding, _grant(source, "text/plain", limit=1))
+        svg = tmp_path / "bad.svg"
+        svg.write_text('<svg><script>alert(1)</script></svg>', encoding="utf-8")
+        with pytest.raises(ContractError):
+            retain(ctx.binding, _grant(svg, "image/svg+xml"))
+        svg.write_text('<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1" fill="#fff"/></svg>', encoding="utf-8")
+>       valid = retain(ctx.binding, _grant(svg, "image/svg+xml"))
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\contract\test_v11_retained_artifacts.py:58: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+core\retained_artifacts.py:208: in retain
+    with destination.open("xb") as stream:
+         ^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-c50ahzv8/scope.recall.test-boundary.3l...st_mime_size_hash_and_svg_po0/TEST-instance/retained/81d6bdc0666662f3ff4845307b2c6276983e760bdd91a7e56494f4e688017e85')
+mode = 'xb', buffering = -1, encoding = None, errors = None, newline = None
+
+    def open(self, mode='r', buffering=-1, encoding=None,
+             errors=None, newline=None):
+        """
+        Open the file pointed to by this path and return a file object, as
+        the built-in open() function does.
+        """
+        if "b" not in mode:
+            encoding = io.text_encoding(encoding)
+>       return io.open(self, mode, buffering, encoding, errors, newline)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: 'F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-c50ahzv8\\scope.recall.test-boundary.3l1wf3za\\temp\\pytest-of-unknown\\pytest-0\\test_mime_size_hash_and_svg_po0\\TEST-instance\\retained\\81d6bdc0666662f3ff4845307b2c6276983e760bdd91a7e56494f4e688017e85'
+
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\pathlib.py:1013: FileNotFoundError
+_____________ test_read_detects_tamper_missing_and_erase_is_exact _____________
+
+tmp_path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-c50ahzv8/scope.recall.test-boundary.3l1wf3za/temp/pytest-of-unknown/pytest-0/test_read_detects_tamper_missi0')
+
+    def test_read_detects_tamper_missing_and_erase_is_exact(tmp_path):
+        ctx = context(tmp_path / "TEST-instance")
+        source = tmp_path / "a.webp"
+        source.write_bytes(WEBP)
+>       blob = retain(ctx.binding, _grant(source, "image/webp"))
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\contract\test_v11_retained_artifacts.py:72: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+core\retained_artifacts.py:208: in retain
+    with destination.open("xb") as stream:
+         ^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-c50ahzv8/scope.recall.test-boundary.3l...st_read_detects_tamper_missi0/TEST-instance/retained/3fe79651a92ea3850c3fc3dd9519a67c7f70b598fa238a3fd92042f6446e6452')
+mode = 'xb', buffering = -1, encoding = None, errors = None, newline = None
+
+    def open(self, mode='r', buffering=-1, encoding=None,
+             errors=None, newline=None):
+        """
+        Open the file pointed to by this path and return a file object, as
+        the built-in open() function does.
+        """
+        if "b" not in mode:
+            encoding = io.text_encoding(encoding)
+>       return io.open(self, mode, buffering, encoding, errors, newline)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: 'F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-c50ahzv8\\scope.recall.test-boundary.3l1wf3za\\temp\\pytest-of-unknown\\pytest-0\\test_read_detects_tamper_missi0\\TEST-instance\\retained\\3fe79651a92ea3850c3fc3dd9519a67c7f70b598fa238a3fd92042f6446e6452'
+
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\pathlib.py:1013: FileNotFoundError
+___ test_hardlink_mutation_is_detected_and_fsync_failure_leaves_no_partial ____
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000020F17B946E0>
+tmp_path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-c50ahzv8/scope.recall.test-boundary.3l1wf3za/temp/pytest-of-unknown/pytest-0/test_hardlink_mutation_is_dete0')
+
+    def test_hardlink_mutation_is_detected_and_fsync_failure_leaves_no_partial(monkeypatch, tmp_path):
+        ctx = context(tmp_path / "TEST-instance")
+        source = tmp_path / "a.png"
+        source.write_bytes(PNG_V1)
+>       blob = retain(ctx.binding, _grant(source))
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\contract\test_v11_retained_artifacts.py:107: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+core\retained_artifacts.py:208: in retain
+    with destination.open("xb") as stream:
+         ^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-c50ahzv8/scope.recall.test-boundary.3l...st_hardlink_mutation_is_dete0/TEST-instance/retained/0cd8b99d2f8403627d74f900f85923cbf70e202fbeaefe7c58d937f7e559f870')
+mode = 'xb', buffering = -1, encoding = None, errors = None, newline = None
+
+    def open(self, mode='r', buffering=-1, encoding=None,
+             errors=None, newline=None):
+        """
+        Open the file pointed to by this path and return a file object, as
+        the built-in open() function does.
+        """
+        if "b" not in mode:
+            encoding = io.text_encoding(encoding)
+>       return io.open(self, mode, buffering, encoding, errors, newline)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: 'F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-c50ahzv8\\scope.recall.test-boundary.3l1wf3za\\temp\\pytest-of-unknown\\pytest-0\\test_hardlink_mutation_is_dete0\\TEST-instance\\retained\\0cd8b99d2f8403627d74f900f85923cbf70e202fbeaefe7c58d937f7e559f870'
+
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\pathlib.py:1013: FileNotFoundError
+_______________ test_blob_metadata_does_not_echo_text_contents ________________
+
+tmp_path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-c50ahzv8/scope.recall.test-boundary.3l1wf3za/temp/pytest-of-unknown/pytest-0/test_blob_metadata_does_not_ec0')
+
+    def test_blob_metadata_does_not_echo_text_contents(tmp_path):
+        ctx = context(tmp_path / "TEST-instance")
+        source = tmp_path / "notes.txt"
+        source.write_text("TEST-secret-content", encoding="utf-8")
+>       blob = retain(ctx.binding, _grant(source, "text/plain"))
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\contract\test_v11_retained_artifacts.py:152: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+core\retained_artifacts.py:208: in retain
+    with destination.open("xb") as stream:
+         ^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-c50ahzv8/scope.recall.test-boundary.3l...st_blob_metadata_does_not_ec0/TEST-instance/retained/fecc6249727d0463984dc0e338843e61bb13b5809630711f01e0b8c70a3c8fc3')
+mode = 'xb', buffering = -1, encoding = None, errors = None, newline = None
+
+    def open(self, mode='r', buffering=-1, encoding=None,
+             errors=None, newline=None):
+        """
+        Open the file pointed to by this path and return a file object, as
+        the built-in open() function does.
+        """
+        if "b" not in mode:
+            encoding = io.text_encoding(encoding)
+>       return io.open(self, mode, buffering, encoding, errors, newline)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: 'F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-c50ahzv8\\scope.recall.test-boundary.3l1wf3za\\temp\\pytest-of-unknown\\pytest-0\\test_blob_metadata_does_not_ec0\\TEST-instance\\retained\\fecc6249727d0463984dc0e338843e61bb13b5809630711f01e0b8c70a3c8fc3'
+
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\pathlib.py:1013: FileNotFoundError
+____________ test_blob_identity_is_bound_to_installation_and_agent ____________
+
+tmp_path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-c50ahzv8/scope.recall.test-boundary.3l1wf3za/temp/pytest-of-unknown/pytest-0/test_blob_identity_is_bound_to0')
+
+    def test_blob_identity_is_bound_to_installation_and_agent(tmp_path):
+        ctx = context(tmp_path / "TEST-instance")
+        source = tmp_path / "a.png"
+        source.write_bytes(PNG_V1)
+>       blob = retain(ctx.binding, _grant(source))
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\contract\test_v11_retained_artifacts.py:164: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+core\retained_artifacts.py:208: in retain
+    with destination.open("xb") as stream:
+         ^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-c50ahzv8/scope.recall.test-boundary.3l...st_blob_identity_is_bound_to0/TEST-instance/retained/0cd8b99d2f8403627d74f900f85923cbf70e202fbeaefe7c58d937f7e559f870')
+mode = 'xb', buffering = -1, encoding = None, errors = None, newline = None
+
+    def open(self, mode='r', buffering=-1, encoding=None,
+             errors=None, newline=None):
+        """
+        Open the file pointed to by this path and return a file object, as
+        the built-in open() function does.
+        """
+        if "b" not in mode:
+            encoding = io.text_encoding(encoding)
+>       return io.open(self, mode, buffering, encoding, errors, newline)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: 'F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-c50ahzv8\\scope.recall.test-boundary.3l1wf3za\\temp\\pytest-of-unknown\\pytest-0\\test_blob_identity_is_bound_to0\\TEST-instance\\retained\\0cd8b99d2f8403627d74f900f85923cbf70e202fbeaefe7c58d937f7e559f870'
+
+C:\Users\w4109\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\pathlib.py:1013: FileNotFoundError
+============================ slowest 10 durations =============================
+0.06s call     tests/contract/test_v11_episodes.py::test_C26_M06_same_trusted_task_continues_across_sessions_and_branches_do_not
+0.05s call     tests/contract/test_v11_episodes.py::test_resume_cannot_merge_two_topics_or_invent_local_artifact_access
+0.05s call     tests/contract/test_v11_episodes.py::test_resume_keeps_unprocessed_tail_and_source_paging_is_not_a_false_complete_count
+0.05s call     tests/contract/test_v11_episodes.py::test_bad_watermark_or_old_source_revision_cannot_mark_processing_complete
+0.05s call     tests/contract/test_v11_episodes.py::test_resume_is_extractive_versioned_and_stale_environment_is_labelled
+0.04s call     tests/contract/test_v11_episodes.py::test_same_title_in_new_session_without_anchor_does_not_merge
+0.04s call     tests/contract/test_v11_episodes.py::test_C25_one_session_changes_topic_without_cancelling_previous
+0.04s call     tests/contract/test_v11_episodes.py::test_C16_M47_same_path_overwrite_preserves_exact_prior_artifact
+0.03s call     tests/contract/test_v11_episodes.py::test_C37_plain_chat_has_provisional_episode_without_manufactured_goal
+0.03s call     tests/contract/test_v11_episodes.py::test_model_cannot_promote_promise_negative_or_hypothesis_to_verified_progress[TEST \u6211\u5c06\u5b8c\u6210\u914d\u8272\u3002-assistant_visible-\u5b8c\u6210\u914d\u8272]
+=========================== short test summary info ===========================
+FAILED tests/contract/test_v11_episodes.py::test_C16_M47_same_path_overwrite_preserves_exact_prior_artifact
+FAILED tests/contract/test_v11_episodes.py::test_M13_M14_display_order_binds_version_only_when_actually_observed
+FAILED tests/contract/test_v11_episodes.py::test_M50_deleted_artifact_blocks_descriptions_references_resume_and_cached_release
+FAILED tests/contract/test_v11_retained_artifacts.py::test_same_name_versions_are_content_addressed_and_immutable
+FAILED tests/contract/test_v11_retained_artifacts.py::test_mime_size_hash_and_svg_policy
+FAILED tests/contract/test_v11_retained_artifacts.py::test_read_detects_tamper_missing_and_erase_is_exact
+FAILED tests/contract/test_v11_retained_artifacts.py::test_hardlink_mutation_is_detected_and_fsync_failure_leaves_no_partial
+FAILED tests/contract/test_v11_retained_artifacts.py::test_blob_metadata_does_not_echo_text_contents
+FAILED tests/contract/test_v11_retained_artifacts.py::test_blob_identity_is_bound_to_installation_and_agent
+9 failed, 18 passed, 1 skipped in 1.96s
