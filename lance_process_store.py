@@ -16,6 +16,7 @@ import secrets
 import subprocess
 import sys
 import threading
+import time
 import weakref
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
@@ -93,6 +94,17 @@ def _remote_failure(error_type, message: str) -> RuntimeError:
 def _helper_lock_timeout() -> RuntimeError:
     return RuntimeError(
         "native vector helper lock timeout; SQLite truth is intact and the active helper was not interrupted"
+    )
+
+
+class _RequestBudgetExpired(TimeoutError):
+    """The caller stopped waiting, but the sequential helper remains healthy."""
+
+
+def _request_budget_expired() -> _RequestBudgetExpired:
+    return _RequestBudgetExpired(
+        "native vector helper request deadline exhausted; "
+        "SQLite truth is intact and the active helper was not interrupted"
     )
 
 
@@ -207,7 +219,16 @@ class ProcessLanceVectorStore:
         self._closed = False
         self._owned_reaper: _OwnedHelperReaper | None = None
         self._sequence = 0
+        # A caller that stops waiting leaves the sequential helper healthy; the
+        # frame it owes is parked here and drained before the next request.
+        self._pending_response_id: int | None = None
+        self._pending_response_since: float | None = None
         self._request_timeout = 60.0
+        # A parked frame older than this means the helper itself is wedged,
+        # not merely slower than one caller's budget; then it is reaped so the
+        # explicit reopen path can recover instead of every later request
+        # spending its own budget waiting on the same frame.
+        self._pending_response_timeout = self._request_timeout
 
     def _acquire_helper_lock(self) -> bool:
         """Wait only for the remaining request budget before owning the helper.
@@ -267,6 +288,7 @@ class ProcessLanceVectorStore:
         self._reader = None
         self._sender = None
         self._responses = queue.Queue(maxsize=2)
+        self._clear_pending_response()
         self._finalizer = None
         if finalizer is not None:
             finalizer.detach()
@@ -365,19 +387,85 @@ class ProcessLanceVectorStore:
         finally:
             self._lock.release()
 
+    def _receive_response_locked(self, request_id: int) -> dict[str, Any]:
+        remaining = remaining_seconds()
+        if remaining is not None and remaining <= 0.0:
+            raise _request_budget_expired()
+        wait = self._request_timeout
+        deadline_limited = remaining is not None and remaining <= wait
+        if remaining is not None:
+            wait = min(wait, max(0.0, remaining))
+        try:
+            response = self._responses.get(timeout=wait)
+        except queue.Empty as exc:
+            if deadline_limited:
+                raise _request_budget_expired() from exc
+            raise
+        if not isinstance(response, dict) or response.get("id") != request_id:
+            raise RuntimeError("native vector worker exited or returned an invalid frame")
+        return response
+
+    def _park_pending_response(self, request_id: int) -> None:
+        """Remember the frame a caller stopped waiting for; the helper stays up."""
+        self._pending_response_id = request_id
+        self._pending_response_since = time.monotonic()
+
+    def _clear_pending_response(self) -> None:
+        self._pending_response_id = None
+        self._pending_response_since = None
+
+    def _drain_pending_response_locked(self) -> tuple[int, dict[str, Any]] | None:
+        request_id = self._pending_response_id
+        if request_id is None:
+            return None
+        since = self._pending_response_since
+        if since is not None and time.monotonic() - since > self._pending_response_timeout:
+            # Every caller since the frame was parked has spent its budget on
+            # it.  That is a wedged helper, not a slow one; reap it so
+            # ``requires_reopen`` recovers the runtime instead of degrading
+            # every later request the same way.
+            self._reap_owned_helper(failed=True)
+            raise RuntimeError(
+                "native vector worker unresponsive; SQLite truth is intact and unacknowledged outbox work remains pending"
+            )
+        try:
+            response = self._receive_response_locked(request_id)
+        except _RequestBudgetExpired:
+            raise
+        except (OSError, ValueError, queue.Empty, RuntimeError) as exc:
+            self._reap_owned_helper(failed=True)
+            raise RuntimeError(
+                "native vector worker failed; SQLite truth is intact and unacknowledged outbox work remains pending"
+            ) from exc
+        self._clear_pending_response()
+        return request_id, response
+
+    def _response_result(self, request_id: int, response: dict[str, Any]) -> Any:
+        if not response.get("ok"):
+            error_type = response.get("error_type")
+            message = str(response.get("error") or "native vector operation failed")
+            if error_type == "VectorStoreCompatibilityError":
+                raise VectorStoreCompatibilityError(message)
+            if error_type == "FileNotFoundError":
+                raise FileNotFoundError(message)
+            raise _remote_failure(error_type, message)
+        return response.get("result")
+
     def _invoke_locked(self, method: str, *args: Any, _during_wait=None, **kwargs: Any) -> Any:
         if method not in {"is_available", "close"}:
             self._raise_if_native_path_unsafe()
         if self._failed or self._closed:
             raise RuntimeError("native vector worker is closed; reopen the vector runtime explicitly")
+        # The owed frame belongs to a caller that already gave up; its outcome
+        # is discarded here rather than raised into this unrelated request.
+        self._drain_pending_response_locked()
         remaining = remaining_seconds()
         if remaining is not None and remaining <= 0.0:
-            raise RuntimeError(
-                "native vector helper request deadline exhausted; SQLite truth is intact and the active helper was not interrupted"
-            )
+            raise _request_budget_expired()
         self._sequence += 1
+        request_id = self._sequence
         request = {
-            "id": self._sequence, "method": method, "args": args, "kwargs": kwargs,
+            "id": request_id, "method": method, "args": args, "kwargs": kwargs,
             "store": {"db_path": str(self.db_path), "table_name": self.table_name,
                       "dimensions": self.dimensions, "metric": self._metric},
         }
@@ -405,13 +493,22 @@ class ProcessLanceVectorStore:
                     self._reap_owned_helper(failed=True)
                     raise
                 if remaining_seconds() is not None and remaining_seconds() <= 0:
-                    raise queue.Empty
-            wait = self._request_timeout
-            if remaining is not None:
-                wait = min(wait, max(0.0, remaining_seconds() or 0.0))
-            response = self._responses.get(timeout=wait)
-            if not isinstance(response, dict) or response.get("id") != self._sequence:
-                raise RuntimeError("native vector worker exited or returned an invalid frame")
+                    try:
+                        response = self._responses.get_nowait()
+                    except queue.Empty:
+                        self._park_pending_response(request_id)
+                        return None
+                    if not isinstance(response, dict) or response.get("id") != request_id:
+                        raise RuntimeError("native vector worker exited or returned an invalid frame")
+                else:
+                    response = self._receive_response_locked(request_id)
+            else:
+                response = self._receive_response_locked(request_id)
+        except _RequestBudgetExpired:
+            self._park_pending_response(request_id)
+            if _during_wait is not None:
+                return None
+            raise
         except (OSError, ValueError, queue.Empty, RuntimeError) as exc:
             if work_failed:
                 raise
@@ -423,15 +520,7 @@ class ProcessLanceVectorStore:
             raise RuntimeError(
                 "native vector worker failed; SQLite truth is intact and unacknowledged outbox work remains pending"
             ) from exc
-        if not response.get("ok"):
-            error_type = response.get("error_type")
-            message = str(response.get("error") or "native vector operation failed")
-            if error_type == "VectorStoreCompatibilityError":
-                raise VectorStoreCompatibilityError(message)
-            if error_type == "FileNotFoundError":
-                raise FileNotFoundError(message)
-            raise _remote_failure(error_type, message)
-        return response.get("result")
+        return self._response_result(request_id, response)
 
     def _send_fence_frame(self, encoded: bytes, timeout: float) -> None:
         """Write one handshake frame with the same cumulative deadline."""
@@ -463,6 +552,7 @@ class ProcessLanceVectorStore:
     def _invoke_fenced_locked(self, rows: list[dict[str, Any]], guard: Callable[[], bool]) -> bool:
         if self._failed or self._closed:
             raise RuntimeError("native vector worker is closed; reopen the vector runtime explicitly")
+        self._drain_pending_response_locked()
         remaining = remaining_seconds()
         if remaining is not None and remaining <= 0.0:
             raise RuntimeError("native vector helper request deadline exhausted")
@@ -525,6 +615,8 @@ class ProcessLanceVectorStore:
             final = self._responses.get(timeout=wait)
             if not isinstance(final, dict) or final.get("id") != request_id:
                 raise RuntimeError("native vector fence final response mismatch")
+        except _RequestBudgetExpired:
+            raise
         except (OSError, ValueError, queue.Empty, RuntimeError) as exc:
             self._reap_owned_helper(failed=True)
             raise RuntimeError("native vector fence failed; physical outcome is uncertain") from exc
@@ -607,6 +699,7 @@ class ProcessLanceVectorStore:
             self._reader = None
             self._sender = None
             self._responses = queue.Queue(maxsize=2)
+            self._clear_pending_response()
             self._failed = False
             self._closed = False
 

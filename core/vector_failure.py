@@ -42,6 +42,7 @@ NATIVE_VECTOR_FAULTS: tuple[tuple[str, str], ...] = (
     ("worker exited or returned an invalid frame", "worker_exited_mid_frame"),
     ("worker is closed", "worker_closed"),
     ("worker is not running", "worker_not_running"),
+    ("worker unresponsive", "worker_unresponsive"),
     ("worker failed", "worker_failed"),
     ("fence handshake send failed", "fence_send_failed"),
     ("fence final response mismatch", "fence_mismatch"),

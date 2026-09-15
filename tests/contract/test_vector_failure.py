@@ -20,6 +20,8 @@ NATIVE_FAULTS = [
     ("native vector worker exited or returned an invalid frame", "RuntimeError:worker_exited_mid_frame"),
     ("native vector worker is closed; reopen the vector runtime explicitly", "RuntimeError:worker_closed"),
     ("native vector worker is not running", "RuntimeError:worker_not_running"),
+    ("native vector worker unresponsive; SQLite truth is intact and unacknowledged outbox work remains pending",
+     "RuntimeError:worker_unresponsive"),
     ("native vector worker failed; SQLite truth is intact", "RuntimeError:worker_failed"),
     ("native vector fence handshake send failed", "RuntimeError:fence_send_failed"),
     ("native vector fence final response mismatch", "RuntimeError:fence_mismatch"),

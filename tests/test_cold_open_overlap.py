@@ -50,6 +50,30 @@ for line in sys.stdin:
     finally:s.close()
 
 
+def test_expired_open_wait_defers_response_without_poisoning_worker(tmp_path,monkeypatch):
+    s=store(tmp_path,monkeypatch,delay=.2)
+    workers=[]
+    failure=None
+    def work():
+        workers.append(s._process)
+        time.sleep(.08)
+    try:
+        try:
+            with using_request_deadline(RequestDeadline.from_budget(.06)):
+                s.open_existing_with_work(work)
+        except RuntimeError as exc:
+            failure=exc
+        assert failure is None, f'request deadline poisoned healthy worker: {failure}'
+        assert len(workers)==1 and workers[0] is not None
+        assert s._process is workers[0] and workers[0].poll() is None
+        assert not s.requires_reopen and not s._closed
+        with using_request_deadline(RequestDeadline.from_budget(2)):
+            assert s._call('search',[],scope_id='PUBLIC',limit=1)=='search'
+        assert s._process is workers[0] and workers[0].poll() is None
+        assert not s.requires_reopen and not s._closed
+    finally:s.close()
+
+
 def test_missing_companion_never_calls_model_work(tmp_path,monkeypatch):
     s=store(tmp_path,monkeypatch)
     (s.db_path/'PUBLIC.lance').rmdir()
@@ -59,17 +83,16 @@ def test_missing_companion_never_calls_model_work(tmp_path,monkeypatch):
     finally:s.close()
 
 
-@pytest.mark.parametrize('failure',['embedding','deadline','native','late_embedding'])
+@pytest.mark.parametrize('failure',['embedding','native'])
 def test_failed_overlap_reaps_owned_process_and_fresh_request_isolated(tmp_path,monkeypatch,failure):
-    s=store(tmp_path,monkeypatch,error=failure=='native',delay=.3 if failure=='deadline' else .03)
+    s=store(tmp_path,monkeypatch,error=failure=='native',delay=.03)
     worker=[]
     def work():
         worker.append(s._process)
         if failure=='embedding':raise ValueError('PUBLIC embedding failed')
-        if failure=='late_embedding':time.sleep(.1)
     try:
         with pytest.raises((ValueError,RuntimeError)):
-            with using_request_deadline(RequestDeadline.from_budget(.06 if failure in {'deadline','late_embedding'} else 2)):
+            with using_request_deadline(RequestDeadline.from_budget(2)):
                 s.open_existing_with_work(work)
     finally:s.close()
     assert len(worker)==1 and worker[0].poll() is not None
