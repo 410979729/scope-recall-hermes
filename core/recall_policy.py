@@ -45,6 +45,8 @@ VECTOR_SCORE_TOLERANCE = 1e-6
 _WEAK_QUERY = frozenset({"那次", "那件", "那个", "这个", "怎样", "如何", "what", "that", "it"})
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{1,239}")
 _HARD_IDENTIFIER = re.compile(r"(?<![A-Za-z0-9_])(?:[A-Za-z]{1,12}\d[A-Za-z0-9._/-]*|\d+[A-Za-z][A-Za-z0-9._/-]*)(?![A-Za-z0-9_])")
+_CJK_TEXT = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_CLAUSE_BOUNDARY = re.compile(r"[，,；;。！？!?\n]+")
 
 
 def canonical_embedding_space(value: dict) -> dict:
@@ -259,7 +261,11 @@ class RecallPolicy:
             return False, "weak_query_only"
         if score < self.lexical_min_terms:
             return False, "lexical_below_minimum"
-        if not query_is_specific(query, matched_terms=score):
+        if not query_is_specific(
+            query,
+            matched_terms=score,
+            matched_query_terms=candidate.matched_query_terms,
+        ):
             return False, "lexical_insufficient_specificity"
         return True, None
 
@@ -306,8 +312,30 @@ def query_is_relevant(query: str, content: str) -> bool:
     return overlap >= max(2, math.ceil(len(q) * 0.30))
 
 
-def query_is_specific(query: str, *, matched_terms: float) -> bool:
-    """Require enough distinct lexical coverage for generic candidates."""
+def _specificity_required(term_count: int) -> int:
+    required = max(2, math.ceil(term_count * 0.30))
+    return max(required, 3) if term_count >= 3 else required
+
+
+def _substantive_chinese_clauses(query: str) -> tuple[tuple[str, ...], ...]:
+    if _CJK_TEXT.search(query) is None:
+        return ()
+    clauses = tuple(
+        meaningful_query_terms(clause)
+        for clause in _CLAUSE_BOUNDARY.split(query)
+        if clause.strip() and _CJK_TEXT.search(clause) is not None
+    )
+    substantive = tuple(terms for terms in clauses if len(terms) >= 5)
+    return substantive if len(substantive) >= 2 else ()
+
+
+def query_is_specific(
+    query: str,
+    *,
+    matched_terms: float,
+    matched_query_terms: Iterable[str] | None = None,
+) -> bool:
+    """Require global, or conservative Chinese clause-level, lexical coverage."""
 
     terms = meaningful_query_terms(query)
     if not terms:
@@ -316,10 +344,18 @@ def query_is_specific(query: str, *, matched_terms: float) -> bool:
         return True
     if len(terms) == 1:
         return matched_terms >= 1.0
-    required = max(2, math.ceil(len(terms) * 0.30))
-    if len(terms) >= 3:
-        required = max(required, 3)
-    return matched_terms >= required and matched_terms / len(terms) >= 0.30
+    required = _specificity_required(len(terms))
+    if matched_terms >= required and matched_terms / len(terms) >= 0.30:
+        return True
+    matches = frozenset(matched_query_terms or ())
+    for clause_terms in _substantive_chinese_clauses(query):
+        clause_hits = len(matches.intersection(clause_terms))
+        if (
+            clause_hits >= max(5, _specificity_required(len(clause_terms)))
+            and clause_hits / len(clause_terms) >= 0.30
+        ):
+            return True
+    return False
 
 
 def meaningful_query_terms(query: str) -> tuple[str, ...]:

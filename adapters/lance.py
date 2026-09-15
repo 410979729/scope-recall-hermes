@@ -513,11 +513,13 @@ class LanceVectorPort:
             trusted = context.trusted_context
             binding = trusted.binding
             deadline_hit = False
+            next_search_reserve = 0.0
             for logical_scope_id in sorted(trusted.allowed_scope_ids):
                 if deadline_hit:
                     break
                 for project_id, branch_id in _project_branch_combinations(trusted):
-                    if effective_deadline - self._clock() <= 0:
+                    remaining = effective_deadline - self._clock()
+                    if remaining <= next_search_reserve:
                         deadline_hit = True
                         break
                     physical_scope_id = physical_partition_scope_id(
@@ -528,7 +530,15 @@ class LanceVectorPort:
                         project_id=project_id,
                         branch_id=branch_id,
                     )
+                    search_started = self._clock()
                     rows = self._store.search(query_vector, scope_id=physical_scope_id, limit=limit)
+                    # Keep this estimate request-local: the slowest completed
+                    # partition is a deterministic reserve without coupling
+                    # concurrent requests or inventing a fixed timeout.
+                    next_search_reserve = max(
+                        next_search_reserve,
+                        max(0.0, self._clock() - search_started),
+                    )
                     for row in rows or ():
                         candidate = self._candidate_from_row(
                             row,
@@ -692,6 +702,7 @@ def _with_rank(candidate: CandidateRef, rank: int) -> CandidateRef:
         vector_id=candidate.vector_id,
         embedding_space=candidate.embedding_space,
         fusion_score=candidate.fusion_score,
+        matched_query_terms=candidate.matched_query_terms,
     )
 
 

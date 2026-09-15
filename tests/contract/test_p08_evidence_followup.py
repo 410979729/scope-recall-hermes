@@ -6,12 +6,19 @@ from typing import Any
 
 import pytest
 
+from scope_recall.contracts import ImportProvenance, import_source_fingerprint
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.recall_policy import RecallPolicy, SPACE_ID
-from scope_recall.core.retrieval import CandidateRef, CollectionQuery, SearchContext
+from scope_recall.core.events import lexical_terms
+from scope_recall.core.recall_policy import (
+    RecallPolicy,
+    SPACE_ID,
+    meaningful_query_terms,
+    query_is_specific,
+)
+from scope_recall.core.retrieval import CandidateRef, CollectionQuery, SearchContext, SearchLimits
 from scope_recall.core.retrieval_storage import RetrievalStorage, scope_digest
 from tests.contract.test_v11_claims import Clock, capture
-from tests.v11_support import context, recall_request
+from tests.v11_support import context, recall_request, source_event
 
 
 @dataclass
@@ -357,6 +364,125 @@ def test_generic_short_lexical_overlap_is_not_admitted(app, source_text, query):
     source = capture(core, ctx, source_text, key="TEST-p08/lexical-negative", when="2026-09-05T12:00:00Z")
     result = _recall(core, ctx, query=query, mode="history")
     assert source.ref not in {item.ref for item in result.items}
+
+
+def test_compound_chinese_query_requires_overlap_within_one_substantive_clause(app):
+    core, ctx = app
+    query = "请详细说明海报主体视觉层次变化；补充边缘暗化处理依据"
+    complementary = capture(
+        core,
+        ctx,
+        "补充边缘暗化",
+        key="TEST-p08/clause-aware/complementary",
+        when="2026-09-05T12:01:00Z",
+    )
+    scattered = capture(
+        core,
+        replace(ctx, session_id="TEST-scattered-session"),
+        "请详细补充边缘",
+        key="TEST-p08/clause-aware/scattered",
+        when="2026-09-05T12:02:00Z",
+    )
+    unrelated = capture(
+        core,
+        replace(ctx, session_id="TEST-unrelated-session"),
+        "详细说明",
+        key="TEST-p08/clause-aware/unrelated",
+        when="2026-09-05T12:03:00Z",
+    )
+    query_terms = set(meaningful_query_terms(query))
+    assert len(query_terms) == 23
+    assert len(meaningful_query_terms("补充边缘暗化处理依据")) == 9
+    assert len(query_terms.intersection(lexical_terms(complementary.event["content"]))) == 5
+    assert len(query_terms.intersection(lexical_terms(scattered.event["content"]))) == 5
+    assert len(query_terms.intersection(lexical_terms(unrelated.event["content"]))) == 3
+
+    result = _recall(core, ctx, query=query, mode="history")
+    refs = {item.ref for item in result.items}
+    assert complementary.ref in refs
+    assert scattered.ref not in refs
+    assert unrelated.ref not in refs
+
+
+def test_chinese_clause_fallback_requires_two_substantive_cjk_clauses():
+    query = (
+        "alpha bravo charlie delta echo foxtrot golf hotel india juliet；"
+        "补充边缘暗化处理依据"
+    )
+    matches = lexical_terms("补充边缘暗化")
+    assert len(set(meaningful_query_terms(query))) == 19
+    assert len(set(meaningful_query_terms(query)).intersection(matches)) == 5
+    assert not query_is_specific(
+        query,
+        matched_terms=5.0,
+        matched_query_terms=matches,
+    )
+
+
+def test_lexical_prelimit_keeps_direct_and_imported_evidence_ahead_of_diagnostic_envelopes(app):
+    core, ctx = app
+    direct = capture(
+        core,
+        ctx,
+        "alpha bravo",
+        key="TEST-p08/lexical-priority/direct",
+        when="2026-09-05T12:01:00Z",
+    )
+    imported_event = source_event(
+        source_event_key="TEST-p08/lexical-priority/imported",
+        origin="imported",
+        source_original_origin="human_direct",
+        role="user",
+        content="alpha bravo",
+        occurred_at="2026-09-05T12:02:00Z",
+    )
+    provenance = ImportProvenance(
+        "human_direct",
+        "a" * 64,
+        frozenset({import_source_fingerprint(imported_event)}),
+    )
+    imported_receipt = core.record_event(
+        replace(ctx, actor_origin="imported", import_provenance=provenance),
+        imported_event,
+        scope_id="TEST-scope",
+        remaining_seconds=10,
+    )
+    imported = core.source(ctx, imported_receipt.event_refs[0].ref, 1)
+
+    diagnostics = []
+    for index in range(3):
+        receipt = core.record_event(
+            replace(ctx, actor_origin="memory_reinjection"),
+            source_event(
+                source_event_key=f"TEST-p08/lexical-priority/diagnostic-{index}",
+                origin="memory_reinjection",
+                role="tool",
+                content="alpha bravo charlie delta",
+                occurred_at=f"2026-09-05T12:0{3 + index}:00Z",
+            ),
+            scope_id="TEST-scope",
+            remaining_seconds=10,
+        )
+        diagnostics.append(core.source(ctx, receipt.event_refs[0].ref, 1))
+
+    search = SearchContext(
+        query="alpha bravo charlie delta",
+        mode="history",
+        as_of=None,
+        focus_refs=(),
+        limits=SearchLimits(candidate_pool=3),
+        deadline=core.clock.monotonic() + 5.0,
+        now=core.clock.utc_now(),
+        trusted_context=ctx,
+    )
+    with core.storage.read(ctx) as tx:
+        candidates = RetrievalStorage().lexical(tx, search, limit=3)
+
+    assert [candidate.ref for candidate in candidates] == [
+        imported.ref,
+        direct.ref,
+        diagnostics[-1].ref,
+    ]
 
 
 def test_lexical_specificity_accepts_full_multi_term_match_and_one_term_keyword(app):
