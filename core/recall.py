@@ -17,6 +17,7 @@ from .retrieval_storage import CollectionPage, RetrievalStorage
 from .background_context import background_candidates, current_task_candidate
 from .coverage import note_truncation
 from .duplicate_collapse import DistinctContent, note_duplicates
+from .vector_failure import vector_failure_label
 
 _CAUSAL_MARKERS = re.compile(r"因为|由于|原因是|because|reason is|due to", re.I)
 _REASON_PREDICATES = frozenset({"原因", "理由", "reason", "why", "rationale"})
@@ -300,16 +301,12 @@ class RetrievalPipeline:
                 budget["total"] -= len(raw)
         except Exception as exc:
             gaps.append("vector_unavailable")
-            # The class alone does not say what went wrong: every auxiliary
-            # failure is an AuxiliaryModelError, and whether it was the
-            # connection or the request decides both whether the retry applies
-            # and whether an operator should act. ``error_type`` is a fixed
-            # vocabulary, unlike the message.
-            kind = getattr(exc, "error_type", None)
-            label = type(exc).__name__
-            if type(kind) is str and kind.isascii() and kind.replace("_", "").isalnum():
-                label = f"{label}:{kind}"
-            gaps.append(f"vector_error:{label}")
+            # The class alone does not say what went wrong, and for the native
+            # Lance helper it is not even close: that path raises more than
+            # twenty distinct RuntimeErrors and every one of them reached the
+            # operator as the single word "RuntimeError". See
+            # core/vector_failure.py for what that cost on a live instance.
+            gaps.append(f"vector_error:{vector_failure_label(exc)}")
             return ()
         result = []
         for rank, item in enumerate(tuple(raw or ()), 1):

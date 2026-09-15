@@ -247,3 +247,69 @@ def test_other_tiers_do_not_require_an_installed_distribution(monkeypatch) -> No
     monkeypatch.setattr(sys, "argv", ["check.py", "--tier", "contract", "--plan"])
 
     assert check.main() == 0
+
+
+# --- a contract file nothing selects protects nothing -------------------------
+
+#: Contract files that deliberately stay out of the gate, each with the reason.
+#: Anything else under tests/contract must be selected by some tier, or it is a
+#: file that was written as a contract and is run by nothing.
+UNGATED_CONTRACTS_BY_DESIGN = {
+    # Binds real local sockets; the hermetic tiers forbid child processes and
+    # listening sockets, so this needs a tier that allows them.
+    "tests/contract/test_http_proxy_socket.py",
+    # Reads a frozen fixture outside the test data boundary the guard enforces.
+    "tests/contract/test_historical_hermes_reserve_cover.py",
+    # Two assertions encode contracts that 3.1.0 changed on purpose and that
+    # need their fixtures rebuilt, not their expectations bent: subject binding
+    # now promotes the proposal this file accepts, so the candidate worker has
+    # nothing left to evaluate, and two claims that used to differ now normalise
+    # onto one slot.
+    "tests/contract/test_rc4_correction_closeout.py",
+}
+
+
+def test_every_contract_file_is_selected_by_some_tier():
+    """Twenty-eight of them were not, and nothing said so: about 350 passing
+    assertions that protected nothing, and four failures no one could see --
+    including a contract rc18 changed deliberately, which should have turned its
+    file red the day it changed."""
+    import pathlib
+
+    from check import SUITES, select_tests
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    on_disk = {
+        "tests/contract/" + path.name
+        for path in (root / "tests" / "contract").glob("test_*.py")
+    }
+    selected = set()
+    for tier in SUITES:
+        selected.update(select_tests(tier)[0])
+    unselected = sorted(on_disk - selected - UNGATED_CONTRACTS_BY_DESIGN)
+    assert unselected == [], (
+        "these contract files are run by no tier; add them to CORE_RELEASE_CONTRACTS "
+        "or name them in UNGATED_CONTRACTS_BY_DESIGN with the reason: %r" % unselected)
+
+
+def test_the_exclusions_are_real_files():
+    """An excuse for a file that no longer exists hides the next real gap."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    for relative in UNGATED_CONTRACTS_BY_DESIGN:
+        assert (root / relative).is_file(), relative
+
+
+def test_release_selects_everything_integration_selects():
+    """``release`` is built from unit/contract/native/host/migration/packaging and
+    not from SUITES["integration"], so a file added only to the integration tier
+    runs in CI and not in the gate that decides whether something ships. That is
+    exactly what happened to these contract files before they were moved."""
+    from check import select_tests
+
+    integration = set(select_tests("integration")[0])
+    release = set(select_tests("release")[0])
+    contract_only_in_ci = sorted(
+        path for path in integration - release if path.startswith("tests/contract/"))
+    assert contract_only_in_ci == [], contract_only_in_ci

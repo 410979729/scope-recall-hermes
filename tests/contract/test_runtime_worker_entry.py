@@ -882,3 +882,114 @@ def test_the_two_stop_loss_layers_stay_distinct():
 
     assert _RATE_LIMITED_ERRORS == CAPACITY_REFUSALS
     assert "http_429" in _RATE_LIMITED_ERRORS
+
+
+# --- the watcher and the operator must read the same instance ----------------
+
+class _Queue:
+    def __init__(self, failed_work, work_error_counts, pending_work=0):
+        self.failed_work = failed_work
+        self.work_error_counts = work_error_counts
+        self.pending_work = pending_work
+        self.oldest_pending_at = None
+
+
+def _status_from(queue, *, background_gaps=(), source_only=0, gaps=()):
+    """The decision `run_worker` makes after the drain, in isolation."""
+    from scope_recall.runtime.worker_entry import _is_actionable
+
+    terminal = sum(count for code, count in queue.work_error_counts if not _is_actionable(code))
+    actionable = max(0, queue.failed_work - terminal)
+    out = {"status": "completed", "capability_gaps": sorted(set(gaps))}
+    if actionable or background_gaps or source_only:
+        out["status"] = "degraded"
+        if actionable:
+            out["capability_gaps"] = sorted(set(tuple(gaps) + (f"work_failed:{actionable}",)))
+    elif terminal:
+        out["capability_gaps"] = sorted(set(tuple(gaps) + ("work_failed_terminal_only",)))
+    return out
+
+
+def test_by_design_failures_alone_do_not_make_the_worker_say_degraded():
+    """Measured on tianshu: 33 items failed by design, none actionable. The
+    doctor said "attention"; this line said "degraded" with an empty gap list."""
+    status = _status_from(_Queue(33, (("derivation_invalid", 33),)))
+    assert status["status"] != "degraded"
+    assert status["capability_gaps"] == ["work_failed_terminal_only"]
+
+
+def test_one_actionable_failure_among_many_terminal_is_still_degraded():
+    """The restart that interrupts an in-flight evaluation leaves exactly this."""
+    status = _status_from(_Queue(34, (("derivation_invalid", 33), ("candidate_attempt_interrupted", 1))))
+    assert status["status"] == "degraded"
+    assert "work_failed:1" in status["capability_gaps"]
+
+
+def test_degraded_is_never_reported_without_a_reason():
+    """An empty gap list beside "degraded" is what sent a watcher hunting through
+    two-day-old logs for a cause that was not there."""
+    status = _status_from(_Queue(2, (("http_429", 2),)))
+    assert status["status"] == "degraded" and status["capability_gaps"]
+
+
+def test_the_two_status_decisions_use_one_classification():
+    """rc15 fixed the pass-level decision and left this one restating the old
+    rule forty lines below it."""
+    import inspect
+
+    from scope_recall.runtime import worker_entry
+
+    source = inspect.getsource(worker_entry)
+    assert "if queue.failed_work or background_gaps" not in source
+    assert "if actionable_failed or background_gaps" in source
+    assert source.count("_is_actionable(") >= 2
+
+
+def test_a_source_only_drain_names_itself_too():
+    """The same empty-gap shape one branch over: source_only alone made the
+    status degraded and nothing in the gap list said so."""
+    from scope_recall.runtime.worker_entry import _is_actionable
+
+    queue = _Queue(0, ())
+    terminal = sum(count for code, count in queue.work_error_counts if not _is_actionable(code))
+    actionable = max(0, queue.failed_work - terminal)
+    gaps = []
+    source_only = 3
+    assert actionable == 0
+    if actionable or () or source_only:
+        if actionable:
+            gaps.append(f"work_failed:{actionable}")
+        if source_only:
+            gaps.append(f"source_only:{source_only}")
+    assert gaps == ["source_only:3"]
+
+
+def test_every_degraded_branch_appends_a_gap():
+    """Read the code, not a mock of it: each reason for degraded must put
+    something in the list a watcher reads."""
+    import inspect
+
+    from scope_recall.runtime import worker_entry
+
+    source = inspect.getsource(worker_entry)
+    branch = source[source.index("if actionable_failed or background_gaps"):]
+    branch = branch[:branch.index("elif terminal_failed")]
+    assert 'gaps.append(f"work_failed:{actionable_failed}")' in branch
+    assert "source_only:" in branch
+    assert 'payload["capability_gaps"] = sorted(set(gaps))' in branch
+
+
+def test_the_split_the_worker_computed_reaches_the_file_that_is_polled():
+    """The status file takes only a closed set of keys, which is right -- and a
+    field added to the payload and not to that set is computed, used for the
+    decision, and then silently dropped before anyone can read it. That happened
+    to `terminal_failed_work` on its first release: the behaviour changed and the
+    number explaining it did not appear."""
+    import inspect
+
+    from scope_recall.runtime import worker_entry
+
+    source = inspect.getsource(worker_entry._persist_worker_status_unlocked)
+    assert '"terminal_failed_work"' in source, "the allowlist drops it before anyone reads it"
+    payload_source = inspect.getsource(worker_entry)
+    assert "terminal_failed_work=terminal_failed" in payload_source

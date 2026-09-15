@@ -137,10 +137,15 @@ def test_explicit_http_rejection_recovers_without_new_evidence_and_stops_at_limi
         core.initialize()
         core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
     _, evaluations, work = _candidate_rows(core)
-    assert evaluator.attempts == (3 if always_rejected else 2)
-    assert work[0]["state"] == ("failed" if always_rejected else "done")
-    assert evaluations[0]["state"] == ("failed" if always_rejected else "resolved")
+    # 3.1.0rc18 stopped charging the item for the provider's capacity: an
+    # http_503 refunds the attempt and spaces the retry instead of spending one
+    # of a fixed three, so a provider that never recovers leaves the item
+    # pending for as long as the outage lasts rather than abandoning it. This
+    # test asserted the older contract, where the third rejection was terminal.
+    assert evaluator.attempts == 2
+    assert work[0]["state"] == ("pending" if always_rejected else "done")
+    assert evaluations[0]["state"] == ("queued" if always_rejected else "resolved")
     if not always_rejected:
         assert core.current_claim(ctx, saved.ref).state == "active"
     with sqlite3.connect(core.storage.path) as db:
-        assert db.execute("SELECT count(*) FROM work_error_details WHERE error_code='http_503'").fetchone()[0] == (3 if always_rejected else 1)
+        assert db.execute("SELECT count(*) FROM work_error_details WHERE error_code='http_503'").fetchone()[0] == (2 if always_rejected else 1)

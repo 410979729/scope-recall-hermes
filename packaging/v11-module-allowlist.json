@@ -1,6 +1,6 @@
 {
   "schema": "scope-recall.v11-module-allowlist.v1",
-  "package_version": "3.1.0rc22",
+  "package_version": "3.1.0rc25",
   "packages": [
     "scope_recall",
     "scope_recall._internal",
@@ -101,6 +101,7 @@
     "core/storage.py",
     "core/subject_binding.py",
     "core/trace.py",
+    "core/vector_failure.py",
     "core/visibility.py",
     "core/work_storage.py",
     "core/worker.py",

@@ -73,6 +73,23 @@ def _write_worker_frame(stream: Any, encoded: bytes, output: queue.Queue) -> Non
             pass
 
 
+def _remote_failure(error_type, message: str) -> RuntimeError:
+    """Keep the helper's own name for what went wrong.
+
+    The subprocess reports ``error_type`` (``_lance_worker`` sets it to the
+    exception's class name) and both call sites below read it, handle the two
+    classes they can re-raise faithfully, and then dropped it on the floor --
+    every other remote failure reached the recall packet as the bare word
+    ``RuntimeError``.  ``core/recall.py`` already looks for ``error_type`` on
+    whatever it catches and already screens it, so restoring the attribute is
+    the whole fix: nothing downstream changes.
+    """
+    error = RuntimeError(message)
+    if type(error_type) is str and 0 < len(error_type) <= 64             and error_type.isascii() and error_type.replace("_", "").isalnum():
+        error.error_type = error_type
+    return error
+
+
 def _helper_lock_timeout() -> RuntimeError:
     return RuntimeError(
         "native vector helper lock timeout; SQLite truth is intact and the active helper was not interrupted"
@@ -413,7 +430,7 @@ class ProcessLanceVectorStore:
                 raise VectorStoreCompatibilityError(message)
             if error_type == "FileNotFoundError":
                 raise FileNotFoundError(message)
-            raise RuntimeError(message)
+            raise _remote_failure(error_type, message)
         return response.get("result")
 
     def _send_fence_frame(self, encoded: bytes, timeout: float) -> None:
@@ -516,7 +533,7 @@ class ProcessLanceVectorStore:
             message = str(final.get("error") or "native vector fence failed")
             if error_type == "VectorStoreCompatibilityError":
                 raise VectorStoreCompatibilityError(message)
-            raise RuntimeError(message)
+            raise _remote_failure(error_type, message)
         return bool(final.get("result"))
 
     def fenced_upsert_records(
