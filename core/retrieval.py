@@ -167,6 +167,7 @@ class CandidateRef:
     vector_id: str | None = None
     embedding_space: str | None = None
     fusion_score: float = 0.0
+    matched_query_terms: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in {"event", "claim", "episode", "artifact", "reference"}:
@@ -184,6 +185,11 @@ class CandidateRef:
                 raise ContractError("INPUT_INVALID", name)
         if type(self.fusion_score) not in (int, float) or not math.isfinite(float(self.fusion_score)):
             raise ContractError("INPUT_INVALID", "fusion_score")
+        if self.matched_query_terms is not None and (
+            type(self.matched_query_terms) is not tuple
+            or any(type(term) is not str or not 1 <= len(term) <= 240 for term in self.matched_query_terms)
+        ):
+            raise ContractError("INPUT_INVALID", "matched_query_terms")
 
     @property
     def key(self) -> tuple[str, str, int]:

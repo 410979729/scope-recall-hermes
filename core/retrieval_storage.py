@@ -196,7 +196,8 @@ class RetrievalStorage:
             as_of = " AND (e.occurred_at IS NULL OR e.occurred_at<=?)"
             params.append(context.as_of)
         rows = tx._check().execute(
-            f"""SELECT e.event_id,e.source_revision,COUNT(DISTINCT p.term) AS hits
+            f"""SELECT e.event_id,e.source_revision,COUNT(DISTINCT p.term) AS hits,
+                       GROUP_CONCAT(DISTINCT hex(p.term)) AS matched_term_hexes
                 FROM lexical_projection p JOIN source_events e
                 ON e.event_id=p.event_id AND e.source_revision=p.source_revision
                 WHERE p.term IN ({term_marks}) AND e.scope_id IN ({scope_marks})
@@ -206,12 +207,29 @@ class RetrievalStorage:
                       AND b.object_ref=e.event_id AND b.read_blocked=1)
                   {current}{as_of}
                 GROUP BY e.event_id,e.source_revision
-                ORDER BY hits DESC,e.occurred_at DESC,e.event_id,e.source_revision DESC
+                ORDER BY CASE
+                    WHEN e.role='tool' AND (
+                        e.origin='memory_reinjection'
+                        OR (e.origin='imported' AND e.source_original_origin='memory_reinjection')
+                    ) THEN 1 ELSE 0
+                END,
+                hits DESC,e.occurred_at DESC,e.event_id,e.source_revision DESC
                 LIMIT ?""",
             (*params, limit),
         ).fetchall()
         return tuple(
-            CandidateRef("event", row["event_id"], row["source_revision"], "lexical", rank=index, lexical_score=float(row["hits"]))
+            CandidateRef(
+                "event",
+                row["event_id"],
+                row["source_revision"],
+                "lexical",
+                rank=index,
+                lexical_score=float(row["hits"]),
+                matched_query_terms=tuple(sorted(
+                    bytes.fromhex(encoded).decode("utf-8")
+                    for encoded in row["matched_term_hexes"].split(",")
+                )),
+            )
             for index, row in enumerate(rows, 1)
         )
 

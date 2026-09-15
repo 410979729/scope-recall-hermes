@@ -394,16 +394,9 @@ class RuntimeInstance:
 
     def _ensure_vector_port(self, *, allow_create: bool = False, deadline: float | None = None,
                             during_open=None) -> Any:
-        self._ensure_open()
-        if self._vector_store is not None:
-            return self._vector_port
-        if self.config.vector is None or self._vector_factory is None:
-            return None
-        resource = self._vector_factory(self.config.vector)
-        self._owned_resources.append(resource)
-        try:
+        def open_resource(resource) -> None:
             opener = getattr(resource, "open" if allow_create else "open_existing", None)
-            overlap = getattr(resource, 'open_existing_with_work', None)
+            overlap = getattr(resource, "open_existing_with_work", None)
             if not allow_create and during_open is not None and callable(overlap):
                 def opener():
                     return overlap(during_open)
@@ -416,6 +409,18 @@ class RuntimeInstance:
                         RequestDeadline.from_absolute(deadline, now=time.monotonic())
                     ):
                         opener()
+
+        self._ensure_open()
+        if self._vector_store is not None:
+            if getattr(self._vector_store, "requires_reopen", False):
+                open_resource(self._vector_store)
+            return self._vector_port
+        if self.config.vector is None or self._vector_factory is None:
+            return None
+        resource = self._vector_factory(self.config.vector)
+        self._owned_resources.append(resource)
+        try:
+            open_resource(resource)
         except Exception:
             self._owned_resources.pop()
             closer = getattr(resource, "close", None)

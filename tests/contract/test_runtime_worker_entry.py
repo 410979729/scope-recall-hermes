@@ -291,6 +291,97 @@ def test_lazy_vector_facade_opens_existing_store_for_each_core_search_context(tm
     instance.close()
 
 
+def test_lazy_vector_facade_reopens_poisoned_cached_store_on_next_search(tmp_path):
+    binding = _binding(tmp_path / "data")
+    config = RuntimeInstanceConfig(
+        binding=binding,
+        session_id="construction-session",
+        allowed_scope_ids=binding.scope_ids,
+        auxiliary=AuxiliaryRuntimeConfig.from_mapping(
+            {"external_embedding": False, "external_consolidation": False}
+        ),
+        vector=VectorRuntimeConfig(
+            backend="lancedb",
+            storage_dir=tmp_path / "vectors",
+            table_name="TEST-vectors",
+            dimensions=2,
+            test_injection_override=True,
+        ),
+    )
+
+    class RecoveringStore:
+        def __init__(self):
+            self.failed = False
+            self.closed = False
+            self.open_deadlines = []
+            self.search_calls = 0
+
+        @property
+        def requires_reopen(self):
+            return self.failed
+
+        def open_existing(self):
+            from scope_recall._internal.recall.deadline import current_request_deadline
+
+            deadline = current_request_deadline()
+            self.open_deadlines.append(None if deadline is None else deadline.deadline_monotonic)
+            self.failed = False
+            self.closed = False
+
+        def open_existing_with_work(self, during_open):
+            self.open_existing()
+            return during_open()
+
+        def search(self, vector, *, scope_id, limit):
+            self.search_calls += 1
+            if self.search_calls == 1:
+                self.failed = True
+                self.closed = True
+                raise RuntimeError("worker_failed")
+            if self.failed or self.closed:
+                raise RuntimeError("worker_closed")
+            return []
+
+        def close(self):
+            self.closed = True
+
+    class QueryEmbedding:
+        def embed_query(self, text, *, remaining_seconds):
+            return (0.1, 0.2)
+
+    store = RecoveringStore()
+    factory_calls = []
+    instance = build_runtime_instance(config, vector_factory=lambda _: (factory_calls.append(store) or store))
+    instance.auxiliary = replace(instance.auxiliary, query_embedding=QueryEmbedding())
+    instance.core.initialize()
+    first = SearchContext(
+        query="TEST first query",
+        mode="auto",
+        as_of=None,
+        focus_refs=(),
+        limits=SearchLimits(max_items=1, vector_limit=1),
+        deadline=time.monotonic() + 5.0,
+        now="2026-09-05T12:00:00Z",
+        trusted_context=_context(binding, "first-search-session"),
+    )
+    with pytest.raises(RuntimeError, match="worker_failed"):
+        instance.core.recall_pipeline.vector_port.search(first, limit=1, remaining_seconds=4.0)
+
+    second = replace(
+        first,
+        query="TEST second query",
+        deadline=time.monotonic() + 5.0,
+        trusted_context=_context(binding, "second-search-session"),
+    )
+    assert instance.core.recall_pipeline.vector_port.search(second, limit=1, remaining_seconds=4.0) == ()
+    assert factory_calls == [store]
+    assert len(store.open_deadlines) == 2
+    assert store.open_deadlines[1] is not None
+    assert store.open_deadlines[1] <= second.deadline
+    assert instance._owned_resources == [store]
+    instance.close()
+
+
 def test_default_vector_factory_selects_process_store_without_opening(tmp_path):
     config = VectorRuntimeConfig(
         backend="lancedb",
