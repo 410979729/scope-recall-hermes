@@ -1,0 +1,18 @@
+{
+  "name": "scope-recall",
+  "version": "3.1.0-rc.26",
+  "description": "Scope Recall plugin",
+  "author": {
+    "name": "Local developer"
+  },
+  "interface": {
+    "displayName": "Scope Recall",
+    "shortDescription": "Use Scope Recall in Codex.",
+    "longDescription": "Scope Recall adds a local Codex plugin over the installed core.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Help me use Scope Recall."
+  },
+  "mcpServers": "./.mcp.json"
+}

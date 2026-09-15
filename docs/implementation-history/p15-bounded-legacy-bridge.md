@@ -7,7 +7,7 @@ This is the same unfinished incident as the prior unsuccessful repairs. This wor
 ## Exact changed files
 - `adapters/hermes/installation.py`
 - `tests/migration/test_p15_bounded_archival.py`
-- `IMPLEMENTATION-REPORT.md`
+- `docs/implementation-history/p15-bounded-legacy-bridge.md`
 
 ## Parent-run after checkpoint contract (same incident)
 Parent reviewed and ran the affected tests: they passed. Prior 10-node result after the segment fix remains **3 pass, 7 blocked at receipt**; those seven later passed once `(0,-1,-1)` was accepted only for a non-`wal` journal. This note records that parent-run only. This worker did not rerun them.
@@ -43,6 +43,6 @@ Earlier parent run: **32 tests, 17 failed, 0 errors, 0 skipped**. All 17 failed 
 - Do not treat this edit as green until that parent run.
 
 ## This correction
-Files: `adapters/hermes/installation.py`, `tests/migration/test_p15_bounded_archival.py`, `IMPLEMENTATION-REPORT.md`.
+Files: `adapters/hermes/installation.py`, `tests/migration/test_p15_bounded_archival.py`, `docs/implementation-history/p15-bounded-legacy-bridge.md`.
 
 `build_archive_scope_id` still emits the existing length-prefixed UTF-8 hex ID when that string fits 240 characters. Longer originals keep the exact source string as the `archive_source_map` key and receive `archive|sha256:` plus the full SHA-256 of those UTF-8 bytes. No strip/normalize, no collapse to `owner_private`, no widened global 240/128 contracts. Manifest value-collision rejection remains mandatory. One focused regression covers long ASCII, multibyte, exact leading/trailing keys, reload/`to_binding`, distinct bounded outputs, and no runtime archive grants.
